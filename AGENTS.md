@@ -45,6 +45,7 @@ S0 (JPEG viewing) is accepted; the evidence harness now drives the editor itself
 | Performance rules and review checklist | [docs/engineering/performance-rules.md](docs/engineering/performance-rules.md) |
 | Architecture and crate layout | [docs/design/architecture.md](docs/design/architecture.md) |
 | Milestone contracts M1 to M4 | [docs/design/history-first-roadmap.md](docs/design/history-first-roadmap.md) |
+| Develop screen layout, tool array and visual language (proposal) | [docs/design/develop-workspace.md](docs/design/develop-workspace.md) |
 | History graph, named versions, catalog format 2 | [docs/design/versions-and-lineage.md](docs/design/versions-and-lineage.md) |
 | Specs: history, crop and export, recovery, performance | [docs/specs](docs/specs) |
 | Task plans and conventions | [tasks/README.md](tasks/README.md) |
