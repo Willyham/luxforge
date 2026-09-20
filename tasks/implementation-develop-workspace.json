@@ -128,7 +128,7 @@
     {
       "id": "TASK-003",
       "description": "Restructure the desktop into app, state and view layers with a pure view model, keeping every current behaviour and evidence path.",
-      "status": "ready",
+      "status": "completed",
       "dependencies": [
         "TASK-001"
       ],
@@ -146,9 +146,9 @@
         },
         {
           "kind": "file",
-          "label": "current desktop",
-          "target": "crates/lightwell-app/src/editor_app.rs",
-          "relevance": "The desktop being restructured: messages, owner tasks, evidence mode, generated controls and the crop driver."
+          "label": "restructured desktop",
+          "target": "crates/lightwell-app/src/app/mod.rs",
+          "relevance": "The Editor, its messages, the update function and the owner tasks the layers were split into."
         },
         {
           "kind": "file",
@@ -223,9 +223,9 @@
         },
         {
           "kind": "file",
-          "label": "current desktop",
-          "target": "crates/lightwell-app/src/editor_app.rs",
-          "relevance": "The generated-control mapping, field seeding and history rows being replaced by the view model and panels."
+          "label": "tools view model",
+          "target": "crates/lightwell-app/src/state/tools.rs",
+          "relevance": "The generated-control mapping and per-section versioning the panels render from."
         }
       ],
       "acceptance_criteria": [
@@ -271,9 +271,9 @@
         },
         {
           "kind": "file",
-          "label": "current desktop",
-          "target": "crates/lightwell-app/src/editor_app.rs",
-          "relevance": "The desktop being restructured: messages, owner tasks, evidence mode, generated controls and the crop driver."
+          "label": "update and effects",
+          "target": "crates/lightwell-app/src/app/mod.rs",
+          "relevance": "The Editor, its messages, the update function and the owner tasks the canvas work joins."
         },
         {
           "kind": "file",
@@ -362,7 +362,7 @@
         {
           "kind": "file",
           "label": "evidence scripts",
-          "target": "crates/lightwell-app/src/editor_app.rs",
+          "target": "crates/lightwell-app/src/app/evidence.rs",
           "relevance": "Script parsing and step settling that the new steps join."
         }
       ],

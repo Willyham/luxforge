@@ -433,8 +433,8 @@
         {
           "kind": "file",
           "label": "Desktop adapter",
-          "target": "crates/lightwell-app/src/editor_app.rs",
-          "relevance": "Generated controls, narrow refresh paths, preview delivery and rendered evidence."
+          "target": "crates/lightwell-app/src/app/mod.rs",
+          "relevance": "The Editor, its messages, the update function and the owner tasks; generated controls are modelled in state/ and drawn in view/."
         },
         {
           "kind": "file",
@@ -574,8 +574,8 @@
         {
           "kind": "file",
           "label": "Desktop adapter",
-          "target": "crates/lightwell-app/src/editor_app.rs",
-          "relevance": "Generated controls, narrow refresh paths, preview delivery and rendered evidence."
+          "target": "crates/lightwell-app/src/app/mod.rs",
+          "relevance": "The Editor, its messages, the update function and the owner tasks; generated controls are modelled in state/ and drawn in view/."
         },
         {
           "kind": "file",
@@ -1147,8 +1147,8 @@
         {
           "kind": "file",
           "label": "Desktop adapter",
-          "target": "crates/lightwell-app/src/editor_app.rs",
-          "relevance": "Generated controls, narrow refresh paths, preview delivery and rendered evidence."
+          "target": "crates/lightwell-app/src/app/mod.rs",
+          "relevance": "The Editor, its messages, the update function and the owner tasks; generated controls are modelled in state/ and drawn in view/."
         },
         {
           "kind": "file",
