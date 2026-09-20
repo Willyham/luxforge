@@ -252,7 +252,7 @@
     {
       "id": "TASK-005",
       "description": "Build the canvas, mode strip, draft bar, notices, title bar, status bar, keymap and compare.",
-      "status": "pending",
+      "status": "ready",
       "dependencies": [
         "TASK-004"
       ],
