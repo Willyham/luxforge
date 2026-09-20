@@ -78,7 +78,7 @@
     {
       "id": "TASK-002",
       "description": "Create the lightwell-ui widget crate: theme tokens and the widget set from the design, depending on Iced only.",
-      "status": "ready",
+      "status": "completed",
       "dependencies": [],
       "extra_context": [
         "Widgets: bipolar slider with editable value and draft, typing and invalid states; section header with dot and reset; sub-group header; icon button; segmented control; chip; list row for history, version and recipe rows; notice card; floating bar; mode strip; inline menu.",
