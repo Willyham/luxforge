@@ -16,7 +16,7 @@
 | Fit, numeric zoom, 100% source detail and pan | Implemented (M1) | Physical-pixel 100%; per-client session state |
 | Live JSON API and single-owner IPC | Implemented (M1) | Same service and history while the GUI is open |
 | Rotate left/right, mirror horizontal, flip vertical | Implemented (M2) | Exact integer mappings |
-| Named versions and lineage view | Implemented | A version names a retained entry; lineage query and branch markers; catalog format 2 ([design](design/versions-and-lineage.md)) |
+| Named versions and lineage view | Implemented | A version names a retained entry; lineage query and branch markers; catalog format 3 ([design](design/versions-and-lineage.md)) |
 | Cached source and compiled one-pass rendering | Implemented | Point queries never rasterize; [performance rules](engineering/performance-rules.md) |
 | Declarative tool-module interface | Implemented (M3) | Descriptor-validated registry, generated `edit.<action>` methods and `module.list`; [modules](design/modules-and-api.md) |
 | Pixel and transform tools as modules | Implemented (M3) | Registered effects and actions use the current payload shapes |

@@ -519,14 +519,16 @@ impl EditorService {
                         crate::Availability::Unavailable { reason } => {
                             (format!("unavailable: {reason}"), false)
                         }
-                        crate::Availability::Available => (
-                            module.describe_layer(
-                                &layer.effect_id,
-                                layer.effect_format,
-                                &layer.payload,
-                            )?,
-                            true,
-                        ),
+                        // A payload the provider cannot read is reported on its own row; the
+                        // rest of the stack is still described.
+                        crate::Availability::Available => match module.describe_layer(
+                            &layer.effect_id,
+                            layer.effect_format,
+                            &layer.payload,
+                        ) {
+                            Ok(summary) => (summary, true),
+                            Err(error) => (format!("unreadable payload: {}", error.detail), false),
+                        },
                     };
                     LayerDescription {
                         id: layer.id.clone(),
