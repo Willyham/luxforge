@@ -7,9 +7,9 @@ use super::geometry::{BoxRect, CropPayload, CropStage, MAX_ANGLE, MIN_ANGLE};
 use crate::{
     CROP_EFFECT, EFFECT_FORMAT, Error, ErrorKind, Layer,
     modules::{
-        ActionDescriptor, ActionInput, ActionPlan, Availability, CanvasInteraction, Control,
+        ActionDescriptor, ActionInput, ActionPlan, Availability, CanvasInteraction,
         EffectDescriptor, EffectStage, ExactGeometry, ModuleDescriptor, ParameterDescriptor,
-        ParameterKind, Processing, Resample, Stage, StageContext, ToolModule,
+        ParameterKind, Processing, Resample, ResetAction, Stage, StageContext, ToolModule,
     },
 };
 use serde_json::{Map, Value};
@@ -119,6 +119,7 @@ impl CropModule {
             descriptor: ModuleDescriptor {
                 id: "lightwell.crop".into(),
                 title: "Crop and straighten".into(),
+                hint: Some("Frame, ratio and angle".into()),
                 effects: vec![EffectDescriptor {
                     id: CROP_EFFECT.into(),
                     format: EFFECT_FORMAT,
@@ -129,6 +130,7 @@ impl CropModule {
                         id: CROP_ACTION.into(),
                         title: "Crop".into(),
                         notes: "sets the straightening angle and the crop rectangle of the stack's one crop layer, updating it in place or appending it; a rectangle that would need an empty corner is rejected".into(),
+                        summary: Some("Crop {angle}°".into()),
                         parameters: vec![
                             angle_parameter(),
                             rectangle_parameter(
@@ -153,6 +155,7 @@ impl CropModule {
                         id: CROP_FIT_ACTION.into(),
                         title: "Fit crop to a ratio".into(),
                         notes: "commits the largest covered rectangle with the chosen ratio about the chosen center".into(),
+                        summary: Some("Crop {aspect}".into()),
                         parameters: vec![
                             ParameterDescriptor {
                                 name: "aspect".into(),
@@ -175,17 +178,16 @@ impl CropModule {
                         id: CROP_RESET_ACTION.into(),
                         title: "Reset crop".into(),
                         notes: "returns an existing crop layer to the neutral payload; a no-op without one".into(),
+                        summary: None,
                         parameters: Vec::new(),
                     },
                 ],
-                controls: vec![Control::Group {
-                    label: "Crop".into(),
-                    controls: vec![Control::Action {
-                        action: CROP_RESET_ACTION.into(),
-                        label: "Reset crop".into(),
-                        preset: Map::new(),
-                    }],
-                }],
+                // The section's reset is the same API action the header button calls.
+                controls: Vec::new(),
+                reset: Some(ResetAction {
+                    action: CROP_RESET_ACTION.into(),
+                    preset: Map::new(),
+                }),
                 canvas: Some(CanvasInteraction::CropFrame {
                     action: CROP_ACTION.into(),
                     angle: "angle".into(),
@@ -195,7 +197,10 @@ impl CropModule {
                     height: "height".into(),
                     fit_action: CROP_FIT_ACTION.into(),
                     aspect: "aspect".into(),
+                    title: "Crop".into(),
+                    shortcut: Some("R".into()),
                 }),
+                developer: false,
                 availability: Availability::Available,
             },
         }
@@ -533,6 +538,26 @@ impl ToolModule for CropModule {
         payload(effect_id, format, value)?.validate()
     }
 
+    fn describe_layer(&self, effect_id: &str, format: u32, value: &Value) -> Result<String, Error> {
+        let crop = payload(effect_id, format, value)?;
+        crop.validate()?;
+        if crop.is_neutral() {
+            return Ok("Whole image".into());
+        }
+        let percent = |fraction: f64| (fraction * 100.0).round();
+        let angle = crop.angle;
+        let straightened = if angle == 0.0 {
+            String::new()
+        } else {
+            format!(" at {angle}°")
+        };
+        Ok(format!(
+            "{}% × {}%{straightened}",
+            percent(crop.width),
+            percent(crop.height)
+        ))
+    }
+
     fn compile(
         &self,
         effect_id: &str,
@@ -695,18 +720,72 @@ mod tests {
                 height: "height".into(),
                 fit_action: "crop-fit".into(),
                 aspect: "aspect".into(),
+                title: "Crop".into(),
+                shortcut: Some("R".into()),
             })
         );
+        // The former Reset crop button is the module's header reset: the same API action.
+        assert!(descriptor.controls.is_empty());
         assert_eq!(
-            descriptor.controls,
-            vec![Control::Group {
-                label: "Crop".into(),
-                controls: vec![Control::Action {
-                    action: "crop-reset".into(),
-                    label: "Reset crop".into(),
-                    preset: Map::new(),
-                }],
-            }]
+            descriptor.reset,
+            Some(ResetAction {
+                action: "crop-reset".into(),
+                preset: Map::new(),
+            })
+        );
+        assert_eq!(descriptor.hint.as_deref(), Some("Frame, ratio and angle"));
+        assert!(!descriptor.developer);
+        assert_eq!(crop.summary.as_deref(), Some("Crop {angle}°"));
+        assert_eq!(fit.summary.as_deref(), Some("Crop {aspect}"));
+        assert_eq!(
+            descriptor
+                .action(CROP_RESET_ACTION)
+                .expect("the reset action")
+                .summary,
+            None,
+            "the reset label is its title"
+        );
+    }
+
+    #[test]
+    fn a_crop_layer_describes_its_frame_angle_and_neutral_state() {
+        let module = CropModule::new();
+        let described = |payload: CropPayload| {
+            module
+                .describe_layer(
+                    CROP_EFFECT,
+                    EFFECT_FORMAT,
+                    &serde_json::to_value(payload).unwrap(),
+                )
+                .expect("a stored crop payload")
+        };
+        assert_eq!(described(CropPayload::NEUTRAL), "Whole image");
+        assert_eq!(
+            described(CropPayload {
+                angle: 0.0,
+                x: 0.25,
+                y: 0.25,
+                width: 0.5,
+                height: 0.5,
+            }),
+            "50% × 50%"
+        );
+        assert_eq!(
+            described(CropPayload {
+                angle: 3.5,
+                x: 0.1,
+                y: 0.1,
+                width: 0.605,
+                height: 0.8,
+            }),
+            "61% × 80% at 3.5°"
+        );
+        assert_eq!(
+            module
+                .describe_layer(TRANSFORM_EFFECT, EFFECT_FORMAT, &json!({}))
+                .unwrap_err()
+                .kind,
+            ErrorKind::Incompatible
         );
     }
 

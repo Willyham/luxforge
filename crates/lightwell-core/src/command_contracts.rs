@@ -235,6 +235,145 @@ fn wrappers_actions_and_the_api_produce_identical_entries_pixels_and_errors() {
     std::fs::remove_dir_all(dir).unwrap();
 }
 
+/// Every workspace addition through the JSON API alone: labels on history rows, the recipe
+/// description of the committed stack, and the session's workspace state.
+#[test]
+fn the_workspace_additions_are_reachable_through_the_json_api() {
+    let dir = temp("workspace");
+    let source = dir.join("orientation-1.jpg");
+    std::fs::copy(fixture("orientation-1.jpg"), &source).unwrap();
+    let bytes = std::fs::read(&source).unwrap();
+    let (owner, join) = OwnerHandle::start(&dir.join("catalog.sqlite")).unwrap();
+    let client = owner.register();
+    let request = |method: &str, params: Value| -> Result<Value, Value> {
+        let response = owner
+            .call(
+                client,
+                ApiRequest {
+                    id: method.into(),
+                    method: method.into(),
+                    params,
+                    token: None,
+                },
+            )
+            .unwrap();
+        match response.error {
+            Some(error) => Err(serde_json::to_value(error).unwrap()),
+            None => Ok(response.result.unwrap()),
+        }
+    };
+    let call = |method: &str, params: Value| -> Value {
+        request(method, params).unwrap_or_else(|error| panic!("{method}: {error}"))
+    };
+
+    // Every descriptor addition the workspace renders from.
+    let modules = call("module.list", json!({}));
+    let module = |id: &str| -> Value {
+        modules["modules"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|module| module["id"] == json!(id))
+            .unwrap_or_else(|| panic!("{id} is registered"))
+            .clone()
+    };
+    assert_eq!(
+        module("lightwell.crop")["hint"],
+        json!("Frame, ratio and angle")
+    );
+    assert_eq!(
+        module("lightwell.crop")["reset"],
+        json!({"action": "crop-reset", "preset": {}})
+    );
+    assert_eq!(module("lightwell.crop")["canvas"]["shortcut"], json!("R"));
+    assert_eq!(module("lightwell.pixel")["developer"], json!(true));
+
+    let asset = call("catalog.import", json!({"path": source}))["asset"]["id"].clone();
+    let original = call("asset.state", json!({"asset_id": asset}))["current_entry"].clone();
+    assert_eq!(original["label"], json!("Original"));
+    call(
+        "edit.transform",
+        json!({"asset_id":asset,"mutation":{"expected_revision":0,"request_id":"a","actor":"workspace"},"transform":"rotate-right"}),
+    );
+    call(
+        "edit.crop",
+        json!({"asset_id":asset,"mutation":{"expected_revision":1,"request_id":"b","actor":"workspace"},"x":0.0,"y":0.0,"width":0.5,"height":0.5}),
+    );
+    let entries = call("history.list", json!({"asset_id": asset}))["entries"]
+        .as_array()
+        .unwrap()
+        .clone();
+    assert_eq!(
+        entries
+            .iter()
+            .map(|entry| (entry["action_id"].clone(), entry["label"].clone()))
+            .collect::<Vec<_>>(),
+        [
+            (json!("crop"), json!("Crop 0°")),
+            (json!("rotate-right"), json!("Rotate right")),
+            (json!("original"), json!("Original")),
+        ]
+    );
+
+    // The recipe rows for the committed stack, in stored order.
+    let described = call("recipe.describe", json!({"asset_id": asset}));
+    assert_eq!(described["entry_id"], entries[0]["id"]);
+    assert_eq!(
+        described["layers"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|layer| (
+                layer["module"].clone(),
+                layer["summary"].clone(),
+                layer["available"].clone()
+            ))
+            .collect::<Vec<_>>(),
+        [
+            (
+                json!("lightwell.transform"),
+                json!("Rotate right"),
+                json!(true)
+            ),
+            (json!("lightwell.crop"), json!("50% × 50%"), json!(true)),
+        ]
+    );
+    assert!(
+        call(
+            "recipe.describe",
+            json!({"asset_id": asset, "entry_id": original["id"]})
+        )["layers"]
+            .as_array()
+            .unwrap()
+            .is_empty(),
+        "the original entry has no layers"
+    );
+
+    // Workspace state is per-client session state, reported like the view.
+    assert_eq!(
+        call("session.state", json!({}))["workspace"],
+        json!({"state_panel": true, "tools_panel": true, "mode": "pointer", "thirds": false})
+    );
+    assert_eq!(
+        call(
+            "workspace.set",
+            json!({"mode": "lightwell.crop", "tools_panel": false})
+        )["workspace"],
+        json!({"state_panel": true, "tools_panel": false, "mode": "lightwell.crop", "thirds": false})
+    );
+    let refused = request("workspace.set", json!({"mode": "lightwell.transform"}))
+        .expect_err("a module without a canvas is not a mode");
+    assert_eq!(refused["code"], json!("validation"));
+    assert_eq!(
+        call("session.state", json!({}))["workspace"]["mode"],
+        json!("lightwell.crop")
+    );
+    owner.stop();
+    join.join().unwrap();
+    assert_eq!(std::fs::read(&source).unwrap(), bytes, "source unchanged");
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
 /// The crop journey used for parity: one rectangle, a ratio fit at an angle, a reset and an angled
 /// rectangle, as (expected revision, request id, action, parameters).
 const CROP_JOURNEY: [(u64, &str, &str, &str); 4] = [
@@ -391,6 +530,8 @@ fn crop_actions_are_discoverable_and_identical_through_actions_and_the_api() {
             "height": "height",
             "fit_action": "crop-fit",
             "aspect": "aspect",
+            "title": "Crop",
+            "shortcut": "R",
         })
     );
 

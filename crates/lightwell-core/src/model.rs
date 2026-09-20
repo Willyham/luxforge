@@ -253,6 +253,10 @@ pub struct HistoryEntry {
     pub asset_id: AssetId,
     pub sequence: u64,
     pub action_id: String,
+    /// The one-line label history rows show, rendered by the host when the entry was committed
+    /// from the requested action's summary template, or its title. Stored with the entry so a row
+    /// reads the same however the providers change.
+    pub label: String,
     pub parameters: Value,
     pub actor: String,
     pub timestamp_ms: i64,

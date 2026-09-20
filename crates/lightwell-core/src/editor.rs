@@ -1,7 +1,7 @@
 use crate::{
-    AssetId, EntryId, Error, ErrorKind, HistoryEntry, ModuleRegistry, Mutation, PreviewJob, Raster,
-    Snapshot, SnapshotId, SourceImage, Transform,
-    modules::{ActionInput, ActionPlan, Stage, StageContext, check_parameters},
+    AssetId, EntryId, Error, ErrorKind, HistoryEntry, LayerId, ModuleRegistry, Mutation,
+    PreviewJob, Raster, Snapshot, SnapshotId, SourceImage, Transform,
+    modules::{ActionInput, ActionPlan, Stage, StageContext, action_label, check_parameters},
     open_source, render,
     render::Evaluation,
     sample,
@@ -20,7 +20,8 @@ use std::{
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
-const CATALOG_FORMAT: i64 = 2;
+/// Entries store their rendered label, so a catalog written before format 3 is refused by name.
+const CATALOG_FORMAT: i64 = 3;
 const MAX_HISTORY_PAGE: usize = 100;
 const MAX_VERSION_NAME: usize = 64;
 const ASSET_COLUMNS: &str =
@@ -141,6 +142,28 @@ pub struct Lineage {
     pub next_entry_id: Option<EntryId>,
 }
 
+/// One stored layer of an entry as the recipe panel reads it. `available` is false when no
+/// provider is registered for the effect or the registered one reports itself unavailable; the
+/// summary then carries the reason instead of a description.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LayerDescription {
+    pub id: LayerId,
+    pub effect: String,
+    pub module: Option<String>,
+    pub title: Option<String>,
+    pub summary: String,
+    pub available: bool,
+}
+
+/// One entry's ordered layers with their provider and summary. Reading only: no source, no render.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RecipeDescription {
+    pub entry_id: EntryId,
+    pub layers: Vec<LayerDescription>,
+}
+
 /// A named reference to one retained history entry: the Lightroom-style saved state.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -251,7 +274,7 @@ impl EditorService {
             ));
         }
         connection
-            .execute_batch(
+            .execute_batch(&format!(
                 "BEGIN IMMEDIATE;
                  CREATE TABLE assets (
                     id TEXT PRIMARY KEY,
@@ -297,9 +320,9 @@ impl EditorService {
                  CREATE TRIGGER entries_are_immutable BEFORE UPDATE ON entries BEGIN
                     SELECT RAISE(ABORT, 'history entries are immutable');
                  END;
-                 PRAGMA user_version=2;
-                 COMMIT;",
-            )
+                 PRAGMA user_version={CATALOG_FORMAT};
+                 COMMIT;"
+            ))
             .map_err(catalog_error)
     }
 
@@ -353,6 +376,7 @@ impl EditorService {
             asset_id: asset.id.clone(),
             sequence: 0,
             action_id: "original".into(),
+            label: "Original".into(),
             parameters: json!({}),
             actor: "system".into(),
             timestamp_ms: now_ms(),
@@ -466,6 +490,62 @@ impl EditorService {
         entry_from(&self.connection, asset_id, entry_id)
     }
 
+    /// Describe one entry's stored layers for the recipe panel: `O(layers)` registry lookups and
+    /// payload reads, with no decode, no render and no source access. A layer whose provider is
+    /// missing or unavailable is listed with the reason, never omitted.
+    pub fn describe_entry(
+        &self,
+        asset_id: &AssetId,
+        entry_id: Option<&EntryId>,
+    ) -> Result<RecipeDescription, Error> {
+        let entry = match entry_id {
+            Some(entry_id) => self.entry(asset_id, entry_id)?,
+            None => self.state(asset_id)?.current_entry,
+        };
+        let mut layers = Vec::with_capacity(entry.snapshot.recipe.layers.len());
+        for layer in &entry.snapshot.recipe.layers {
+            let described = match self.registry.effect(&layer.effect_id) {
+                None => LayerDescription {
+                    id: layer.id.clone(),
+                    effect: layer.effect_id.clone(),
+                    module: None,
+                    title: None,
+                    summary: "no provider".into(),
+                    available: false,
+                },
+                Some((module, _)) => {
+                    let descriptor = module.descriptor();
+                    let (summary, available) = match &descriptor.availability {
+                        crate::Availability::Unavailable { reason } => {
+                            (format!("unavailable: {reason}"), false)
+                        }
+                        crate::Availability::Available => (
+                            module.describe_layer(
+                                &layer.effect_id,
+                                layer.effect_format,
+                                &layer.payload,
+                            )?,
+                            true,
+                        ),
+                    };
+                    LayerDescription {
+                        id: layer.id.clone(),
+                        effect: layer.effect_id.clone(),
+                        module: Some(descriptor.id.clone()),
+                        title: Some(descriptor.title.clone()),
+                        summary,
+                        available,
+                    }
+                }
+            };
+            layers.push(described);
+        }
+        Ok(RecipeDescription {
+            entry_id: entry.id,
+            layers,
+        })
+    }
+
     pub fn render_current(&self, asset_id: &AssetId) -> Result<Raster, Error> {
         let state = self.state(asset_id)?;
         self.render_entry(asset_id, &state.current_entry.id)
@@ -561,6 +641,9 @@ impl EditorService {
         })?;
         let checked = check_parameters(action, &parameters)?;
         let input = module.parse(action_id, &checked)?;
+        // The label comes from the action that was requested, which is not always the durable
+        // action identity the entry stores: `transform` renders the label, `rotate-left` is stored.
+        let label = action_label(action, &input.parameters);
         let request = request_input(&input, &mutation)?;
         if let Some(result) = self.request_result(asset_id, &mutation.request_id, &request)? {
             return Ok(result);
@@ -605,7 +688,14 @@ impl EditorService {
             // before anything is written.
             ActionPlan::Update(layer) => state.current_entry.snapshot.with_layer_replaced(layer)?,
         };
-        self.commit_snapshot(asset_id, mutation, request, snapshot, &source, input)
+        self.commit_snapshot(
+            asset_id,
+            mutation,
+            request,
+            snapshot,
+            &source,
+            CommittedAction { input, label },
+        )
     }
 
     pub fn apply_pixel(
@@ -700,7 +790,7 @@ impl EditorService {
         request: Value,
         snapshot: Snapshot,
         source: &SourceImage,
-        action: ActionInput,
+        action: CommittedAction,
     ) -> Result<MutationResult, Error> {
         let mut state = self.state(asset_id)?;
         ensure_revision(&state, mutation.expected_revision)?;
@@ -710,8 +800,9 @@ impl EditorService {
             id: EntryId::new(),
             asset_id: asset_id.clone(),
             sequence: next_sequence(&self.connection, asset_id)?,
-            action_id: action.action_id,
-            parameters: Value::Object(action.parameters),
+            action_id: action.input.action_id,
+            label: action.label,
+            parameters: Value::Object(action.input.parameters),
             actor: mutation.actor.clone(),
             timestamp_ms: now_ms(),
             request_id: Some(mutation.request_id.clone()),
@@ -847,6 +938,7 @@ impl EditorService {
             asset_id: asset_id.clone(),
             sequence: next_sequence(&self.connection, asset_id)?,
             action_id: "restore".into(),
+            label: format!("Restore entry {}", target.sequence),
             parameters: json!({"target_entry_id":target_id}),
             actor: mutation.actor.clone(),
             timestamp_ms: now_ms(),
@@ -1116,6 +1208,13 @@ impl EditorService {
 enum Navigation {
     Undo,
     Redo,
+}
+
+/// What one action records on the entry it commits: the durable identity and stored parameters the
+/// module parsed, and the label the host rendered from the action that was requested.
+struct CommittedAction {
+    input: ActionInput,
+    label: String,
 }
 
 fn ensure_revision(state: &EditorState, expected: u64) -> Result<(), Error> {
@@ -1770,6 +1869,197 @@ mod tests {
     }
 
     #[test]
+    fn a_format_2_catalog_is_refused_by_name_without_rewriting_it() {
+        let catalog = temp("format-2.sqlite");
+        let mut service = EditorService::open(&catalog).unwrap();
+        service.import(&fixture()).unwrap();
+        drop(service);
+        // Entries before format 3 carry no label, so the marker refuses them rather than guessing.
+        let connection = Connection::open(&catalog).unwrap();
+        connection.pragma_update(None, "user_version", 2).unwrap();
+        drop(connection);
+        let before = std::fs::read(&catalog).unwrap();
+        let error = EditorService::open(&catalog).unwrap_err();
+        assert_eq!(error.kind, ErrorKind::Incompatible);
+        assert_eq!(
+            error.detail,
+            "catalog format 2 is not supported; expected 3; choose a new catalog path"
+        );
+        assert_eq!(
+            std::fs::read(&catalog).unwrap(),
+            before,
+            "a refused catalog is left byte for byte as it was"
+        );
+        std::fs::remove_file(catalog).unwrap();
+    }
+
+    #[test]
+    fn every_entry_carries_the_label_its_history_row_shows() {
+        let catalog = temp("labels.sqlite");
+        let mut service = EditorService::open(&catalog).unwrap();
+        let state = service.import(&fixture()).unwrap();
+        let asset = state.asset.id;
+        assert_eq!(state.current_entry.label, "Original");
+        let label =
+            |service: &EditorService, entry: &EntryId| service.entry(&asset, entry).unwrap().label;
+        let pixel = service
+            .apply_pixel(&asset, mutation(0, "pixel"), 3, 4, [1, 2, 3])
+            .unwrap()
+            .current_entry_id;
+        assert_eq!(label(&service, &pixel), "Pixel 3, 4");
+        // The requested action renders the label; the entry stores the durable transform identity.
+        let rotated = service
+            .apply_transform(&asset, mutation(1, "rotate"), Transform::RotateLeft)
+            .unwrap()
+            .current_entry_id;
+        let entry = service.entry(&asset, &rotated).unwrap();
+        assert_eq!(
+            (entry.action_id.as_str(), entry.label.as_str()),
+            ("rotate-left", "Rotate left")
+        );
+        let cropped = service
+            .apply_action(
+                &asset,
+                mutation(2, "crop"),
+                "crop",
+                json!({"angle":3.5,"x":0.1,"y":0.1,"width":0.5,"height":0.5}),
+            )
+            .unwrap()
+            .current_entry_id;
+        assert_eq!(label(&service, &cropped), "Crop 3.5°");
+        let fitted = service
+            .apply_action(
+                &asset,
+                mutation(3, "fit"),
+                "crop-fit",
+                json!({"aspect":"16:9"}),
+            )
+            .unwrap()
+            .current_entry_id;
+        assert_eq!(label(&service, &fitted), "Crop 16:9");
+        // An action without a template is labelled by its title.
+        let reset = service
+            .apply_action(&asset, mutation(4, "reset"), "crop-reset", json!({}))
+            .unwrap()
+            .current_entry_id;
+        assert_eq!(label(&service, &reset), "Reset crop");
+        let restored = service
+            .restore(&asset, mutation(5, "restore"), &pixel)
+            .unwrap()
+            .current_entry_id;
+        assert_eq!(
+            label(&service, &restored),
+            "Restore entry 1",
+            "a restore names the sequence it copied"
+        );
+        // Labels are stored with the entries, so reopening reads the same rows.
+        drop(service);
+        let service = EditorService::open(&catalog).unwrap();
+        let labels: Vec<String> = service
+            .history(&asset, None, 50)
+            .unwrap()
+            .entries
+            .into_iter()
+            .map(|entry| entry.label)
+            .collect();
+        assert_eq!(
+            labels,
+            [
+                "Restore entry 1",
+                "Reset crop",
+                "Crop 16:9",
+                "Crop 3.5°",
+                "Rotate left",
+                "Pixel 3, 4",
+                "Original",
+            ]
+        );
+        drop(service);
+        std::fs::remove_file(catalog).unwrap();
+    }
+
+    #[test]
+    fn an_entrys_layers_are_described_in_order_with_their_provider() {
+        let catalog = temp("describe.sqlite");
+        let mut service = EditorService::open(&catalog).unwrap();
+        let asset = service.import(&fixture()).unwrap().asset.id;
+        let original = service.state(&asset).unwrap().current_entry.id;
+        assert_eq!(
+            service.describe_entry(&asset, None).unwrap(),
+            RecipeDescription {
+                entry_id: original.clone(),
+                layers: Vec::new(),
+            },
+            "the original entry has no layers"
+        );
+        service
+            .apply_action(
+                &asset,
+                mutation(0, "crop"),
+                "crop",
+                json!({"x":0.25,"y":0.25,"width":0.5,"height":0.5}),
+            )
+            .unwrap();
+        service
+            .apply_pixel(&asset, mutation(1, "pixel"), 1, 2, [4, 5, 6])
+            .unwrap();
+        let described = service.describe_entry(&asset, None).unwrap();
+        assert_eq!(
+            described
+                .layers
+                .iter()
+                .map(|layer| (
+                    layer.module.as_deref(),
+                    layer.title.as_deref(),
+                    layer.summary.as_str(),
+                    layer.available
+                ))
+                .collect::<Vec<_>>(),
+            [
+                (
+                    Some("lightwell.crop"),
+                    Some("Crop and straighten"),
+                    "50% × 50%",
+                    true
+                ),
+                (
+                    Some("lightwell.pixel"),
+                    Some("Pixel"),
+                    "Pixel 1, 2 → 4,5,6",
+                    true
+                ),
+            ]
+        );
+        let current = service.state(&asset).unwrap().current_entry;
+        assert_eq!(described.entry_id, current.id);
+        assert_eq!(
+            described
+                .layers
+                .iter()
+                .map(|layer| layer.id.clone())
+                .collect::<Vec<_>>(),
+            current
+                .snapshot
+                .recipe
+                .layers
+                .iter()
+                .map(|layer| layer.id.clone())
+                .collect::<Vec<_>>(),
+            "the stored order and identities"
+        );
+        // An earlier entry describes its own stack.
+        assert!(
+            service
+                .describe_entry(&asset, Some(&original))
+                .unwrap()
+                .layers
+                .is_empty()
+        );
+        drop(service);
+        std::fs::remove_file(catalog).unwrap();
+    }
+
+    #[test]
     fn failed_entry_write_rolls_back_snapshot_state_and_request() {
         let catalog = temp("rollback.sqlite");
         let mut service = EditorService::open(&catalog).unwrap();
@@ -1946,11 +2236,13 @@ mod tests {
                 id: id.into(),
                 title: "Shrink".into(),
                 notes: "test".into(),
+                summary: Some("Shrink {width}x{height}".into()),
                 parameters: vec![extent("width"), extent("height")],
             };
             Self(ModuleDescriptor {
                 id: "test.shrink".into(),
                 title: "Shrink".into(),
+                hint: None,
                 effects: vec![EffectDescriptor {
                     id: SHRINK_EFFECT.into(),
                     format: EFFECT_FORMAT,
@@ -1958,7 +2250,9 @@ mod tests {
                 }],
                 actions: vec![action(SHRINK_ACTION), action(MISSING_ACTION)],
                 controls: Vec::new(),
+                reset: None,
                 canvas: None,
+                developer: false,
                 availability: Availability::Available,
             })
         }
@@ -2046,6 +2340,11 @@ mod tests {
 
         fn validate_payload(&self, _: &str, _: u32, payload: &Value) -> Result<(), Error> {
             Self::extents(payload).map(|_| ())
+        }
+
+        fn describe_layer(&self, _: &str, _: u32, payload: &Value) -> Result<String, Error> {
+            let (width, height) = Self::extents(payload)?;
+            Ok(format!("Shrink to {width}x{height}"))
         }
 
         fn compile(

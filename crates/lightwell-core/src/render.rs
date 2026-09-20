@@ -697,6 +697,7 @@ mod tests {
             Arc::new(Self(ModuleDescriptor {
                 id: "test.geometry".into(),
                 title: "Test geometry".into(),
+                hint: None,
                 effects: [TEST_CROP_EFFECT, TEST_SCALE_EFFECT, TEST_OFFSET_EFFECT]
                     .into_iter()
                     .map(|id| EffectDescriptor {
@@ -707,7 +708,9 @@ mod tests {
                     .collect(),
                 actions: Vec::new(),
                 controls: Vec::new(),
+                reset: None,
                 canvas: None,
+                developer: false,
                 availability: Availability::Available,
             }))
         }
@@ -725,6 +728,9 @@ mod tests {
         }
         fn validate_payload(&self, _: &str, _: u32, _: &Value) -> Result<(), Error> {
             Ok(())
+        }
+        fn describe_layer(&self, effect_id: &str, _: u32, _: &Value) -> Result<String, Error> {
+            Ok(format!("test geometry {effect_id}"))
         }
         fn compile(
             &self,

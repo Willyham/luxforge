@@ -15,8 +15,8 @@ pub use crop::geometry::{
 };
 pub use descriptor::{
     ActionDescriptor, Availability, CanvasInteraction, Control, EffectDescriptor, EffectStage,
-    ModuleDescriptor, ParameterDescriptor, ParameterKind, check_parameters, valid_identity,
-    valid_name,
+    ModuleDescriptor, ParameterDescriptor, ParameterKind, ResetAction, action_label,
+    check_parameters, render_summary, valid_identity, valid_name,
 };
 pub use pixel::PixelModule;
 pub use processing::{ExactGeometry, Processing, Resample, Stage};
@@ -73,6 +73,14 @@ pub trait ToolModule: Send + Sync {
     fn plan(&self, input: &ActionInput, stage: &StageContext<'_>) -> Result<ActionPlan, Error>;
     /// Accept or reject a persisted payload structurally.
     fn validate_payload(&self, effect_id: &str, format: u32, payload: &Value) -> Result<(), Error>;
+    /// One short line describing what this stored layer does, for the recipe row. Reading a
+    /// payload only: it never renders, samples or touches the source.
+    fn describe_layer(
+        &self,
+        effect_id: &str,
+        format: u32,
+        payload: &Value,
+    ) -> Result<String, Error>;
     /// Turn a persisted payload into a host processing primitive at its input stage.
     fn compile(
         &self,

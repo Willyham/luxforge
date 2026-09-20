@@ -86,12 +86,26 @@ pub struct ParameterDescriptor {
     pub notes: String,
 }
 
+/// A declared action with fixed parameter values: the header and group reset buttons. It is the
+/// same API action a client can call itself, so a reset is never a GUI-only gesture.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ResetAction {
+    pub action: String,
+    #[serde(default)]
+    pub preset: Map<String, Value>,
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ActionDescriptor {
     pub id: String,
     pub title: String,
     pub notes: String,
+    /// A one-line history label template over this action's own parameters, e.g. `Crop {angle}°`.
+    /// Every `{name}` names a declared parameter; without a template the label is the title.
+    #[serde(default)]
+    pub summary: Option<String>,
     pub parameters: Vec<ParameterDescriptor>,
 }
 
@@ -110,6 +124,9 @@ pub enum Control {
     Group {
         label: String,
         controls: Vec<Control>,
+        /// The action that returns this group to its neutral values, shown on the group header.
+        #[serde(default)]
+        reset: Option<ResetAction>,
     },
     Number {
         action: String,
@@ -138,6 +155,10 @@ pub enum CanvasInteraction {
         action: String,
         x: String,
         y: String,
+        /// The mode's name in the canvas mode strip.
+        title: String,
+        /// One uppercase ASCII letter that selects the mode, unique across the registry.
+        shortcut: Option<String>,
     },
     /// The host's crop-frame editor edits a transient draft of the named number parameters of
     /// `action` and derives its ratio presets from the `aspect` enum of `fit_action`. Only Apply
@@ -151,7 +172,27 @@ pub enum CanvasInteraction {
         height: String,
         fit_action: String,
         aspect: String,
+        title: String,
+        shortcut: Option<String>,
     },
+}
+
+impl CanvasInteraction {
+    /// The mode strip entry's name.
+    pub fn title(&self) -> &str {
+        match self {
+            Self::PointPick { title, .. } | Self::CropFrame { title, .. } => title,
+        }
+    }
+
+    /// The letter that selects this mode, when the module declares one.
+    pub fn shortcut(&self) -> Option<&str> {
+        match self {
+            Self::PointPick { shortcut, .. } | Self::CropFrame { shortcut, .. } => {
+                shortcut.as_deref()
+            }
+        }
+    }
 }
 
 /// An unavailable provider keeps its descriptor and effect identities so stored data stays readable.
@@ -167,10 +208,20 @@ pub enum Availability {
 pub struct ModuleDescriptor {
     pub id: String,
     pub title: String,
+    /// A short line for the collapsed section header, e.g. `Rotate, mirror and flip`.
+    #[serde(default)]
+    pub hint: Option<String>,
     pub effects: Vec<EffectDescriptor>,
     pub actions: Vec<ActionDescriptor>,
     pub controls: Vec<Control>,
+    /// The action that returns the whole module to its neutral state, shown on the section header.
+    #[serde(default)]
+    pub reset: Option<ResetAction>,
     pub canvas: Option<CanvasInteraction>,
+    /// A proof or diagnostic tool rather than a photo-editing one; hidden unless the client asks
+    /// for developer tools. The API is unaffected.
+    #[serde(default)]
+    pub developer: bool,
     pub availability: Availability,
 }
 
@@ -264,12 +315,21 @@ impl ModuleDescriptor {
                     check_value(parameter, default)?;
                 }
             }
+            check_summary(action)?;
         }
         for control in &self.controls {
             self.check_control(control, 1)?;
         }
+        self.check_reset(self.reset.as_ref())?;
         match &self.canvas {
-            Some(CanvasInteraction::PointPick { action, x, y }) => {
+            Some(CanvasInteraction::PointPick {
+                action,
+                x,
+                y,
+                title,
+                shortcut,
+            }) => {
+                self.check_canvas_mode(title, shortcut.as_deref())?;
                 let declared = self.declared_action(action)?;
                 for name in [x, y] {
                     let parameter = self.declared_parameter(declared, name)?;
@@ -289,7 +349,10 @@ impl ModuleDescriptor {
                 height,
                 fit_action,
                 aspect,
+                title,
+                shortcut,
             }) => {
+                self.check_canvas_mode(title, shortcut.as_deref())?;
                 let declared = self.declared_action(action)?;
                 for name in [angle, x, y, width, height] {
                     self.canvas_number(declared, name)?;
@@ -305,6 +368,41 @@ impl ModuleDescriptor {
                 self.canvas_number(fit, angle)?;
             }
             None => {}
+        }
+        Ok(())
+    }
+
+    /// A canvas mode needs a name for the mode strip, and its optional shortcut is exactly one
+    /// uppercase ASCII letter so a keymap can hold it without parsing.
+    fn check_canvas_mode(&self, title: &str, shortcut: Option<&str>) -> Result<(), Error> {
+        if title.trim().is_empty() {
+            return Err(validation(format!(
+                "module {} declares a canvas interaction without a title",
+                self.id
+            )));
+        }
+        match shortcut {
+            Some(letter)
+                if letter.len() != 1 || !letter.starts_with(|c: char| c.is_ascii_uppercase()) =>
+            {
+                Err(validation(format!(
+                    "canvas shortcut {letter} of module {} must be one uppercase ASCII letter",
+                    self.id
+                )))
+            }
+            _ => Ok(()),
+        }
+    }
+
+    /// A reset is validated exactly like an action control: the action must be declared here and
+    /// every preset value must be in its parameter's range.
+    fn check_reset(&self, reset: Option<&ResetAction>) -> Result<(), Error> {
+        let Some(reset) = reset else {
+            return Ok(());
+        };
+        let declared = self.declared_action(&reset.action)?;
+        for (name, value) in &reset.preset {
+            check_value(self.declared_parameter(declared, name)?, value)?;
         }
         Ok(())
     }
@@ -348,13 +446,18 @@ impl ModuleDescriptor {
             )));
         }
         match control {
-            Control::Group { label, controls } => {
+            Control::Group {
+                label,
+                controls,
+                reset,
+            } => {
                 if label.trim().is_empty() {
                     return Err(validation(format!(
                         "module {} has an unlabelled group",
                         self.id
                     )));
                 }
+                self.check_reset(reset.as_ref())?;
                 for child in controls {
                     self.check_control(child, depth + 1)?;
                 }
@@ -392,6 +495,109 @@ impl ModuleDescriptor {
             }
         }
         Ok(())
+    }
+}
+
+/// Every `{name}` in a summary template names a parameter of its own action, and the braces are
+/// balanced, so rendering one at commit cannot silently produce a wrong label.
+fn check_summary(action: &ActionDescriptor) -> Result<(), Error> {
+    let Some(template) = &action.summary else {
+        return Ok(());
+    };
+    let unbalanced = || {
+        validation(format!(
+            "summary of action {} has unbalanced braces",
+            action.id
+        ))
+    };
+    let mut rest = template.as_str();
+    while let Some(index) = rest.find(['{', '}']) {
+        let tail = &rest[index..];
+        if tail.starts_with('}') {
+            return Err(unbalanced());
+        }
+        let after = &tail[1..];
+        let close = after.find('}').ok_or_else(unbalanced)?;
+        let name = &after[..close];
+        if name.contains('{') {
+            return Err(unbalanced());
+        }
+        if action.parameter(name).is_none() {
+            return Err(validation(format!(
+                "summary of action {} names undeclared parameter {name}",
+                action.id
+            )));
+        }
+        rest = &after[close + 1..];
+    }
+    Ok(())
+}
+
+/// Render a validated summary template with an action's stored parameters. Pure and allocation
+/// bounded by the template: integers as written, numbers without trailing zeros, three channels as
+/// `r,g,b`, enum options title-cased with hyphens as spaces, anything else as its JSON text. A
+/// parameter the request did not carry renders as nothing.
+pub fn render_summary(template: &str, parameters: &Map<String, Value>) -> String {
+    let mut rendered = String::with_capacity(template.len());
+    let mut rest = template;
+    while let Some(open) = rest.find('{') {
+        rendered.push_str(&rest[..open]);
+        let after = &rest[open + 1..];
+        let Some(close) = after.find('}') else {
+            // Validation rejects this template; render what is left literally rather than panic.
+            rendered.push_str(after);
+            return rendered;
+        };
+        if let Some(value) = parameters.get(&after[..close]) {
+            rendered.push_str(&summary_value(value));
+        }
+        rest = &after[close + 1..];
+    }
+    rendered.push_str(rest);
+    rendered
+}
+
+/// The history label one requested action commits: its rendered summary, or its title when it
+/// declares no template or the template rendered nothing.
+pub fn action_label(action: &ActionDescriptor, parameters: &Map<String, Value>) -> String {
+    match &action.summary {
+        Some(template) => {
+            let rendered = render_summary(template, parameters);
+            if rendered.trim().is_empty() {
+                action.title.clone()
+            } else {
+                rendered
+            }
+        }
+        None => action.title.clone(),
+    }
+}
+
+fn summary_value(value: &Value) -> String {
+    match value {
+        // `{}` on an f64 already drops trailing zeros: 3.5, 0, -12.
+        Value::Number(number) if number.is_f64() => match number.as_f64() {
+            Some(number) => format!("{number}"),
+            None => number.to_string(),
+        },
+        Value::Number(number) => number.to_string(),
+        Value::String(text) => title_case(text),
+        Value::Array(channels) if channels.iter().all(Value::is_number) => channels
+            .iter()
+            .map(summary_value)
+            .collect::<Vec<_>>()
+            .join(","),
+        other => other.to_string(),
+    }
+}
+
+/// `rotate-left` reads as `Rotate left`; `16:9` and other punctuated options keep their shape.
+fn title_case(text: &str) -> String {
+    let spaced = text.replace('-', " ");
+    let mut characters = spaced.chars();
+    match characters.next() {
+        Some(first) => first.to_uppercase().chain(characters).collect(),
+        None => spaced,
     }
 }
 
@@ -546,6 +752,8 @@ mod tests {
             height: "height".into(),
             fit_action: fit_action.into(),
             aspect: "aspect".into(),
+            title: "Frame".into(),
+            shortcut: Some("R".into()),
         }
     }
 
@@ -558,6 +766,7 @@ mod tests {
                     id: "set-frame".into(),
                     title: "Set frame".into(),
                     notes: "test".into(),
+                    summary: None,
                     parameters: vec![
                         number("angle", -45.0, 45.0),
                         number("x", 0.0, 1.0),
@@ -570,6 +779,7 @@ mod tests {
                     id: "fit-frame".into(),
                     title: "Fit frame".into(),
                     notes: "test".into(),
+                    summary: None,
                     parameters: vec![enumerated("aspect"), number("angle", -45.0, 45.0)],
                 },
             ],
@@ -578,6 +788,8 @@ mod tests {
                 parameter: "angle".into(),
                 label: "Angle".into(),
             }],
+            // The shared descriptor's reset names an action this one does not declare.
+            reset: None,
             canvas: Some(frame_canvas("set-frame", "fit-frame")),
             ..descriptor()
         }
@@ -601,6 +813,7 @@ mod tests {
             id: "set-thing".into(),
             title: "Set thing".into(),
             notes: "test".into(),
+            summary: Some("Thing {x} {mode}".into()),
             parameters: vec![
                 integer("x"),
                 ParameterDescriptor {
@@ -629,6 +842,7 @@ mod tests {
         ModuleDescriptor {
             id: "test.module".into(),
             title: "Test".into(),
+            hint: Some("A test module".into()),
             effects: vec![EffectDescriptor {
                 id: "test.module.effect".into(),
                 format: 1,
@@ -637,6 +851,10 @@ mod tests {
             actions: vec![action()],
             controls: vec![Control::Group {
                 label: "Test".into(),
+                reset: Some(ResetAction {
+                    action: "set-thing".into(),
+                    preset: json!({"x": 0}).as_object().unwrap().clone(),
+                }),
                 controls: vec![
                     Control::Number {
                         action: "set-thing".into(),
@@ -650,7 +868,12 @@ mod tests {
                     },
                 ],
             }],
+            reset: Some(ResetAction {
+                action: "set-thing".into(),
+                preset: Map::new(),
+            }),
             canvas: None,
+            developer: false,
             availability: Availability::Available,
         }
     }
@@ -870,6 +1093,8 @@ mod tests {
                         action: "set-thing".into(),
                         x: "x".into(),
                         y: "rgb".into(),
+                        title: "Pick".into(),
+                        shortcut: None,
                     }),
                     ..descriptor()
                 },
@@ -977,6 +1202,133 @@ mod tests {
                 "crop frame fit angle is not a number",
                 frame_with("fit-frame", vec![enumerated("aspect"), integer("angle")]),
             ),
+            (
+                "module reset names an undeclared action",
+                ModuleDescriptor {
+                    reset: Some(ResetAction {
+                        action: "missing".into(),
+                        preset: Map::new(),
+                    }),
+                    ..descriptor()
+                },
+            ),
+            (
+                "module reset preset out of range",
+                ModuleDescriptor {
+                    reset: Some(ResetAction {
+                        action: "set-thing".into(),
+                        preset: json!({"x": 99}).as_object().unwrap().clone(),
+                    }),
+                    ..descriptor()
+                },
+            ),
+            (
+                "group reset names an undeclared parameter",
+                ModuleDescriptor {
+                    controls: vec![Control::Group {
+                        label: "Test".into(),
+                        controls: Vec::new(),
+                        reset: Some(ResetAction {
+                            action: "set-thing".into(),
+                            preset: json!({"missing": 1}).as_object().unwrap().clone(),
+                        }),
+                    }],
+                    ..descriptor()
+                },
+            ),
+            (
+                "group reset preset out of range",
+                ModuleDescriptor {
+                    controls: vec![Control::Group {
+                        label: "Test".into(),
+                        controls: Vec::new(),
+                        reset: Some(ResetAction {
+                            action: "set-thing".into(),
+                            preset: json!({"mode": "sloppy"}).as_object().unwrap().clone(),
+                        }),
+                    }],
+                    ..descriptor()
+                },
+            ),
+            (
+                "summary names an undeclared parameter",
+                ModuleDescriptor {
+                    actions: vec![ActionDescriptor {
+                        summary: Some("Thing {missing}".into()),
+                        ..action()
+                    }],
+                    ..descriptor()
+                },
+            ),
+            (
+                "summary opens a placeholder it does not close",
+                ModuleDescriptor {
+                    actions: vec![ActionDescriptor {
+                        summary: Some("Thing {x".into()),
+                        ..action()
+                    }],
+                    ..descriptor()
+                },
+            ),
+            (
+                "summary closes a placeholder it did not open",
+                ModuleDescriptor {
+                    actions: vec![ActionDescriptor {
+                        summary: Some("Thing x}".into()),
+                        ..action()
+                    }],
+                    ..descriptor()
+                },
+            ),
+            (
+                "summary nests braces",
+                ModuleDescriptor {
+                    actions: vec![ActionDescriptor {
+                        summary: Some("Thing {{x}}".into()),
+                        ..action()
+                    }],
+                    ..descriptor()
+                },
+            ),
+            (
+                "canvas mode without a title",
+                ModuleDescriptor {
+                    canvas: Some(CanvasInteraction::PointPick {
+                        action: "set-thing".into(),
+                        x: "x".into(),
+                        y: "x".into(),
+                        title: "  ".into(),
+                        shortcut: None,
+                    }),
+                    ..descriptor()
+                },
+            ),
+            (
+                "canvas shortcut is not one uppercase letter",
+                ModuleDescriptor {
+                    canvas: Some(CanvasInteraction::PointPick {
+                        action: "set-thing".into(),
+                        x: "x".into(),
+                        y: "x".into(),
+                        title: "Pick".into(),
+                        shortcut: Some("r".into()),
+                    }),
+                    ..descriptor()
+                },
+            ),
+            (
+                "canvas shortcut is a word",
+                ModuleDescriptor {
+                    canvas: Some(CanvasInteraction::PointPick {
+                        action: "set-thing".into(),
+                        x: "x".into(),
+                        y: "x".into(),
+                        title: "Pick".into(),
+                        shortcut: Some("RR".into()),
+                    }),
+                    ..descriptor()
+                },
+            ),
         ];
         for (case, descriptor) in cases {
             let error = descriptor
@@ -984,6 +1336,110 @@ mod tests {
                 .expect_err(&format!("{case} must be rejected"));
             assert_eq!(error.kind, ErrorKind::Validation, "{case}");
         }
+    }
+
+    #[test]
+    fn a_summary_renders_every_parameter_kind_the_way_a_history_row_reads_it() {
+        let parameters = |value: Value| value.as_object().expect("an object").clone();
+        for (case, template, values, expected) in [
+            (
+                "integers as written",
+                "Pixel {x}, {y}",
+                json!({"x": 12, "y": 0}),
+                "Pixel 12, 0",
+            ),
+            (
+                "numbers without trailing zeros",
+                "Crop {angle}°",
+                json!({"angle": 3.5}),
+                "Crop 3.5°",
+            ),
+            (
+                "a whole number",
+                "Crop {angle}°",
+                json!({"angle": 0.0}),
+                "Crop 0°",
+            ),
+            (
+                "a negative whole number",
+                "Crop {angle}°",
+                json!({"angle": -12.0}),
+                "Crop -12°",
+            ),
+            (
+                "three channels",
+                "Colour {rgb}",
+                json!({"rgb": [1, 2, 3]}),
+                "Colour 1,2,3",
+            ),
+            (
+                "an enum option",
+                "{transform}",
+                json!({"transform": "rotate-left"}),
+                "Rotate left",
+            ),
+            (
+                "a punctuated option",
+                "Crop {aspect}",
+                json!({"aspect": "16:9"}),
+                "Crop 16:9",
+            ),
+            (
+                "a one-word option",
+                "Crop {aspect}",
+                json!({"aspect": "free"}),
+                "Crop Free",
+            ),
+            (
+                "a boolean",
+                "Linked {locked}",
+                json!({"locked": true}),
+                "Linked true",
+            ),
+            (
+                "null",
+                "Centre {center-x}",
+                json!({ "center-x": Value::Null }),
+                "Centre null",
+            ),
+            (
+                "a parameter the request did not carry",
+                "Crop {angle}°",
+                json!({}),
+                "Crop °",
+            ),
+            (
+                "no placeholder at all",
+                "Reset crop",
+                json!({}),
+                "Reset crop",
+            ),
+        ] {
+            assert_eq!(
+                render_summary(template, &parameters(values)),
+                expected,
+                "{case}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_label_is_the_rendered_summary_or_the_action_title() {
+        let with_template = action();
+        let mut without_template = action();
+        without_template.summary = None;
+        let parameters = json!({"x": 4, "mode": "fast"}).as_object().unwrap().clone();
+        assert_eq!(action_label(&with_template, &parameters), "Thing 4 Fast");
+        assert_eq!(action_label(&without_template, &parameters), "Set thing");
+        let only_placeholder = ActionDescriptor {
+            summary: Some("{x}".into()),
+            ..action()
+        };
+        assert_eq!(
+            action_label(&only_placeholder, &Map::new()),
+            "Set thing",
+            "a template that renders nothing falls back to the title"
+        );
     }
 
     #[test]
@@ -1033,6 +1489,8 @@ mod tests {
                 "height": "height",
                 "fit_action": "fit-frame",
                 "aspect": "aspect",
+                "title": "Frame",
+                "shortcut": "R",
             })
         );
         let descriptor = frame_descriptor();

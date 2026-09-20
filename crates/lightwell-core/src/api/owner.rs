@@ -1,6 +1,6 @@
 //! One thread owns the catalog and every client session; all clients call it in turn.
 use super::{ApiEvent, ApiRequest, ApiResponse, ClientSession, EventsResult, methods};
-use crate::{AssetId, EditorService, EntryId, Error, ErrorKind, PreviewJob};
+use crate::{AssetId, EditorService, EntryId, Error, ErrorKind, ModuleRegistry, PreviewJob};
 use serde::Deserialize;
 use std::{
     collections::{HashMap, VecDeque},
@@ -46,7 +46,16 @@ pub struct OwnerHandle {
 
 impl OwnerHandle {
     pub fn start(catalog: &Path) -> Result<(Self, JoinHandle<()>), Error> {
-        let service = EditorService::open(catalog)?;
+        Self::start_with(catalog, Arc::new(ModuleRegistry::builtin()))
+    }
+
+    /// Own a catalog served by a specific set of providers, which is how a client registers a
+    /// built-in wrapped as unavailable. Registration happens before any catalog work.
+    pub fn start_with(
+        catalog: &Path,
+        registry: Arc<ModuleRegistry>,
+    ) -> Result<(Self, JoinHandle<()>), Error> {
+        let service = EditorService::open_with(catalog, registry)?;
         let (sender, receiver) = sync_channel(64);
         let join = std::thread::spawn(move || owner_loop(service, receiver));
         Ok((
@@ -213,6 +222,49 @@ mod tests {
     }
     fn fixture() -> PathBuf {
         Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/s0/orientation-1.jpg")
+    }
+
+    #[test]
+    fn an_owner_started_with_a_registry_serves_exactly_those_providers() {
+        let catalog = temp("registry.sqlite");
+        let _ = std::fs::remove_file(&catalog);
+        let (owner, join) =
+            OwnerHandle::start_with(&catalog, Arc::new(crate::ModuleRegistry::new())).unwrap();
+        let client = owner.register();
+        let response = owner
+            .call(
+                client,
+                ApiRequest {
+                    id: "modules".into(),
+                    method: "module.list".into(),
+                    params: json!({}),
+                    token: None,
+                },
+            )
+            .unwrap();
+        assert_eq!(
+            response.result.unwrap()["modules"],
+            json!([]),
+            "the owner serves the registry it was given, not the built-ins"
+        );
+        let missing = owner
+            .call(
+                client,
+                ApiRequest {
+                    id: "pixel".into(),
+                    method: "edit.set-pixel".into(),
+                    params: json!({}),
+                    token: None,
+                },
+            )
+            .unwrap();
+        assert_eq!(
+            missing.error.expect("no provider, no method").message,
+            "unknown method edit.set-pixel"
+        );
+        owner.stop();
+        join.join().unwrap();
+        std::fs::remove_file(catalog).unwrap();
     }
 
     #[test]

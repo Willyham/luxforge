@@ -2880,7 +2880,9 @@ enum Rendered<'a> {
 
 fn classify(control: &Control) -> Rendered<'_> {
     match control {
-        Control::Group { label, controls } => Rendered::Group { label, controls },
+        Control::Group {
+            label, controls, ..
+        } => Rendered::Group { label, controls },
         Control::Number {
             action,
             parameter,
@@ -2985,7 +2987,7 @@ fn control_preset<'a>(controls: &'a [Control], action: &str) -> Option<&'a Map<S
 /// A crop frame is a different adapter and is ignored here rather than treated as a pick.
 fn point_pick(modules: &[ModuleDescriptor]) -> Option<(&str, &str, &str)> {
     modules.iter().find_map(|module| match &module.canvas {
-        Some(CanvasInteraction::PointPick { action, x, y }) if module.is_available() => {
+        Some(CanvasInteraction::PointPick { action, x, y, .. }) if module.is_available() => {
             Some((action.as_str(), x.as_str(), y.as_str()))
         }
         Some(CanvasInteraction::PointPick { .. })
@@ -3059,6 +3061,7 @@ fn crop_frame(modules: &[ModuleDescriptor]) -> Option<CropFrame<'_>> {
             height,
             fit_action,
             aspect,
+            ..
         }) if module.is_available() => Some(CropFrame {
             module,
             action,
@@ -3592,6 +3595,7 @@ mod tests {
             asset_id: asset.clone(),
             sequence,
             action_id: "test".into(),
+            label: "Test".into(),
             parameters: json!({}),
             actor: "test".into(),
             timestamp_ms: 0,
@@ -3649,6 +3653,7 @@ mod tests {
         ModuleDescriptor {
             id: "lightwell.crop".into(),
             title: "Crop".into(),
+            hint: Some("Frame, ratio and angle".into()),
             effects: vec![lightwell_core::EffectDescriptor {
                 id: CROP_EFFECT.into(),
                 format: 1,
@@ -3659,29 +3664,37 @@ mod tests {
                     id: "crop".into(),
                     title: "Crop".into(),
                     notes: "test".into(),
+                    summary: Some("Crop {angle}°".into()),
                     parameters: crop,
                 },
                 ActionDescriptor {
                     id: "crop-fit".into(),
                     title: "Fit crop".into(),
                     notes: "test".into(),
+                    summary: Some("Crop {aspect}".into()),
                     parameters: fit,
                 },
                 ActionDescriptor {
                     id: "crop-reset".into(),
                     title: "Reset crop".into(),
                     notes: "test".into(),
+                    summary: None,
                     parameters: Vec::new(),
                 },
             ],
             controls: vec![Control::Group {
                 label: "Crop".into(),
+                reset: None,
                 controls: vec![Control::Action {
                     action: "crop-reset".into(),
                     label: "Reset crop".into(),
                     preset: Map::new(),
                 }],
             }],
+            reset: Some(lightwell_core::ResetAction {
+                action: "crop-reset".into(),
+                preset: Map::new(),
+            }),
             canvas: Some(CanvasInteraction::CropFrame {
                 action: "crop".into(),
                 angle: "angle".into(),
@@ -3691,7 +3704,10 @@ mod tests {
                 height: "height".into(),
                 fit_action: "crop-fit".into(),
                 aspect: "aspect".into(),
+                title: "Crop".into(),
+                shortcut: Some("R".into()),
             }),
+            developer: false,
             availability: Availability::Available,
         }
     }
@@ -4057,6 +4073,7 @@ mod tests {
             Control::Group {
                 label: "Group".into(),
                 controls: Vec::new(),
+                reset: None,
             },
             Control::Number {
                 action: "act".into(),

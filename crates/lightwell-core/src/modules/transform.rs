@@ -2,7 +2,7 @@
 use super::{
     ActionDescriptor, ActionInput, ActionPlan, Availability, Control, EffectDescriptor,
     EffectStage, ExactGeometry, ModuleDescriptor, ParameterDescriptor, ParameterKind, Processing,
-    Stage, StageContext, ToolModule,
+    Stage, StageContext, ToolModule, render_summary,
 };
 use crate::{EFFECT_FORMAT, Error, ErrorKind, Layer, TRANSFORM_EFFECT, Transform};
 use serde_json::{Map, Value};
@@ -88,6 +88,7 @@ impl TransformModule {
             descriptor: ModuleDescriptor {
                 id: "lightwell.transform".into(),
                 title: "Transforms".into(),
+                hint: Some("Rotate, mirror and flip".into()),
                 effects: vec![EffectDescriptor {
                     id: TRANSFORM_EFFECT.into(),
                     format: EFFECT_FORMAT,
@@ -97,6 +98,7 @@ impl TransformModule {
                     id: TRANSFORM_ACTION.into(),
                     title: "Transform".into(),
                     notes: "exact quarter turns and reflections; integer mappings with no interpolation".into(),
+                    summary: Some("{transform}".into()),
                     parameters: vec![ParameterDescriptor {
                         name: "transform".into(),
                         kind: ParameterKind::Enum {
@@ -115,6 +117,7 @@ impl TransformModule {
                 }],
                 controls: vec![Control::Group {
                     label: "Exact transforms".into(),
+                    reset: None,
                     controls: vec![
                         control(Transform::RotateLeft, "Rotate left"),
                         control(Transform::RotateRight, "Rotate right"),
@@ -122,7 +125,9 @@ impl TransformModule {
                         control(Transform::FlipVertical, "Flip vertical"),
                     ],
                 }],
+                reset: None,
                 canvas: None,
+                developer: false,
                 availability: Availability::Available,
             },
         }
@@ -186,6 +191,14 @@ impl ToolModule for TransformModule {
 
     fn validate_payload(&self, effect_id: &str, format: u32, value: &Value) -> Result<(), Error> {
         payload(effect_id, format, value).map(|_| ())
+    }
+
+    fn describe_layer(&self, effect_id: &str, format: u32, value: &Value) -> Result<String, Error> {
+        let transform = payload(effect_id, format, value)?;
+        // The same wording the history label uses for this transform.
+        let mut parameters = Map::new();
+        parameters.insert("transform".into(), Value::from(transform.action_id()));
+        Ok(render_summary("{transform}", &parameters))
     }
 
     fn compile(

@@ -1,8 +1,8 @@
 //! The provider index: descriptors validated once at registration, then hash lookups by effect
 //! and action identity. Registration touches no image or catalog resource.
 use super::{
-    ActionDescriptor, CropModule, EffectDescriptor, ModuleDescriptor, PixelModule, Processing,
-    Stage, ToolModule, TransformModule,
+    ActionDescriptor, CanvasInteraction, CropModule, EffectDescriptor, ModuleDescriptor,
+    PixelModule, Processing, Stage, ToolModule, TransformModule,
 };
 use crate::{
     Error, ErrorKind, Layer, RECIPE_FORMAT, Recipe,
@@ -35,6 +35,8 @@ pub struct ModuleRegistry {
     effects: HashMap<String, (usize, usize)>,
     /// Action identity to (module, action) position.
     actions: HashMap<String, (usize, usize)>,
+    /// Canvas mode shortcut to the module that claims it, so one letter selects one mode.
+    shortcuts: HashMap<String, usize>,
 }
 
 impl std::fmt::Debug for ModuleRegistry {
@@ -98,7 +100,22 @@ impl ModuleRegistry {
                 )));
             }
         }
+        let shortcut = descriptor
+            .canvas
+            .as_ref()
+            .and_then(CanvasInteraction::shortcut);
+        if let Some(letter) = shortcut
+            && let Some(existing) = self.shortcuts.get(letter)
+        {
+            return Err(validation(format!(
+                "canvas shortcut {letter} is already claimed by {}",
+                self.modules[*existing].descriptor().id
+            )));
+        }
         let index = self.modules.len();
+        if let Some(letter) = shortcut {
+            self.shortcuts.insert(letter.to_owned(), index);
+        }
         self.module_ids.insert(descriptor.id.clone());
         for (position, effect) in descriptor.effects.iter().enumerate() {
             self.effects.insert(effect.id.clone(), (index, position));
@@ -278,6 +295,7 @@ pub(crate) mod tests {
             Self(ModuleDescriptor {
                 id: id.into(),
                 title: "Test".into(),
+                hint: None,
                 effects: vec![EffectDescriptor {
                     id: effect.into(),
                     format: EFFECT_FORMAT,
@@ -287,12 +305,19 @@ pub(crate) mod tests {
                     id: action.into(),
                     title: "Test action".into(),
                     notes: "test".into(),
+                    summary: None,
                     parameters: Vec::new(),
                 }],
                 controls: Vec::new(),
+                reset: None,
                 canvas: None,
+                developer: false,
                 availability,
             })
+        }
+        /// A module whose descriptor is written by the test itself.
+        pub(crate) fn from_descriptor(descriptor: ModuleDescriptor) -> Arc<dyn ToolModule> {
+            Arc::new(Self(descriptor))
         }
         pub(crate) fn shared(
             id: &str,
@@ -319,6 +344,9 @@ pub(crate) mod tests {
         }
         fn validate_payload(&self, _: &str, _: u32, _: &Value) -> Result<(), Error> {
             Ok(())
+        }
+        fn describe_layer(&self, effect_id: &str, _: u32, _: &Value) -> Result<String, Error> {
+            Ok(format!("test layer of {effect_id}"))
         }
         fn compile(&self, _: &str, _: u32, _: &Value, _: Stage) -> Result<Processing, Error> {
             Err(Error::new(ErrorKind::Internal, "test module never renders"))
@@ -413,6 +441,104 @@ pub(crate) mod tests {
                 .is_ok()
         );
         assert_eq!(registry.descriptors().len(), 4);
+    }
+
+    /// A module whose canvas claims one mode-strip letter.
+    fn shortcut_module(id: &str, effect: &str, action: &str, letter: &str) -> Arc<dyn ToolModule> {
+        let coordinate = |name: &str| crate::ParameterDescriptor {
+            name: name.into(),
+            kind: crate::ParameterKind::Integer { min: 0, max: 100 },
+            required: true,
+            default: None,
+            unit: None,
+            notes: "test".into(),
+        };
+        let mut descriptor = TestModule::new(id, effect, action, Availability::Available).0;
+        descriptor.actions[0].parameters = vec![coordinate("x"), coordinate("y")];
+        descriptor.canvas = Some(crate::CanvasInteraction::PointPick {
+            action: action.into(),
+            x: "x".into(),
+            y: "y".into(),
+            title: "Test mode".into(),
+            shortcut: Some(letter.into()),
+        });
+        TestModule::from_descriptor(descriptor)
+    }
+
+    #[test]
+    fn one_canvas_shortcut_letter_selects_one_mode_across_the_registry() {
+        let mut registry = ModuleRegistry::builtin();
+        assert_eq!(
+            registry
+                .effect(CROP_EFFECT)
+                .expect("the crop module")
+                .0
+                .descriptor()
+                .canvas
+                .as_ref()
+                .and_then(crate::CanvasInteraction::shortcut),
+            Some("R"),
+            "the built-in crop mode claims R"
+        );
+        let error = registry
+            .register(shortcut_module(
+                "test.one",
+                "test.one.effect",
+                "test-one",
+                "R",
+            ))
+            .expect_err("R is already claimed by the crop module");
+        assert_eq!(error.kind, ErrorKind::Validation);
+        assert!(
+            error
+                .detail
+                .contains("canvas shortcut R is already claimed"),
+            "{error}"
+        );
+        registry
+            .register(shortcut_module(
+                "test.two",
+                "test.two.effect",
+                "test-two",
+                "K",
+            ))
+            .expect("a free letter registers");
+        let error = registry
+            .register(shortcut_module(
+                "test.three",
+                "test.three.effect",
+                "test-three",
+                "K",
+            ))
+            .expect_err("K is now claimed too");
+        assert_eq!(error.kind, ErrorKind::Validation);
+    }
+
+    #[test]
+    fn built_in_modules_describe_their_stored_layers() {
+        let registry = ModuleRegistry::builtin();
+        let described = |layer: &Layer| -> String {
+            let (module, _) = registry.effect(&layer.effect_id).expect("a provider");
+            module
+                .describe_layer(&layer.effect_id, layer.effect_format, &layer.payload)
+                .expect("a stored payload")
+        };
+        assert_eq!(
+            described(&Layer::pixel(3, 4, [1, 2, 3])),
+            "Pixel 3, 4 → 1,2,3"
+        );
+        assert_eq!(
+            described(&Layer::transform(Transform::RotateLeft)),
+            "Rotate left"
+        );
+        assert_eq!(
+            described(&Layer::transform(Transform::MirrorHorizontal)),
+            "Mirror horizontal"
+        );
+        assert_eq!(
+            described(&Layer::crop(crate::CropPayload::NEUTRAL)),
+            "Whole image"
+        );
     }
 
     #[test]

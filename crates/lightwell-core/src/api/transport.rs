@@ -31,6 +31,8 @@ pub struct LocalServer {
     info: LocalSessionInfo,
     session_file: PathBuf,
     stopping: Arc<AtomicBool>,
+    /// The same counter the accept loop keeps, so the status bar can report live clients.
+    clients: Arc<AtomicUsize>,
     join: Option<JoinHandle<()>>,
 }
 
@@ -50,6 +52,7 @@ impl LocalServer {
         let stop = stopping.clone();
         let token = info.token.clone();
         let clients = Arc::new(AtomicUsize::new(0));
+        let connected = clients.clone();
         // Blocking accept keeps the idle listener asleep; Drop wakes it with one loopback connection.
         let join = std::thread::spawn(move || {
             for stream in listener.incoming() {
@@ -74,11 +77,16 @@ impl LocalServer {
             info,
             session_file: session_file.into(),
             stopping,
+            clients: connected,
             join: Some(join),
         })
     }
     pub fn info(&self) -> &LocalSessionInfo {
         &self.info
+    }
+    /// Live connections served by this listener, counted as they are accepted and released.
+    pub fn connected(&self) -> usize {
+        self.clients.load(Ordering::Acquire)
     }
 }
 
@@ -288,14 +296,22 @@ mod tests {
                 }
                 Err(error) => panic!("cannot start local server: {error}"),
             };
+            assert_eq!(server.connected(), 0, "no client has connected yet");
             let mut stream = TcpStream::connect(server.info().address).unwrap();
             stream
                 .write_all(request("bad", "schema.list", json!({})).as_bytes())
                 .unwrap();
             let mut line = String::new();
-            BufReader::new(stream).read_line(&mut line).unwrap();
+            // The stream stays open while the count is read: closing it releases the connection.
+            let mut reader = BufReader::new(stream.try_clone().unwrap());
+            reader.read_line(&mut line).unwrap();
             let response: ApiResponse = serde_json::from_str(&line).unwrap();
             assert_eq!(response.error.unwrap().code, "protocol");
+            assert_eq!(
+                server.connected(),
+                1,
+                "the answering connection is counted while it is live"
+            );
         }
         assert!(!session_file.exists());
         owner.stop();

@@ -1,7 +1,7 @@
 //! The method table: host methods carry their schema description, mutation flag and handler, and
 //! every module action resolves to a generated `edit.<action>` method from the same registry, so
 //! discovery, event emission and dispatch cannot drift apart.
-use super::{ApiRequest, ApiResponse, ClientSession, PROTOCOL};
+use super::{ApiRequest, ApiResponse, ClientSession, POINTER_MODE, PROTOCOL};
 use crate::{
     ActionDescriptor, AssetId, EditorService, EntryId, Error, ErrorKind, HistorySelection,
     ModuleRegistry, Mutation, Zoom,
@@ -82,6 +82,14 @@ pub(super) const METHODS: &[MethodSpec] = &[
         ],
         notes: "undo-parent chain newest first; next_entry_id continues a longer chain",
         handler: Some(history_lineage),
+    },
+    MethodSpec {
+        name: "recipe.describe",
+        mutates: false,
+        required: &["asset_id"],
+        optional: &[("entry_id", "entry to describe; default current")],
+        notes: "an entry's stored layers in order with their module, title, summary and availability; reads payloads only and renders nothing",
+        handler: Some(recipe_describe),
     },
     MethodSpec {
         name: "module.list",
@@ -168,11 +176,27 @@ pub(super) const METHODS: &[MethodSpec] = &[
         handler: Some(view_set),
     },
     MethodSpec {
+        name: "workspace.set",
+        mutates: false,
+        required: &[],
+        optional: &[
+            ("state_panel", "bool"),
+            ("tools_panel", "bool"),
+            (
+                "mode",
+                "pointer or an available module id that declares a canvas interaction",
+            ),
+            ("thirds", "bool"),
+        ],
+        notes: "session workspace state: panels, canvas mode and the thirds overlay; returns the session",
+        handler: Some(workspace_set),
+    },
+    MethodSpec {
         name: "session.state",
         mutates: false,
         required: &[],
         optional: &[],
-        notes: "this client's selection, view and session revision",
+        notes: "this client's selection, view, workspace state and session revision",
         handler: Some(session_state),
     },
     MethodSpec {
@@ -577,6 +601,75 @@ fn view_set(
     value(session)
 }
 
+fn recipe_describe(
+    service: &mut EditorService,
+    _: &mut ClientSession,
+    params: &Value,
+) -> Result<Value, Error> {
+    #[derive(Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct P {
+        asset_id: AssetId,
+        entry_id: Option<EntryId>,
+    }
+    let p = parse::<P>(params)?;
+    value(service.describe_entry(&p.asset_id, p.entry_id.as_ref())?)
+}
+
+/// The canvas modes this registry offers: the pointer plus every available module that declares a
+/// canvas interaction. `O(modules)`; it touches no image resource.
+fn canvas_modes(registry: &ModuleRegistry) -> Vec<String> {
+    let mut modes = vec![POINTER_MODE.to_owned()];
+    modes.extend(
+        registry
+            .descriptors()
+            .iter()
+            .filter(|descriptor| descriptor.is_available() && descriptor.canvas.is_some())
+            .map(|descriptor| descriptor.id.clone()),
+    );
+    modes
+}
+
+fn workspace_set(
+    service: &mut EditorService,
+    session: &mut ClientSession,
+    params: &Value,
+) -> Result<Value, Error> {
+    #[derive(Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct P {
+        state_panel: Option<bool>,
+        tools_panel: Option<bool>,
+        mode: Option<String>,
+        thirds: Option<bool>,
+    }
+    let p = parse::<P>(params)?;
+    // Validate before changing anything, so a rejected request leaves the session as it was.
+    if let Some(mode) = &p.mode {
+        let modes = canvas_modes(service.registry());
+        if !modes.iter().any(|accepted| accepted == mode) {
+            return Err(Error::new(
+                ErrorKind::Validation,
+                format!("mode must be one of {}", modes.join(", ")),
+            ));
+        }
+    }
+    if let Some(mode) = p.mode {
+        session.workspace.mode = mode;
+    }
+    if let Some(state_panel) = p.state_panel {
+        session.workspace.state_panel = state_panel;
+    }
+    if let Some(tools_panel) = p.tools_panel {
+        session.workspace.tools_panel = tools_panel;
+    }
+    if let Some(thirds) = p.thirds {
+        session.workspace.thirds = thirds;
+    }
+    session.touch();
+    value(session)
+}
+
 fn session_state(
     _: &mut EditorService,
     session: &mut ClientSession,
@@ -652,14 +745,48 @@ mod tests {
     use super::*;
     use crate::{
         ActionInput, ActionPlan, Availability, EFFECT_FORMAT, EffectDescriptor, EffectStage,
-        ModuleDescriptor, ParameterDescriptor, ParameterKind, Processing, Stage, StageContext,
-        ToolModule,
+        ExactGeometry, Layer, LayerId, ModuleDescriptor, ParameterDescriptor, ParameterKind,
+        Processing, Stage, StageContext, ToolModule,
     };
     use std::{
         collections::HashSet,
-        path::Path,
+        path::{Path, PathBuf},
         sync::{Arc, Mutex},
     };
+
+    fn fixture() -> PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/s0/orientation-1.jpg")
+    }
+
+    fn call(
+        service: &mut EditorService,
+        session: &mut ClientSession,
+        method: &str,
+        params: Value,
+    ) -> ApiResponse {
+        dispatch(
+            service,
+            session,
+            &ApiRequest {
+                id: method.into(),
+                method: method.into(),
+                params,
+                token: None,
+            },
+            0,
+        )
+    }
+
+    fn ok(
+        service: &mut EditorService,
+        session: &mut ClientSession,
+        method: &str,
+        params: Value,
+    ) -> Value {
+        let response = call(service, session, method, params);
+        assert!(response.error.is_none(), "{method}: {:?}", response.error);
+        response.result.expect("a result")
+    }
 
     #[test]
     fn host_and_generated_methods_are_unique_complete_and_match_the_schema() {
@@ -705,6 +832,56 @@ mod tests {
             3
         );
         assert_eq!(listed["edit.transform"]["mutates"], json!(true));
+        assert_eq!(
+            listed["recipe.describe"],
+            json!({
+                "mutates": false,
+                "required": ["asset_id"],
+                "optional": {"entry_id": "entry to describe; default current"},
+                "notes": listed["recipe.describe"]["notes"],
+            })
+        );
+        assert_eq!(listed["workspace.set"]["required"], json!([]));
+        assert_eq!(
+            listed["workspace.set"]["optional"]
+                .as_object()
+                .expect("the workspace fields")
+                .keys()
+                .collect::<Vec<_>>(),
+            ["mode", "state_panel", "thirds", "tools_panel"]
+        );
+        // The descriptor additions the workspace renders from reach a client through module.list.
+        let modules = module_list(&mut service, &mut session, &json!({})).unwrap();
+        let module = |id: &str| -> Value {
+            modules["modules"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|module| module["id"] == json!(id))
+                .unwrap_or_else(|| panic!("{id} is registered"))
+                .clone()
+        };
+        let pixel = module("lightwell.pixel");
+        assert_eq!(pixel["hint"], json!("One exact pixel"));
+        assert_eq!(pixel["developer"], json!(true));
+        assert_eq!(pixel["reset"], json!(null));
+        assert_eq!(pixel["canvas"]["title"], json!("Pick pixel"));
+        assert_eq!(pixel["canvas"]["shortcut"], json!(null));
+        assert_eq!(pixel["actions"][0]["summary"], json!("Pixel {x}, {y}"));
+        let transform = module("lightwell.transform");
+        assert_eq!(transform["hint"], json!("Rotate, mirror and flip"));
+        assert_eq!(transform["developer"], json!(false));
+        assert_eq!(transform["actions"][0]["summary"], json!("{transform}"));
+        let crop = module("lightwell.crop");
+        assert_eq!(crop["hint"], json!("Frame, ratio and angle"));
+        assert_eq!(crop["reset"], json!({"action": "crop-reset", "preset": {}}));
+        assert_eq!(
+            crop["controls"],
+            json!([]),
+            "the crop reset moved from a control to the section header"
+        );
+        assert_eq!(crop["canvas"]["title"], json!("Crop"));
+        assert_eq!(crop["canvas"]["shortcut"], json!("R"));
         for name in names
             .iter()
             .copied()
@@ -777,6 +954,9 @@ mod tests {
         fn validate_payload(&self, _: &str, _: u32, _: &Value) -> Result<(), Error> {
             Ok(())
         }
+        fn describe_layer(&self, _: &str, _: u32, _: &Value) -> Result<String, Error> {
+            Ok("Angle".into())
+        }
         fn compile(&self, _: &str, _: u32, _: &Value, _: Stage) -> Result<Processing, Error> {
             Err(Error::new(ErrorKind::Internal, "test module never renders"))
         }
@@ -789,6 +969,7 @@ mod tests {
             descriptor: ModuleDescriptor {
                 id: "test.angle".into(),
                 title: "Angle".into(),
+                hint: None,
                 effects: vec![EffectDescriptor {
                     id: "test.angle.effect".into(),
                     format: EFFECT_FORMAT,
@@ -798,6 +979,7 @@ mod tests {
                     id: "test-angle".into(),
                     title: "Set angle".into(),
                     notes: "test".into(),
+                    summary: Some("Angle {angle}".into()),
                     parameters: vec![ParameterDescriptor {
                         name: "angle".into(),
                         kind: ParameterKind::Number {
@@ -811,7 +993,9 @@ mod tests {
                     }],
                 }],
                 controls: Vec::new(),
+                reset: None,
                 canvas: None,
+                developer: false,
                 availability: Availability::Available,
             },
             seen: seen.clone(),
@@ -860,6 +1044,271 @@ mod tests {
                 .expect("a parsed request")["angle"],
             json!(-3.5),
             "the number reached the module exactly as sent"
+        );
+        drop(service);
+        std::fs::remove_file(catalog).unwrap();
+    }
+
+    const MARK_EFFECT: &str = "test.mark.effect";
+    const MARK_ACTION: &str = "test-mark";
+
+    /// A module that commits one identity layer, so a stack can hold an effect whose provider is
+    /// later registered as unavailable or not registered at all.
+    struct MarkModule(ModuleDescriptor);
+
+    impl MarkModule {
+        fn shared(availability: Availability) -> Arc<dyn ToolModule> {
+            Arc::new(Self(ModuleDescriptor {
+                id: "test.mark".into(),
+                title: "Mark".into(),
+                hint: None,
+                effects: vec![EffectDescriptor {
+                    id: MARK_EFFECT.into(),
+                    format: EFFECT_FORMAT,
+                    stage: EffectStage::Geometry,
+                }],
+                actions: vec![ActionDescriptor {
+                    id: MARK_ACTION.into(),
+                    title: "Mark".into(),
+                    notes: "test".into(),
+                    summary: None,
+                    parameters: Vec::new(),
+                }],
+                controls: Vec::new(),
+                reset: None,
+                canvas: None,
+                developer: false,
+                availability,
+            }))
+        }
+
+        fn registry(availability: Availability) -> Arc<ModuleRegistry> {
+            let mut registry = ModuleRegistry::builtin();
+            registry.register(Self::shared(availability)).unwrap();
+            Arc::new(registry)
+        }
+    }
+
+    impl ToolModule for MarkModule {
+        fn descriptor(&self) -> &ModuleDescriptor {
+            &self.0
+        }
+        fn parse(&self, action_id: &str, _: &Map<String, Value>) -> Result<ActionInput, Error> {
+            Ok(ActionInput {
+                action_id: action_id.into(),
+                parameters: Map::new(),
+            })
+        }
+        fn plan(&self, _: &ActionInput, _: &StageContext<'_>) -> Result<ActionPlan, Error> {
+            Ok(ActionPlan::Commit(Layer {
+                id: LayerId::new(),
+                effect_id: MARK_EFFECT.into(),
+                effect_format: EFFECT_FORMAT,
+                payload: json!({}),
+            }))
+        }
+        fn validate_payload(&self, _: &str, _: u32, _: &Value) -> Result<(), Error> {
+            Ok(())
+        }
+        fn describe_layer(&self, _: &str, _: u32, _: &Value) -> Result<String, Error> {
+            Ok("Marked".into())
+        }
+        fn compile(&self, _: &str, _: u32, _: &Value, stage: Stage) -> Result<Processing, Error> {
+            Ok(Processing::ExactGeometry(ExactGeometry {
+                a: 1,
+                b: 0,
+                c: 0,
+                d: 1,
+                tx: 0,
+                ty: 0,
+                output_width: stage.width,
+                output_height: stage.height,
+            }))
+        }
+    }
+
+    #[test]
+    fn recipe_describe_lists_every_layer_and_names_a_provider_it_cannot_use() {
+        let catalog = std::env::temp_dir().join(format!(
+            "lightwell-methods-describe-{}.sqlite",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_file(&catalog);
+        let asset;
+        {
+            let mut service =
+                EditorService::open_with(&catalog, MarkModule::registry(Availability::Available))
+                    .unwrap();
+            let mut session = ClientSession::default();
+            asset = ok(
+                &mut service,
+                &mut session,
+                "catalog.import",
+                json!({"path": fixture()}),
+            )["asset"]["id"]
+                .clone();
+            ok(
+                &mut service,
+                &mut session,
+                "edit.transform",
+                json!({"asset_id":asset,"mutation":{"expected_revision":0,"request_id":"t","actor":"test"},"transform":"rotate-left"}),
+            );
+            ok(
+                &mut service,
+                &mut session,
+                &format!("edit.{MARK_ACTION}"),
+                json!({"asset_id":asset,"mutation":{"expected_revision":1,"request_id":"m","actor":"test"}}),
+            );
+            let described = ok(
+                &mut service,
+                &mut session,
+                "recipe.describe",
+                json!({"asset_id": asset}),
+            );
+            assert_eq!(
+                described["layers"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .map(|layer| (
+                        layer["module"].clone(),
+                        layer["summary"].clone(),
+                        layer["available"].clone()
+                    ))
+                    .collect::<Vec<_>>(),
+                [
+                    (
+                        json!("lightwell.transform"),
+                        json!("Rotate left"),
+                        json!(true)
+                    ),
+                    (json!("test.mark"), json!("Marked"), json!(true)),
+                ]
+            );
+            assert_eq!(described["layers"][1]["effect"], json!(MARK_EFFECT));
+            assert_eq!(described["layers"][1]["title"], json!("Mark"));
+            assert_eq!(
+                described["entry_id"],
+                ok(
+                    &mut service,
+                    &mut session,
+                    "asset.state",
+                    json!({"asset_id": asset})
+                )["current_entry"]["id"]
+            );
+        }
+        // The same catalog served by a provider that reports itself unavailable.
+        {
+            let mut service = EditorService::open_with(
+                &catalog,
+                MarkModule::registry(Availability::Unavailable {
+                    reason: "not built in this configuration".into(),
+                }),
+            )
+            .unwrap();
+            let mut session = ClientSession::default();
+            let described = ok(
+                &mut service,
+                &mut session,
+                "recipe.describe",
+                json!({"asset_id": asset}),
+            );
+            let layer = &described["layers"][1];
+            assert_eq!(layer["available"], json!(false));
+            assert_eq!(
+                layer["summary"],
+                json!("unavailable: not built in this configuration")
+            );
+            assert_eq!(
+                layer["module"],
+                json!("test.mark"),
+                "an unavailable provider keeps its identity"
+            );
+            assert_eq!(described["layers"][0]["available"], json!(true));
+        }
+        // And with no provider registered for that effect at all.
+        {
+            let mut service = EditorService::open(&catalog).unwrap();
+            let mut session = ClientSession::default();
+            let described = ok(
+                &mut service,
+                &mut session,
+                "recipe.describe",
+                json!({"asset_id": asset}),
+            );
+            let layer = &described["layers"][1];
+            assert_eq!(layer["available"], json!(false));
+            assert_eq!(layer["summary"], json!("no provider"));
+            assert_eq!(layer["module"], json!(null));
+            assert_eq!(layer["title"], json!(null));
+            assert_eq!(layer["effect"], json!(MARK_EFFECT));
+        }
+        std::fs::remove_file(catalog).unwrap();
+    }
+
+    #[test]
+    fn workspace_state_round_trips_through_session_state_and_validates_the_mode() {
+        let catalog = std::env::temp_dir().join(format!(
+            "lightwell-methods-workspace-{}.sqlite",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_file(&catalog);
+        let mut service = EditorService::open(&catalog).unwrap();
+        let mut session = ClientSession::default();
+        assert_eq!(
+            ok(&mut service, &mut session, "session.state", json!({}))["workspace"],
+            json!({"state_panel": true, "tools_panel": true, "mode": "pointer", "thirds": false}),
+            "a fresh session opens with both panels, the pointer and no overlay"
+        );
+        let set = ok(
+            &mut service,
+            &mut session,
+            "workspace.set",
+            json!({"state_panel": false, "mode": "lightwell.crop", "thirds": true}),
+        );
+        assert_eq!(
+            set["workspace"],
+            json!({"state_panel": false, "tools_panel": true, "mode": "lightwell.crop", "thirds": true})
+        );
+        assert_eq!(set["revision"], json!(1), "a session change is a revision");
+        assert_eq!(
+            ok(&mut service, &mut session, "session.state", json!({}))["workspace"],
+            set["workspace"],
+            "session.state reports what workspace.set stored"
+        );
+        for (case, params, fragment) in [
+            (
+                "an unknown mode",
+                json!({"mode": "lightwell.heal"}),
+                "mode must be one of pointer, lightwell.pixel, lightwell.crop",
+            ),
+            (
+                "a module that declares no canvas",
+                json!({"mode": "lightwell.transform"}),
+                "mode must be one of",
+            ),
+            ("an unknown field", json!({"panel": true}), "unknown field"),
+            ("the wrong type", json!({"thirds": "yes"}), "invalid type"),
+        ] {
+            let error = call(&mut service, &mut session, "workspace.set", params)
+                .error
+                .unwrap_or_else(|| panic!("{case} must be refused"));
+            assert_eq!(error.code, "validation", "{case}");
+            assert!(
+                error.message.contains(fragment),
+                "{case}: {}",
+                error.message
+            );
+        }
+        assert_eq!(
+            ok(&mut service, &mut session, "session.state", json!({}))["workspace"],
+            set["workspace"],
+            "a refused request changes nothing"
+        );
+        assert_eq!(
+            ok(&mut service, &mut session, "workspace.set", json!({}))["workspace"],
+            set["workspace"],
+            "an empty request keeps the state"
         );
         drop(service);
         std::fs::remove_file(catalog).unwrap();

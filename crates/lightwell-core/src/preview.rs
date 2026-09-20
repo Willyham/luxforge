@@ -233,6 +233,7 @@ mod tests {
                 asset_id: asset,
                 sequence: u64::from(color),
                 action_id: "set-pixel".into(),
+                label: "Pixel 0, 0".into(),
                 parameters: json!({}),
                 actor: "test".into(),
                 timestamp_ms: 0,

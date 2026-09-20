@@ -88,12 +88,40 @@ pub struct EventsResult {
     pub gap: bool,
 }
 
+/// Per-client workspace state: which panels are open, which canvas mode is active and whether the
+/// thirds overlay is on. It is a client preference the owner holds, never authoritative edit state.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct WorkspaceState {
+    pub state_panel: bool,
+    pub tools_panel: bool,
+    /// `pointer`, or the id of an available module that declares a canvas interaction.
+    pub mode: String,
+    pub thirds: bool,
+}
+
+/// The pointer mode: the canvas shows the photograph and nothing else.
+pub const POINTER_MODE: &str = "pointer";
+
+impl Default for WorkspaceState {
+    fn default() -> Self {
+        Self {
+            state_panel: true,
+            tools_panel: true,
+            mode: POINTER_MODE.into(),
+            thirds: false,
+        }
+    }
+}
+
 /// Per-client session state held by the owner. `revision` increases on every session change so a
 /// client applying responses out of order can keep the newest one.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ClientSession {
     pub preview: PreviewSession,
+    #[serde(default)]
+    pub workspace: WorkspaceState,
     #[serde(default)]
     pub revision: u64,
 }

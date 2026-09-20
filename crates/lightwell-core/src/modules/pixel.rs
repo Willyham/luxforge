@@ -46,6 +46,7 @@ impl PixelModule {
             descriptor: ModuleDescriptor {
                 id: "lightwell.pixel".into(),
                 title: "Pixel".into(),
+                hint: Some("One exact pixel".into()),
                 effects: vec![EffectDescriptor {
                     id: PIXEL_EFFECT.into(),
                     format: EFFECT_FORMAT,
@@ -55,6 +56,7 @@ impl PixelModule {
                     id: SET_PIXEL.into(),
                     title: "Set pixel".into(),
                     notes: "replaces one pixel of the current stage; replacing a pixel with its current value is a reported no-op".into(),
+                    summary: Some("Pixel {x}, {y}".into()),
                     parameters: vec![
                         coordinate("x"),
                         coordinate("y"),
@@ -70,6 +72,7 @@ impl PixelModule {
                 }],
                 controls: vec![Control::Group {
                     label: "Pixel proof".into(),
+                    reset: None,
                     controls: vec![
                         Control::Number {
                             action: SET_PIXEL.into(),
@@ -93,11 +96,16 @@ impl PixelModule {
                         },
                     ],
                 }],
+                reset: None,
                 canvas: Some(CanvasInteraction::PointPick {
                     action: SET_PIXEL.into(),
                     x: "x".into(),
                     y: "y".into(),
+                    title: "Pick pixel".into(),
+                    shortcut: None,
                 }),
+                // A proof tool, not a photo-editing one.
+                developer: true,
                 availability: Availability::Available,
             },
         }
@@ -200,6 +208,14 @@ impl ToolModule for PixelModule {
 
     fn validate_payload(&self, effect_id: &str, format: u32, value: &Value) -> Result<(), Error> {
         payload(effect_id, format, value).map(|_| ())
+    }
+
+    fn describe_layer(&self, effect_id: &str, format: u32, value: &Value) -> Result<String, Error> {
+        let pixel = payload(effect_id, format, value)?;
+        Ok(format!(
+            "Pixel {}, {} → {},{},{}",
+            pixel.x, pixel.y, pixel.rgb[0], pixel.rgb[1], pixel.rgb[2]
+        ))
     }
 
     fn compile(
