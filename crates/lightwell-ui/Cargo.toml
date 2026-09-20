@@ -1,0 +1,17 @@
+[package]
+name = "lightwell-ui"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[lib]
+name = "lightwell_ui"
+path = "src/lib.rs"
+
+[dependencies]
+iced.workspace = true
+
+[lints]
+workspace = true
