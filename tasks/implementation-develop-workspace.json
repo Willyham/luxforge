@@ -192,7 +192,7 @@
     {
       "id": "TASK-004",
       "description": "Build the generated tools panel and the state panel from the widget library: sections in registry order, the control mapping, the Developer section, history rows, version chips and recipe rows.",
-      "status": "pending",
+      "status": "ready",
       "dependencies": [
         "TASK-002",
         "TASK-003"
