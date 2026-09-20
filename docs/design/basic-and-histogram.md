@@ -43,7 +43,7 @@ The inspected checkout contains M3 descriptors and generated actions. They curre
 | Tone, white-balance and vibrance numerical studies | Module-owned compilation into the host's bounded color operation |
 | Descriptors and control behavior on paper | M3 descriptor validation and M4 transaction/draft contract |
 
-Shared files likely to need coordinated integration are `modules/descriptor.rs`, `modules/processing.rs`, `modules/mod.rs`, `render.rs`, `preview.rs`, `editor.rs`, `api/methods.rs` and `editor_app.rs` under `crates/`. Keep algorithm and reducer implementations in dedicated files. One integrator should reconcile shared host changes against the delivered M3/M4 baseline; independent algorithm tasks need not wait for crop UI completion. Do not build a second draft system while crop's is in progress.
+Shared files likely to need coordinated integration are `modules/descriptor.rs`, `modules/processing.rs`, `modules/mod.rs`, `render.rs`, `preview.rs`, `editor.rs`, `api/methods.rs` and the desktop's `app/`, `state/` and `view/` layers under `crates/`. Keep algorithm and reducer implementations in dedicated files. One integrator should reconcile shared host changes against the delivered M3/M4 baseline; independent algorithm tasks need not wait for crop UI completion. Do not build a second draft system while crop's is in progress.
 
 ## Basic controls and interaction
 

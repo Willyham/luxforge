@@ -1,6 +1,6 @@
 # Tool modules and the shared core
 
-Status: implemented (M3, M4). The pixel, transform and crop tools are the built-in modules; the host owns everything a module does not declare here. The registry, descriptors and built-in modules live in `crates/lightwell-core/src/modules/`; the desktop renders them in `crates/lightwell-app/src/editor_app.rs`, and the crop-frame editor's own draft and canvas live in `crates/lightwell-app/src/crop_draft.rs` and `crop_canvas.rs`.
+Status: implemented (M3, M4). The pixel, transform and crop tools are the built-in modules; the host owns everything a module does not declare here. The registry, descriptors and built-in modules live in `crates/lightwell-core/src/modules/`; the desktop models them in `crates/lightwell-app/src/state/` and renders them in `crates/lightwell-app/src/view/`, and the crop-frame editor's own draft and canvas live in `crates/lightwell-app/src/crop_draft.rs` and `crop_canvas.rs`.
 
 An operation is semantic and programmable: set one pixel, rotate, set crop parameters, restore history, select a preview or change view state. Scripts never simulate pointer movement. Exposure, masks, clone strokes and lifecycle actions inherit this rule when they arrive.
 

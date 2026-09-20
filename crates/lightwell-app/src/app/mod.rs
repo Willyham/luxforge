@@ -1,0 +1,1881 @@
+//! The Iced application: the editor's own state, the update function and the effects it starts.
+//! Every change to authoritative state goes through an owner call; the view models are re-derived
+//! after each message and the view renders those alone.
+pub(crate) mod crop;
+pub(crate) mod evidence;
+pub(crate) mod fields;
+pub(crate) mod keymap;
+pub(crate) mod message;
+pub(crate) mod tasks;
+#[cfg(test)]
+pub(crate) mod testing;
+
+use crate::{
+    Config,
+    diagnostics::Diagnostics,
+    paths::Paths,
+    state::{self, Workspace, tools},
+    view,
+};
+use crop::PendingDraft;
+use evidence::{EVIDENCE_DEADLINE, Evidence, Settle};
+use fields::{Fields, action_params, number_text, submit_preset};
+use iced::{Element, Subscription, Task, widget::operation};
+use iced_runtime::image as image_memory;
+use lightwell_core::{
+    ActionInput, ActionPlan, Availability, ClientId, ClientSession, CropStage, EditorState, Error,
+    ErrorKind, HistoryPage, HistorySelection, LocalServer, ModuleDescriptor, ModuleRegistry,
+    OwnerHandle, PreviewQueue, Processing, RecipeDescription, StageContext, ToolModule, Version,
+};
+use message::{CropMessage, MenuTarget, Message, PaletteAction, Panel};
+use serde_json::{Map, Value, json};
+use std::{
+    collections::{BTreeMap, HashSet},
+    path::PathBuf,
+    sync::{Arc, Mutex},
+    thread::JoinHandle,
+    time::{Duration, Instant},
+};
+use tasks::{
+    ACTOR, Refresh, SyncResult, Upload, import_task, merge_current_entry, modules_task, mutation,
+    older_task, pan_task, preview_task, recipe_task, session_task, state_task, sync_task,
+    versions_task, workspace_task,
+};
+
+/// What the editor was last asked to show, correlated with logged events and captured frames.
+pub(crate) struct Activity {
+    /// Counts open requests; `displayed` is the request whose image is on screen.
+    pub(crate) requested: u64,
+    pub(crate) displayed: u64,
+    /// An open request is in progress until its image is uploaded or it fails.
+    pub(crate) pending: bool,
+    pub(crate) phase: &'static str,
+    pub(crate) error_code: Option<String>,
+    pub(crate) source_dimensions: Option<(u32, u32)>,
+    pub(crate) preview_dimensions: Option<(u32, u32)>,
+    pub(crate) orientation: Option<u8>,
+    pub(crate) backend: Option<Value>,
+    pub(crate) request_started: Instant,
+}
+
+/// Catalog ownership and the live service start before the window so failures are reported, not panics.
+pub(crate) struct Boot {
+    pub(crate) owner: OwnerHandle,
+    pub(crate) join: JoinHandle<()>,
+    pub(crate) live_server: Option<LocalServer>,
+    pub(crate) config: Config,
+}
+
+/// A registered provider wrapped as unavailable. Its effect identities stay readable, so a stack
+/// that uses it is reported rather than silently rendered without it.
+struct Disabled {
+    inner: Arc<dyn ToolModule>,
+    descriptor: ModuleDescriptor,
+}
+
+impl Disabled {
+    const REASON: &'static str = "disabled by --disable-module";
+
+    fn new(inner: Arc<dyn ToolModule>) -> Self {
+        let descriptor = ModuleDescriptor {
+            availability: Availability::Unavailable {
+                reason: Self::REASON.into(),
+            },
+            ..inner.descriptor().clone()
+        };
+        Self { inner, descriptor }
+    }
+}
+
+impl ToolModule for Disabled {
+    fn descriptor(&self) -> &ModuleDescriptor {
+        &self.descriptor
+    }
+    fn parse(
+        &self,
+        action_id: &str,
+        parameters: &Map<String, Value>,
+    ) -> Result<ActionInput, Error> {
+        self.inner.parse(action_id, parameters)
+    }
+    fn plan(&self, input: &ActionInput, stage: &StageContext<'_>) -> Result<ActionPlan, Error> {
+        self.inner.plan(input, stage)
+    }
+    fn validate_payload(&self, effect_id: &str, format: u32, payload: &Value) -> Result<(), Error> {
+        self.inner.validate_payload(effect_id, format, payload)
+    }
+    fn describe_layer(
+        &self,
+        effect_id: &str,
+        format: u32,
+        payload: &Value,
+    ) -> Result<String, Error> {
+        self.inner.describe_layer(effect_id, format, payload)
+    }
+    fn compile(
+        &self,
+        effect_id: &str,
+        format: u32,
+        payload: &Value,
+        stage: lightwell_core::Stage,
+    ) -> Result<Processing, Error> {
+        self.inner.compile(effect_id, format, payload, stage)
+    }
+}
+
+/// The providers this run serves, with any `--disable-module` built-in wrapped as unavailable.
+fn registry(disabled: &[String]) -> Result<ModuleRegistry, String> {
+    let mut registry = ModuleRegistry::new();
+    let mut unknown: Vec<&str> = disabled.iter().map(String::as_str).collect();
+    for module in [
+        Arc::new(lightwell_core::PixelModule::new()) as Arc<dyn ToolModule>,
+        Arc::new(lightwell_core::TransformModule::new()),
+        Arc::new(lightwell_core::CropModule::new()),
+    ] {
+        let id = module.descriptor().id.clone();
+        let module = if disabled.contains(&id) {
+            unknown.retain(|named| *named != id);
+            Arc::new(Disabled::new(module)) as Arc<dyn ToolModule>
+        } else {
+            module
+        };
+        registry
+            .register(module)
+            .map_err(|error| error.to_string())?;
+    }
+    match unknown.first() {
+        Some(id) => Err(format!("--disable-module names no registered module: {id}")),
+        None => Ok(registry),
+    }
+}
+
+pub(crate) fn run(config: Config, size: (f32, f32)) -> Result<(), String> {
+    // Evidence runs never touch a real catalog: theirs lives inside the new evidence directory.
+    let catalog = match (&config.catalog, &config.evidence) {
+        (Some(catalog), _) => catalog.clone(),
+        (None, Some(evidence)) => evidence.join("catalog.sqlite"),
+        (None, None) => Paths::resolve(config.data_root.as_ref())
+            .ok_or("no usable application data directory; pass --data-root")?
+            .config
+            .join("catalog.sqlite"),
+    };
+    let registry = Arc::new(registry(&config.disabled)?);
+    let (owner, join) =
+        OwnerHandle::start_with(&catalog, registry).map_err(|error| match error.kind {
+            ErrorKind::Conflict => format!(
+                "another Lightwell instance owns the catalog {}; close it or pass --catalog",
+                catalog.display()
+            ),
+            _ => format!("cannot open catalog {}: {error}", catalog.display()),
+        })?;
+    let session_file = catalog.with_extension("live-session.json");
+    // Owning the catalog proves any same-catalog session file from an earlier process is stale.
+    if session_file.exists() {
+        let _ = std::fs::remove_file(&session_file);
+    }
+    let live_server = LocalServer::start(owner.clone(), &session_file).ok();
+    let boot = Mutex::new(Some(Boot {
+        owner,
+        join,
+        live_server,
+        config,
+    }));
+    iced::application(
+        move || {
+            Editor::new(
+                boot.lock()
+                    .expect("boot state is never poisoned")
+                    .take()
+                    .expect("the editor boots once"),
+            )
+        },
+        Editor::update,
+        Editor::view,
+    )
+    .title("Lightwell")
+    .window_size(size)
+    .exit_on_close_request(false)
+    .theme(iced::Theme::Dark)
+    .subscription(Editor::subscription)
+    .run()
+    .map_err(|error| error.to_string())
+}
+
+pub(crate) struct Editor {
+    pub(crate) owner: OwnerHandle,
+    pub(crate) owner_join: Option<JoinHandle<()>>,
+    pub(crate) live_server: Option<LocalServer>,
+    /// The desktop is one registered client; the owner holds its session.
+    pub(crate) client: ClientId,
+    /// Local copy of the owner's session, replaced only by a response with a newer revision.
+    pub(crate) session: ClientSession,
+    pub(crate) activity: Activity,
+    pub(crate) evidence: Option<Evidence>,
+    pub(crate) diagnostics: Option<Diagnostics>,
+    pub(crate) run_id: String,
+    /// Emit events to stderr when a log was requested but is unavailable.
+    pub(crate) verbose: bool,
+    pub(crate) started: Instant,
+    pub(crate) state: Option<EditorState>,
+    pub(crate) history: HistoryPage,
+    pub(crate) versions: Vec<Version>,
+    /// Entries on the current undo-parent chain; other loaded entries are abandoned branches.
+    pub(crate) lineage: HashSet<lightwell_core::EntryId>,
+    /// Oldest lineage sequence when the chain was truncated; entries at or below it are unknown.
+    pub(crate) lineage_floor: Option<u64>,
+    pub(crate) display_entry: Option<lightwell_core::EntryId>,
+    /// The Original entry, so Compare needs no search.
+    pub(crate) original_entry: Option<lightwell_core::EntryId>,
+    /// What the selection was before Compare took it.
+    pub(crate) compare_return: Option<HistorySelection>,
+    pub(crate) photo: Option<image_memory::Allocation>,
+    pub(crate) dimensions: Option<(u32, u32)>,
+    pub(crate) preview_queue: PreviewQueue,
+    pub(crate) preview_generation: u64,
+    pub(crate) uploading: bool,
+    pub(crate) busy: bool,
+    pub(crate) syncing: bool,
+    pub(crate) pan_in_flight: bool,
+    pub(crate) pending_pan: Option<(f32, f32)>,
+    pub(crate) picker_open: bool,
+    pub(crate) status: String,
+    pub(crate) api_sequence: u64,
+    pub(crate) scale_factor: f32,
+    /// Descriptors fetched once through `module.list`; the only source of tool controls.
+    pub(crate) modules: Vec<ModuleDescriptor>,
+    /// Set once discovery answered, successfully or not, so evidence never captures an empty panel.
+    pub(crate) modules_ready: bool,
+    /// Proof and diagnostic modules are listed only when the run asked for them.
+    pub(crate) developer: bool,
+    /// The text typed into each generated field, by (action id, parameter name).
+    pub(crate) fields: Fields,
+    /// The (action, parameter) whose value is being typed.
+    pub(crate) editing: Option<(String, String)>,
+    /// The (action, parameter) whose slider is being dragged.
+    pub(crate) dragging: Option<(String, String)>,
+    /// Sections the person collapsed or expanded; every other follows the default.
+    pub(crate) expanded: BTreeMap<String, bool>,
+    /// The displayed entry's layers as the recipe panel reads them.
+    pub(crate) recipe: Option<RecipeDescription>,
+    pub(crate) menu: Option<MenuTarget>,
+    pub(crate) palette_open: bool,
+    pub(crate) palette_query: String,
+    pub(crate) palette_selected: usize,
+    /// The last pointer position over the photo in image pixels; a pick commits nothing.
+    pub(crate) pointer: Option<(u32, u32)>,
+    pub(crate) zoom: String,
+    pub(crate) version_name: String,
+    /// The transient crop draft. It is session state, never authoritative: only Apply commits.
+    pub(crate) crop: Option<crate::crop_draft::CropDraft>,
+    /// What a started or reapplied draft still needs from its truncated preview.
+    pub(crate) crop_pending: Option<PendingDraft>,
+    /// The crop layer's input stage on the GPU: one extra texture, bounded like the main preview
+    /// and dropped as soon as the draft ends.
+    pub(crate) draft_photo: Option<image_memory::Allocation>,
+    /// The preview generation that belongs to the draft rather than to the displayed state.
+    pub(crate) draft_generation: Option<u64>,
+    /// This desktop's own Apply is in flight, so the revision it produces is not a conflict.
+    pub(crate) crop_applying: Option<String>,
+    pub(crate) crop_angle: String,
+    /// The two extents the `custom` ratio preset reads.
+    pub(crate) crop_custom: (String, String),
+    pub(crate) crop_guide: bool,
+    pub(crate) crop_option: bool,
+    pub(crate) crop_space: bool,
+    /// The whole screen as plain data, re-derived after every message.
+    pub(crate) workspace: Workspace,
+}
+
+impl Editor {
+    pub(crate) fn new(boot: Boot) -> (Self, Task<Message>) {
+        let Boot {
+            owner,
+            join,
+            live_server,
+            mut config,
+        } = boot;
+        let client = owner.register();
+        let script = std::mem::take(&mut config.script);
+        let evidence = config.evidence.take().map(|dir| {
+            let queue = std::mem::take(&mut config.files);
+            Evidence {
+                dir,
+                opens: queue.len() as u64,
+                queue,
+                script,
+                step: 0,
+                awaiting: None,
+                current: None,
+                steps: Vec::new(),
+                frames: Vec::new(),
+                capture_pending: false,
+                saving: false,
+                had_errors: false,
+            }
+        });
+        let initial = config.files.pop_front();
+        let mut editor = Self {
+            owner: owner.clone(),
+            owner_join: Some(join),
+            live_server,
+            client,
+            session: ClientSession::default(),
+            activity: Activity {
+                requested: 0,
+                displayed: 0,
+                pending: false,
+                phase: "empty",
+                error_code: None,
+                source_dimensions: None,
+                preview_dimensions: None,
+                orientation: None,
+                backend: None,
+                request_started: Instant::now(),
+            },
+            evidence,
+            diagnostics: config.diagnostics.clone(),
+            run_id: config.run_id.clone(),
+            verbose: config.wants_events(),
+            started: Instant::now(),
+            state: None,
+            history: HistoryPage {
+                entries: Vec::new(),
+                next_before_sequence: None,
+            },
+            versions: Vec::new(),
+            lineage: HashSet::new(),
+            lineage_floor: None,
+            display_entry: None,
+            original_entry: None,
+            compare_return: None,
+            photo: None,
+            dimensions: None,
+            preview_queue: PreviewQueue::default(),
+            preview_generation: 0,
+            uploading: false,
+            busy: false,
+            syncing: false,
+            pan_in_flight: false,
+            pending_pan: None,
+            picker_open: false,
+            status: "Open a JPEG to begin".into(),
+            api_sequence: 0,
+            scale_factor: 1.0,
+            modules: Vec::new(),
+            modules_ready: false,
+            developer: config.developer,
+            fields: Fields::default(),
+            editing: None,
+            dragging: None,
+            expanded: BTreeMap::new(),
+            recipe: None,
+            menu: None,
+            palette_open: false,
+            palette_query: String::new(),
+            palette_selected: 0,
+            pointer: None,
+            zoom: "100".into(),
+            version_name: String::new(),
+            crop: None,
+            crop_pending: None,
+            draft_photo: None,
+            draft_generation: None,
+            crop_applying: None,
+            crop_angle: "0".into(),
+            crop_custom: ("5".into(), "4".into()),
+            crop_guide: false,
+            crop_option: false,
+            crop_space: false,
+            workspace: Workspace::default(),
+        };
+        if editor.live_server.is_none() {
+            editor.status = "Editor ready; live API unavailable on this host".into();
+        }
+        editor.event(
+            "startup",
+            json!({"os":std::env::consts::OS,"arch":std::env::consts::ARCH,"version":env!("CARGO_PKG_VERSION"),"debug_assertions":cfg!(debug_assertions),"mode":if editor.evidence.is_some() {"evidence"} else {"editor"}}),
+        );
+        let scale = iced::window::oldest()
+            .and_then(iced::window::scale_factor)
+            .map(Message::ScaleFactor);
+        let backend = iced::system::information().map(Message::Info);
+        // Tool controls are discovered once, through the same API every other client uses.
+        let modules = modules_task(editor.owner.clone(), editor.client);
+        let first = match &mut editor.evidence {
+            Some(evidence) => match evidence.queue.pop_front() {
+                Some(path) => editor.open(path),
+                None => {
+                    evidence.capture_pending = true;
+                    Task::none()
+                }
+            },
+            None => initial
+                .map(|path| editor.open(path))
+                .unwrap_or_else(Task::none),
+        };
+        editor.rederive();
+        (editor, Task::batch([scale, backend, modules, first]))
+    }
+
+    pub(crate) fn event(&self, name: &str, detail: Value) {
+        let value = json!({"event":name,"run_id":self.run_id,"build_version":env!("CARGO_PKG_VERSION"),"elapsed_ms":self.started.elapsed().as_secs_f64()*1000.,"request_id":self.activity.requested,"generation":self.activity.requested,"detail":detail});
+        if let Some(log) = &self.diagnostics {
+            log.event(value);
+        } else if self.verbose {
+            eprintln!("{value}");
+        }
+    }
+
+    /// The state correlated with every event and captured frame; never includes source paths.
+    pub(crate) fn snapshot(&self) -> Value {
+        json!({"run_id":self.run_id,"mode":if self.evidence.is_some() {"evidence"} else {"editor"},"orientation":self.activity.orientation,"phase":self.activity.phase,"requested_generation":self.activity.requested,"displayed_generation":self.activity.displayed,"source_dimensions":self.activity.source_dimensions,"preview_dimensions":self.activity.preview_dimensions,"backend":self.activity.backend,"status":self.status,"error_code":self.activity.error_code,"modules":module_summary(&self.modules),"controls":self.fields.summary(),"crop":self.crop_summary(),"stack":self.stack_summary(),"workspace":serde_json::to_value(&self.session.workspace).unwrap_or(Value::Null),"developer":self.developer,"expanded":self.workspace.expanded()})
+    }
+
+    /// The committed stack the captured frame belongs to: the revision, the current entry and every
+    /// layer's identity, effect and payload, so evidence can prove that an edit updated one layer in
+    /// place instead of appending another.
+    fn stack_summary(&self) -> Value {
+        match &self.state {
+            Some(state) => {
+                let layers: Vec<Value> = state
+                    .current_entry
+                    .snapshot
+                    .recipe
+                    .layers
+                    .iter()
+                    .map(|layer| {
+                        json!({"id":layer.id.as_str(),"effect":layer.effect_id,"payload":layer.payload})
+                    })
+                    .collect();
+                json!({"revision":state.revision,"entry":state.current_entry.id.as_str(),"layers":layers})
+            }
+            None => Value::Null,
+        }
+    }
+
+    /// The crop draft as a captured frame reports it, so a rendered frame correlates with the
+    /// rectangle, angle and output size that produced it.
+    fn crop_summary(&self) -> Value {
+        match &self.crop {
+            Some(draft) => {
+                let mut summary = draft.summary();
+                if let Some(object) = summary.as_object_mut() {
+                    object.insert("drafting".into(), Value::from(true));
+                    object.insert("guide".into(), Value::from(self.crop_guide));
+                    object.insert("option".into(), Value::from(self.crop_option));
+                    object.insert("space".into(), Value::from(self.crop_space));
+                    object.insert(
+                        "paused".into(),
+                        Value::from(!self.session.preview.can_edit()),
+                    );
+                    object.insert(
+                        "input_stage_loaded".into(),
+                        Value::from(self.draft_photo.is_some()),
+                    );
+                }
+                summary
+            }
+            None => json!({"drafting":false,"pending":self.crop_pending.is_some()}),
+        }
+    }
+
+    /// One request whose outcome a frame is captured for: the next generation is pending until its
+    /// pixels are uploaded or it fails.
+    pub(crate) fn begin_request(&mut self) {
+        self.activity.requested += 1;
+        self.activity.pending = true;
+        self.activity.phase = "loading";
+        self.activity.error_code = None;
+        self.activity.request_started = Instant::now();
+    }
+
+    /// Import a file through the same API call the Open button uses, tracked as one open request.
+    fn open(&mut self, path: PathBuf) -> Task<Message> {
+        self.begin_request();
+        self.busy = true;
+        self.status = "Importing photograph…".into();
+        let file = path
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        self.event("open_requested", json!({"file":file}));
+        import_task(self.owner.clone(), self.client, path)
+    }
+
+    fn open_failed(&mut self, error_code: &str, message: &str) {
+        self.activity.pending = false;
+        self.activity.phase = "error";
+        self.activity.error_code = Some(error_code.into());
+        self.event(
+            "open_failed",
+            json!({"error_code":error_code,"message":message}),
+        );
+        self.outcome_ready(true);
+    }
+
+    /// An open request reached its outcome; evidence mode captures a frame for it.
+    fn outcome_ready(&mut self, failed: bool) {
+        if let Some(evidence) = &mut self.evidence {
+            evidence.had_errors |= failed;
+            evidence.capture_pending = true;
+        }
+    }
+
+    /// Keep the newest session the owner has reported; responses may complete out of order.
+    pub(crate) fn adopt(&mut self, session: ClientSession) {
+        if session.revision >= self.session.revision {
+            self.session = session;
+        }
+    }
+
+    pub(crate) fn update(&mut self, message: Message) -> Task<Message> {
+        let task = self.dispatch(message);
+        self.rederive();
+        task
+    }
+
+    /// Re-derive the whole screen from the state this message left behind.
+    fn rederive(&mut self) {
+        let mut workspace = std::mem::take(&mut self.workspace);
+        let inputs = state::Inputs {
+            state: self.state.as_ref(),
+            history: &self.history,
+            versions: &self.versions,
+            lineage: &self.lineage,
+            lineage_floor: self.lineage_floor,
+            display_entry: self.display_entry.as_ref(),
+            modules: &self.modules,
+            modules_ready: self.modules_ready,
+            recipe: self.recipe.as_ref(),
+            fields: &self.fields,
+            editing: self.editing.as_ref(),
+            dragging: self.dragging.as_ref(),
+            expanded: &self.expanded,
+            draft: self.crop.as_ref(),
+            draft_pending: self.crop_pending.is_some(),
+            drafting: self.drafting(),
+            crop_angle: &self.crop_angle,
+            crop_custom: (&self.crop_custom.0, &self.crop_custom.1),
+            crop_guide: self.crop_guide,
+            crop_option: self.crop_option,
+            crop_space: self.crop_space,
+            session: &self.session,
+            status: &self.status,
+            busy: self.busy,
+            can_open: !self.busy && self.evidence.is_none(),
+            developer: self.developer,
+            compare_held: self.compare_return.is_some(),
+            scale_factor: self.scale_factor,
+            zoom: &self.zoom,
+            version_name: &self.version_name,
+            dimensions: self.dimensions,
+            photo: self.photo.is_some(),
+            phase: self.activity.phase,
+            clients: self
+                .live_server
+                .as_ref()
+                .map(LocalServer::connected)
+                .unwrap_or(0),
+            pointer: self.pointer,
+            menu: self.menu.as_ref(),
+            palette_open: self.palette_open,
+            palette_query: &self.palette_query,
+            palette_selected: self.palette_selected,
+        };
+        workspace.derive(&inputs);
+        self.workspace = workspace;
+    }
+
+    fn dispatch(&mut self, message: Message) -> Task<Message> {
+        match message {
+            Message::Key(event, status) => {
+                // The whole keyboard table is one pure function; only its result reaches the state.
+                return match keymap::keymap(&event, status, &self.key_context()) {
+                    Some(message) => self.dispatch(message),
+                    None => Task::none(),
+                };
+            }
+            Message::CopyStatus => return iced::clipboard::write(self.status.clone()),
+            Message::Open => {
+                if self.picker_open || self.busy || self.evidence.is_some() {
+                    return Task::none();
+                }
+                self.picker_open = true;
+                return Task::perform(
+                    async {
+                        rfd::AsyncFileDialog::new()
+                            .add_filter("JPEG", &["jpg", "jpeg"])
+                            .pick_file()
+                            .await
+                            .map(|file| file.path().to_path_buf())
+                    },
+                    Message::Picked,
+                );
+            }
+            Message::Picked(path) => {
+                self.picker_open = false;
+                if let Some(path) = path {
+                    return self.open(path);
+                }
+            }
+            Message::Refreshed(result) => {
+                self.busy = false;
+                match result {
+                    Ok(refresh) => {
+                        if self.activity.pending {
+                            self.activity.source_dimensions =
+                                Some((refresh.state.asset.width, refresh.state.asset.height));
+                            self.activity.orientation = Some(refresh.job.source.orientation);
+                        }
+                        self.accept(*refresh);
+                    }
+                    Err(error) => {
+                        self.status = error.clone();
+                        // A failed Apply keeps the draft; a stale revision makes it conflicted so
+                        // the user chooses Discard or Reapply rather than losing the composition.
+                        if self.crop_applying.take().is_some() {
+                            let conflict = error.starts_with(ErrorKind::Conflict.code());
+                            if conflict && let Some(draft) = &mut self.crop {
+                                draft.mark_conflicted();
+                            }
+                            if conflict {
+                                self.crop_changed("crop_draft_conflicted");
+                            }
+                        }
+                        if self.activity.pending {
+                            let (code, message) =
+                                error.split_once(": ").unwrap_or(("internal", &error));
+                            self.open_failed(code, message);
+                        }
+                    }
+                }
+            }
+            Message::Info(info) => {
+                self.activity.backend =
+                    Some(json!({"backend":info.graphics_backend,"adapter":info.graphics_adapter}));
+                self.event(
+                    "backend",
+                    self.activity.backend.clone().unwrap_or(Value::Null),
+                );
+            }
+            Message::EvidenceTick => {
+                if self.evidence.is_some() && self.started.elapsed() > EVIDENCE_DEADLINE {
+                    eprintln!("Evidence deadline exceeded; inspect retained subprocess output");
+                    std::process::exit(3);
+                }
+            }
+            Message::Capture => {
+                let Some(evidence) = &mut self.evidence else {
+                    return Task::none();
+                };
+                // Wait for the backend and for tool discovery so a frame always shows real controls.
+                if !evidence.capture_pending
+                    || evidence.saving
+                    || self.activity.backend.is_none()
+                    || !self.modules_ready
+                {
+                    return Task::none();
+                }
+                evidence.capture_pending = false;
+                evidence.saving = true;
+                return iced::window::oldest()
+                    .and_then(iced::window::screenshot)
+                    .map(Message::Captured);
+            }
+            Message::Captured(shot) => {
+                self.event(
+                    "frame_captured",
+                    json!({"displayed_generation":self.activity.displayed,"request_to_capture_ms":self.activity.request_started.elapsed().as_secs_f64()*1000.}),
+                );
+                let state = self.snapshot();
+                let generation = self.activity.requested;
+                let scale = shot.scale_factor;
+                let logical_width = shot.size.width as f32 / scale;
+                // The photo surface spans the window minus padding, the sidebar and their spacing.
+                let columns = view::surface_columns(logical_width, scale, &self.workspace);
+                let Some(evidence) = &self.evidence else {
+                    return Task::none();
+                };
+                // Open frames keep their generation's number; script frames continue after them.
+                let number = match evidence.step {
+                    0 => generation,
+                    step => evidence.opens + step,
+                };
+                let step = evidence.current.clone().unwrap_or(Value::Null);
+                let dir = evidence.dir.clone();
+                return Task::perform(
+                    async move {
+                        let name = format!("frame-{number}.png");
+                        ::image::save_buffer(
+                            dir.join(&name),
+                            &shot.rgba,
+                            shot.size.width,
+                            shot.size.height,
+                            ::image::ColorType::Rgba8,
+                        )
+                        .map_err(|e| e.to_string())?;
+                        let frame = json!({"file":name,"state":state,"step":step,"capture_provenance":"window-renderer-readback","color":"sRGB","physical_size":[shot.size.width,shot.size.height],"scale":scale,"surface_columns":columns});
+                        std::fs::write(
+                            dir.join(format!("state-{number}.json")),
+                            serde_json::to_vec_pretty(&frame).expect("frame is serializable"),
+                        )
+                        .map_err(|e| e.to_string())?;
+                        Ok(frame)
+                    },
+                    Message::Saved,
+                );
+            }
+            Message::Saved(result) => {
+                let Some(evidence) = &mut self.evidence else {
+                    return Task::none();
+                };
+                evidence.saving = false;
+                match result {
+                    Ok(frame) => {
+                        // The step that produced this frame is recorded with the frame it produced.
+                        if let Some(mut record) = evidence.current.take() {
+                            if let Some(object) = record.as_object_mut() {
+                                object.insert("frame".into(), frame["file"].clone());
+                            }
+                            evidence.steps.push(record);
+                        }
+                        evidence.frames.push(frame);
+                    }
+                    Err(error) => {
+                        eprintln!("Evidence write failed: {error}");
+                        std::process::exit(4);
+                    }
+                }
+                return match evidence.queue.pop_front() {
+                    Some(path) => self.open(path),
+                    None => self.next_step(),
+                };
+            }
+            Message::PreviewLoaded(result) => {
+                self.busy = false;
+                match result {
+                    Ok(payload) => {
+                        let payload = *payload;
+                        self.api_sequence = payload.sequence;
+                        self.adopt(payload.session);
+                        let entry = payload.job.entry.id.clone();
+                        self.display_entry = Some(entry.clone());
+                        self.preview_generation = self.preview_queue.request(payload.job);
+                        self.status = "Rendering selected history state…".into();
+                        // The recipe rows follow the displayed entry: one payload read, no render.
+                        if let Some(state) = &self.state {
+                            return recipe_task(
+                                self.owner.clone(),
+                                self.client,
+                                state.asset.id.clone(),
+                                Some(entry),
+                            );
+                        }
+                    }
+                    Err(error) => self.status = error,
+                }
+            }
+            Message::SessionUpdated(result) => {
+                self.busy = false;
+                match result {
+                    Ok((session, sequence)) => {
+                        self.adopt(session);
+                        self.api_sequence = sequence;
+                        self.status = "View updated".into();
+                    }
+                    Err(error) => self.status = error,
+                }
+                self.settle_step(Settle::Session);
+            }
+            Message::WorkspaceUpdated(result) => match result {
+                Ok((session, sequence)) => {
+                    self.adopt(session);
+                    self.api_sequence = sequence;
+                }
+                Err(error) => self.status = error,
+            },
+            Message::RecipeDescribed(result) => match result {
+                Ok(recipe) => self.recipe = Some(*recipe),
+                Err(error) => self.status = format!("Recipe unavailable: {error}"),
+            },
+            Message::PanSynced(result) => {
+                self.pan_in_flight = false;
+                match result {
+                    Ok(session) => self.adopt(session),
+                    Err(error) => self.status = error,
+                }
+                if let Some((x, y)) = self.pending_pan.take() {
+                    return self.pan(x, y);
+                }
+            }
+            Message::VersionsLoaded(result) => {
+                self.busy = false;
+                match result {
+                    Ok((versions, sequence)) => {
+                        self.versions = versions;
+                        self.api_sequence = sequence;
+                        self.version_name.clear();
+                        self.status = "Versions updated".into();
+                    }
+                    Err(error) => self.status = error,
+                }
+            }
+            Message::Sync => {
+                if self.syncing || self.busy || self.state.is_none() {
+                    return Task::none();
+                }
+                self.syncing = true;
+                return sync_task(
+                    self.owner.clone(),
+                    self.client,
+                    self.state.as_ref().unwrap().asset.id.clone(),
+                    self.api_sequence,
+                );
+            }
+            Message::Synced(result) => {
+                self.syncing = false;
+                match result {
+                    Ok(SyncResult::Unchanged { sequence }) => self.api_sequence = sequence,
+                    Ok(SyncResult::Changed(refresh)) => self.accept(*refresh),
+                    Err(error) => self.status = format!("Live refresh failed: {error}"),
+                }
+            }
+            Message::OlderLoaded(result) => {
+                self.busy = false;
+                match result {
+                    Ok((page, sequence)) => {
+                        self.api_sequence = sequence;
+                        self.history.entries.extend(page.entries);
+                        self.history.next_before_sequence = page.next_before_sequence;
+                        self.status = "Loaded older history".into();
+                    }
+                    Err(error) => self.status = error,
+                }
+            }
+            Message::Poll => {
+                if !self.uploading
+                    && let Some(result) = self.preview_queue.poll()
+                {
+                    // The draft's truncated preview shares the queue; its generation says which
+                    // texture the pixels belong to.
+                    let for_draft = Some(result.generation) == self.draft_generation;
+                    if !for_draft && result.generation != self.preview_generation {
+                        return Task::none();
+                    }
+                    match result.result {
+                        Ok(raster) => {
+                            self.uploading = true;
+                            self.status = "Preparing pixels for display…".into();
+                            if self.activity.pending && !for_draft {
+                                self.activity.preview_dimensions =
+                                    Some((raster.width, raster.height));
+                                self.event(
+                                    "decoded",
+                                    json!({"open_to_raster_ms":self.activity.request_started.elapsed().as_secs_f64()*1000.,"source_dimensions":self.activity.source_dimensions,"preview_dimensions":[raster.width,raster.height]}),
+                                );
+                            }
+                            let upload = Upload {
+                                generation: result.generation,
+                                width: raster.width,
+                                height: raster.height,
+                                entry_id: result.entry_id,
+                                snapshot_id: raster.snapshot_id.to_string(),
+                                source_fingerprint: raster.source_fingerprint,
+                                started: Instant::now(),
+                            };
+                            let handle = iced::widget::image::Handle::from_rgba(
+                                raster.width,
+                                raster.height,
+                                iced_runtime::core::Bytes::from_owner(raster.rgba),
+                            );
+                            return image_memory::allocate(handle).map(move |result| {
+                                if for_draft {
+                                    Message::DraftUploaded(upload.clone(), result)
+                                } else {
+                                    Message::Uploaded(upload.clone(), result)
+                                }
+                            });
+                        }
+                        Err(error) => {
+                            self.status = error.to_string();
+                            if self.activity.pending {
+                                self.activity.pending = false;
+                                self.activity.phase = "error";
+                                self.activity.error_code = Some(error.kind.code().into());
+                                self.event(
+                                    "render_failed",
+                                    json!({"error_code":error.kind.code()}),
+                                );
+                                self.outcome_ready(true);
+                            }
+                        }
+                    }
+                }
+            }
+            Message::Uploaded(upload, result) => {
+                self.uploading = false;
+                if upload.generation != self.preview_generation {
+                    return Task::none();
+                }
+                match result {
+                    Ok(allocation) => {
+                        self.photo = Some(allocation);
+                        self.dimensions = Some((upload.width, upload.height));
+                        self.display_entry = Some(upload.entry_id.clone());
+                        if self.activity.pending {
+                            self.activity.pending = false;
+                            self.activity.displayed = self.activity.requested;
+                            self.activity.phase = "ready";
+                            self.event(
+                                "render_ready",
+                                json!({"upload_ms":upload.started.elapsed().as_secs_f64()*1000.,"displayed_generation":self.activity.displayed}),
+                            );
+                            self.outcome_ready(false);
+                        }
+                        let marker = if self.session.preview.can_edit() {
+                            "Current"
+                        } else {
+                            "Previewing history"
+                        };
+                        self.status = format!(
+                            "{marker} · {} × {} · entry {} · snapshot {} · source {}",
+                            upload.width,
+                            upload.height,
+                            short(upload.entry_id.as_str()),
+                            short(&upload.snapshot_id),
+                            short(&upload.source_fingerprint)
+                        );
+                    }
+                    Err(_) => {
+                        self.status = "Could not upload rendered pixels".into();
+                        if self.activity.pending {
+                            self.activity.pending = false;
+                            self.activity.phase = "error";
+                            self.activity.error_code = Some(ErrorKind::Render.code().into());
+                            self.event("render_failed", json!({"error_code":"render"}));
+                            self.outcome_ready(true);
+                        }
+                    }
+                }
+            }
+            Message::DraftUploaded(upload, result) => {
+                self.uploading = false;
+                if Some(upload.generation) != self.draft_generation {
+                    return Task::none();
+                }
+                match result {
+                    Ok(allocation) => {
+                        self.draft_photo = Some(allocation);
+                        self.open_draft(CropStage {
+                            width: upload.width,
+                            height: upload.height,
+                            angle: 0.0,
+                        });
+                    }
+                    Err(_) => {
+                        self.crop_pending = None;
+                        self.draft_generation = None;
+                        self.status = "Could not upload the crop's input stage".into();
+                        self.settle_step(Settle::Draft);
+                    }
+                }
+            }
+            Message::Crop(message) => return self.crop_update(message),
+            Message::ModulesLoaded(result) => {
+                self.modules_ready = true;
+                match result {
+                    Ok(modules) => {
+                        self.fields = Fields::seeded(&modules);
+                        self.event("modules_loaded", module_summary(&modules));
+                        self.modules = modules;
+                    }
+                    Err(error) => {
+                        self.status = format!("Tool discovery failed: {error}");
+                        self.event("modules_failed", json!({ "message": self.status }));
+                    }
+                }
+            }
+            Message::Field {
+                action,
+                parameter,
+                text,
+            } => {
+                self.fields.set(&action, &parameter, text);
+                // Typing is editing: the field shows what was typed until it is committed.
+                self.editing = Some((action, parameter));
+            }
+            Message::SliderMoved {
+                action,
+                parameter,
+                value,
+            } => {
+                // A drag changes the field text and nothing else; no request leaves the desktop.
+                self.fields.set(&action, &parameter, number_text(value));
+                self.editing = None;
+                self.dragging = Some((action, parameter));
+            }
+            Message::EditValue { action, parameter } => self.editing = Some((action, parameter)),
+            Message::CancelEdit => self.editing = None,
+            Message::Submit { action } | Message::SliderReleased { action } => {
+                self.editing = None;
+                self.dragging = None;
+                let Some(preset) =
+                    submit_preset(&self.modules, &action).filter(|_| self.editable())
+                else {
+                    return Task::none();
+                };
+                return self.dispatch(Message::RunAction { action, preset });
+            }
+            Message::ToggleSection(module_id) => {
+                let expanded = self
+                    .workspace
+                    .tools
+                    .all()
+                    .find(|section| section.module_id == module_id)
+                    .map(|section| section.expanded)
+                    .unwrap_or(true);
+                self.expanded.insert(module_id, !expanded);
+            }
+            Message::ResetModule(module_id) => {
+                let Some(reset) = tools::module_of(&self.modules, &module_id)
+                    .and_then(|module| module.reset.clone())
+                else {
+                    self.status = format!("{module_id} declares no reset action");
+                    return Task::none();
+                };
+                return self.dispatch(Message::RunAction {
+                    action: reset.action,
+                    preset: reset.preset,
+                });
+            }
+            Message::ResetGroup { module_id, path } => {
+                let Some(reset) = tools::module_of(&self.modules, &module_id)
+                    .and_then(|module| group_reset(&module.controls, &path))
+                else {
+                    self.status = format!("{module_id} declares no reset for that group");
+                    return Task::none();
+                };
+                return self.dispatch(Message::RunAction {
+                    action: reset.action,
+                    preset: reset.preset,
+                });
+            }
+            Message::TogglePanel(panel) => {
+                let open = match panel {
+                    Panel::State => self.session.workspace.state_panel,
+                    Panel::Tools => self.session.workspace.tools_panel,
+                };
+                let mut params = Map::new();
+                params.insert(panel.field().into(), Value::from(!open));
+                return workspace_task(self.owner.clone(), self.client, Value::Object(params));
+            }
+            Message::ToggleThirds => {
+                return workspace_task(
+                    self.owner.clone(),
+                    self.client,
+                    json!({"thirds": !self.session.workspace.thirds}),
+                );
+            }
+            Message::SetMode(mode) => {
+                // A draft is never discarded implicitly: leaving crop mode asks for Apply or Cancel.
+                if mode != self.session.workspace.mode && self.crop.is_some() {
+                    self.status = "Apply or Cancel the crop draft before leaving this mode".into();
+                    return Task::none();
+                }
+                let opens_draft = tools::crop_frame(&self.modules)
+                    .is_some_and(|frame| frame.module.id == mode)
+                    && self.crop.is_none()
+                    && self.crop_pending.is_none();
+                let mut tasks = vec![workspace_task(
+                    self.owner.clone(),
+                    self.client,
+                    json!({ "mode": mode }),
+                )];
+                if opens_draft {
+                    tasks.push(self.crop_update(CropMessage::Start));
+                }
+                return Task::batch(tasks);
+            }
+            Message::CompareBegin => {
+                let (Some(state), Some(original)) = (&self.state, self.original_entry.clone())
+                else {
+                    return Task::none();
+                };
+                if self.compare_return.is_some() {
+                    return Task::none();
+                }
+                self.compare_return = Some(self.session.preview.selection.clone());
+                let asset = state.asset.id.clone();
+                self.status = "Comparing with the original…".into();
+                return preview_task(
+                    self.owner.clone(),
+                    self.client,
+                    asset.clone(),
+                    Some(original.clone()),
+                    "preview.select",
+                    json!({"asset_id":asset,"entry_id":original}),
+                );
+            }
+            Message::CompareEnd => {
+                let (Some(state), Some(previous)) = (&self.state, self.compare_return.take())
+                else {
+                    return Task::none();
+                };
+                let asset = state.asset.id.clone();
+                return match previous {
+                    HistorySelection::Current => preview_task(
+                        self.owner.clone(),
+                        self.client,
+                        asset,
+                        None,
+                        "preview.return-current",
+                        json!({}),
+                    ),
+                    HistorySelection::Entry(entry_id) => preview_task(
+                        self.owner.clone(),
+                        self.client,
+                        asset.clone(),
+                        Some(entry_id.clone()),
+                        "preview.select",
+                        json!({"asset_id":asset,"entry_id":entry_id}),
+                    ),
+                };
+            }
+            Message::OpenPalette => {
+                self.palette_open = true;
+                self.palette_query.clear();
+                self.palette_selected = 0;
+            }
+            Message::ClosePalette => self.palette_open = false,
+            Message::PaletteQuery(query) => {
+                self.palette_query = query;
+                self.palette_selected = 0;
+            }
+            Message::PaletteMove(delta) => {
+                let last = self.workspace.palette.entries.len().saturating_sub(1);
+                let moved = self.palette_selected as i64 + i64::from(delta);
+                self.palette_selected = moved.clamp(0, last as i64) as usize;
+            }
+            Message::PaletteRun => {
+                let chosen = self
+                    .workspace
+                    .palette
+                    .entries
+                    .get(self.palette_selected)
+                    .map(|entry| entry.action.clone());
+                self.palette_open = false;
+                return match chosen {
+                    Some(PaletteAction::Run { action, preset }) => {
+                        self.dispatch(Message::RunAction { action, preset })
+                    }
+                    Some(PaletteAction::Mode(mode)) => self.dispatch(Message::SetMode(mode)),
+                    None => Task::none(),
+                };
+            }
+            Message::OpenMenu(target) => self.menu = Some(target),
+            Message::CloseMenu => self.menu = None,
+            Message::CopyRequest { action } => {
+                let Some(request) = self.request_for(&action) else {
+                    return Task::none();
+                };
+                self.status = format!("Copied the edit.{action} request");
+                return iced::clipboard::write(
+                    serde_json::to_string_pretty(&request).unwrap_or_default(),
+                );
+            }
+            Message::RunAction { action, preset } => {
+                let Some(state) = &self.state else {
+                    return Task::none();
+                };
+                let Some(declared) = tools::declared_action(&self.modules, &action) else {
+                    self.status = format!("No module declares the action {action}");
+                    return Task::none();
+                };
+                let params = match action_params(declared, &preset, &self.fields) {
+                    Ok(params) => params,
+                    Err(message) => {
+                        self.status = message;
+                        return Task::none();
+                    }
+                };
+                let mut request =
+                    json!({"asset_id":state.asset.id,"mutation":mutation(state.revision)});
+                let object = request.as_object_mut().expect("the envelope is an object");
+                object.extend(params);
+                return self.command(format!("edit.{action}"), request);
+            }
+            Message::PointerMoved(point) => self.pointer = point,
+            Message::PointPicked { x, y } => {
+                let Some((action, x_parameter, y_parameter)) = tools::point_pick(&self.modules)
+                else {
+                    return Task::none();
+                };
+                let (action, x_parameter, y_parameter) = (
+                    action.to_owned(),
+                    x_parameter.to_owned(),
+                    y_parameter.to_owned(),
+                );
+                self.fields.set(&action, &x_parameter, x.to_string());
+                self.fields.set(&action, &y_parameter, y.to_string());
+                self.event("canvas_pick", json!({"action":action,"x":x,"y":y}));
+                self.status = format!("Picked ({x}, {y}) into {action}");
+            }
+            Message::FocusNext => return operation::focus_next(),
+            Message::FocusPrevious => return operation::focus_previous(),
+            Message::Zoom(value) => self.zoom = value,
+            Message::VersionName(value) => self.version_name = value,
+            Message::Panned(x, y) => return self.pan(x, y),
+            Message::Undo | Message::Redo => {
+                let undo = matches!(message, Message::Undo);
+                let Some(state) = &self.state else {
+                    return Task::none();
+                };
+                let method = if undo { "history.undo" } else { "history.redo" };
+                let params = json!({"asset_id":state.asset.id,"mutation":mutation(state.revision)});
+                return self.command(method, params);
+            }
+            Message::Preview(entry_id) => {
+                let Some(state) = &self.state else {
+                    return Task::none();
+                };
+                if self.busy {
+                    return Task::none();
+                }
+                let params = json!({"asset_id":state.asset.id,"entry_id":entry_id});
+                let asset = state.asset.id.clone();
+                self.busy = true;
+                self.status = "Selecting history state…".into();
+                return preview_task(
+                    self.owner.clone(),
+                    self.client,
+                    asset,
+                    Some(entry_id),
+                    "preview.select",
+                    params,
+                );
+            }
+            Message::ReturnCurrent => {
+                let Some(state) = &self.state else {
+                    return Task::none();
+                };
+                if self.busy {
+                    return Task::none();
+                }
+                let asset = state.asset.id.clone();
+                self.busy = true;
+                self.status = "Returning to current state…".into();
+                return preview_task(
+                    self.owner.clone(),
+                    self.client,
+                    asset,
+                    None,
+                    "preview.return-current",
+                    json!({}),
+                );
+            }
+            Message::Restore => {
+                let (Some(state), HistorySelection::Entry(entry_id)) =
+                    (&self.state, &self.session.preview.selection)
+                else {
+                    return Task::none();
+                };
+                let params = json!({"asset_id":state.asset.id,"mutation":mutation(state.revision),"entry_id":entry_id});
+                return self.command("history.restore", params);
+            }
+            Message::SaveVersion => {
+                let (Some(state), Some(entry_id)) = (&self.state, &self.display_entry) else {
+                    return Task::none();
+                };
+                let name = self.version_name.trim().to_string();
+                if name.is_empty() {
+                    self.status = "Enter a version name first".into();
+                    return Task::none();
+                }
+                let params = json!({"asset_id":state.asset.id,"name":name,"actor":ACTOR,"entry_id":entry_id});
+                return self.version_command("version.create", params);
+            }
+            Message::DeleteVersion(name) => {
+                let Some(state) = &self.state else {
+                    return Task::none();
+                };
+                let params = json!({"asset_id":state.asset.id,"name":name});
+                return self.version_command("version.delete", params);
+            }
+            Message::LoadOlder => {
+                let (Some(state), Some(before)) = (&self.state, self.history.next_before_sequence)
+                else {
+                    return Task::none();
+                };
+                if self.busy {
+                    return Task::none();
+                }
+                let asset = state.asset.id.clone();
+                self.busy = true;
+                return older_task(self.owner.clone(), self.client, asset, before);
+            }
+            Message::Fit => {
+                self.zoom = "Fit".into();
+                return self.session_command("view.set", json!({"zoom":{"mode":"fit"}}));
+            }
+            Message::HundredPercent => {
+                self.zoom = "100".into();
+                return self
+                    .session_command("view.set", json!({"zoom":{"mode":"percent","value":100.0}}));
+            }
+            Message::ApplyZoom => {
+                let Ok(value) = self.zoom.parse::<f32>() else {
+                    self.status = "Zoom must be Fit or a percentage from 10 to 1600".into();
+                    return Task::none();
+                };
+                return self
+                    .session_command("view.set", json!({"zoom":{"mode":"percent","value":value}}));
+            }
+            Message::ScaleFactor(scale) => {
+                if scale.is_finite() && scale > 0.0 {
+                    self.scale_factor = scale;
+                }
+            }
+            Message::Close => {
+                self.event("shutdown", json!({"while_loading":self.activity.pending}));
+                self.live_server.take();
+                self.owner.disconnect(self.client);
+                self.owner.stop();
+                let join = self.owner_join.take();
+                let log = self.diagnostics.take();
+                return Task::perform(
+                    async move {
+                        if let Some(log) = log {
+                            log.finish();
+                        }
+                        if let Some(join) = join {
+                            let _ = join.join();
+                        }
+                    },
+                    |_| (),
+                )
+                .then(|_| iced::exit());
+            }
+        }
+        Task::none()
+    }
+
+    /// The JSON request one control would send right now, with this desktop's own envelope.
+    fn request_for(&mut self, action: &str) -> Option<Value> {
+        let Some(state) = &self.state else {
+            self.status = "No photograph is open".into();
+            return None;
+        };
+        let Some(declared) = tools::declared_action(&self.modules, action) else {
+            self.status = format!("No module declares the action {action}");
+            return None;
+        };
+        let preset = submit_preset(&self.modules, action).unwrap_or_default();
+        let params = match action_params(declared, &preset, &self.fields) {
+            Ok(params) => params,
+            Err(message) => {
+                self.status = message;
+                return None;
+            }
+        };
+        let mut envelope = json!({"asset_id":state.asset.id,"mutation":mutation(state.revision)});
+        envelope
+            .as_object_mut()
+            .expect("the envelope is an object")
+            .extend(params);
+        Some(json!({"method":format!("edit.{action}"),"params":envelope}))
+    }
+
+    pub(crate) fn accept(&mut self, refresh: Refresh) {
+        self.api_sequence = refresh.sequence;
+        self.adopt(refresh.session);
+        match refresh.history {
+            Some(history) => self.history = history,
+            None => merge_current_entry(&mut self.history, refresh.state.current_entry.clone()),
+        }
+        self.versions = refresh.versions;
+        self.lineage = refresh
+            .lineage
+            .steps
+            .iter()
+            .map(|step| step.entry_id.clone())
+            .collect();
+        self.lineage_floor = refresh
+            .lineage
+            .next_entry_id
+            .as_ref()
+            .and_then(|_| refresh.lineage.steps.last().map(|step| step.sequence));
+        if refresh.original.is_some() {
+            self.original_entry = refresh.original;
+        }
+        self.recipe = Some(refresh.recipe);
+        let revision = refresh.state.revision;
+        let entry = refresh.state.current_entry.id.clone();
+        self.state = Some(refresh.state);
+        self.display_entry = Some(refresh.job.entry.id.clone());
+        self.preview_generation = self.preview_queue.request(refresh.job);
+        self.status = "Rendering selected history state…".into();
+        self.settle_draft(revision, &entry);
+    }
+
+    /// A new authoritative revision arrived while a draft was open. The draft's own Apply ends it;
+    /// anything else, including this desktop's undo, redo and restore, marks it conflicted and keeps
+    /// it, because no history operation discards a draft implicitly.
+    fn settle_draft(&mut self, revision: u64, entry: &lightwell_core::EntryId) {
+        let Some((base, conflicted, summary)) = self
+            .crop
+            .as_ref()
+            .map(|draft| (draft.base_revision, draft.conflicted, draft.summary()))
+        else {
+            return;
+        };
+        if let Some(request_id) = self.crop_applying.take() {
+            self.end_draft();
+            self.event(
+                "crop_draft_applied",
+                json!({"request_id":request_id,"entry_id":entry.as_str(),"revision":revision,"draft":summary}),
+            );
+            self.status = format!("Crop applied · entry {}", short(entry.as_str()));
+            return;
+        }
+        if base == revision || conflicted {
+            return;
+        }
+        if let Some(draft) = &mut self.crop {
+            draft.mark_conflicted();
+        }
+        self.crop_changed("crop_draft_conflicted");
+        self.status = "Changed elsewhere: discard the crop draft or reapply it".into();
+    }
+
+    /// Pan is session state like zoom, but scroll events arrive faster than round trips complete:
+    /// keep one request in flight and only the newest pending position.
+    fn pan(&mut self, x: f32, y: f32) -> Task<Message> {
+        if self.pan_in_flight {
+            self.pending_pan = Some((x, y));
+            return Task::none();
+        }
+        self.pan_in_flight = true;
+        pan_task(self.owner.clone(), self.client, x, y)
+    }
+
+    /// Every mutation, generated or not, takes the narrowest completion path: the command, one
+    /// `asset.state` refresh and one preview job.
+    pub(crate) fn command(&mut self, method: impl Into<String>, params: Value) -> Task<Message> {
+        let Some(state) = &self.state else {
+            return Task::none();
+        };
+        if self.busy {
+            return Task::none();
+        }
+        let method = method.into();
+        let asset = state.asset.id.clone();
+        self.busy = true;
+        self.status = format!("Running {method}…");
+        state_task(self.owner.clone(), self.client, asset, method, params)
+    }
+
+    fn session_command(&mut self, method: &'static str, params: Value) -> Task<Message> {
+        if self.state.is_none() || self.busy {
+            return Task::none();
+        }
+        self.busy = true;
+        self.status = format!("Running {method}…");
+        session_task(self.owner.clone(), self.client, method, params)
+    }
+
+    fn version_command(&mut self, method: &'static str, params: Value) -> Task<Message> {
+        let Some(state) = &self.state else {
+            return Task::none();
+        };
+        if self.busy {
+            return Task::none();
+        }
+        let asset = state.asset.id.clone();
+        self.busy = true;
+        self.status = format!("Running {method}…");
+        versions_task(self.owner.clone(), self.client, asset, method, params)
+    }
+
+    /// An edit is possible when an asset is open, the session shows the current state and no
+    /// request is in flight.
+    pub(crate) fn editable(&self) -> bool {
+        self.state.is_some() && self.session.preview.can_edit() && !self.busy
+    }
+
+    /// The crop draft is displayed instead of the plain preview only while its own input stage is on
+    /// the GPU and the session shows the current state.
+    pub(crate) fn drafting(&self) -> bool {
+        self.crop.is_some() && self.draft_photo.is_some() && self.session.preview.can_edit()
+    }
+
+    fn view(&self) -> Element<'_, Message> {
+        view::workspace(
+            &self.workspace,
+            view::Surfaces {
+                photo: self.photo.as_ref(),
+                draft_photo: self.draft_photo.as_ref(),
+                draft: self.crop.as_ref(),
+            },
+        )
+    }
+
+    /// What the keyboard table depends on right now.
+    fn key_context(&self) -> keymap::KeyContext {
+        keymap::KeyContext {
+            drafting: self.crop.is_some(),
+            modes: self
+                .modules
+                .iter()
+                .filter(|module| module.is_available())
+                .filter_map(|module| {
+                    let letter = module.canvas.as_ref()?.shortcut()?.chars().next()?;
+                    Some((letter, module.id.clone()))
+                })
+                .collect(),
+        }
+    }
+
+    fn subscription(&self) -> Subscription<Message> {
+        let mut subscriptions = vec![iced::event::listen_with(raw_event)];
+        if self.preview_queue.is_busy() {
+            subscriptions.push(iced::time::every(Duration::from_millis(16)).map(|_| Message::Poll));
+        }
+        if self.state.is_some() && self.evidence.is_none() {
+            subscriptions
+                .push(iced::time::every(Duration::from_millis(500)).map(|_| Message::Sync));
+        }
+        if let Some(evidence) = &self.evidence {
+            subscriptions
+                .push(iced::time::every(Duration::from_millis(250)).map(|_| Message::EvidenceTick));
+            if evidence.capture_pending {
+                subscriptions.push(iced::window::frames().map(|_| Message::Capture));
+            }
+        }
+        Subscription::batch(subscriptions)
+    }
+}
+
+/// The events the keyboard table can act on. Everything else never wakes the update function, so a
+/// pointer move costs nothing here.
+fn raw_event(
+    event: iced::Event,
+    status: iced::event::Status,
+    _: iced::window::Id,
+) -> Option<Message> {
+    match &event {
+        iced::Event::Keyboard(_) | iced::Event::Window(iced::window::Event::CloseRequested) => {
+            Some(Message::Key(event, status))
+        }
+        _ => None,
+    }
+}
+
+/// The reset a group declares, found by its position in the module's controls.
+fn group_reset(
+    controls: &[lightwell_core::Control],
+    path: &[usize],
+) -> Option<lightwell_core::ResetAction> {
+    let (index, rest) = path.split_first()?;
+    match controls.get(*index)? {
+        lightwell_core::Control::Group {
+            controls, reset, ..
+        } => {
+            if rest.is_empty() {
+                reset.clone()
+            } else {
+                group_reset(controls, rest)
+            }
+        }
+        _ => None,
+    }
+}
+
+pub(crate) fn short(value: &str) -> &str {
+    value.get(..value.len().min(12)).unwrap_or(value)
+}
+
+/// Module identity for correlated evidence; descriptors carry no source paths.
+fn module_summary(modules: &[ModuleDescriptor]) -> Value {
+    Value::Array(
+        modules
+            .iter()
+            .map(|module| {
+                json!({"id":module.id,"available":module.is_available(),"actions":module.actions.iter().map(|action| action.id.clone()).collect::<Vec<_>>()})
+            })
+            .collect(),
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use lightwell_core::{AssetId, POINTER_MODE, Zoom};
+    use testing::{boot, crop_descriptor, descriptors, entry, finish, opened, refresh_for};
+
+    #[test]
+    fn a_canvas_pick_fills_the_declared_coordinate_fields_without_committing() {
+        let (mut editor, catalog) = boot();
+        let _ = editor.update(Message::ModulesLoaded(Ok(descriptors())));
+        assert!(editor.modules_ready);
+        let (action, x, y) = tools::point_pick(&editor.modules).expect("a canvas pick");
+        let (action, x, y) = (action.to_owned(), x.to_owned(), y.to_owned());
+        let _ = editor.update(Message::PointerMoved(Some((7, 9))));
+        assert_eq!(editor.pointer, Some((7, 9)));
+        let _ = editor.update(Message::PointPicked { x: 7, y: 9 });
+        assert_eq!(editor.fields.get(&action, &x), Some("7"));
+        assert_eq!(editor.fields.get(&action, &y), Some("9"));
+        assert!(
+            editor.state.is_none(),
+            "a pick opens no asset and commits nothing"
+        );
+        assert_eq!(editor.api_sequence, 0);
+        let _ = editor.update(Message::Field {
+            action: action.clone(),
+            parameter: x.clone(),
+            text: "11".into(),
+        });
+        assert_eq!(editor.fields.get(&action, &x), Some("11"));
+        assert_eq!(editor.editing, Some((action.clone(), x.clone())));
+        // The correlated state carries the module identities and what the controls hold.
+        let snapshot = editor.snapshot();
+        assert_eq!(snapshot["controls"][format!("{action}.{x}")], json!("11"));
+        assert_eq!(
+            snapshot["modules"].as_array().map(Vec::len),
+            Some(editor.modules.len())
+        );
+        assert_eq!(snapshot["developer"], json!(false));
+        assert_eq!(snapshot["workspace"]["mode"], json!(POINTER_MODE));
+        assert!(!editor.editable(), "nothing is open");
+        finish(editor, catalog);
+    }
+
+    #[test]
+    fn a_slider_drag_changes_the_field_and_sends_no_request() {
+        let (mut editor, catalog) = boot();
+        let _ = editor.update(Message::ModulesLoaded(Ok(descriptors())));
+        let (action, x, _) = tools::point_pick(&editor.modules).expect("a canvas pick");
+        let (action, x) = (action.to_owned(), x.to_owned());
+        let _ = editor.update(Message::SliderMoved {
+            action: action.clone(),
+            parameter: x.clone(),
+            value: 12.0,
+        });
+        assert_eq!(editor.fields.get(&action, &x), Some("12"));
+        assert_eq!(editor.dragging, Some((action.clone(), x.clone())));
+        assert_eq!(editor.api_sequence, 0, "a drag calls nothing");
+        let _ = editor.update(Message::SliderReleased {
+            action: action.clone(),
+        });
+        assert!(editor.dragging.is_none(), "release ends the drag");
+        // Editing a value and cancelling leaves the text exactly as it was.
+        let _ = editor.update(Message::EditValue {
+            action: action.clone(),
+            parameter: x.clone(),
+        });
+        assert_eq!(editor.editing, Some((action.clone(), x.clone())));
+        let _ = editor.update(Message::CancelEdit);
+        assert!(editor.editing.is_none());
+        assert_eq!(editor.fields.get(&action, &x), Some("12"));
+        finish(editor, catalog);
+    }
+
+    #[test]
+    fn a_section_toggle_is_local_and_a_mode_change_is_session_state() {
+        let crop = crop_descriptor();
+        let (mut editor, catalog, _, _) = opened(Vec::new(), 2);
+        assert!(editor.expanded.is_empty(), "defaults need no stored flag");
+        let _ = editor.update(Message::ToggleSection(crop.id.clone()));
+        assert_eq!(editor.expanded.get(&crop.id), Some(&false));
+        assert_eq!(editor.snapshot()["expanded"][&crop.id], json!(false));
+        let _ = editor.update(Message::ToggleSection(crop.id.clone()));
+        assert_eq!(editor.expanded.get(&crop.id), Some(&true));
+
+        // Entering the crop module's mode opens its draft; leaving it with a draft open is refused.
+        let _ = editor.update(Message::SetMode(crop.id.clone()));
+        assert!(
+            editor.crop_pending.is_some(),
+            "the mode opens the draft: {}",
+            editor.status
+        );
+        editor.open_draft(CropStage {
+            width: 480,
+            height: 320,
+            angle: 0.0,
+        });
+        editor.session.workspace.mode = crop.id.clone();
+        let _ = editor.update(Message::SetMode(POINTER_MODE.into()));
+        assert!(editor.crop.is_some(), "the draft is never discarded");
+        assert!(
+            editor.status.contains("Apply or Cancel"),
+            "{}",
+            editor.status
+        );
+        finish(editor, catalog);
+    }
+
+    #[test]
+    fn copy_as_json_request_writes_what_the_control_would_send() {
+        let (mut editor, catalog, asset, _) = opened(Vec::new(), 5);
+        let request = editor
+            .request_for("crop-reset")
+            .expect("a copyable request");
+        assert_eq!(request["method"], json!("edit.crop-reset"));
+        assert_eq!(request["params"]["asset_id"], json!(asset));
+        assert_eq!(request["params"]["mutation"]["expected_revision"], json!(5));
+        assert!(
+            request["params"]["mutation"]["request_id"]
+                .as_str()
+                .is_some_and(|id| id.starts_with("desktop-")),
+            "{request}"
+        );
+        let _ = editor.update(Message::CopyRequest {
+            action: "crop-reset".into(),
+        });
+        assert!(editor.status.contains("Copied"), "{}", editor.status);
+        finish(editor, catalog);
+    }
+
+    #[test]
+    fn compare_remembers_the_selection_it_replaced() {
+        let (mut editor, catalog, asset, entry_id) = opened(Vec::new(), 1);
+        let original = lightwell_core::EntryId::new();
+        editor.original_entry = Some(original.clone());
+        let _ = editor.update(Message::CompareBegin);
+        assert_eq!(
+            editor.compare_return,
+            Some(HistorySelection::Current),
+            "the selection Compare replaced is remembered"
+        );
+        let _ = editor.update(Message::CompareEnd);
+        assert!(editor.compare_return.is_none());
+        // From a historical preview Compare returns to that entry, not to current.
+        editor.session.preview.selection = HistorySelection::Entry(entry_id.clone());
+        let _ = editor.update(Message::CompareBegin);
+        assert_eq!(
+            editor.compare_return,
+            Some(HistorySelection::Entry(entry_id))
+        );
+        let _ = std::hint::black_box(&asset);
+        finish(editor, catalog);
+    }
+
+    #[test]
+    fn failed_discovery_is_reported_and_never_blocks_evidence() {
+        let (mut editor, catalog) = boot();
+        let _ = editor.update(Message::ModulesLoaded(Err("protocol: gone".into())));
+        assert!(editor.modules_ready);
+        assert!(editor.modules.is_empty());
+        assert!(
+            editor.status.contains("Tool discovery failed"),
+            "{}",
+            editor.status
+        );
+        finish(editor, catalog);
+    }
+
+    #[test]
+    fn short_ids_are_safe_for_status_display() {
+        assert_eq!(short("abc"), "abc");
+        assert_eq!(short("123456789012345"), "123456789012");
+    }
+
+    #[test]
+    fn stale_session_responses_are_not_adopted() {
+        let (mut editor, catalog) = boot();
+        let mut newer = ClientSession {
+            revision: 5,
+            ..ClientSession::default()
+        };
+        newer
+            .preview
+            .view
+            .set_zoom(Zoom::Percent { value: 200.0 })
+            .unwrap();
+        let older = ClientSession {
+            revision: 3,
+            ..ClientSession::default()
+        };
+        let _ = editor.update(Message::SessionUpdated(Ok((newer.clone(), 1))));
+        let _ = editor.update(Message::PanSynced(Ok(older)));
+        assert_eq!(editor.session, newer);
+        let mut same = newer.clone();
+        same.preview.view.pan_to(4.0, 5.0).unwrap();
+        let _ = editor.update(Message::SessionUpdated(Ok((same.clone(), 1))));
+        assert_eq!(
+            editor.session, same,
+            "an equal revision may replace the copy"
+        );
+        finish(editor, catalog);
+    }
+
+    #[test]
+    fn pan_keeps_one_request_in_flight_and_only_the_newest_pending_position() {
+        let (mut editor, catalog) = boot();
+        let _ = editor.update(Message::Panned(1.0, 2.0));
+        assert!(editor.pan_in_flight);
+        assert_eq!(editor.pending_pan, None);
+        let _ = editor.update(Message::Panned(3.0, 4.0));
+        let _ = editor.update(Message::Panned(5.0, 6.0));
+        assert_eq!(editor.pending_pan, Some((5.0, 6.0)));
+        let _ = editor.update(Message::PanSynced(Ok(ClientSession::default())));
+        assert!(
+            editor.pan_in_flight,
+            "the pending position starts the next request"
+        );
+        assert_eq!(editor.pending_pan, None);
+        let _ = editor.update(Message::PanSynced(Ok(ClientSession::default())));
+        assert!(!editor.pan_in_flight);
+        finish(editor, catalog);
+    }
+
+    #[test]
+    fn refresh_replaces_or_merges_history_and_marks_abandoned_branches() {
+        let (mut editor, catalog) = boot();
+        let asset = AssetId::new();
+        let original = entry(&asset, 0, None);
+        let a = entry(&asset, 1, Some(&original.id));
+        let b = entry(&asset, 2, Some(&a.id));
+        let c = entry(&asset, 3, Some(&a.id));
+        editor.busy = true;
+        let full = refresh_for(
+            &asset,
+            &c,
+            vec![c.clone(), b.clone(), a.clone(), original.clone()],
+            &[&c, &a, &original],
+            false,
+        );
+        let _ = editor.update(Message::Refreshed(Ok(Box::new(full))));
+        assert!(!editor.busy);
+        assert_eq!(editor.api_sequence, 7);
+        assert_eq!(editor.history.entries.len(), 4);
+        assert_eq!(editor.display_entry, Some(c.id.clone()));
+        fn branch(editor: &Editor, id: &lightwell_core::EntryId) -> Option<bool> {
+            editor
+                .workspace
+                .panel
+                .history
+                .iter()
+                .find(|row| &row.entry_id == id)
+                .map(|row| row.branch)
+        }
+        assert_eq!(branch(&editor, &c.id), Some(false));
+        assert_eq!(branch(&editor, &original.id), Some(false));
+        assert_eq!(
+            branch(&editor, &b.id),
+            Some(true),
+            "b was undone and is a branch"
+        );
+        let d = entry(&asset, 4, Some(&c.id));
+        let merged = refresh_for(&asset, &d, Vec::new(), &[&d, &c], true);
+        let _ = editor.update(Message::Refreshed(Ok(Box::new(merged))));
+        assert_eq!(editor.history.entries.len(), 5);
+        assert_eq!(editor.history.entries[0].id, d.id);
+        assert_eq!(branch(&editor, &d.id), Some(false));
+        assert_eq!(
+            branch(&editor, &b.id),
+            Some(false),
+            "below a truncated lineage nothing is marked as a branch"
+        );
+        finish(editor, catalog);
+    }
+}

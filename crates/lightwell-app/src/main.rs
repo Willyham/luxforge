@@ -1,10 +1,12 @@
+mod app;
 mod crop_canvas;
 mod crop_draft;
 mod diagnostics;
-mod editor_app;
 mod paths;
+mod state;
+mod view;
+use app::evidence::Step;
 use diagnostics::Diagnostics;
-use editor_app::Step;
 use std::{collections::VecDeque, path::PathBuf};
 
 #[derive(Clone, Default)]
@@ -18,6 +20,11 @@ struct Config {
     catalog: Option<PathBuf>,
     diagnostics: Option<Diagnostics>,
     run_id: String,
+    /// List proof and diagnostic modules; the default workspace stays a photo editor.
+    developer: bool,
+    /// Built-in module identities to register as unavailable, so an unavailable provider can be
+    /// rendered and reported without removing it from the catalog's readable effects.
+    disabled: Vec<String>,
 }
 
 impl Config {
@@ -48,13 +55,22 @@ fn arguments() -> Result<Config, String> {
                 let text = std::fs::read_to_string(&path).map_err(|error| {
                     format!("cannot read the evidence script: {}", error.kind())
                 })?;
-                config.script = editor_app::parse_script(&text)?;
+                config.script = app::evidence::parse_script(&text)?;
             }
             Some("--data-root") => {
                 config.data_root = Some(args.next().ok_or("--data-root requires a path")?.into());
             }
             Some("--catalog") => {
                 config.catalog = Some(args.next().ok_or("--catalog requires a path")?.into());
+            }
+            Some("--developer") => config.developer = true,
+            Some("--disable-module") => {
+                let id = args
+                    .next()
+                    .ok_or("--disable-module requires a module identity")?
+                    .into_string()
+                    .map_err(|_| "--disable-module requires a module identity")?;
+                config.disabled.push(id);
             }
             Some("--window-size") => {
                 let mut number = || {
@@ -67,7 +83,7 @@ fn arguments() -> Result<Config, String> {
             }
             Some("--help") => {
                 println!(
-                    "Lightwell: [--open JPEG]... [--catalog CATALOG] [--data-root DIRECTORY] [--evidence-dir NEW_DIRECTORY] [--evidence-script FILE] [--window-size WIDTH HEIGHT]\nEvidence mode imports each --open in order into an isolated catalog, captures a frame after each, runs any evidence script with a frame per step and exits."
+                    "Lightwell: [--open JPEG]... [--catalog CATALOG] [--data-root DIRECTORY] [--developer] [--disable-module MODULE_ID]... [--evidence-dir NEW_DIRECTORY] [--evidence-script FILE] [--window-size WIDTH HEIGHT]\n--developer lists proof and diagnostic modules; --disable-module registers a built-in as unavailable, so a stack that uses it reports the unavailable effect instead of rendering without it.\nEvidence mode imports each --open in order into an isolated catalog, captures a frame after each, runs any evidence script with a frame per step and exits."
                 );
                 std::process::exit(0)
             }
@@ -141,7 +157,7 @@ fn main() {
         std::process::exit(2)
     });
     let size = config.size.unwrap_or((960., 640.));
-    if let Err(error) = editor_app::run(config, size) {
+    if let Err(error) = app::run(config, size) {
         eprintln!("Could not start Lightwell editor: {error}");
         std::process::exit(1);
     }

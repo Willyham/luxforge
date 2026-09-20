@@ -182,6 +182,56 @@ fn active_plans(root: &Path, plans: &[Value], s: &Value) -> Result<Vec<String>> 
     }
     Ok(summaries)
 }
+/// The desktop's layering rule, enforced here rather than by review: the view model cannot reach a
+/// framework, the view cannot reach authoritative state or the owner, and the widget crate cannot
+/// reach the core at all. Each entry is a directory, the tokens it may not contain and why.
+const BOUNDARIES: [(&str, &[&str]); 3] = [
+    (
+        "crates/lightwell-app/src/state",
+        &["use iced", "iced::", "iced_runtime"],
+    ),
+    (
+        "crates/lightwell-app/src/view",
+        &["lightwell_core", "OwnerHandle", ".call("],
+    ),
+    ("crates/lightwell-ui", &["lightwell_core"]),
+];
+
+/// Fail on the first forbidden token, naming the file, the line and the token.
+fn boundaries(root: &Path) -> Result<usize> {
+    let mut checked = 0;
+    for (directory, forbidden) in BOUNDARIES {
+        let dir = root.join(directory);
+        if !dir.is_dir() {
+            continue;
+        }
+        for path in files(&dir)? {
+            let extension = path
+                .extension()
+                .and_then(|e| e.to_str())
+                .unwrap_or_default();
+            if !matches!(extension, "rs" | "toml") {
+                continue;
+            }
+            let text = fs::read_to_string(&path)?;
+            for (number, line) in text.lines().enumerate() {
+                for token in forbidden {
+                    ensure(
+                        !line.contains(token),
+                        format!(
+                            "{}:{}: {directory} may not contain {token}",
+                            path.display(),
+                            number + 1
+                        ),
+                    )?;
+                }
+            }
+            checked += 1;
+        }
+    }
+    Ok(checked)
+}
+
 pub fn check(root: &Path) -> Result {
     let s = read_json(&root.join("tools/task-plan.schema.json"))?;
     let mut plan_paths: Vec<_> = fs::read_dir(root.join("tasks"))?
@@ -241,6 +291,10 @@ pub fn check(root: &Path) -> Result {
         "PASS local task schemas/DAGs/order ({}), {count} local links",
         summaries.join(", ")
     );
+    println!(
+        "PASS desktop layer boundaries ({} files)",
+        boundaries(root)?
+    );
     Ok(())
 }
 #[cfg(test)]
@@ -262,6 +316,55 @@ mod tests {
     #[test]
     fn active_repository_is_valid() {
         check(&root().unwrap()).unwrap();
+    }
+    #[test]
+    fn layer_boundaries_reject_a_forbidden_import() {
+        let tmp = tempfile::tempdir().unwrap();
+        let state = tmp.path().join("crates/lightwell-app/src/state");
+        fs::create_dir_all(&state).unwrap();
+        fs::write(state.join("clean.rs"), "use crate::app::fields::Fields;\n").unwrap();
+        assert_eq!(boundaries(tmp.path()).unwrap(), 1);
+        fs::write(state.join("bad.rs"), "use iced::widget::text;\n").unwrap();
+        let error = boundaries(tmp.path()).unwrap_err().to_string();
+        assert!(
+            error.contains("bad.rs:1") && error.contains("use iced"),
+            "{error}"
+        );
+        fs::remove_file(state.join("bad.rs")).unwrap();
+        let view = tmp.path().join("crates/lightwell-app/src/view");
+        fs::create_dir_all(&view).unwrap();
+        fs::write(
+            view.join("bad.rs"),
+            "\nlet state: lightwell_core::EditorState;\n",
+        )
+        .unwrap();
+        assert!(
+            boundaries(tmp.path())
+                .unwrap_err()
+                .to_string()
+                .contains("lightwell_core")
+        );
+        fs::write(view.join("bad.rs"), "owner.call(client, request)\n").unwrap();
+        assert!(
+            boundaries(tmp.path())
+                .unwrap_err()
+                .to_string()
+                .contains(".call(")
+        );
+        fs::remove_file(view.join("bad.rs")).unwrap();
+        let ui = tmp.path().join("crates/lightwell-ui");
+        fs::create_dir_all(&ui).unwrap();
+        fs::write(
+            ui.join("Cargo.toml"),
+            "[dependencies]\nlightwell_core = { path = \"../lightwell-core\" }\n",
+        )
+        .unwrap();
+        assert!(
+            boundaries(tmp.path())
+                .unwrap_err()
+                .to_string()
+                .contains("lightwell-ui")
+        );
     }
     fn minimal_plan(id: &str) -> Value {
         json!({

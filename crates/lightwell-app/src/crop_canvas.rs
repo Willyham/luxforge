@@ -2,14 +2,14 @@
 //!
 //! The canvas owns no editing state. It borrows the draft for one `view` call, maps pointer
 //! positions into box space and publishes messages; every change to the draft happens in
-//! [`crate::editor_app`]'s update, so the same gestures are reachable from the API without
+//! [`crate::app`]'s update, so the same gestures are reachable from the API without
 //! simulating a pointer.
 //!
 //! The rotation drawn here is the GPU's display filter, not the reference sampler: the committed
 //! render is the reference. The canvas never rasterizes a pixel itself.
 use crate::{
+    app::message::{CropMessage, CropPointer, Message},
     crop_draft::{Corner, CropDraft, Handle, edge_midpoint},
-    editor_app::{CropMessage, CropPointer, Message},
 };
 use iced::{
     Color, Point, Radians, Rectangle, Renderer, Size, Theme, Vector,
