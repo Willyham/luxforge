@@ -6,6 +6,7 @@ Each JSON file is an independent plan. IDs start at `TASK-001` inside every file
 | --- | --- |
 | [S0 follow-ups](implementation-s0.json) | Hosted CI refresh, Windows/Linux packaging and desktop checks, Linux VM route, license audit and expiring advisory exceptions |
 | [Basic adjustments and histogram](implementation-basic-histogram.json) | Proposed JPEG exposure/histogram slice, then core tone, white balance and color controls; integration alongside separately owned M3/M4 work |
+| [Develop workspace](implementation-develop-workspace.json) | The accepted workspace shell: widget crate, layered desktop, generated panels, canvas modes, palette and evidence over the current modules |
 | [Editor follow-ups](implementation-editor-followups.json) | Export, color and metadata, Locate, MCP and full-editor verification |
 | [Later extensions](implementation-extensions.json) | External-loader measurements and proof planning after a selected use case |
 | [Product decisions](product-decisions.json) | Open product questions |

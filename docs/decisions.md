@@ -27,6 +27,17 @@ Accepted owner decisions and the questions still open. Proposals stay proposals 
 - Recovery (follow-up): verified manual Locate keeps asset identity, layers and history and rejects changed or ambiguous sources.
 - Live agents: human and agent actions share one history. An external commit preserves a human draft and marks it conflicted, resolved by explicit Discard or Reapply. Live JSON/IPC exists from M1; MCP is a later adapter over the same operations.
 
+## Develop workspace
+
+Accepted on 2026-09-20 for the [Develop workspace](design/develop-workspace.md) shell over the modules that exist today (pixel, transform, crop):
+
+- State panel on the left (versions, history, recipe), tools panel on the right, both collapsible independently.
+- Modules render as stacked collapsible sections in registry order. A build lists only registered modules; nothing is drawn for modules that do not exist.
+- A history row shows the action title plus a one-value summary supplied by the module through a declared `summary` template; the host stores the rendered label with the entry.
+- Test modules (pixel proof) live in a Developer section that is hidden unless the desktop is launched with `--developer`; the registry marks them `developer: true` and their API is unaffected.
+- Compare is hold-`\` for the Original entry, through `preview.select` and `preview.return-current`. Dark theme only; a light theme is not planned.
+- Basic, histogram, export, Locate, heal and mask are outside this work. Their sections, buttons and notices are left out of the build entirely rather than drawn as placeholders. The generated tools panel must accept a `number` slider module without desktop changes, which is how Basic lands later.
+
 ## Programmable operations and modules
 
 Every operation is programmable, including future tools, masks, clone strokes, settings and module lifecycle. The core owns recipe transactions, history, invariants and bounded services; tool modules own parameters, validation, controls and algorithms through those APIs. M3 uses linked modules with cheap registration and lazy resources. Real external loading is required later, and a missing or disabled provider must never silently erase edits or produce an incomplete export. Still open: the first external use case, package and runtime format, trust and UI contribution. See [modules](design/modules-and-api.md).

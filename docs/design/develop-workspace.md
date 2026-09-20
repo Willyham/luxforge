@@ -1,6 +1,6 @@
 # Develop workspace
 
-Status: proposal. This is the design for the single-image editing screen: what it shows, how the tools are arranged and how they behave. Library, catalog management and settings are out of scope. Nothing here is implemented by this document, and the tool list below marks what exists today against what is only planned. Product choices stay proposals until the owner decides; see [open decisions](#open-decisions).
+Status: accepted for the shell, the widget library and the panels over the modules that exist today (pixel, transform, crop); implementation in progress under the [architecture](#architecture) below. This is the design for the single-image editing screen: what it shows, how the tools are arranged and how they behave. Library, catalog management and settings are out of scope. The tool list below marks what exists today against what is only planned. The owner's decisions are recorded in [decisions](#decisions) and in [product decisions](../decisions.md#develop-workspace).
 
 ## Mockup
 
@@ -115,19 +115,9 @@ System UI face (SF Pro on macOS, the platform default elsewhere), 12 pt controls
 
 ## What the desktop needs from the core
 
-The screen is renderable from today's descriptors with these additions, each small and each also visible through `module.list`:
+The screen is renderable from today's descriptors with a small set of additions, each visible through `module.list` or `session.state`: section hints, reset actions, history summary templates, per-layer summaries, canvas titles and shortcuts, the developer flag and per-client workspace state. They are specified in [core additions](#core-additions) below. Compare, the command palette and Copy as JSON request need no core change.
 
-| Need | Proposed descriptor or API change |
-| --- | --- |
-| Section hints, reset actions, sub-group resets | A `reset` preset on `group` and module level, and an optional `hint` string on the descriptor |
-| History labels such as "Shadows +25" | Actions may declare a `summary` template over their parameters; the host stores the rendered label with the entry |
-| Recipe rows | A payload summary string returned by the module for each of its layers |
-| Mode strip | A module's `canvas` declaration already names the interaction; add a `title` and a `shortcut` so the strip can label it |
-| Developer section | A launch flag that lists test modules; the registry marks them `developer: true` |
-| Copy as JSON request | No core change; the desktop already holds the action id, parameters and expected revision |
-| Command palette | No core change; `schema.list` and `module.list` supply the entries |
-
-Widgets keep no authoritative state. Panel collapse, mode, overlay toggles and compare are per-client session state, reported with `session.state` like zoom today. The tools panel refreshes only the section whose values changed, and slider drags produce one preview request per frame at most, per the [performance rules](../engineering/performance-rules.md).
+Widgets keep no authoritative state. Panel collapse, mode and overlay toggles are per-client session state, reported with `session.state` like zoom today. The tools panel refreshes only the section whose values changed, and slider drags produce one preview request per frame at most, per the [performance rules](../engineering/performance-rules.md).
 
 ## Acceptance
 
@@ -137,15 +127,68 @@ Widgets keep no authoritative state. Panel collapse, mode, overlay toggles and c
 - Keyboard-only operation reaches every control; the status bar names the reason for every disabled action.
 - The workspace opens without initialising any module resource, and expanding a section allocates nothing until its first action, measured separately as the module design requires.
 
-## Open decisions
+## Decisions
 
-| Decision | Recommendation | Effect if changed |
+Accepted by the owner on 2026-09-20; see [product decisions](../decisions.md#develop-workspace).
+
+| Decision | Decided | Effect |
 | --- | --- | --- |
-| Panel split | State left, tools right, both collapsible | A single right panel keeps history further from the photo and mixes state with tools |
-| Module presentation | Stacked collapsible sections in registry order | A one-tool-at-a-time icon rail is cleaner but hides the recipe's breadth and breaks Lightroom familiarity |
-| History label | Action title plus one-value summary from the module | Raw action ids are exact but read as logs, not edits |
-| Test modules | Hidden Developer section behind a launch flag | Showing pixel proof by default keeps the panel honest but not a photo editor |
-| Compare | Hold `\` for the Original entry | A side-by-side view needs a second render and a different layout |
-| Light theme | Not now | A second theme doubles the rendered-evidence surface |
+| Panel split | State left, tools right, both collapsible | History stays next to the photo and state never mixes with tools |
+| Module presentation | Stacked collapsible sections in registry order | The recipe's breadth stays visible and the panel keeps Lightroom familiarity |
+| History label | Action title plus a one-value summary from the module, stored with the entry | Rows read as edits, not logs |
+| Test modules | Developer section behind the `--developer` launch flag, hidden by default | The default workspace stays a photo editor; the API is unaffected |
+| Compare | Hold `\` for the Original entry | No second render, no second layout |
+| Light theme | Not now | One rendered-evidence surface |
+| Scope of the first build | Shell, widget library, generated tools panel, state panel, canvas modes and bars for pixel, transform and crop | Basic, histogram, export, Locate, heal and mask are left out entirely, not drawn as placeholders |
 
-Planning authorization is not implementation authorization. The next step after the owner's review is a task plan for the shell, the state panel and the mode strip against the current modules, with the Basic and histogram work landing in the sections this design reserves for them.
+## Architecture
+
+The desktop is split into layers with hard boundaries. The boundaries are enforced by crate dependencies, by module structure and by the repository check, which refuses an `iced` import under `state/` and a `lightwell_core` import under `view/` or in the widget crate.
+
+### Crates and modules
+
+| Layer | Where | Depends on | Holds |
+| --- | --- | --- | --- |
+| Widget library | `crates/lightwell-ui` | Iced only, never `lightwell-core` | Theme tokens from the [visual language](#visual-language) and the widgets: bipolar slider with an editable value and draft, typing and invalid states, section header with dot and reset, sub-group header, icon button, segmented control, chip, list row, notice card, floating bar, mode strip, inline menu. Every widget takes plain data and callbacks and holds no editing logic |
+| View model | `crates/lightwell-app/src/state/` | `lightwell-core` types and `serde_json`; no Iced | Pure functions from core state (asset state, history page, versions, lineage, descriptors, layer summaries, drafts, notices, session workspace state, field text) to plain-data models: title bar, state panel, tools panel sections, canvas (mode strip, draft bar, notices), status bar and command palette |
+| View | `crates/lightwell-app/src/view/` | `lightwell-ui`, Iced and the view models; no `lightwell-core`, no owner calls | One file per region, each a pure function from a model to an `Element<Message>`: `title_bar`, `state_panel`, `canvas`, `tools_panel`, `status_bar`, `palette`, plus the layout that composes the five regions and the crop canvas program |
+| Update and effects | `crates/lightwell-app/src/app/` | Everything above plus the owner handle | The Iced application: the `Editor` state, semantic messages, the update function, owner tasks, evidence mode and scripts, the keymap in one file, and the crop-draft driver |
+| Draft state machines | `crates/lightwell-app/src/crop_draft.rs`, `crop_canvas.rs` | As today | The crop draft and its canvas program stay their own modules and are driven from `app/` |
+
+The widget crate is a separate crate for two reasons. It cannot depend on `lightwell-core`, so a widget cannot reach authoritative state, validate a parameter or build a request: the compiler enforces the "widgets hold no logic" rule rather than a review. And it compiles in isolation, so a styling change rebuilds the widgets and the app, never the core. It is a compile-time boundary only: it links into the same binary, adds no startup work, and `cargo xtask measure` on the empty workload before and after the split shows no launch-to-frame or idle cost.
+
+### Message flow
+
+1. A gesture or key becomes one semantic `Message` in `app/`: "field `angle` of `crop` is now `3.5`", "submit action `transform` with preset rotate-right", "toggle the state panel", "enter mode `lightwell.crop`". Pixel deltas, pointer positions and key codes never leave the view or the keymap.
+2. `Editor::update` either changes local UI state (field text, an open palette, a value being typed, a menu) or returns a task that calls the owner through the same methods the JSON API dispatches: `edit.<action>`, `history.*`, `preview.*`, `version.*`, `view.set`, `workspace.set`, `recipe.describe`. There is no desktop-only mutation path.
+3. A response is adopted only if newer (session revision, event sequence), then the view models are re-derived. The tools panel keeps one model per module section with an input version; a field change, a draft change or a state change re-derives only the sections whose inputs changed, and a unit test proves an untouched section keeps its version.
+4. A slider drag sends one field message per pointer move and no owner request; release, key-up or Enter sends the control's action once, exactly as Enter in a field does today. No module in this build previews during a drag, so a drag produces zero preview requests; when a module declares a draft-capable action the rule becomes at most one preview request per frame, and the update function is where that bound lives.
+5. Crop drafts keep their M4 state machine: mode strip or `R` calls `workspace.set` for the mode and opens the draft; the draft bar and the Crop section drive `CropMessage`s; Apply sends `edit.crop`; an external revision marks the draft conflicted and the notice offers Discard or Reapply.
+
+### Core additions
+
+The additions below are the only core changes. Each is visible through `module.list` or `session.state` and covered by an API test.
+
+| Need | Change |
+| --- | --- |
+| Section hints | `ModuleDescriptor.hint: Option<String>`, shown on a collapsed header |
+| Reset actions | `ModuleDescriptor.reset` and `Control::Group.reset`, each an optional `{action, preset}` validated like an action control. The crop module declares `crop-reset` as its module reset; its former Reset crop button is the same action reached from the header |
+| History labels | `ActionDescriptor.summary: Option<String>`, a template over the action's parameters (`{name}`). At commit the host renders it with the stored parameters (integers as written, numbers without trailing zeros, colours as `r,g,b`, enum options title-cased with hyphens as spaces) into `HistoryEntry.label`; without a template the label is the action title. The host labels Original and restore entries itself. Storing the label on entries moves the catalog to internal format 3; format 2 catalogs are refused explicitly |
+| Recipe rows | `ToolModule::describe_layer` returns a short payload summary; the read-only method `recipe.describe {asset_id, entry_id?}` lists an entry's layers with module id, title, summary and availability. An unavailable provider's layers are listed with the reason instead of a summary |
+| Mode strip | `CanvasInteraction` gains `title` and `shortcut` (one letter, unique across the registry, optional) on both variants |
+| Developer section | `ModuleDescriptor.developer: bool`; the pixel module sets it. The desktop lists developer modules only with `--developer` |
+| Workspace state | `ClientSession.workspace {state_panel, tools_panel, mode, thirds}` reported by `session.state` and set by `workspace.set` with optional fields; `mode` is `pointer` or an available module id that declares a canvas interaction |
+| Evidence for an unavailable provider | `OwnerHandle::start_with` accepts a registry; the desktop's `--disable-module ID` flag registers that built-in wrapped as unavailable, so rendering a stack that uses it fails with the unavailable-effect error and the notice appears. `LocalServer::connected` reports live client count for the status bar |
+
+Compare, the command palette and Copy as JSON request need no core change.
+
+### What is tested where
+
+| Layer | Tests |
+| --- | --- |
+| `lightwell-core` | Descriptor validation for reset, summary, shortcut and developer; label rendering; `recipe.describe`; `workspace.set` and `session.state`; format 3 refusal of a format 2 catalog; every addition through the JSON method table |
+| `lightwell-ui` | Token values equal the visual language; the slider's fill geometry, value-field states and the mapping from a pointer position to a value are pure functions with tests; no test links `lightwell-core` |
+| `lightwell-app/src/state/` | History labels and markers, branch marking, disabled reasons, conflict state, which section is expanded, what a slider shows while its value is being typed or dragged, the mode strip entries, the notices, the palette entries, per-section re-derivation |
+| `lightwell-app/src/app/` | Every generated control's message produces the request an independent JSON client would send (parity), the keymap table, evidence steps, draft driving, compare restore |
+| `xtask` | Repository boundary check; smoke scenarios `workspace` (default, each panel collapsed, historical preview, conflict during a draft), `crop`, `crop-draft` and `unavailable`; `measure` before and after |
+
