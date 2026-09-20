@@ -1,121 +1,208 @@
-//! The tools panel: one block per registered module, every control drawn from its model. The view
-//! knows no tool and no parameter limit; it draws what the section says and publishes messages.
+//! The tools panel: one collapsible section per registered module, rendered from [`ToolsModel`]
+//! with the widget library. The view knows no tool and no parameter limit; it draws what the
+//! section says and publishes messages, exactly as the generated-control mapping in
+//! `state::tools` describes it.
 use crate::{
-    app::message::{CropMessage, Message},
+    app::{
+        fields,
+        message::{CropMessage, Message},
+    },
     state::tools::{
-        ColorControl, ControlModel, CropSectionModel, GroupControl, SectionModel, SliderControl,
-        ToolsModel,
+        ActionControl, ColorControl, ControlModel, CropSectionModel, EnumControl, GroupControl,
+        SectionModel, SliderControl, ToolsModel, ValueEdit,
     },
 };
 use iced::{
-    Alignment, Element,
-    widget::{Column, button, column, row, text, text_input},
+    Alignment, Element, Length,
+    widget::{Row, button, column, row, scrollable, text_input},
 };
-
-/// Ratio presets per row in the sidebar.
-const PRESETS_PER_ROW: usize = 3;
+use lightwell_ui::{
+    ChipModel, IconButtonModel, SectionHeaderModel, SegmentedModel, SliderModel,
+    SubGroupHeaderModel, caption, chip, error_caption, icon_button, section_header, section_label,
+    segmented, slider, sub_group_header, theme,
+};
 
 pub(crate) fn tools_panel(model: &ToolsModel) -> Element<'_, Message> {
     if let Some(message) = model.status.message() {
-        return text(message).size(14).into();
+        return scrollable(iced::widget::container(caption(message)).padding(theme::SPACING))
+            .height(Length::Fill)
+            .into();
     }
-    let mut panel = column![].spacing(18);
-    for section in model.all() {
-        panel = panel.push(block(section));
+    let mut panel = column![]
+        .spacing(theme::SPACING)
+        .padding(theme::SPACING)
+        .width(Length::Fill);
+    for section in &model.sections {
+        panel = panel.push(section_view(section));
     }
-    panel.into()
+    if !model.developer.is_empty() {
+        panel = panel.push(section_label("Developer"));
+        for section in &model.developer {
+            panel = panel.push(section_view(section));
+        }
+    }
+    scrollable(panel).height(Length::Fill).into()
 }
 
-/// One module's block. The plain arrangement has no header: an unavailable module names its reason
-/// and every available one shows its controls directly.
-fn block(section: &SectionModel) -> Element<'_, Message> {
-    let mut block = column![].spacing(18);
-    if let Some(reason) = &section.unavailable {
-        block = block.push(text(format!("{} · unavailable: {reason}", section.title)).size(14));
-    }
-    if !section.expanded {
-        return block.into();
-    }
-    for control in &section.controls {
-        block = block.push(element(control));
+fn section_view(section: &SectionModel) -> Element<'_, Message> {
+    let header = section_header(
+        &SectionHeaderModel {
+            title: section.title.clone(),
+            expanded: section.expanded,
+            active: section.active,
+            hint: section.hint.clone(),
+            unavailable: section.unavailable.clone(),
+            reset: section.reset.is_some(),
+            enabled: section.enabled,
+        },
+        Message::ToggleSection(section.module_id.clone()),
+        Message::ResetModule(section.module_id.clone()),
+    );
+    let mut block = column![header].spacing(theme::SPACING);
+    // An unavailable module cannot expand, per the design; nothing under it is drawn. Otherwise a
+    // disabled section (busy, a historical preview) still shows its values, just not interactive.
+    if section.expanded && section.unavailable.is_none() {
+        for control in &section.controls {
+            block = block.push(control_view(&section.module_id, section.enabled, control));
+        }
     }
     block.into()
 }
 
-fn element(control: &ControlModel) -> Element<'_, Message> {
+fn control_view<'a>(
+    module_id: &str,
+    enabled: bool,
+    control: &'a ControlModel,
+) -> Element<'a, Message> {
     match control {
-        ControlModel::Group(group) => group_element(group),
-        ControlModel::Slider(slider) => slider_element(slider),
-        ControlModel::Color(color) => color_element(color),
-        ControlModel::Enum(choice) => {
-            // No registered module declares an enum control yet; its values are still reachable.
-            let mut options = row![text(&choice.label).size(12).width(110)]
-                .spacing(6)
-                .align_y(Alignment::Center);
-            for (index, option) in choice.options.iter().enumerate() {
-                let label = if choice.selected == Some(index) {
-                    format!("● {option}")
-                } else {
-                    option.clone()
-                };
-                let (action, parameter, text_value) = (
-                    choice.action.clone(),
-                    choice.parameter.clone(),
-                    option.clone(),
-                );
-                options = options.push(button(text(label).size(12)).on_press(Message::Field {
-                    action,
-                    parameter,
-                    text: text_value,
-                }));
-            }
-            options.into()
-        }
-        ControlModel::Action(action) => button(text(&action.label))
-            .on_press_maybe(action.runnable.then(|| Message::RunAction {
-                action: action.action.clone(),
-                preset: action.preset.clone(),
-            }))
-            .into(),
-        ControlModel::Unsupported(message) => text(message).size(12).into(),
-        ControlModel::CropFrame(frame) => crop_section(frame),
+        ControlModel::Slider(field) => slider_view(enabled, field),
+        ControlModel::Enum(choice) => enum_view(enabled, choice),
+        ControlModel::Color(color) => color_view(enabled, color),
+        ControlModel::Group(group) => group_view(module_id, enabled, group),
+        ControlModel::Action(action) => action_view(action),
+        ControlModel::Unsupported(message) => error_caption(message.clone()),
+        ControlModel::CropFrame(frame) => crop_section_view(frame),
     }
 }
 
-fn group_element(group: &GroupControl) -> Element<'_, Message> {
-    let mut children: Vec<Element<'_, Message>> = vec![text(&group.label).size(18).into()];
-    children.extend(group.controls.iter().map(element));
-    Column::with_children(children).spacing(8).into()
+/// The generic step for a non-integer slider: a fraction of its range, rounded to a power of ten.
+fn generic_step(min: f64, max: f64) -> f64 {
+    let span = (max - min).abs();
+    if !span.is_finite() || span <= 0.0 {
+        return 0.01;
+    }
+    10f64.powf((span / 200.0).log10().round())
 }
 
-fn slider_element(slider: &SliderControl) -> Element<'_, Message> {
-    let (action, parameter) = (slider.action.clone(), slider.parameter.clone());
-    let input = text_input(&slider.label, slider.edit.text(&slider.display))
-        .id(slider.id.clone())
-        .on_input(move |text| Message::Field {
-            action: action.clone(),
-            parameter: parameter.clone(),
+fn slider_view(enabled: bool, field: &SliderControl) -> Element<'_, Message> {
+    let step = if field.integer {
+        1.0
+    } else {
+        generic_step(field.min, field.max)
+    };
+    let zero = (field.min < 0.0 && field.max > 0.0).then_some(field.zero);
+    // `ValueEdit::text` is the one place that resolves "what a field shows right now" (what was
+    // typed, else the formatted value); the widget's own `Editing`/`Display` split follows it.
+    let edit = match &field.edit {
+        ValueEdit::Typing(_) => lightwell_ui::ValueEdit::Editing {
+            text: field.edit.text(&field.display).to_owned(),
+            invalid: field.invalid.clone(),
+        },
+        ValueEdit::None => lightwell_ui::ValueEdit::Display,
+    };
+    let (action, parameter) = (field.action.clone(), field.parameter.clone());
+    let (change_action, change_parameter) = (action.clone(), parameter.clone());
+    let (text_action, text_parameter) = (action.clone(), parameter.clone());
+    let release_action = action.clone();
+    let submit_action = action.clone();
+    let reset_message = Message::Field {
+        action,
+        parameter,
+        text: field.default.clone(),
+    };
+    slider(
+        &SliderModel {
+            label: field.label.clone(),
+            min: field.min,
+            max: field.max,
+            value: field.value,
+            step,
+            shift_step: step * 10.0,
+            zero,
+            unit: field.unit.clone(),
+            display: field.display.clone(),
+            edit,
+            dragging: field.dragging,
+            enabled,
+        },
+        move |value| Message::SliderMoved {
+            action: change_action.clone(),
+            parameter: change_parameter.clone(),
+            value,
+        },
+        Message::SliderReleased {
+            action: release_action,
+        },
+        Message::EditValue {
+            action: text_action.clone(),
+            parameter: text_parameter.clone(),
+        },
+        move |text| Message::Field {
+            action: text_action.clone(),
+            parameter: text_parameter.clone(),
             text,
-        })
-        .on_submit(Message::Submit {
-            action: slider.action.clone(),
-        })
-        .width(90);
-    let mut field = column![
-        row![text(&slider.label).size(12).width(110), input]
-            .spacing(6)
-            .align_y(Alignment::Center)
-    ]
-    .spacing(4);
-    if let Some(message) = &slider.invalid {
-        field = field.push(text(message).size(11));
-    }
-    field.into()
+        },
+        Message::Submit {
+            action: submit_action,
+        },
+        reset_message,
+    )
 }
 
-fn color_element(color: &ColorControl) -> Element<'_, Message> {
-    let mut channels = row![text(&color.label).size(12).width(110)]
-        .spacing(6)
+fn enum_view(enabled: bool, choice: &EnumControl) -> Element<'_, Message> {
+    let field = column![lightwell_ui::label(choice.label.clone())].spacing(4.0);
+    let (action, parameter) = (choice.action.clone(), choice.parameter.clone());
+    if choice.segmented {
+        let options = choice.options.clone();
+        return field
+            .push(segmented(
+                &SegmentedModel {
+                    options: choice.options.clone(),
+                    selected: choice.selected.unwrap_or(0),
+                    enabled,
+                },
+                move |index| Message::Field {
+                    action: action.clone(),
+                    parameter: parameter.clone(),
+                    text: options[index].clone(),
+                },
+            ))
+            .into();
+    }
+    let chips = choice.options.iter().enumerate().map(|(index, option)| {
+        chip(
+            &ChipModel {
+                label: option.clone(),
+                trailing: None,
+                selected: choice.selected == Some(index),
+                enabled,
+            },
+            Some(Message::Field {
+                action: action.clone(),
+                parameter: parameter.clone(),
+                text: option.clone(),
+            }),
+            None,
+        )
+    });
+    field
+        .push(Row::new().spacing(4.0).extend(chips).wrap())
+        .into()
+}
+
+fn color_view(enabled: bool, color: &ColorControl) -> Element<'_, Message> {
+    let mut channels = row![lightwell_ui::label(color.label.clone())]
+        .spacing(4.0)
         .align_y(Alignment::Center);
     for (index, value) in color.channels.iter().enumerate() {
         let (action, parameter, current) = (
@@ -124,144 +211,221 @@ fn color_element(color: &ColorControl) -> Element<'_, Message> {
             color.text.clone(),
         );
         channels = channels.push(
-            text_input(crate::app::fields::CHANNELS[index], value)
+            text_input(fields::CHANNELS[index], value)
                 .id(color.ids[index].clone())
-                .on_input(move |text| Message::Field {
+                .style(theme::text_input_style(color.invalid.is_some()))
+                .size(theme::SIZE_CONTROL)
+                .width(Length::Fixed(48.0))
+                .on_input_maybe(enabled.then_some(move |text: String| Message::Field {
                     action: action.clone(),
                     parameter: parameter.clone(),
-                    text: crate::app::fields::replace_channel(&current, index, &text),
-                })
+                    text: fields::replace_channel(&current, index, &text),
+                }))
                 .on_submit(Message::Submit {
                     action: color.action.clone(),
-                })
-                .width(55),
+                }),
         );
     }
-    let mut field = column![channels].spacing(4);
+    let mut field = column![channels].spacing(4.0);
     if let Some(message) = &color.invalid {
-        field = field.push(text(message).size(11));
+        field = field.push(error_caption(message.clone()));
     }
     field.into()
 }
 
-/// The crop draft's own controls. Every one of them is a [`CropMessage`], so the API-equivalent
-/// path and this panel drive the same state machine.
-fn crop_section(model: &CropSectionModel) -> Element<'_, Message> {
-    let mut panel = column![text(&model.title).size(18)].spacing(8);
+fn group_view<'a>(module_id: &str, enabled: bool, group: &'a GroupControl) -> Element<'a, Message> {
+    let header = sub_group_header(
+        &SubGroupHeaderModel {
+            label: group.label.clone(),
+            reset: group.reset.is_some(),
+            enabled,
+        },
+        Message::ResetGroup {
+            module_id: module_id.to_owned(),
+            path: group.path.clone(),
+        },
+    );
+    let indent = iced::Padding::default().left(theme::SPACING);
+    let mut inner = column![].spacing(theme::SPACING).padding(indent);
+    for control in &group.controls {
+        inner = inner.push(control_view(module_id, enabled, control));
+    }
+    column![header, inner].spacing(theme::SPACING / 2.0).into()
+}
+
+fn action_view(action: &ActionControl) -> Element<'_, Message> {
+    let control = button(lightwell_ui::label(action.label.clone()))
+        .padding([4.0, 10.0])
+        .style(theme::button_plain)
+        .on_press_maybe(action.runnable.then(|| Message::RunAction {
+            action: action.action.clone(),
+            preset: action.preset.clone(),
+        }));
+    match &action.reason {
+        Some(reason) if !action.runnable => iced::widget::tooltip(
+            control,
+            iced::widget::container(caption(reason.clone()))
+                .padding(6.0)
+                .style(theme::bar_surface),
+            iced::widget::tooltip::Position::Top,
+        )
+        .into(),
+        _ => control.into(),
+    }
+}
+
+/// The crop draft's own panel, driven by [`CropMessage`]: the API-equivalent path and this panel
+/// share the same state machine.
+fn crop_section_view(model: &CropSectionModel) -> Element<'_, Message> {
+    let mut panel = column![lightwell_ui::title(model.title.clone())].spacing(theme::SPACING);
     if !model.drafting {
         panel = panel.push(
-            button("Crop")
+            button(lightwell_ui::label("Crop & straighten"))
+                .padding([4.0, 10.0])
+                .style(theme::button_plain)
                 .on_press_maybe(model.can_start.then_some(Message::Crop(CropMessage::Start))),
         );
         if model.pending {
-            panel = panel.push(text("Preparing the crop's input stage…").size(12));
+            panel = panel.push(caption("Preparing the crop's input stage…"));
         }
         return panel.into();
     }
     if model.conflicted {
-        panel = panel.push(text("Changed elsewhere: Discard or Reapply").size(12));
+        panel = panel.push(error_caption("Changed elsewhere · Discard or Reapply"));
         panel = panel.push(
             row![
-                button("Discard").on_press(Message::Crop(CropMessage::Cancel)),
-                button("Reapply").on_press_maybe(
-                    model
-                        .can_reapply
-                        .then_some(Message::Crop(CropMessage::Reapply))
-                ),
+                button(lightwell_ui::label("Discard"))
+                    .padding([4.0, 10.0])
+                    .style(theme::button_plain)
+                    .on_press(Message::Crop(CropMessage::Cancel)),
+                button(lightwell_ui::label("Reapply"))
+                    .padding([4.0, 10.0])
+                    .style(theme::button_accent)
+                    .on_press_maybe(
+                        model
+                            .can_reapply
+                            .then_some(Message::Crop(CropMessage::Reapply))
+                    ),
             ]
-            .spacing(6),
+            .spacing(theme::SPACING / 2.0),
         );
     }
     if model.paused {
-        panel =
-            panel.push(text("Draft paused during history preview · Return to current").size(12));
+        panel = panel.push(caption(
+            "Draft paused during history preview · Return to current",
+        ));
     }
-    for chunk in model.presets.chunks(PRESETS_PER_ROW) {
-        let mut buttons = row![].spacing(6);
-        for preset in chunk {
-            let label = if preset.chosen {
-                format!("● {}", preset.label)
-            } else {
-                preset.label.clone()
-            };
-            buttons = buttons.push(
-                button(text(label).size(12)).on_press_maybe(
-                    model
-                        .enabled
-                        .then_some(Message::Crop(CropMessage::Preset(preset.index))),
-                ),
-            );
-        }
-        panel = panel.push(buttons);
+    if !model.presets.is_empty() {
+        let chips = model.presets.iter().map(|preset| {
+            chip(
+                &ChipModel {
+                    label: preset.label.clone(),
+                    trailing: None,
+                    selected: preset.chosen,
+                    enabled: model.enabled,
+                },
+                model
+                    .enabled
+                    .then_some(Message::Crop(CropMessage::Preset(preset.index))),
+                None,
+            )
+        });
+        panel = panel.push(Row::new().spacing(4.0).extend(chips).wrap());
     }
     panel = panel.push(
         row![
-            text("Custom").size(12).width(56),
             text_input("W", &model.custom.0)
                 .id(model.custom_ids.0.clone())
-                .on_input(|text| Message::Crop(CropMessage::CustomWidth(text)))
-                .width(48),
+                .style(theme::text_input_style(false))
+                .size(theme::SIZE_CONTROL)
+                .width(Length::Fixed(48.0))
+                .on_input(|text| Message::Crop(CropMessage::CustomWidth(text))),
             text_input("H", &model.custom.1)
                 .id(model.custom_ids.1.clone())
-                .on_input(|text| Message::Crop(CropMessage::CustomHeight(text)))
-                .width(48),
-        ]
-        .spacing(6)
-        .align_y(Alignment::Center),
-    );
-    panel = panel.push(
-        row![
-            button(text(&model.lock_label).size(12))
+                .style(theme::text_input_style(false))
+                .size(theme::SIZE_CONTROL)
+                .width(Length::Fixed(48.0))
+                .on_input(|text| Message::Crop(CropMessage::CustomHeight(text))),
+            button(lightwell_ui::label(model.lock_label.clone()))
+                .padding([4.0, 10.0])
+                .style(theme::button_plain)
                 .on_press_maybe(model.enabled.then_some(Message::Crop(CropMessage::Lock))),
-            button(text("Swap").size(12))
+            button(lightwell_ui::label("Swap"))
+                .padding([4.0, 10.0])
+                .style(theme::button_plain)
                 .on_press_maybe(model.can_swap.then_some(Message::Crop(CropMessage::Swap))),
         ]
-        .spacing(6),
-    );
-    panel = panel.push(
-        row![
-            text("Angle (deg)").size(12).width(78),
-            text_input("0", &model.angle)
-                .id(model.angle_id.clone())
-                .on_input(|text| Message::Crop(CropMessage::AngleText(text)))
-                .on_submit(Message::Crop(CropMessage::SubmitAngle))
-                .width(60),
-            button(text(format!("−{}°", model.nudge)).size(12)).on_press_maybe(
-                model
-                    .enabled
-                    .then_some(Message::Crop(CropMessage::NudgeAngle(-model.nudge)))
-            ),
-            button(text(format!("+{}°", model.nudge)).size(12)).on_press_maybe(
-                model
-                    .enabled
-                    .then_some(Message::Crop(CropMessage::NudgeAngle(model.nudge)))
-            ),
-        ]
-        .spacing(6)
+        .spacing(theme::SPACING / 2.0)
         .align_y(Alignment::Center),
     );
-    let guide = if model.guide {
-        "Straighten guide: on"
-    } else {
-        "Straighten guide: off"
-    };
     panel = panel.push(
-        button(text(guide).size(12)).on_press(Message::Crop(CropMessage::Guide(!model.guide))),
+        row![
+            icon_button(
+                &IconButtonModel {
+                    glyph: "\u{2212}".into(),
+                    tooltip: format!("−{}°", model.nudge),
+                    enabled: model.enabled,
+                    selected: false,
+                },
+                model
+                    .enabled
+                    .then_some(Message::Crop(CropMessage::NudgeAngle(-model.nudge))),
+            ),
+            text_input("0", &model.angle)
+                .id(model.angle_id.clone())
+                .style(theme::text_input_style(false))
+                .size(theme::SIZE_CONTROL)
+                .width(Length::Fixed(60.0))
+                .on_input(|text| Message::Crop(CropMessage::AngleText(text)))
+                .on_submit(Message::Crop(CropMessage::SubmitAngle)),
+            icon_button(
+                &IconButtonModel {
+                    glyph: "+".into(),
+                    tooltip: format!("+{}°", model.nudge),
+                    enabled: model.enabled,
+                    selected: false,
+                },
+                model
+                    .enabled
+                    .then_some(Message::Crop(CropMessage::NudgeAngle(model.nudge))),
+            ),
+            straighten_toggle(model),
+        ]
+        .spacing(theme::SPACING / 2.0)
+        .align_y(Alignment::Center),
     );
     panel = panel.push(
         row![
-            button("Apply")
+            button(lightwell_ui::label("Cancel"))
+                .padding([4.0, 10.0])
+                .style(theme::button_plain)
+                .on_press(Message::Crop(CropMessage::Cancel)),
+            button(lightwell_ui::label("Apply"))
+                .padding([4.0, 10.0])
+                .style(theme::button_accent)
                 .on_press_maybe(model.can_apply.then_some(Message::Crop(CropMessage::Apply))),
-            button("Cancel").on_press(Message::Crop(CropMessage::Cancel)),
         ]
-        .spacing(6),
+        .spacing(theme::SPACING / 2.0),
     );
     for line in &model.readout {
-        panel = panel.push(text(line).size(11));
+        panel = panel.push(caption(line.clone()));
     }
-    panel = panel.push(
-        text("Drag handles to resize, inside to move, Option for one scale about the centre, Space to pan. Enter applies, Escape cancels.")
-            .size(11),
-    );
     panel.into()
+}
+
+fn straighten_toggle(model: &CropSectionModel) -> Element<'_, Message> {
+    let style = if model.guide {
+        theme::button_selected
+    } else {
+        theme::button_plain
+    };
+    button(lightwell_ui::label("Straighten guide"))
+        .padding([4.0, 10.0])
+        .style(style)
+        .on_press_maybe(
+            model
+                .enabled
+                .then_some(Message::Crop(CropMessage::Guide(!model.guide))),
+        )
+        .into()
 }

@@ -156,7 +156,7 @@ fn main() {
         eprintln!("{error}");
         std::process::exit(2)
     });
-    let size = config.size.unwrap_or((960., 640.));
+    let size = config.size.unwrap_or((1440., 900.));
     if let Err(error) = app::run(config, size) {
         eprintln!("Could not start Lightwell editor: {error}");
         std::process::exit(1);

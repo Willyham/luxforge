@@ -12,8 +12,7 @@ use lightwell_core::{
 use serde_json::{Map, Value};
 use std::path::PathBuf;
 
-/// One of the two collapsible side panels. The toggles that name them land with the panels.
-#[allow(dead_code)]
+/// One of the two collapsible side panels, toggled from the title bar.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Panel {
     State,
@@ -227,6 +226,8 @@ pub(crate) enum Message {
     Zoom(String),
     /// The version name field's text.
     VersionName(String),
+    /// Show or hide the version-naming field the "+" chip reveals.
+    ToggleVersionForm,
     /// The photo surface scrolled to this absolute offset.
     Panned(f32, f32),
     Undo,

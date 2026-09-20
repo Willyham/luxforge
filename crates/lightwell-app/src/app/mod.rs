@@ -195,7 +195,7 @@ pub(crate) fn run(config: Config, size: (f32, f32)) -> Result<(), String> {
     .title("Lightwell")
     .window_size(size)
     .exit_on_close_request(false)
-    .theme(iced::Theme::Dark)
+    .theme(lightwell_ui::theme::theme())
     .subscription(Editor::subscription)
     .run()
     .map_err(|error| error.to_string())
@@ -265,6 +265,8 @@ pub(crate) struct Editor {
     pub(crate) pointer: Option<(u32, u32)>,
     pub(crate) zoom: String,
     pub(crate) version_name: String,
+    /// The "+" chip has revealed the version-naming field.
+    pub(crate) version_form_open: bool,
     /// The transient crop draft. It is session state, never authoritative: only Apply commits.
     pub(crate) crop: Option<crate::crop_draft::CropDraft>,
     /// What a started or reapplied draft still needs from its truncated preview.
@@ -376,6 +378,7 @@ impl Editor {
             pointer: None,
             zoom: "100".into(),
             version_name: String::new(),
+            version_form_open: false,
             crop: None,
             crop_pending: None,
             draft_photo: None,
@@ -568,6 +571,7 @@ impl Editor {
             scale_factor: self.scale_factor,
             zoom: &self.zoom,
             version_name: &self.version_name,
+            version_form_open: self.version_form_open,
             dimensions: self.dimensions,
             photo: self.photo.is_some(),
             phase: self.activity.phase,
@@ -1017,13 +1021,16 @@ impl Editor {
             Message::EditValue { action, parameter } => self.editing = Some((action, parameter)),
             Message::CancelEdit => self.editing = None,
             Message::Submit { action } | Message::SliderReleased { action } => {
-                self.editing = None;
                 self.dragging = None;
                 let Some(preset) =
                     submit_preset(&self.modules, &action).filter(|_| self.editable())
                 else {
                     return Task::none();
                 };
+                // The field only stops editing once the submit actually runs; a rejected submit
+                // (nothing declares the action, or editing is disabled right now) leaves the typed
+                // text on screen rather than silently reverting to the last committed value.
+                self.editing = None;
                 return self.dispatch(Message::RunAction { action, preset });
             }
             Message::ToggleSection(module_id) => {
@@ -1224,6 +1231,7 @@ impl Editor {
             Message::FocusPrevious => return operation::focus_previous(),
             Message::Zoom(value) => self.zoom = value,
             Message::VersionName(value) => self.version_name = value,
+            Message::ToggleVersionForm => self.version_form_open = !self.version_form_open,
             Message::Panned(x, y) => return self.pan(x, y),
             Message::Undo | Message::Redo => {
                 let undo = matches!(message, Message::Undo);
@@ -1292,6 +1300,7 @@ impl Editor {
                     return Task::none();
                 }
                 let params = json!({"asset_id":state.asset.id,"name":name,"actor":ACTOR,"entry_id":entry_id});
+                self.version_form_open = false;
                 return self.version_command("version.create", params);
             }
             Message::DeleteVersion(name) => {
@@ -1676,6 +1685,177 @@ mod tests {
         let _ = editor.update(Message::CancelEdit);
         assert!(editor.editing.is_none());
         assert_eq!(editor.fields.get(&action, &x), Some("12"));
+        finish(editor, catalog);
+    }
+
+    /// Opens an asset with `modules` registered, so a slider or an action control has something
+    /// real to submit against.
+    fn opened_with_modules(modules: Vec<ModuleDescriptor>, revision: u64) -> (Editor, PathBuf) {
+        let (mut editor, catalog) = boot();
+        let _ = editor.update(Message::ModulesLoaded(Ok(modules)));
+        let asset = AssetId::new();
+        let current = entry(&asset, revision, None);
+        let refresh = refresh_for(&asset, &current, vec![current.clone()], &[&current], false);
+        let _ = editor.update(Message::Refreshed(Ok(Box::new(refresh))));
+        assert!(editor.editable(), "{}", editor.status);
+        (editor, catalog)
+    }
+
+    #[test]
+    fn a_slider_drag_of_many_moves_and_one_release_sends_exactly_one_request() {
+        let (mut editor, catalog) = opened_with_modules(descriptors(), 4);
+        let (action, x, _) = tools::point_pick(&editor.modules).expect("a canvas pick");
+        let (action, x) = (action.to_owned(), x.to_owned());
+
+        for step in 0..25 {
+            let _ = editor.update(Message::SliderMoved {
+                action: action.clone(),
+                parameter: x.clone(),
+                value: f64::from(step),
+            });
+            assert!(!editor.busy, "a drag never starts a request");
+            assert!(
+                !editor.status.starts_with("Running edit."),
+                "a drag never runs the action: {}",
+                editor.status
+            );
+        }
+        let _ = editor.update(Message::SliderReleased {
+            action: action.clone(),
+        });
+        assert!(editor.busy, "release submits exactly one request");
+        assert!(
+            editor.status.starts_with(&format!("Running edit.{action}")),
+            "{}",
+            editor.status
+        );
+
+        // A second release while the first request is still in flight sends nothing further.
+        let busy_status = editor.status.clone();
+        let _ = editor.update(Message::SliderReleased { action });
+        assert_eq!(
+            editor.status, busy_status,
+            "already busy: no second request"
+        );
+        finish(editor, catalog);
+    }
+
+    /// Every action control a built-in descriptor generates sends the exact `edit.<action>`
+    /// request an independent JSON client would send: the method name, every required parameter
+    /// the control's own preset does not already supply, and no field the action does not declare.
+    /// The same message the control's click would raise then runs cleanly through `Editor::update`.
+    #[test]
+    fn every_generated_action_control_matches_its_declared_schema() {
+        let modules = descriptors();
+        let (mut editor, catalog) = opened_with_modules(modules.clone(), 1);
+
+        let mut checked = 0usize;
+        for (_, _, action) in tools::palette_entries(&modules, "") {
+            let PaletteAction::Run { action, preset } = action else {
+                continue;
+            };
+            let declared = tools::declared_action(&modules, &action)
+                .unwrap_or_else(|| panic!("{action} is not declared by any module"));
+            let request = editor
+                .request_for(&action)
+                .unwrap_or_else(|| panic!("{action}: {}", editor.status));
+            assert_eq!(request["method"], json!(format!("edit.{action}")));
+            let params = request["params"].as_object().expect("an object");
+            for parameter in &declared.parameters {
+                if parameter.required
+                    && parameter.default.is_none()
+                    && !preset.contains_key(&parameter.name)
+                {
+                    assert!(
+                        params.contains_key(&parameter.name),
+                        "{action} is missing its required parameter {}",
+                        parameter.name
+                    );
+                }
+            }
+            let known: Vec<&str> = declared
+                .parameters
+                .iter()
+                .map(|parameter| parameter.name.as_str())
+                .chain(["asset_id", "mutation"])
+                .collect();
+            for key in params.keys() {
+                assert!(
+                    known.contains(&key.as_str()),
+                    "{action} sends the undeclared field {key}"
+                );
+            }
+            // The exact message a click on the generated control raises runs the same request.
+            editor.busy = false;
+            let _ = editor.update(Message::RunAction {
+                action: action.clone(),
+                preset: preset.clone(),
+            });
+            assert!(editor.busy, "{action} did not run through RunAction");
+            assert!(
+                editor.status.starts_with(&format!("Running edit.{action}")),
+                "{action}: {}",
+                editor.status
+            );
+            checked += 1;
+        }
+        assert!(checked > 0, "at least one built-in action was exercised");
+
+        // Every module's own header reset (`Message::ResetModule`) is the same round trip.
+        for module in &modules {
+            let Some(reset) = &module.reset else {
+                continue;
+            };
+            assert!(
+                tools::declared_action(&modules, &reset.action).is_some(),
+                "{} declares an undeclared reset action",
+                module.id
+            );
+            editor.busy = false;
+            let _ = editor.update(Message::ResetModule(module.id.clone()));
+            assert!(editor.busy, "{} reset did not run", module.id);
+            assert!(
+                editor
+                    .status
+                    .starts_with(&format!("Running edit.{}", reset.action)),
+                "{}: {}",
+                module.id,
+                editor.status
+            );
+            checked += 1;
+        }
+        assert!(
+            checked > 1,
+            "the crop module's own header reset was exercised too"
+        );
+        finish(editor, catalog);
+    }
+
+    /// `Message::ResetGroup` finds a group's reset by its position in the module's controls and
+    /// runs it exactly as `Message::ResetModule` runs a header reset. No built-in module declares
+    /// a group reset yet, so this drives the mechanism on a descriptor built for the purpose.
+    #[test]
+    fn reset_group_dispatches_the_action_at_its_declared_position() {
+        let mut module = crop_descriptor();
+        let lightwell_core::Control::Group { reset, .. } = &mut module.controls[0] else {
+            unreachable!("the fixture's first control is a group")
+        };
+        *reset = Some(lightwell_core::ResetAction {
+            action: "crop-reset".into(),
+            preset: Map::new(),
+        });
+        let (mut editor, catalog) = opened_with_modules(vec![module.clone()], 2);
+
+        let _ = editor.update(Message::ResetGroup {
+            module_id: module.id.clone(),
+            path: vec![0],
+        });
+        assert!(editor.busy, "{}", editor.status);
+        assert!(
+            editor.status.starts_with("Running edit.crop-reset"),
+            "{}",
+            editor.status
+        );
         finish(editor, catalog);
     }
 

@@ -58,6 +58,8 @@ pub(crate) struct RecipeRow {
 pub(crate) struct StatePanelModel {
     pub(crate) versions: Vec<VersionChip>,
     pub(crate) version_name: String,
+    /// The "+" chip has revealed the version-naming field.
+    pub(crate) version_form_open: bool,
     pub(crate) can_save: bool,
     pub(crate) history: Vec<HistoryRow>,
     pub(crate) can_load_older: bool,
@@ -82,6 +84,7 @@ pub(crate) fn derive(inputs: &Inputs<'_>) -> StatePanelModel {
             })
             .collect(),
         version_name: inputs.version_name.to_owned(),
+        version_form_open: inputs.version_form_open,
         can_save: inputs.state.is_some() && inputs.display_entry.is_some() && !inputs.busy,
         history: inputs
             .history

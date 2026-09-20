@@ -125,6 +125,8 @@ pub(crate) struct SliderControl {
     pub(crate) integer: bool,
     /// The declared range, when the text does not satisfy it.
     pub(crate) invalid: Option<String>,
+    /// The parameter's declared default, already formatted: what a reset sets the field to.
+    pub(crate) default: String,
 }
 
 #[allow(dead_code)]
@@ -599,6 +601,7 @@ fn slider(
             .is_some_and(|(a, p)| a == action && p == parameter),
         integer,
         invalid,
+        default: crate::app::fields::seed_text(declared),
     }
 }
 

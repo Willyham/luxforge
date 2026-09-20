@@ -1,134 +1,169 @@
-//! The state panel: history, named versions and the recipe of the displayed entry.
+//! The state panel: what has happened to this photograph. Versions, history and the recipe render
+//! straight from [`StatePanelModel`] with the widget library; nothing here decides what a row means.
 use crate::{
-    app::message::Message,
-    state::panel::{Marker, StatePanelModel},
+    app::message::{MenuTarget, Message},
+    state::panel::{Marker as PanelMarker, StatePanelModel},
 };
 use iced::{
-    Element, Length,
-    widget::{button, column, row, text, text_input},
+    Alignment, Element, Length,
+    widget::{Row, Space, button, column, row, scrollable, text, text_input},
+};
+use lightwell_ui::{
+    ChipModel, IconButtonModel, ListRowModel, Marker, chip, icon_button, inline_menu, list_row,
+    section_label, theme,
 };
 
 pub(crate) fn state_panel(model: &StatePanelModel) -> Element<'_, Message> {
-    column![
-        history(model),
-        versions(model),
-        text("Layer stack").size(18),
-        text(recipe(model)).size(11),
-    ]
-    .spacing(18)
-    .into()
+    let content = column![versions(model), history(model), recipe(model)]
+        .spacing(theme::SPACING * 2.0)
+        .padding(theme::SPACING)
+        .width(Length::Fill);
+    scrollable(content).height(Length::Fill).into()
 }
 
-fn history(model: &StatePanelModel) -> Element<'_, Message> {
-    let editable = !model.busy && model.preview.is_none() && !model.history.is_empty();
-    let mut rows = column![
-        row![
-            text("History").size(18),
-            button("Undo").on_press_maybe(editable.then_some(Message::Undo)),
-            button("Redo").on_press_maybe(editable.then_some(Message::Redo)),
-        ]
-        .spacing(6)
-    ]
-    .spacing(5);
-    for entry in &model.history {
-        let marker = match entry.marker {
-            Marker::Current => "●",
-            Marker::Previewed => "◉",
-            Marker::Plain => "○",
-        };
-        let branch = if entry.branch { " · branch" } else { "" };
-        let label = format!(
-            "{marker} {} · {} · {}{branch}",
-            entry.sequence, entry.label, entry.actor
-        );
-        rows = rows.push(
-            button(text(label).size(12))
-                .width(Length::Fill)
-                .on_press_maybe((!model.busy).then(|| Message::Preview(entry.entry_id.clone()))),
-        );
+fn ui_marker(marker: PanelMarker) -> Marker {
+    match marker {
+        PanelMarker::Current => Marker::Current,
+        PanelMarker::Previewed => Marker::Previewed,
+        PanelMarker::Plain => Marker::Plain,
     }
-    if model.can_load_older {
-        rows = rows.push(
-            button("Load older history")
-                .on_press_maybe((!model.busy).then_some(Message::LoadOlder)),
-        );
-    }
-    if let Some(preview) = model.preview {
-        rows = rows.push(
-            row![
-                button("Return to current")
-                    .on_press_maybe(preview.can_return.then_some(Message::ReturnCurrent)),
-                button("Restore this state")
-                    .on_press_maybe(preview.can_restore.then_some(Message::Restore)),
-            ]
-            .spacing(6),
-        );
-    }
-    rows.into()
 }
 
 fn versions(model: &StatePanelModel) -> Element<'_, Message> {
-    let mut rows = column![
-        text("Versions").size(18),
+    let chips = model.versions.iter().map(|version| {
+        chip(
+            &ChipModel {
+                label: version.name.clone(),
+                trailing: Some(version.entry_sequence.to_string()),
+                selected: version.selected,
+                enabled: !model.busy,
+            },
+            (!model.busy).then(|| Message::Preview(version.entry_id.clone())),
+            Some(Message::OpenMenu(MenuTarget::Version(version.name.clone()))),
+        )
+    });
+    let chip_row = Row::new()
+        .spacing(theme::SPACING / 2.0)
+        .extend(chips)
+        .wrap();
+
+    let mut block = column![
         row![
-            text_input("Name the displayed state", &model.version_name)
-                .on_input(Message::VersionName)
-                .on_submit(Message::SaveVersion)
-                .width(Length::Fill),
-            button("Save").on_press_maybe(model.can_save.then_some(Message::SaveVersion)),
+            section_label("Versions"),
+            Space::new().width(Length::Fill),
+            icon_button(
+                &IconButtonModel {
+                    glyph: "+".into(),
+                    tooltip: "Save the displayed state as a version".into(),
+                    enabled: true,
+                    selected: model.version_form_open,
+                },
+                Some(Message::ToggleVersionForm),
+            ),
         ]
-        .spacing(6),
+        .align_y(Alignment::Center),
+        chip_row,
     ]
-    .spacing(5);
-    for version in &model.versions {
-        let marker = if version.selected { "◉" } else { "○" };
-        let label = format!(
-            "{marker} {} · entry {}",
-            version.name, version.entry_sequence
-        );
-        rows = rows.push(
+    .spacing(theme::SPACING / 2.0);
+
+    if model.version_form_open {
+        block = block.push(
             row![
-                button(text(label).size(12))
-                    .width(Length::Fill)
-                    .on_press_maybe(
-                        (!model.busy).then(|| Message::Preview(version.entry_id.clone()))
-                    ),
-                button(text("Delete").size(12)).on_press_maybe(
-                    (!model.busy).then(|| Message::DeleteVersion(version.name.clone()))
-                ),
+                text_input("Name this version", &model.version_name)
+                    .on_input(Message::VersionName)
+                    .on_submit(Message::SaveVersion)
+                    .style(theme::text_input_style(false))
+                    .size(theme::SIZE_CONTROL)
+                    .width(Length::Fill),
+                save_button(model.can_save),
             ]
-            .spacing(6),
+            .spacing(theme::SPACING / 2.0)
+            .align_y(Alignment::Center),
         );
     }
-    rows.into()
+
+    if let Some(MenuTarget::Version(name)) = &model.menu {
+        block = block.push(inline_menu(vec![
+            ("Delete".to_string(), Message::DeleteVersion(name.clone())),
+            ("Cancel".to_string(), Message::CloseMenu),
+        ]));
+    }
+
+    block.into()
 }
 
-/// The recipe as the owner described it: one row per stored layer, in processing order.
-fn recipe(model: &StatePanelModel) -> String {
-    if model.recipe.is_empty() {
-        return if model.history.is_empty() {
-            "No layer selected".into()
-        } else {
-            "Original · no edit layers".into()
-        };
+fn save_button(can_save: bool) -> Element<'static, Message> {
+    button(text("Save").size(theme::SIZE_CONTROL))
+        .padding([4.0, 10.0])
+        .style(theme::button_plain)
+        .on_press_maybe(can_save.then_some(Message::SaveVersion))
+        .into()
+}
+
+fn history(model: &StatePanelModel) -> Element<'_, Message> {
+    let mut block = column![section_label("History")].spacing(4.0);
+    let editable = !model.busy;
+    for entry in &model.history {
+        block = block.push(list_row(
+            &ListRowModel {
+                marker: ui_marker(entry.marker),
+                leading: entry.sequence.to_string(),
+                label: entry.label.clone(),
+                trailing: Some(entry.actor.clone()),
+                dimmed: entry.branch,
+                tag: entry.branch.then(|| "branch".to_string()),
+                enabled: editable,
+            },
+            Some(Message::Preview(entry.entry_id.clone())),
+            None,
+        ));
     }
-    model
-        .recipe
-        .iter()
-        .enumerate()
-        .map(|(index, layer)| {
-            let availability = if layer.available {
-                ""
-            } else {
-                " · unavailable"
-            };
-            format!(
-                "{}: {} · {}{availability}",
-                index + 1,
-                layer.title,
-                layer.summary
-            )
-        })
-        .collect::<Vec<_>>()
-        .join("\n")
+    if model.can_load_older {
+        block = block.push(
+            button(text("Load older").size(theme::SIZE_CONTROL))
+                .padding([4.0, 10.0])
+                .style(theme::button_plain)
+                .on_press_maybe(editable.then_some(Message::LoadOlder)),
+        );
+    }
+    if let Some(preview) = model.preview {
+        block = block.push(
+            row![
+                button(text("Return to current").size(theme::SIZE_CONTROL))
+                    .padding([4.0, 10.0])
+                    .style(theme::button_plain)
+                    .on_press_maybe(preview.can_return.then_some(Message::ReturnCurrent)),
+                button(text("Restore").size(theme::SIZE_CONTROL))
+                    .padding([4.0, 10.0])
+                    .style(theme::button_accent)
+                    .on_press_maybe(preview.can_restore.then_some(Message::Restore)),
+            ]
+            .spacing(theme::SPACING / 2.0),
+        );
+    }
+    block.into()
+}
+
+fn recipe(model: &StatePanelModel) -> Element<'_, Message> {
+    let mut block = column![section_label("Recipe")].spacing(4.0);
+    if model.recipe.is_empty() {
+        block = block.push(lightwell_ui::caption("No layer selected"));
+        return block.into();
+    }
+    for (index, layer) in model.recipe.iter().enumerate() {
+        block = block.push(list_row(
+            &ListRowModel {
+                marker: Marker::None,
+                leading: (index + 1).to_string(),
+                label: layer.title.clone(),
+                trailing: Some(layer.summary.clone()),
+                dimmed: !layer.available,
+                tag: None,
+                enabled: true,
+            },
+            None,
+            None,
+        ));
+    }
+    block.into()
 }

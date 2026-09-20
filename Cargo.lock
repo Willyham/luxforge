@@ -1869,6 +1869,7 @@ dependencies = [
  "iced_runtime",
  "image",
  "lightwell-core",
+ "lightwell-ui",
  "rfd",
  "serde",
  "serde_json",

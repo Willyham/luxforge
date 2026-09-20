@@ -58,6 +58,8 @@ pub(crate) struct Inputs<'a> {
     pub(crate) scale_factor: f32,
     pub(crate) zoom: &'a str,
     pub(crate) version_name: &'a str,
+    /// The "+" chip has revealed the version-naming field.
+    pub(crate) version_form_open: bool,
     pub(crate) dimensions: Option<(u32, u32)>,
     /// A preview is on the GPU.
     pub(crate) photo: bool,
@@ -237,6 +239,7 @@ mod tests {
                 scale_factor: 2.0,
                 zoom: "100",
                 version_name: "",
+                version_form_open: false,
                 dimensions: Some((480, 320)),
                 photo: true,
                 phase: "ready",

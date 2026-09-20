@@ -2,8 +2,11 @@
 //! reads authoritative state, validates a parameter or calls the owner; the models carry everything
 //! the screen shows, so a rendering change cannot change what the editor does.
 //!
-//! The arrangement is still the plain one: a header, the photo beside one sidebar, a status row.
-//! The five-region layout from the Develop workspace design lands with the panels themselves.
+//! The five-region shell from the [Develop workspace design](../../../../docs/design/develop-workspace.md#layout):
+//! a title bar, a middle row of the state panel, the canvas and the tools panel, and a status bar.
+//! The two side panels collapse independently through the session's own workspace state; the canvas
+//! takes whatever remains. Every region is styled from [`lightwell_ui::theme`], never an ad hoc
+//! colour, and the window carries no outer padding: the canvas pads its photo itself.
 pub(crate) mod canvas;
 pub(crate) mod palette;
 pub(crate) mod state_panel;
@@ -13,17 +16,20 @@ pub(crate) mod tools_panel;
 
 use crate::{app::message::Message, crop_draft::CropDraft, state::Workspace};
 use iced::{
-    Element, Length,
-    widget::{Column, column, container, row, scrollable, stack},
+    Element, Length, Theme,
+    widget::{Space, column, container, row, stack},
 };
 use iced_runtime::image as image_memory;
+use lightwell_ui::theme;
 
-/// Layout constants shared by the view and the evidence frame description.
-pub(crate) const PADDING: f32 = 16.0;
-pub(crate) const SPACING: f32 = 12.0;
-pub(crate) const SIDEBAR_WIDTH: f32 = 340.0;
-/// The gap between the blocks inside the sidebar.
-const BLOCK_SPACING: f32 = 18.0;
+/// The title bar's fixed height.
+pub(crate) const TITLE_BAR_HEIGHT: f32 = 44.0;
+/// The state panel's fixed width, at the layout's left edge.
+pub(crate) const STATE_PANEL_WIDTH: f32 = 240.0;
+/// The tools panel's fixed width, at the layout's right edge.
+pub(crate) const TOOLS_PANEL_WIDTH: f32 = 300.0;
+/// The status bar's fixed height.
+pub(crate) const STATUS_BAR_HEIGHT: f32 = 26.0;
 
 /// The GPU-resident pixels and the transient draft the canvas borrows for one frame. They are not
 /// view-model data: the model says what to draw, these are what it is drawn from.
@@ -34,63 +40,106 @@ pub(crate) struct Surfaces<'a> {
 }
 
 pub(crate) fn workspace<'a>(model: &'a Workspace, surfaces: Surfaces<'a>) -> Element<'a, Message> {
-    let surface = container(canvas::surface(&model.canvas, surfaces))
+    let title = container(
+        row![
+            title_bar::identity(&model.title),
+            Space::new().width(Length::Fill),
+            title_bar::view_controls(model),
+            Space::new().width(Length::Fill),
+            title_bar::actions(&model.title),
+        ]
+        .spacing(theme::SPACING)
+        .align_y(iced::Alignment::Center)
+        .width(Length::Fill),
+    )
+    .height(Length::Fixed(TITLE_BAR_HEIGHT))
+    .padding([0.0, theme::SPACING])
+    .align_y(iced::alignment::Vertical::Center)
+    .style(theme::bar_surface);
+
+    let canvas_area = container(canvas::surface(&model.canvas, surfaces))
         .width(Length::Fill)
-        .height(Length::Fill);
-    let middle: Element<'_, Message> = match sidebar(model) {
-        Some(sidebar) => row![surface, sidebar]
-            .spacing(SPACING)
-            .height(Length::Fill)
-            .into(),
-        None => surface.into(),
-    };
+        .height(Length::Fill)
+        .style(theme::canvas_surface);
+
+    let mut middle = row![].height(Length::Fill);
+    if model.title.state_panel_open {
+        middle = middle.push(
+            container(state_panel::state_panel(&model.panel))
+                .width(Length::Fixed(STATE_PANEL_WIDTH))
+                .height(Length::Fill)
+                .style(theme::panel_surface),
+        );
+        middle = middle.push(vertical_divider());
+    }
+    middle = middle.push(canvas_area);
+    if model.title.tools_panel_open {
+        middle = middle.push(vertical_divider());
+        middle = middle.push(
+            container(tools_panel::tools_panel(&model.tools))
+                .width(Length::Fixed(TOOLS_PANEL_WIDTH))
+                .height(Length::Fill)
+                .style(theme::panel_surface),
+        );
+    }
+
+    let status = container(status_bar::status_bar(&model.status))
+        .height(Length::Fixed(STATUS_BAR_HEIGHT))
+        .padding([0.0, theme::SPACING])
+        .align_y(iced::alignment::Vertical::Center)
+        .style(theme::panel_surface);
+
     let screen = column![
-        title_bar::title_bar(&model.title),
+        title,
+        horizontal_divider(),
         middle,
-        status_bar::status_bar(&model.status),
-    ]
-    .spacing(SPACING)
-    .padding(PADDING);
+        horizontal_divider(),
+        status
+    ];
     match palette::palette(&model.palette) {
         Some(overlay) => stack![screen, overlay].into(),
         None => screen.into(),
     }
 }
 
-/// The two panels share one sidebar until they collapse independently.
-fn sidebar<'a>(model: &'a Workspace) -> Option<Element<'a, Message>> {
-    let mut blocks: Vec<Element<'a, Message>> = Vec::new();
-    if model.title.tools_panel_open {
-        blocks.push(tools_panel::tools_panel(&model.tools));
-        blocks.push(title_bar::view_controls(model));
-    }
-    if model.title.state_panel_open {
-        blocks.push(state_panel::state_panel(&model.panel));
-    }
-    if blocks.is_empty() {
-        return None;
-    }
-    Some(
-        scrollable(
-            Column::with_children(blocks)
-                .spacing(BLOCK_SPACING)
-                .padding(12),
-        )
-        .width(SIDEBAR_WIDTH)
-        .into(),
-    )
+/// A 1 px vertical rule between the middle row's regions.
+fn vertical_divider<'a>() -> Element<'a, Message> {
+    container(Space::new())
+        .width(Length::Fixed(theme::BORDER_WIDTH))
+        .height(Length::Fill)
+        .style(divider_style)
+        .into()
 }
 
-/// The physical x range of the photo surface inside a captured frame, so evidence can prove the
-/// image was drawn where the layout puts it.
+/// A 1 px horizontal rule between the title bar, the middle row and the status bar.
+fn horizontal_divider<'a>() -> Element<'a, Message> {
+    container(Space::new())
+        .width(Length::Fill)
+        .height(Length::Fixed(theme::BORDER_WIDTH))
+        .style(divider_style)
+        .into()
+}
+
+fn divider_style(_theme: &Theme) -> container::Style {
+    container::Style::default().background(theme::BORDER)
+}
+
+/// The physical x range of the canvas region inside a captured frame, so evidence can prove the
+/// image was drawn where the layout puts it: the state panel's width from the left edge when it is
+/// open, and the tools panel's width taken off the right edge when it is open.
 pub(crate) fn surface_columns(logical_width: f32, scale: f32, model: &Workspace) -> [u32; 2] {
-    let sidebar = if model.title.state_panel_open || model.title.tools_panel_open {
-        SIDEBAR_WIDTH + SPACING
+    let left = if model.title.state_panel_open {
+        STATE_PANEL_WIDTH
     } else {
         0.0
     };
+    let right_edge = if model.title.tools_panel_open {
+        logical_width - TOOLS_PANEL_WIDTH
+    } else {
+        logical_width
+    };
     [
-        (PADDING * scale).round() as u32,
-        ((logical_width - PADDING - sidebar) * scale).round() as u32,
+        (left * scale).round() as u32,
+        (right_edge * scale).round() as u32,
     ]
 }
