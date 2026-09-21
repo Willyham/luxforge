@@ -33,7 +33,7 @@ The improvements are all of one kind: **the same control is exact, typed, keyboa
 
 ## Control kinds
 
-The closed set a module may declare. Names are the JSON `kind` in `controls[]`. Every kind binds to an action and, except `action`, to one or more of that action's parameters; registration rejects a binding whose parameter kind does not match. Everything that is a `style` or a `hint` may be omitted and has the stated default, so a module that declares nothing beyond a label gets a sensible control.
+The closed set a module may declare. Names are the JSON `kind` in `controls[]`. Every kind binds to an action and, except `action` and `picker`, to one or more of that action's parameters; registration rejects a binding whose parameter kind does not match. `picker` binds to the module's canvas declaration instead. Everything that is a `style` or a `hint` may be omitted and has the stated default, so a module that declares nothing beyond a label gets a sensible control.
 
 | Kind | Binds to | Widget | Gesture and commit |
 | --- | --- | --- | --- |
@@ -46,6 +46,9 @@ The closed set a module may declare. Names are the JSON `kind` in `controls[]`. 
 | `action {action, label, preset?, style?, icon?}` | any action | `style: default`, `primary` (accent, one per surface) or `icon` (an icon button whose tooltip is the label). `icon` names one of the host's named icons; an unknown name renders the label | Runs the action once with the preset |
 | `text {action, parameter, label, placeholder?}` | `string` (new) | A labelled text field | Commits on Enter |
 | `pad {action, x, y, label, style?}` | two `number` parameters | A 2D pad; `style: plane` (default) or `hue-saturation` (a colour wheel: angle is `x` in degrees, radius is `y`) | Drafts on drag, commits once on release; arrows nudge |
+| `picker {label}` | the module's own `point-pick` or `sample-apply` canvas, not a parameter | A button in the module's own panel, beside the controls its pick fills; it reads selected while that mode is active, and its tooltip names the mode and its letter | Enters the mode through `workspace.set`, and leaves it for the pointer when it is already selected. It commits nothing: the pick itself is what the canvas declares |
+
+A module declares at most one `picker`, a `picker` needs a pick canvas (a `crop-frame` takes the whole photograph over and has its own controls, so it is not a pick), and a module that declares a pick canvas declares exactly one `picker`, so no pick mode is reachable only by its letter. Registration refuses each of the three.
 
 `text` and `pad` are specified here so the vocabulary is closed, but they are the second slice: no built-in module needs them before the colour mixer's grading wheels, and the core has no `string` parameter yet. They are not built before then ([decision 2](#decisions)).
 
@@ -56,6 +59,7 @@ Kinds deliberately left out, with the reason:
 - **Histogram or plot of a query result.** The histogram is a core inspector, not a module control. A module that wants to show its own transfer function declares a `curve` with the channel bound to its parameter; a read-only plot is a later question, not a placeholder now.
 - **Layer enable, mask, opacity.** These are host concepts on the recipe, not module controls. They arrive with their own designs.
 - **Tabs, popovers and windows.** Layout belongs to the desktop. A module has groups and nothing else.
+- **A second way into a canvas mode.** A module's pick mode has exactly one `picker`, its declared letter and the command palette. A kind that declared a mode a module does not own, or a second button for the same mode, would give the panel two selected states to reconcile.
 
 ### Parameter kinds and hints
 
@@ -99,10 +103,10 @@ The components board gains a row per new widget and state, `gallery_states()` bu
 
 The generated tools panel maps a declared control to a view model with the rules the workspace design already fixes, extended one kind at a time:
 
-- **Continuous controls draft; discrete controls commit.** Slider, stepper drag, picker plane and rail, curve point drag and pad are continuous: a control of a field-patch action opens one core draft on the first change, sends at most one `draft.set` and one preview per 16 ms tick, and commits once on release. Field, toggle, choice, colour fields, text and action commit once. No control of a non-patch action drafts; it sends the whole action on commit, as the crop and pixel controls do today.
-- **One field per request.** A control of a patch action submits its own parameter only; a curve channel submits its one curve parameter; a pad submits its two. A reset submits its declared preset only.
+- **Continuous controls draft; discrete controls commit.** Slider, stepper drag, colour plane and rail, curve point drag and pad are continuous: a control whose one field is already a whole request — a field-patch action's field, or the only parameter its action declares — opens one core draft on the first change, sends at most one `draft.set` and one preview per 16 ms tick, and commits once on release. Field, toggle, choice, colour fields, text and action commit once. A control of an action that declares a second parameter does not draft; it sends the whole action on commit, as the crop and pixel controls do today.
+- **One field per request.** A control of a patch action, or of an action that declares that parameter alone, submits its own parameter only; a curve channel submits its one curve parameter; a pad submits its two. A reset submits its declared preset only.
 - **Authoritative values.** Every generated field is seeded from the displayed entry's values after each refresh, except the field being edited. Original and Custom on a sub-group are derived from declared defaults exactly as today, and a `curve` is Original when it equals its default points.
-- **Every control has the menu.** Right-click on any generated control offers Copy as JSON request, with the current expected revision, and shows the action and parameter names. The curve editor's request carries the whole point list.
+- **Every control has the menu.** Right-click on any generated control offers Copy as JSON request, with the current expected revision, and shows the action and parameter names. The curve editor's request carries the whole point list; a picker's request is the `workspace.set` its click would send.
 - **Disabled means explained.** A control is disabled only when the core disables the section, and the section names the reason. No control is hidden because of state.
 - **Keyboard.** Tab order follows control order. A focused slider, stepper or field steps with arrows, Shift ×10 and Option ÷10; a curve editor moves its selected point; a toggle flips on Space; a choice moves on arrows. Iced's slider takes arrows only while the pointer is over its rail, as recorded in the workspace design, and that limitation is stated, not hidden.
 
