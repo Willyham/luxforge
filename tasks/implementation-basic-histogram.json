@@ -577,7 +577,7 @@
     {
       "id": "TASK-009",
       "description": "Deliver the generated Basic Exposure slider with live preview and gesture history.",
-      "status": "in_progress",
+      "status": "completed",
       "dependencies": [
         "TASK-008"
       ],
@@ -940,7 +940,7 @@
     {
       "id": "TASK-014",
       "description": "Implement Temperature, Tint and the neutral picker through module and API actions.",
-      "status": "in_progress",
+      "status": "completed",
       "dependencies": [
         "TASK-003",
         "TASK-004",
@@ -1156,7 +1156,7 @@
     {
       "id": "TASK-017",
       "description": "Complete the Basic panel and integrate group reset, picker and historical values.",
-      "status": "pending",
+      "status": "in_progress",
       "dependencies": [
         "TASK-009",
         "TASK-012",
