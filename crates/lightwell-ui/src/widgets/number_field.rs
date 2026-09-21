@@ -92,10 +92,7 @@ pub(crate) fn field_header<'a, M: Clone + 'a>(
     };
     let value: Element<'a, M> = match &model.edit {
         ValueEdit::Display => {
-            let display = match &model.unit {
-                Some(unit) => format!("{}{unit}", model.display),
-                None => model.display.clone(),
-            };
+            let display = display_with_unit(&model.display, &model.unit);
             button(value_text(display))
                 .padding(0)
                 .style(theme::button_plain)
@@ -127,4 +124,28 @@ pub(crate) fn field_header<'a, M: Clone + 'a>(
             .into(),
         invalid,
     )
+}
+
+/// Symbols sit against a number; word units have a separating space.
+fn display_with_unit(display: &str, unit: &Option<String>) -> String {
+    match unit {
+        Some(unit) if unit.starts_with(|c: char| c.is_ascii_alphanumeric()) => {
+            format!("{display} {unit}")
+        }
+        Some(unit) => format!("{display}{unit}"),
+        None => display.to_string(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::display_with_unit;
+
+    #[test]
+    fn symbol_and_word_units_keep_their_spacing() {
+        assert_eq!(display_with_unit("140", &None), "140");
+        assert_eq!(display_with_unit("2.4", &Some("°".into())), "2.4°");
+        assert_eq!(display_with_unit("1.00", &Some("EV".into())), "1.00 EV");
+        assert_eq!(display_with_unit("6500", &Some("K".into())), "6500 K");
+    }
 }

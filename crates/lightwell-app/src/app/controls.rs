@@ -183,18 +183,19 @@ impl Editor {
             _ => return Task::none(),
         };
         let raw = min + fraction * (max - min);
-        let step = declared.step.unwrap_or(if integer { 1.0 } else { 0.01 });
-        let step = if integer {
-            step
+        let step = declared.step.unwrap_or(if integer {
+            1.0
         } else {
-            declared.fine_step.unwrap_or(step / 10.0)
-        };
-        let rounded = if step > 0.0 {
-            min + ((raw - min) / step).round() * step
-        } else {
-            raw
-        };
-        let value = rounded.clamp(min, max);
+            tools::generic_step(min, max)
+        });
+        let fine_step = declared.fine_step.unwrap_or(step / 10.0);
+        let value = lightwell_ui::geometry::quantize(
+            raw,
+            hard_min(&declared.kind),
+            hard_max(&declared.kind),
+            fine_step,
+            crate::app::fields::fine_decimals_for(declared),
+        );
         let value = if integer {
             Value::from(value.round() as i64)
         } else {
@@ -210,7 +211,7 @@ impl Editor {
         value: Value,
         continuous: bool,
     ) -> Task<Message> {
-        if continuous && tools::is_patch(&self.modules, &action) {
+        if continuous && tools::drafts(&self.modules, &action, &parameter) {
             return self.control_moved(action, parameter, value);
         }
         if !self.editable() {
@@ -267,9 +268,9 @@ impl Editor {
         } else {
             Value::from(next)
         };
-        let patch = tools::is_patch(&self.modules, &action);
-        let task = self.control_value(action, parameter, value, patch);
-        if patch {
+        let drafts = tools::drafts(&self.modules, &action, &parameter);
+        let task = self.control_value(action, parameter, value, drafts);
+        if drafts {
             Task::batch([task, self.slider_commit()])
         } else {
             task

@@ -16,6 +16,9 @@ struct Config {
     /// Evidence steps run after the last `--open` outcome, one captured frame each.
     script: VecDeque<Step>,
     size: Option<(f32, f32)>,
+    /// Create the window invisible, so an automated launch cannot appear on the owner's desktop.
+    /// The renderer, the window surface and its readbacks are unaffected.
+    hidden: bool,
     data_root: Option<PathBuf>,
     catalog: Option<PathBuf>,
     diagnostics: Option<Diagnostics>,
@@ -67,6 +70,7 @@ fn arguments() -> Result<Config, String> {
                 config.catalog = Some(args.next().ok_or("--catalog requires a path")?.into());
             }
             Some("--developer") => config.developer = true,
+            Some("--hidden-window") => config.hidden = true,
             Some("--disable-module") => {
                 let id = args
                     .next()
@@ -86,7 +90,7 @@ fn arguments() -> Result<Config, String> {
             }
             Some("--help") => {
                 println!(
-                    "Lightwell: [--open IMAGE]... [--catalog CATALOG] [--data-root DIRECTORY] [--developer] [--disable-module MODULE_ID]... [--evidence-dir NEW_DIRECTORY] [--evidence-script FILE] [--window-size WIDTH HEIGHT]\n--developer shows the components gallery and proof modules (automatic in debug builds); --disable-module registers a built-in as unavailable, so a stack that uses it reports the unavailable effect instead of rendering without it.\nEvidence mode imports each --open in order into an isolated catalog, captures a frame after each, runs any evidence script with a frame per step and exits."
+                    "Lightwell: [--open IMAGE]... [--catalog CATALOG] [--data-root DIRECTORY] [--developer] [--disable-module MODULE_ID]... [--evidence-dir NEW_DIRECTORY] [--evidence-script FILE] [--window-size WIDTH HEIGHT] [--hidden-window]\n--developer shows the components gallery and proof modules (automatic in debug builds); --disable-module registers a built-in as unavailable, so a stack that uses it reports the unavailable effect instead of rendering without it.\n--hidden-window creates the window invisible: it renders and captures as usual but is never placed on screen, which is what automated launches use.\nEvidence mode imports each --open in order into an isolated catalog, captures a frame after each, runs any evidence script with a frame per step and exits."
                 );
                 std::process::exit(0)
             }

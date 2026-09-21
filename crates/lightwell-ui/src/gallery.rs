@@ -7,8 +7,8 @@ use crate::{
     BINS, ChipModel, ClipTriangleModel, HistogramChannel, HistogramModel, Icon, IconButtonModel,
     ListRowModel, Marker, ModeEntry, NoticeCardModel, RailDecoration, SectionHeaderModel,
     SegmentedModel, SliderModel, SubGroupHeaderModel, ToggleEntry, Tone, ValueEdit, caption, chip,
-    clip_triangle, error_caption, floating_bar, histogram, icon_button, inline_menu, label,
-    list_row, mode_strip, notice_card, section_header, section_label, segmented, slider,
+    clip_triangle, double_click, error_caption, floating_bar, histogram, icon_button, inline_menu,
+    label, list_row, mode_strip, notice_card, section_header, section_label, segmented, slider,
     sub_group_header, theme, title, value_text,
 };
 use iced::Element;
@@ -366,6 +366,10 @@ pub fn gallery() -> Vec<Element<'static, ()>> {
 
     // -- A floating bar holding an arbitrary child.
     states.push(floating_bar(vec![label::<()>("Crop")]));
+
+    // -- The double-click wrapper. It has no appearance of its own — it delegates size, layout and
+    // -- drawing to its content — so the board shows what wrapping costs visually: nothing.
+    states.push(double_click(label::<()>("Double-click to reset"), ()));
 
     // -- The mode strip: canvas modes plus a separated toggle group.
     states.push(mode_strip(

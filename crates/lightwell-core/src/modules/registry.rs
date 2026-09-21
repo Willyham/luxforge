@@ -733,6 +733,10 @@ pub(crate) mod tests {
             title: "Test mode".into(),
             shortcut: Some(letter.into()),
         });
+        // A pick canvas is reached from the panel, so it declares its picker control.
+        descriptor.controls = vec![crate::Control::Picker {
+            label: "Test mode".into(),
+        }];
         TestModule::from_descriptor(descriptor)
     }
 

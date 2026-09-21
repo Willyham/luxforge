@@ -1223,6 +1223,7 @@ fn an_independent_client_discovers_basic_and_drives_one_gesture_as_a_draft() {
                 "controls": [
                     {"kind": "number", "action": "set-basic", "parameter": "temperature", "label": "Temperature"},
                     {"kind": "number", "action": "set-basic", "parameter": "tint", "label": "Tint"},
+                    {"kind": "picker", "label": "Neutral picker"},
                 ],
             },
             {
@@ -1255,7 +1256,8 @@ fn an_independent_client_discovers_basic_and_drives_one_gesture_as_a_draft() {
                 ],
             },
         ]),
-        "White balance, then Tone, then Colour, each with its sliders and its own group reset"
+        "White balance with its two sliders and the neutral picker, then Tone, then Colour, each \
+         with its own group reset"
     );
 
     let schema = call(&owner, client, "schema.list", json!({}));

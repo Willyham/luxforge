@@ -6,6 +6,40 @@ use std::{
     process::{Child, Stdio},
     time::{Duration, Instant},
 };
+/// Every rendered scenario, in the order `verify --tier rendered` runs them. One list: `main.rs`
+/// and `verify` both reach a scenario through [`dispatch`], so a new scenario is named here once.
+pub const SCENARIOS: [&str; 19] = [
+    "empty",
+    "load",
+    "replacement",
+    "invalid",
+    "repeated",
+    "alternating",
+    "large24",
+    "large60",
+    "crop",
+    "crop-draft",
+    "workspace",
+    "basic",
+    "basic-panel",
+    "basic-crop",
+    "basic-restart",
+    "histogram",
+    "gallery",
+    "controls",
+    "unavailable",
+];
+
+/// Run one scenario, including the two that are not a single launch: a module can only be disabled
+/// at startup, and persistence across a restart needs a second process.
+pub fn dispatch(root: &Path, out: &Path, scenario: &str, bin: &Path, timeout: Duration) -> Result {
+    match scenario {
+        "unavailable" => workspace::run_unavailable(root, out, bin, timeout),
+        "basic-restart" => basic::run_restart(root, out, bin, timeout),
+        _ => run(root, out, scenario, bin, timeout),
+    }
+}
+
 pub struct Guard {
     pub child: Child,
     _launch: launch::Background,
@@ -32,6 +66,14 @@ pub fn spawn(root: &Path, bin: &Path, args: &[OsString], log: &Path) -> Result<G
         _launch: launch,
     })
 }
+
+/// Launch the editor itself: the caller's arguments with the hidden-window flag the harness always
+/// passes. Children that are not the editor (the probe binary, xtask's own test children) use
+/// [`spawn`] directly.
+pub fn spawn_editor(root: &Path, bin: &Path, args: &[OsString], log: &Path) -> Result<Guard> {
+    spawn(root, bin, &launch::editor_args(args), log)
+}
+
 pub fn wait(child: &mut Guard, timeout: Duration) -> Result<std::process::ExitStatus> {
     let start = Instant::now();
     loop {
@@ -483,6 +525,8 @@ pub fn run(root: &Path, out: &Path, scenario: &str, bin: &Path, timeout: Duratio
             histogram::WINDOW[1].into(),
         ]);
     }
+    // The recorded command is what actually runs, hidden-window flag included.
+    let args = launch::editor_args(&args);
     let command = std::iter::once(bin.as_os_str())
         .chain(args.iter().map(OsString::as_os_str))
         .map(|s| s.to_string_lossy().into_owned())
@@ -523,7 +567,7 @@ pub fn run(root: &Path, out: &Path, scenario: &str, bin: &Path, timeout: Duratio
     fs::write(
         out.join("reproduce.md"),
         format!(
-            "# Smoke run\n\nScenario: {scenario}. Status: {}.\n\nLaunch mode: {}. Reproduce with `cargo xtask smoke --scenario {scenario} --output NEW_DIR --binary PATH`; on macOS this copies the binary into a temporary background-only bundle. Running the argument array directly bypasses that focus protection.\n\nArgument array:\n\n```json\n{}\n```\n\nActual renderer readback; native dialog/focus verified separately. Synthetic fixtures only.\n",
+            "# Smoke run\n\nScenario: {scenario}. Status: {}.\n\nLaunch mode: {}. Reproduce with `cargo xtask smoke --scenario {scenario} --output NEW_DIR --binary PATH`; on macOS this copies the binary into a temporary background-only bundle and the editor runs with `--hidden-window`, so its window is never placed on the desktop. Running the argument array directly bypasses that focus protection.\n\nArgument array:\n\n```json\n{}\n```\n\nActual renderer readback; native dialog/focus verified separately. Synthetic fixtures only.\n",
             result["status"],
             launch::MODE,
             serde_json::to_string_pretty(&command)?

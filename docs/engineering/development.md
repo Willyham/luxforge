@@ -21,6 +21,7 @@ Doctor reports missing tools and the graphics environment without installing any
 | --- | --- |
 | Environment report | `cargo xtask doctor` |
 | Full local and CI checks: repository links and task plans, formatting, Clippy, tests | `cargo xtask check` |
+| A whole verification tier with one summary | `cargo run --release --locked --package xtask -- verify --tier quick\|rendered\|timing\|full --output NEW_DIR [--jobs N] [--binary PATH] [--manifest FILE]` |
 | Individual steps | `cargo xtask check-repository`, `fmt`, `lint`, `test`, `build [--release]` |
 | Run the editor, release build | `cargo xtask develop [--catalog FILE] [--open PATH] [--data-root DIR]` |
 | Run an unoptimized build, debugging only | `cargo xtask develop --debug ...` |
@@ -30,7 +31,7 @@ Doctor reports missing tools and the graphics environment without installing any
 | Desktop slider/curve-to-presented-frame and settled-histogram timing, peak RSS, scratch and idle CPU | `cargo run --release --locked --package xtask -- editor-latency --source JPEG --output NEW_DIR [--binary PATH] [--samples N] [--control slider|curve] [--crop DEGREES] [--idle]` |
 | Verify golden fixtures; generate 24 and 60 MP workloads | `cargo xtask fixtures`, `cargo xtask generate-fixtures [--output NEW_DIR]` |
 | RAW corpus integrity; independent numerical stage references | `cargo xtask raw-corpus --manifest FILE --output NEW_DIR`, `cargo xtask raw-reference --output NEW_DIR` |
-| Authentic RAW editor journey, reopen and resource sampling | `cargo run --release --locked --package xtask -- raw-editor --manifest FILE --output NEW_DIR [--samples N] [--binary PATH]` |
+| Authentic RAW editor journey, reopen and resource sampling; `--samples` defaults to 3 trials per source | `cargo run --release --locked --package xtask -- raw-editor --manifest FILE --output NEW_DIR [--samples N] [--binary PATH]` |
 | Rendered smoke scenario, needs a native graphical session | `cargo xtask smoke --scenario NAME --output NEW_DIR [--binary PATH]` |
 | Rendered crop workflow and overlay | `cargo xtask smoke --scenario crop --output NEW_DIR`, `--scenario crop-draft` |
 | Rendered workspace panels, mode, preview, conflict and palette; unavailable-provider notice | `cargo xtask smoke --scenario workspace --output NEW_DIR`, `--scenario unavailable` |
@@ -40,16 +41,123 @@ Doctor reports missing tools and the graphics environment without installing any
 | Rendered Basic composed with crop and straighten | `cargo xtask smoke --scenario basic-crop --output NEW_DIR` |
 | Rendered restart: a Basic edit committed in one launch and reopened in the next | `cargo xtask smoke --scenario basic-restart --output NEW_DIR` |
 | Inspect a capture | `cargo xtask check-capture --image PNG [--orientation N]` |
-| Process failure checks; macOS measurement | `cargo xtask hardening --binary PATH --output NEW_DIR`, `cargo xtask measure --binary PATH --output NEW_DIR [--samples N]` |
+| Process failure checks; macOS measurement, `--samples` defaults to 5 launches per workload | `cargo xtask hardening --binary PATH --output NEW_DIR`, `cargo xtask measure --binary PATH --output NEW_DIR [--samples N]` |
 | Package; dependency inventory | `cargo xtask package --output NEW_DIR`, `cargo xtask inventory --output NEW_DIR` |
 | License, source and advisory policy | `cargo xtask audit`, see [dependencies](dependencies.md) |
 | Isolated UI probes | `cargo xtask probe --candidate iced|egui --output NEW_DIR` |
 
-Every evidence command refuses an existing output directory: use a fresh `artifacts/<run-id>/`. Timing commands must use release builds. A debug build makes image work roughly thirty times slower (a 10 MB JPEG took ten seconds to open), which is why `develop` defaults to release. `check` never implies graphical or dependency-audit acceptance.
+Every evidence command refuses an existing output directory: use a fresh `artifacts/<run-id>/`. Default sample counts are functional runs: they prove the journey and give one launch count to quote, not a distribution. A p50/p95 claim needs the explicit counts stated in the [performance plan](../specs/performance.md#sample-counts-for-a-p50p95-claim). Timing commands must use release builds. A debug build makes image work roughly thirty times slower (a 10 MB JPEG took ten seconds to open), which is why `develop` defaults to release. `check` never implies graphical or dependency-audit acceptance.
+
+### Verification tiers
+
+`verify` runs a tier of the commands above and writes one summary. Each tier includes the ones below it:
+
+| Tier | What it runs |
+| --- | --- |
+| `quick` | `check` and `editor-acceptance` |
+| `rendered` | quick plus all 19 smoke scenarios, including `gallery` and `controls`, through a bounded pool |
+| `timing` | quick plus `editor-performance`, `editor-latency` and `measure`, in that order, serially, after everything else in the tier and behind the host-wide timing lock |
+| `full` | rendered plus timing plus `raw-reference` and, with `--manifest FILE`, `raw-editor` |
+
+The local default is `quick` per change; run `rendered` and `timing` at integration points and `full`
+before a milestone claim. Without a manifest, `full` lists `raw-editor` as `skipped` with the reason
+`no --manifest`: a skip is never a pass.
+
+The command builds `lightwell-app` and `xtask` once in release, then runs each component as a child
+process of the release `xtask` executable with its console output in `<out>/<component>/console.log`
+and its own evidence in `<out>/<component>/run/`. `--binary PATH` is forwarded to every component
+that takes one; without it the executable just built is passed explicitly, so every component
+measures the same file. The rendered and timing tiers run `generate-fixtures` first when the 24 or
+60 MP workloads are missing. A component that has stopped making progress is killed after twenty
+minutes and recorded as `timed_out`.
+
+The rendered scenarios are the one block that overlaps: they run through a bounded pool, three at a
+time by default and `--jobs N` otherwise, with `--jobs 1` as the serial run through the same path.
+Each scenario is already a separate child process with its own output directory, catalog and evidence
+directory; that every component's directory is its own is checked before anything starts. Scenarios
+are started in the fixed list order and each result is stored at its own place in that list, so the
+summary reads in list order however the completions interleave, and each one records the second of
+the run it started at beside its elapsed time. `check` and `editor-acceptance` still run first and
+serially, and the summary carries the pool's wall clock against the sum of the scenarios' own elapsed
+times.
+
+Timing components never overlap, with each other or with anything else on the machine. Before the
+first one starts, `verify` takes a host-wide lock — `lightwell-timing.lock` in the OS temporary
+directory, holding the pid, treated as stale only once that pid is no longer alive — and releases it
+at the end of the run, including on failure. `measure`, `editor-latency`, `editor-performance` and
+`raw-editor` take the same lock when run by hand, so an ad hoc timing run and a `verify` timing tier
+refuse each other. A run that cannot have the lock refuses rather than measuring: it exits non-zero
+naming the live pid, and its summary records `refused: another timing run (pid N) is alive` with
+nothing run.
+
+A figure is only as good as the host was. `verify` reads the one-minute load average immediately
+before each timing component and records it beside that component and its timing rows, along with the
+threshold of 8.0 — the baselines in the [performance plan](../specs/performance.md) were taken
+between 2.3 and 5.7 on this fourteen-core host. Every timing summary states the threshold and the
+load, on either side of it. When a component started above the threshold, all of its timing rows and
+target verdicts are marked `unreliable` instead of `pass` or `miss`: the measured figure, its sample
+count and the load are all still recorded, but the target is unanswered rather than met or missed,
+and the summary header names the component. Load never fails the run by itself.
+
+The console shows only the Markdown table. `<out>/summary.json` and `<out>/summary.md` hold, per
+component in plan order, its status, start offset, elapsed time, exit code, first failure line,
+artifact paths and how many editor processes it started, then the p50/p95 timing rows of the timing
+tier with their source file, sample count, load and reliability, and each provisional performance
+target with its measured figure and a `pass`, `miss`, `unreliable` or `not_measured` verdict. Both
+files are rewritten after every component, from whichever worker finished it, so a partial run still
+reports what it has; components that never ran are `not_run`. The exit status is non-zero when any
+component failed or timed out, and names them.
+
+The command never opens a frame. Read a capture as an image only for a failed scenario or a design
+review.
+
+Wall-clock on the owner's M4 Pro, release build already current and the Cargo cache warm, on a host
+shared with other work at one-minute load averages between 4 and 13: `quick` 9 s, of which `check`
+is 8 s and varies with how much Cargo has to redo; `rendered` 18 s, a measured 17-scenario workload with 19 editor
+launches taking 9 s of wall clock through the pool against 26 s of their own summed elapsed time, or
+23 s serially with `--jobs 1`; `timing` 70 s with the default sample counts, of which `measure` is
+48 s and 17 launches, `editor-performance` 4 s and `editor-latency` 5 s; `full` with the owner's three-source
+manifest adds `raw-reference` and `raw-editor`, whose default three trials per source cost about 8 s
+each for the Z6, 19 s for the X100VI and 18 s for the Air 2S, two launches per trial. On a run whose
+`measure` started at a load average of 8.33, that component's rows and target verdicts came back
+`unreliable` while the two components below the threshold still gave verdicts.
+
+### Rendered scenario cost: why every scenario stays in `rendered`
+
+Per-scenario elapsed time comes from each run's own `summary.json`. Back to back on the same shared
+host, one-minute load averages of 12.96 (`--jobs 1`) and 13.24 (the default pool of three), a 17-scenario workload (excluding the gallery and controls boards) cost 24.40 s serially and 30.00 s summed inside the pool, whose own wall clock was 10.30 s.
+Every scenario costs one to two seconds either way, and none exceeds 2.3 s; against a rendered tier
+whose own total stays under two minutes, no single scenario is a material share of it. Every scenario
+therefore stays in `rendered`; `full` adds only the RAW components (`raw-reference` and, with
+`--manifest`, `raw-editor`), which is already the tier's composition.
+
+| Scenario | Serial elapsed (`--jobs 1`) | Pooled elapsed (default `--jobs 3`) | Tier |
+| --- | --- | --- | --- |
+| `empty` | 1.03 s | 1.8 s | rendered |
+| `load` | 0.96 s | 1.2 s | rendered |
+| `replacement` | 1.02 s | 2.1 s | rendered |
+| `invalid` | 0.91 s | 1.6 s | rendered |
+| `repeated` | 1.56 s | 2.0 s | rendered |
+| `alternating` | 2.08 s | 2.3 s | rendered |
+| `large24` | 1.04 s | 1.2 s | rendered |
+| `large60` | 1.17 s | 1.1 s | rendered |
+| `crop` | 1.49 s | 1.7 s | rendered |
+| `crop-draft` | 1.24 s | 1.3 s | rendered |
+| `workspace` | 1.63 s | 1.6 s | rendered |
+| `basic` | 1.95 s | 2.3 s | rendered |
+| `basic-panel` | 1.70 s | 2.3 s | rendered |
+| `basic-crop` | 1.25 s | 1.5 s | rendered |
+| `basic-restart` | 1.87 s | 1.9 s | rendered |
+| `histogram` | 1.69 s | 2.0 s | rendered |
+| `unavailable` | 1.80 s | 2.3 s | rendered |
+
+Reproduce with `verify --tier rendered --output NEW_DIR` for the pool and `--jobs 1` for the serial
+figures. The summary records the load average for timing components only; the loads quoted above
+were read with `sysctl -n vm.loadavg` immediately before each run.
 
 ## Running the application
 
-`cargo xtask develop` starts the editor. It owns the catalog (`--catalog FILE`, defaulting to the platform configuration directory), offers native Open with Cmd+O or Ctrl+O and starts an authenticated loopback JSON service. `--data-root DIR` isolates config, cache and log paths. The application also accepts `--window-size W H` (320 to 4096 logical), `--developer`, `--disable-module MODULE_ID`, `--evidence-dir NEW_DIR` and `--evidence-script FILE`. `--developer` lists proof and diagnostic modules, which are hidden by default so the workspace stays a photo editor; the API is unaffected. `--disable-module MODULE_ID` registers that built-in wrapped as unavailable, keeping its effect identities readable so a stack that uses it reports the unavailable effect instead of rendering without it; an unknown identity is a startup error. Evidence mode is the same editor driven by the harness: each `--open` goes through the ordinary import call into a catalog created inside the new evidence directory, a window frame is captured after each outcome, the script's steps then run with a frame each, and the run exits after writing its results. Manual Open is disabled during collection, and `--open` may repeat only with `--evidence-dir`.
+`cargo xtask develop` starts the editor. It owns the catalog (`--catalog FILE`, defaulting to the platform configuration directory), offers native Open with Cmd+O or Ctrl+O and starts an authenticated loopback JSON service. `--data-root DIR` isolates config, cache and log paths. The application also accepts `--window-size W H` (320 to 4096 logical), `--developer`, `--disable-module MODULE_ID`, `--hidden-window`, `--evidence-dir NEW_DIR` and `--evidence-script FILE`. `--hidden-window` creates the window invisible: it owns a real surface and renders and captures through it exactly as a visible window does, but the window server never places it on screen. Every automated editor launch the harness makes passes it; `develop` in either mode never does. `--developer` lists proof and diagnostic modules, which are hidden by default so the workspace stays a photo editor; the API is unaffected. `--disable-module MODULE_ID` registers that built-in wrapped as unavailable, keeping its effect identities readable so a stack that uses it reports the unavailable effect instead of rendering without it; an unknown identity is a startup error. Evidence mode is the same editor driven by the harness: each `--open` goes through the ordinary import call into a catalog created inside the new evidence directory, a window frame is captured after each outcome, the script's steps then run with a frame each, and the run exits after writing its results. Manual Open is disabled during collection, and `--open` may repeat only with `--evidence-dir`.
 
 The headless owner reads one JSON request per line:
 
@@ -103,7 +211,7 @@ and are referenced rather than duplicated.
 
 `raw-editor` runs the actual background editor, then reopens the same isolated catalog in a second process. Each source passes exposure, gain and custom temperature/tint edits, a sensor-neutral pick, geometry, undo, Original/current history selection and Fit/100%. It checks displayed entry/snapshot/layers, bound control values, source hashes, actual photo pixels and exact reopened presentation. These comparisons prove reevaluation and state correlation, not controlled color accuracy.
 
-The local manifest has `format:1` and a `sources` array. Each source supplies `id`, `path`, `sha256`, `mode`, `make`, `model`, upright `source_dimensions:[width,height]`, `orientation` and a fixture-verified `neutral_point:[x,y]`. Supported mode strings are `NikonZ6Lossless12`, `NikonZ6Lossless14`, `FujifilmX100ViUncompressed14`, `FujifilmX100ViLossless14` and `DjiAir2sDng16`. The DJI source additionally supplies exact `sensor_dimensions`, `active_area` and `default_crop` expectations, and the harness verifies the mandatory correction order and persisted interpretation. Keep private paths and derived evidence ignored. `--samples` defaults to 30 (range1–100); one trial is useful for correctness but not a latency distribution. Use an explicit absolute `--binary` and the same `CARGO_TARGET_DIR` for build and harness when working across worktrees.
+The local manifest has `format:1` and a `sources` array. Each source supplies `id`, `path`, `sha256`, `mode`, `make`, `model`, upright `source_dimensions:[width,height]`, `orientation` and a fixture-verified `neutral_point:[x,y]`. Supported mode strings are `NikonZ6Lossless12`, `NikonZ6Lossless14`, `FujifilmX100ViUncompressed14`, `FujifilmX100ViLossless14` and `DjiAir2sDng16`. The DJI source additionally supplies exact `sensor_dimensions`, `active_area` and `default_crop` expectations, and the harness verifies the mandatory correction order and persisted interpretation. Keep private paths and derived evidence ignored. `--samples` defaults to 3 (range 1–100), a functional run; a latency distribution needs `--samples 30`. Use an explicit absolute `--binary` and the same `CARGO_TARGET_DIR` for build and harness when working across worktrees.
 
 Reports include binary/lock/manifest hashes, launch mode, stage events, frame checks and sampled process RSS. The filesystem cache is not purged; app-cold is not OS-cache-cold. GPU memory is not isolated from RSS, and capture readbacks can affect memory. Same-process editing without repeated captures is a separate resource control.
 
@@ -298,7 +406,10 @@ job, one upload, with nothing from the previous input still in flight. `slider_d
 input's time, `slider_draft_preview` names the preview generation that `draft.set` produced, and the
 `preview_displayed` of that generation is when the pixels became a renderer texture. Presented
 therefore means the desktop's `Uploaded` message, not display scanout: the figures are an upper
-bound on the editor's own work and a lower bound on what an eye sees. The last scripted value also
+bound on the editor's own work and a lower bound on what an eye sees. The measured window is
+invisible, so nothing in these runs is composited or scanned out at all; the figures cover the
+editor's own path to the texture and say nothing about the cost of putting that texture on a
+screen. The last scripted value also
 releases, so its drafted preview is superseded by the commit — that is the queue cancellation the
 report counts — and it is measured through to the `analysis_adopted` of the committed frame, which
 is the settled exact histogram. A final burst step sends every value between two ticks to show the
@@ -309,7 +420,9 @@ ordinary launch reopens the same file from that catalog and is left alone for th
 is where peak RSS with a full stack and idle CPU come from. `latency.json` and `resources.json` keep
 every sample, the scratch budget's high-water mark and the correlated state.
 
-On macOS, smoke, hardening, measurement and probe subprocesses always use the same background bundle as `develop --background`. Reports record `launch_mode`; reproduce through the harness to preserve focus protection. A native graphical session is still required. Windows and Linux retain direct launches; background behavior is not claimed there. Measurement launch times include the temporary bundle and executable copy, so they do not measure normal foreground activation.
+On macOS, smoke, hardening, measurement, latency, RAW editor and probe subprocesses always use the same background bundle as `develop --background`, and every one of them that launches the editor passes `--hidden-window`, so the run has neither an activated process nor a window on screen. Reports record `launch_mode`; reproduce through the harness to preserve focus protection. A native graphical session is still required. Windows and Linux retain direct launches; background behavior is not claimed there. Measurement launch times include the temporary bundle and executable copy, so they do not measure normal foreground activation, and with an invisible window they do not include the cost of compositing a visible one either.
+
+That an automated launch never takes the desktop is proven once, not per run: `hardening` reads the frontmost application's pid through LaunchServices (`lsappinfo`, no Automation permission needed) while its abrupt-termination child is running and fails if that pid is the editor's, recording it as `frontmost_pid_while_running`. Every other run relies on the bundle and the hidden window and does not re-measure the desktop, so switching applications or locking the screen during a run does not affect it.
 
 Rules for any UI or image check:
 
@@ -322,10 +435,10 @@ Rules for any UI or image check:
 ## Agent loop
 
 1. Read the applicable spec and task, including any owner-decision gates.
-2. Run `doctor` and the smallest checks appropriate to the change.
-3. For UI or image changes, run a smoke scenario or the acceptance journey and inspect the capture as an image.
+2. Run `doctor`, then pick the [verify tier](#verification-tiers) the change needs: `quick` for any change, including a docs-only one; `rendered` for a change touching rendering or the UI, at an integration point; `timing` alongside it for a change under `crates/` at an integration point; `full` before a milestone claim.
+3. For UI or image changes, run a smoke scenario, the `rendered` tier, or the acceptance journey and inspect the capture as an image.
    On macOS, use the background harness or `develop --background` for every automated GUI launch; use the live API and renderer readbacks to drive and inspect it. Only perform foreground interaction checks when the owner explicitly requests them.
-4. For changes under `crates/`, answer the [performance rules](performance-rules.md) checklist and run `editor-performance` on a generated 24 MP input in release.
+4. For changes under `crates/`, answer the [performance rules](performance-rules.md) checklist and run `editor-performance` on a generated 24 MP input in release, or the `timing` tier.
 5. Report exact commands, artifact paths, results and unsupported cases. Update task and feature status only when acceptance is met.
 
 ## Packaging

@@ -134,7 +134,7 @@ fn evidence_run(
     args: &[OsString],
     deadline: Duration,
 ) -> Result<(Vec<Value>, f64)> {
-    let mut child = smoke::spawn(root, bin, args, &out.join(format!("{name}.log")))?;
+    let mut child = smoke::spawn_editor(root, bin, args, &out.join(format!("{name}.log")))?;
     let start = Instant::now();
     let mut rss = Vec::new();
     let status = loop {
@@ -720,7 +720,7 @@ fn hold_and_idle(root: &Path, out: &Path, bin: &Path, source: &Path) -> Result {
     // The second process: the same catalog, no script, left idle after its first frame.
     let data = out.join("idle-data");
     let log = out.join("idle.log");
-    let mut child = smoke::spawn(
+    let mut child = smoke::spawn_editor(
         root,
         bin,
         &[

@@ -1425,6 +1425,30 @@ mod tests {
         assert_eq!(pixel["reset"], json!(null));
         assert_eq!(pixel["canvas"]["title"], json!("Pick pixel"));
         assert_eq!(pixel["canvas"]["shortcut"], json!(null));
+        // Every pick mode is discovered as a control of its own module, so a client reaches it
+        // from that module's panel and not only from a mode strip it has to invent.
+        let picker = |module: &Value| -> Value {
+            module["controls"][0]["controls"]
+                .as_array()
+                .unwrap_or(&Vec::new())
+                .iter()
+                .find(|control| control["kind"] == json!("picker"))
+                .cloned()
+                .unwrap_or(Value::Null)
+        };
+        assert_eq!(
+            picker(&pixel),
+            json!({"kind": "picker", "label": "Pick pixel"})
+        );
+        assert_eq!(
+            picker(&module("lightwell.basic")),
+            json!({"kind": "picker", "label": "Neutral picker"}),
+            "the neutral picker is a control of the White balance group"
+        );
+        assert_eq!(
+            picker(&module("lightwell.raw")),
+            json!({"kind": "picker", "label": "Neutral WB"})
+        );
         assert_eq!(pixel["actions"][0]["summary"], json!("Pixel {x}, {y}"));
         let transform = module("lightwell.transform");
         assert_eq!(transform["hint"], json!("Rotate, mirror and flip"));
@@ -2380,6 +2404,90 @@ mod tests {
         .expect("the draft has ended");
         assert_eq!(error.code, "validation");
         assert!(error.message.contains("unknown draft"), "{}", error.message);
+        drop(service);
+        std::fs::remove_file(catalog).unwrap();
+    }
+
+    /// A draft over an ordinary, non-patch action whose one parameter is the whole request: the
+    /// gesture a desktop slider of such a control makes. `draft.set` validates the one field,
+    /// `draft_recipe` plans the drafted action against the stored stack without persisting it, and
+    /// `draft.commit` applies it as exactly one history entry. No module is named by the draft
+    /// machinery; the transform module is used here because it is registered and declares exactly
+    /// one parameter, which is the shape the rule turns on.
+    #[test]
+    fn a_draft_over_a_single_parameter_action_previews_and_commits_one_entry() {
+        let (mut service, catalog, asset) = patched("draft-single");
+        let mut session = ClientSession::default();
+        let single = service
+            .registry()
+            .action("transform")
+            .expect("the transform action is registered")
+            .1
+            .clone();
+        assert!(!single.patch, "the action under test is not a field patch");
+        assert_eq!(
+            single.parameters.len(),
+            1,
+            "its one parameter is the whole request"
+        );
+        let asset_id: AssetId = serde_json::from_value(asset.clone()).expect("the asset id");
+
+        let begun = ok(
+            &mut service,
+            &mut session,
+            "draft.begin",
+            json!({"asset_id": asset, "action": single.id}),
+        );
+        let draft_id = begun["draft_id"].clone();
+        assert_eq!(begun["fields"], json!({}));
+        assert_eq!(begun["base_revision"], json!(0));
+
+        let set = ok(
+            &mut service,
+            &mut session,
+            "draft.set",
+            json!({"draft_id": draft_id, "fields": {single.parameters[0].name.clone(): "rotate-right"}}),
+        );
+        assert_eq!(set["fields"], json!({"transform": "rotate-right"}));
+        assert_eq!(set["draft_revision"], json!(1));
+
+        // The preview: the recipe the open draft would produce, planned and never persisted.
+        let held = session.draft.clone().expect("the open draft");
+        let (drafted, _) = service
+            .draft_recipe(&asset_id, &held)
+            .expect("the drafted recipe");
+        assert_eq!(
+            drafted.layers.len(),
+            1,
+            "the drafted recipe carries the action's own layer: {drafted:?}"
+        );
+        assert_eq!(
+            described(&mut service, &mut session, &asset)["layers"],
+            json!([]),
+            "and the stored stack still holds nothing"
+        );
+
+        let committed = ok(
+            &mut service,
+            &mut session,
+            "draft.commit",
+            json!({"draft_id": draft_id, "mutation": mutation(0, "single")}),
+        );
+        assert_eq!(committed["outcome"], json!("applied"));
+        assert_eq!(committed["revision"], json!(1));
+        assert_eq!(
+            described(&mut service, &mut session, &asset)["layers"]
+                .as_array()
+                .expect("the committed layers")
+                .len(),
+            1,
+            "one gesture is one entry and one layer"
+        );
+        assert_eq!(
+            ok(&mut service, &mut session, "session.state", json!({}))["draft"],
+            json!(null),
+            "committing ends the draft"
+        );
         drop(service);
         std::fs::remove_file(catalog).unwrap();
     }

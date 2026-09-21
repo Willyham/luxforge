@@ -324,6 +324,7 @@ fn registered_proof_descriptor_generates_the_whole_vocabulary() {
                 "curve".into()
             }
             ControlModel::Action(action) => format!("action:{:?}", action.style),
+            ControlModel::Picker(_) => panic!("proof module declares no canvas picker"),
             ControlModel::Unsupported(kind) => panic!("unsupported proof control {kind}"),
             ControlModel::CropFrame(_) => panic!("proof module declares no crop frame"),
         })

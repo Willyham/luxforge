@@ -19,8 +19,8 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y build-essential pkg-config libx11-dev libxkbcommon-dev libwayland-dev libvulkan-dev
       - name: Pinned toolchain
         run: rustup toolchain install 1.94.0 --profile minimal --component rustfmt --component clippy
-      - name: Check
-        run: cargo xtask check
+      - name: Verify (quick tier)
+        run: cargo xtask verify --tier quick --output artifacts/verify-quick
       - name: Optimized native build
         run: cargo xtask build --release
       - name: Local development artifact and notices

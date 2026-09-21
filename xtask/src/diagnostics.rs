@@ -31,6 +31,7 @@ pub fn hardening(root: &Path, out: &Path, bin: &Path) -> Result {
         let fixture = root.join("fixtures/s0/orientation-6.jpg");
         let before = hash(&fixture)?;
         {
+            // Not the editor: xtask's own hanging child, so it carries no editor arguments.
             let mut child = smoke::spawn(
                 root,
                 &std::env::current_exe()?,
@@ -45,7 +46,7 @@ pub fn hardening(root: &Path, out: &Path, bin: &Path) -> Result {
         let obstacle = out.join("not-a-directory");
         fs::write(&obstacle, "preserve")?;
         {
-            let mut child = smoke::spawn(
+            let mut child = smoke::spawn_editor(
                 root,
                 bin,
                 &[
@@ -54,10 +55,8 @@ pub fn hardening(root: &Path, out: &Path, bin: &Path) -> Result {
                 ],
                 &out.join("initialization.log"),
             )?;
-            ensure(
-                smoke::wait(&mut child, Duration::from_secs(5))?.code() == Some(2),
-                "Wrong initialization failure",
-            )?;
+            let status = smoke::wait(&mut child, Duration::from_secs(5))?;
+            ensure(status.code() == Some(2), "Wrong initialization failure")?;
             ensure(
                 fs::read_to_string(out.join("initialization.log"))?
                     .contains("Cannot create evidence directory"),
@@ -72,7 +71,7 @@ pub fn hardening(root: &Path, out: &Path, bin: &Path) -> Result {
             // The data root is a plain file, so its log path cannot be created; the editor must
             // still import and render with an explicit catalog elsewhere.
             let log = out.join("diagnostics-unavailable.log");
-            let mut child = smoke::spawn(
+            let mut child = smoke::spawn_editor(
                 root,
                 bin,
                 &[
@@ -99,7 +98,7 @@ pub fn hardening(root: &Path, out: &Path, bin: &Path) -> Result {
         let isolated = out.join("abrupt");
         let events = isolated.join("logs/events.jsonl");
         {
-            let mut child = smoke::spawn(
+            let mut child = smoke::spawn_editor(
                 root,
                 bin,
                 &[
@@ -116,6 +115,18 @@ pub fn hardening(root: &Path, out: &Path, bin: &Path) -> Result {
                 "\"event\":\"startup\"",
                 Duration::from_secs(10),
             )?;
+            // The one focus check: with the editor running, the frontmost application is not it.
+            // Automated launches run hidden in a background-only bundle, so this holds whatever
+            // else the owner is doing on the desktop, and no other run re-measures it.
+            #[cfg(target_os = "macos")]
+            {
+                let front = launch::frontmost_pid()?;
+                ensure(
+                    front != child.child.id(),
+                    format!("The automated launch (pid {front}) is the frontmost application"),
+                )?;
+                result["frontmost_pid_while_running"] = json!(front);
+            }
         }
         // An abrupt kill may leave an incomplete final line; the first complete startup must survive.
         let text = fs::read_to_string(events)?;
@@ -141,7 +152,8 @@ pub fn hardening(root: &Path, out: &Path, bin: &Path) -> Result {
             "Actual hung child killed and reaped",
             "Evidence initialization fails without changing existing files",
             "Normal decode survives unavailable diagnostics; child then terminated",
-            "Abrupt termination retains startup; only the catalog under config, no cache or source mutation"
+            "Abrupt termination retains startup; only the catalog under config, no cache or source mutation",
+            "A running automated launch is never the frontmost application (macOS)"
         ]);
         Ok(())
     })();
@@ -184,7 +196,7 @@ pub fn measure(root: &Path, out: &Path, bin: &Path, samples: usize) -> Result {
     ensure((1..=1000).contains(&samples), "Samples must be 1..1000")?;
     ensure(!out.exists(), "Measurement output must be new")?;
     fs::create_dir_all(out)?;
-    let mut report = json!({"status":"in_progress","launch_mode":launch::MODE,"platform":host(root)?,"binary_sha256":hash(bin)?,"lockfile_sha256":hash(&root.join("Cargo.lock"))?,"method":"App-cold editor launches with an isolated evidence catalog; filesystem cache not purged. On macOS, launch timing includes a temporary background bundle and binary copy; this is not foreground activation timing. open_to_raster_ms spans import, refresh and render. Frame observation upper bound includes polling/readback, not scanout. RSS sampled about every 50 ms; GPU memory not separated.","runs":[]});
+    let mut report = json!({"status":"in_progress","launch_mode":launch::MODE,"platform":host(root)?,"binary_sha256":hash(bin)?,"lockfile_sha256":hash(&root.join("Cargo.lock"))?,"method":"App-cold editor launches with an isolated evidence catalog; filesystem cache not purged. On macOS, launch timing includes a temporary background bundle and binary copy and the window is created invisible, so this is neither foreground activation timing nor the cost of compositing a visible window. open_to_raster_ms spans import, refresh and render. Frame observation upper bound includes polling/readback, not scanout. RSS sampled about every 50 ms; GPU memory not separated.","runs":[]});
     let checked = (|| -> Result {
         for name in ["empty", "24mp", "60mp", "repeated60mp"] {
             for index in 0..if name == "repeated60mp" { 1 } else { samples } {
@@ -211,7 +223,7 @@ pub fn measure(root: &Path, out: &Path, bin: &Path, samples: usize) -> Result {
                     args.extend(["--open".into(), source.clone().into_os_string()]);
                 }
                 let start = Instant::now();
-                let mut child = smoke::spawn(
+                let mut child = smoke::spawn_editor(
                     root,
                     bin,
                     &args,
@@ -314,7 +326,7 @@ pub fn measure(root: &Path, out: &Path, bin: &Path, samples: usize) -> Result {
             }
         }
         let data = out.join("idle-data");
-        let mut child = smoke::spawn(
+        let mut child = smoke::spawn_editor(
             root,
             bin,
             &[
@@ -401,6 +413,7 @@ pub fn probe(root: &Path, out: &Path, candidate: &str) -> Result {
     ));
     let mut result = json!({"candidate":candidate,"status":"failed","launch_mode":launch::MODE,"fixture_sha256":before,"native_dialog_resize_verification":"not-performed"});
     let check = (|| -> Result {
+        // A probe is its own binary, not the editor, so it takes none of the editor's arguments.
         let mut child = smoke::spawn(
             root,
             &bin,

@@ -202,6 +202,7 @@ pub(crate) fn run(config: Config, size: (f32, f32)) -> Result<(), String> {
         let _ = std::fs::remove_file(&session_file);
     }
     let live_server = LocalServer::start(owner.clone(), &session_file).ok();
+    let hidden = config.hidden;
     let boot = Mutex::new(Some(Boot {
         owner,
         join,
@@ -222,8 +223,14 @@ pub(crate) fn run(config: Config, size: (f32, f32)) -> Result<(), String> {
         Editor::view,
     )
     .title("Lightwell")
-    .window_size(size)
-    .exit_on_close_request(false)
+    // An invisible window still owns a real surface and renders through it, so a hidden launch
+    // captures the same renderer readbacks; it is simply never placed on the desktop.
+    .window(iced::window::Settings {
+        size: size.into(),
+        visible: !hidden,
+        exit_on_close_request: false,
+        ..iced::window::Settings::default()
+    })
     .theme(lightwell_ui::theme::theme())
     .subscription(Editor::subscription)
     .run()
@@ -623,7 +630,7 @@ impl Editor {
                 entry.as_ref(),
             );
         }
-        json!({"run_id":self.run_id,"mode":if self.evidence.is_some() {"evidence"} else {"editor"},"selection":self.session.preview.selection,"orientation":self.activity.orientation,"phase":self.activity.phase,"requested_generation":self.activity.requested,"displayed_generation":self.activity.displayed,"displayed_draft_revision":self.displayed_draft_revision,"source_dimensions":self.activity.source_dimensions,"preview_dimensions":self.activity.preview_dimensions,"backend":self.activity.backend,"status":self.status,"error_code":self.activity.error_code,"modules":module_summary(&self.modules),"controls":self.fields.summary(),"control_ui":{"group_expanded":self.controls_ui.group_expanded,"curve_channels":curve_channels,"curve_points":curve_points,"picker_open":picker_open,"curves":curves,"pickers":pickers},"gallery":gallery,"tools_scroll":tools_scroll,"crop":self.crop_summary(),"draft":self.draft_summary(),"stack":self.stack_summary(),"workspace":serde_json::to_value(&self.session.workspace).unwrap_or(Value::Null),"developer":self.developer,"expanded":self.workspace.expanded(),"notices":self.notice_titles(),"compare":self.compare_return.is_some(),"render_error":self.render_error_summary(),"palette":{"open":self.palette_open,"query":self.palette_query},"histogram":self.histogram_summary(),"readout":self.readout_summary(),"scratch":Self::scratch_summary()})
+        json!({"run_id":self.run_id,"mode":if self.evidence.is_some() {"evidence"} else {"editor"},"selection":self.session.preview.selection,"orientation":self.activity.orientation,"phase":self.activity.phase,"requested_generation":self.activity.requested,"displayed_generation":self.activity.displayed,"displayed_draft_revision":self.displayed_draft_revision,"source_dimensions":self.activity.source_dimensions,"preview_dimensions":self.activity.preview_dimensions,"backend":self.activity.backend,"status":self.status,"error_code":self.activity.error_code,"modules":module_summary(&self.modules),"controls":self.fields.summary(),"control_ui":{"group_expanded":self.controls_ui.group_expanded,"curve_channels":curve_channels,"curve_points":curve_points,"picker_open":picker_open,"curves":curves,"pickers":pickers},"gallery":gallery,"tools_scroll":tools_scroll,"crop":self.crop_summary(),"draft":self.draft_summary(),"stack":self.stack_summary(),"workspace":serde_json::to_value(&self.session.workspace).unwrap_or(Value::Null),"developer":self.developer,"expanded":self.workspace.expanded(),"pickers":self.workspace.pickers(),"notices":self.notice_titles(),"compare":self.compare_return.is_some(),"render_error":self.render_error_summary(),"palette":{"open":self.palette_open,"query":self.palette_query},"histogram":self.histogram_summary(),"readout":self.readout_summary(),"scratch":Self::scratch_summary()})
     }
 
     /// The process-wide colour scratch budget as it stands when the frame is captured, with the
@@ -1301,8 +1308,12 @@ impl Editor {
                         // text while the selected entry is read-only.
                         self.editing = None;
                         self.dragging = None;
-                        self.fields
-                            .bind_raw(&payload.job.entry.snapshot.recipe, None, None);
+                        self.fields.bind_raw(
+                            &self.modules,
+                            &payload.job.entry.snapshot.recipe,
+                            None,
+                            None,
+                        );
                         let entry = payload.job.entry.id.clone();
                         self.requested_render_entry = Some(payload.job.entry.clone());
                         self.show_entry(entry.clone());
@@ -1654,6 +1665,7 @@ impl Editor {
                             && matches!(state.asset.source, lightwell_core::SourceKind::Raw { .. })
                         {
                             self.fields.bind_raw(
+                                &modules,
                                 &state.current_entry.snapshot.recipe,
                                 self.editing.as_ref(),
                                 self.dragging.as_ref(),
@@ -1682,14 +1694,18 @@ impl Editor {
                 parameter,
                 value,
             } => {
-                // A control of a patch action drafts: the move updates the field and the draft's
-                // pending value, and the gated tick is the only thing that sends anything. Every
-                // other slider keeps its old behaviour, which is to change the text and nothing
-                // else until release.
-                if tools::is_patch(&self.modules, &action) {
+                // A control whose one field is already a whole request drafts: a patch action's
+                // field, or the only parameter its action declares. The move updates the field and
+                // the draft's pending value, and the gated tick is the only thing that sends
+                // anything. Every other slider keeps its old behaviour, which is to change the text
+                // and nothing else until release.
+                if tools::drafts(&self.modules, &action, &parameter) {
                     return self.slider_moved(action, parameter, value);
                 }
-                self.fields.set(&action, &parameter, number_text(value));
+                let text = fields::declared(&self.modules, &action, &parameter)
+                    .map(|declared| fields::format_number(declared, value))
+                    .unwrap_or_else(|| number_text(value));
+                self.fields.set(&action, &parameter, text);
                 self.editing = None;
                 self.dragging = Some((action, parameter));
             }
@@ -1824,8 +1840,9 @@ impl Editor {
                 };
                 self.fields.set(&action, &parameter, default);
                 self.editing = None;
-                // One field of a patch action is one action; a non-patch action has no way to send
-                // one field alone, so the double-click only refills the text there, as before.
+                // One field is one action when the action merges it or declares nothing else; an
+                // action with a second parameter has no way to send one field alone, so the
+                // double-click only refills the text there.
                 if let Some(preset) = reset_field_preset(&self.modules, &action, &parameter)
                     .filter(|_| self.editable())
                 {
@@ -2052,6 +2069,13 @@ impl Editor {
                 self.status = format!("Copied the edit.{action} request");
                 return iced::clipboard::write(
                     serde_json::to_string_pretty(&request).unwrap_or_default(),
+                );
+            }
+            Message::CopyModeRequest(module_id) => {
+                self.status = "Copied the workspace.set request".into();
+                return iced::clipboard::write(
+                    serde_json::to_string_pretty(&self.mode_request(&module_id))
+                        .unwrap_or_default(),
                 );
             }
             Message::CopyDraftRequest => match self.crop_request() {
@@ -2491,9 +2515,23 @@ impl Editor {
             .map(|entry| entry.sequence)
     }
 
-    /// The JSON request one control would send right now, with this desktop's own envelope. A
-    /// control of a patch action names its own field, so the copied request is the one that
-    /// control sends and not a patch over the whole module.
+    /// The `workspace.set` request this module's picker control would send: its own mode when the
+    /// mode is not active, and the pointer when it is, which is exactly what clicking it does. The
+    /// panel gesture and the copied request are the same request by construction.
+    pub(crate) fn mode_request(&self, module_id: &str) -> Value {
+        json!({"method":"workspace.set","params":{"mode": self.mode_target(module_id)}})
+    }
+
+    /// The mode a click on that module's picker selects.
+    fn mode_target(&self, module_id: &str) -> String {
+        if self.session.workspace.mode == module_id {
+            POINTER_MODE.to_owned()
+        } else {
+            module_id.to_owned()
+        }
+    }
+
+    /// The JSON request one control would send right now, with this desktop's own envelope.
     #[cfg(test)]
     pub(crate) fn request_for(&mut self, action: &str, parameter: Option<&str>) -> Option<Value> {
         self.request_for_preset(action, parameter, None)
@@ -2569,6 +2607,7 @@ impl Editor {
             lightwell_core::SourceKind::Raw { .. }
         ) {
             self.fields.bind_raw(
+                &self.modules,
                 &refresh.job.entry.snapshot.recipe,
                 self.editing.as_ref(),
                 self.dragging.as_ref(),
@@ -2626,6 +2665,7 @@ impl Editor {
                     let reported = values
                         .and_then(|values| values.get(&parameter.name))
                         .and_then(|value| fields::value_text(parameter, value).ok());
+
                     match reported {
                         Some(text) => self.fields.set(&key.0, &key.1, text),
                         None if action.patch => {
@@ -3105,7 +3145,9 @@ mod tests {
             .clone();
 
         // Every move inside one tick is one pending value: the tick that follows sends the last.
-        for value in [0.25, 0.5, 0.75] {
+        // The values are ones the widget would send: it quantizes each drag to the parameter's
+        // declared step and precision before the message is published.
+        for value in [25.0, 50.0, 75.0] {
             let _ = editor.update(Message::SliderMoved {
                 action: action.clone(),
                 parameter: parameter.clone(),
@@ -3116,7 +3158,7 @@ mod tests {
         }
         assert_eq!(
             editor.fields.get(&action, &parameter),
-            Some("0.75"),
+            Some("75"),
             "the field follows the pointer"
         );
         assert_eq!(editor.dragging, Some((action.clone(), parameter.clone())));
@@ -3145,7 +3187,7 @@ mod tests {
         );
         assert_eq!(
             sets[0]["fields"],
-            json!({ parameter.clone(): 0.75 }),
+            json!({ parameter.clone(): 75.0 }),
             "and it carries the newest value, as one field patch"
         );
 
@@ -3166,6 +3208,197 @@ mod tests {
                 .map(|draft| draft.draft_revision),
             Some(1),
             "the adopted draft carries the revision the frame is correlated with"
+        );
+        finish(editor, catalog);
+    }
+
+    /// The first action a registered module declares with exactly one parameter and no field
+    /// patch, and that parameter: the shape whose slider drafts for the second reason.
+    fn single_parameter_control(editor: &Editor) -> (String, String) {
+        let action = editor
+            .modules
+            .iter()
+            .flat_map(|module| module.actions.iter())
+            .find(|action| !action.patch && action.parameters.len() == 1)
+            .expect("a built-in declares a single-parameter action");
+        (action.id.clone(), action.parameters[0].name.clone())
+    }
+
+    /// The single-parameter action these tests drive is the shape the rule is about: one number
+    /// parameter with a declared default, which is what a RAW slider sends.
+    #[test]
+    fn the_single_parameter_control_under_test_is_one_number_with_a_default() {
+        let (editor, catalog, _, _, _, _) = drafting();
+        let (action, parameter) = single_parameter_control(&editor);
+        let declared = tools::declared_action(&editor.modules, &action)
+            .and_then(|declared| declared.parameter(&parameter))
+            .expect("the declared parameter");
+        assert!(
+            matches!(declared.kind, lightwell_core::ParameterKind::Number { .. }),
+            "{action}.{parameter} is {:?}",
+            declared.kind
+        );
+        assert!(
+            declared.default.is_some(),
+            "{action}.{parameter} declares the default a reset sends"
+        );
+        finish(editor, catalog);
+    }
+
+    /// A slider of an ordinary action whose one parameter is the whole request drafts exactly like
+    /// a patch action's: one `draft.begin`, one `draft.set` per tick for the newest value, one
+    /// `draft.commit` on release. The one field it sends is the complete request, so the core needs
+    /// nothing special and the person sees the preview move while dragging.
+    #[test]
+    fn a_single_parameter_actions_slider_drafts_previews_and_commits_once() {
+        let (mut editor, catalog, log, asset, _, _) = drafting();
+        let (action, parameter) = single_parameter_control(&editor);
+        let current = editor
+            .state
+            .as_ref()
+            .expect("an open asset")
+            .current_entry
+            .clone();
+
+        for value in [0.25, 0.5] {
+            let _ = editor.update(Message::SliderMoved {
+                action: action.clone(),
+                parameter: parameter.clone(),
+                value,
+            });
+            let _ = editor.update(Message::SliderDraftTick);
+        }
+        assert!(
+            editor.slider_draft.is_some(),
+            "the gesture opened a draft: {}",
+            editor.status
+        );
+        begun(&mut editor, &asset, &action, 4);
+        let _ = editor.update(Message::SliderDraftTick);
+        was_set(&mut editor, &asset, &current);
+        let _ = editor.update(Message::SliderMoved {
+            action: action.clone(),
+            parameter: parameter.clone(),
+            value: 0.75,
+        });
+        let _ = editor.update(Message::SliderDraftTick);
+        was_set(&mut editor, &asset, &current);
+        let _ = editor.update(Message::SliderReleased {
+            action: action.clone(),
+            parameter: parameter.clone(),
+        });
+
+        let records = logged(&mut editor, &log);
+        assert_eq!(
+            draft_events(&records, "slider_draft_begin").len(),
+            1,
+            "one gesture opens one draft"
+        );
+        let sets = draft_events(&records, "slider_draft_set");
+        assert_eq!(sets.len(), 2, "one draft.set per tick: {sets:?}");
+        assert_eq!(
+            sets[0]["fields"],
+            json!({ parameter.clone(): 0.5 }),
+            "and it carries the newest value the tick saw, as the whole request"
+        );
+        assert_eq!(sets[1]["fields"], json!({ parameter.clone(): 0.75 }));
+        assert_eq!(
+            draft_events(&records, "slider_draft_preview").len(),
+            2,
+            "each accepted set queues the preview its value produces"
+        );
+        assert_eq!(
+            draft_events(&records, "slider_draft_commit").len(),
+            1,
+            "release commits exactly once"
+        );
+        finish(editor, catalog);
+    }
+
+    /// An action with a second parameter keeps the older gesture: one field of it is not a request,
+    /// so dragging only changes the text and release submits the whole action once.
+    #[test]
+    fn a_multi_parameter_actions_slider_sends_nothing_until_release() {
+        let (mut editor, catalog, log, _, _, _) = drafting();
+        let (action, parameter) = editor
+            .modules
+            .iter()
+            .flat_map(|module| module.actions.iter())
+            .find(|action| !action.patch && action.parameters.len() > 1)
+            .map(|action| (action.id.clone(), action.parameters[0].name.clone()))
+            .expect("a built-in declares a multi-parameter action");
+
+        for value in [3.0, 7.0] {
+            let _ = editor.update(Message::SliderMoved {
+                action: action.clone(),
+                parameter: parameter.clone(),
+                value,
+            });
+            let _ = editor.update(Message::SliderDraftTick);
+        }
+        assert!(editor.slider_draft.is_none(), "no draft was opened");
+        assert_eq!(
+            editor.fields.get(&action, &parameter),
+            Some("7"),
+            "the field still follows the pointer"
+        );
+        assert!(
+            draft_events(&logged(&mut editor, &log), "slider_draft_begin").is_empty(),
+            "nothing was sent while dragging"
+        );
+
+        let _ = editor.update(Message::SliderReleased {
+            action: action.clone(),
+            parameter: parameter.clone(),
+        });
+        assert_eq!(
+            editor.status,
+            format!("Running edit.{action}…"),
+            "release submits the whole action once"
+        );
+        assert!(editor.busy, "and exactly one request is in flight");
+        finish(editor, catalog);
+    }
+
+    /// The double-click reset follows the same rule: one field is one action where that field is
+    /// the whole request, and it sends the parameter's declared default.
+    #[test]
+    fn the_double_click_reset_of_a_single_parameter_action_sends_its_declared_default() {
+        let (mut editor, catalog, _, _, _, _) = drafting();
+        let (action, parameter) = single_parameter_control(&editor);
+        let default = tools::declared_action(&editor.modules, &action)
+            .and_then(|declared| declared.parameter(&parameter))
+            .and_then(|declared| declared.default.clone())
+            .expect("the parameter declares a default");
+        let preset = fields::reset_field_preset(&editor.modules, &action, &parameter)
+            .expect("a single-parameter action resets that field as one action");
+        assert_eq!(
+            preset,
+            [(parameter.clone(), default.clone())]
+                .into_iter()
+                .collect::<serde_json::Map<_, _>>(),
+            "the request is the declared default, not an invented one"
+        );
+
+        editor.fields.set(&action, &parameter, "1.25".to_owned());
+        let _ = editor.update(Message::ResetField {
+            action: action.clone(),
+            parameter: parameter.clone(),
+        });
+        assert_eq!(
+            editor.fields.get(&action, &parameter),
+            Some(fields::seed_text(
+                tools::declared_action(&editor.modules, &action)
+                    .and_then(|declared| declared.parameter(&parameter))
+                    .expect("the declared parameter")
+            ))
+            .as_deref(),
+            "the field returns to its default"
+        );
+        assert_eq!(
+            editor.status,
+            format!("Running edit.{action}…"),
+            "and the reset runs once as that action"
         );
         finish(editor, catalog);
     }
@@ -3302,7 +3535,7 @@ mod tests {
         let _ = editor.update(Message::SliderMoved {
             action: action.clone(),
             parameter: parameter.clone(),
-            value: 1.5,
+            value: 15.0,
         });
         begun(&mut editor, &asset, &action, 4);
         let _ = editor.update(Message::SliderDraftTick);
@@ -3316,7 +3549,7 @@ mod tests {
         assert!(draft.conflicted);
         assert_eq!(
             editor.fields.get(&action, &parameter),
-            Some("1.5"),
+            Some("15"),
             "the drafted value stays on the slider"
         );
         assert_eq!(
@@ -3362,7 +3595,7 @@ mod tests {
             1,
             "a reapply re-sends the drafted value and re-requests its preview"
         );
-        assert_eq!(sets[0]["fields"], json!({ parameter.clone(): 1.5 }));
+        assert_eq!(sets[0]["fields"], json!({ parameter.clone(): 15.0 }));
         assert!(editor.workspace.canvas.notices.is_empty());
         finish(editor, catalog);
     }
@@ -3475,10 +3708,10 @@ mod tests {
             let _ = editor.update(Message::Refreshed(Ok(Box::new(refresh))));
         };
 
-        seeded(&mut editor, Some(json!({ parameter.clone(): -1.25 })));
+        seeded(&mut editor, Some(json!({ parameter.clone(): -25.0 })));
         assert_eq!(
             editor.fields.get(&action, &parameter),
-            Some("-1.25"),
+            Some("-25"),
             "the slider shows the authoritative value of the module's one layer"
         );
         assert_eq!(
@@ -3490,14 +3723,14 @@ mod tests {
         // A field being dragged is not overwritten by the refresh that arrives under it.
         editor.dragging = Some((action.clone(), parameter.clone()));
         editor.fields.set(&action, &parameter, "3".into());
-        seeded(&mut editor, Some(json!({ parameter.clone(): -1.25 })));
+        seeded(&mut editor, Some(json!({ parameter.clone(): -25.0 })));
         assert_eq!(editor.fields.get(&action, &parameter), Some("3"));
         editor.dragging = None;
 
         // The same for a field being typed.
         editor.editing = Some((action.clone(), parameter.clone()));
         editor.fields.set(&action, &parameter, "2.5".into());
-        seeded(&mut editor, Some(json!({ parameter.clone(): -1.25 })));
+        seeded(&mut editor, Some(json!({ parameter.clone(): -25.0 })));
         assert_eq!(editor.fields.get(&action, &parameter), Some("2.5"));
         editor.editing = None;
 
@@ -3575,10 +3808,13 @@ mod tests {
                 json!({ parameter.clone(): value }),
                 "{parameter} drafts its own field alone"
             );
+            let shown = fields::declared(&editor.modules, &action, parameter)
+                .map(|declared| fields::format_number(declared, *value))
+                .expect("the declared parameter");
             assert_eq!(
                 editor.fields.get(&action, parameter),
-                Some(fields::number_text(*value).as_str()),
-                "{parameter} shows the drafted value"
+                Some(shown.as_str()),
+                "{parameter} shows the drafted value, with its declared decimals"
             );
 
             // The release: one commit, then the no-op outcome that ends the gesture.
@@ -4667,9 +4903,11 @@ mod tests {
         assert_eq!(readout.rgba, [128, 64, 255, 255]);
         assert!(!editor.sample_in_flight);
         editor.rederive();
+        // No frame has been analysed in this test, so the caption row carries the pending notice
+        // as well as the readout: both share that one row rather than taking one each.
         assert_eq!(
             editor.workspace.histogram.caption_line(),
-            "Output \u{b7} sRGB \u{b7} after crop \u{b7} R 128 \u{b7} G 64 \u{b7} B 255 \u{b7} 7, 8"
+            "Output \u{b7} sRGB \u{b7} after crop \u{b7} R 128 \u{b7} G 64 \u{b7} B 255 \u{b7} 7, 8 \u{b7} No analysis yet"
         );
         assert_eq!(
             editor.snapshot()["readout"]["rgba"],
@@ -5132,6 +5370,78 @@ mod tests {
         finish(editor, catalog);
     }
 
+    /// The picker control is the way into and out of its module's pick mode: one `workspace.set`
+    /// for the module, and one for the pointer when it is already active. It commits nothing, and
+    /// its context menu copies exactly the request the click sends.
+    #[test]
+    fn a_picker_control_enters_and_leaves_its_modules_mode_through_workspace_set() {
+        let (mut editor, catalog, _, entry_id) = opened(Vec::new(), 5);
+        let _ = editor.update(Message::ModulesLoaded(Ok(descriptors())));
+        let (module_id, _, _) = sample_mode(&editor);
+        let revision = editor.state.as_ref().expect("an open asset").revision;
+        editor.rederive();
+        let picker = |editor: &Editor| -> crate::state::tools::PickerControl {
+            editor
+                .workspace
+                .tools
+                .all()
+                .find(|section| section.module_id == module_id)
+                .expect("the declaring module's section")
+                .pickers()
+                .first()
+                .map(|picker| (*picker).clone())
+                .expect("its declared picker")
+        };
+
+        // Not in the mode: the button is unselected and a click enters that module's mode.
+        let before = picker(&editor);
+        assert!(!before.selected);
+        assert_eq!(before.target, module_id);
+        assert_eq!(
+            editor.mode_request(&module_id),
+            json!({"method":"workspace.set","params":{"mode": module_id}}),
+            "the copied request is the one the click sends"
+        );
+        let _ = editor.update(Message::SetMode(before.target.clone()));
+
+        // The session adopts the mode, as the `workspace.set` round trip does.
+        editor.session.workspace.mode = module_id.clone();
+        editor.rederive();
+        let after = picker(&editor);
+        assert!(after.selected, "the button reads selected in its own mode");
+        assert_eq!(
+            after.target, POINTER_MODE,
+            "clicking it again leaves the mode"
+        );
+        assert_eq!(
+            editor.mode_request(&module_id),
+            json!({"method":"workspace.set","params":{"mode": POINTER_MODE}})
+        );
+        let _ = editor.update(Message::SetMode(after.target.clone()));
+        let _ = editor.update(Message::CopyModeRequest(module_id.clone()));
+        assert_eq!(editor.status, "Copied the workspace.set request");
+
+        // Nothing about it is an edit: no history entry, no revision, no draft.
+        assert_eq!(
+            editor.state.as_ref().expect("an open asset").revision,
+            revision
+        );
+        assert_eq!(editor.displayed_entry(), Some(entry_id));
+        assert!(editor.slider_draft.is_none() && editor.crop.is_none());
+
+        // The mode strip no longer offers it: the panel is the only place it lives.
+        assert!(
+            !editor
+                .workspace
+                .canvas
+                .modes
+                .iter()
+                .any(|mode| mode.id == module_id),
+            "a pick mode is not a mode-strip entry"
+        );
+        finish(editor, catalog);
+    }
+
     #[test]
     fn copy_as_json_request_writes_what_the_control_would_send() {
         let (mut editor, catalog, asset, _) = opened(Vec::new(), 5);
@@ -5362,6 +5672,9 @@ mod tests {
     #[test]
     fn historical_raw_preview_rebinds_controls_and_return_restores_current_values() {
         let (mut editor, catalog, asset, _) = opened(Vec::new(), 4);
+        // The real descriptors, because the RAW parameters' declared precision is what decides how
+        // a bound field reads: 1.2 sensor gain shows as `1.20`, the same as one the person set.
+        let _ = editor.update(Message::ModulesLoaded(Ok(descriptors())));
         let original = RawPayload::for_as_shot([2.0, 1.0, 1.5], [[0.0; 3]; 4]).unwrap();
         let mut historical = entry(&asset, 0, None);
         historical.snapshot = historical
@@ -5381,9 +5694,11 @@ mod tests {
             metadata: json!({}),
         };
         editor.state.as_mut().unwrap().current_entry = current.clone();
-        editor.fields.bind_raw(&current.snapshot.recipe, None, None);
-        assert_eq!(editor.fields.get("set-raw-exposure", "ev"), Some("1"));
-        assert_eq!(editor.fields.get("set-raw-red-gain", "gain"), Some("1.2"));
+        editor
+            .fields
+            .bind_raw(&editor.modules, &current.snapshot.recipe, None, None);
+        assert_eq!(editor.fields.get("set-raw-exposure", "ev"), Some("1.00"));
+        assert_eq!(editor.fields.get("set-raw-red-gain", "gain"), Some("1.20"));
 
         let job = |entry: lightwell_core::HistoryEntry| PreviewJob {
             source: PreviewSource::Jpeg(SourceImage {
@@ -5424,9 +5739,9 @@ mod tests {
         ))));
         assert_eq!(editor.display_entry, Some(historical.id));
         assert!(editor.editing.is_none());
-        assert_eq!(editor.fields.get("set-raw-exposure", "ev"), Some("0"));
-        assert_eq!(editor.fields.get("set-raw-red-gain", "gain"), Some("2"));
-        assert_eq!(editor.fields.get("set-raw-blue-gain", "gain"), Some("1.5"));
+        assert_eq!(editor.fields.get("set-raw-exposure", "ev"), Some("0.00"));
+        assert_eq!(editor.fields.get("set-raw-red-gain", "gain"), Some("2.00"));
+        assert_eq!(editor.fields.get("set-raw-blue-gain", "gain"), Some("1.50"));
 
         let mut session = editor.session.clone();
         session.preview.return_current();
@@ -5439,9 +5754,9 @@ mod tests {
             },
         ))));
         assert_eq!(editor.display_entry, Some(current.id));
-        assert_eq!(editor.fields.get("set-raw-exposure", "ev"), Some("1"));
-        assert_eq!(editor.fields.get("set-raw-red-gain", "gain"), Some("1.2"));
-        assert_eq!(editor.fields.get("set-raw-blue-gain", "gain"), Some("0.9"));
+        assert_eq!(editor.fields.get("set-raw-exposure", "ev"), Some("1.00"));
+        assert_eq!(editor.fields.get("set-raw-red-gain", "gain"), Some("1.20"));
+        assert_eq!(editor.fields.get("set-raw-blue-gain", "gain"), Some("0.90"));
         finish(editor, catalog);
     }
 
@@ -5504,7 +5819,7 @@ mod tests {
             .all()
             .next()
             .expect("the crop section");
-        assert!(!section.enabled && section.reset.is_none());
+        assert!(!section.enabled && section.reset.is_some());
         let _ = std::hint::black_box(&entry_id);
         finish(editor, catalog);
     }

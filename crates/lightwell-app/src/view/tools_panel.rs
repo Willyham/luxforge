@@ -12,8 +12,8 @@ use crate::{
         tools::{
             ActionControl, ActionControlStyle, ChoiceControlStyle, ColorControl, ColorControlStyle,
             ControlModel, CropSectionModel, CurveControl, EnumControl, GroupControl,
-            NumberControlStyle, RailStyle, SectionModel, SliderControl, ToggleControl, ToolsModel,
-            ValueEdit,
+            NumberControlStyle, PickerControl, RailStyle, SectionModel, SliderControl,
+            ToggleControl, ToolsModel, ValueEdit,
         },
     },
 };
@@ -82,8 +82,13 @@ pub(crate) fn tools_panel<'a>(
         .into()
 }
 
-/// The histogram inspector: the plot, the two clipping triangles in its bottom corners, the domain
-/// caption with the pointer readout, and the textual endpoint counts under it.
+/// The histogram inspector: the plot, the two clipping triangles in its bottom corners, the
+/// caption row (the domain, the pointer readout and any status notice), and three count rows.
+///
+/// The row count is fixed and unconditional, which is the point: every control in the panel sits
+/// under this block, so a row that appeared or vanished with the analysis status would make the
+/// whole tools panel jump while a slider is dragged. The model decides what each of those rows
+/// says, including what a row says when there is nothing to count.
 ///
 /// The view decides nothing here. Which channel is which colour, what the counts say, which
 /// triangle is tinted and what its tooltip states are all in the model; this turns them into
@@ -132,19 +137,18 @@ fn inspector(model: &HistogramModel) -> Element<'_, Message> {
         ),
     ]
     .align_y(Alignment::Center);
-    let mut block = column![plot, triangles].spacing(theme::SPACING / 2.0);
-    // The domain is always named, so an output endpoint count is never read as sensor clipping.
-    block = block.push(caption(model.caption_line()));
-    match model.notice() {
-        // Pending, updating, unavailable: an explicit line rather than a silently empty plot.
-        Some(notice) => block = block.push(caption(notice)),
-        None => {
-            // The counters in words, for a reader who cannot measure the plot's heights.
-            block = block.push(caption(model.counters.shadow_text()));
-            block = block.push(caption(model.counters.highlight_text()));
-            block = block.push(caption(model.counters.both_text()));
-        }
-    }
+    // Four rows, always: the caption (the domain — so an output endpoint count is never read as
+    // sensor clipping — plus the readout and the status), then the counters in words, for a reader
+    // who cannot measure the plot's heights.
+    let block = column![
+        plot,
+        triangles,
+        caption(model.caption_line()),
+        caption(model.shadow_text()),
+        caption(model.highlight_text()),
+        caption(model.both_text()),
+    ]
+    .spacing(theme::SPACING / 2.0);
     debug_assert_eq!(BINS, 256, "one bin per 8-bit output code");
     block.into()
 }
@@ -236,6 +240,7 @@ fn control_view<'a>(
         ControlModel::Curve(curve) => curve_view(enabled, curve, menu, plot),
         ControlModel::Group(group) => group_view(module_id, enabled, group, menu, plot),
         ControlModel::Action(action) => action_view(action, menu),
+        ControlModel::Picker(picker) => picker_view(picker, menu),
         ControlModel::Unsupported(message) => error_caption(message.clone()),
         ControlModel::CropFrame(frame) => crop_section_view(frame, menu),
     }
@@ -970,6 +975,61 @@ fn action_view<'a>(
         )
         .into(),
         _ => control,
+    }
+}
+
+/// A module's picker: the button that enters that module's canvas pick mode, drawn beside the
+/// controls the pick fills. It reads selected while the mode is active and clicking it then returns
+/// to the pointer, so the mode is always leavable from the same place it was entered. It commits
+/// nothing: the gesture is one `workspace.set`, which is what its context menu copies.
+fn picker_view<'a>(
+    picker: &'a PickerControl,
+    menu: Option<&'a MenuTarget>,
+) -> Element<'a, Message> {
+    let style = if picker.selected {
+        theme::button_selected
+    } else {
+        theme::button_plain
+    };
+    let control = button(lightwell_ui::label(picker.label.clone()))
+        .padding([4.0, 10.0])
+        .style(style)
+        .on_press_maybe(
+            picker
+                .enabled
+                .then(|| Message::SetMode(picker.target.clone())),
+        );
+    // The mode strip named the mode and its letter in a tooltip; the panel says the same thing.
+    let control: Element<'a, Message> = match &picker.shortcut {
+        Some(key) => iced::widget::tooltip(
+            control,
+            iced::widget::container(caption(format!("{} \u{00b7} {key}", picker.title)))
+                .padding(6.0)
+                .style(theme::bar_surface),
+            iced::widget::tooltip::Position::Top,
+        )
+        .into(),
+        None => control.into(),
+    };
+    let target = MenuTarget::Mode(picker.module_id.clone());
+    let area: Element<'a, Message> = mouse_area(control)
+        .on_right_press(Message::OpenMenu(target.clone()))
+        .into();
+    if menu == Some(&target) {
+        column![
+            area,
+            inline_menu(vec![
+                (
+                    "Copy as JSON request".to_owned(),
+                    Message::CopyModeRequest(picker.module_id.clone()),
+                ),
+                ("Cancel".to_owned(), Message::CloseMenu),
+            ])
+        ]
+        .spacing(4.0)
+        .into()
+    } else {
+        area
     }
 }
 

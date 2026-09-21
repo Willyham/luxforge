@@ -21,6 +21,7 @@ mod raw_editor;
 mod reference;
 mod repository;
 mod smoke;
+mod verify;
 mod workspace_smoke;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
@@ -178,6 +179,12 @@ impl Args {
         )
     }
 }
+fn samples(a: &mut Args, default: usize) -> Result<usize> {
+    Ok(a.value("--samples")?
+        .map(|s| s.to_string_lossy().parse::<usize>())
+        .transpose()?
+        .unwrap_or(default))
+}
 fn main() -> ExitCode {
     match main_result() {
         Ok(()) => ExitCode::SUCCESS,
@@ -306,11 +313,7 @@ fn main_result() -> Result {
         "raw-editor" => {
             let manifest = absolute(&root, &a.path("--manifest")?);
             let out = absolute(&root, &a.path("--output")?);
-            let samples = a
-                .value("--samples")?
-                .map(|s| s.to_string_lossy().parse::<usize>())
-                .transpose()?
-                .unwrap_or(30);
+            let samples = samples(&mut a, 3)?;
             let selected_binary = a.value("--binary")?.map(PathBuf::from);
             a.done()?;
             let bin = selected_binary
@@ -318,6 +321,7 @@ fn main_result() -> Result {
                 .map(|path| absolute(&root, path))
                 .map(Ok)
                 .unwrap_or_else(|| binary(&root))?;
+            let _gate = launch::TimingGate::acquire()?;
             raw_editor::run(&root, &manifest, &out, &bin, samples)?;
         }
         "inventory" | "package" => {
@@ -341,12 +345,9 @@ fn main_result() -> Result {
         "editor-performance" => {
             let source = absolute(&root, &a.path("--source")?);
             let out = absolute(&root, &a.path("--output")?);
-            let samples = a
-                .value("--samples")?
-                .map(|s| s.to_string_lossy().parse::<usize>())
-                .transpose()?
-                .unwrap_or(10);
+            let samples = samples(&mut a, 10)?;
             a.done()?;
+            let _gate = launch::TimingGate::acquire()?;
             editor_performance::run(&root, &source, &out, samples)?;
         }
         "editor-latency" => {
@@ -356,11 +357,7 @@ fn main_result() -> Result {
                 .value("--binary")?
                 .map(|path| absolute(&root, Path::new(&path)))
                 .map_or_else(|| binary(&root), Ok)?;
-            let samples = a
-                .value("--samples")?
-                .map(|s| s.to_string_lossy().parse::<usize>())
-                .transpose()?
-                .unwrap_or(30);
+            let samples = samples(&mut a, 30)?;
             let crop = a
                 .value("--crop")?
                 .map(|s| s.to_string_lossy().parse::<f64>())
@@ -379,6 +376,7 @@ fn main_result() -> Result {
                 Some(other) => return Err(format!("--mode is drag or commit, not {other}").into()),
             };
             a.done()?;
+            let _gate = launch::TimingGate::acquire()?;
             editor_latency::run(
                 &root,
                 &out,
@@ -406,24 +404,34 @@ fn main_result() -> Result {
                 .map(|p| absolute(&root, &p))
                 .unwrap_or(binary(&root)?);
             a.done()?;
-            if scenario == "unavailable" {
-                workspace_smoke::run_unavailable(
-                    &root,
-                    &out,
-                    &bin,
-                    std::time::Duration::from_secs(35),
-                )?;
-            } else if scenario == "basic-restart" {
-                basic_smoke::run_restart(&root, &out, &bin, std::time::Duration::from_secs(35))?;
-            } else {
-                smoke::run(
-                    &root,
-                    &out,
-                    &scenario,
-                    &bin,
-                    std::time::Duration::from_secs(35),
-                )?;
-            }
+            smoke::dispatch(
+                &root,
+                &out,
+                &scenario,
+                &bin,
+                std::time::Duration::from_secs(35),
+            )?;
+        }
+        "verify" => {
+            let out = absolute(&root, &a.path("--output")?);
+            let tier = a
+                .value("--tier")?
+                .map(|t| {
+                    t.into_string()
+                        .map_err(|_| "Invalid tier".into())
+                        .and_then(|t| verify::Tier::parse(&t))
+                })
+                .transpose()?
+                .unwrap_or(verify::Tier::Quick);
+            let bin = a.value("--binary")?.map(PathBuf::from);
+            let manifest = a.value("--manifest")?.map(PathBuf::from);
+            let jobs = a
+                .value("--jobs")?
+                .map(|s| s.to_string_lossy().parse::<usize>())
+                .transpose()?
+                .unwrap_or(verify::JOBS);
+            a.done()?;
+            verify::run(&root, &out, tier, bin, manifest, jobs)?;
         }
         "check-capture" => {
             let path = absolute(&root, &a.path("--image")?);
@@ -462,15 +470,13 @@ fn main_result() -> Result {
         "hardening" | "measure" => {
             let out = absolute(&root, &a.path("--output")?);
             let bin = absolute(&root, &a.path("--binary")?);
-            let samples = a
-                .value("--samples")?
-                .map(|s| s.to_string_lossy().parse::<usize>())
-                .transpose()?
-                .unwrap_or(30);
+            let samples = samples(&mut a, 5)?;
             a.done()?;
             if op == "hardening" {
                 diagnostics::hardening(&root, &out, &bin)?
             } else {
+                // Timing runs never overlap, whether they were started by `verify` or by hand.
+                let _gate = launch::TimingGate::acquire()?;
                 diagnostics::measure(&root, &out, &bin, samples)?;
             }
         }
@@ -486,7 +492,7 @@ fn main_result() -> Result {
         }
         "__hang" => std::thread::sleep(std::time::Duration::from_secs(60)),
         "help" => println!(
-            "cargo xtask doctor|check|check-repository|fmt|lint|test|build [--release]|develop [--debug] [--background] [app args]|fixtures|generate-fixtures [--output NEW]|audit|raw-corpus --manifest FILE --output NEW|raw-reference --output NEW|raw-editor --manifest FILE --output NEW [--samples N] [--binary PATH]|editor-acceptance --output NEW|editor-performance --source JPEG --output NEW [--samples N]|editor-latency --source JPEG --output NEW [--binary PATH] [--samples N] [--mode drag|commit] [--control slider|curve] [--crop DEGREES] [--idle]|inventory --output NEW|package --output NEW|smoke --output NEW [--scenario NAME] [--binary PATH]|check-capture --image PNG [--orientation N] [--aspect R] [--columns LEFT,RIGHT]|hardening --binary PATH --output NEW|measure --binary PATH --output NEW [--samples N]|probe --candidate iced|egui --output NEW"
+            "cargo xtask doctor|check|check-repository|fmt|lint|test|build [--release]|develop [--debug] [--background] [app args]|fixtures|generate-fixtures [--output NEW]|audit|raw-corpus --manifest FILE --output NEW|raw-reference --output NEW|raw-editor --manifest FILE --output NEW [--samples N] [--binary PATH]|editor-acceptance --output NEW|editor-performance --source JPEG --output NEW [--samples N]|editor-latency --source JPEG --output NEW [--binary PATH] [--samples N] [--mode drag|commit] [--control slider|curve] [--crop DEGREES] [--idle]|inventory --output NEW|package --output NEW|smoke --output NEW [--scenario NAME] [--binary PATH]|verify --output NEW [--tier quick|rendered|timing|full] [--jobs N] [--binary PATH] [--manifest FILE]|check-capture --image PNG [--orientation N] [--aspect R] [--columns LEFT,RIGHT]|hardening --binary PATH --output NEW|measure --binary PATH --output NEW [--samples N]|probe --candidate iced|egui --output NEW"
         ),
         _ => return Err("Unknown command; use cargo xtask help".into()),
     }

@@ -65,6 +65,8 @@ pub(crate) enum MenuTarget {
     },
     /// The open crop draft's own Apply: Copy as JSON request for its current values.
     Draft,
+    /// A module's picker control: Copy as JSON request for the `workspace.set` a click sends.
+    Mode(String),
 }
 
 /// What running one command palette entry does. Every entry is an existing message, so running an
@@ -367,6 +369,8 @@ pub(crate) enum Message {
     },
     /// Copy the JSON request the open crop draft's own Apply would send.
     CopyDraftRequest,
+    /// Copy the `workspace.set` request this module's picker control would send.
+    CopyModeRequest(String),
     /// Run one declared action with a fixed preset over the current field values.
     RunAction {
         action: String,

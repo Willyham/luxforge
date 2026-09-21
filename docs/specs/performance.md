@@ -40,6 +40,10 @@ A single float32 RGBA buffer for 60 MP is about 916 MiB, so unrestricted full-re
 
 Native M4 Pro, release builds, warm filesystem cache, synthetic fixtures. Diagnostic observations, not accepted budgets or cross-platform claims.
 
+### Sample counts for a p50/p95 claim
+
+Every harness command's default run is a functional run: it proves the journey and gives one launch count you can quote, not a distribution. A p50/p95 figure requires an explicit sample count: 30 samples per recipe for `editor-performance`, 30 inputs for `editor-latency` (one launch), 30 trials per source for `raw-editor`, and at least 5 launches per workload for `measure` — 5 gives a median and a maximum, not a stable p95, so use 30 launches per workload for a p95 claim. Every recorded figure states the count it was taken with.
+
 | Measurement | Result |
 | --- | --- |
 | S0 viewer launch to observed frame (empty / 24 MP / 60 MP) | median 233 / 296 / 412 ms |
@@ -123,7 +127,8 @@ each. This is the desktop measurement the core rows cannot make. **Presented mea
 `Uploaded` message**, recorded as the `preview_displayed` event: the rendered pixels have become a
 renderer texture and the canvas draws them from the next frame on. It is **not** display scanout,
 which the harness cannot observe, so every figure is an upper bound on the editor's own work and a
-lower bound on what an eye sees.
+lower bound on what an eye sees. The window these runs measure is invisible, so nothing is
+composited or scanned out in them at all.
 
 Each measured input is one scripted `slider` step left open, so the step settles only when the
 gesture has drained: one input, one `draft.set`, one preview job, one upload, with nothing from the
@@ -287,6 +292,15 @@ at full resolution.
 Crop correctness evidence is rendered, not timed: the `crop` and `crop-draft` smoke scenarios record
 correlated state, events and pixel checks, and no latency is claimed from them.
 
+The `verify` timing tier reports these provisional targets itself: its summary lists each target
+above that `editor-latency` and `measure` can answer, with the measured figure, the sample count, the
+exact JSON path it came from and a `pass`, `miss` or `not_measured` verdict, next to the one-minute
+load average of the host at the time. A verdict produced from those commands' default sample counts
+is a functional check that the targets are still roughly where this table says, not a baseline: a
+figure recorded here needs the sample count its own row states, on an otherwise quiet machine. A
+summary row or verdict marked `unreliable`, meaning the one-minute load average exceeded 8.0 when its
+component started, is never quoted as a baseline or as a pass or a miss.
+
 Core figures exclude desktop scheduling, GPU upload and presentation. Reproduce with
 `editor-performance`, `editor-latency` and `measure` as described in
 [development](../engineering/development.md). Reports under `artifacts/final-perf-24`,
@@ -296,7 +310,7 @@ Core figures exclude desktop scheduling, GPU upload and presentation. Reproduce 
 `artifacts/before-measure` retain every sample, the correlated state and the source and binary
 hashes; they are local evidence and are not repository assets.
 
-Current macOS `measure` and `editor-latency` runs use background-only bundles to preserve desktop focus. Launch-to-frame timings include copying the executable and creating its temporary bundle; they are background renderer measurements, not foreground activation measurements. Reports identify the launch mode. Earlier launch baselines above predate this wrapper and are not directly comparable.
+Current macOS `measure` and `editor-latency` runs use background-only bundles to preserve desktop focus, and the editor they launch creates its window invisible. Launch-to-frame timings include copying the executable and creating its temporary bundle; they are background renderer measurements, not foreground activation measurements, and they exclude the cost of placing and compositing a visible window. Nothing in these runs is scanned out, so the presentation figures cover the editor's path to a renderer texture and not what reaching a display would add. Rendering, readback and the state each frame is correlated against are unchanged: the window owns the same Metal surface either way. Reports identify the launch mode. Earlier launch baselines above predate this wrapper and are not directly comparable.
 
 ## Current RAW and JPEG measurements
 

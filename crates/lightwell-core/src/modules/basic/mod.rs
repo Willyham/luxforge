@@ -96,6 +96,9 @@ const COLOUR_GROUP: &str = "Colour";
 /// The group label the White balance controls share.
 const WHITE_BALANCE_GROUP: &str = "White balance";
 
+/// The neutral picker's name, on its control in the White balance group and on its canvas mode.
+const NEUTRAL_PICKER_LABEL: &str = "Neutral picker";
+
 /// Every implemented Basic field, in the payload's declared order. A later slice adds further
 /// optional keys of the same format, and a neutral-defaulting key changes no existing
 /// interpretation.
@@ -561,6 +564,10 @@ impl BasicModule {
                                 style: crate::NumberStyle::Slider,
                                 rail: None,
                             },
+                            // The neutral picker, beside the two fields a pick sets.
+                            Control::Picker {
+                                label: NEUTRAL_PICKER_LABEL.into(),
+                            },
                         ],
                         collapsed: false,
                     },
@@ -658,7 +665,7 @@ impl BasicModule {
                     x: "x".into(),
                     y: "y".into(),
                     action: SET_BASIC.into(),
-                    title: "Neutral picker".into(),
+                    title: NEUTRAL_PICKER_LABEL.into(),
                     shortcut: Some("W".into()),
                 }),
                 developer: false,
@@ -1117,6 +1124,9 @@ mod tests {
                             style: crate::NumberStyle::Slider,
                             rail: None,
                         },
+                        Control::Picker {
+                            label: "Neutral picker".into(),
+                        },
                     ],
                     collapsed: false,
                 },
@@ -1211,8 +1221,8 @@ mod tests {
                     collapsed: false,
                 },
             ],
-            "the White balance group's two sliders, then the Tone group's six, then the Colour \
-             group's two, each with a group reset naming all of its fields"
+            "the White balance group's two sliders and its neutral picker, then the Tone group's \
+             six, then the Colour group's two, each with a group reset naming all of its fields"
         );
     }
 
@@ -1251,10 +1261,14 @@ mod tests {
                         style: crate::NumberStyle::Slider,
                         rail: None,
                     },
+                    Control::Picker {
+                        label: "Neutral picker".into(),
+                    },
                 ],
                 collapsed: false,
             }),
-            "white balance is the first group, before tone"
+            "white balance is the first group, before tone, and the neutral picker sits with the \
+             two fields a pick sets"
         );
 
         let set = descriptor.action(SET_BASIC).expect("set-basic");

@@ -2,6 +2,7 @@
 
 use crate::geometry::{self, Side};
 use crate::theme;
+use crate::widgets::double_click::double_click;
 use crate::widgets::number_field::{NumberFieldModel, field_header};
 use crate::widgets::slider_guard::SliderGuard;
 use crate::widgets::text::error_caption;
@@ -42,7 +43,10 @@ pub struct SliderModel {
     pub enabled: bool,
 }
 
-/// The callback receives a rail fraction. The host maps it to a declared value and owns steps.
+/// The callback receives a rail fraction. The host maps it to a declared value, applies its
+/// declared step and display precision, and owns validation. Double-clicking the label or an
+/// enabled rail publishes `on_reset`; the rail wrapper sees the press before Iced's slider
+/// captures it.
 #[allow(clippy::too_many_arguments)]
 pub fn slider<'a, M: Clone + 'a>(
     model: &SliderModel,
@@ -61,7 +65,8 @@ pub fn slider<'a, M: Clone + 'a>(
         unit: model.unit.clone(),
         enabled: model.enabled,
     };
-    let (header, invalid) = field_header(&field, on_edit_start, on_text, on_submit, on_reset);
+    let (header, invalid) =
+        field_header(&field, on_edit_start, on_text, on_submit, on_reset.clone());
     let fill = geometry::fill_stops(model.soft_min, model.soft_max, model.zero, model.value);
     let range = model.soft_min..=model.soft_max;
     let soft_min = model.soft_min;
@@ -100,6 +105,11 @@ pub fn slider<'a, M: Clone + 'a>(
     .into();
     let low = over_range_mark(model.over_range == Some(Side::Low));
     let high = over_range_mark(model.over_range == Some(Side::High));
+    let rail = if model.enabled {
+        double_click(rail, on_reset)
+    } else {
+        rail
+    };
     let rail = row![low, rail, high]
         .spacing(3.0)
         .align_y(Alignment::Center);

@@ -111,6 +111,10 @@ notes: "three 8-bit sRGB channels".into(),
                             label: "RGB".into(),
                             style: crate::ColorStyle::Fields,
                         },
+                        // The proof's own pick mode, reached from its panel like every other.
+                        Control::Picker {
+                            label: "Pick pixel".into(),
+                        },
                         Control::Action {
                             action: SET_PIXEL.into(),
                             label: "Apply pixel".into(),

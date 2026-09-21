@@ -13,14 +13,14 @@ use lightwell_ui::{MenuChoiceModel, caption, gallery_named_states, menu_choice, 
 const PAGES: [(&str, usize, usize); 10] = [
     ("Sliders and sections", 0, 9),
     ("Actions and history", 9, 19),
-    ("Notices and menus", 19, 24),
-    ("Histogram and typography", 24, 37),
-    ("Rails and number fields", 37, 46),
-    ("Toggles, choices and swatches", 46, 55),
-    ("Colour picker", 55, 58),
-    ("Curve points", 58, 60),
-    ("Curve channels", 60, 62),
-    ("Named vector icons", 62, 63),
+    ("Notices and menus", 19, 25),
+    ("Histogram and typography", 25, 38),
+    ("Rails and number fields", 38, 47),
+    ("Toggles, choices and swatches", 47, 56),
+    ("Colour picker", 56, 59),
+    ("Curve points", 59, 61),
+    ("Curve channels", 61, 63),
+    ("Named vector icons", 63, 64),
 ];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

@@ -42,6 +42,10 @@ Accepted on 2026-09-20 for the [Develop workspace](design/develop-workspace.md) 
 - Compare is hold-`\` for the Original entry, through `preview.select` and `preview.return-current`. Dark theme only; a light theme is not planned.
 - Basic, histogram, export, Locate, heal and mask are outside this work. Their sections, buttons and notices are left out of the build entirely rather than drawn as placeholders. The generated tools panel must accept a `number` slider module without desktop changes, which is how Basic lands later.
 
+Decided on 2026-09-21:
+
+- A picking mode belongs beside the controls it fills, not in the hovering mode strip: a module that declares a `point-pick` or `sample-apply` canvas declares a `picker` control in its own panel (Basic's Neutral picker in the White balance group, RAW's Neutral WB in the RAW group), and the strip holds the pointer, canvas-takeover modes (crop) and view overlays only. Declared letters and the command palette still enter every mode.
+
 ## Basic adjustments and histogram
 
 Accepted on 2026-09-21 for the [Basic and histogram design](design/basic-and-histogram.md). These settle the product questions; implementation was authorized the same day and is delivered.

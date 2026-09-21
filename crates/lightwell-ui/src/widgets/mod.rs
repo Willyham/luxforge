@@ -8,6 +8,7 @@ mod chip;
 mod color_picker;
 mod color_swatch;
 mod curve_editor;
+mod double_click;
 mod floating_bar;
 mod focus_control;
 mod histogram;
@@ -37,6 +38,7 @@ pub use curve_editor::{
     CurveEditorEvent, CurveEditorModel, CurvePointRow, POINT_HIT_RADIUS, curve_editor, hit_test,
     point_fraction, round_fraction,
 };
+pub use double_click::double_click;
 pub use floating_bar::floating_bar;
 pub use focus_control::{ControlKey, ControlKeyEvent, focus_control};
 pub use histogram::{
