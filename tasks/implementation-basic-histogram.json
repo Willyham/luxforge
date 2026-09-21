@@ -358,7 +358,7 @@
     {
       "id": "TASK-006",
       "description": "Expose bounded histogram jobs through the shared service and independent JSON clients.",
-      "status": "in_progress",
+      "status": "completed",
       "dependencies": [
         "TASK-003",
         "TASK-005"
@@ -429,7 +429,7 @@
     {
       "id": "TASK-007",
       "description": "Build the Histogram inspector, clipping overlays and pixel readout.",
-      "status": "pending",
+      "status": "in_progress",
       "dependencies": [
         "TASK-006"
       ],
