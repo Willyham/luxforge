@@ -300,7 +300,7 @@
     {
       "id": "TASK-005",
       "description": "Implement the standalone exact RGB histogram reducer and output clipping predicates.",
-      "status": "in_progress",
+      "status": "completed",
       "dependencies": [
         "TASK-002"
       ],
@@ -1018,7 +1018,7 @@
     {
       "id": "TASK-015",
       "description": "Select Saturation and Vibrance mathematics, gamut behavior and portrait acceptance.",
-      "status": "in_progress",
+      "status": "completed",
       "dependencies": [
         "TASK-001",
         "TASK-002"
