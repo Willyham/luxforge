@@ -1376,7 +1376,8 @@ mod tests {
             .find(|module| module.id == "lightwell.basic")
             .expect("the Basic module is registered")
             .clone();
-        assert_eq!(group_path(&basic.controls, "Tone"), Some(vec![0]));
+        assert_eq!(group_path(&basic.controls, "Tone"), Some(vec![1]));
+        assert_eq!(group_path(&basic.controls, "White balance"), Some(vec![0]));
         assert_eq!(group_path(&basic.controls, "Nowhere"), None);
     }
 
