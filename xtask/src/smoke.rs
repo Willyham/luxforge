@@ -6,6 +6,38 @@ use std::{
     process::{Child, Stdio},
     time::{Duration, Instant},
 };
+/// Every rendered scenario, in the order `verify --tier rendered` runs them. One list: `main.rs`
+/// and `verify` both reach a scenario through [`dispatch`], so a new scenario is named here once.
+pub const SCENARIOS: [&str; 17] = [
+    "empty",
+    "load",
+    "replacement",
+    "invalid",
+    "repeated",
+    "alternating",
+    "large24",
+    "large60",
+    "crop",
+    "crop-draft",
+    "workspace",
+    "basic",
+    "basic-panel",
+    "basic-crop",
+    "basic-restart",
+    "histogram",
+    "unavailable",
+];
+
+/// Run one scenario, including the two that are not a single launch: a module can only be disabled
+/// at startup, and persistence across a restart needs a second process.
+pub fn dispatch(root: &Path, out: &Path, scenario: &str, bin: &Path, timeout: Duration) -> Result {
+    match scenario {
+        "unavailable" => workspace::run_unavailable(root, out, bin, timeout),
+        "basic-restart" => basic::run_restart(root, out, bin, timeout),
+        _ => run(root, out, scenario, bin, timeout),
+    }
+}
+
 pub struct Guard {
     pub child: Child,
     focus: launch::Focus,

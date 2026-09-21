@@ -19,6 +19,7 @@ mod raw_editor;
 mod reference;
 mod repository;
 mod smoke;
+mod verify;
 mod workspace_smoke;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
@@ -390,24 +391,29 @@ fn main_result() -> Result {
                 .map(|p| absolute(&root, &p))
                 .unwrap_or(binary(&root)?);
             a.done()?;
-            if scenario == "unavailable" {
-                workspace_smoke::run_unavailable(
-                    &root,
-                    &out,
-                    &bin,
-                    std::time::Duration::from_secs(35),
-                )?;
-            } else if scenario == "basic-restart" {
-                basic_smoke::run_restart(&root, &out, &bin, std::time::Duration::from_secs(35))?;
-            } else {
-                smoke::run(
-                    &root,
-                    &out,
-                    &scenario,
-                    &bin,
-                    std::time::Duration::from_secs(35),
-                )?;
-            }
+            smoke::dispatch(
+                &root,
+                &out,
+                &scenario,
+                &bin,
+                std::time::Duration::from_secs(35),
+            )?;
+        }
+        "verify" => {
+            let out = absolute(&root, &a.path("--output")?);
+            let tier = a
+                .value("--tier")?
+                .map(|t| {
+                    t.into_string()
+                        .map_err(|_| "Invalid tier".into())
+                        .and_then(|t| verify::Tier::parse(&t))
+                })
+                .transpose()?
+                .unwrap_or(verify::Tier::Quick);
+            let bin = a.value("--binary")?.map(PathBuf::from);
+            let manifest = a.value("--manifest")?.map(PathBuf::from);
+            a.done()?;
+            verify::run(&root, &out, tier, bin, manifest)?;
         }
         "check-capture" => {
             let path = absolute(&root, &a.path("--image")?);
@@ -466,7 +472,7 @@ fn main_result() -> Result {
         }
         "__hang" => std::thread::sleep(std::time::Duration::from_secs(60)),
         "help" => println!(
-            "cargo xtask doctor|check|check-repository|fmt|lint|test|build [--release]|develop [--debug] [--background] [app args]|fixtures|generate-fixtures [--output NEW]|audit|raw-corpus --manifest FILE --output NEW|raw-reference --output NEW|raw-editor --manifest FILE --output NEW [--samples N] [--binary PATH]|editor-acceptance --output NEW|editor-performance --source JPEG --output NEW [--samples N]|editor-latency --source JPEG --output NEW [--binary PATH] [--samples N] [--mode drag|commit] [--crop DEGREES] [--idle]|inventory --output NEW|package --output NEW|smoke --output NEW [--scenario NAME] [--binary PATH]|check-capture --image PNG [--orientation N] [--aspect R] [--columns LEFT,RIGHT]|hardening --binary PATH --output NEW|measure --binary PATH --output NEW [--samples N]|probe --candidate iced|egui --output NEW"
+            "cargo xtask doctor|check|check-repository|fmt|lint|test|build [--release]|develop [--debug] [--background] [app args]|fixtures|generate-fixtures [--output NEW]|audit|raw-corpus --manifest FILE --output NEW|raw-reference --output NEW|raw-editor --manifest FILE --output NEW [--samples N] [--binary PATH]|editor-acceptance --output NEW|editor-performance --source JPEG --output NEW [--samples N]|editor-latency --source JPEG --output NEW [--binary PATH] [--samples N] [--mode drag|commit] [--crop DEGREES] [--idle]|inventory --output NEW|package --output NEW|smoke --output NEW [--scenario NAME] [--binary PATH]|verify --output NEW [--tier quick|rendered|timing|full] [--binary PATH] [--manifest FILE]|check-capture --image PNG [--orientation N] [--aspect R] [--columns LEFT,RIGHT]|hardening --binary PATH --output NEW|measure --binary PATH --output NEW [--samples N]|probe --candidate iced|egui --output NEW"
         ),
         _ => return Err("Unknown command; use cargo xtask help".into()),
     }

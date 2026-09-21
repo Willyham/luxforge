@@ -292,6 +292,13 @@ at full resolution.
 Crop correctness evidence is rendered, not timed: the `crop` and `crop-draft` smoke scenarios record
 correlated state, events and pixel checks, and no latency is claimed from them.
 
+The `verify` timing tier reports these provisional targets itself: its summary lists each target
+above that `editor-latency` and `measure` can answer, with the measured figure, the sample count, the
+exact JSON path it came from and a `pass`, `miss` or `not_measured` verdict, next to the one-minute
+load average of the host at the time. A verdict produced from those commands' default sample counts
+is a functional check that the targets are still roughly where this table says, not a baseline: a
+figure recorded here needs the sample count its own row states, on an otherwise quiet machine.
+
 Core figures exclude desktop scheduling, GPU upload and presentation. Reproduce with
 `editor-performance`, `editor-latency` and `measure` as described in
 [development](../engineering/development.md). Reports under `artifacts/final-perf-24`,

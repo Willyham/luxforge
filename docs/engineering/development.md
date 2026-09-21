@@ -21,6 +21,7 @@ Doctor reports missing tools and the graphics environment without installing any
 | --- | --- |
 | Environment report | `cargo xtask doctor` |
 | Full local and CI checks: repository links and task plans, formatting, Clippy, tests | `cargo xtask check` |
+| A whole verification tier with one summary | `cargo run --release --locked --package xtask -- verify --tier quick\|rendered\|timing\|full --output NEW_DIR [--binary PATH] [--manifest FILE]` |
 | Individual steps | `cargo xtask check-repository`, `fmt`, `lint`, `test`, `build [--release]` |
 | Run the editor, release build | `cargo xtask develop [--catalog FILE] [--open PATH] [--data-root DIR]` |
 | Run an unoptimized build, debugging only | `cargo xtask develop --debug ...` |
@@ -46,6 +47,48 @@ Doctor reports missing tools and the graphics environment without installing any
 | Isolated UI probes | `cargo xtask probe --candidate iced|egui --output NEW_DIR` |
 
 Every evidence command refuses an existing output directory: use a fresh `artifacts/<run-id>/`. Default sample counts are functional runs: they prove the journey and give one launch count to quote, not a distribution. A p50/p95 claim needs the explicit counts stated in the [performance plan](../specs/performance.md#sample-counts-for-a-p50p95-claim). Timing commands must use release builds. A debug build makes image work roughly thirty times slower (a 10 MB JPEG took ten seconds to open), which is why `develop` defaults to release. `check` never implies graphical or dependency-audit acceptance.
+
+### Verification tiers
+
+`verify` runs a tier of the commands above and writes one summary. Each tier includes the ones below it:
+
+| Tier | What it runs |
+| --- | --- |
+| `quick` | `check` and `editor-acceptance` |
+| `rendered` | quick plus every smoke scenario |
+| `timing` | quick plus `editor-performance`, `editor-latency` and `measure`, in that order, after everything else in the tier |
+| `full` | rendered plus timing plus `raw-reference` and, with `--manifest FILE`, `raw-editor` |
+
+The local default is `quick` per change; run `rendered` and `timing` at integration points and `full`
+before a milestone claim. Without a manifest, `full` lists `raw-editor` as `skipped` with the reason
+`no --manifest`: a skip is never a pass.
+
+The command builds `lightwell-app` and `xtask` once in release, then runs each component as a child
+process of the release `xtask` executable with its console output in `<out>/<component>/console.log`
+and its own evidence in `<out>/<component>/run/`. `--binary PATH` is forwarded to every component
+that takes one; without it the executable just built is passed explicitly, so every component
+measures the same file. The rendered and timing tiers run `generate-fixtures` first when the 24 or
+60 MP workloads are missing. A component that has stopped making progress is killed after twenty
+minutes and recorded as `timed_out`.
+
+The console shows only the Markdown table. `<out>/summary.json` and `<out>/summary.md` hold, per
+component in run order, its status, elapsed time, exit code, first failure line, artifact paths and
+how many editor processes it started, then the p50/p95 timing rows of the timing tier with their
+source file and sample count, and each provisional performance target with its measured figure and a
+`pass`, `miss` or `not_measured` verdict. Both files are rewritten after every component, so a
+partial run still reports what it has; components that never ran are `not_run`. The exit status is
+non-zero when any component failed or timed out, and names them.
+
+The command never opens a frame. Read a capture as an image only for a failed scenario or a design
+review.
+
+Wall-clock on the owner's M4 Pro with the release build already current and the Cargo cache warm:
+`quick` 9 s at one-minute load average 5 and 45 s at load average 37, almost all of it `check`, which
+takes minutes whenever Cargo has to rebuild; `rendered` 41 s at load average 6 for 17 scenarios and
+19 editor launches; `timing` 133 s at load average 11 with the default sample counts, of which
+`measure` is 115 s and 92 launches; `full` without a manifest 182 s at load average 5. A timing
+figure is only as good as the host was, so the summary records the one-minute load average at the
+start of each timing component beside its rows.
 
 ## Running the application
 
