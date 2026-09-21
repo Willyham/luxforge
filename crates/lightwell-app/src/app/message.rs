@@ -37,16 +37,30 @@ pub(crate) enum MenuTarget {
     Version(String),
     /// A generated control: Copy as JSON request.
     Control { action: String },
+    /// The open crop draft's own Apply: Copy as JSON request for its current values.
+    Draft,
 }
 
-/// What running one command palette entry does. Every entry is an existing message.
+/// What running one command palette entry does. Every entry is an existing message, so running an
+/// entry can reach nothing the panels and the title bar cannot.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum PaletteAction {
+    /// A generated control action, with the control's own preset over the current field values.
     Run {
         action: String,
         preset: Map<String, Value>,
     },
+    /// The pointer mode or a module's declared canvas mode.
     Mode(String),
+    /// Show or hide one side panel.
+    TogglePanel(Panel),
+    ToggleThirds,
+    Fit,
+    HundredPercent,
+    Undo,
+    Redo,
+    ReturnCurrent,
+    Restore,
 }
 
 /// One pointer step of a crop gesture, already mapped to box pixels by the canvas.
@@ -198,7 +212,9 @@ pub(crate) enum Message {
     PaletteMove(i32),
     /// Run the selected palette entry.
     PaletteRun,
-    /// Open an inline menu on a version chip or a control.
+    /// Select and run one specific entry directly, as a click on it does.
+    PaletteRunIndex(usize),
+    /// Open an inline menu on a version chip, a control or the open crop draft.
     OpenMenu(MenuTarget),
     /// Close the open inline menu.
     CloseMenu,
@@ -206,6 +222,8 @@ pub(crate) enum Message {
     CopyRequest {
         action: String,
     },
+    /// Copy the JSON request the open crop draft's own Apply would send.
+    CopyDraftRequest,
     /// Run one declared action with a fixed preset over the current field values.
     RunAction {
         action: String,

@@ -788,6 +788,53 @@ mod tests {
     }
 
     #[test]
+    fn a_render_failure_before_any_upload_explains_itself_on_the_canvas_placeholder() {
+        let unavailable = ModuleDescriptor {
+            availability: Availability::Unavailable {
+                reason: "disabled by --disable-module".into(),
+            },
+            ..crop_descriptor()
+        };
+        let effect = unavailable.effects[0].id.clone();
+        let scene = Scene::new(vec![unavailable]).opened(Vec::new());
+        let render_error = Some((
+            lightwell_core::ErrorKind::Incompatible,
+            format!("unavailable effect {effect} (layers l1)"),
+        ));
+        let mut inputs = scene.inputs();
+        inputs.photo = false;
+        inputs.render_error = render_error.as_ref();
+        let mut workspace = Workspace::default();
+        workspace.derive(&inputs);
+        assert_eq!(
+            workspace.canvas.photo,
+            canvas::PhotoView::Empty(
+                "Preview unavailable: Crop is unavailable: disabled by --disable-module".into()
+            ),
+            "a photograph is open but nothing has ever rendered for it"
+        );
+
+        // Nothing open at all still invites opening one, never "unavailable".
+        let closed = Scene::new(Vec::new());
+        let mut inputs = closed.inputs();
+        inputs.photo = false;
+        inputs.render_error = render_error.as_ref();
+        let mut workspace = Workspace::default();
+        workspace.derive(&inputs);
+        assert_eq!(
+            workspace.canvas.photo,
+            canvas::PhotoView::Empty("Open a photograph".into())
+        );
+
+        // Once a photograph is actually on the GPU, the placeholder never applies.
+        let mut inputs = scene.inputs();
+        inputs.render_error = render_error.as_ref();
+        let mut workspace = Workspace::default();
+        workspace.derive(&inputs);
+        assert_eq!(workspace.canvas.photo, canvas::PhotoView::Plain);
+    }
+
+    #[test]
     fn the_conflict_notice_names_the_revision_that_arrived() {
         let crop = crop_descriptor();
         let mut scene = Scene::new(vec![crop]).opened(Vec::new());

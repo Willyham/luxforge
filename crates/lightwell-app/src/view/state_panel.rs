@@ -5,8 +5,10 @@ use crate::{
     state::panel::{Marker as PanelMarker, StatePanelModel},
 };
 use iced::{
-    Alignment, Element, Length,
-    widget::{Row, Space, button, column, row, scrollable, text, text_input},
+    Alignment, Element, Length, Padding,
+    widget::{
+        Row, Space, button, column, container, row, scrollable, text, text::Wrapping, text_input,
+    },
 };
 use lightwell_ui::{
     ChipModel, IconButtonModel, ListRowModel, Marker, chip, icon_button, inline_menu, list_row,
@@ -151,19 +153,73 @@ fn recipe(model: &StatePanelModel) -> Element<'_, Message> {
         return block.into();
     }
     for (index, layer) in model.recipe.iter().enumerate() {
-        block = block.push(list_row(
-            &ListRowModel {
-                marker: Marker::None,
-                leading: (index + 1).to_string(),
-                label: layer.title.clone(),
-                trailing: Some(layer.summary.clone()),
-                dimmed: !layer.available,
-                tag: None,
-                enabled: true,
-            },
-            None,
-            None,
+        block = block.push(recipe_row(
+            index,
+            layer.title.clone(),
+            layer.summary.clone(),
+            layer.available,
         ));
     }
     block.into()
+}
+
+/// One recipe row: the sequence and the module title on their own line, the layer's payload
+/// summary as a caption underneath. Two short lines read better here than a trailing caption,
+/// which a long summary ("unavailable: disabled by --disable-module") would otherwise squeeze
+/// into a sliver next to a title that keeps the rest of the row. Both lines stay on one line each
+/// (`Wrapping::None`) and clip rather than grow the row to fit an unbounded summary.
+fn recipe_row(
+    index: usize,
+    title: String,
+    summary: String,
+    available: bool,
+) -> Element<'static, Message> {
+    let title_color = if available {
+        theme::TEXT_PRIMARY
+    } else {
+        theme::TEXT_TERTIARY
+    };
+    let heading = row![
+        container(lightwell_ui::caption((index + 1).to_string())).width(Length::Fixed(24.0)),
+        container(
+            text(title)
+                .size(theme::SIZE_CONTROL)
+                .color(title_color)
+                .wrapping(Wrapping::None),
+        )
+        .clip(true)
+        .width(Length::Fill),
+    ]
+    .spacing(theme::SPACING)
+    .align_y(Alignment::Center);
+    let detail = container(
+        text(summary)
+            .size(theme::SIZE_CAPTION)
+            .color(theme::TEXT_TERTIARY)
+            .wrapping(Wrapping::None),
+    )
+    .clip(true)
+    .width(Length::Fill)
+    .padding(Padding {
+        left: 32.0,
+        ..Padding::default()
+    });
+    column![heading, detail].spacing(2.0).into()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A summary long enough to have caused the old trailing-caption layout to wrap into a tall
+    /// sliver still builds as one row, its own two lines, with no panic.
+    #[test]
+    fn a_long_recipe_summary_stays_a_two_line_row() {
+        let _: Element<'static, Message> = recipe_row(
+            0,
+            "Basic".into(),
+            "unavailable: disabled by --disable-module".into(),
+            false,
+        );
+    }
 }

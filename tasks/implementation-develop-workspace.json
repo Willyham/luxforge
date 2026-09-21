@@ -325,7 +325,7 @@
     {
       "id": "TASK-006",
       "description": "Add the command palette, Copy as JSON request, the evidence steps and the workspace and unavailable smoke scenarios.",
-      "status": "ready",
+      "status": "completed",
       "dependencies": [
         "TASK-005"
       ],
@@ -390,7 +390,7 @@
     {
       "id": "TASK-007",
       "description": "Collect native M4 evidence for every mockup state, measure startup and idle cost, and update the docs to describe only what is demonstrated.",
-      "status": "pending",
+      "status": "ready",
       "dependencies": [
         "TASK-006"
       ],

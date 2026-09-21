@@ -7,7 +7,7 @@ use crate::{
             action_params, channel_text, field_id, labelled, number_text, parse_field,
             undeclared_label, unsupported_label,
         },
-        message::PaletteAction,
+        message::{MenuTarget, PaletteAction},
     },
     crop_draft::{AspectPreset, CropDraft},
     state::Inputs,
@@ -48,6 +48,8 @@ pub(crate) struct ToolsModel {
     /// Proof and diagnostic modules, listed only when the desktop was started with `--developer`.
     pub(crate) developer: Vec<SectionModel>,
     pub(crate) status: ToolsStatus,
+    /// The inline menu open on one generated control or the crop draft's Apply, if any.
+    pub(crate) menu: Option<MenuTarget>,
 }
 
 /// A declared action with fixed parameters, as a header or group reset button raises it.
@@ -230,6 +232,7 @@ pub(crate) struct CropSectionModel {
 impl ToolsModel {
     /// Recompute every section whose inputs changed and leave the rest exactly as they were.
     pub(crate) fn refresh(&mut self, inputs: &Inputs<'_>) {
+        self.menu = inputs.menu.cloned();
         self.status = match (inputs.modules.is_empty(), inputs.modules_ready) {
             (true, false) => ToolsStatus::Loading,
             (true, true) => ToolsStatus::Empty,
@@ -890,29 +893,40 @@ pub(crate) fn crop_frame(modules: &[ModuleDescriptor]) -> Option<CropFrame<'_>> 
     })
 }
 
-/// Every palette entry the registry offers: each module's declared action controls and each
-/// available canvas mode, filtered by the typed query.
+/// Every module-declared palette entry the registry offers: each generated control action
+/// ("`<module title> · <control label>`"), each module's own reset and each available canvas mode
+/// ("`Mode · <title>`"). Unfiltered and in registry order; `state::palette` combines these with the
+/// host commands and applies the query once, over the whole list. A developer module (the pixel
+/// proof) is listed only when the run asked for it, exactly as its section is.
 pub(crate) fn palette_entries(
     modules: &[ModuleDescriptor],
-    query: &str,
+    developer: bool,
 ) -> Vec<(String, String, PaletteAction)> {
     let mut entries = Vec::new();
-    for module in modules.iter().filter(|module| module.is_available()) {
+    for module in modules
+        .iter()
+        .filter(|module| module.is_available())
+        .filter(|module| !module.developer || developer)
+    {
         collect_actions(module, &module.controls, &mut entries);
+        if let Some(reset) = &module.reset {
+            entries.push((
+                format!("{} · Reset", module.title),
+                format!("edit.{}", reset.action),
+                PaletteAction::Run {
+                    action: reset.action.clone(),
+                    preset: reset.preset.clone(),
+                },
+            ));
+        }
         if let Some(canvas) = &module.canvas {
             entries.push((
-                canvas.title().to_owned(),
-                module.title.clone(),
+                format!("Mode · {}", canvas.title()),
+                "workspace.set".to_owned(),
                 PaletteAction::Mode(module.id.clone()),
             ));
         }
     }
-    let needle = query.trim().to_lowercase();
-    entries.retain(|(label, detail, _)| {
-        needle.is_empty()
-            || label.to_lowercase().contains(&needle)
-            || detail.to_lowercase().contains(&needle)
-    });
     entries
 }
 
@@ -929,8 +943,8 @@ fn collect_actions(
                 label,
                 preset,
             } => entries.push((
-                label.to_owned(),
-                module.title.clone(),
+                format!("{} · {label}", module.title),
+                format!("edit.{action}"),
                 PaletteAction::Run {
                     action: action.to_owned(),
                     preset: preset.clone(),

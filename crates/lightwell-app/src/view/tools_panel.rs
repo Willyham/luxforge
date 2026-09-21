@@ -5,7 +5,7 @@
 use crate::{
     app::{
         fields,
-        message::{CropMessage, Message},
+        message::{CropMessage, MenuTarget, Message},
     },
     state::tools::{
         ActionControl, ColorControl, ControlModel, CropSectionModel, EnumControl, GroupControl,
@@ -14,12 +14,12 @@ use crate::{
 };
 use iced::{
     Alignment, Element, Length,
-    widget::{Row, button, column, row, scrollable, text_input},
+    widget::{Row, button, column, mouse_area, row, scrollable, text_input},
 };
 use lightwell_ui::{
     ChipModel, IconButtonModel, SectionHeaderModel, SegmentedModel, SliderModel,
-    SubGroupHeaderModel, caption, chip, error_caption, icon_button, section_header, section_label,
-    segmented, slider, sub_group_header, theme,
+    SubGroupHeaderModel, caption, chip, error_caption, icon_button, inline_menu, section_header,
+    section_label, segmented, slider, sub_group_header, theme,
 };
 
 pub(crate) fn tools_panel(model: &ToolsModel) -> Element<'_, Message> {
@@ -28,23 +28,27 @@ pub(crate) fn tools_panel(model: &ToolsModel) -> Element<'_, Message> {
             .height(Length::Fill)
             .into();
     }
+    let menu = model.menu.as_ref();
     let mut panel = column![]
         .spacing(theme::SPACING)
         .padding(theme::SPACING)
         .width(Length::Fill);
     for section in &model.sections {
-        panel = panel.push(section_view(section));
+        panel = panel.push(section_view(section, menu));
     }
     if !model.developer.is_empty() {
         panel = panel.push(section_label("Developer"));
         for section in &model.developer {
-            panel = panel.push(section_view(section));
+            panel = panel.push(section_view(section, menu));
         }
     }
     scrollable(panel).height(Length::Fill).into()
 }
 
-fn section_view(section: &SectionModel) -> Element<'_, Message> {
+fn section_view<'a>(
+    section: &'a SectionModel,
+    menu: Option<&'a MenuTarget>,
+) -> Element<'a, Message> {
     let header = section_header(
         &SectionHeaderModel {
             title: section.title.clone(),
@@ -63,7 +67,12 @@ fn section_view(section: &SectionModel) -> Element<'_, Message> {
     // disabled section (busy, a historical preview) still shows its values, just not interactive.
     if section.expanded && section.unavailable.is_none() {
         for control in &section.controls {
-            block = block.push(control_view(&section.module_id, section.enabled, control));
+            block = block.push(control_view(
+                &section.module_id,
+                section.enabled,
+                control,
+                menu,
+            ));
         }
     }
     block.into()
@@ -73,15 +82,54 @@ fn control_view<'a>(
     module_id: &str,
     enabled: bool,
     control: &'a ControlModel,
+    menu: Option<&'a MenuTarget>,
 ) -> Element<'a, Message> {
     match control {
-        ControlModel::Slider(field) => slider_view(enabled, field),
-        ControlModel::Enum(choice) => enum_view(enabled, choice),
-        ControlModel::Color(color) => color_view(enabled, color),
-        ControlModel::Group(group) => group_view(module_id, enabled, group),
-        ControlModel::Action(action) => action_view(action),
+        ControlModel::Slider(field) => slider_view(enabled, field, menu),
+        ControlModel::Enum(choice) => enum_view(enabled, choice, menu),
+        ControlModel::Color(color) => color_view(enabled, color, menu),
+        ControlModel::Group(group) => group_view(module_id, enabled, group, menu),
+        ControlModel::Action(action) => action_view(action, menu),
         ControlModel::Unsupported(message) => error_caption(message.clone()),
-        ControlModel::CropFrame(frame) => crop_section_view(frame),
+        ControlModel::CropFrame(frame) => crop_section_view(frame, menu),
+    }
+}
+
+/// Whether the control that owns `action` is the one whose context menu is open.
+fn menu_open_for(menu: Option<&MenuTarget>, action: &str) -> bool {
+    matches!(menu, Some(MenuTarget::Control { action: open }) if open == action)
+}
+
+/// The "Copy as JSON request" / "Cancel" menu a generated control's context menu opens, for the
+/// exact `edit.<action>` request its current values would send.
+fn control_menu(action: &str) -> Element<'static, Message> {
+    inline_menu(vec![
+        (
+            "Copy as JSON request".to_owned(),
+            Message::CopyRequest {
+                action: action.to_owned(),
+            },
+        ),
+        ("Cancel".to_owned(), Message::CloseMenu),
+    ])
+}
+
+/// Wrap a generated control so a right-click on it opens its action's context menu, and append the
+/// menu itself directly under the control when it is the one currently open.
+fn with_control_menu<'a>(
+    control: Element<'a, Message>,
+    action: &str,
+    menu: Option<&MenuTarget>,
+) -> Element<'a, Message> {
+    let area: Element<'a, Message> = mouse_area(control)
+        .on_right_press(Message::OpenMenu(MenuTarget::Control {
+            action: action.to_owned(),
+        }))
+        .into();
+    if menu_open_for(menu, action) {
+        column![area, control_menu(action)].spacing(4.0).into()
+    } else {
+        area
     }
 }
 
@@ -94,7 +142,11 @@ fn generic_step(min: f64, max: f64) -> f64 {
     10f64.powf((span / 200.0).log10().round())
 }
 
-fn slider_view(enabled: bool, field: &SliderControl) -> Element<'_, Message> {
+fn slider_view<'a>(
+    enabled: bool,
+    field: &'a SliderControl,
+    menu: Option<&'a MenuTarget>,
+) -> Element<'a, Message> {
     let step = if field.integer {
         1.0
     } else {
@@ -120,7 +172,7 @@ fn slider_view(enabled: bool, field: &SliderControl) -> Element<'_, Message> {
         parameter,
         text: field.default.clone(),
     };
-    slider(
+    let control: Element<'a, Message> = slider(
         &SliderModel {
             label: field.label.clone(),
             min: field.min,
@@ -156,54 +208,72 @@ fn slider_view(enabled: bool, field: &SliderControl) -> Element<'_, Message> {
             action: submit_action,
         },
         reset_message,
-    )
+    );
+    with_control_menu(control, &field.action, menu)
 }
 
-fn enum_view(enabled: bool, choice: &EnumControl) -> Element<'_, Message> {
-    let field = column![lightwell_ui::label(choice.label.clone())].spacing(4.0);
+fn enum_view<'a>(
+    enabled: bool,
+    choice: &'a EnumControl,
+    menu: Option<&'a MenuTarget>,
+) -> Element<'a, Message> {
+    let label = mouse_area(lightwell_ui::label(choice.label.clone())).on_right_press(
+        Message::OpenMenu(MenuTarget::Control {
+            action: choice.action.clone(),
+        }),
+    );
+    let mut field = column![label].spacing(4.0);
     let (action, parameter) = (choice.action.clone(), choice.parameter.clone());
     if choice.segmented {
         let options = choice.options.clone();
-        return field
-            .push(segmented(
-                &SegmentedModel {
-                    options: choice.options.clone(),
-                    selected: choice.selected.unwrap_or(0),
-                    enabled,
-                },
-                move |index| Message::Field {
-                    action: action.clone(),
-                    parameter: parameter.clone(),
-                    text: options[index].clone(),
-                },
-            ))
-            .into();
-    }
-    let chips = choice.options.iter().enumerate().map(|(index, option)| {
-        chip(
-            &ChipModel {
-                label: option.clone(),
-                trailing: None,
-                selected: choice.selected == Some(index),
+        field = field.push(segmented(
+            &SegmentedModel {
+                options: choice.options.clone(),
+                selected: choice.selected.unwrap_or(0),
                 enabled,
             },
-            Some(Message::Field {
+            move |index| Message::Field {
                 action: action.clone(),
                 parameter: parameter.clone(),
-                text: option.clone(),
-            }),
-            None,
-        )
-    });
-    field
-        .push(Row::new().spacing(4.0).extend(chips).wrap())
-        .into()
+                text: options[index].clone(),
+            },
+        ));
+    } else {
+        let chips = choice.options.iter().enumerate().map(|(index, option)| {
+            chip(
+                &ChipModel {
+                    label: option.clone(),
+                    trailing: None,
+                    selected: choice.selected == Some(index),
+                    enabled,
+                },
+                Some(Message::Field {
+                    action: action.clone(),
+                    parameter: parameter.clone(),
+                    text: option.clone(),
+                }),
+                None,
+            )
+        });
+        field = field.push(Row::new().spacing(4.0).extend(chips).wrap());
+    }
+    if menu_open_for(menu, &choice.action) {
+        field = field.push(control_menu(&choice.action));
+    }
+    field.into()
 }
 
-fn color_view(enabled: bool, color: &ColorControl) -> Element<'_, Message> {
-    let mut channels = row![lightwell_ui::label(color.label.clone())]
-        .spacing(4.0)
-        .align_y(Alignment::Center);
+fn color_view<'a>(
+    enabled: bool,
+    color: &'a ColorControl,
+    menu: Option<&'a MenuTarget>,
+) -> Element<'a, Message> {
+    let label = mouse_area(lightwell_ui::label(color.label.clone())).on_right_press(
+        Message::OpenMenu(MenuTarget::Control {
+            action: color.action.clone(),
+        }),
+    );
+    let mut channels = row![label].spacing(4.0).align_y(Alignment::Center);
     for (index, value) in color.channels.iter().enumerate() {
         let (action, parameter, current) = (
             color.action.clone(),
@@ -230,10 +300,18 @@ fn color_view(enabled: bool, color: &ColorControl) -> Element<'_, Message> {
     if let Some(message) = &color.invalid {
         field = field.push(error_caption(message.clone()));
     }
+    if menu_open_for(menu, &color.action) {
+        field = field.push(control_menu(&color.action));
+    }
     field.into()
 }
 
-fn group_view<'a>(module_id: &str, enabled: bool, group: &'a GroupControl) -> Element<'a, Message> {
+fn group_view<'a>(
+    module_id: &str,
+    enabled: bool,
+    group: &'a GroupControl,
+    menu: Option<&'a MenuTarget>,
+) -> Element<'a, Message> {
     let header = sub_group_header(
         &SubGroupHeaderModel {
             label: group.label.clone(),
@@ -248,12 +326,15 @@ fn group_view<'a>(module_id: &str, enabled: bool, group: &'a GroupControl) -> El
     let indent = iced::Padding::default().left(theme::SPACING);
     let mut inner = column![].spacing(theme::SPACING).padding(indent);
     for control in &group.controls {
-        inner = inner.push(control_view(module_id, enabled, control));
+        inner = inner.push(control_view(module_id, enabled, control, menu));
     }
     column![header, inner].spacing(theme::SPACING / 2.0).into()
 }
 
-fn action_view(action: &ActionControl) -> Element<'_, Message> {
+fn action_view<'a>(
+    action: &'a ActionControl,
+    menu: Option<&'a MenuTarget>,
+) -> Element<'a, Message> {
     let control = button(lightwell_ui::label(action.label.clone()))
         .padding([4.0, 10.0])
         .style(theme::button_plain)
@@ -261,6 +342,7 @@ fn action_view(action: &ActionControl) -> Element<'_, Message> {
             action: action.action.clone(),
             preset: action.preset.clone(),
         }));
+    let control = with_control_menu(control.into(), &action.action, menu);
     match &action.reason {
         Some(reason) if !action.runnable => iced::widget::tooltip(
             control,
@@ -270,13 +352,16 @@ fn action_view(action: &ActionControl) -> Element<'_, Message> {
             iced::widget::tooltip::Position::Top,
         )
         .into(),
-        _ => control.into(),
+        _ => control,
     }
 }
 
 /// The crop draft's own panel, driven by [`CropMessage`]: the API-equivalent path and this panel
 /// share the same state machine.
-fn crop_section_view(model: &CropSectionModel) -> Element<'_, Message> {
+fn crop_section_view<'a>(
+    model: &'a CropSectionModel,
+    menu: Option<&'a MenuTarget>,
+) -> Element<'a, Message> {
     let mut panel = column![lightwell_ui::title(model.title.clone())].spacing(theme::SPACING);
     if !model.drafting {
         panel = panel.push(
@@ -394,19 +479,29 @@ fn crop_section_view(model: &CropSectionModel) -> Element<'_, Message> {
         .spacing(theme::SPACING / 2.0)
         .align_y(Alignment::Center),
     );
+    let apply = button(lightwell_ui::label("Apply"))
+        .padding([4.0, 10.0])
+        .style(theme::button_accent)
+        .on_press_maybe(model.can_apply.then_some(Message::Crop(CropMessage::Apply)));
+    let apply: Element<'a, Message> = mouse_area(apply)
+        .on_right_press(Message::OpenMenu(MenuTarget::Draft))
+        .into();
     panel = panel.push(
         row![
             button(lightwell_ui::label("Cancel"))
                 .padding([4.0, 10.0])
                 .style(theme::button_plain)
                 .on_press(Message::Crop(CropMessage::Cancel)),
-            button(lightwell_ui::label("Apply"))
-                .padding([4.0, 10.0])
-                .style(theme::button_accent)
-                .on_press_maybe(model.can_apply.then_some(Message::Crop(CropMessage::Apply))),
+            apply,
         ]
         .spacing(theme::SPACING / 2.0),
     );
+    if matches!(menu, Some(MenuTarget::Draft)) {
+        panel = panel.push(inline_menu(vec![
+            ("Copy as JSON request".to_owned(), Message::CopyDraftRequest),
+            ("Cancel".to_owned(), Message::CloseMenu),
+        ]));
+    }
     for line in &model.readout {
         panel = panel.push(caption(line.clone()));
     }

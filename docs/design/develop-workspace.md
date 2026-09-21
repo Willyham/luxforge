@@ -59,8 +59,9 @@ Where each tool lives, what kind of thing it is and whether it exists. Kinds: **
 | Recipe (layer stack) | State panel | core | Implemented as text; proposed as rows | `asset.state` and `history.inspect` |
 | Export | Title bar | core | Editor follow-up | The export design |
 | Locate | Notice on a missing original | core | Editor follow-up | [Source recovery](../specs/source-recovery.md) |
-| Command palette (`Cmd+K`) | Overlay | core | Proposed | `schema.list` and `module.list` |
-| Copy as JSON request, Show in schema | Control context menu | core | Proposed | The control's generated action |
+| Command palette (`Cmd+K`) | Overlay | core | Implemented | Every listed module's `module.list` controls, resets and canvas modes, plus the host view, history and panel commands |
+| Copy as JSON request | Control context menu, the crop draft's Apply | core | Implemented | The control's generated action, or `edit.crop` for the open draft |
+| Show in schema | Control context menu | core | Later | Its own design |
 | Pixel proof | Developer section, off by default | module | Implemented (M1) | `edit.set-pixel` |
 
 A build shows only the modules its registry contains. Sections for later modules exist in the mockup to settle their place in the panel, not as placeholders in code; the desktop never lists a module that is not registered. The pixel proof tool is a test module: propose a Developer section that is hidden unless enabled by a launch flag, so the default workspace stays a photo editor.

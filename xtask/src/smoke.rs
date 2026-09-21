@@ -1,4 +1,4 @@
-use crate::{crop_smoke as crop, *};
+use crate::{crop_smoke as crop, workspace_smoke as workspace, *};
 use std::{
     process::{Child, Stdio},
     time::{Duration, Instant},
@@ -244,6 +244,11 @@ pub fn verify(evidence: &Path, scenario: &str, count: usize) -> Result<Value> {
         crop::verify(evidence, scenario, &app, &events)?;
         return Ok(app);
     }
+    if let Some(frames) = workspace::frames(scenario) {
+        let (app, events) = preamble(evidence, frames)?;
+        workspace::verify(evidence, &app, &events)?;
+        return Ok(app);
+    }
     let (app, events) = preamble(evidence, count.max(1))?;
     let frames = app["frames"].as_array().ok_or("Missing frames")?;
     for (index, frame) in frames.iter().enumerate() {
@@ -353,6 +358,9 @@ pub fn run(root: &Path, out: &Path, scenario: &str, bin: &Path, timeout: Duratio
         "large60" => vec![root.join("fixtures/generated/60mp.jpg")],
         // The crop scenarios drive the editor's crop workflow through an evidence script.
         "crop" | "crop-draft" => vec![root.join("fixtures/s0/orientation-1.jpg")],
+        // `workspace` drives the panels, canvas mode, thirds, preview and palette; it needs the
+        // window size the design's layout constants are written against.
+        "workspace" => vec![root.join("fixtures/s0/orientation-1.jpg")],
         _ => return Err("Unknown smoke scenario".into()),
     };
     fs::create_dir_all(out)?;
@@ -371,6 +379,16 @@ pub fn run(root: &Path, out: &Path, scenario: &str, bin: &Path, timeout: Duratio
             "--window-size".into(),
             "1280".into(),
             "800".into(),
+        ]);
+    } else if let Some(script) = workspace::script(scenario) {
+        let file = out.join("script.json");
+        write_json(&file, &script)?;
+        args.extend([
+            "--evidence-script".into(),
+            file.into_os_string(),
+            "--window-size".into(),
+            workspace::WINDOW[0].into(),
+            workspace::WINDOW[1].into(),
         ]);
     }
     let command = std::iter::once(bin.as_os_str())

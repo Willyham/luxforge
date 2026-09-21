@@ -5,8 +5,8 @@ use crate::{
     app::{
         Editor,
         fields::number_text,
-        message::{CropMessage, CropPointer, Message},
-        tasks::mutation,
+        message::{CropMessage, CropPointer, Message, PaletteAction},
+        tasks::{mutation, workspace_task},
     },
     crop_draft::{Corner, Handle},
     state::tools::crop_frame,
@@ -55,6 +55,33 @@ pub(crate) enum Step {
     },
     Draft(DraftStep),
     View(ViewStep),
+    Workspace(WorkspaceStep),
+    Preview(PreviewStep),
+    Palette(PaletteStep),
+}
+
+/// Any of the panels, mode or thirds; every field is optional, exactly as `workspace.set` takes
+/// them. At least one field is required.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub(crate) struct WorkspaceStep {
+    pub(crate) state_panel: Option<bool>,
+    pub(crate) tools_panel: Option<bool>,
+    pub(crate) mode: Option<String>,
+    pub(crate) thirds: Option<bool>,
+}
+
+/// Select a loaded history entry by its sequence number, or return to the current state.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) enum PreviewStep {
+    Sequence(u64),
+    Current,
+}
+
+/// Open the command palette with this query, or open it, run the query and run its first match.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) enum PaletteStep {
+    Query(String),
+    Run(String),
 }
 
 /// One crop-draft change, each mapped to the [`CropMessage`] the panel or the canvas would send.
@@ -90,7 +117,33 @@ impl Step {
             Self::Draft(draft) => json!({"draft":draft.record()}),
             Self::View(ViewStep::Fit) => json!({"view":{"zoom":"fit"}}),
             Self::View(ViewStep::Percent(value)) => json!({"view":{"zoom":value}}),
+            Self::Workspace(workspace) => json!({"workspace":workspace.record()}),
+            Self::Preview(PreviewStep::Sequence(sequence)) => {
+                json!({"preview":{"sequence":sequence}})
+            }
+            Self::Preview(PreviewStep::Current) => json!({"preview":"current"}),
+            Self::Palette(PaletteStep::Query(query)) => json!({"palette":{"query":query}}),
+            Self::Palette(PaletteStep::Run(query)) => json!({"palette":{"run":query}}),
         }
+    }
+}
+
+impl WorkspaceStep {
+    fn record(&self) -> Value {
+        let mut object = Map::new();
+        if let Some(value) = self.state_panel {
+            object.insert("state_panel".into(), Value::from(value));
+        }
+        if let Some(value) = self.tools_panel {
+            object.insert("tools_panel".into(), Value::from(value));
+        }
+        if let Some(mode) = &self.mode {
+            object.insert("mode".into(), Value::from(mode.clone()));
+        }
+        if let Some(value) = self.thirds {
+            object.insert("thirds".into(), Value::from(value));
+        }
+        Value::Object(object)
     }
 }
 
@@ -119,8 +172,10 @@ impl DraftStep {
 pub(crate) enum Settle {
     /// The crop layer's truncated preview must reach the GPU and open the draft.
     Draft,
-    /// One session round trip, for a view change.
+    /// One session round trip, for a view or workspace change.
     Session,
+    /// A history or current-state selection's pixels must reach the GPU.
+    Preview,
 }
 
 impl Editor {
@@ -147,6 +202,9 @@ impl Editor {
             Step::Api { method, params } => self.api_step(method, params),
             Step::Draft(draft) => self.draft_step(draft),
             Step::View(view) => self.view_step(view),
+            Step::Workspace(workspace) => self.workspace_step(workspace),
+            Step::Preview(preview) => self.preview_step(preview),
+            Step::Palette(palette) => self.palette_step(palette),
         }
     }
 
@@ -297,6 +355,123 @@ impl Editor {
         }
     }
 
+    /// Any of the panels, the mode or the thirds overlay, sent as one `workspace.set` naming only
+    /// the fields that actually differ from the session's own, exactly as `TogglePanel`, `SetMode`
+    /// and `ToggleThirds` each already do for their one field. Captured on the session round trip.
+    fn workspace_step(&mut self, step: WorkspaceStep) -> Task<Message> {
+        if self.state.is_none() {
+            return self.fail_step("no photograph is open");
+        }
+        let mut diff = Map::new();
+        let workspace = &self.session.workspace;
+        if let Some(value) = step.state_panel
+            && value != workspace.state_panel
+        {
+            diff.insert("state_panel".into(), Value::from(value));
+        }
+        if let Some(value) = step.tools_panel
+            && value != workspace.tools_panel
+        {
+            diff.insert("tools_panel".into(), Value::from(value));
+        }
+        if let Some(value) = step.thirds
+            && value != workspace.thirds
+        {
+            diff.insert("thirds".into(), Value::from(value));
+        }
+        if let Some(mode) = &step.mode
+            && *mode != workspace.mode
+        {
+            diff.insert("mode".into(), Value::from(mode.clone()));
+        }
+        if diff.is_empty() {
+            self.capture_next_frame();
+            return Task::none();
+        }
+        self.await_step(Settle::Session);
+        workspace_task(self.owner.clone(), self.client, Value::Object(diff))
+    }
+
+    /// Select a loaded history entry by sequence, or return to the current state, exactly as the
+    /// state panel's rows and "Return to current" do. Captured once its pixels reach the GPU.
+    fn preview_step(&mut self, step: PreviewStep) -> Task<Message> {
+        if self.state.is_none() {
+            return self.fail_step("no photograph is open");
+        }
+        if self.busy {
+            return self.fail_step("a request is already in flight");
+        }
+        match step {
+            PreviewStep::Current => {
+                self.await_step(Settle::Preview);
+                self.update(Message::ReturnCurrent)
+            }
+            PreviewStep::Sequence(sequence) => {
+                let Some(entry_id) = self
+                    .history
+                    .entries
+                    .iter()
+                    .find(|entry| entry.sequence == sequence)
+                    .map(|entry| entry.id.clone())
+                else {
+                    return self
+                        .fail_step(format!("no loaded history entry has sequence {sequence}"));
+                };
+                self.await_step(Settle::Preview);
+                self.update(Message::Preview(entry_id))
+            }
+        }
+    }
+
+    /// Open the palette, type the query, and either stop there or run the first match. The query
+    /// step is captured on the next frame; a run settles the way its own entry would.
+    fn palette_step(&mut self, step: PaletteStep) -> Task<Message> {
+        let query = match &step {
+            PaletteStep::Query(query) | PaletteStep::Run(query) => query.clone(),
+        };
+        let _ = self.update(Message::OpenPalette);
+        let _ = self.update(Message::PaletteQuery(query.clone()));
+        match step {
+            PaletteStep::Query(_) => {
+                self.capture_next_frame();
+                Task::none()
+            }
+            PaletteStep::Run(_) => {
+                let Some(action) = self
+                    .workspace
+                    .palette
+                    .entries
+                    .first()
+                    .map(|entry| entry.action.clone())
+                else {
+                    return self.fail_step(format!("no palette entry matches {query:?}"));
+                };
+                self.arm_palette_settle(&action);
+                self.dispatch(Message::PaletteRun)
+            }
+        }
+    }
+
+    /// What a palette entry settles on, matched to the same round trip its own message produces:
+    /// a mutation waits for its pixels like an `api` step, a mode or panel change waits for the
+    /// session, and returning to current waits for its own upload.
+    fn arm_palette_settle(&mut self, action: &PaletteAction) {
+        match action {
+            PaletteAction::Run { .. }
+            | PaletteAction::Undo
+            | PaletteAction::Redo
+            | PaletteAction::Restore => {
+                self.begin_request();
+            }
+            PaletteAction::ReturnCurrent => self.await_step(Settle::Preview),
+            PaletteAction::Mode(_)
+            | PaletteAction::TogglePanel(_)
+            | PaletteAction::ToggleThirds
+            | PaletteAction::Fit
+            | PaletteAction::HundredPercent => self.await_step(Settle::Session),
+        }
+    }
+
     /// The running step waits for this before its frame is captured.
     fn await_step(&mut self, settle: Settle) {
         if let Some(evidence) = &mut self.evidence {
@@ -430,16 +605,19 @@ fn sole(object: &Map<String, Value>) -> Result<(&str, &Value), String> {
 }
 
 fn parse_step(step: &Value) -> Result<Step, String> {
-    let object = step
-        .as_object()
-        .ok_or("a step is an object with one key: api, draft or view")?;
+    let object = step.as_object().ok_or(
+        "a step is an object with one key: api, draft, view, workspace, preview or palette",
+    )?;
     let (kind, value) = sole(object)?;
     match kind {
         "api" => parse_api(value),
         "draft" => Ok(Step::Draft(parse_draft(value)?)),
         "view" => Ok(Step::View(parse_view(value)?)),
+        "workspace" => Ok(Step::Workspace(parse_workspace(value)?)),
+        "preview" => Ok(Step::Preview(parse_preview(value)?)),
+        "palette" => Ok(Step::Palette(parse_palette(value)?)),
         other => Err(format!(
-            "unknown step kind {other}; expected api, draft or view"
+            "unknown step kind {other}; expected api, draft, view, workspace, preview or palette"
         )),
     }
 }
@@ -560,6 +738,76 @@ fn parse_view(value: &Value) -> Result<ViewStep, String> {
     }
 }
 
+fn parse_workspace(value: &Value) -> Result<WorkspaceStep, String> {
+    let object = value
+        .as_object()
+        .ok_or("workspace takes an object with any of state_panel, tools_panel, mode or thirds")?;
+    let mut step = WorkspaceStep::default();
+    let flag = |value: &Value, field: &str| {
+        value
+            .as_bool()
+            .ok_or_else(|| format!("workspace {field} takes true or false"))
+    };
+    for (key, value) in object {
+        match key.as_str() {
+            "state_panel" => step.state_panel = Some(flag(value, "state_panel")?),
+            "tools_panel" => step.tools_panel = Some(flag(value, "tools_panel")?),
+            "thirds" => step.thirds = Some(flag(value, "thirds")?),
+            "mode" => {
+                step.mode = Some(
+                    value
+                        .as_str()
+                        .filter(|text| !text.trim().is_empty())
+                        .ok_or("workspace mode takes a module id or \"pointer\"")?
+                        .to_owned(),
+                );
+            }
+            other => return Err(format!("unknown workspace field {other}")),
+        }
+    }
+    if step == WorkspaceStep::default() {
+        return Err(
+            "workspace needs at least one of state_panel, tools_panel, mode or thirds".into(),
+        );
+    }
+    Ok(step)
+}
+
+fn parse_preview(value: &Value) -> Result<PreviewStep, String> {
+    match value {
+        Value::String(text) if text.trim() == "current" => Ok(PreviewStep::Current),
+        Value::Object(object) => {
+            let (key, value) = sole(object)?;
+            if key != "sequence" {
+                return Err(format!("unknown preview field {key}; expected sequence"));
+            }
+            value
+                .as_u64()
+                .map(PreviewStep::Sequence)
+                .ok_or_else(|| "preview sequence takes a non-negative integer".to_owned())
+        }
+        _ => Err("preview takes \"current\" or {\"sequence\": N}".into()),
+    }
+}
+
+fn parse_palette(value: &Value) -> Result<PaletteStep, String> {
+    let object = value
+        .as_object()
+        .ok_or("palette takes an object with a query or a run")?;
+    let (key, value) = sole(object)?;
+    let text = value
+        .as_str()
+        .ok_or_else(|| format!("palette {key} takes a string"))?
+        .to_owned();
+    match key {
+        "query" => Ok(PaletteStep::Query(text)),
+        "run" => Ok(PaletteStep::Run(text)),
+        other => Err(format!(
+            "unknown palette field {other}; expected query or run"
+        )),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -579,10 +827,16 @@ mod tests {
                 {"draft":{"apply":true}},
                 {"view":{"zoom":"fit"}},
                 {"view":{"zoom":"100"}},
-                {"view":{"zoom":250}}]"#,
+                {"view":{"zoom":250}},
+                {"workspace":{"state_panel":false}},
+                {"workspace":{"tools_panel":true,"thirds":true}},
+                {"preview":{"sequence":0}},
+                {"preview":"current"},
+                {"palette":{"query":"rotate"}},
+                {"palette":{"run":"rotate"}}]"#,
         )
         .expect("a valid script");
-        assert_eq!(steps.len(), 11);
+        assert_eq!(steps.len(), 17);
         assert_eq!(
             steps[1],
             Step::Api {
@@ -597,9 +851,37 @@ mod tests {
         );
         assert_eq!(steps[8], Step::View(ViewStep::Fit));
         assert_eq!(steps[9], Step::View(ViewStep::Percent(100.0)));
+        assert_eq!(
+            steps[11],
+            Step::Workspace(WorkspaceStep {
+                state_panel: Some(false),
+                ..WorkspaceStep::default()
+            })
+        );
+        assert_eq!(
+            steps[12],
+            Step::Workspace(WorkspaceStep {
+                tools_panel: Some(true),
+                thirds: Some(true),
+                ..WorkspaceStep::default()
+            })
+        );
+        assert_eq!(steps[13], Step::Preview(PreviewStep::Sequence(0)));
+        assert_eq!(steps[14], Step::Preview(PreviewStep::Current));
+        assert_eq!(
+            steps[15],
+            Step::Palette(PaletteStep::Query("rotate".into()))
+        );
+        assert_eq!(steps[16], Step::Palette(PaletteStep::Run("rotate".into())));
         // Every record round-trips to the shape the script was written in.
         assert_eq!(steps[4].record(), json!({"draft":{"preset":"3:2"}}));
         assert_eq!(steps[0].record()["api"]["method"], json!("edit.crop-fit"));
+        assert_eq!(
+            steps[12].record(),
+            json!({"workspace":{"tools_panel":true,"thirds":true}})
+        );
+        assert_eq!(steps[14].record(), json!({"preview":"current"}));
+        assert_eq!(steps[16].record(), json!({"palette":{"run":"rotate"}}));
 
         for (script, expected) in [
             ("{}", "array of steps"),
@@ -616,6 +898,17 @@ mod tests {
             (r#"[{"draft":{"nowhere":true}}]"#, "unknown draft step"),
             (r#"[{"view":{"zoom":2}}]"#, "10 to 1600"),
             (r#"[{"view":{"pan":1}}]"#, "unknown view field"),
+            (r#"[{"workspace":{}}]"#, "at least one of"),
+            (r#"[{"workspace":{"mode":""}}]"#, "module id"),
+            (
+                r#"[{"workspace":{"nowhere":true}}]"#,
+                "unknown workspace field",
+            ),
+            (r#"[{"preview":{"sequence":-1}}]"#, "non-negative integer"),
+            (r#"[{"preview":{"entry":1}}]"#, "unknown preview field"),
+            (r#"[{"preview":true}]"#, "\"current\" or"),
+            (r#"[{"palette":{"query":1}}]"#, "takes a string"),
+            (r#"[{"palette":{"filter":"x"}}]"#, "unknown palette field"),
             (r#"[{"zoom":"fit"}]"#, "unknown step kind"),
             ("not json", "not JSON"),
         ] {
@@ -736,6 +1029,92 @@ mod tests {
         );
         assert!(editor.busy, "the owner call is in flight");
         drop(asset);
+        finish(editor, catalog);
+    }
+
+    #[test]
+    fn a_scripted_workspace_step_sends_only_the_fields_that_differ() {
+        let (mut editor, catalog, _, _) = scripted(r#"[{"workspace":{"state_panel":false}}]"#);
+        assert!(
+            editor.session.workspace.state_panel,
+            "starts at the default"
+        );
+        let _ = editor.next_step();
+        assert_eq!(evidence(&editor).awaiting, Some(Settle::Session));
+        assert!(
+            !evidence(&editor).capture_pending,
+            "the round trip has not settled yet"
+        );
+        finish(editor, catalog);
+
+        // Asking for a value the session already reports needs no round trip at all: nothing to
+        // settle, so the frame is captured straight away.
+        let (mut editor, catalog, _, _) = scripted(r#"[{"workspace":{"tools_panel":true}}]"#);
+        let _ = editor.next_step();
+        assert_eq!(evidence(&editor).awaiting, None);
+        assert!(evidence(&editor).capture_pending);
+        finish(editor, catalog);
+    }
+
+    #[test]
+    fn a_scripted_preview_step_selects_by_sequence_or_returns_to_current() {
+        // No loaded entry has this sequence: the step is refused, not silently ignored.
+        let (mut editor, catalog, _, _) = scripted(r#"[{"preview":{"sequence":9}}]"#);
+        let _ = editor.next_step();
+        let record = evidence(&editor).current.clone().expect("a step record");
+        assert_eq!(record["status"], json!("failed"));
+        assert!(
+            record["reason"]
+                .as_str()
+                .is_some_and(|r| r.contains("sequence 9")),
+            "{record}"
+        );
+        finish(editor, catalog);
+
+        // `opened` (which `scripted` builds on) commits one entry at sequence 4.
+        let (mut editor, catalog, _, _) = scripted(r#"[{"preview":{"sequence":4}}]"#);
+        let _ = editor.next_step();
+        assert_eq!(evidence(&editor).awaiting, Some(Settle::Preview));
+        assert!(
+            editor.busy,
+            "the same round trip a history row's click starts"
+        );
+        finish(editor, catalog);
+
+        let (mut editor, catalog, _, _) = scripted(r#"[{"preview":"current"}]"#);
+        let _ = editor.next_step();
+        assert_eq!(evidence(&editor).awaiting, Some(Settle::Preview));
+        assert_eq!(editor.status, "Returning to current state…");
+        finish(editor, catalog);
+    }
+
+    #[test]
+    fn a_scripted_palette_step_opens_and_queries_or_runs_the_first_match() {
+        let (mut editor, catalog, _, _) = scripted(r#"[{"palette":{"query":"crop"}}]"#);
+        let _ = editor.next_step();
+        assert!(editor.palette_open);
+        assert_eq!(editor.palette_query, "crop");
+        assert!(!editor.workspace.palette.entries.is_empty());
+        assert!(evidence(&editor).capture_pending);
+        finish(editor, catalog);
+
+        // The crop module's own reset is the only thing both these words can match.
+        let (mut editor, catalog, _, _) = scripted(r#"[{"palette":{"run":"reset crop"}}]"#);
+        let requested = editor.activity.requested;
+        let _ = editor.next_step();
+        assert!(!editor.palette_open, "running an entry closes the palette");
+        assert!(editor.busy, "{}", editor.status);
+        assert!(
+            editor.activity.requested > requested,
+            "a mutation is tracked as evidence tracks any other open request"
+        );
+        finish(editor, catalog);
+
+        // A query with no match fails the step rather than running something else.
+        let (mut editor, catalog, _, _) = scripted(r#"[{"palette":{"run":"no such thing"}}]"#);
+        let _ = editor.next_step();
+        let record = evidence(&editor).current.clone().expect("a step record");
+        assert_eq!(record["status"], json!("failed"));
         finish(editor, catalog);
     }
 }

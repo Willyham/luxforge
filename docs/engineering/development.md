@@ -30,6 +30,7 @@ Doctor reports missing tools and the graphics environment without installing any
 | Verify golden fixtures; generate 24 and 60 MP workloads | `cargo xtask fixtures`, `cargo xtask generate-fixtures [--output NEW_DIR]` |
 | Rendered smoke scenario, needs a native graphical session | `cargo xtask smoke --scenario NAME --output NEW_DIR [--binary PATH]` |
 | Rendered crop workflow and overlay | `cargo xtask smoke --scenario crop --output NEW_DIR`, `--scenario crop-draft` |
+| Rendered workspace panels, mode, preview, conflict and palette; unavailable-provider notice | `cargo xtask smoke --scenario workspace --output NEW_DIR`, `--scenario unavailable` |
 | Inspect a capture | `cargo xtask check-capture --image PNG [--orientation N]` |
 | Process failure checks; macOS measurement | `cargo xtask hardening --binary PATH --output NEW_DIR`, `cargo xtask measure --binary PATH --output NEW_DIR [--samples N]` |
 | Package; dependency inventory | `cargo xtask package --output NEW_DIR`, `cargo xtask inventory --output NEW_DIR` |
@@ -54,7 +55,7 @@ On macOS, `develop --background` builds the selected profile and runs a temporar
 
 ## Rendered evidence
 
-Smoke runs the built or packaged editor through a deterministic evidence sequence (repeated `--open`, evidence directory, fixed window size, bounded deadlines); there is no separate viewer, so the captured frame is the editor window with its sidebar. Scenarios: `empty`, `load`, `replacement`, `invalid`, `repeated`, `alternating`, `large24`, `large60`, `crop`, `crop-draft`; generate the large fixtures first. Each run writes `result.json`, `app/events.jsonl`, `app/state.json`, `app/frame-*.png` (window-renderer readbacks, not OS screenshots), `subprocess.log` and `reproduce.md`. Each frame records `surface_columns`, the physical x range of the photo surface derived from the editor's layout constants, and the runner verifies fixture colors, Fit geometry and centering within that range, generation and state, backend, exit status and unchanged source hashes before writing `passed`; blank, stale or missing frames fail. The `render_ready` event marks the upload of the open request's preview raster, which is when a frame becomes capturable. A 25-second application deadline and a 35-second process deadline bound hangs.
+Smoke runs the built or packaged editor through a deterministic evidence sequence (repeated `--open`, evidence directory, fixed window size, bounded deadlines); there is no separate viewer, so the captured frame is the editor window with its sidebar. Scenarios: `empty`, `load`, `replacement`, `invalid`, `repeated`, `alternating`, `large24`, `large60`, `crop`, `crop-draft`, `workspace`, `unavailable`; generate the large fixtures first. Each run writes `result.json`, `app/events.jsonl`, `app/state.json`, `app/frame-*.png` (window-renderer readbacks, not OS screenshots), `subprocess.log` and `reproduce.md`. Each frame records `surface_columns`, the physical x range of the photo surface derived from the editor's layout constants, and the runner verifies fixture colors, Fit geometry and centering within that range, generation and state, backend, exit status and unchanged source hashes before writing `passed`; blank, stale or missing frames fail. The `render_ready` event marks the upload of the open request's preview raster, which is when a frame becomes capturable. A 25-second application deadline and a 35-second process deadline bound hangs.
 
 ### Evidence scripts
 
@@ -87,6 +88,15 @@ Each step is an object with exactly one key.
   `reapply` wait for the crop layer's truncated input-stage preview, `apply` waits for its committed
   pixels, and the rest are captured on the next rendered frame.
 - `view` sets the zoom through `view.set`: `{"zoom": "fit"}` or a percentage from 10 to 1600.
+- `workspace` sets any of `state_panel`, `tools_panel`, `mode` and `thirds` through `workspace.set`,
+  naming only the fields that actually differ from the session's own; captured on that round trip,
+  or immediately when nothing differs.
+- `preview` selects a loaded history entry by its sequence number (`{"sequence": N}`) or returns to
+  the current state (`"current"`), exactly as a history row's click or "Return to current" does.
+  Captured once its pixels reach the GPU.
+- `palette` opens the command palette and types a query: `{"query": "text"}` captures the next frame
+  with the palette open; `{"run": "text"}` additionally runs the first matching entry, settled the
+  way that entry's own message would be.
 
 A step that cannot be sent is recorded with `"status": "failed"` and its reason and still captures a
 frame, so a refused step is visible in the evidence instead of missing from it.
@@ -100,6 +110,28 @@ the displayed image has the ratio the committed payload declares, and, on draft 
 rectangle drawn at full opacity matches the captured draft rectangle, that all eight handles are
 present and that the stage outside the rectangle is dimmed toward the window background. Each run
 also writes `app/crop-checks.json` with the measured values and their tolerances.
+
+`workspace` opens `fixtures/s0/orientation-1.jpg` at 1440 × 900 and drives a rotate, three panel and
+thirds changes, a historical preview and its return, a crop draft, a commit during that draft (the
+conflict, since any other commit while a draft is open marks it conflicted, whoever made it) and the
+command palette, before cancelling the draft. The runner checks, per frame, that `state.workspace`
+matches the requested panels, mode and thirds and that the photograph stays centred in the recorded
+`surface_columns`; that the historical-preview frame's `state.status` starts with "Previewing entry
+0"; that the conflict frame's `state.notices` names "Changed elsewhere" and `state.crop.conflicted`
+is set; that the draft frames report the crop module as the workspace mode and the cancelled frame
+reports `pointer`; that the palette frame's `state.palette` records it open with its query; and that
+the thirds frame's fitted photograph reads brighter at its one-third column than beside it. It writes
+`app/workspace-checks.json`.
+
+`unavailable` is not one launch but two, since a module can only be disabled at startup. The first
+opens the fixture and commits a 16:9 `edit.crop-fit` with every built-in module registered. The
+second reuses the first launch's own catalog (`--catalog <dir1>/catalog.sqlite`) with
+`--disable-module lightwell.crop` and reopens the same fixture, which the catalog dedupes to the same
+asset by file identity, so its stack still names the now-unavailable crop layer. The runner checks
+that the second launch's frame reports `state.render_error.code` `incompatible`, `state.notices`
+naming "Preview is stale", the crop module listed unavailable in `state.modules`, no fixture colour
+drawn anywhere in the photo surface, and the source fixture's hash unchanged throughout. It writes
+`unavailable-checks.json` beside its own two launch directories rather than one `app/` directory.
 
 On macOS, smoke, hardening, measurement and probe subprocesses always use the same background bundle as `develop --background`. Reports record `launch_mode`; reproduce through the harness to preserve focus protection. A native graphical session is still required. Windows and Linux retain direct launches; background behavior is not claimed there. Measurement launch times include the temporary bundle and executable copy, so they do not measure normal foreground activation.
 

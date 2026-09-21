@@ -85,9 +85,15 @@ pub(crate) fn keymap(event: &Event, status: Status, context: &KeyContext) -> Opt
         }
         return None;
     }
-    // The palette owns Escape while it is open, whatever its own query field did with the key.
-    if context.palette_open && matches!(key, Key::Named(Named::Escape)) {
-        return Some(Message::ClosePalette);
+    // The palette owns Escape and the arrow keys while it is open, whatever its own query field
+    // did with the key: the field has focus, so these must act regardless of `status`.
+    if context.palette_open {
+        match key {
+            Key::Named(Named::Escape) => return Some(Message::ClosePalette),
+            Key::Named(Named::ArrowUp) => return Some(Message::PaletteMove(-1)),
+            Key::Named(Named::ArrowDown) => return Some(Message::PaletteMove(1)),
+            _ => {}
+        }
     }
     // Tab walks the generated fields; shift is the only modifier it tolerates.
     if matches!(key, Key::Named(Named::Tab))
@@ -268,6 +274,27 @@ mod tests {
                 Status::Ignored,
                 &drafting_palette,
                 Some("ClosePalette"),
+            ),
+            (
+                "the palette's down arrow moves the selection, even though its own field has focus",
+                pressed(Key::Named(Named::ArrowDown), Modifiers::empty()),
+                Status::Captured,
+                &palette,
+                Some("PaletteMove(1)"),
+            ),
+            (
+                "the palette's up arrow moves the selection the other way",
+                pressed(Key::Named(Named::ArrowUp), Modifiers::empty()),
+                Status::Captured,
+                &palette,
+                Some("PaletteMove(-1)"),
+            ),
+            (
+                "an arrow key does nothing while the palette is closed",
+                pressed(Key::Named(Named::ArrowDown), Modifiers::empty()),
+                Status::Ignored,
+                &plain,
+                None,
             ),
             (
                 "toggle the state panel",

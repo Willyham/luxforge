@@ -8,6 +8,7 @@ mod package;
 mod policy;
 mod repository;
 mod smoke;
+mod workspace_smoke;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::{
@@ -320,13 +321,22 @@ fn main_result() -> Result {
                 .map(|p| absolute(&root, &p))
                 .unwrap_or(binary(&root)?);
             a.done()?;
-            smoke::run(
-                &root,
-                &out,
-                &scenario,
-                &bin,
-                std::time::Duration::from_secs(35),
-            )?;
+            if scenario == "unavailable" {
+                workspace_smoke::run_unavailable(
+                    &root,
+                    &out,
+                    &bin,
+                    std::time::Duration::from_secs(35),
+                )?;
+            } else {
+                smoke::run(
+                    &root,
+                    &out,
+                    &scenario,
+                    &bin,
+                    std::time::Duration::from_secs(35),
+                )?;
+            }
         }
         "check-capture" => {
             let path = absolute(&root, &a.path("--image")?);

@@ -12,7 +12,7 @@ use crate::{
     state::tools::crop_frame,
 };
 use iced::{Task, widget::operation};
-use lightwell_core::{CropPayload, CropStage, LayerId, MAX_ANGLE, MIN_ANGLE};
+use lightwell_core::{CropPayload, CropStage, LayerId, MAX_ANGLE, MIN_ANGLE, POINTER_MODE};
 use serde_json::{Value, json};
 
 /// How far one nudge button moves the straightening angle, in degrees.
@@ -147,8 +147,8 @@ impl Editor {
         if self.busy || !self.session.preview.can_edit() || reapply != self.crop.is_some() {
             return Task::none();
         }
-        let Some(effect) = crop_frame(&self.modules)
-            .and_then(|frame| frame.effect().map(str::to_owned))
+        let Some((module_id, effect)) = crop_frame(&self.modules)
+            .and_then(|frame| Some((frame.module.id.clone(), frame.effect()?.to_owned())))
             .filter(|_| self.state.is_some())
         else {
             return Task::none();
@@ -168,6 +168,12 @@ impl Editor {
         let layer_count = pending.layer_index;
         self.crop_pending = Some(pending);
         self.status = "Preparing the crop's input stage…".into();
+        // Starting a draft by any route — the section's own button, `R`, the mode strip or a
+        // scripted `draft.start` — asks the session to enter this module's mode, so the strip shows
+        // Crop selected for the whole life of the draft. A reapply keeps the mode already set.
+        if !reapply {
+            self.mode_sync = Some(module_id);
+        }
         crop_preview_task(self.owner.clone(), asset, layer_count)
     }
 
@@ -239,7 +245,8 @@ impl Editor {
         self.event(event, summary);
     }
 
-    /// Drop the draft and the extra texture it displayed.
+    /// Drop the draft and the extra texture it displayed. Ending a draft by any route — Apply,
+    /// Cancel or a scripted `draft.cancel`/`draft.apply` — returns the session to pointer.
     pub(crate) fn end_draft(&mut self) {
         self.crop = None;
         self.crop_pending = None;
@@ -247,6 +254,7 @@ impl Editor {
         self.draft_generation = None;
         self.crop_applying = None;
         self.crop_guide = false;
+        self.mode_sync = Some(POINTER_MODE.into());
     }
 
     /// The `custom` preset's two extents as typed, or `None` when either is not a positive number.
@@ -591,6 +599,47 @@ mod tests {
         assert!(editor.crop.is_none());
         assert!(editor.draft_photo.is_none());
         assert!(editor.status.contains("Crop applied"), "{}", editor.status);
+        finish(editor, catalog);
+    }
+
+    #[test]
+    fn starting_or_ending_a_draft_by_any_route_asks_the_session_to_follow_it() {
+        let (mut editor, catalog, _, _) = opened(Vec::new(), 1);
+        let crop_id = crop_frame(&editor.modules)
+            .expect("a declared crop frame")
+            .module
+            .id
+            .to_owned();
+
+        // The section's own "Crop & straighten" button, `R` and a scripted `draft.start` all send
+        // this message directly, never through `Message::SetMode`; starting still asks the session
+        // to enter the crop mode.
+        let _ = editor.dispatch(Message::Crop(CropMessage::Start));
+        assert_eq!(
+            editor.mode_sync.as_deref(),
+            Some(crop_id.as_str()),
+            "starting a draft by any route queues the session's own mode change"
+        );
+        // The public entry point folds that into the returned task and consumes the flag.
+        editor.session.workspace.mode = crop_id.clone();
+        let _ = editor.update(Message::PointerMoved(None));
+        assert_eq!(editor.mode_sync, None, "the wrapper always consumes it");
+
+        editor.open_draft(stage());
+        assert!(editor.workspace.canvas.modes[0].id == POINTER_MODE);
+        assert!(
+            !editor.workspace.canvas.modes[0].selected,
+            "pointer is not selected while the session reports the crop mode"
+        );
+
+        // Ending it, by Cancel here (Apply and a scripted cancel go through the same `end_draft`),
+        // returns the session to pointer.
+        let _ = editor.dispatch(Message::Crop(CropMessage::Cancel));
+        assert_eq!(
+            editor.mode_sync.as_deref(),
+            Some(POINTER_MODE),
+            "ending a draft by any route queues the session's return to pointer"
+        );
         finish(editor, catalog);
     }
 

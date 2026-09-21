@@ -136,13 +136,7 @@ pub(crate) fn derive(inputs: &Inputs<'_>) -> CanvasModel {
             }),
     );
     CanvasModel {
-        photo: if drafting {
-            PhotoView::Draft
-        } else if inputs.photo && inputs.dimensions.is_some() {
-            PhotoView::Plain
-        } else {
-            PhotoView::default()
-        },
+        photo: photo_view(inputs, drafting),
         zoom: match inputs.session.preview.view.zoom {
             Zoom::Fit => ZoomView::Fit,
             Zoom::Percent { value } => ZoomView::Percent(value),
@@ -164,6 +158,28 @@ pub(crate) fn derive(inputs: &Inputs<'_>) -> CanvasModel {
         },
         option: inputs.crop_option,
     }
+}
+
+/// What the surface shows when there is no photograph to draw: a photo (this frame or the last
+/// one still on the GPU), the crop draft's own frame, or, failing both, a placeholder line. A
+/// photograph that is open but whose last render failed says so and names the short reason,
+/// rather than asking to open one that already is.
+fn photo_view(inputs: &Inputs<'_>, drafting: bool) -> PhotoView {
+    if drafting {
+        return PhotoView::Draft;
+    }
+    if inputs.photo && inputs.dimensions.is_some() {
+        return PhotoView::Plain;
+    }
+    if inputs.state.is_some()
+        && let Some((kind, detail)) = inputs.render_error
+    {
+        let reason = render_notice(inputs.modules, *kind, detail)
+            .map(|notice| notice.body)
+            .unwrap_or_else(|| detail.clone());
+        return PhotoView::Empty(format!("Preview unavailable: {reason}"));
+    }
+    PhotoView::default()
 }
 
 fn draft_bar(inputs: &Inputs<'_>) -> Option<DraftBar> {

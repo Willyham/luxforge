@@ -289,6 +289,11 @@ pub(crate) struct Editor {
     pub(crate) crop_guide: bool,
     pub(crate) crop_option: bool,
     pub(crate) crop_space: bool,
+    /// Set when a draft just started or ended by a route that does not already ask the session
+    /// itself: the next `update` call folds in one `workspace.set` for this mode, unless the
+    /// session already reports it, so the mode strip shows Crop selected during every draft
+    /// however it was opened, and pointer again however it ended.
+    pub(crate) mode_sync: Option<String>,
     /// The whole screen as plain data, re-derived after every message.
     pub(crate) workspace: Workspace,
 }
@@ -396,6 +401,7 @@ impl Editor {
             crop_guide: false,
             crop_option: false,
             crop_space: false,
+            mode_sync: None,
             workspace: Workspace::default(),
         };
         if editor.live_server.is_none() {
@@ -438,7 +444,7 @@ impl Editor {
 
     /// The state correlated with every event and captured frame; never includes source paths.
     pub(crate) fn snapshot(&self) -> Value {
-        json!({"run_id":self.run_id,"mode":if self.evidence.is_some() {"evidence"} else {"editor"},"orientation":self.activity.orientation,"phase":self.activity.phase,"requested_generation":self.activity.requested,"displayed_generation":self.activity.displayed,"source_dimensions":self.activity.source_dimensions,"preview_dimensions":self.activity.preview_dimensions,"backend":self.activity.backend,"status":self.status,"error_code":self.activity.error_code,"modules":module_summary(&self.modules),"controls":self.fields.summary(),"crop":self.crop_summary(),"stack":self.stack_summary(),"workspace":serde_json::to_value(&self.session.workspace).unwrap_or(Value::Null),"developer":self.developer,"expanded":self.workspace.expanded(),"notices":self.notice_titles(),"compare":self.compare_return.is_some(),"render_error":self.render_error_summary()})
+        json!({"run_id":self.run_id,"mode":if self.evidence.is_some() {"evidence"} else {"editor"},"orientation":self.activity.orientation,"phase":self.activity.phase,"requested_generation":self.activity.requested,"displayed_generation":self.activity.displayed,"source_dimensions":self.activity.source_dimensions,"preview_dimensions":self.activity.preview_dimensions,"backend":self.activity.backend,"status":self.status,"error_code":self.activity.error_code,"modules":module_summary(&self.modules),"controls":self.fields.summary(),"crop":self.crop_summary(),"stack":self.stack_summary(),"workspace":serde_json::to_value(&self.session.workspace).unwrap_or(Value::Null),"developer":self.developer,"expanded":self.workspace.expanded(),"notices":self.notice_titles(),"compare":self.compare_return.is_some(),"render_error":self.render_error_summary(),"palette":{"open":self.palette_open,"query":self.palette_query}})
     }
 
     /// The notices the captured frame drew, by title, so a frame's chrome is observable.
@@ -560,8 +566,25 @@ impl Editor {
 
     pub(crate) fn update(&mut self, message: Message) -> Task<Message> {
         let task = self.dispatch(message);
+        let task = self.sync_mode(task);
         self.rederive();
         task
+    }
+
+    /// Fold in the one `workspace.set` a just-started or just-ended draft still needs, whatever
+    /// route opened or closed it. `Message::SetMode` already asks the session itself and clears
+    /// this before returning, so it is never doubled.
+    fn sync_mode(&mut self, task: Task<Message>) -> Task<Message> {
+        let Some(target) = self.mode_sync.take() else {
+            return task;
+        };
+        if target == self.session.workspace.mode {
+            return task;
+        }
+        Task::batch([
+            task,
+            workspace_task(self.owner.clone(), self.client, json!({ "mode": target })),
+        ])
     }
 
     /// Re-derive the whole screen from the state this message left behind.
@@ -816,13 +839,16 @@ impl Editor {
                 }
                 self.settle_step(Settle::Session);
             }
-            Message::WorkspaceUpdated(result) => match result {
-                Ok((session, sequence)) => {
-                    self.adopt(session);
-                    self.api_sequence = sequence;
+            Message::WorkspaceUpdated(result) => {
+                match result {
+                    Ok((session, sequence)) => {
+                        self.adopt(session);
+                        self.api_sequence = sequence;
+                    }
+                    Err(error) => self.status = error,
                 }
-                Err(error) => self.status = error,
-            },
+                self.settle_step(Settle::Session);
+            }
             Message::RecipeDescribed(result) => match result {
                 Ok(recipe) => self.recipe = Some(*recipe),
                 Err(error) => self.status = format!("Recipe unavailable: {error}"),
@@ -958,6 +984,9 @@ impl Editor {
                         self.render_error = None;
                         self.activity.render_ms =
                             Some(self.activity.request_started.elapsed().as_secs_f64() * 1000.);
+                        // A scripted preview selection settles on these same pixels, whether or not
+                        // this upload also belongs to the one open request evidence tracks below.
+                        self.settle_step(Settle::Preview);
                         if self.activity.pending {
                             self.activity.pending = false;
                             self.activity.displayed = self.activity.requested;
@@ -1121,6 +1150,10 @@ impl Editor {
                 if opens_draft {
                     tasks.push(self.crop_update(CropMessage::Start));
                 }
+                // This arm already asks the session to follow the mode explicitly; the generic
+                // catch-up in `sync_mode` would otherwise queue a second, redundant request for the
+                // same field.
+                self.mode_sync = None;
                 return Task::batch(tasks);
             }
             Message::CompareBegin => {
@@ -1180,6 +1213,7 @@ impl Editor {
                 self.palette_open = true;
                 self.palette_query.clear();
                 self.palette_selected = 0;
+                return operation::focus(view::palette::QUERY_ID);
             }
             Message::ClosePalette => self.palette_open = false,
             Message::PaletteQuery(query) => {
@@ -1204,8 +1238,22 @@ impl Editor {
                         self.dispatch(Message::RunAction { action, preset })
                     }
                     Some(PaletteAction::Mode(mode)) => self.dispatch(Message::SetMode(mode)),
+                    Some(PaletteAction::TogglePanel(panel)) => {
+                        self.dispatch(Message::TogglePanel(panel))
+                    }
+                    Some(PaletteAction::ToggleThirds) => self.dispatch(Message::ToggleThirds),
+                    Some(PaletteAction::Fit) => self.dispatch(Message::Fit),
+                    Some(PaletteAction::HundredPercent) => self.dispatch(Message::HundredPercent),
+                    Some(PaletteAction::Undo) => self.dispatch(Message::Undo),
+                    Some(PaletteAction::Redo) => self.dispatch(Message::Redo),
+                    Some(PaletteAction::ReturnCurrent) => self.dispatch(Message::ReturnCurrent),
+                    Some(PaletteAction::Restore) => self.dispatch(Message::Restore),
                     None => Task::none(),
                 };
+            }
+            Message::PaletteRunIndex(index) => {
+                self.palette_selected = index;
+                return self.dispatch(Message::PaletteRun);
             }
             Message::OpenMenu(target) => self.menu = Some(target),
             Message::CloseMenu => self.menu = None,
@@ -1218,6 +1266,20 @@ impl Editor {
                     serde_json::to_string_pretty(&request).unwrap_or_default(),
                 );
             }
+            Message::CopyDraftRequest => match self.crop_request() {
+                Some(Ok((method, request, _))) => {
+                    self.status = format!("Copied the {method} request");
+                    return iced::clipboard::write(
+                        serde_json::to_string_pretty(&json!({
+                            "method": method,
+                            "params": request,
+                        }))
+                        .unwrap_or_default(),
+                    );
+                }
+                Some(Err(message)) => self.status = message,
+                None => self.status = "No crop draft to copy".into(),
+            },
             Message::RunAction { action, preset } => {
                 let Some(state) = &self.state else {
                     return Task::none();
@@ -1810,7 +1872,7 @@ mod tests {
         let (mut editor, catalog) = opened_with_modules(modules.clone(), 1);
 
         let mut checked = 0usize;
-        for (_, _, action) in tools::palette_entries(&modules, "") {
+        for (_, _, action) in tools::palette_entries(&modules, editor.developer) {
             let PaletteAction::Run { action, preset } = action else {
                 continue;
             };
@@ -1972,6 +2034,79 @@ mod tests {
             action: "crop-reset".into(),
         });
         assert!(editor.status.contains("Copied"), "{}", editor.status);
+        finish(editor, catalog);
+    }
+
+    /// The CropFrame section's Apply reads current pointer-composed values, not generated fields,
+    /// so it needs its own copy path rather than the generic `request_for`.
+    #[test]
+    fn copy_as_json_request_for_the_open_crop_draft_matches_its_own_apply() {
+        let (mut editor, catalog, asset, _) = opened(Vec::new(), 6);
+        let _ = editor.update(Message::Crop(CropMessage::Start));
+        editor.open_draft(lightwell_core::CropStage {
+            width: 480,
+            height: 320,
+            angle: 0.0,
+        });
+        let (method, request, _) = editor
+            .crop_request()
+            .expect("a request")
+            .expect("a valid draft");
+        assert_eq!(method, "edit.crop");
+        assert_eq!(request["asset_id"], json!(asset));
+        assert_eq!(request["mutation"]["expected_revision"], json!(6));
+        assert!(request.get("angle").is_some() && request.get("width").is_some());
+
+        let _ = editor.update(Message::CopyDraftRequest);
+        assert_eq!(editor.status, "Copied the edit.crop request");
+
+        // With no draft open there is nothing to copy, and the status says so plainly.
+        editor.crop = None;
+        let _ = editor.update(Message::CopyDraftRequest);
+        assert_eq!(editor.status, "No crop draft to copy");
+        finish(editor, catalog);
+    }
+
+    /// The palette runs an entry through the exact message a click on its control raises, so a
+    /// palette hit for `edit.transform` and the generated button produce the identical request.
+    #[test]
+    fn a_palette_entry_for_transform_runs_the_same_request_as_its_button() {
+        let (mut editor, catalog) = opened_with_modules(descriptors(), 3);
+        let _ = editor.update(Message::OpenPalette);
+        let _ = editor.update(Message::PaletteQuery("Rotate right".into()));
+        let entry = editor
+            .workspace
+            .palette
+            .entries
+            .first()
+            .cloned()
+            .unwrap_or_else(|| {
+                panic!(
+                    "no palette entry matched: {:?}",
+                    editor.workspace.palette.entries
+                )
+            });
+        let PaletteAction::Run { action, preset } = entry.action.clone() else {
+            panic!("expected a runnable action entry, got {:?}", entry.action);
+        };
+        assert_eq!(action, "transform");
+        let _ = editor.update(Message::PaletteRun);
+        assert!(
+            !editor.workspace.palette.open,
+            "running an entry closes the palette"
+        );
+        assert!(editor.busy, "{}", editor.status);
+        assert!(
+            editor.status.starts_with("Running edit.transform"),
+            "{}",
+            editor.status
+        );
+        let palette_status = editor.status.clone();
+
+        // The exact message the generated button's own click raises produces the identical request.
+        editor.busy = false;
+        let _ = editor.update(Message::RunAction { action, preset });
+        assert_eq!(editor.status, palette_status);
         finish(editor, catalog);
     }
 
