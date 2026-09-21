@@ -4,6 +4,7 @@
 //! writes an ad hoc colour or size. Values are copied from the visual language table in
 //! `docs/design/develop-workspace.md`; the unit tests in this module assert the copy is exact.
 
+use crate::RailDecoration;
 use crate::geometry::{Fill, FillStops, Segment};
 use iced::widget::{button, container, slider, text_input};
 use iced::{Background, Border, Color, Degrees, Gradient, Shadow, Theme, gradient};
@@ -325,6 +326,62 @@ pub fn slider_style(
             },
         }
     }
+}
+
+/// A colour rail keeps the same handle treatment as the neutral rail. Its two Iced background
+/// halves sample one continuous scale, split at the handle position.
+pub fn slider_style_decorated(
+    fill: FillStops,
+    dragging: bool,
+    decoration: RailDecoration,
+    handle_fraction: f32,
+) -> impl Fn(&Theme, slider::Status) -> slider::Style {
+    move |theme, status| {
+        let mut style = slider_style(fill, dragging)(theme, status);
+        if let RailDecoration::Colors(colors) = &decoration {
+            if !colors.is_empty() {
+                // The rail is split at the handle by Iced. A single gradient on either half
+                // would repeat the spectrum, so each half receives its own slice.
+                let fraction = handle_fraction.clamp(0.0, 1.0);
+                style.rail.backgrounds = (
+                    gradient_slice(colors, 0.0, fraction),
+                    gradient_slice(colors, fraction, 1.0),
+                );
+                style.rail.width = 4.0;
+            }
+        }
+        style
+    }
+}
+
+fn gradient_slice(colors: &[Color], start: f32, end: f32) -> Background {
+    let color_at = |fraction: f32| {
+        if colors.len() == 1 {
+            return colors[0];
+        }
+        let position = fraction.clamp(0.0, 1.0) * (colors.len() - 1) as f32;
+        let low = position.floor() as usize;
+        let high = (low + 1).min(colors.len() - 1);
+        let t = position - low as f32;
+        let a = colors[low];
+        let b = colors[high];
+        Color {
+            r: a.r + (b.r - a.r) * t,
+            g: a.g + (b.g - a.g) * t,
+            b: a.b + (b.b - a.b) * t,
+            a: a.a + (b.a - a.a) * t,
+        }
+    };
+    let mut gradient = gradient::Linear::new(Degrees(90.0)).add_stop(0.0, color_at(start));
+    if end > start && colors.len() > 1 {
+        for i in 1..colors.len() - 1 {
+            let position = i as f32 / (colors.len() - 1) as f32;
+            if position > start && position < end {
+                gradient = gradient.add_stop((position - start) / (end - start), colors[i]);
+            }
+        }
+    }
+    gradient.add_stop(1.0, color_at(end)).into()
 }
 
 #[cfg(test)]

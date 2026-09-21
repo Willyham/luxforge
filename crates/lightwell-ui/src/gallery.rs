@@ -4,12 +4,12 @@
 //! part of the public widget API; [`crate::gallery_states`] is the only path to it.
 
 use crate::{
-    BINS, ChipModel, ClipTriangleModel, HistogramChannel, HistogramModel, IconButtonModel,
-    ListRowModel, Marker, ModeEntry, NoticeCardModel, SectionHeaderModel, SegmentedModel,
-    SliderModel, SubGroupHeaderModel, ToggleEntry, Tone, ValueEdit, caption, chip, clip_triangle,
-    error_caption, floating_bar, histogram, icon_button, inline_menu, label, list_row, mode_strip,
-    notice_card, section_header, section_label, segmented, slider, sub_group_header, theme, title,
-    value_text,
+    BINS, ChipModel, ClipTriangleModel, HistogramChannel, HistogramModel, Icon, IconButtonModel,
+    ListRowModel, Marker, ModeEntry, NoticeCardModel, RailDecoration, SectionHeaderModel,
+    SegmentedModel, SliderModel, SubGroupHeaderModel, ToggleEntry, Tone, ValueEdit, caption, chip,
+    clip_triangle, error_caption, floating_bar, histogram, icon_button, inline_menu, label,
+    list_row, mode_strip, notice_card, section_header, section_label, segmented, slider,
+    sub_group_header, theme, title, value_text,
 };
 use iced::Element;
 
@@ -27,9 +27,14 @@ pub fn gallery() -> Vec<Element<'static, ()>> {
             label: "Highlights".into(),
             min: -100.0,
             max: 100.0,
+            soft_min: -100.0,
+            soft_max: 100.0,
             value: -40.0,
             step: 1.0,
             shift_step: 10.0,
+            fine_step: 0.1,
+            rail: RailDecoration::Plain,
+            over_range: None,
             zero: Some(0.0),
             unit: None,
             display: "-40".into(),
@@ -49,9 +54,14 @@ pub fn gallery() -> Vec<Element<'static, ()>> {
             label: "Exposure".into(),
             min: -5.0,
             max: 5.0,
+            soft_min: -5.0,
+            soft_max: 5.0,
             value: 0.62,
             step: 0.01,
             shift_step: 0.1,
+            fine_step: 0.001,
+            rail: RailDecoration::Plain,
+            over_range: None,
             zero: Some(0.0),
             unit: None,
             display: "+0.62".into(),
@@ -71,9 +81,14 @@ pub fn gallery() -> Vec<Element<'static, ()>> {
             label: "Contrast".into(),
             min: -100.0,
             max: 100.0,
+            soft_min: -100.0,
+            soft_max: 100.0,
             value: 18.0,
             step: 1.0,
             shift_step: 10.0,
+            fine_step: 0.1,
+            rail: RailDecoration::Plain,
+            over_range: None,
             zero: Some(0.0),
             unit: None,
             display: "18".into(),
@@ -96,9 +111,14 @@ pub fn gallery() -> Vec<Element<'static, ()>> {
             label: "Temperature".into(),
             min: -100.0,
             max: 100.0,
+            soft_min: -100.0,
+            soft_max: 100.0,
             value: 6.0,
             step: 1.0,
             shift_step: 10.0,
+            fine_step: 0.1,
+            rail: RailDecoration::Plain,
+            over_range: None,
             zero: Some(0.0),
             unit: None,
             display: "140".into(),
@@ -121,9 +141,14 @@ pub fn gallery() -> Vec<Element<'static, ()>> {
             label: "Saturation".into(),
             min: -100.0,
             max: 100.0,
+            soft_min: -100.0,
+            soft_max: 100.0,
             value: 0.0,
             step: 1.0,
             shift_step: 10.0,
+            fine_step: 0.1,
+            rail: RailDecoration::Plain,
+            over_range: None,
             zero: None,
             unit: None,
             display: "0".into(),
@@ -194,7 +219,7 @@ pub fn gallery() -> Vec<Element<'static, ()>> {
     // -- Icon button: plain, selected, disabled.
     states.push(icon_button(
         &IconButtonModel {
-            glyph: "\u{21bb}".into(),
+            icon: Icon::RotateRight,
             tooltip: "Rotate right".into(),
             enabled: true,
             selected: false,
@@ -203,7 +228,7 @@ pub fn gallery() -> Vec<Element<'static, ()>> {
     ));
     states.push(icon_button(
         &IconButtonModel {
-            glyph: "\u{2712}".into(),
+            icon: Icon::Crop,
             tooltip: "Crop & straighten".into(),
             enabled: true,
             selected: true,
@@ -212,7 +237,7 @@ pub fn gallery() -> Vec<Element<'static, ()>> {
     ));
     states.push(icon_button(
         &IconButtonModel {
-            glyph: "\u{21ba}".into(),
+            icon: Icon::Reset,
             tooltip: "Reset".into(),
             enabled: false,
             selected: false,
@@ -428,5 +453,6 @@ pub fn gallery() -> Vec<Element<'static, ()>> {
     states.push(error_caption::<()>("Range is -100 to 100"));
     states.push(value_text::<()>("+0.62"));
 
+    states.extend(crate::gallery_components::gallery_components());
     states
 }

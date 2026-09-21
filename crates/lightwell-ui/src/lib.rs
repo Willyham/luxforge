@@ -20,6 +20,7 @@ mod widgets;
 pub use widgets::*;
 
 mod gallery;
+mod gallery_components;
 
 /// Builds one instance of every widget in every state shown on the components board
 /// (`docs/design/develop-workspace/components.png`), as `Element<'_, ()>` values, so a caller can

@@ -1,6 +1,6 @@
 //! A module section's header row: disclosure, title, active dot and an optional reset.
 
-use super::icon_button::{IconButtonModel, icon_button};
+use super::icon_button::{Icon, IconButtonModel, icon_button};
 use super::text::{caption, error_caption, title};
 use crate::theme;
 use iced::widget::{Space, button, container, row};
@@ -58,7 +58,7 @@ pub fn section_header<'a, M: Clone + 'a>(
     if model.reset {
         header = header.push(icon_button(
             &IconButtonModel {
-                glyph: "\u{21ba}".to_string(),
+                icon: Icon::Reset,
                 tooltip: "Reset".to_string(),
                 enabled: model.enabled,
                 selected: false,

@@ -1,0 +1,71 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="1220" viewBox="0 0 1600 1220" role="img" aria-labelledby="title desc">
+  <title id="title">Lightwell module control components</title>
+  <desc id="desc">Current slider, number field, stepper, toggle, menu, swatch, colour picker, curve editor and icon states shown by the gallery.</desc>
+  <defs>
+    <style>
+      .bg{fill:#19191b}.panel{fill:#202023;stroke:#39393d;stroke-width:1}.control{fill:#2c2c31;stroke:#55555a;stroke-width:1}.text{fill:#e8e8ea;font:17px system-ui,sans-serif}.muted{fill:#a8a8ae;font:15px system-ui,sans-serif}.dim{fill:#77777f;font:15px system-ui,sans-serif}.small{fill:#a8a8ae;font:13px system-ui,sans-serif}.head{fill:#e8e8ea;font:600 24px system-ui,sans-serif}.rowhead{fill:#e8e8ea;font:600 17px system-ui,sans-serif}.accent{fill:#e2b46a}.error{fill:#e5534b}.line{stroke:#a8a8ae;stroke-width:2;fill:none}.curve{stroke:#e8e8ea;stroke-width:2;fill:none}.point{fill:#e2b46a}
+    </style>
+    <linearGradient id="hue"><stop stop-color="#f00"/><stop offset=".2" stop-color="#ff0"/><stop offset=".4" stop-color="#0f0"/><stop offset=".6" stop-color="#0ff"/><stop offset=".8" stop-color="#00f"/><stop offset="1" stop-color="#f0f"/></linearGradient>
+    <linearGradient id="plane" x1="0" x2="1" y1="1" y2="0"><stop stop-color="#101010"/><stop offset=".5" stop-color="#9a4929"/><stop offset="1" stop-color="#ff6e34"/></linearGradient>
+  </defs>
+  <rect class="bg" width="1600" height="1220"/>
+  <text class="head" x="48" y="52">Module control components</text>
+  <text class="muted" x="48" y="78">The gallery builds each labelled state. Controls accept plain data and emit messages.</text>
+
+  <g transform="translate(48 108)">
+    <rect class="panel" width="1504" height="130" rx="8"/>
+    <text class="rowhead" x="20" y="31">Slider</text>
+    <text class="small" x="208" y="31">colour rail</text><text class="small" x="625" y="31">below soft range</text><text class="small" x="1040" y="31">above soft range</text>
+    <g transform="translate(210 61)"><text class="text" y="0">Hue</text><text class="muted" x="308" y="0">0°</text><rect x="0" y="23" width="350" height="5" rx="2" fill="url(#hue)"/><circle class="point" cx="175" cy="25" r="7"/></g>
+    <g transform="translate(625 61)"><text class="text" y="0">Hue</text><text class="muted" x="308" y="0">−120°</text><rect x="0" y="23" width="350" height="5" rx="2" fill="url(#hue)"/><rect class="accent" x="0" y="18" width="3" height="15"/><circle class="point" cy="25" r="7"/></g>
+    <g transform="translate(1040 61)"><text class="text" y="0">Hue</text><text class="muted" x="308" y="0">+120°</text><rect x="0" y="23" width="350" height="5" rx="2" fill="url(#hue)"/><rect class="accent" x="347" y="18" width="3" height="15"/><circle class="point" cx="350" cy="25" r="7"/></g>
+  </g>
+
+  <g transform="translate(48 254)">
+    <rect class="panel" width="1504" height="125" rx="8"/>
+    <text class="rowhead" x="20" y="31">Number field</text>
+    <text class="small" x="210" y="31">display</text><text class="small" x="530" y="31">editing</text><text class="small" x="850" y="31">invalid</text><text class="small" x="1170" y="31">disabled</text>
+    <g transform="translate(210 67)"><text class="text">Angle</text><text class="text" x="190">12°</text></g>
+    <g transform="translate(530 50)"><text class="text" y="24">Angle</text><rect class="control" x="163" y="5" width="80" height="32" rx="5"/><text class="text" x="185" y="27">12</text></g>
+    <g transform="translate(850 50)"><text class="text" y="24">Angle</text><rect x="163" y="5" width="80" height="32" rx="5" fill="#2c2c31" stroke="#e5534b"/><text class="text" x="174" y="27">999</text><text class="error" x="0" y="55" style="font:13px system-ui,sans-serif">Range is −90 to 90</text></g>
+    <g transform="translate(1170 67)"><text class="dim">Angle</text><text class="dim" x="190">12°</text></g>
+  </g>
+
+  <g transform="translate(48 395)">
+    <rect class="panel" width="1504" height="108" rx="8"/>
+    <text class="rowhead" x="20" y="31">Stepper · Toggle · Menu</text>
+    <text class="small" x="210" y="31">stepper</text><text class="small" x="505" y="31">stepper disabled</text><text class="small" x="835" y="31">off · on · disabled</text><text class="small" x="1170" y="31">menu choices</text>
+    <g transform="translate(210 57)"><text class="text" y="21">Angle</text><text class="text" x="105" y="21">12°</text><rect class="control" x="164" width="38" height="38" rx="5"/><text class="text" x="177" y="26">−</text><rect class="control" x="211" width="38" height="38" rx="5"/><text class="text" x="224" y="26">+</text></g>
+    <g transform="translate(505 57)"><text class="dim" y="21">Angle</text><text class="dim" x="105" y="21">12°</text><rect class="control" x="164" width="38" height="38" rx="5"/><text class="dim" x="177" y="26">−</text><rect class="control" x="211" width="38" height="38" rx="5"/><text class="dim" x="224" y="26">+</text></g>
+    <g transform="translate(835 60)"><rect class="control" width="19" height="19" rx="3"/><rect x="89" width="19" height="19" rx="3" fill="#e2b46a"/><path d="M93 9l5 5 8-10" stroke="#19191b" stroke-width="2" fill="none"/><rect class="control" x="178" width="19" height="19" rx="3"/><text class="dim" x="203" y="16">disabled</text></g>
+    <g transform="translate(1170 56)"><rect class="control" width="112" height="38" rx="5"/><text class="text" x="10" y="25">RGB  ▾</text><rect class="control" x="125" width="112" height="38" rx="5"/><text class="text" x="135" y="25">Lab  ▾</text><text class="dim" x="250" y="25">Lab</text></g>
+  </g>
+
+  <g transform="translate(48 519)">
+    <rect class="panel" width="1504" height="84" rx="8"/>
+    <text class="rowhead" x="20" y="31">Colour swatch</text>
+    <text class="small" x="210" y="31">rest</text><text class="small" x="530" y="31">open</text><text class="small" x="850" y="31">disabled</text>
+    <rect x="210" y="48" width="56" height="22" rx="3" fill="#cc5028"/><rect x="530" y="48" width="56" height="22" rx="3" fill="#cc5028" stroke="#e2b46a" stroke-width="3"/><rect x="850" y="48" width="56" height="22" rx="3" fill="#505050"/>
+  </g>
+
+  <g transform="translate(48 619)">
+    <rect class="panel" width="1504" height="242" rx="8"/>
+    <text class="rowhead" x="20" y="31">Colour picker</text>
+    <text class="small" x="210" y="31">rest</text><text class="small" x="625" y="31">dragging</text><text class="small" x="1040" y="31">disabled</text>
+    <g transform="translate(210 46)"><rect width="230" height="130" fill="url(#plane)"/><circle cx="166" cy="35" r="7" fill="none" stroke="#e8e8ea" stroke-width="2"/><rect y="140" width="230" height="8" fill="url(#hue)"/><text class="small" y="174">R 217 · G 106 · B 61 · #D96A3D</text></g>
+    <g transform="translate(625 46)"><rect width="230" height="130" fill="url(#plane)"/><circle cx="181" cy="24" r="7" fill="none" stroke="#e2b46a" stroke-width="2"/><rect y="140" width="230" height="8" fill="url(#hue)"/><text class="small" y="174">plane drag · fraction pair</text></g>
+    <g transform="translate(1040 46)" opacity=".45"><rect width="230" height="130" fill="url(#plane)"/><circle cx="166" cy="35" r="7" fill="none" stroke="#e8e8ea" stroke-width="2"/><rect y="140" width="230" height="8" fill="url(#hue)"/><text class="small" y="174">unavailable</text></g>
+  </g>
+
+  <g transform="translate(48 877)">
+    <rect class="panel" width="1504" height="255" rx="8"/>
+    <text class="rowhead" x="20" y="31">Curve editor</text>
+    <text class="small" x="210" y="31">rest</text><text class="small" x="505" y="31">selected · dragging</text><text class="small" x="835" y="31">histogram · two channels</text><text class="small" x="1170" y="31">disabled</text>
+    <g transform="translate(210 47)"><rect class="control" width="190" height="160"/><path class="line" d="M0 160L190 0" opacity=".45"/><path class="curve" d="M0 160 Q95 65 190 0"/><circle class="point" cx="95" cy="61" r="5"/><text class="small" y="188">0,0 · 0.5,0.62 · 1,1</text></g>
+    <g transform="translate(505 47)"><rect class="control" width="190" height="160"/><path class="line" d="M0 160L190 0" opacity=".45"/><path class="curve" d="M0 160 Q95 65 190 0"/><circle class="point" cx="95" cy="61" r="8"/><text class="small" y="188">point 2 selected</text></g>
+    <g transform="translate(835 47)"><rect class="control" width="190" height="160"/><path d="M0 160L20 148 45 118 70 70 95 48 120 69 145 118 170 145 190 160Z" fill="#77777f" opacity=".35"/><path class="curve" d="M0 160 Q95 65 190 0"/><circle class="point" cx="95" cy="61" r="5"/><text class="small" y="188">RGB · Red</text></g>
+    <g transform="translate(1170 47)" opacity=".45"><rect class="control" width="190" height="160"/><path class="line" d="M0 160L190 0"/><path class="curve" d="M0 160 Q95 65 190 0"/><text class="small" y="188">unavailable</text></g>
+  </g>
+  <text class="small" x="48" y="1178">Named vector icons: rotate left/right · flip · mirror · crop · picker · reset · plus · minus · lock · swap · guide · pointer · versions · undo · redo · before · after</text>
+  <text class="small" x="48" y="1198">Each is rendered in the text colour at 12 and 16 pt. No font glyph is required.</text>
+</svg>
