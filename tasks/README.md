@@ -5,14 +5,14 @@ Each JSON file is an independent plan. IDs start at `TASK-001` inside every file
 | Plan | Purpose |
 | --- | --- |
 | [S0 follow-ups](implementation-s0.json) | Hosted CI refresh, Windows/Linux packaging and desktop checks, Linux VM route, license audit and expiring advisory exceptions |
-| [Basic adjustments and histogram](implementation-basic-histogram.json) | Proposed JPEG exposure/histogram slice, then core tone, white balance and color controls; integration alongside separately owned M3/M4 work |
+| [Basic adjustments and histogram](implementation-basic-histogram.json) | Decided JPEG exposure/histogram slice, then core tone, white balance and color controls, over the delivered core and workspace; implementation not yet authorized |
 | [Editor follow-ups](implementation-editor-followups.json) | Export, color and metadata, Locate, MCP and full-editor verification |
 | [Later extensions](implementation-extensions.json) | External-loader measurements and proof planning after a selected use case |
 | [Product decisions](product-decisions.json) | Open product questions |
 
 Editor follow-ups and later work wait until the owner asks for them.
 
-The Basic/histogram plan is planning only; its [design](../docs/design/basic-and-histogram.md) records proposals and integration dependencies. Ready tasks identify runnable preparation after implementation is authorized, not approval to begin all proposed work.
+The Basic/histogram plan has its product choices decided and its [design](../docs/design/basic-and-histogram.md) records them with the integration dependencies; implementation is not yet authorized. Ready tasks identify runnable preparation, not approval to begin all work.
 
 ## Conventions
 

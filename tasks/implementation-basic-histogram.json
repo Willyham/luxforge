@@ -1,19 +1,18 @@
 {
   "schema_version": "1.0",
   "plan_id": "basic-histogram",
-  "title": "Basic adjustments and histogram — proposed JPEG tool slices",
+  "title": "Basic adjustments and histogram \u2014 proposed JPEG tool slices",
   "objective": "Deliver a useful exact-output histogram and Exposure slice, followed by core Tone, White Balance and Color controls with shared UI/API history and bounded processing.",
-  "context_summary": "Planning only. M3/M4 are separately owned work in progress; reconcile their delivered interfaces rather than duplicating them. JPEG-first, one fixed-order editable Basic layer, gesture commits and pointwise global Tone are proposals pending owner choice. Numerical/reference work and the pure histogram reducer can be prepared independently of crop; final acceptance needs real M4 geometry. No export, RAW, PNG, HDR, Auto, external loader or local-presence implementation is added. Every crates handoff answers the performance checklist and measures photo-sized inputs.",
+  "context_summary": "Product choices are decided (JPEG first, one fixed-order Basic layer, release commits, global tone first, Lightroom research as the numerical starting point, Slice A before Slice B); implementation is not yet authorized. The delivered baseline is M3 modules, M4 crop drafts and conflicts with number parameters and in-place layer updates, content-space edits, the orientation layer and the Develop workspace whose generated tools panel already renders sliders that commit once on release. Still missing in the core: the revision-bound draft lifecycle, bounded pointwise float colour processing with point sampling, the histogram analysis job and the field-patch action. No export, RAW, PNG, HDR, Auto, external loader or local-presence implementation is added. Every crates handoff answers the performance checklist and measures photo-sized inputs.",
   "tasks": [
     {
       "id": "TASK-001",
-      "description": "Resolve Basic product choices and the integration contract with the separately owned M3/M4 host.",
+      "description": "Record the Basic integration contract against the delivered core and workspace.",
       "status": "ready",
       "dependencies": [],
       "extra_context": [
-        "Planning only has been authorized. Ready is a preparation status, not authorization to implement.",
-        "The checkout has M3 but the owner reports M3/M4 work in progress elsewhere. Inspect the delivered interfaces before shared-host changes; do not duplicate draft or interpolation work.",
-        "Choose JPEG-first versus RAW prerequisite, one fixed-order Basic layer versus independent layers, slider commit timing, global Tone scope and slice priority with the owner. Unanswered choices remain proposals."
+        "Preparation only: implementation is authorized separately.",
+        "The product choices are decided and recorded; this task turns them into the integration contract: field-patch semantics, the core draft lifecycle and reapply rules, the Basic layer's stage placement and internal order, analysis target identity and job bounds, and the method names chosen against the delivered API table."
       ],
       "context_links": [
         {
@@ -39,19 +38,30 @@
           "label": "Persistent history",
           "target": "docs/specs/edit-history.md",
           "relevance": "Host-owned transactions, stable IDs, immutable snapshots, no-ops, retries and restoration."
+        },
+        {
+          "kind": "file",
+          "label": "Develop workspace",
+          "target": "docs/design/develop-workspace.md",
+          "relevance": "The delivered panel, slider, reset, label and notice behaviour Basic and the histogram slot into."
+        },
+        {
+          "kind": "file",
+          "label": "Product decisions",
+          "target": "docs/decisions.md",
+          "relevance": "The owner's decided Basic and histogram choices."
         }
       ],
       "acceptance_criteria": [
-        "Record actual owner decisions or explicit unresolved gates; do not adopt candidates silently.",
-        "Define Basic layer targeting and field-patch semantics, draft lifecycle/reapply, internal order and integration extension points with precise input/output ownership.",
-        "Separate independent numerical/reducer work from descriptor, transaction and renderer integration; document named M4 outcomes needed for final acceptance without cross-plan task references.",
-        "Freeze analysis target/result identity, job bounds and declared color boundaries; preserve existing crop semantics and old catalogs.",
-        "The design states which downstream work is unblocked and which product or external-integration gates remain."
+        "Define Basic layer targeting and field-patch semantics, draft lifecycle/reapply, internal order and integration extension points with precise input/output ownership, reusing the delivered number parameters, in-place updates and content-stage placement.",
+        "Separate independent numerical/reducer work from descriptor, transaction and renderer integration.",
+        "Freeze analysis target/result identity, job bounds and declared color boundaries; preserve existing crop semantics and refuse old catalogs explicitly.",
+        "The design states which downstream work is unblocked and which gates remain."
       ],
       "test_strategy": {
         "approach": "inspection",
         "steps": [
-          "Review the design against current module, crop and history contracts; inspect resulting M3/M4 code when available.",
+          "Review the design against current module, crop and history contracts; inspect the delivered module, crop, content-space and workspace code.",
           "Review consequential choices with the owner and check that the plan status never treats a proposal as an accepted decision."
         ],
         "commands": [
@@ -68,7 +78,7 @@
       "status": "ready",
       "dependencies": [],
       "extra_context": [
-        "Preparation can run alongside M3/M4; no shared host changes are necessary.",
+        "Preparation needs no shared host changes and can start before implementation is authorized.",
         "Only freeze neutral/exposure/sRGB and histogram oracles now. Later algorithm tasks must supply their own final constants and expected outputs."
       ],
       "context_links": [
@@ -126,14 +136,14 @@
     },
     {
       "id": "TASK-003",
-      "description": "Integrate decimal controls, identified-layer updates and reusable tool drafts through the core.",
+      "description": "Add the core draft lifecycle, step and display precision, and the Basic field-patch action.",
       "status": "pending",
       "dependencies": [
         "TASK-001"
       ],
       "extra_context": [
-        "Reuse M4 implementations of decimal validation, payload replacement and drafts when present; implement only missing shared capabilities after reconciling the delivered host.",
-        "M3 currently supports append-only ActionPlan::Commit and integer fields. Basic must not maintain authoritative draft or recipe logic in widgets."
+        "Number parameters, generic range validation and ActionPlan::Update already exist (M4); do not duplicate them. Add only step and display precision to descriptors, the revision-bound draft lifecycle (begin, set, read, cancel, commit, reapply) through the API, and the field patch.",
+        "The crop draft is desktop-local; reuse its conflict semantics, not its state machine. Basic must not maintain authoritative draft or recipe logic in widgets; the workspace's slider already sends field messages during a drag and one submit on release."
       ],
       "context_links": [
         {
@@ -183,6 +193,12 @@
           "label": "Performance rules",
           "target": "docs/engineering/performance-rules.md",
           "relevance": "Required cache, frame-work, allocation, worker, sampling and measurement checklist for every crates change."
+        },
+        {
+          "kind": "file",
+          "label": "Develop workspace",
+          "target": "docs/design/develop-workspace.md",
+          "relevance": "The delivered panel, slider, reset, label and notice behaviour Basic and the histogram slot into."
         }
       ],
       "acceptance_criteria": [
@@ -216,7 +232,7 @@
       ],
       "extra_context": [
         "Use an explicit small host operation family, not a generalized graph or a full-frame float intermediate.",
-        "Reconcile the actual M4 color/interpolation boundary; do not change an accepted crop result silently."
+        "Fit the colour stage inside the delivered resample stage boundary; do not change an accepted crop result silently."
       ],
       "context_links": [
         {
@@ -291,7 +307,7 @@
         "TASK-002"
       ],
       "extra_context": [
-        "This pure reducer can be prepared alongside M3/M4 on existing final byte rasters. Product integration remains gated by the agreed design.",
+        "This pure reducer runs on existing final byte rasters and needs no host change; product integration follows the design.",
         "Histogram inspection creates neither a recipe effect nor a history entry."
       ],
       "context_links": [
@@ -421,7 +437,8 @@
       ],
       "extra_context": [
         "Ship exact full-composition SDR output counts with shared linear plot scaling; no histogram dragging or metadata extraction in this slice.",
-        "Use a dedicated analysis presentation rather than a fake effect layer; controls and view settings remain programmable."
+        "Use a dedicated analysis presentation rather than a fake effect layer; controls and view settings remain programmable.",
+        "The histogram sits above the module sections in the tools panel and the clipping toggle joins the title bar, as the Develop workspace design reserves; the pointer readout uses render.sample and render.locate."
       ],
       "context_links": [
         {
@@ -459,6 +476,12 @@
           "label": "Performance rules",
           "target": "docs/engineering/performance-rules.md",
           "relevance": "Required cache, frame-work, allocation, worker, sampling and measurement checklist for every crates change."
+        },
+        {
+          "kind": "file",
+          "label": "Develop workspace",
+          "target": "docs/design/develop-workspace.md",
+          "relevance": "The delivered panel, slider, reset, label and notice behaviour Basic and the histogram slot into."
         }
       ],
       "acceptance_criteria": [
@@ -537,19 +560,19 @@
         "First non-neutral use appends Basic and later sets update the same layer; resets preserve other effects and stable identity.",
         "Module descriptors expose inspection, field update and reset semantics through the shared host without direct catalog writes.",
         "Payload format and unavailable-provider errors protect every retained snapshot; reload and restore evaluate identically.",
-        "±EV references, unchanged originals, source sampling and UI-independent history/deduplication tests pass within the declared numerical contract."
+        "\u00b1EV references, unchanged originals, source sampling and UI-independent history/deduplication tests pass within the declared numerical contract."
       ],
       "test_strategy": {
         "approach": "mixed",
         "steps": [
-          "Run exact neutral and reference ±EV buffers, mixed geometry/replacement order and out-of-range input cases.",
+          "Run exact neutral and reference \u00b1EV buffers, mixed geometry/replacement order and out-of-range input cases.",
           "Exercise set/reset/undo/redo/restore/reopen, retries, write failure and disabled provider; answer the performance checklist."
         ],
         "commands": [
           "cargo xtask check"
         ],
         "expected_results": [
-          "±EV references, unchanged originals, source sampling and UI-independent history/deduplication tests pass within the declared numerical contract."
+          "\u00b1EV references, unchanged originals, source sampling and UI-independent history/deduplication tests pass within the declared numerical contract."
         ]
       }
     },
@@ -561,8 +584,8 @@
         "TASK-008"
       ],
       "extra_context": [
-        "Use the agreed release/key-up/Enter commit policy or the owner-selected alternative, backed by shared drafts.",
-        "Control labels, values, ranges and defaults come from descriptors."
+        "Release, key-up or Enter commits once and Escape cancels, as decided; the generated slider already behaves this way for a plain number parameter. This task adds the draft-backed live preview during a drag, at most one preview request per frame, and one history entry per gesture.",
+        "Control labels, values, ranges and defaults come from descriptors; the history label comes from the action's summary template."
       ],
       "context_links": [
         {
@@ -606,6 +629,12 @@
           "label": "Performance rules",
           "target": "docs/engineering/performance-rules.md",
           "relevance": "Required cache, frame-work, allocation, worker, sampling and measurement checklist for every crates change."
+        },
+        {
+          "kind": "file",
+          "label": "Develop workspace",
+          "target": "docs/design/develop-workspace.md",
+          "relevance": "The delivered panel, slider, reset, label and notice behaviour Basic and the histogram slot into."
         }
       ],
       "acceptance_criteria": [
@@ -710,7 +739,8 @@
       ],
       "extra_context": [
         "Choose explicit Lightwell equations; do not assume Lightroom numerical equivalence.",
-        "Pointwise global Tone is a proposal. If visual acceptance needs edge-aware behavior, return a concrete scope decision before implementation."
+        "Pointwise global Tone is a proposal. If visual acceptance needs edge-aware behavior, return a concrete scope decision before implementation.",
+        "Start from the Lightroom research and the design's starting ranges, as the owner decided; freeze the equations and tolerances against independent references before the control ships and claim no Lightroom equivalence."
       ],
       "context_links": [
         {
@@ -847,7 +877,8 @@
       ],
       "extra_context": [
         "Temperature/Tint are relative JPEG corrections, not camera Kelvin or recoverable RAW white balance.",
-        "The picker samples before Basic at its saved input stage and must return reproducible numeric parameters."
+        "The picker samples before Basic at its saved input stage and must return reproducible numeric parameters.",
+        "Start from the Lightroom research and the design's starting ranges, as the owner decided; freeze the equations and tolerances against independent references before the control ships and claim no Lightroom equivalence."
       ],
       "context_links": [
         {
@@ -996,7 +1027,8 @@
       ],
       "extra_context": [
         "Oklab chroma processing is the first candidate, not an already accepted formula.",
-        "Any skin-like protection is explicit smooth hue/chroma weighting, not face detection."
+        "Any skin-like protection is explicit smooth hue/chroma weighting, not face detection.",
+        "Start from the Lightroom research and the design's starting ranges, as the owner decided; freeze the equations and tolerances against independent references before the control ships and claim no Lightroom equivalence."
       ],
       "context_links": [
         {
@@ -1033,7 +1065,7 @@
       "acceptance_criteria": [
         "Specify the working-space conversions, parameter-to-chroma mapping, vibrance weights, negative behavior and internal order.",
         "Define out-of-gamut, near-black, achromatic, negative and above-white behavior before final SDR output quantization.",
-        "Freeze independent reference values and tolerances for neutral preservation, saturation −100 grayscale, monotone intensity response and smooth hue/chroma boundaries.",
+        "Freeze independent reference values and tolerances for neutral preservation, saturation \u2212100 grayscale, monotone intensity response and smooth hue/chroma boundaries.",
         "Review varied portraits and saturated primaries for exaggerated skin, hue shifts and clipping, with limitations recorded.",
         "The selected equations and gamut policy are implementable without a model/resource dependency and have an independent oracle."
       ],
@@ -1104,7 +1136,7 @@
       ],
       "acceptance_criteria": [
         "Descriptor/action/readback/reset behavior matches the agreed ranges and compiles the selected color transform.",
-        "Independent buffers prove grayscale at saturation −100, neutral preservation and the documented vibrance weighting/gamut limits.",
+        "Independent buffers prove grayscale at saturation \u2212100, neutral preservation and the documented vibrance weighting/gamut limits.",
         "Point samples and production raster agree within fixed tolerances, with identity paths and ordered effects preserved.",
         "Earlier saved Basic histories and every retained snapshot stay readable and reproducible; unavailable providers are explicit.",
         "UI-independent history/API tests and measured photo-sized processing satisfy the correctness/resource contract."
@@ -1135,7 +1167,8 @@
       ],
       "extra_context": [
         "Reuse generic controls and the existing gesture adapter; no new transaction path per group.",
-        "Only implemented White Balance/Tone/Color groups appear. No Auto, HDR, profile or Presence placeholders."
+        "Only implemented White Balance/Tone/Color groups appear. No Auto, HDR, profile or Presence placeholders.",
+        "Group and module resets, section hints and labels come from the descriptor and render through the delivered tools panel; the neutral picker is a canvas mode with its own title and shortcut."
       ],
       "context_links": [
         {
@@ -1179,6 +1212,12 @@
           "label": "Performance rules",
           "target": "docs/engineering/performance-rules.md",
           "relevance": "Required cache, frame-work, allocation, worker, sampling and measurement checklist for every crates change."
+        },
+        {
+          "kind": "file",
+          "label": "Develop workspace",
+          "target": "docs/design/develop-workspace.md",
+          "relevance": "The delivered panel, slider, reset, label and notice behaviour Basic and the histogram slot into."
         }
       ],
       "acceptance_criteria": [
@@ -1204,14 +1243,14 @@
     },
     {
       "id": "TASK-018",
-      "description": "Verify full Basic/histogram integration with delivered M4 geometry and photo-sized performance.",
+      "description": "Verify full Basic/histogram integration with the delivered crop geometry and photo-sized performance.",
       "status": "pending",
       "dependencies": [
         "TASK-010",
         "TASK-017"
       ],
       "extra_context": [
-        "Completion requires the actual M4 crop/interpolation and conflict outcomes, not an assumed future interface. If unavailable, retain the task as unfinished and report the named external dependency.",
+        "Completion requires mixed stacks over the delivered crop resample, orientation layer and conflict behaviour, not an assumed interface.",
         "This is the final acceptance gate for both slices; no promise of Adobe pixel matching, RAW recovery or calibrated monitor color."
       ],
       "context_links": [

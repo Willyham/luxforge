@@ -41,6 +41,17 @@ Accepted on 2026-09-20 for the [Develop workspace](design/develop-workspace.md) 
 - Compare is hold-`\` for the Original entry, through `preview.select` and `preview.return-current`. Dark theme only; a light theme is not planned.
 - Basic, histogram, export, Locate, heal and mask are outside this work. Their sections, buttons and notices are left out of the build entirely rather than drawn as placeholders. The generated tools panel must accept a `number` slider module without desktop changes, which is how Basic lands later.
 
+## Basic adjustments and histogram
+
+Accepted on 2026-09-21 for the [Basic and histogram design](design/basic-and-histogram.md). These settle the product questions; starting the implementation is a separate authorization.
+
+- JPEG first: the Basic controls and the histogram work on the supported SDR sRGB and greyscale JPEG subset. RAW is separate later work with its own input and colour contracts, not a prerequisite.
+- One Basic layer per recipe with a fixed internal group order (White balance, Exposure, tone curve, Vibrance, Saturation), placed by its colour stage before the geometry tail and updated in place at the same identity.
+- Slider release, key-up or Enter commits one action; Escape cancels; focus loss cancels an unfinished gesture. There is no Apply panel for adjustments.
+- Global pointwise tone first: Contrast, Highlights, Shadows, Whites and Blacks are one monotone global curve before any edge-aware processing is considered.
+- Numerical ranges and equations start from the Lightroom research and the design's proposed ranges and defaults; the numerical tasks select and freeze them against independent references before a control ships, and no value is claimed as Lightroom-equivalent.
+- Priority: Slice A (histogram, clipping and Exposure) next, then Slice B (the remaining Basic controls); export, Locate and MCP keep their own follow-up priority.
+
 ## Programmable operations and modules
 
 Every operation is programmable, including future tools, masks, clone strokes, settings and module lifecycle. The core owns recipe transactions, history, invariants and bounded services; tool modules own parameters, validation, controls and algorithms through those APIs. M3 uses linked modules with cheap registration and lazy resources. Real external loading is required later, and a missing or disabled provider must never silently erase edits or produce an incomplete export. Still open: the first external use case, package and runtime format, trust and UI contribution. See [modules](design/modules-and-api.md).
@@ -67,4 +78,4 @@ Tracked in [product decisions](../tasks/product-decisions.json).
 - What is the first external module the owner would use, and what enablement and recovery behavior does it need?
 - Which measured workloads and responsiveness budgets become acceptance requirements?
 
-The [Basic and histogram proposal](design/basic-and-histogram.md#open-decisions) also leaves JPEG-first delivery, Basic layer organization, gesture commit timing, global Tone quality scope and relative priority open. These are recommendations for the requested planning work, not accepted product decisions.
+The Basic and histogram product choices were decided on 2026-09-21; see [Basic adjustments and histogram](#basic-adjustments-and-histogram). Implementation is not yet authorized.

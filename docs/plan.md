@@ -23,7 +23,7 @@ After M4: JPEG export (quality 90, no overwrites, optional metadata stripped by 
 
 ## Later phases
 
-Basic adjustments and histogram now have a [proposed design](design/basic-and-histogram.md) and [task plan](../tasks/implementation-basic-histogram.json): first histogram/clipping and Exposure, then core Tone, White Balance and Color. This is planning alongside the separately owned M3/M4 work, not a change to their status or authorization to implement the proposal. JPEG-first delivery and its priority relative to other follow-ups remain proposed.
+Basic adjustments and histogram have a [design](design/basic-and-histogram.md) with the owner's product choices decided (JPEG first, one Basic layer, release commits, global tone first, Lightroom research as the numerical starting point) and a [task plan](../tasks/implementation-basic-histogram.json): first histogram/clipping and Exposure, then core Tone, White Balance and Color. Implementation is not yet authorized; the plan's first wave is preparation.
 
 Relative priority still needs owner input; see the [open questions](decisions.md#open-product-questions).
 

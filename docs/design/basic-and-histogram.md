@@ -1,12 +1,12 @@
 # Basic adjustments and histogram
 
-Status: proposal for implementation planning. No tools or commands in this document are implemented by this plan. M3/M4 work is owned separately; this proposal does not change their scope, acceptance or status. Product choices below remain proposals until the owner decides.
+Status: design with the product choices decided by the owner on 2026-09-21 ([decisions](../decisions.md#basic-adjustments-and-histogram)); implementation is not yet authorized and nothing in this document is implemented. It builds on the delivered M3 modules, M4 crop drafts and conflicts, content-space edits, the orientation layer and the [Develop workspace](develop-workspace.md), whose generated tools panel already renders a `number` control as a slider that commits once on release.
 
 ## Outcome and delivery order
 
 Make the current single-image editor useful for everyday brightness, tone and color corrections, with immediate, trustworthy feedback about the result. Use the supplied Lightroom screenshot as a familiarity reference, not as an instruction to reproduce every visible feature or Adobe's processing.
 
-Recommend starting with the supported SDR sRGB/greyscale JPEG subset. Linearizing a rendered JPEG makes exposure arithmetic meaningful but does not turn it into scene-linear RAW data. PNG, RAW, broad ICC conversion and calibrated display output keep their existing separate scope.
+Decided: start with the supported SDR sRGB/greyscale JPEG subset. Linearizing a rendered JPEG makes exposure arithmetic meaningful but does not turn it into scene-linear RAW data. RAW is separate later work; PNG, broad ICC conversion and calibrated display output keep their existing separate scope.
 
 | Slice | User-visible result | Main dependency |
 | --- | --- | --- |
@@ -18,7 +18,7 @@ Slice A is independently demonstrable before all of Slice B. It does not wait fo
 
 ## Module boundaries
 
-Propose two linked built-ins, with lazy resources:
+Two linked built-ins, with lazy resources:
 
 | Component | Owns | Does not own |
 | --- | --- | --- |
@@ -26,30 +26,32 @@ Propose two linked built-ins, with lazy resources:
 | Histogram inspector | A deterministic RGB reduction, clipping predicates, inspectable result schema and histogram presentation | A recipe effect or an undo entry |
 | Shared host additions | Decimal parameter/slider semantics, revision-bound drafts, updating an identified layer, bounded pointwise color execution and analysis jobs | Tool-specific equations or bespoke Basic-only transaction logic |
 
-Basic is one editable recipe effect with internal algorithm units for white balance, exposure, tone and color. This avoids making the result depend on the order in which a person first touches individual Basic sliders. It does not require a new crate or external module loader. The histogram uses the common operation registry and a small analysis interface; do not invent a no-op image layer to fit it into today's effect-only interface.
+Decided: Basic is one editable recipe effect with internal algorithm units for white balance, exposure, tone and color. This avoids making the result depend on the order in which a person first touches individual Basic sliders. It does not require a new crate or external module loader. The histogram uses the common operation registry and a small analysis interface; do not invent a no-op image layer to fit it into today's effect-only interface.
 
-Proposed internal order: **White Balance → Exposure → tonal curve → Vibrance → Saturation**. Under the accepted [content-space edits](content-space-edits.md) rule the host places a new layer by its effect stage, so a color-stage Basic layer joins the stack before the geometry tail like a pixel layer; it then stays at that saved position. First non-neutral use inserts it; later adjustments replace that layer's payload at the same ID and position in a new immutable snapshot. Never move an existing layer or a pixel replacement. Initially create at most one Basic layer per recipe; if an unsupported/imported stack contains multiple candidates, report ambiguity rather than silently choosing one. Whether multiple Basic instances should become user-facing is outside this scope.
+Internal order: **White Balance → Exposure → tonal curve → Vibrance → Saturation**. Under the accepted [content-space edits](content-space-edits.md) rule the host places a new layer by its effect stage, so a color-stage Basic layer joins the stack before the geometry tail like a pixel layer; it then stays at that saved position. First non-neutral use inserts it; later adjustments replace that layer's payload at the same ID and position in a new immutable snapshot. Never move an existing layer or a pixel replacement. Initially create at most one Basic layer per recipe; if an unsupported/imported stack contains multiple candidates, report ambiguity rather than silently choosing one. Whether multiple Basic instances should become user-facing is outside this scope.
 
 Each slice persists only its implemented state and supports only the current Basic payload and algorithm. Breaking changes may replace that shape; update the internal effect format when its interpretation changes and reject unsupported formats explicitly. Do not retain earlier evaluators, conversions or dormant controls.
 
-## Relationship to the work in progress
+## Relationship to the delivered core and workspace
 
-The inspected checkout contains M3 descriptors and generated actions. They currently have integer, enum and 8-bit color parameters; `ActionPlan` appends a layer; processing has only `ExactGeometry` and `PointReplace`. M4 is expected to extend decimals, drafts, layer replacement and interpolation. Read its delivered interfaces before integration and reuse them where available.
+The checkout now delivers what this design first listed as prerequisites, so the integration work is smaller than first planned:
 
-| Work that can be prepared alongside M3/M4 | Integration boundary |
-| --- | --- |
-| Histogram reducer with hand-counted buffers; clipping predicates | Immutable final raster and render identity |
-| Color/exposure reference functions and synthetic fixtures | Declared color stage and point sampler |
-| Tone, white-balance and vibrance numerical studies | Module-owned compilation into the host's bounded color operation |
-| Descriptors and control behavior on paper | M3 descriptor validation and M4 transaction/draft contract |
+| Delivered | Where | What Basic reuses |
+| --- | --- | --- |
+| `number` parameters with finite ranges, units and defaults; generic range validation | M4 descriptors | Every Basic parameter is a `number`; step and display precision are the one descriptor addition still needed |
+| `ActionPlan::Update` replacing an identified layer in place in a new immutable snapshot | M4 host | The Basic field patch updates the one Basic layer at its saved identity and position |
+| Layers placed by effect stage before the geometry tail | [Content-space edits](content-space-edits.md) | A colour-stage Basic layer joins the stack before quarter-turns and crop and stays there |
+| The resample stage boundary and one-pass exact segments | M4 renderer | The pointwise colour stage is a new bounded operation inside a segment, not a second pipeline |
+| Draft conflict rules: an external commit keeps the draft and marks it conflicted until Discard or Reapply | M4 crop draft, desktop-local | The semantics to reuse; the crop draft itself lives in the desktop and is not the core draft lifecycle Basic needs |
+| Generated tools panel: sliders that commit once on release, drag sends nothing, group and module resets, section hints, history labels from `summary` templates, recipe summaries, the Developer section | [Develop workspace](develop-workspace.md) | A Basic descriptor with sliders and grouped resets renders without desktop changes; the histogram sits above the modules in the tools panel and the clipping toggle and neutral picker join the title bar and mode strip as the design reserves for them |
 
-Shared files likely to need coordinated integration are `modules/descriptor.rs`, `modules/processing.rs`, `modules/mod.rs`, `render.rs`, `preview.rs`, `editor.rs`, `api/methods.rs` and the desktop's `app/`, `state/` and `view/` layers under `crates/`. Keep algorithm and reducer implementations in dedicated files. One integrator should reconcile shared host changes against the delivered M3/M4 baseline; independent algorithm tasks need not wait for crop UI completion. Do not build a second draft system while crop's is in progress.
+What is still missing from the core: the revision-bound draft lifecycle for slider gestures (begin, set, read, cancel, commit, reapply through the API, at most one preview request per frame while dragging), the bounded pointwise float colour operation and its point sampler, the analysis job for the histogram, and the field-patch action. Shared files likely to need coordinated integration are `modules/descriptor.rs`, `modules/processing.rs`, `modules/mod.rs`, `render.rs`, `preview.rs`, `editor.rs`, `api/methods.rs` and the desktop's `app/`, `state/` and `view/` layers under `crates/`. Keep algorithm and reducer implementations in dedicated files. One integrator reconciles the shared host changes; independent algorithm and reducer tasks run alongside.
 
 ## Basic controls and interaction
 
-These are proposed Lightwell ranges and units, not claims of numeric equivalence to Lightroom. Defaults are neutral, zero. Ranges, step, display precision, defaults and descriptions belong in descriptors and API schemas.
+These are the starting Lightwell ranges and units, taken from the [Lightroom research](../research/lightroom/tone-and-color-tools.md) as the owner decided, not claims of numeric equivalence to Lightroom. Defaults are neutral, zero. The numerical tasks may adjust a range against independent references before a control ships. Ranges, step, display precision, defaults and descriptions belong in descriptors and API schemas.
 
-| Group/control | Proposed UI range | Required behavior |
+| Group/control | Starting UI range | Required behavior |
 | --- | --- | --- |
 | Tone / Exposure | −5.00 to +5.00 EV, 0.01 step | Multiply linear-light channels by `2^EV` |
 | Tone / Contrast | −100 to +100, step 1 | Change midtone separation with a defined pivot and smooth monotone curve |
@@ -60,9 +62,9 @@ These are proposed Lightwell ranges and units, not claims of numeric equivalence
 
 Each slider has editable numeric text, keyboard steps, an accessible name/value/unit, and an explicit reset action. Double-click reset can be an additional shortcut. Group reset and Reset Basic preserve other groups/effects as appropriate and commit once. Reset on a neutral layer is a no-op; resetting an existing layer retains its ID with neutral parameters. No hidden group-enable/bypass feature is required.
 
-Propose slider release as the normal commit boundary, matching common photo-editor interaction. Pointer-down begins a revision-bound draft, pointer updates replace its settings and preview request, and release commits once. Escape cancels; numeric Enter commits once; an arrow-key hold is one gesture ending on key-up. Focus loss cancels an unfinished gesture rather than committing an intermediate value. Invalid text stays editable with a useful error and commits nothing. A gesture that returns to its start is a no-op.
+Decided: slider release is the commit boundary, matching common photo-editor interaction. Pointer-down begins a revision-bound draft, pointer updates replace its settings and preview request, and release commits once. Escape cancels; numeric Enter commits once; an arrow-key hold is one gesture ending on key-up. Focus loss cancels an unfinished gesture rather than committing an intermediate value. Invalid text stays editable with a useful error and commits nothing. A gesture that returns to its start is a no-op.
 
-Reuse the core draft primitives supplied for crop, with Basic-specific commit timing. Independent clients can begin, set, inspect, cancel and commit drafts semantically without pointer simulation. Keep at most one active tool draft per client/asset; changing tools with a draft requires explicit commit or discard, not silent replacement.
+Add the draft lifecycle to the core with Basic's commit timing, reusing the crop draft's conflict semantics rather than its desktop-local state machine. Independent clients can begin, set, inspect, cancel and commit drafts semantically without pointer simulation. Keep at most one active tool draft per client/asset; changing tools with a draft requires explicit commit or discard, not silent replacement.
 
 An external commit preserves the draft and marks conflict. Discard or explicit Reapply is required. Reapply preserves the user's changed fields, merges them onto the newest compatible Basic state and revalidates geometry/picker inputs; it must not overwrite unrelated fields edited by another client. Undo/redo, Restore and history preview follow the same conflict rules. Historical previews remain read-only, and their values and histogram remain attached to the selected entry.
 
@@ -116,7 +118,7 @@ Do not allocate a full-resolution mask: derive overlay values from the same fina
 
 ## Shared API and jobs
 
-The following are required capabilities, **not existing command names**. Final method names and schemas are chosen with the M3/M4 integration, avoiding duplicate APIs.
+The following are required capabilities, **not existing command names**. Final method names and schemas are chosen at integration against the delivered method table (`module.list`, `recipe.describe`, `workspace.set`, `render.locate`, `render.sample`), avoiding duplicate APIs.
 
 | Capability | Required semantics |
 | --- | --- |
@@ -162,18 +164,20 @@ Every implementation handoff answers the [performance checklist](../engineering/
 
 Auto Tone, profiles/presets, HDR, local masks, healing, red-eye and screenshot metadata rows are not selected for the first two slices. No disabled placeholders for them. Histogram dragging can follow once tone control semantics are proven; first ship the histogram as feedback. The existing export/Locate/MCP commitments keep their own priorities.
 
-## Open decisions
+## Decisions
 
-| Decision | Recommendation | Effect if changed |
+Decided by the owner on 2026-09-21 and recorded in [product decisions](../decisions.md#basic-adjustments-and-histogram).
+
+| Decision | Decided | Effect |
 | --- | --- | --- |
-| JPEG now versus RAW prerequisite | Deliver on existing JPEG support | RAW first changes input/color contracts and substantially expands the dependency chain |
-| Editable Basic organization | One layer with fixed internal group order, stable position among other effects | Separate tool layers need an explicit ordering and targeting UX |
-| Commit timing | Slider release/key-up/Enter; Escape cancels | An Apply/Cancel panel is possible, but changes draft lifetime and keyboard interaction |
-| First highlights/shadows quality scope | Prove a global pointwise curve before considering edge-aware processing | Local/adaptive behavior adds analysis, tiles/halos and larger performance work |
-| Numerical limits and visual quality | Confirm ranges and select equations using the reference studies | Do not declare formulas or perceptual tolerances accepted merely because a candidate was documented |
-| Relative priority | Demonstrate Slice A, then finish Slice B | Owner may continue export or RAW/library work before Slice B |
+| JPEG now versus RAW prerequisite | JPEG now; RAW is separate later work | Input and colour contracts stay the current SDR JPEG subset |
+| Editable Basic organization | One layer with a fixed internal group order, at a stable position before the geometry tail | No ordering or targeting UX between Basic controls |
+| Commit timing | Slider release, key-up or Enter; Escape cancels | No Apply/Cancel panel for adjustments; the draft lives for one gesture |
+| First highlights/shadows quality scope | Global pointwise curve first | Edge-aware processing is a later, separately measured proposal |
+| Numerical limits and visual quality | Start from the Lightroom research and the ranges above; select and freeze against references in the numerical tasks | No formula or tolerance is accepted merely because a candidate was documented |
+| Relative priority | Slice A, then Slice B | Export, Locate and MCP keep their own follow-up priority |
 
-The task plan starts with resolving these product/integration choices. Independent fixture/reference preparation is runnable while choices are reviewed. Planning authorization is not implementation authorization.
+Implementation starts only when the owner authorizes it; the task plan's first wave is preparation.
 
 ## References
 
