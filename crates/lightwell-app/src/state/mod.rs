@@ -113,6 +113,30 @@ impl Workspace {
         self.palette = palette::derive(inputs);
     }
 
+    /// Every picker control the panel derived, by the module whose pick mode it selects, with the
+    /// label it shows and whether it reads selected. A captured frame carries it so the rendered
+    /// button can be checked against what the model said it should be.
+    pub(crate) fn pickers(&self) -> serde_json::Value {
+        serde_json::Value::Object(
+            self.tools
+                .all()
+                .flat_map(|section| section.pickers())
+                .map(|picker| {
+                    (
+                        picker.module_id.clone(),
+                        serde_json::json!({
+                            "label": picker.label,
+                            "title": picker.title,
+                            "shortcut": picker.shortcut,
+                            "selected": picker.selected,
+                            "enabled": picker.enabled,
+                        }),
+                    )
+                })
+                .collect(),
+        )
+    }
+
     /// Which sections are expanded, for the correlated evidence state.
     pub(crate) fn expanded(&self) -> serde_json::Value {
         serde_json::Value::Object(
@@ -668,6 +692,79 @@ mod tests {
         );
     }
 
+    /// A module's declared picker is a control of its own panel: it names the mode, carries its
+    /// letter, reads selected exactly while that mode is active, and its section re-derives when
+    /// the mode changes so the button on screen is never a frame behind the session.
+    #[test]
+    fn a_declared_picker_is_a_control_of_its_module_and_follows_the_workspace_mode() {
+        let mut scene = Scene::new(descriptors()).opened(Vec::new());
+        scene.developer = true;
+        let mut workspace = Workspace::default();
+        workspace.derive(&scene.inputs());
+        let basic = section(&workspace, "lightwell.basic");
+        let picker = *basic
+            .pickers()
+            .first()
+            .expect("the Basic module declares a picker");
+        assert_eq!(picker.module_id, "lightwell.basic");
+        assert_eq!(picker.label, "Neutral picker");
+        assert_eq!(
+            picker.title, "Neutral picker",
+            "the tooltip names the declared canvas mode"
+        );
+        assert_eq!(picker.shortcut.as_deref(), Some("W"));
+        assert!(!picker.selected, "the pointer is the mode on opening");
+        assert!(picker.enabled, "an editable section offers its picker");
+
+        // It sits inside the White balance group, with the two fields a pick fills.
+        let group = basic
+            .controls
+            .iter()
+            .find_map(|control| match control {
+                ControlModel::Group(group) if group.label == "White balance" => Some(group),
+                _ => None,
+            })
+            .expect("the White balance group");
+        assert!(
+            matches!(group.controls.last(), Some(ControlModel::Picker(_))),
+            "the picker is the last control of the group whose fields it sets"
+        );
+        assert_eq!(
+            group.state,
+            Some(tools::GroupState::Original),
+            "a picker is not a value, so it does not make the group Custom"
+        );
+
+        // Every declaring module gets one, and only the module whose mode is active reads selected.
+        let versions: Vec<(String, u64)> = workspace
+            .tools
+            .all()
+            .map(|section| (section.module_id.clone(), section.version))
+            .collect();
+        scene.session.workspace.mode = "lightwell.basic".into();
+        workspace.derive(&scene.inputs());
+        assert!(
+            section(&workspace, "lightwell.basic").pickers()[0].selected,
+            "the picker reads selected while its own mode is active"
+        );
+        for (id, before) in versions {
+            let after = section(&workspace, &id).version;
+            if id == "lightwell.basic" {
+                assert_eq!(
+                    after,
+                    before + 1,
+                    "{id} re-derives when its mode is entered"
+                );
+            } else {
+                assert_eq!(after, before, "{id} is untouched by another module's mode");
+            }
+        }
+        assert!(
+            !section(&workspace, "lightwell.pixel").pickers()[0].selected,
+            "another module's picker is not selected by the Basic mode"
+        );
+    }
+
     #[test]
     fn a_field_change_re_derives_only_its_own_section() {
         let modules = descriptors();
@@ -824,8 +921,11 @@ mod tests {
         );
     }
 
+    /// The strip holds the pointer, the canvas-takeover modes and the view overlays, and nothing
+    /// else. A pick mode takes no canvas over: it belongs beside the controls its pick fills, so it
+    /// is reached from its module's own picker control and never appears here.
     #[test]
-    fn the_mode_strip_lists_the_pointer_then_every_declared_canvas_mode() {
+    fn the_mode_strip_lists_the_pointer_then_every_declared_crop_frame() {
         let mut scene = Scene::new(descriptors()).opened(Vec::new());
         let strip = scene.derive().canvas.modes;
         assert_eq!(strip[0].id, POINTER_MODE);
@@ -838,32 +938,37 @@ mod tests {
         assert_eq!(crop.label, "Crop", "the descriptor's own canvas title");
         assert_eq!(crop.shortcut.as_deref(), Some("R"));
         assert!(crop.enabled);
-        // A sample-apply interaction reaches the strip by the same rule: the strip is derived from
-        // the declaration, not from a list of kinds the desktop knows.
-        let picker = strip
-            .iter()
-            .find(|mode| mode.id == "lightwell.basic")
-            .expect("the Basic module declares the neutral picker");
-        assert_eq!(picker.label, "Neutral picker");
-        assert_eq!(picker.shortcut.as_deref(), Some("W"));
-        assert!(picker.enabled);
-        // A developer module's mode is listed only when the run asked for developer tools.
-        let developer: Vec<String> = scene
+        assert_eq!(
+            strip.len(),
+            2,
+            "the pointer and the crop frame alone: {:?}",
+            strip.iter().map(|mode| &mode.id).collect::<Vec<_>>()
+        );
+        // Every module that declares a pick — a point pick or a sample apply — stays out, for
+        // every run, including one that asked for developer tools.
+        let picks: Vec<String> = scene
             .modules
             .iter()
-            .filter(|module| module.developer && module.canvas.is_some())
+            .filter(|module| {
+                matches!(
+                    module.canvas,
+                    Some(lightwell_core::CanvasInteraction::PointPick { .. })
+                        | Some(lightwell_core::CanvasInteraction::SampleApply { .. })
+                )
+            })
             .map(|module| module.id.clone())
             .collect();
-        for id in &developer {
-            assert!(
-                !strip.iter().any(|mode| &mode.id == id),
-                "{id} is a developer mode and is hidden by default"
-            );
-        }
+        assert!(
+            picks.iter().any(|id| id == "lightwell.basic"),
+            "the Basic module declares the neutral picker: {picks:?}"
+        );
         scene.developer = true;
         let strip = scene.derive().canvas.modes;
-        for id in &developer {
-            assert!(strip.iter().any(|mode| &mode.id == id), "{id} is listed");
+        for id in &picks {
+            assert!(
+                !strip.iter().any(|mode| &mode.id == id),
+                "{id} is a pick mode and is reached from its own panel, not the strip"
+            );
         }
         // An unavailable module offers no mode at all.
         scene.modules = vec![ModuleDescriptor {

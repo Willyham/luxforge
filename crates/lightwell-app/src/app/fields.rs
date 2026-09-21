@@ -111,7 +111,9 @@ fn seed_controls(module: &ModuleDescriptor, controls: &[Control], fields: &mut F
                     fields.set(action, parameter, seed_text(declared));
                 }
             }
-            Rendered::Action { .. } | Rendered::Unsupported(_) => {}
+            // Neither carries a field of its own: an action button submits the fields already
+            // seeded, and a picker only enters its module's canvas mode.
+            Rendered::Action { .. } | Rendered::Picker { .. } | Rendered::Unsupported(_) => {}
         }
     }
 }
@@ -321,19 +323,27 @@ fn control_preset_of(modules: &[ModuleDescriptor], action: &str) -> Map<String, 
         .unwrap_or_default()
 }
 
-/// What a double-click on a label submits: that one field at its declared default. A patch action
-/// runs it as one action; every other action only refills the text, which is what it has always
-/// done, because there is no way to send one field of a non-patch action on its own.
+/// What a double-click on a label submits: that one field at its declared default.
+///
+/// It runs as one action exactly where one field is already a whole request — a patch action's
+/// field, which the module merges, or the only parameter its action declares. An action with a
+/// second parameter has no way to send one field alone, so the double-click only refills the text
+/// there, as it has always done. A non-patch action's default is the value that is sent, so a
+/// parameter that declares none cannot be reset this way either; `seed_text` would invent its
+/// minimum, and inventing a value to commit is not a reset.
 pub(crate) fn reset_field_preset(
     modules: &[ModuleDescriptor],
     action: &str,
     parameter: &str,
 ) -> Option<Map<String, Value>> {
     let declared = crate::state::tools::declared_action(modules, action)?;
-    if !declared.patch {
+    if !declared.patch && !crate::state::tools::drafts_alone(modules, action, parameter) {
         return None;
     }
     let declared = declared.parameter(parameter)?;
+    if !crate::state::tools::is_patch(modules, action) && declared.default.is_none() {
+        return None;
+    }
     let value = parse_field(declared, &seed_text(declared)).ok()?;
     Some([(parameter.to_owned(), value)].into_iter().collect())
 }

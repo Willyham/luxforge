@@ -1146,10 +1146,34 @@ pub fn verify_panel(evidence: &Path, app: &Value, _events: &[Value]) -> Result {
         revision(&frames[6])? == revision(&frames[5])?,
         "Entering the picker mode committed something",
     )?;
+    // The picker lives in the White balance group, beside the two fields a pick sets, and reads
+    // selected exactly while its mode is active. The mode strip holds no entry for it at all.
+    let picker = |frame: &Value| frame["state"]["pickers"][BASIC_MODULE].clone();
+    ensure(
+        picker(&frames[0])["label"] == json!("Neutral picker")
+            && picker(&frames[0])["shortcut"] == json!("W"),
+        format!("The Basic panel declares no picker: {}", picker(&frames[0])),
+    )?;
+    ensure(
+        picker(&frames[0])["selected"] == json!(false),
+        "The picker reads selected before its mode was entered",
+    )?;
+    ensure(
+        picker(&frames[6])["selected"] == json!(true),
+        format!(
+            "The picker does not read selected in its own mode: {}",
+            picker(&frames[6])
+        ),
+    )?;
     record(
         &frames[6],
-        "the neutral picker mode, entered through workspace.set as W does",
-        json!({"mode": frames[6]["state"]["workspace"]["mode"], "status": status(&frames[6])?}),
+        "the neutral picker mode, entered through workspace.set as W and the panel's own picker \
+         button do; that button reads selected inside the White balance group",
+        json!({
+            "mode": frames[6]["state"]["workspace"]["mode"],
+            "status": status(&frames[6])?,
+            "picker": picker(&frames[6]),
+        }),
     );
 
     // Frame 7: a pick on a neutral grey patch. The picker answers the exact identity, 0 and 0,

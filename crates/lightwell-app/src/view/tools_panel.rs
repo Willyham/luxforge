@@ -11,7 +11,7 @@ use crate::{
         histogram::{HIGHLIGHT_GLYPH, HIGHLIGHT_RULE, HistogramModel, SHADOW_GLYPH, SHADOW_RULE},
         tools::{
             ActionControl, ColorControl, ControlModel, CropSectionModel, EnumControl, GroupControl,
-            SectionModel, SliderControl, ToolsModel, ValueEdit,
+            PickerControl, SectionModel, SliderControl, ToolsModel, ValueEdit,
         },
     },
 };
@@ -198,6 +198,7 @@ fn control_view<'a>(
         ControlModel::Color(color) => color_view(enabled, color, menu),
         ControlModel::Group(group) => group_view(module_id, enabled, group, menu),
         ControlModel::Action(action) => action_view(action, menu),
+        ControlModel::Picker(picker) => picker_view(picker, menu),
         ControlModel::Unsupported(message) => error_caption(message.clone()),
         ControlModel::CropFrame(frame) => crop_section_view(frame, menu),
     }
@@ -472,6 +473,61 @@ fn action_view<'a>(
         )
         .into(),
         _ => control,
+    }
+}
+
+/// A module's picker: the button that enters that module's canvas pick mode, drawn beside the
+/// controls the pick fills. It reads selected while the mode is active and clicking it then returns
+/// to the pointer, so the mode is always leavable from the same place it was entered. It commits
+/// nothing: the gesture is one `workspace.set`, which is what its context menu copies.
+fn picker_view<'a>(
+    picker: &'a PickerControl,
+    menu: Option<&'a MenuTarget>,
+) -> Element<'a, Message> {
+    let style = if picker.selected {
+        theme::button_selected
+    } else {
+        theme::button_plain
+    };
+    let control = button(lightwell_ui::label(picker.label.clone()))
+        .padding([4.0, 10.0])
+        .style(style)
+        .on_press_maybe(
+            picker
+                .enabled
+                .then(|| Message::SetMode(picker.target.clone())),
+        );
+    // The mode strip named the mode and its letter in a tooltip; the panel says the same thing.
+    let control: Element<'a, Message> = match &picker.shortcut {
+        Some(key) => iced::widget::tooltip(
+            control,
+            iced::widget::container(caption(format!("{} \u{00b7} {key}", picker.title)))
+                .padding(6.0)
+                .style(theme::bar_surface),
+            iced::widget::tooltip::Position::Top,
+        )
+        .into(),
+        None => control.into(),
+    };
+    let target = MenuTarget::Mode(picker.module_id.clone());
+    let area: Element<'a, Message> = mouse_area(control)
+        .on_right_press(Message::OpenMenu(target.clone()))
+        .into();
+    if menu == Some(&target) {
+        column![
+            area,
+            inline_menu(vec![
+                (
+                    "Copy as JSON request".to_owned(),
+                    Message::CopyModeRequest(picker.module_id.clone()),
+                ),
+                ("Cancel".to_owned(), Message::CloseMenu),
+            ])
+        ]
+        .spacing(4.0)
+        .into()
+    } else {
+        area
     }
 }
 

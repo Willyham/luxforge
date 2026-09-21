@@ -114,9 +114,11 @@ pub(crate) struct CanvasModel {
 pub(crate) fn derive(inputs: &Inputs<'_>) -> CanvasModel {
     let editable = inputs.state.is_some() && inputs.session.preview.can_edit() && !inputs.busy;
     let drafting = inputs.drafting;
-    // Pointer first, then one entry per available module that declares a canvas interaction, in
-    // registry order. Developer modules stay out of the strip unless the run asked for them, so the
-    // default workspace shows a photo editor's modes and nothing else.
+    // Pointer first, then one entry per available module that takes the whole canvas over — a
+    // declared crop frame — in registry order, and the view overlays after them. A pick mode is
+    // not a canvas takeover: it belongs beside the controls its pick fills, so its module declares
+    // a picker control in its own panel and the strip does not list it. Developer modules stay out
+    // of the strip unless the run asked for them.
     let mut modes = vec![ModeEntry {
         id: POINTER_MODE.into(),
         label: "Pointer".into(),
@@ -130,20 +132,17 @@ pub(crate) fn derive(inputs: &Inputs<'_>) -> CanvasModel {
             .iter()
             .filter(|module| module.is_available())
             .filter(|module| !module.developer || inputs.developer)
-            .filter(|module| {
-                module.id != "lightwell.raw"
-                    || inputs.state.is_some_and(|state| {
-                        matches!(state.asset.source, lightwell_core::SourceKind::Raw { .. })
-                    })
-            })
-            .filter_map(|module| {
-                module.canvas.as_ref().map(|canvas| ModeEntry {
+            .filter_map(|module| match module.canvas.as_ref() {
+                Some(canvas @ CanvasInteraction::CropFrame { .. }) => Some(ModeEntry {
                     id: module.id.clone(),
                     label: canvas.title().to_owned(),
                     shortcut: canvas.shortcut().map(str::to_owned),
                     selected: inputs.session.workspace.mode == module.id,
                     enabled: editable,
-                })
+                }),
+                Some(CanvasInteraction::PointPick { .. })
+                | Some(CanvasInteraction::SampleApply { .. })
+                | None => None,
             }),
     );
     CanvasModel {
