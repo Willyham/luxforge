@@ -8,7 +8,7 @@ Each JSON file is an independent plan. IDs start at `TASK-001` inside every file
 | [Verification harness](implementation-verification-harness.json) | Tiered `verify` command with one summary, hidden-window launches with a focus check, smaller launch defaults and bounded concurrency for rendered runs |
 | [Editor follow-ups](implementation-editor-followups.json) | Export, color and metadata, Locate, MCP and full-editor verification |
 | [Initial RAW editing](implementation-initial-raw.json) | Continuous high-precision RAW recipes for the original Nikon Z6, Fujifilm X100VI and supplied DJI Air 2S DNG: mode qualification, decoder/development evidence, bounded preparation, neutral rendering, exposure/WB, history and UI/API parity |
-| [UI components](implementation-ui-components.json) | The closed control vocabulary for modules: new parameter and control kinds, pure widgets, desktop gesture rules, a controls proof module and rendered evidence, per the accepted [design](../docs/design/ui-components.md); not started |
+| [UI components](implementation-ui-components.json) | The closed control vocabulary for modules: new parameter and control kinds, pure widgets, desktop gesture rules, a controls proof module and rendered evidence, per the accepted [design](../docs/design/ui-components.md); completed with native M4 captures and scoped before/after timing evidence |
 | [Later extensions](implementation-extensions.json) | External-loader measurements and proof planning after a selected use case |
 | [Product decisions](product-decisions.json) | Open product questions |
 

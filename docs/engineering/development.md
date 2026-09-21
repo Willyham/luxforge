@@ -27,7 +27,7 @@ Doctor reports missing tools and the graphics environment without installing any
 | Run an agent's editor check without taking focus (macOS) | `cargo xtask develop --background --catalog FILE [--open PATH]` |
 | Exact current-editor journey, display-independent, including the Basic and histogram chapter | `cargo run --release --locked --package xtask -- editor-acceptance --output NEW_DIR` |
 | Core timing on a real-sized JPEG | `cargo run --release --locked --package xtask -- editor-performance --source JPEG --output NEW_DIR [--samples N]` |
-| Desktop slider-to-presented-frame and settled-histogram timing, peak RSS, scratch and idle CPU | `cargo run --release --locked --package xtask -- editor-latency --source JPEG --output NEW_DIR [--binary PATH] [--samples N] [--crop DEGREES] [--idle]` |
+| Desktop slider/curve-to-presented-frame and settled-histogram timing, peak RSS, scratch and idle CPU | `cargo run --release --locked --package xtask -- editor-latency --source JPEG --output NEW_DIR [--binary PATH] [--samples N] [--control slider|curve] [--crop DEGREES] [--idle]` |
 | Verify golden fixtures; generate 24 and 60 MP workloads | `cargo xtask fixtures`, `cargo xtask generate-fixtures [--output NEW_DIR]` |
 | RAW corpus integrity; independent numerical stage references | `cargo xtask raw-corpus --manifest FILE --output NEW_DIR`, `cargo xtask raw-reference --output NEW_DIR` |
 | Authentic RAW editor journey, reopen and resource sampling | `cargo run --release --locked --package xtask -- raw-editor --manifest FILE --output NEW_DIR [--samples N] [--binary PATH]` |
@@ -276,6 +276,10 @@ that the second launch's frame reports `state.render_error.code` `incompatible`,
 naming "Preview is stale", the crop module listed unavailable in `state.modules`, no fixture colour
 drawn anywhere in the photo surface, and the source fixture's hash unchanged throughout. It writes
 `unavailable-checks.json` beside its own two launch directories rather than one `app/` directory.
+
+`cargo xtask smoke --scenario gallery --output NEW_DIR` captures all 63 named widget states across ten pages in the real background editor at 1440×1000 logical points. Each page has renderer readback, state metadata and a matching script event; the board includes every named vector icon at 12 and 16 points. `cargo xtask smoke --scenario controls --output NEW_DIR` enables the developer proof, scrolls its generated panel, and exercises slider/picker/curve drafts, cancellation, channel selection, point add/remove, discrete controls, group disclosure and reset. Its checks correlate history revisions and values with captures and verify that the identity proof preserves the displayed photograph. The gallery and generated panel have different widths; both require visual review alongside their automated checks.
+
+`editor-latency --control curve` measures the controls proof's middle-point drag with the curve editor visible. The proof's colour stage is identity; this measures the control, query, draft, preview and upload path, not a future Tone Curve image algorithm. Slider remains the default workload. Both use the same provisional 100 ms p95 interaction threshold and retain all samples.
 
 `editor-latency` is the desktop counterpart to `editor-performance`, which measures `render` on the
 catalog owner's thread and so cannot see scheduling, GPU upload or presentation. It writes its own

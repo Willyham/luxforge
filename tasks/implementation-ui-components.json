@@ -13,7 +13,7 @@
       "extra_context": [
         "The host validates and stores exactly what it is sent; hints change what a client draws, never what the host accepts. A curve is an ordered list of [x, y] fractions with strictly increasing x, monotone when declared, and fixed x values when declared.",
         "The string parameter kind, the text control and the pad control are the second slice and are not added here. Existing built-in modules keep their descriptors; only the descriptor types, validation and module.list change.",
-        "Evidence: 510827b; lightwell-core unit and integration suites pass (245 library tests; existing fixture-dependent ignored cases retained); descriptor JSON roundtrip, invalid bindings/hints, boolean/curve request checks and module.list assertions pass. check-repository passes. Descriptor-only registration/request validation adds no frame work, timers or queues."
+        "Evidence: descriptor validation/roundtrip and module.list tests pass; the final core suite has 246 active tests plus integration coverage. Boolean/curve bounds and malformed requests, query bindings, style/range hints and one-field patch action-button presets are tested. check-repository passes. Registration/request validation adds no image IO, full-frame allocations, owner frame work, refreshes, timers or queues. Existing declared Basic group-reset presets retain their contract."
       ],
       "context_links": [
         {
@@ -66,7 +66,7 @@
       "extra_context": [
         "Every widget takes a plain-data model and messages and holds no state; fractions are mapped to values by the caller. Canvas-drawn icons cache their geometry.",
         "The existing slider's value field becomes the number field so the slider, the stepper and the crop angle share one implementation.",
-        "Evidence: 24b527a; lightwell-ui 39 tests pass, check-repository passes, companion components-ui.svg validates as XML. Gallery includes all new basic and canvas states. Slider event filter prevents all wheel editing and implements Option fine-step; desktop keyboard focus integration remains TASK-004."
+        "Evidence: 41 UI tests pass, including pure soft-range/rail geometry, all 25 named icons at 12 and 16 points, field/stepper/toggle/choice states, and gallery construction. Native gallery covers every named state; components-ui.svg validates as XML. check-repository enforces Iced-only dependencies. Wheel editing is filtered and Option fine-step is implemented."
       ],
       "context_links": [
         {
@@ -118,7 +118,7 @@
       "extra_context": [
         "The curve editor draws a polyline the host supplies and never interpolates; the picker maps pointer positions to fractions and the caller turns them into channel values.",
         "Tessellated geometry is cached on the model's version the way the histogram plot caches its polygons, so an unchanged model costs nothing per frame.",
-        "Evidence: e3f6b5b and 7f0fccf; lightwell-ui 38 tests pass, including exhaustive 8-bit RGB HSV/hex round trips, offset hit testing, keyboard release and version-cache checks. Gallery includes swatch, picker and curve rest/dragging/disabled, histogram and two-channel states; check-repository passes. Native captures remain TASK-006."
+        "Evidence: 41 UI tests pass, including exhaustive 8-bit RGB HSV/hex round trips, offset hit tests, keyboard release and model-version cache checks. Native gallery and controls captures verify smooth cached picker gradients, disabled states, point lists, histogram backgrounds and both curve channels. No new photo-sized allocation, source IO, owner work or timers; geometry rebuilds only when its model version changes."
       ],
       "context_links": [
         {
@@ -172,7 +172,7 @@
       "extra_context": [
         "Continuous controls of a field-patch action draft through draft.begin, draft.set and draft.commit under the existing 16 ms tick; discrete controls commit once. A curve channel submits its one parameter; the crop draft keeps its own messages.",
         "Enum parameters currently render through a kind-driven mapping; the declared choice control replaces that path.",
-        "Evidence: state/view/controller integration; all 164 app unit tests and JSON CLI integration pass (2 fixture-dependent RAW CLI checks remain ignored). Nine generated-gesture tests prove one-field requests, fine step, field Enter-only, one draft/commit, Escape, and preset copy. check-repository passes. Native M4 Pro/Metal crop-draft and workspace smoke pass: artifacts/ui-components-crop-draft-final and artifacts/ui-components-workspace-final (binary 8ad8168); corrected header/gutter capture inspected. No source/frame changes or new timers; module curve queries are bounded to one active plus one replaceable pending query and 1024 returned points. Photo-sized measurements remain TASK-006."
+        "Evidence: final 175 app unit tests and JSON CLI integration pass, including nine generated gesture tests for one-field parameter patches, fine step, field Enter-only, one draft/commit, Escape and preset copy. Native M4 Pro/Metal crop-draft and workspace smoke pass in artifacts/ui-components-crop-draft-final and ui-components-workspace-final; captures inspected. Curve queries are bounded to one active plus one replaceable pending query and 1024 points, with asset/entry/channel/value identity. No source/frame changes or production timers; narrow completion and untouched section versions are preserved. Photo-sized evidence is recorded under TASK-006."
       ],
       "context_links": [
         {
@@ -227,13 +227,14 @@
     {
       "id": "TASK-005",
       "description": "Add the lightwell.controls developer proof module declaring one control of every kind over one field-patch action, and prove UI/API parity for the whole vocabulary through the JSON method table.",
-      "status": "in_progress",
+      "status": "completed",
       "dependencies": [
         "TASK-001",
         "TASK-004"
       ],
       "extra_context": [
-        "The module compiles to a no-op colour stage, is marked developer and appears only with --developer, like the pixel proof. It is the fixture for parity, not a photo tool."
+        "The module compiles to a no-op colour stage, is marked developer and appears only with --developer, like the pixel proof. It is the fixture for parity, not a photo tool.",
+        "Evidence: core proof and bidirectional desktop/independent JSON parity pass for all delivered kinds/styles; developer-off registry omits the proof. The 175 app, 246 core, 41 UI and integration tests pass. set-controls accepts exactly one field; reset-controls is a separate non-patch action. Query supplies 257 samples. The identity layer is byte-exact and Arc-shares source pixels. Picker hue through grey/black, context cache identity and one-field copied requests have regressions. No new source IO, full-frame buffers or timers; owner interpolation is bounded scalar work."
       ],
       "context_links": [
         {
@@ -271,13 +272,15 @@
     {
       "id": "TASK-006",
       "description": "Capture rendered evidence with gallery and controls smoke scenarios on the M4 Mac, measure that slider-to-frame latency has not regressed and that a curve point drag meets the slider threshold, and update the workspace design, module design, feature status and user guide.",
-      "status": "pending",
+      "status": "completed",
       "dependencies": [
         "TASK-005"
       ],
       "extra_context": [
         "Launches stay in the background through cargo xtask smoke and editor-latency. Captures are compared with the components board with correlated state and logs; a skipped scenario is not a pass.",
-        "Docs describe delivered kinds only; text, pad and the string kind stay listed as the second slice."
+        "Docs describe delivered kinds only; text, pad and the string kind stay listed as the second slice.",
+        "Performance checklist across crates: all original IO remains through the existing verified source cache; no new photo-sized allocation, point-query render, owner frame work or history snapshot copy. The identity proof shares source pixels. Continuous controls use the existing bounded draft/preview path; discrete edits use normal asset.state and preview refresh, and view-only channel/group/gallery changes create no render job. Curve metadata has at most 32 control points (8 in proof), 1024 accepted samples (257 from proof), one active and one replaceable pending query, with asset/entry/channel/value identity. No production timer is added. Canvas cache versions include selection, dragging and histogram/picker inputs. Exactness, Arc sharing, request parity and cache regressions are tested. Photo-sized before/after measurements and native qualification are recorded in docs/specs/performance.md#ui-components-qualification and artifacts/ui-components-verification/summary.json.",
+        "Evidence: cargo xtask check passes (including check-repository, strict Clippy, formatting and workspace suites). Native M4 Pro/Metal gallery-qualified captures all 63 states across 10 pages; controls-qualified captures all 22 interactions with correlated state, requests and logs and unchanged source hashes. Matched 24 MP release/warm-cache slider p50/p95: before 75.00/91.10 ms, after 70.66/87.75 ms; no regression in this pair. Visible proof curve p50/p95 57.09/74.76 ms, maximum 108.17 ms; both p95 targets pass below 100 ms. Measures Uploaded, not scanout; curve photo effect is identity. Core 24/60 MP before/after 30-sample tables have mixed tails, recorded without a general speedup claim. Initial contended baseline missed at 223.68 ms p95; failed sandbox and verifier attempts are retained. Existing private RAW/manual/fixture-generation/explicit-measurement checks remain ignored, not passes; no native Windows/Linux GPU claim."
       ],
       "context_links": [
         {
