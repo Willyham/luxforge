@@ -217,30 +217,27 @@ mod tests {
     use super::*;
     use mouse::{Button, Click, click::Kind};
 
-    /// The rule the wrapper applies to each press, over a real run of `mouse::Click` values: the
-    /// first press is a single and forwards, the second at the same place is the double that
-    /// resets, and the third is a triple that does not reset again.
+    /// The rule the wrapper applies to each press it classifies. Iced decides which kind a press
+    /// is, from the previous one's position and time; this is the whole of what this widget adds,
+    /// over every kind there is. A test that clicked twice and asserted `Double` would be a test
+    /// of the wall clock: `mouse::Click` treats two presses at the same `Instant` as unrelated.
     #[test]
-    fn only_the_second_click_of_a_run_resets() {
-        let position = Point::new(20.0, 8.0);
-        let first = Click::new(position, Button::Left, None);
-        assert_eq!(first.kind(), Kind::Single);
-        assert!(!resets(first.kind()));
-
-        let second = Click::new(position, Button::Left, Some(first));
-        assert_eq!(second.kind(), Kind::Double);
-        assert!(resets(second.kind()));
-
-        let third = Click::new(position, Button::Left, Some(second));
-        assert_eq!(third.kind(), Kind::Triple);
-        assert!(!resets(third.kind()));
+    fn only_a_double_click_resets() {
+        assert!(!resets(Kind::Single), "the first click starts the gesture");
+        assert!(resets(Kind::Double), "the second click resets the field");
+        assert!(
+            !resets(Kind::Triple),
+            "a third click does not reset a second time"
+        );
     }
 
     /// A press far from the previous one starts a new run, so dragging the handle and pressing
-    /// again elsewhere on the rail never reads as a double click.
+    /// again elsewhere on the rail never reads as a double click. Distance alone decides this, so
+    /// it holds however fast or slowly the two presses arrive.
     #[test]
     fn a_press_elsewhere_starts_a_new_run() {
         let first = Click::new(Point::new(20.0, 8.0), Button::Left, None);
+        assert_eq!(first.kind(), Kind::Single, "there is nothing before it");
         let elsewhere = Click::new(Point::new(180.0, 8.0), Button::Left, Some(first));
         assert_eq!(elsewhere.kind(), Kind::Single);
         assert!(!resets(elsewhere.kind()));
