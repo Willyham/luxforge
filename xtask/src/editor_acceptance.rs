@@ -21,7 +21,7 @@ pub fn run(root: &Path, out: &Path) -> Result {
     let catalog = out.join("catalog.sqlite");
     let mut result = json!({
         "status":"failed",
-        "scope":["M1 history foundation","M2 basic transforms","M3 tool modules","M4 crop module core"],
+        "scope":["M1 history foundation","M2 basic transforms","M3 tool modules","M4 crop module core","Basic adjustments and histogram"],
         "profile": if cfg!(debug_assertions) { "debug" } else { "release" },
         "platform":host(root)?,
         "fixture":"fixtures/s0/orientation-1.jpg",
@@ -49,6 +49,7 @@ pub fn run(root: &Path, out: &Path) -> Result {
             modules
                 == [
                     "lightwell.pixel",
+                    "lightwell.raw",
                     "lightwell.basic",
                     "lightwell.transform",
                     "lightwell.crop",
@@ -56,6 +57,14 @@ pub fn run(root: &Path, out: &Path) -> Result {
                 && actions
                     == [
                         "set-pixel",
+                        "set-raw-exposure",
+                        "set-raw-temperature",
+                        "set-raw-tint",
+                        "set-raw-red-gain",
+                        "set-raw-blue-gain",
+                        "pick-raw-neutral",
+                        "use-as-shot-wb",
+                        "reset-raw",
                         "set-basic",
                         "reset-basic",
                         "transform",
@@ -394,7 +403,14 @@ pub fn run(root: &Path, out: &Path) -> Result {
                 listed + 5
             ),
         )?;
+        // The Basic and histogram chapter runs as an independent JSON client against its own
+        // catalog in the same output directory, so this exact journey's state is untouched by it.
+        let basic_started = Instant::now();
+        let basic = basic_acceptance::run(root, out)?;
+        let basic_ms = basic_started.elapsed().as_secs_f64() * 1000.0;
+
         ensure(hash(&fixture)? == fixture_hash, "Original source changed")?;
+        result["basic_and_histogram"] = basic;
         result["status"] = json!("passed");
         result["asset_id"] = json!(asset);
         result["original_entry_id"] = json!(original);
@@ -439,6 +455,7 @@ pub fn run(root: &Path, out: &Path) -> Result {
             "straightened_crop_render":angled_render_ms,
             "catalog_reopen":reopen_ms,
             "current_render_full_stack":current_render_ms,
+            "basic_and_histogram_chapter":basic_ms,
             "total":total.elapsed().as_secs_f64()*1000.0,
         });
         result["catalog_bytes"] = json!(fs::metadata(&catalog)?.len());
@@ -452,6 +469,7 @@ pub fn run(root: &Path, out: &Path) -> Result {
             "Straightened 16:9 crop-fit updates the one crop layer in place and renders its declared stage",
             "Catalog reopen retains revision, identities, snapshots, the crop layer and dimensions",
             "Module registry and descriptor discovery",
+            "Basic and histogram: the whole chapter under basic_and_histogram, driven through the JSON method table",
             "Source SHA-256 unchanged"
         ]);
         Ok(())

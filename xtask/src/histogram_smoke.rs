@@ -38,17 +38,18 @@ const LINE: (u32, u32) = (240, 200);
 /// Quadrant interiors with no channel at either endpoint, so no overlay may appear on them.
 const CLEAN: [(u32, u32); 4] = [(120, 60), (400, 60), (120, 270), (420, 285)];
 
-/// How many frames the scenario captures: one for the open, then one per script step.
+/// How many frames each scenario captures: one for the open, then one per script step.
 pub fn frames(scenario: &str) -> Option<usize> {
     match scenario {
-        "histogram" => Some(9),
+        "histogram" => Some(12),
+        "basic-crop" => Some(4),
         _ => None,
     }
 }
 
 /// The scenario's own fixture, so `smoke::run` opens the one the checks below are written against.
 pub fn source(scenario: &str) -> Option<&'static str> {
-    (scenario == "histogram").then_some(FIXTURE)
+    matches!(scenario, "histogram" | "basic-crop").then_some(FIXTURE)
 }
 
 pub fn script(scenario: &str) -> Option<Value> {
@@ -69,7 +70,29 @@ pub fn script(scenario: &str) -> Option<Value> {
             // 7: both overlays off again; the photograph is untouched underneath.
             {"workspace":{"clip_shadows":false,"clip_highlights":false}},
             // 8: the Original entry, whose counts are the fixture's own again.
-            {"preview":{"sequence":0}}
+            {"preview":{"sequence":0}},
+            // 9: back to current, because a gesture is refused while a historical entry is shown.
+            {"preview":"current"},
+            // 10: an Exposure drag left open, so the photograph on screen is the drafted render.
+            {"slider":{"action":"set-basic","parameter":"exposure","values":[0.5,1.0]}},
+            // 11: the same gesture released, which commits once; the plot follows the new stack.
+            {"slider":{"action":"set-basic","parameter":"exposure","values":[1.0],"release":true}}
+        ])
+    })
+}
+
+/// The `basic-crop` scenario: a Basic commit, then a 16:9 fit and a 7 degree straighten over it.
+/// Its frames prove the counts describe the composition **after** the crop, and that the
+/// photograph is placed at the ratio the committed payload declares.
+pub fn crop_script(scenario: &str) -> Option<Value> {
+    (scenario == "basic-crop").then(|| {
+        json!([
+            // 1: one Basic commit, so every later frame composes colour with geometry.
+            {"api":{"method":"edit.set-basic","params":{"exposure":1.0}}},
+            // 2: a 16:9 fit at angle zero, which is an exact copy of its input stage.
+            {"api":{"method":"edit.crop-fit","params":{"aspect":"16:9","angle":0.0}}},
+            // 3: the same ratio straightened by 7 degrees, which resamples.
+            {"api":{"method":"edit.crop-fit","params":{"aspect":"16:9","angle":7.0}}}
         ])
     })
 }
@@ -77,14 +100,48 @@ pub fn script(scenario: &str) -> Option<Value> {
 /// An independent reduction of the fixture through `recipe`: decode, render and reduce in this
 /// process, with no reference to anything the editor reported.
 fn reference(root: &Path, recipe: &Recipe) -> Result<analysis::Report> {
+    let report = reduction(root, recipe)?;
+    ensure(
+        (report.width, report.height) == SOURCE,
+        format!("Reference render is {}x{}", report.width, report.height),
+    )?;
+    Ok(report)
+}
+
+/// The same reduction without the source-sized expectation, for a composition whose crop changes
+/// the output stage.
+fn reduction(root: &Path, recipe: &Recipe) -> Result<analysis::Report> {
     let source = lightwell_core::open_source(&root.join(FIXTURE))?;
     let registry = ModuleRegistry::builtin();
     let raster = core_render(&registry, &source, SnapshotId::new(), recipe)?;
-    ensure(
-        (raster.width, raster.height) == SOURCE,
-        format!("Reference render is {}x{}", raster.width, raster.height),
-    )?;
     Ok(analysis::reduce_raster(&raster)?)
+}
+
+/// The stack a frame says it is displaying, rebuilt as a recipe so this runner renders and reduces
+/// it independently instead of trusting the counts beside it.
+fn displayed_recipe(frame: &Value) -> Result<Recipe> {
+    let layers = frame["state"]["stack"]["displayed"]["layers"]
+        .as_array()
+        .ok_or("The frame records no displayed stack")?;
+    Ok(Recipe {
+        format: RECIPE_FORMAT,
+        layers: layers
+            .iter()
+            .map(|layer| -> Result<Layer> {
+                Ok(Layer {
+                    id: lightwell_core::LayerId::parse(
+                        layer["id"].as_str().ok_or("A displayed layer has no id")?,
+                    )?,
+                    effect_id: layer["effect"]
+                        .as_str()
+                        .ok_or("A displayed layer has no effect")?
+                        .to_owned(),
+                    effect_format: lightwell_core::EFFECT_FORMAT,
+                    payload: layer["payload"].clone(),
+                })
+            })
+            .collect::<Result<Vec<_>>>()?,
+    })
 }
 
 /// The eleven counters as the frame's correlated state records them.
@@ -115,9 +172,12 @@ fn expect_counts(frame: &Value, report: &analysis::Report, what: &str) -> Result
         ),
     )?;
     ensure(
-        state["identity"]["width"] == json!(SOURCE.0)
-            && state["identity"]["height"] == json!(SOURCE.1),
-        format!("{what}: the identity names {}", state["identity"]),
+        state["identity"]["width"] == json!(report.width)
+            && state["identity"]["height"] == json!(report.height),
+        format!(
+            "{what}: the identity names {} for a {}x{} reduction",
+            state["identity"], report.width, report.height
+        ),
     )?;
     let expected = json!({
         "r0": report.r0, "g0": report.g0, "b0": report.b0,
@@ -669,6 +729,281 @@ pub fn verify(root: &Path, evidence: &Path, app: &Value, _events: &[Value]) -> R
         original,
     );
 
+    // Frame 9: back to current. A gesture is refused while a historical entry is shown, so the
+    // run returns first; the plot is the edited stack's again.
+    ensure(
+        counters(&frames[9]) == counters(&frames[1]),
+        "Returning to current did not restore the edited stack's counts",
+    )?;
+    record(
+        &frames[9],
+        "back to current before the gesture",
+        counters(&frames[9]).clone(),
+    );
+
+    // Frame 10: an Exposure drag left open. The photograph on screen is the drafted render — the
+    // frame says which draft revision it displays — and the inspector does not present a number
+    // for it: the counts a gesture is shown are an explicit non-ready state, never the previous
+    // frame's counts relabelled. The drafted composition's own exactness is proved through the
+    // API in `cargo xtask editor-acceptance`, whose Basic chapter compares
+    // `analysis.request {target: draft}` with an independent reduction of the drafted render.
+    let drafted = &frames[10]["state"]["draft"];
+    ensure(
+        drafted["action"] == json!("set-basic") && drafted["fields"] == json!({"exposure": 1.0}),
+        format!("Frame 10's draft is not the open Exposure gesture: {drafted}"),
+    )?;
+    ensure(
+        frames[10]["state"]["displayed_draft_revision"] == drafted["draft_revision"]
+            && drafted["draft_revision"].as_u64().is_some_and(|r| r >= 1),
+        format!(
+            "Frame 10 displays draft revision {} while the draft is at {}",
+            frames[10]["state"]["displayed_draft_revision"], drafted["draft_revision"]
+        ),
+    )?;
+    let drafted_histogram = &frames[10]["state"]["histogram"];
+    ensure(
+        drafted_histogram["status"] != json!("ready"),
+        format!(
+            "The inspector reports {} for a drafted frame it did not analyse",
+            drafted_histogram["status"]
+        ),
+    )?;
+    ensure(
+        drafted_histogram["counters"]
+            .as_object()
+            .is_some_and(|counters| counters.values().all(|count| count == &json!(0))),
+        format!(
+            "A drafted frame carries counts it cannot justify: {}",
+            drafted_histogram["counters"]
+        ),
+    )?;
+    ensure(
+        frames[10]["state"]["stack"]["revision"] == frames[9]["state"]["stack"]["revision"],
+        "The open gesture committed something",
+    )?;
+    record(
+        &frames[10],
+        "an Exposure drag left open: the photograph is the drafted render and the inspector reports an explicit non-ready state rather than a number it cannot justify",
+        json!({"draft": drafted, "histogram_status": drafted_histogram["status"], "displayed_draft_revision": frames[10]["state"]["displayed_draft_revision"],
+               "note": "the desktop does not analyse a drafted preview; the drafted composition is proved exact through analysis.request {target: draft} in editor-acceptance"}),
+    );
+
+    // Frame 11: the gesture released. One commit, and the plot follows the composed stack: an
+    // independent render and reduction of exactly the layers the frame says it displays.
+    ensure(
+        frames[11]["state"]["draft"] == Value::Null,
+        "The released gesture left a draft open",
+    )?;
+    ensure(
+        frames[11]["state"]["stack"]["revision"]
+            == json!(
+                frames[10]["state"]["stack"]["revision"]
+                    .as_u64()
+                    .unwrap_or(0)
+                    + 1
+            ),
+        "The release did not advance the revision by exactly one",
+    )?;
+    let released = reduction(root, &displayed_recipe(&frames[11])?)?;
+    let released_detail = expect_counts(&frames[11], &released, "frame 11, the released gesture")?;
+    ensure(
+        counters(&frames[11]) != counters(&frames[9]),
+        "The committed exposure left the counts unchanged",
+    )?;
+    record(
+        &frames[11],
+        "the gesture released: one commit, and the counts equal an independent reduction of the composed pixel-and-exposure stack",
+        released_detail,
+    );
+
     write_json(&evidence.join("histogram-checks.json"), &json!(checks))?;
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------------------------
+// The `basic-crop` scenario: colour composed with geometry, on the real editor.
+// ---------------------------------------------------------------------------------------------
+
+/// The ratio the two crop frames commit.
+const CROP_RATIO: f64 = 16.0 / 9.0;
+
+/// The photograph's bounding box in a capture, found by brightness rather than by the fixture's
+/// own quadrant colours: a Basic edit moves those colours, so matching them would be matching the
+/// edit rather than the placement. Inside the photo surface, between the notices at the top of the
+/// canvas and the floating mode strip at its bottom, nothing is as bright as the photograph.
+fn bright_rect(path: &Path, frame: &Value) -> Result<[u32; 4]> {
+    /// Well above the canvas surface (`#19191b`) and the bars over it (`#232326`), and well below
+    /// every quadrant of this fixture at any exposure this scenario uses.
+    const BRIGHT: u32 = 70;
+    /// The 1 px dividers at the surface's own edges are as bright as dark content, so the scan
+    /// starts inside them.
+    const INSET: u32 = 4;
+    let image = image::open(path)?.to_rgb8();
+    let (width, height) = image.dimensions();
+    let [left_edge, right_edge] = columns(frame)?.unwrap_or([0, width]);
+    ensure(
+        left_edge + INSET < right_edge.saturating_sub(INSET) && right_edge <= width,
+        "Invalid surface columns",
+    )?;
+    let (band_top, band_bottom) = (height * 3 / 20, height * 22 / 25);
+    let (mut left, mut top, mut right, mut bottom) = (width, height, 0u32, 0u32);
+    for y in band_top..band_bottom {
+        for x in (left_edge + INSET)..(right_edge - INSET) {
+            let pixel = image.get_pixel(x, y).0;
+            let mean = (u32::from(pixel[0]) + u32::from(pixel[1]) + u32::from(pixel[2])) / 3;
+            if mean >= BRIGHT {
+                left = left.min(x);
+                top = top.min(y);
+                right = right.max(x + 1);
+                bottom = bottom.max(y + 1);
+            }
+        }
+    }
+    ensure(
+        right > left && bottom > top,
+        "No photograph in the frame: blank or wrong render",
+    )?;
+    Ok([left, top, right, bottom])
+}
+
+/// The displayed ratio and centring of a captured photograph, against the ratio its committed crop
+/// payload declares.
+fn expect_placement(path: &Path, frame: &Value, ratio: f64, what: &str) -> Result<Value> {
+    let [left, top, right, bottom] = bright_rect(path, frame)?;
+    let image = image::open(path)?.to_rgb8();
+    let [surface_left, surface_right] = columns(frame)?.unwrap_or([0, image.width()]);
+    let measured = f64::from(right - left) / f64::from(bottom - top);
+    ensure(
+        (measured - ratio).abs() < 0.02,
+        format!("{what}: the displayed ratio is {measured:.4}, the payload declares {ratio:.4}"),
+    )?;
+    ensure(
+        (f64::from(left + right) / 2.0 - f64::from(surface_left + surface_right) / 2.0).abs()
+            <= 6.0,
+        format!("{what}: the photograph is not centred in the photo surface"),
+    )?;
+    ensure(
+        f64::from(right - left) > f64::from(surface_right - surface_left) * 0.4,
+        format!("{what}: the photograph does not fill the surface at Fit"),
+    )?;
+    Ok(json!({
+        "image_bounds": [left, top, right, bottom],
+        "surface_columns": [surface_left, surface_right],
+        "measured_ratio": measured,
+        "expected_ratio": ratio,
+        "ratio_tolerance": 0.02,
+        "scope": "Displayed placement read back from the renderer; not monitor calibration",
+    }))
+}
+
+pub fn verify_crop(root: &Path, evidence: &Path, app: &Value, _events: &[Value]) -> Result {
+    let frames = app["frames"].as_array().ok_or("Missing frames")?.clone();
+    ensure(
+        app["had_input_errors"] == json!(false),
+        "The run recorded an input error",
+    )?;
+    let paths: Vec<PathBuf> = frames
+        .iter()
+        .map(|frame| frame_identity(evidence, app, frame))
+        .collect::<Result<Vec<_>>>()?;
+
+    // Every frame's counts are an independent render and reduction of exactly the layers that
+    // frame says it displays, so the plot is proved against the composition rather than itself.
+    let expected: Vec<&str> = vec![
+        "the opened fixture",
+        "one Basic commit",
+        "a 16:9 fit at angle zero over the Basic layer",
+        "the same ratio straightened by 7 degrees",
+    ];
+    let mut details = Vec::new();
+    for (index, frame) in frames.iter().enumerate() {
+        let recipe = displayed_recipe(frame)?;
+        let report = reduction(root, &recipe)?;
+        let counts = expect_counts(
+            frame,
+            &report,
+            &format!("frame {index}, {}", expected[index]),
+        )?;
+        details.push(json!({
+            "frame": frame["file"],
+            "shows": expected[index],
+            "stack": recipe.layers.iter().map(|layer| layer.effect_id.clone()).collect::<Vec<_>>(),
+            "output": [report.width, report.height],
+            "counts": counts,
+        }));
+    }
+
+    // The Basic commit is one entry and one revision, and it changes the population.
+    ensure(
+        frames[1]["state"]["stack"]["revision"] == json!(1),
+        "edit.set-basic did not commit revision 1",
+    )?;
+    ensure(
+        counters(&frames[1]) != counters(&frames[0]),
+        "The exposure left the population unchanged",
+    )?;
+    // Each crop commits once and keeps the one crop layer with its identity.
+    let crop_layer = |frame: &Value| -> Result<String> {
+        frame["state"]["stack"]["layers"]
+            .as_array()
+            .ok_or("No layers")?
+            .iter()
+            .find(|layer| layer["effect"] == json!(lightwell_core::CROP_EFFECT))
+            .and_then(|layer| layer["id"].as_str())
+            .map(str::to_owned)
+            .ok_or_else(|| "The frame holds no crop layer".into())
+    };
+    ensure(
+        crop_layer(&frames[2])? == crop_layer(&frames[3])?,
+        "The straighten replaced the crop layer instead of updating it",
+    )?;
+    ensure(
+        frames[3]["state"]["stack"]["revision"] == json!(3),
+        format!(
+            "The straighten left the revision at {}",
+            frames[3]["state"]["stack"]["revision"]
+        ),
+    )?;
+    // The counts follow the crop: a 16:9 rectangle of this stage holds fewer pixels than the
+    // whole one, and the identity says so.
+    let pixels_of = |frame: &Value| -> u64 {
+        frame["state"]["histogram"]["identity"]["width"]
+            .as_u64()
+            .unwrap_or(0)
+            * frame["state"]["histogram"]["identity"]["height"]
+                .as_u64()
+                .unwrap_or(0)
+    };
+    ensure(
+        pixels_of(&frames[2]) < pixels_of(&frames[1])
+            && pixels_of(&frames[3]) < pixels_of(&frames[1]),
+        "A crop did not reduce the analysed output stage",
+    )?;
+
+    // Placement: each crop frame shows a 16:9 photograph, centred in the photo surface.
+    let mut placements = Vec::new();
+    for (index, ratio) in [
+        (0usize, 3.0 / 2.0),
+        (1, 3.0 / 2.0),
+        (2, CROP_RATIO),
+        (3, CROP_RATIO),
+    ] {
+        placements.push(expect_placement(
+            &paths[index],
+            &frames[index],
+            ratio,
+            &format!("frame {index}"),
+        )?);
+    }
+
+    write_json(
+        &evidence.join("basic-crop-checks.json"),
+        &json!({
+            "frames": details,
+            "placement": placements,
+            "crop_layer": crop_layer(&frames[3])?,
+            "scope": "Counts against an independent core render and reduction of the displayed stack; placement read back from the renderer",
+        }),
+    )?;
     Ok(())
 }

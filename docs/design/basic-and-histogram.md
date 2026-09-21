@@ -227,6 +227,46 @@ Every implementation handoff answers the [performance checklist](../engineering/
 6. Extend existing acceptance/performance harnesses for these paths; run `cargo xtask check` on each implementation handoff and release diagnostics on the final editor. Headless/VM results are distinct from native rendered evidence. No performance claim follows from small fixtures alone.
 7. Update current module/color contracts, feature status and user guide only for demonstrated behavior. If export is implemented concurrently, validate it uses the same evaluator/output contract; this plan does not own export encoding or metadata.
 
+### What is demonstrated
+
+Item 1 is demonstrated by the hand-counted fixtures in `fixtures/basic/` and the core reducer tests
+over them, and on a photo-sized stack by the acceptance chapter's cropped-population check, which
+builds a Basic layer that clips the border and a crop that removes it and proves the counts are the
+interior population alone.
+
+Items 2, 3 and 4 are demonstrated, display-independently, by the Basic and histogram chapter of
+`cargo xtask editor-acceptance`, driven through the JSON method table against the independent f64
+reference: whole-raster agreement within the frozen one output code for exposure, the nine-field
+patch and the frozen unit order; `render.sample` byte-identical to the rendered raster and to an
+open draft's later commit; the draft lifecycle, the return-to-start no-op, retry deduplication,
+group and module resets keeping the layer identity, undo, redo, preview, restore and a catalog
+reopen all evaluating byte-identically; an unavailable Basic provider refusing to render the stack
+that names it while keeping the layer and module readable and reporting the analysis failed with no
+counts; two Basic layers and an unsupported payload format both refused without rewriting anything;
+`analysis.request/read` on current, historical and drafted targets equal to an independent
+reduction; mixed stacks against a stepwise quantize-then-bilinear reference, around a point
+replacement on both sides and under an orientation layer; and the two-client races — a draft
+conflicted by another client's commit, a refused commit, a field-preserving reapply committing one
+entry, a historical selection and its analysis staying attached to their entry, and one client's
+cancel leaving another's shared job intact. The original file's SHA-256 is unchanged throughout.
+
+Item 5 is demonstrated natively on the owner's M4 by the rendered scenarios `basic`, `basic-panel`,
+`basic-crop`, `basic-restart`, `histogram`, `workspace`, `crop`, `crop-draft`, `unavailable`,
+`large24` and `large60`, each correlating its captures with the recorded revision, entry, draft,
+render generation and state. Calibrated colour and screen-reader behaviour are not claimed: every
+pixel measurement is renderer readback of displayed brightness or channel balance.
+
+One gap is open against item 3 of the histogram and clipping contract. During an active slider
+gesture the desktop displays the drafted render but does not analyse it: the drafted preview job is
+built without `analyse` (`crates/lightwell-app/src/app/tasks.rs`, `draft_set_task`) and a drafted
+result's report and raster are not adopted (`crates/lightwell-app/src/app/mod.rs`, the `!for_draft`
+guard), so the inspector reports an explicit non-ready state with no counts rather than the drafted
+population or the previous one marked updating. Nothing wrong is ever shown, and the core path is
+complete and proved — `analysis.request {target: draft}` matches an independent reduction of the
+drafted render exactly — so this is a desktop adoption step, not a contract or arithmetic problem.
+The `histogram` scenario pins the current behaviour so a fix tightens the check rather than
+silently changing it.
+
 ## Later module candidates
 
 | Candidate | Useful next scope | Why separate |

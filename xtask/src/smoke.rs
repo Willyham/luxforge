@@ -259,7 +259,11 @@ pub fn verify(evidence: &Path, scenario: &str, count: usize) -> Result<Value> {
     }
     if let Some(frames) = histogram::frames(scenario) {
         let (app, events) = preamble(evidence, frames)?;
-        histogram::verify(&root()?, evidence, &app, &events)?;
+        if scenario == "basic-crop" {
+            histogram::verify_crop(&root()?, evidence, &app, &events)?;
+        } else {
+            histogram::verify(&root()?, evidence, &app, &events)?;
+        }
         return Ok(app);
     }
     let (app, events) = preamble(evidence, count.max(1))?;
@@ -417,7 +421,9 @@ pub fn run(root: &Path, out: &Path, scenario: &str, bin: &Path, timeout: Duratio
             workspace::WINDOW[0].into(),
             workspace::WINDOW[1].into(),
         ]);
-    } else if let Some(script) = histogram::script(scenario) {
+    } else if let Some(script) =
+        histogram::script(scenario).or_else(|| histogram::crop_script(scenario))
+    {
         let file = out.join("script.json");
         write_json(&file, &script)?;
         args.extend([

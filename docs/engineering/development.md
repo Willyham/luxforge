@@ -25,7 +25,7 @@ Doctor reports missing tools and the graphics environment without installing any
 | Run the editor, release build | `cargo xtask develop [--catalog FILE] [--open PATH] [--data-root DIR]` |
 | Run an unoptimized build, debugging only | `cargo xtask develop --debug ...` |
 | Run an agent's editor check without taking focus (macOS) | `cargo xtask develop --background --catalog FILE [--open PATH]` |
-| Exact current-editor journey, display-independent | `cargo run --release --locked --package xtask -- editor-acceptance --output NEW_DIR` |
+| Exact current-editor journey, display-independent, including the Basic and histogram chapter | `cargo run --release --locked --package xtask -- editor-acceptance --output NEW_DIR` |
 | Core timing on a real-sized JPEG | `cargo run --release --locked --package xtask -- editor-performance --source JPEG --output NEW_DIR [--samples N]` |
 | Verify golden fixtures; generate 24 and 60 MP workloads | `cargo xtask fixtures`, `cargo xtask generate-fixtures [--output NEW_DIR]` |
 | RAW corpus integrity; independent numerical stage references | `cargo xtask raw-corpus --manifest FILE --output NEW_DIR`, `cargo xtask raw-reference --output NEW_DIR` |
@@ -35,7 +35,9 @@ Doctor reports missing tools and the graphics environment without installing any
 | Rendered workspace panels, mode, preview, conflict and palette; unavailable-provider notice | `cargo xtask smoke --scenario workspace --output NEW_DIR`, `--scenario unavailable` |
 | Rendered Basic slider gesture: draft, commit, typed value, undo, reset and conflict | `cargo xtask smoke --scenario basic --output NEW_DIR` |
 | Rendered Basic panel: all three groups, historical values, a group reset and the neutral picker | `cargo xtask smoke --scenario basic-panel --output NEW_DIR` |
-| Rendered histogram, clipping overlays and pointer readout | `cargo xtask smoke --scenario histogram --output NEW_DIR` |
+| Rendered histogram, clipping overlays, pointer readout and a drafted frame | `cargo xtask smoke --scenario histogram --output NEW_DIR` |
+| Rendered Basic composed with crop and straighten | `cargo xtask smoke --scenario basic-crop --output NEW_DIR` |
+| Rendered restart: a Basic edit committed in one launch and reopened in the next | `cargo xtask smoke --scenario basic-restart --output NEW_DIR` |
 | Inspect a capture | `cargo xtask check-capture --image PNG [--orientation N]` |
 | Process failure checks; macOS measurement | `cargo xtask hardening --binary PATH --output NEW_DIR`, `cargo xtask measure --binary PATH --output NEW_DIR [--samples N]` |
 | Package; dependency inventory | `cargo xtask package --output NEW_DIR`, `cargo xtask inventory --output NEW_DIR` |
@@ -60,7 +62,33 @@ On macOS, `develop --background` builds the selected profile and runs a temporar
 
 ## Rendered evidence
 
-Smoke runs the built or packaged editor through a deterministic evidence sequence (repeated `--open`, evidence directory, fixed window size, bounded deadlines); there is no separate viewer, so the captured frame is the editor window with its sidebar. Scenarios: `empty`, `load`, `replacement`, `invalid`, `repeated`, `alternating`, `large24`, `large60`, `crop`, `crop-draft`, `workspace`, `basic`, `basic-panel`, `histogram`, `unavailable`; generate the large fixtures first. Each run writes `result.json`, `app/events.jsonl`, `app/state.json`, `app/frame-*.png` (window-renderer readbacks, not OS screenshots), `subprocess.log` and `reproduce.md`. Each frame records `surface_columns`, the physical x range of the photo surface derived from the editor's layout constants, and the runner verifies fixture colors, Fit geometry and centering within that range, generation and state, backend, exit status and unchanged source hashes before writing `passed`; blank, stale or missing frames fail. The `render_ready` event marks the upload of the open request's preview raster, which is when a frame becomes capturable. A 25-second application deadline and a 35-second process deadline bound hangs.
+Smoke runs the built or packaged editor through a deterministic evidence sequence (repeated `--open`, evidence directory, fixed window size, bounded deadlines); there is no separate viewer, so the captured frame is the editor window with its sidebar. Scenarios: `empty`, `load`, `replacement`, `invalid`, `repeated`, `alternating`, `large24`, `large60`, `crop`, `crop-draft`, `workspace`, `basic`, `basic-panel`, `basic-crop`, `basic-restart`, `histogram`, `unavailable`; generate the large fixtures first. Each run writes `result.json`, `app/events.jsonl`, `app/state.json`, `app/frame-*.png` (window-renderer readbacks, not OS screenshots), `subprocess.log` and `reproduce.md`. Each frame records `surface_columns`, the physical x range of the photo surface derived from the editor's layout constants, and the runner verifies fixture colors, Fit geometry and centering within that range, generation and state, backend, exit status and unchanged source hashes before writing `passed`; blank, stale or missing frames fail. The `render_ready` event marks the upload of the open request's preview raster, which is when a frame becomes capturable. A 25-second application deadline and a 35-second process deadline bound hangs.
+
+### The Basic and histogram acceptance chapter
+
+`editor-acceptance` ends with a chapter that drives the whole Basic and histogram surface through
+the JSON method table with `OwnerHandle::call`, exactly as an independent client reaches it, against
+its own catalog inside the run's output directory. Its oracle is the independent f64 reference under
+`crates/lightwell-core/tests/reference/`, compiled into `xtask` through a `#[path]` module rather
+than copied, so the acceptance journey and the core's own numerical tests check production against
+one written-from-the-formulas implementation that production code can never import; the crop
+sampler, the exact quarter turn and the histogram reduction the chapter compares against are written
+in `xtask/src/basic_acceptance.rs` from the crop spec and the histogram contract, not taken from
+`analysis::reduce`. Every result lands in `result.json` under `basic_and_histogram`, and any
+mismatch fails the command.
+
+The chapter covers discovery, `edit.set-basic` as a field patch checked whole-raster against the f64
+reference, the frozen unit order, `render.sample` against the rendered bytes, the draft lifecycle
+with `render.sample {draft_id}` agreeing with the later committed render, a return-to-start no-op,
+request deduplication, group and module resets keeping the layer identity, `analysis.request/read`
+on current, historical and drafted targets against an independent reduction, cropped-population
+semantics, mixed stacks (a straightened 10° crop against a stepwise quantize-then-bilinear
+reference, a point replacement before and after the Basic layer, and Basic under an orientation
+layer), the ambiguity and unsupported-format refusals, two-client draft conflict and reapply,
+analysis sharing and cancellation, an unavailable Basic provider, and a catalog reopen. The
+supersede and disconnect races are covered by
+`lightwell_core::api::owner::tests::racing_requests_supersede_the_pending_job_and_withdrawal_releases_only_its_own_interest`
+and are referenced rather than duplicated.
 
 ### Authentic RAW evidence
 
@@ -212,8 +240,31 @@ line, magenta on the one both-endpoint pixel, nothing over the unclipped quadran
 nothing at all once both flags are off. Differencing rather than classifying a colour is deliberate:
 the fixture's own red quadrant is as red as a highlight mask is, so only the change from the same
 frame without the mask identifies one. Each overlay frame's `state.stack` is compared with the frame
-before it, which is how the run proves a view flag commits nothing. It writes
+before it, which is how the run proves a view flag commits nothing. Its last three frames return to
+current, drive an Exposure drag left open and then release it: the drafted frame must display the
+draft revision it names in `state.draft` and must report an explicit non-ready inspector state
+carrying no counts, and the released frame must advance the revision by exactly one and carry counts
+equal to an independent reduction of the composed stack it says it displays. It writes
 `app/histogram-checks.json`.
+
+`basic-crop` opens the same fixture at 1440 × 900 and commits `edit.set-basic` at +1.00 EV, then a
+16:9 `edit.crop-fit` at angle zero and the same ratio straightened by 7°. Every one of its four
+frames is checked against an independent core render and reduction of exactly the layers
+`state.stack.displayed` names, so the plot is proved against the composition of colour and geometry
+rather than against itself; the run also checks that the two crops update one crop layer in place,
+that the analysed output stage shrinks with the crop, and that the displayed photograph measures
+16:9 and stays centred in the photo surface. Its placement measurement finds the photograph by
+brightness rather than by the fixture's quadrant colours, because a Basic edit moves those colours.
+It writes `app/basic-crop-checks.json`.
+
+`basic-restart` is two launches, since a restart cannot be simulated inside one process. The first
+opens `fixtures/s0/orientation-1.jpg` and commits one `edit.set-basic` patch of exposure +1.5 EV and
+temperature +25. The second reuses that launch's own catalog (`--catalog <dir1>/catalog.sqlite`) and
+reopens the same file, which the catalog dedupes to the same asset. The runner checks that the
+second launch reports the same revision, entry, stored payload, Basic layer identity and history
+label, that the generated fields re-seed to `1.5` and `25`, and that the photograph's mean Rec. 709
+luminance matches the render the first launch committed and is above a neutral open. It writes
+`basic-restart-checks.json` beside its own two launch directories.
 
 `unavailable` is not one launch but two, since a module can only be disabled at startup. The first
 opens the fixture and commits a 16:9 `edit.crop-fit` with every built-in module registered. The

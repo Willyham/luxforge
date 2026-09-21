@@ -536,6 +536,203 @@ pub fn verify(evidence: &Path, app: &Value, _events: &[Value]) -> Result {
 }
 
 // -------------------------------------------------------------------------------------------
+// The `basic-restart` scenario: a Basic edit survives a restart of the real editor.
+// -------------------------------------------------------------------------------------------
+
+/// The fixture both launches open, and the window both use.
+const RESTART_FIXTURE: &str = "fixtures/s0/orientation-1.jpg";
+
+/// What the first launch commits: two fields in one patch, so the second launch proves both the
+/// stored payload and the panel's re-seeding rather than a single slider.
+const RESTART_EXPOSURE: f64 = 1.5;
+const RESTART_TEMPERATURE: f64 = 25.0;
+
+/// Two launches, because a restart cannot be simulated inside one process: the first commits a
+/// Basic edit into its own evidence catalog, the second reopens that catalog and the same file and
+/// must show the same values, the same layer and the same brighter photograph.
+pub fn run_restart(root: &Path, out: &Path, bin: &Path, timeout: std::time::Duration) -> Result {
+    ensure(!out.exists(), "Smoke output must be new")?;
+    fs::create_dir_all(out)?;
+    let fixture = root.join(RESTART_FIXTURE);
+    let launch1 = out.join("launch1");
+    let launch2 = out.join("launch2");
+    let mut result = json!({"scenario":"basic-restart","status":"failed","launch_mode":launch::MODE,"platform":format!("{}-{}",std::env::consts::OS,std::env::consts::ARCH)});
+    let check = (|| -> Result {
+        result["fixture_hash"] = json!(hash(&fixture)?);
+        result["binary_sha256"] = json!(hash(bin)?);
+        result["lockfile_sha256"] = json!(hash(&root.join("Cargo.lock"))?);
+
+        // Launch 1: open the fixture, commit one Basic patch through the ordinary edit path.
+        let script = out.join("script1.json");
+        write_json(
+            &script,
+            &json!([{"api":{"method":"edit.set-basic","params":{"exposure":RESTART_EXPOSURE,"temperature":RESTART_TEMPERATURE}}}]),
+        )?;
+        let args1: Vec<OsString> = vec![
+            "--evidence-dir".into(),
+            launch1.clone().into_os_string(),
+            "--open".into(),
+            fixture.clone().into_os_string(),
+            "--evidence-script".into(),
+            script.into_os_string(),
+            "--window-size".into(),
+            workspace_smoke::WINDOW[0].into(),
+            workspace_smoke::WINDOW[1].into(),
+        ];
+        let mut child1 = smoke::spawn(root, bin, &args1, &out.join("launch1.log"))?;
+        let status1 = smoke::wait(&mut child1, timeout)?;
+        result["launch1_exit_code"] = json!(status1.code());
+        ensure(status1.success(), format!("Launch 1 exit {status1}"))?;
+        let (app1, _) = smoke::preamble(&launch1, 2)?;
+        let frames1 = app1["frames"]
+            .as_array()
+            .ok_or("Launch 1 wrote no frames")?;
+        let opened = &frames1[0];
+        let committed = &frames1[1];
+        let opened_path = smoke::frame_identity(&launch1, &app1, opened)?;
+        let committed_path = smoke::frame_identity(&launch1, &app1, committed)?;
+        ensure(
+            basic_payload(opened).is_none(),
+            "Launch 1 opened with a Basic layer already in the stack",
+        )?;
+        ensure(
+            revision(committed)? == 1,
+            format!("Launch 1 committed revision {}", revision(committed)?),
+        )?;
+        let stored = basic_payload(committed)
+            .ok_or("Launch 1 committed no Basic layer")?
+            .clone();
+        ensure(
+            stored == json!({ EXPOSURE: RESTART_EXPOSURE, TEMPERATURE: RESTART_TEMPERATURE }),
+            format!("Launch 1 stored {stored}"),
+        )?;
+        let layer = basic_layer_id(committed)
+            .ok_or("Launch 1's Basic layer has no identity")?
+            .to_owned();
+        let neutral_luminance = photo_luminance(&opened_path, opened)?;
+        let edited_luminance = photo_luminance(&committed_path, committed)?;
+        brighter(
+            "launch 1's committed edit against its own neutral open",
+            edited_luminance,
+            neutral_luminance,
+        )?;
+
+        // Launch 2: the same catalog and the same file, in a new process. The catalog dedupes the
+        // reopened file to the same asset by file identity, so its saved stack comes back.
+        let catalog = launch1.join("catalog.sqlite");
+        ensure(catalog.is_file(), "Launch 1 wrote no catalog")?;
+        let args2: Vec<OsString> = vec![
+            "--catalog".into(),
+            catalog.into_os_string(),
+            "--evidence-dir".into(),
+            launch2.clone().into_os_string(),
+            "--open".into(),
+            fixture.clone().into_os_string(),
+            "--window-size".into(),
+            workspace_smoke::WINDOW[0].into(),
+            workspace_smoke::WINDOW[1].into(),
+        ];
+        let mut child2 = smoke::spawn(root, bin, &args2, &out.join("launch2.log"))?;
+        let status2 = smoke::wait(&mut child2, timeout)?;
+        result["launch2_exit_code"] = json!(status2.code());
+        ensure(status2.success(), format!("Launch 2 exit {status2}"))?;
+        let (app2, _) = smoke::preamble(&launch2, 1)?;
+        let reopened = &app2["frames"]
+            .as_array()
+            .ok_or("Launch 2 wrote no frames")?[0];
+        let reopened_path = smoke::frame_identity(&launch2, &app2, reopened)?;
+        ensure(
+            revision(reopened)? == revision(committed)? && entry(reopened)? == entry(committed)?,
+            format!(
+                "Launch 2 reopened at revision {} entry {}",
+                revision(reopened)?,
+                entry(reopened)?
+            ),
+        )?;
+        ensure(
+            basic_payload(reopened) == Some(&stored),
+            format!(
+                "Launch 2 reads the Basic layer as {:?}",
+                basic_payload(reopened)
+            ),
+        )?;
+        ensure(
+            basic_layer_id(reopened) == Some(layer.as_str()),
+            "The Basic layer's identity did not survive the restart",
+        )?;
+        // The sliders re-seed from the stored layer, which is what a person sees on reopening.
+        ensure(
+            basic_field(reopened, EXPOSURE)? == "1.5"
+                && basic_field(reopened, TEMPERATURE)? == "25",
+            format!(
+                "Launch 2's fields read exposure {:?}, temperature {:?}",
+                basic_field(reopened, EXPOSURE)?,
+                basic_field(reopened, TEMPERATURE)?
+            ),
+        )?;
+        ensure(
+            label(reopened)? == label(committed)?,
+            format!(
+                "Launch 2's history label is {:?}, launch 1 committed {:?}",
+                label(reopened)?,
+                label(committed)?
+            ),
+        )?;
+        // The photograph itself is the edited one again, to the same measured brightness.
+        let reopened_luminance = photo_luminance(&reopened_path, reopened)?;
+        same(
+            "the reopened render against the render launch 1 committed",
+            reopened_luminance,
+            edited_luminance,
+        )?;
+        brighter(
+            "the reopened render against a neutral open",
+            reopened_luminance,
+            neutral_luminance,
+        )?;
+        ensure(
+            json!(hash(&fixture)?) == result["fixture_hash"],
+            "Source changed",
+        )?;
+        write_json(
+            &out.join("basic-restart-checks.json"),
+            &json!({
+                "stored_payload": stored,
+                "basic_layer": layer,
+                "label": label(reopened)?,
+                "fields_after_restart": {
+                    EXPOSURE: basic_field(reopened, EXPOSURE)?,
+                    TEMPERATURE: basic_field(reopened, TEMPERATURE)?,
+                },
+                "mean_luminance": {
+                    "launch1_neutral_open": neutral_luminance,
+                    "launch1_committed": edited_luminance,
+                    "launch2_reopened": reopened_luminance,
+                },
+                "brighter_margin": BRIGHTER,
+                "same_tolerance": SAME,
+                "scope": "Mean Rec. 709 luminance of a centred window of the photo surface, read back from the renderer; not a colorimetric claim",
+            }),
+        )?;
+        Ok(())
+    })();
+    match &check {
+        Ok(()) => result["status"] = json!("passed"),
+        Err(e) => result["error"] = json!(e.to_string()),
+    };
+    write_json(&out.join("result.json"), &result)?;
+    fs::write(
+        out.join("reproduce.md"),
+        format!(
+            "# Smoke run\n\nScenario: basic-restart. Status: {}.\n\nTwo launches, because a restart cannot be simulated inside one process: the first opens the fixture and commits one `edit.set-basic` patch of exposure and temperature; the second reuses that launch's own catalog (`--catalog <dir1>/catalog.sqlite`) and reopens the same file, which the catalog dedupes to the same asset, so the saved Basic layer, its identity, the slider values, the history label and the rendered brightness all come back.\n\nReproduce with `cargo xtask smoke --scenario basic-restart --output NEW_DIR --binary PATH`.\n",
+            result["status"],
+        ),
+    )?;
+    println!("{}", serde_json::to_string_pretty(&result)?);
+    check
+}
+
+// -------------------------------------------------------------------------------------------
 // The `basic-panel` scenario: the whole Basic section, historical values and the neutral picker.
 // -------------------------------------------------------------------------------------------
 

@@ -1,3 +1,4 @@
+mod basic_acceptance;
 mod basic_smoke;
 mod crop_smoke;
 mod diagnostics;
@@ -10,6 +11,11 @@ mod package;
 mod policy;
 mod raw;
 mod raw_editor;
+/// The independent f64 colour reference the core's own numerical tests use, compiled in rather
+/// than copied, so the acceptance journey checks production against one written-from-the-formulas
+/// oracle that production code can never import.
+#[path = "../../crates/lightwell-core/tests/reference/mod.rs"]
+mod reference;
 mod repository;
 mod smoke;
 mod workspace_smoke;
@@ -360,6 +366,8 @@ fn main_result() -> Result {
                     &bin,
                     std::time::Duration::from_secs(35),
                 )?;
+            } else if scenario == "basic-restart" {
+                basic_smoke::run_restart(&root, &out, &bin, std::time::Duration::from_secs(35))?;
             } else {
                 smoke::run(
                     &root,
