@@ -179,6 +179,21 @@ pub enum CanvasInteraction {
         /// One uppercase ASCII letter that selects the mode, unique across the registry.
         shortcut: Option<String>,
     },
+    /// A pointer pick on the image runs a module query at the picked content pixel and, when the
+    /// query answers, submits its numeric result fields to `action` once. `query` names a query this
+    /// module declares and `x`/`y` name that query's integer coordinate parameters; the fields
+    /// submitted are every top-level number field of the result whose name is a parameter of
+    /// `action`. A refused query commits nothing and its reason is shown instead.
+    SampleApply {
+        query: String,
+        x: String,
+        y: String,
+        action: String,
+        /// The mode's name in the canvas mode strip.
+        title: String,
+        /// One uppercase ASCII letter that selects the mode, unique across the registry.
+        shortcut: Option<String>,
+    },
     /// The host's crop-frame editor edits a transient draft of the named number parameters of
     /// `action` and derives its ratio presets from the `aspect` enum of `fit_action`. Only Apply
     /// calls an action.
@@ -200,16 +215,18 @@ impl CanvasInteraction {
     /// The mode strip entry's name.
     pub fn title(&self) -> &str {
         match self {
-            Self::PointPick { title, .. } | Self::CropFrame { title, .. } => title,
+            Self::PointPick { title, .. }
+            | Self::SampleApply { title, .. }
+            | Self::CropFrame { title, .. } => title,
         }
     }
 
     /// The letter that selects this mode, when the module declares one.
     pub fn shortcut(&self) -> Option<&str> {
         match self {
-            Self::PointPick { shortcut, .. } | Self::CropFrame { shortcut, .. } => {
-                shortcut.as_deref()
-            }
+            Self::PointPick { shortcut, .. }
+            | Self::SampleApply { shortcut, .. }
+            | Self::CropFrame { shortcut, .. } => shortcut.as_deref(),
         }
     }
 }
@@ -232,6 +249,12 @@ pub struct ModuleDescriptor {
     pub hint: Option<String>,
     pub effects: Vec<EffectDescriptor>,
     pub actions: Vec<ActionDescriptor>,
+    /// Read-only questions this module answers about a stored stack, declared and validated exactly
+    /// like an action and reached through the generated `query.<id>` method. A query mutates
+    /// nothing, adds no history entry and emits no event; it answers from point samples of the
+    /// stage its own layer addresses, so it allocates no frame. The neutral picker is one.
+    #[serde(default)]
+    pub queries: Vec<ActionDescriptor>,
     pub controls: Vec<Control>,
     /// The action that returns the whole module to its neutral state, shown on the section header.
     #[serde(default)]
@@ -255,6 +278,13 @@ impl ModuleDescriptor {
 
     pub fn action(&self, id: &str) -> Option<&ActionDescriptor> {
         self.actions.iter().find(|action| action.id == id)
+    }
+
+    /// The read-only query this module declares under that identity. Queries have their own
+    /// namespace: `query.<id>` and `edit.<id>` are different methods, so a module may name a query
+    /// after the action its result feeds without either shadowing the other.
+    pub fn query(&self, id: &str) -> Option<&ActionDescriptor> {
+        self.queries.iter().find(|query| query.id == id)
     }
 
     pub fn effect(&self, id: &str) -> Option<&EffectDescriptor> {
@@ -284,58 +314,12 @@ impl ModuleDescriptor {
         }
         let mut actions = HashSet::with_capacity(self.actions.len());
         for action in &self.actions {
-            if !valid_name(&action.id) {
-                return Err(validation(format!("invalid action identity {}", action.id)));
-            }
-            if !actions.insert(action.id.as_str()) {
-                return Err(validation(format!("duplicate action {}", action.id)));
-            }
-            if action.title.trim().is_empty() {
-                return Err(validation(format!("action {} has no title", action.id)));
-            }
-            let mut parameters = HashSet::with_capacity(action.parameters.len());
-            for parameter in &action.parameters {
-                if !valid_name(&parameter.name) {
-                    return Err(validation(format!(
-                        "invalid parameter name {} of action {}",
-                        parameter.name, action.id
-                    )));
-                }
-                if !parameters.insert(parameter.name.as_str()) {
-                    return Err(validation(format!(
-                        "duplicate parameter {} of action {}",
-                        parameter.name, action.id
-                    )));
-                }
-                match &parameter.kind {
-                    ParameterKind::Integer { min, max } if min > max => {
-                        return Err(validation(format!(
-                            "parameter {} declares an empty range {min}..={max}",
-                            parameter.name
-                        )));
-                    }
-                    ParameterKind::Number { min, max }
-                        if !min.is_finite() || !max.is_finite() || min > max =>
-                    {
-                        return Err(validation(format!(
-                            "parameter {} declares an empty range {min}..={max}",
-                            parameter.name
-                        )));
-                    }
-                    ParameterKind::Enum { options } if options.is_empty() => {
-                        return Err(validation(format!(
-                            "parameter {} declares no options",
-                            parameter.name
-                        )));
-                    }
-                    _ => {}
-                }
-                check_hints(parameter)?;
-                if let Some(default) = &parameter.default {
-                    check_value(parameter, default)?;
-                }
-            }
-            check_summary(action)?;
+            check_declared(action, "action", &mut actions)?;
+        }
+        // A query declares and validates exactly like an action, in its own identity namespace.
+        let mut queries = HashSet::with_capacity(self.queries.len());
+        for query in &self.queries {
+            check_declared(query, "query", &mut queries)?;
         }
         for control in &self.controls {
             self.check_control(control, 1)?;
@@ -359,6 +343,28 @@ impl ModuleDescriptor {
                         )));
                     }
                 }
+            }
+            Some(CanvasInteraction::SampleApply {
+                query,
+                x,
+                y,
+                action,
+                title,
+                shortcut,
+            }) => {
+                self.check_canvas_mode(title, shortcut.as_deref())?;
+                // The query answers the pick and the action receives its result, so both identities
+                // and both coordinate parameters must be declared here before a client sees them.
+                let declared = self.declared_query(query)?;
+                for name in [x, y] {
+                    let parameter = self.declared_parameter(declared, name)?;
+                    if !matches!(parameter.kind, ParameterKind::Integer { .. }) {
+                        return Err(validation(format!(
+                            "canvas parameter {name} of query {query} is not an integer"
+                        )));
+                    }
+                }
+                self.declared_action(action)?;
             }
             Some(CanvasInteraction::CropFrame {
                 action,
@@ -448,6 +454,15 @@ impl ModuleDescriptor {
         })
     }
 
+    fn declared_query(&self, id: &str) -> Result<&ActionDescriptor, Error> {
+        self.query(id).ok_or_else(|| {
+            validation(format!(
+                "module {} references undeclared query {id}",
+                self.id
+            ))
+        })
+    }
+
     fn declared_parameter<'a>(
         &self,
         action: &'a ActionDescriptor,
@@ -516,6 +531,71 @@ impl ModuleDescriptor {
         }
         Ok(())
     }
+}
+
+/// One declared action or query: a valid, unique identity, a title, and parameters whose names,
+/// ranges, hints and defaults a caller can be validated against. Actions and queries are checked by
+/// the same rules because a client calls them the same way; only the method prefix differs.
+fn check_declared<'a>(
+    declared: &'a ActionDescriptor,
+    kind: &str,
+    seen: &mut HashSet<&'a str>,
+) -> Result<(), Error> {
+    if !valid_name(&declared.id) {
+        return Err(validation(format!(
+            "invalid {kind} identity {}",
+            declared.id
+        )));
+    }
+    if !seen.insert(declared.id.as_str()) {
+        return Err(validation(format!("duplicate {kind} {}", declared.id)));
+    }
+    if declared.title.trim().is_empty() {
+        return Err(validation(format!("{kind} {} has no title", declared.id)));
+    }
+    let mut parameters = HashSet::with_capacity(declared.parameters.len());
+    for parameter in &declared.parameters {
+        if !valid_name(&parameter.name) {
+            return Err(validation(format!(
+                "invalid parameter name {} of {kind} {}",
+                parameter.name, declared.id
+            )));
+        }
+        if !parameters.insert(parameter.name.as_str()) {
+            return Err(validation(format!(
+                "duplicate parameter {} of {kind} {}",
+                parameter.name, declared.id
+            )));
+        }
+        match &parameter.kind {
+            ParameterKind::Integer { min, max } if min > max => {
+                return Err(validation(format!(
+                    "parameter {} declares an empty range {min}..={max}",
+                    parameter.name
+                )));
+            }
+            ParameterKind::Number { min, max }
+                if !min.is_finite() || !max.is_finite() || min > max =>
+            {
+                return Err(validation(format!(
+                    "parameter {} declares an empty range {min}..={max}",
+                    parameter.name
+                )));
+            }
+            ParameterKind::Enum { options } if options.is_empty() => {
+                return Err(validation(format!(
+                    "parameter {} declares no options",
+                    parameter.name
+                )));
+            }
+            _ => {}
+        }
+        check_hints(parameter)?;
+        if let Some(default) = &parameter.default {
+            check_value(parameter, default)?;
+        }
+    }
+    check_summary(declared)
 }
 
 /// The largest number of decimals a client is asked to display. Beyond this a slider's text is
@@ -907,6 +987,40 @@ mod tests {
         descriptor
     }
 
+    /// The read-only query shape a module declares: two integer coordinates, no summary.
+    fn query() -> ActionDescriptor {
+        ActionDescriptor {
+            id: "neutral-sample".into(),
+            title: "Neutral sample".into(),
+            notes: "test".into(),
+            summary: None,
+            patch: false,
+            parameters: vec![integer("x"), integer("y")],
+        }
+    }
+
+    fn sample_apply(query: &str, x: &str, y: &str, action: &str) -> CanvasInteraction {
+        CanvasInteraction::SampleApply {
+            query: query.into(),
+            x: x.into(),
+            y: y.into(),
+            action: action.into(),
+            title: "Pick".into(),
+            shortcut: Some("W".into()),
+        }
+    }
+
+    /// A module declaring one query and the sample-apply canvas that binds it to an action: the
+    /// shape the Basic module declares, used here to prove every sample-apply rejection.
+    fn sample_descriptor() -> ModuleDescriptor {
+        ModuleDescriptor {
+            queries: vec![query()],
+            controls: Vec::new(),
+            canvas: Some(sample_apply("neutral-sample", "x", "y", "set-thing")),
+            ..descriptor()
+        }
+    }
+
     fn action() -> ActionDescriptor {
         ActionDescriptor {
             id: "set-thing".into(),
@@ -953,6 +1067,7 @@ mod tests {
                 stage: EffectStage::Pixel,
             }],
             actions: vec![action()],
+            queries: Vec::new(),
             controls: vec![Control::Group {
                 label: "Test".into(),
                 reset: Some(ResetAction {
@@ -1021,6 +1136,18 @@ mod tests {
         assert!(
             frame_descriptor().validate().is_ok(),
             "a crop frame over declared number parameters is accepted"
+        );
+        assert!(
+            sample_descriptor().validate().is_ok(),
+            "a sample-apply over a declared query and action is accepted"
+        );
+        assert_eq!(
+            sample_descriptor().query("neutral-sample").map(|q| &q.id),
+            Some(&"neutral-sample".to_owned())
+        );
+        assert!(
+            descriptor().queries.is_empty(),
+            "queries are optional and default to none"
         );
         let cases: Vec<(&str, ModuleDescriptor)> = vec![
             (
@@ -1433,6 +1560,98 @@ mod tests {
                         shortcut: Some("RR".into()),
                     }),
                     ..descriptor()
+                },
+            ),
+            (
+                "a query with an invalid identity",
+                ModuleDescriptor {
+                    queries: vec![ActionDescriptor {
+                        id: "Neutral.Sample".into(),
+                        ..query()
+                    }],
+                    canvas: None,
+                    ..descriptor()
+                },
+            ),
+            (
+                "a duplicate query",
+                ModuleDescriptor {
+                    queries: vec![query(), query()],
+                    canvas: None,
+                    ..descriptor()
+                },
+            ),
+            (
+                "a query parameter with an empty range",
+                ModuleDescriptor {
+                    queries: vec![ActionDescriptor {
+                        parameters: vec![ParameterDescriptor {
+                            kind: ParameterKind::Integer { min: 9, max: 1 },
+                            ..integer("x")
+                        }],
+                        ..query()
+                    }],
+                    canvas: None,
+                    ..descriptor()
+                },
+            ),
+            (
+                "a sample-apply naming an undeclared query",
+                ModuleDescriptor {
+                    canvas: Some(sample_apply("missing", "x", "y", "set-thing")),
+                    ..sample_descriptor()
+                },
+            ),
+            (
+                "a sample-apply naming an undeclared coordinate",
+                ModuleDescriptor {
+                    canvas: Some(sample_apply("neutral-sample", "x", "z", "set-thing")),
+                    ..sample_descriptor()
+                },
+            ),
+            (
+                "a sample-apply whose coordinate is not an integer",
+                ModuleDescriptor {
+                    queries: vec![ActionDescriptor {
+                        parameters: vec![integer("x"), number("y", 0.0, 10.0)],
+                        ..query()
+                    }],
+                    ..sample_descriptor()
+                },
+            ),
+            (
+                "a sample-apply naming an undeclared action",
+                ModuleDescriptor {
+                    canvas: Some(sample_apply("neutral-sample", "x", "y", "missing")),
+                    ..sample_descriptor()
+                },
+            ),
+            (
+                "a sample-apply without a title",
+                ModuleDescriptor {
+                    canvas: Some(CanvasInteraction::SampleApply {
+                        query: "neutral-sample".into(),
+                        x: "x".into(),
+                        y: "y".into(),
+                        action: "set-thing".into(),
+                        title: "  ".into(),
+                        shortcut: Some("W".into()),
+                    }),
+                    ..sample_descriptor()
+                },
+            ),
+            (
+                "a sample-apply whose shortcut is not one uppercase letter",
+                ModuleDescriptor {
+                    canvas: Some(CanvasInteraction::SampleApply {
+                        query: "neutral-sample".into(),
+                        x: "x".into(),
+                        y: "y".into(),
+                        action: "set-thing".into(),
+                        title: "Pick".into(),
+                        shortcut: Some("w".into()),
+                    }),
+                    ..sample_descriptor()
                 },
             ),
             (

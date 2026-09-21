@@ -1,5 +1,5 @@
-//! The provider index: descriptors validated once at registration, then hash lookups by effect
-//! and action identity. Registration touches no image or catalog resource.
+//! The provider index: descriptors validated once at registration, then hash lookups by effect,
+//! action and query identity. Registration touches no image or catalog resource.
 use super::{
     ActionDescriptor, BasicModule, CanvasInteraction, CropModule, EffectDescriptor, EffectStage,
     MAX_COLOR_UNITS, ModuleDescriptor, PixelModule, Processing, Stage, ToolModule, TransformModule,
@@ -35,6 +35,9 @@ pub struct ModuleRegistry {
     effects: HashMap<String, (usize, usize)>,
     /// Action identity to (module, action) position.
     actions: HashMap<String, (usize, usize)>,
+    /// Query identity to (module, query) position. Queries have their own namespace: `query.<id>`
+    /// and `edit.<id>` are different methods, so an id claimed here does not claim an action name.
+    queries: HashMap<String, (usize, usize)>,
     /// Canvas mode shortcut to the module that claims it, so one letter selects one mode.
     shortcuts: HashMap<String, usize>,
 }
@@ -101,6 +104,15 @@ impl ModuleRegistry {
                 )));
             }
         }
+        for query in &descriptor.queries {
+            if let Some((existing, _)) = self.queries.get(&query.id) {
+                return Err(validation(format!(
+                    "query {} is already provided by {}",
+                    query.id,
+                    self.modules[*existing].descriptor().id
+                )));
+            }
+        }
         let shortcut = descriptor
             .canvas
             .as_ref()
@@ -124,6 +136,9 @@ impl ModuleRegistry {
         for (position, action) in descriptor.actions.iter().enumerate() {
             self.actions.insert(action.id.clone(), (index, position));
         }
+        for (position, query) in descriptor.queries.iter().enumerate() {
+            self.queries.insert(query.id.clone(), (index, position));
+        }
         self.modules.push(module);
         Ok(())
     }
@@ -139,6 +154,15 @@ impl ModuleRegistry {
         let (module, position) = self.actions.get(id)?;
         let module = self.modules[*module].as_ref();
         Some((module, &module.descriptor().actions[*position]))
+    }
+
+    /// The module that answers this read-only query, and the query's declared parameters. An
+    /// unavailable provider keeps its identity here exactly as it does for actions and effects; the
+    /// caller reports that rather than silently answering nothing.
+    pub fn query(&self, id: &str) -> Option<(&dyn ToolModule, &ActionDescriptor)> {
+        let (module, position) = self.queries.get(id)?;
+        let module = self.modules[*module].as_ref();
+        Some((module, &module.descriptor().queries[*position]))
     }
 
     pub fn effect(&self, id: &str) -> Option<(&dyn ToolModule, &EffectDescriptor)> {
@@ -365,6 +389,7 @@ pub(crate) mod tests {
                     patch: false,
                     parameters: Vec::new(),
                 }],
+                queries: Vec::new(),
                 controls: Vec::new(),
                 reset: None,
                 canvas: None,
@@ -452,6 +477,7 @@ pub(crate) mod tests {
                     patch: true,
                     parameters: vec![channel("red"), channel("green")],
                 }],
+                queries: Vec::new(),
                 controls: Vec::new(),
                 reset: None,
                 canvas: None,
@@ -735,6 +761,120 @@ pub(crate) mod tests {
             ))
             .expect_err("K is now claimed too");
         assert_eq!(error.kind, ErrorKind::Validation);
+    }
+
+    /// A query identity is unique across the whole registry, so `query.<id>` can never resolve to
+    /// two providers; it is its own namespace, so it does not collide with an action of that name.
+    #[test]
+    fn one_query_identity_resolves_to_one_provider_across_the_registry() {
+        let mut registry = ModuleRegistry::builtin();
+        let (module, query) = registry
+            .query("neutral-sample")
+            .expect("the Basic module declares the neutral picker");
+        assert_eq!(module.descriptor().id, "lightwell.basic");
+        assert_eq!(query.id, "neutral-sample");
+        assert!(!query.patch);
+        assert!(
+            registry.query("set-basic").is_none(),
+            "queries are separate"
+        );
+        assert!(registry.action("neutral-sample").is_none());
+
+        let with_query = |id: &str, effect: &str, action: &str, query: &str| {
+            let mut descriptor = TestModule::new(id, effect, action, Availability::Available).0;
+            descriptor.queries = vec![ActionDescriptor {
+                id: query.into(),
+                title: "Test query".into(),
+                notes: "test".into(),
+                summary: None,
+                patch: false,
+                parameters: Vec::new(),
+            }];
+            TestModule::from_descriptor(descriptor)
+        };
+        let error = registry
+            .register(with_query(
+                "test.one",
+                "test.one.effect",
+                "test-one",
+                "neutral-sample",
+            ))
+            .expect_err("the Basic module already provides that query");
+        assert_eq!(error.kind, ErrorKind::Validation);
+        assert!(
+            error
+                .detail
+                .contains("query neutral-sample is already provided by lightwell.basic"),
+            "{error}"
+        );
+        // An action may still be named after a query of another module: different namespaces.
+        registry
+            .register(with_query(
+                "test.two",
+                "test.two.effect",
+                "neutral-sample",
+                "test-query",
+            ))
+            .expect("an action named after another module's query is free");
+        assert_eq!(
+            registry
+                .query("test-query")
+                .expect("the new query")
+                .0
+                .descriptor()
+                .id,
+            "test.two"
+        );
+        assert_eq!(
+            registry
+                .query("neutral-sample")
+                .expect("still the Basic module's")
+                .0
+                .descriptor()
+                .id,
+            "lightwell.basic"
+        );
+    }
+
+    /// A descriptor carrying queries and a sample-apply canvas round-trips through JSON, so a
+    /// client reads exactly what the registry validated.
+    #[test]
+    fn queries_and_the_sample_apply_canvas_survive_a_json_round_trip() {
+        let registry = ModuleRegistry::builtin();
+        let basic = registry
+            .effect(BASIC_EFFECT)
+            .expect("the Basic module")
+            .0
+            .descriptor();
+        let encoded = serde_json::to_value(basic).expect("a serializable descriptor");
+        assert_eq!(encoded["queries"][0]["id"], json!("neutral-sample"));
+        assert_eq!(
+            encoded["canvas"],
+            json!({
+                "kind": "sample-apply",
+                "query": "neutral-sample",
+                "x": "x",
+                "y": "y",
+                "action": "set-basic",
+                "title": "Neutral picker",
+                "shortcut": "W",
+            })
+        );
+        assert_eq!(
+            &ModuleDescriptor::parse(&encoded).expect("a valid descriptor"),
+            basic
+        );
+        // A descriptor written before queries existed still reads, with none declared.
+        let mut without = encoded.clone();
+        let object = without.as_object_mut().expect("an object");
+        object.remove("queries");
+        object.insert("canvas".into(), Value::Null);
+        assert!(
+            serde_json::from_value::<ModuleDescriptor>(without)
+                .expect("queries are optional")
+                .queries
+                .is_empty()
+        );
     }
 
     /// The generic check in front of a patch action: the module is handed exactly the fields the

@@ -171,6 +171,7 @@ parameters: vec![ParameterDescriptor {
 notes: "the exact transform to compose into the stack's orientation".into(),
                     }],
                 }],
+                queries: Vec::new(),
                 controls: vec![Control::Group {
                     label: "Exact transforms".into(),
                     reset: None,

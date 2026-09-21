@@ -124,7 +124,7 @@ Tone, white balance and colour equations, ranges and tolerances are frozen by th
 
 ## Basic controls and interaction
 
-Exposure, the five Tone controls (Contrast, Highlights, Shadows, Whites, Blacks), Vibrance and Saturation are implemented, at the ranges, steps and precisions below; every other row is still a starting range for a control that does not exist yet.
+Every Basic control in the table below is implemented — Temperature and Tint, Exposure, the five Tone controls (Contrast, Highlights, Shadows, Whites, Blacks), Vibrance and Saturation — at the ranges, steps and precisions shown, together with the `neutral-sample` picker query behind the White Balance group.
 
 These are the starting Lightwell ranges and units, taken from the [Lightroom research](../research/lightroom/tone-and-color-tools.md) as the owner decided, not claims of numeric equivalence to Lightroom. Defaults are neutral, zero. The numerical tasks may adjust a range against independent references before a control ships. Ranges, step, display precision, defaults and descriptions belong in descriptors and API schemas.
 
@@ -134,7 +134,7 @@ These are the starting Lightwell ranges and units, taken from the [Lightroom res
 | Tone / Contrast — **implemented** | −100 to +100, step 1 | Change midtone separation with a defined pivot and smooth monotone curve |
 | Tone / Highlights, Shadows — **implemented** | −100 to +100, step 1 | Smoothly change bright/dark ranges while retaining ordering and exposing retained detail |
 | Tone / Whites, Blacks — **implemented** | −100 to +100, step 1 | Control bright/dark endpoints separately from broad highlight/shadow shaping |
-| White Balance / Temperature, Tint | −100 to +100, step 1 | Relative warm/cool and green/magenta correction of rendered JPEGs; not Kelvin |
+| White Balance / Temperature, Tint — **implemented** | −100 to +100, step 1, precision 0 | Relative warm/cool and green/magenta correction of rendered JPEGs; not Kelvin |
 | Color / Vibrance, Saturation — **implemented** | −100 to +100, step 1 | Chroma-dependent versus uniform color-intensity adjustment; saturation −100 is neutral grayscale |
 
 Each slider has editable numeric text, keyboard steps, an accessible name/value/unit, and an explicit reset action. Double-click reset can be an additional shortcut. Group reset and Reset Basic preserve other groups/effects as appropriate and commit once. Reset on a neutral layer is a no-op; resetting an existing layer retains its ID with neutral parameters. No hidden group-enable/bypass feature is required.
@@ -177,6 +177,8 @@ Recommend a documented relative chromatic-adaptation or channel-gain transform w
 The neutral picker samples a bounded patch (default 5×5 at input-stage pixel centers, clipped at image edges), evaluates before the target Basic layer, and computes reproducible parameters. Store the resulting numeric settings in the recipe; the sampled position/statistics may be action metadata, not a dependency on a future screen image. Map displayed coordinates back through subsequent geometry. Reject near-black, clipped or non-invertible/invalid samples with an explanation; do not guess. If the relative axes cannot represent the correction within range, report it rather than silently clamping. Freeze averaging, rejection thresholds and solver tolerance in the numerical task. UI and API use the same sample coordinates and solver; cancel commits nothing.
 
 Frozen: [White balance mathematics](basic-white-balance.md). A von Kries adaptation in Bradford LMS anchored at the sRGB D65 white, Temperature as a mired shift along the daylight locus (about 3900 K to 20000 K across ±100) and Tint as a perpendicular CIE 1960 uv offset with positive tint magenta; 0/0 is the exact identity; the neutral picker averages the 5 × 5 patch in linear light, rejects clipped, near-black and non-finite samples with a reason, solves by bounded Newton iteration, rounds to whole steps and refuses corrections outside ±100 rather than clamping.
+
+Implemented: Temperature and Tint are the White balance group of the one Basic layer, compiled as one composite 3 × 3 linear-sRGB matrix that runs first in the layer's unit order, and the neutral picker is the module query `neutral-sample` reached as `query.neutral-sample` and put on the canvas mode strip by a `sample-apply` interaction. The picker reads the 5 × 5 patch from the stage the Basic layer receives, so it evaluates before that layer's own correction; UI and API use the same coordinates, the same patch and the same solver, and a refusal commits nothing.
 
 ### Saturation and vibrance
 

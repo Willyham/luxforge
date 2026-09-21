@@ -804,13 +804,16 @@ pub(crate) fn module_of<'a>(
 }
 
 /// The first available module that declares a canvas pick: its action and coordinate parameters.
-/// A crop frame is a different adapter and is ignored here rather than treated as a pick.
+/// A crop frame is a different adapter and is ignored here rather than treated as a pick, and so is
+/// a sample-apply pick, whose answer comes from a module query rather than from the coordinates
+/// alone. Both still appear in the mode strip, which is derived from the declaration itself.
 pub(crate) fn point_pick(modules: &[ModuleDescriptor]) -> Option<(&str, &str, &str)> {
     modules.iter().find_map(|module| match &module.canvas {
         Some(CanvasInteraction::PointPick { action, x, y, .. }) if module.is_available() => {
             Some((action.as_str(), x.as_str(), y.as_str()))
         }
         Some(CanvasInteraction::PointPick { .. })
+        | Some(CanvasInteraction::SampleApply { .. })
         | Some(CanvasInteraction::CropFrame { .. })
         | None => None,
     })

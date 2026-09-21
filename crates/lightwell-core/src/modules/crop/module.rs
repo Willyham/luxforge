@@ -195,6 +195,7 @@ parameters: Vec::new(),
                     },
                 ],
                 // The section's reset is the same API action the header button calls.
+                queries: Vec::new(),
                 controls: Vec::new(),
                 reset: Some(ResetAction {
                     action: CROP_RESET_ACTION.into(),

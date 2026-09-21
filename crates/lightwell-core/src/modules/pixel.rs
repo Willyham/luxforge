@@ -78,6 +78,7 @@ notes: "three 8-bit sRGB channels".into(),
                         },
                     ],
                 }],
+                queries: Vec::new(),
                 controls: vec![Control::Group {
                     label: "Pixel proof".into(),
                     reset: None,

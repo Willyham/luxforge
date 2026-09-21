@@ -125,6 +125,28 @@ the single-unit `+1 EV` exposure pass measured the same way. The 60 MP p95 (594 
 its median for the same allocator-tail reason noted above; no desktop responsiveness threshold is
 claimed met or missed from this core-only number.
 
+With the Basic module's Temperature and Tint, `editor-performance` re-run on 24 and 60 MP, 30 samples
+each, release, warm cache, on the M4 Pro; core render only, with no desktop scheduling, GPU upload or
+presentation. The baseline and the exposure row were re-measured in the same run, so the three colour
+rows are directly comparable to each other; they are faster than the exposure figures recorded above,
+which came from a separate run, so compare rows within a run and not across runs.
+
+| Measurement | 24 MP | 60 MP |
+| --- | --- | --- |
+| The 200-transform and 10° crop stack, no colour layer (p50 / p95) | 31.8 / 34.4 ms | 68.9 / 73.8 ms |
+| The same stack with one `+1 EV` Basic layer (p50 / p95) | 46.6 / 49.9 ms | 110.0 / 126.3 ms |
+| The same stack with one `temperature 30, tint −10` Basic layer (p50 / p95) | 50.9 / 54.9 ms | 122.4 / 133.3 ms |
+| `query.neutral-sample`: the whole picker, 25 point samples (p50 / p95) | 0.013 / 0.024 ms | 0.015 / 0.027 ms |
+
+The white-balance pass costs about 19 ms at 24 MP and 54 ms at 60 MP at the median, roughly 4 ms and
+12 ms more than exposure's single scalar multiply on the same frames: the unit is one composite 3 × 3
+linear-sRGB matrix per pixel, folded once in `f64` at compile time and applied in `f32`, against
+exposure's one multiply. The neutral picker is not a frame operation at all. It evaluates 25 point
+samples of the stage the Basic layer receives, each at `O(layers)` through the compiled stack, and
+allocates no frame, so a pick costs about 0.015 ms on the catalog owner at either size and does not
+grow with the image. Its cost grows with the stack depth, not the pixel count. Recorded with that
+scope; no threshold is claimed met or missed from these numbers alone.
+
 Editor process measurements from `measure`, five app-cold launches per workload plus one repeated
 60 MP run, on the same host. Launch to observed frame is an upper bound: it includes the harness's
 capture readback, not scanout.

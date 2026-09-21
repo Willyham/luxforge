@@ -327,6 +327,8 @@ mod tests {
                 "set-basic.highlights",
                 "set-basic.saturation",
                 "set-basic.shadows",
+                "set-basic.temperature",
+                "set-basic.tint",
                 "set-basic.vibrance",
                 "set-basic.whites",
                 "set-pixel.rgb",

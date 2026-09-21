@@ -26,6 +26,14 @@ fn srgb_decode(encoded: f64) -> f64 {
     }
 }
 
+/// One 8-bit channel code in linear light, at f64 precision: the same transfer function the f32
+/// table below is built from, without that table's storage rounding. A module that reasons about
+/// colour off the per-pixel path — the neutral picker averages 25 sampled codes and solves a
+/// chromaticity from them — decodes through this rather than restating the transfer function.
+pub(crate) fn srgb_to_linear_f64(code: u8) -> f64 {
+    srgb_decode(f64::from(code) / 255.0)
+}
+
 /// The sRGB transfer function over the 256 8-bit channel values: interpolation weights and colour
 /// units are applied in linear light, so every channel is decoded through this table first. The
 /// entries are computed in f64 and stored as f32, which is the working precision of a colour unit.
@@ -1231,6 +1239,7 @@ mod tests {
                     })
                     .collect(),
                 actions: Vec::new(),
+                queries: Vec::new(),
                 controls: Vec::new(),
                 reset: None,
                 canvas: None,
@@ -2315,6 +2324,7 @@ mod tests {
                     stage: EffectStage::Color,
                 }],
                 actions: Vec::new(),
+                queries: Vec::new(),
                 controls: Vec::new(),
                 reset: None,
                 canvas: None,

@@ -355,6 +355,8 @@ fn reopen_of_an_exposure_only_payload_is_unaffected_by_the_new_colour_fields() {
     assert_eq!(
         row.values,
         json!({
+            "temperature": 0.0,
+            "tint": 0.0,
             "exposure": 0.75,
             "contrast": 0.0,
             "highlights": 0.0,
@@ -454,6 +456,8 @@ fn labels_report_reset_colour_and_basic_n_fields_and_values_include_the_new_fiel
     assert_eq!(
         row.values,
         json!({
+            "temperature": 0.0,
+            "tint": 0.0,
             "exposure": 0.0,
             "contrast": 0.0,
             "highlights": 0.0,

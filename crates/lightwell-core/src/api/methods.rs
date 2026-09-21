@@ -311,10 +311,12 @@ pub(super) const METHODS: &[MethodSpec] = &[
 ];
 
 /// A resolved method: a host method from the static table, or one generated from a registered
-/// module action. Both come from the same lookup discovery uses.
+/// module action or query. All three come from the same lookup discovery uses.
 pub(super) enum Method {
     Host(&'static MethodSpec),
     Action(String),
+    /// A module's read-only query. It writes nothing, so it never emits an event.
+    Query(String),
 }
 
 impl Method {
@@ -322,6 +324,7 @@ impl Method {
         match self {
             Self::Host(spec) => spec.mutates,
             Self::Action(_) => true,
+            Self::Query(_) => false,
         }
     }
     /// `true` for the methods the owner loop answers from its own state.
@@ -335,15 +338,27 @@ pub(super) fn action_method(action_id: &str) -> String {
     format!("edit.{action_id}")
 }
 
+/// Query method names are generated the same way in their own namespace: query `neutral-sample` is
+/// `query.neutral-sample`.
+pub(super) fn query_method(query_id: &str) -> String {
+    format!("query.{query_id}")
+}
+
 pub(super) fn find(service: &EditorService, name: &str) -> Option<Method> {
     if let Some(spec) = METHODS.iter().find(|spec| spec.name == name) {
         return Some(Method::Host(spec));
     }
-    let action_id = name.strip_prefix("edit.")?;
+    if let Some(action_id) = name.strip_prefix("edit.") {
+        return service
+            .registry()
+            .action(action_id)
+            .map(|_| Method::Action(action_id.to_owned()));
+    }
+    let query_id = name.strip_prefix("query.")?;
     service
         .registry()
-        .action(action_id)
-        .map(|_| Method::Action(action_id.to_owned()))
+        .query(query_id)
+        .map(|_| Method::Query(query_id.to_owned()))
 }
 
 /// A method emits an event when it is mutating and its result is not a no-op.
@@ -373,6 +388,7 @@ pub(super) fn dispatch(
         Some(Method::Action(action_id)) => {
             edit_action(service, session, &action_id, &request.params)
         }
+        Some(Method::Query(query_id)) => module_query(service, session, &query_id, &request.params),
         None => Err(Error::new(
             ErrorKind::Protocol,
             format!("unknown method {}", request.method),
@@ -408,6 +424,32 @@ fn action_schema(action: &ActionDescriptor) -> Value {
     })
 }
 
+/// One generated query description. `asset_id` is the envelope, `entry_id` selects the stack to ask
+/// about and defaults to the session's selection, and the remaining top-level fields are the
+/// query's own declared parameters. A query mutates nothing.
+fn query_schema(query: &ActionDescriptor) -> Value {
+    let mut required = vec![json!("asset_id")];
+    let mut optional = Map::new();
+    optional.insert(
+        "entry_id".to_owned(),
+        json!("entry to ask about; default the session's selection"),
+    );
+    for parameter in &query.parameters {
+        if parameter.required && parameter.default.is_none() {
+            required.push(json!(parameter.name));
+        } else {
+            optional.insert(parameter.name.clone(), json!(parameter.notes));
+        }
+    }
+    json!({
+        "mutates": false,
+        "required": required,
+        "optional": optional,
+        "notes": query.notes,
+        "parameters": query.parameters,
+    })
+}
+
 pub fn schemas(registry: &ModuleRegistry) -> Value {
     let mut methods: Map<String, Value> = METHODS
         .iter()
@@ -432,6 +474,9 @@ pub fn schemas(registry: &ModuleRegistry) -> Value {
     for descriptor in &descriptors {
         for action in &descriptor.actions {
             methods.insert(action_method(&action.id), action_schema(action));
+        }
+        for query in &descriptor.queries {
+            methods.insert(query_method(&query.id), query_schema(query));
         }
     }
     json!({
@@ -552,6 +597,40 @@ fn edit_action(
     let asset_id: AssetId = envelope(&mut parameters, "asset_id")?;
     let mutation: Mutation = envelope(&mut parameters, "mutation")?;
     value(service.apply_action(&asset_id, mutation, action_id, Value::Object(parameters))?)
+}
+
+/// Every generated query method: `asset_id` is the envelope, `entry_id` names the stack to ask
+/// about and defaults to the session's selection exactly as `render.sample` does, and the remaining
+/// top-level fields are the query's declared parameters.
+///
+/// A query is read-only, so unlike an edit it does not require the session to be on current: a
+/// client inspecting a historical entry may ask about that entry. Nothing is committed and no event
+/// is emitted, whether the query answers or refuses.
+fn module_query(
+    service: &mut EditorService,
+    session: &mut ClientSession,
+    query_id: &str,
+    request_params: &Value,
+) -> Result<Value, Error> {
+    let mut parameters = match request_params {
+        Value::Object(object) => object.clone(),
+        Value::Null => Map::new(),
+        _ => {
+            return Err(Error::new(
+                ErrorKind::Validation,
+                "params must be a JSON object",
+            ));
+        }
+    };
+    let asset_id: AssetId = envelope(&mut parameters, "asset_id")?;
+    let entry_id: EntryId = match parameters.remove("entry_id") {
+        Some(entry_id) => params(&entry_id)?,
+        None => match &session.preview.selection {
+            HistorySelection::Current => service.state(&asset_id)?.current_entry.id,
+            HistorySelection::Entry(id) => id.clone(),
+        },
+    };
+    service.run_query(&asset_id, &entry_id, query_id, Value::Object(parameters))
 }
 
 fn envelope<T: DeserializeOwned>(
@@ -1156,9 +1235,39 @@ mod tests {
                 "edit.crop-reset"
             ]
         );
+        // A read-only module query generates a method of its own, in its own `query.` namespace.
+        let queries: Vec<String> = service
+            .registry()
+            .descriptors()
+            .iter()
+            .flat_map(|descriptor| descriptor.queries.iter())
+            .map(|query| query_method(&query.id))
+            .collect();
+        assert_eq!(queries, ["query.neutral-sample"]);
         let schema = schemas(service.registry());
         let listed = schema["methods"].as_object().unwrap();
-        assert_eq!(listed.len(), METHODS.len() + generated.len());
+        assert_eq!(
+            listed.len(),
+            METHODS.len() + generated.len() + queries.len()
+        );
+        assert_eq!(
+            listed["query.neutral-sample"]["mutates"],
+            json!(false),
+            "a query writes nothing"
+        );
+        assert_eq!(
+            listed["query.neutral-sample"]["required"],
+            json!(["asset_id", "x", "y"])
+        );
+        assert_eq!(
+            listed["query.neutral-sample"]["optional"]
+                .as_object()
+                .expect("the query's optional fields")
+                .keys()
+                .collect::<Vec<_>>(),
+            ["entry_id"],
+            "a query answers about the session's selection unless an entry is named"
+        );
         assert_eq!(
             schema["modules"].as_array().unwrap().len(),
             service.registry().descriptors().len()
@@ -1436,6 +1545,7 @@ mod tests {
                         notes: "test".into(),
                     }],
                 }],
+                queries: Vec::new(),
                 controls: Vec::new(),
                 reset: None,
                 canvas: None,
@@ -1519,6 +1629,7 @@ mod tests {
                     patch: false,
                     parameters: Vec::new(),
                 }],
+                queries: Vec::new(),
                 controls: Vec::new(),
                 reset: None,
                 canvas: None,
@@ -1739,7 +1850,9 @@ mod tests {
             (
                 "an unknown mode",
                 json!({"mode": "lightwell.heal"}),
-                "mode must be one of pointer, lightwell.pixel, lightwell.crop",
+                // The accepted modes are derived from the registry's canvas declarations, so the
+                // Basic module's neutral picker joins the list without a change here.
+                "mode must be one of pointer, lightwell.pixel, lightwell.basic, lightwell.crop",
             ),
             (
                 "a module that declares no canvas",

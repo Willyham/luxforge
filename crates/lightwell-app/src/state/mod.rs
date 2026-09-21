@@ -714,6 +714,15 @@ mod tests {
         assert_eq!(crop.label, "Crop", "the descriptor's own canvas title");
         assert_eq!(crop.shortcut.as_deref(), Some("R"));
         assert!(crop.enabled);
+        // A sample-apply interaction reaches the strip by the same rule: the strip is derived from
+        // the declaration, not from a list of kinds the desktop knows.
+        let picker = strip
+            .iter()
+            .find(|mode| mode.id == "lightwell.basic")
+            .expect("the Basic module declares the neutral picker");
+        assert_eq!(picker.label, "Neutral picker");
+        assert_eq!(picker.shortcut.as_deref(), Some("W"));
+        assert!(picker.enabled);
         // A developer module's mode is listed only when the run asked for developer tools.
         let developer: Vec<String> = scene
             .modules

@@ -130,6 +130,28 @@ pub trait ToolModule: Send + Sync {
         let _ = (effect_id, format, payload);
         Ok(Map::new())
     }
+    /// Answer one declared read-only query about the current stack.
+    ///
+    /// The host has already checked `parameters` against the query's declared parameters, and hands
+    /// the same [`StageContext`] an action is planned against: point samplers only, so a query
+    /// allocates no frame and runs no work on the catalog owner beyond `O(layers)` per sampled
+    /// point. A query mutates nothing, writes no history entry and emits no event; a module that
+    /// declares none never sees this call.
+    fn query(
+        &self,
+        query_id: &str,
+        parameters: &Map<String, Value>,
+        context: &StageContext<'_>,
+    ) -> Result<Value, Error> {
+        let _ = (parameters, context);
+        Err(Error::new(
+            crate::ErrorKind::Validation,
+            format!(
+                "module {} declares no queries, so it cannot answer {query_id}",
+                self.descriptor().id
+            ),
+        ))
+    }
     /// Turn a persisted payload into a host processing primitive at its input stage.
     fn compile(
         &self,

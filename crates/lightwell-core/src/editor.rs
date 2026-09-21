@@ -882,8 +882,24 @@ impl EditorService {
         module: &dyn crate::ToolModule,
         input: &ActionInput,
     ) -> Result<ActionPlan, Error> {
+        self.with_stage_context(source, &state.current_entry.snapshot.recipe, |context| {
+            module.plan(input, context)
+        })
+    }
+
+    /// Build the questions a module may ask about one stack and hand them to `answer`.
+    ///
+    /// The stack is compiled once and every question is a point query or a prefix compile, so this
+    /// costs `O(layers)` per question and rasterizes nothing. Planning an action and answering a
+    /// read-only query share it, which is what makes a query see exactly the stage a commit would
+    /// address.
+    fn with_stage_context<T>(
+        &self,
+        source: &SourceImage,
+        recipe: &Recipe,
+        answer: impl FnOnce(&StageContext<'_>) -> Result<T, Error>,
+    ) -> Result<T, Error> {
         let registry = &self.registry;
-        let recipe = &state.current_entry.snapshot.recipe;
         let evaluation = Evaluation::new(registry, source, recipe)?;
         let sampler = |x: u32, y: u32| -> Result<Option<[u8; 4]>, Error> { evaluation.pixel(x, y) };
         // The stage one layer receives: compile the prefix before it. Compiling folds declared
@@ -910,7 +926,44 @@ impl EditorService {
             insertion_index: &insertion_index,
             sample_before: &sample_before,
         };
-        module.plan(input, &context)
+        answer(&context)
+    }
+
+    /// Answer one module query about a saved entry's stack: the read-only counterpart of
+    /// [`EditorService::apply_action`].
+    ///
+    /// The query is resolved from the same registry discovery lists, its parameters go through the
+    /// same generic check, and it is handed the same [`StageContext`] a commit is planned against.
+    /// Nothing is written: no snapshot, no history entry, no request row and no event, so two
+    /// clients asking the same question concurrently get the same answer and neither disturbs the
+    /// other. Cost is `O(layers)` per point the module samples and no frame is allocated.
+    pub fn run_query(
+        &self,
+        asset_id: &AssetId,
+        entry_id: &EntryId,
+        query_id: &str,
+        parameters: Value,
+    ) -> Result<Value, Error> {
+        let registry = self.registry.clone();
+        let (module, query) = registry.query(query_id).ok_or_else(|| {
+            Error::new(ErrorKind::Validation, format!("unknown query {query_id}"))
+        })?;
+        if !module.descriptor().is_available() {
+            return Err(Error::new(
+                ErrorKind::Incompatible,
+                format!(
+                    "unavailable module {} cannot answer {query_id}",
+                    module.descriptor().id
+                ),
+            ));
+        }
+        let checked = check_parameters(query, &parameters)?;
+        let state = self.state(asset_id)?;
+        let entry = self.entry(asset_id, entry_id)?;
+        let source = self.verified_source(&state.asset)?;
+        self.with_stage_context(&source, &entry.snapshot.recipe, |context| {
+            module.query(query_id, &checked, context)
+        })
     }
 
     /// The recipe an open draft would produce: the current snapshot with the draft's action planned
@@ -2822,6 +2875,7 @@ mod tests {
                     action(TAIL_ACTION),
                     action(MISSING_ACTION),
                 ],
+                queries: Vec::new(),
                 controls: Vec::new(),
                 reset: None,
                 canvas: None,

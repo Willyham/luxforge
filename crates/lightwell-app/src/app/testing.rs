@@ -145,6 +145,7 @@ pub(crate) fn crop_descriptor() -> ModuleDescriptor {
                 parameters: Vec::new(),
             },
         ],
+        queries: Vec::new(),
         controls: vec![Control::Group {
             label: "Crop".into(),
             reset: None,

@@ -47,6 +47,17 @@ fn basic_vibrance_saturation_layer(vibrance: f64, saturation: f64) -> Layer {
     }
 }
 
+/// The Basic layer the white-balance row measures: one 3x3 linear-sRGB matrix per pixel, compiled
+/// by the real module from the real payload, at the same position a colour-stage commit takes.
+fn basic_white_balance_layer(temperature: f64, tint: f64) -> Layer {
+    Layer {
+        id: LayerId::new(),
+        effect_id: BASIC_EFFECT.into(),
+        effect_format: 1,
+        payload: json!({ "temperature": temperature, "tint": tint }),
+    }
+}
+
 /// Render one recipe repeatedly through a given registry, the way the preview worker does.
 fn recipe_render_samples(
     registry: &ModuleRegistry,
@@ -252,6 +263,48 @@ pub fn run(root: &Path, source: &Path, out: &Path, samples: usize) -> Result {
         &vibrance_saturation,
         samples,
     )?;
+    // The same stack and the same source through the white-balance unit instead: one composite 3x3
+    // linear-sRGB multiply per pixel against exposure's one scalar multiply, so the two rows are
+    // directly comparable and the difference is the unit's own arithmetic.
+    let mut balanced = stack.clone();
+    balanced
+        .layers
+        .insert(index, basic_white_balance_layer(30.0, -10.0));
+    let (white_balance_samples, white_balance_stage) =
+        recipe_render_samples(&colour_registry, &colour_job.source, &balanced, samples)?;
+    ensure(
+        stack_stage == white_balance_stage,
+        "A white-balance operation changed the output stage",
+    )?;
+    let white_balance_render = distribution(white_balance_samples);
+
+    // The neutral picker: 25 point samples of the stage the Basic layer receives, each evaluated
+    // through the compiled stack at O(layers). No frame is allocated and nothing is written, so
+    // this is the whole cost of a pick on the catalog owner.
+    let (pick_x, pick_y) = (state.asset.width / 2, state.asset.height / 2);
+    let mut picker = Vec::with_capacity(samples);
+    for _ in 0..samples {
+        let started = Instant::now();
+        let answered = service.run_query(
+            &asset,
+            &crop_entry,
+            "neutral-sample",
+            json!({"x": pick_x, "y": pick_y}),
+        );
+        picker.push(milliseconds(started));
+        // A photograph's mid-frame patch may legitimately be clipped, near-black or beyond the
+        // representable range; the measurement is of the sampling path either way, so only an
+        // unexpected failure kind is a problem.
+        if let Err(error) = &answered {
+            ensure(
+                error.detail.starts_with("clipped:")
+                    || error.detail.starts_with("near-black:")
+                    || error.detail.starts_with("out-of-range:"),
+                format!("Neutral picker failed unexpectedly: {error}"),
+            )?;
+        }
+    }
+    let neutral_picker = distribution(picker);
     ensure(
         identity_stage == (state.asset.width, state.asset.height),
         "Identity colour baseline has wrong dimensions",
@@ -315,6 +368,8 @@ pub fn run(root: &Path, source: &Path, out: &Path, samples: usize) -> Result {
             "colour_same_stack_with_one_1ev_basic_layer":colour_render,
             "colour_same_stack_with_exposure_and_five_tone_fields":toned_render,
             "colour_same_stack_with_vibrance_50_saturation_20_basic_layer":vibrance_saturation_render,
+            "colour_same_stack_with_one_white_balance_basic_layer":white_balance_render,
+            "neutral_picker_query_25_point_samples":neutral_picker,
             "reopen_source_and_preview_job":cold_source_and_job_ms,
             "reopen_original_render":cold_original_render_ms,
             "total":milliseconds(total),
@@ -328,6 +383,8 @@ pub fn run(root: &Path, source: &Path, out: &Path, samples: usize) -> Result {
             "One +1 EV Basic exposure layer, compiled by the real lightwell.basic module, renders the same stage as the stack without it; the difference against that baseline is the streamed colour pass",
             "One Basic layer with +1 EV exposure and all five Contrast/Highlights/Shadows/Whites/Blacks fields non-neutral, compiled into two real pointwise units by the real lightwell.basic module, renders the same stage as the stack without it",
             "One Basic layer with vibrance 50 and saturation 20, compiled to two real Oklab colour units, renders the same stage as the stack without it",
+            "One temperature 30 / tint -10 Basic layer renders the same stage as the stack without it; its unit is one composite 3x3 linear-sRGB multiply per pixel",
+            "The neutral picker query evaluates 25 point samples of the stage the Basic layer receives at O(layers) each and allocates no frame",
             "Catalog reopen reconstructs the original historical state",
             "Source SHA-256 is unchanged"
         ]

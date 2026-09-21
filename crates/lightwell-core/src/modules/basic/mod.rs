@@ -1,23 +1,32 @@
 //! The Basic adjustment module: one colour-stage layer holding every Basic parameter, edited by
 //! one field-patch action.
 //!
-//! This slice implements Exposure, the five Tone controls (Contrast, Highlights, Shadows, Whites
-//! and Blacks), Vibrance and Saturation. A payload is a JSON object whose keys are the implemented
-//! parameter names; a missing key is neutral, so the canonical neutral payload is the empty object
-//! `{}` and `{"exposure": 0}` is the same state written differently. Every comparison here is
-//! between canonical values, never between JSON maps, so the two forms are never mistaken for a
-//! change.
+//! This slice implements Temperature and Tint, Exposure, the five Tone controls (Contrast,
+//! Highlights, Shadows, Whites and Blacks), Vibrance and Saturation. A payload is a JSON object
+//! whose keys are the implemented parameter names; a missing key is neutral, so the canonical
+//! neutral payload is the empty object `{}` and `{"exposure": 0}` is the same state written
+//! differently. Every comparison here is between canonical values, never between JSON maps, so the
+//! two forms are never mistaken for a change.
+//!
+//! The units compile in the frozen internal order — white balance, then exposure, then the tonal
+//! curve, then vibrance and saturation — whatever order the fields were set in, so the result never
+//! depends on which slider a person touched first. Each unit's equations live in its own file.
 //!
 //! The host places the layer by its effect stage: a colour-stage commit joins the stack before the
 //! geometry tail, like a pixel replacement, and stays at that position for the rest of its life.
 //! Later sets update it in place at the same identity and index.
+//!
+//! The module also answers one read-only query, `neutral-sample`: the neutral picker, which reads a
+//! bounded patch of the stage this layer receives and solves the white balance that makes it
+//! neutral. It commits nothing.
 mod colour;
 mod exposure;
 mod tone;
+mod white_balance;
 
 use super::{
-    ActionDescriptor, ActionInput, ActionPlan, Availability, ColorOperation, Control,
-    EffectDescriptor, EffectStage, ModuleDescriptor, ParameterDescriptor, ParameterKind,
+    ActionDescriptor, ActionInput, ActionPlan, Availability, CanvasInteraction, ColorOperation,
+    Control, EffectDescriptor, EffectStage, ModuleDescriptor, ParameterDescriptor, ParameterKind,
     PointwiseColor, Processing, ResetAction, Stage, StageContext, ToolModule,
 };
 use crate::{BASIC_EFFECT, EFFECT_FORMAT, Error, ErrorKind, Layer, LayerId};
@@ -26,9 +35,12 @@ use exposure::Exposure;
 use serde_json::{Map, Number, Value};
 use std::sync::Arc;
 use tone::Tone;
+use white_balance::{PARAMETER_RANGE, WhiteBalance};
 
 pub(super) const SET_BASIC: &str = "set-basic";
 pub(super) const RESET_BASIC: &str = "reset-basic";
+/// The read-only query the neutral picker runs, in its own `query.<id>` namespace.
+pub(super) const NEUTRAL_SAMPLE: &str = "neutral-sample";
 
 const EXPOSURE: &str = "exposure";
 const EXPOSURE_MIN: f64 = -5.0;
@@ -37,6 +49,13 @@ const EXPOSURE_STEP: f64 = 0.01;
 const EXPOSURE_PRECISION: u8 = 2;
 const EXPOSURE_UNIT: &str = "EV";
 const EXPOSURE_LABEL: &str = "Exposure";
+
+const TEMPERATURE: &str = "temperature";
+const TINT: &str = "tint";
+const WHITE_BALANCE_STEP: f64 = 1.0;
+const WHITE_BALANCE_PRECISION: u8 = 0;
+const TEMPERATURE_LABEL: &str = "Temperature";
+const TINT_LABEL: &str = "Tint";
 
 /// The five Tone-curve fields, each in the agreed -100..100 UI range with step 1 and no display
 /// decimals, holding no unit.
@@ -74,12 +93,28 @@ const TONE_GROUP: &str = "Tone";
 /// every one of its fields to neutral takes in history.
 const COLOUR_GROUP: &str = "Colour";
 
+/// The group label the White balance controls share.
+const WHITE_BALANCE_GROUP: &str = "White balance";
+
 /// Every implemented Basic field, in the payload's declared order. A later slice adds further
 /// optional keys of the same format, and a neutral-defaulting key changes no existing
 /// interpretation.
-const FIELDS: [&str; 8] = [
-    EXPOSURE, CONTRAST, HIGHLIGHTS, SHADOWS, WHITES, BLACKS, VIBRANCE, SATURATION,
+const FIELDS: [&str; 10] = [
+    TEMPERATURE,
+    TINT,
+    EXPOSURE,
+    CONTRAST,
+    HIGHLIGHTS,
+    SHADOWS,
+    WHITES,
+    BLACKS,
+    VIBRANCE,
+    SATURATION,
 ];
+
+/// The fields of the White balance group, so a patch holding exactly these at neutral is that
+/// group's reset however it was sent.
+const WHITE_BALANCE_FIELDS: [&str; 2] = [TEMPERATURE, TINT];
 
 /// The fields of the Tone group: a patch holding exactly these at neutral is that group's reset.
 const TONE_FIELDS: [&str; 6] = [EXPOSURE, CONTRAST, HIGHLIGHTS, SHADOWS, WHITES, BLACKS];
@@ -102,6 +137,7 @@ fn incompatible(detail: impl Into<String>) -> Error {
 /// generic parameter check and a stored payload are refused by the same numbers.
 fn range(name: &str) -> (f64, f64) {
     match name {
+        TEMPERATURE | TINT => (-PARAMETER_RANGE, PARAMETER_RANGE),
         EXPOSURE => (EXPOSURE_MIN, EXPOSURE_MAX),
         CONTRAST | HIGHLIGHTS | SHADOWS | WHITES | BLACKS => (TONE_MIN, TONE_MAX),
         VIBRANCE | SATURATION => (COLOUR_MIN, COLOUR_MAX),
@@ -114,6 +150,8 @@ fn range(name: &str) -> (f64, f64) {
 /// declares.
 fn display(name: &str) -> (&'static str, u8, &'static str) {
     match name {
+        TEMPERATURE => (TEMPERATURE_LABEL, WHITE_BALANCE_PRECISION, ""),
+        TINT => (TINT_LABEL, WHITE_BALANCE_PRECISION, ""),
         EXPOSURE => (EXPOSURE_LABEL, EXPOSURE_PRECISION, EXPOSURE_UNIT),
         CONTRAST => (CONTRAST_LABEL, TONE_PRECISION, ""),
         HIGHLIGHTS => (HIGHLIGHTS_LABEL, TONE_PRECISION, ""),
@@ -124,6 +162,15 @@ fn display(name: &str) -> (&'static str, u8, &'static str) {
         SATURATION => (SATURATION_LABEL, COLOUR_PRECISION, ""),
         _ => ("Basic", 2, ""),
     }
+}
+
+/// One named field of a canonical value array. Reading by name rather than destructuring keeps each
+/// implemented parameter's compilation independent of where it sits in [`FIELDS`].
+fn value_of(values: &[f64; FIELDS.len()], name: &str) -> f64 {
+    FIELDS
+        .iter()
+        .position(|field| *field == name)
+        .map_or(NEUTRAL, |index| values[index])
 }
 
 /// One field of a validated payload or request: a missing key is neutral.
@@ -190,6 +237,25 @@ fn read_payload(effect_id: &str, format: u32, value: &Value) -> Result<Map<Strin
     Ok(object.clone())
 }
 
+/// The group a patch returns entirely to neutral, when it is one: a patch holding exactly one
+/// group's fields, all at neutral, is that group's reset however it was sent — from the header
+/// button, a keyboard reset or an API call.
+fn reset_group(sent: &[(&String, f64)]) -> Option<&'static str> {
+    [
+        (WHITE_BALANCE_GROUP, WHITE_BALANCE_FIELDS.as_slice()),
+        (TONE_GROUP, TONE_FIELDS.as_slice()),
+        (COLOUR_GROUP, COLOUR_FIELDS.as_slice()),
+    ]
+    .into_iter()
+    .find(|(_, fields)| {
+        sent.len() == fields.len()
+            && sent
+                .iter()
+                .all(|(name, value)| fields.contains(&name.as_str()) && *value == NEUTRAL)
+    })
+    .map(|(label, _)| label)
+}
+
 /// One field's history label: the control's name, the value with its sign and declared decimals,
 /// and the declared unit.
 fn field_label(name: &str, value: f64) -> String {
@@ -206,13 +272,20 @@ fn field_label(name: &str, value: f64) -> String {
 /// refuses to guess which one an action addresses rather than silently choosing one; nothing is
 /// rewritten.
 fn locate(layers: &[Layer]) -> Result<Option<&Layer>, Error> {
+    Ok(locate_index(layers)?.map(|index| &layers[index]))
+}
+
+/// The position of the stack's one Basic layer, which is also the index whose input stage the
+/// neutral picker samples: the stage that layer receives, so a pick sees the image as it is before
+/// the Basic layer, not after it.
+fn locate_index(layers: &[Layer]) -> Result<Option<usize>, Error> {
     let mut found = None;
-    for layer in layers {
+    for (index, layer) in layers.iter().enumerate() {
         if layer.effect_id == BASIC_EFFECT {
             if found.is_some() {
                 return Err(validation(AMBIGUOUS));
             }
-            found = Some(layer);
+            found = Some(index);
         }
     }
     Ok(found)
@@ -235,6 +308,38 @@ fn exposure_parameter() -> ParameterDescriptor {
         precision: Some(EXPOSURE_PRECISION),
         notes: "multiplies the linear-light channels by 2^EV. The input is a rendered sRGB JPEG decoded through the sRGB transfer function, not scene-linear RAW data, so this is an exposure correction of a rendered image and cannot recover detail a clipped plateau no longer holds".into(),
     }
+}
+
+/// Temperature and Tint share a range, a step and a precision; only their name, label and the
+/// direction they describe differ.
+fn white_balance_parameter(name: &str, notes: &str) -> ParameterDescriptor {
+    ParameterDescriptor {
+        name: name.into(),
+        kind: ParameterKind::Number {
+            min: -PARAMETER_RANGE,
+            max: PARAMETER_RANGE,
+        },
+        required: false,
+        default: Some(number(NEUTRAL)),
+        unit: None,
+        step: Some(WHITE_BALANCE_STEP),
+        precision: Some(WHITE_BALANCE_PRECISION),
+        notes: notes.into(),
+    }
+}
+
+fn temperature_parameter() -> ParameterDescriptor {
+    white_balance_parameter(
+        TEMPERATURE,
+        "a relative warm/cool correction of the rendered JPEG, not a camera Kelvin value: 0 is the image's existing rendering and nothing here recovers or reproduces the camera's own white balance. Positive temperature warms the image, raising red and lowering blue; negative cools it. The correction is a von Kries chromatic adaptation in Bradford LMS anchored at the sRGB D65 white",
+    )
+}
+
+fn tint_parameter() -> ParameterDescriptor {
+    white_balance_parameter(
+        TINT,
+        "a relative green/magenta correction of the rendered JPEG, not a camera Kelvin or tint value: 0 is the image's existing rendering. Positive tint is magenta, raising red and blue and lowering green; negative is green. It offsets the target chromaticity perpendicular to the daylight locus in CIE 1960 (u, v)",
+    )
 }
 
 /// One Tone-curve parameter descriptor: -100..100, step 1, no display decimals, no unit.
@@ -321,6 +426,32 @@ fn saturation_parameter() -> ParameterDescriptor {
     }
 }
 
+/// The neutral picker's coordinates, in the content stage the Basic layer's input addresses. The
+/// declared bound is the host's own maximum side, because a query's descriptor cannot know the
+/// stage a particular asset produces; a point outside the actual stage is refused when it is asked.
+fn sample_coordinate(name: &str) -> ParameterDescriptor {
+    ParameterDescriptor {
+        name: name.into(),
+        kind: ParameterKind::Integer {
+            min: 0,
+            max: MAX_COORDINATE,
+        },
+        required: true,
+        default: None,
+        unit: Some("px".into()),
+        step: None,
+        precision: None,
+        notes: format!(
+            "the {name} coordinate, in pixels of the stage the Basic layer receives: the content \
+             stage, the source after EXIF orientation plus any pixel replacement before it. Map a \
+             rendered pixel to it with render.locate"
+        ),
+    }
+}
+
+/// The largest coordinate a query accepts, matching the host's maximum image side.
+const MAX_COORDINATE: i64 = 16383;
+
 #[derive(Debug)]
 pub struct BasicModule {
     descriptor: ModuleDescriptor,
@@ -352,6 +483,8 @@ impl BasicModule {
                         summary: None,
                         patch: true,
                         parameters: vec![
+                            temperature_parameter(),
+                            tint_parameter(),
                             exposure_parameter(),
                             contrast_parameter(),
                             highlights_parameter(),
@@ -371,7 +504,37 @@ impl BasicModule {
                         parameters: Vec::new(),
                     },
                 ],
+                queries: vec![ActionDescriptor {
+                    id: NEUTRAL_SAMPLE.into(),
+                    title: "Neutral sample".into(),
+                    notes: "reads a 5x5 patch of the stage the Basic layer receives, centred on the named content pixel and clipped at that stage's edges, and returns the temperature and tint that make its average neutral. It evaluates before the Basic layer, so picking the same patch twice gives the same answer whatever white balance is already set. A clipped, near-black or non-finite patch, a correction outside the representable range and a point outside the stage are each refused with their reason; nothing is guessed, clamped or committed".into(),
+                    summary: None,
+                    patch: false,
+                    parameters: vec![sample_coordinate("x"), sample_coordinate("y")],
+                }],
                 controls: vec![
+                    Control::Group {
+                        label: WHITE_BALANCE_GROUP.into(),
+                        reset: Some(ResetAction {
+                            action: SET_BASIC.into(),
+                            preset: WHITE_BALANCE_FIELDS
+                                .iter()
+                                .map(|name| ((*name).to_owned(), number(NEUTRAL)))
+                                .collect(),
+                        }),
+                        controls: vec![
+                            Control::Number {
+                                action: SET_BASIC.into(),
+                                parameter: TEMPERATURE.into(),
+                                label: TEMPERATURE_LABEL.into(),
+                            },
+                            Control::Number {
+                                action: SET_BASIC.into(),
+                                parameter: TINT.into(),
+                                label: TINT_LABEL.into(),
+                            },
+                        ],
+                    },
                     Control::Group {
                         label: TONE_GROUP.into(),
                         reset: Some(ResetAction {
@@ -441,7 +604,16 @@ impl BasicModule {
                     action: RESET_BASIC.into(),
                     preset: Map::new(),
                 }),
-                canvas: None,
+                // The neutral picker: a pick runs the query at the content pixel behind it and
+                // submits the settings it returns to `set-basic` once. A refusal commits nothing.
+                canvas: Some(CanvasInteraction::SampleApply {
+                    query: NEUTRAL_SAMPLE.into(),
+                    x: "x".into(),
+                    y: "y".into(),
+                    action: SET_BASIC.into(),
+                    title: "Neutral picker".into(),
+                    shortcut: Some("W".into()),
+                }),
                 developer: false,
                 availability: Availability::Available,
             },
@@ -565,25 +737,14 @@ impl ToolModule for BasicModule {
                     .iter()
                     .map(|(name, value)| (name, value.as_f64().unwrap_or(NEUTRAL)))
                     .collect();
-                // A patch holding exactly one group's fields, all at neutral, is that group's reset
-                // however it was sent: from the header button, a keyboard reset or an API call.
-                let tone_reset = sent.len() == TONE_FIELDS.len()
-                    && sent.iter().all(|(name, value)| {
-                        TONE_FIELDS.contains(&name.as_str()) && *value == NEUTRAL
-                    });
-                let colour_reset = sent.len() == COLOUR_FIELDS.len()
-                    && sent.iter().all(|(name, value)| {
-                        COLOUR_FIELDS.contains(&name.as_str()) && *value == NEUTRAL
-                    });
-                match (tone_reset, colour_reset, sent.as_slice()) {
-                    (true, _, _) => Some(format!("Reset {TONE_GROUP}")),
-                    (_, true, _) => Some(format!("Reset {COLOUR_GROUP}")),
+                match (reset_group(&sent), sent.as_slice()) {
+                    (Some(group), _) => Some(format!("Reset {group}")),
+                    (None, [(name, value)]) => Some(field_label(name, *value)),
                     // An empty patch changes nothing and commits no entry; the host falls back to
                     // the action's own title if it ever asks.
-                    (false, false, []) => None,
-                    (false, false, [(name, value)]) => Some(field_label(name, *value)),
+                    (None, []) => None,
                     // Any other patch: several fields changed at once, not a declared group reset.
-                    (false, false, sent) => Some(format!("Basic ({} fields)", sent.len())),
+                    (None, fields) => Some(format!("Basic ({} fields)", fields.len())),
                 }
             }
             _ => None,
@@ -620,35 +781,118 @@ impl ToolModule for BasicModule {
         if is_neutral(&values) {
             return Ok(Processing::Color(ColorOperation::neutral()));
         }
+        // The frozen internal order: white balance, then exposure, then the tonal curve, then
+        // vibrance and saturation. Each unit is added only when its own field is not neutral, so a
+        // layer that moves one slider costs one unit.
         let mut units: Vec<Arc<dyn PointwiseColor>> = Vec::new();
-        let [
-            exposure,
-            contrast,
-            highlights,
-            shadows,
-            whites,
-            blacks,
-            vibrance,
-            saturation,
-        ] = values;
-        // The frozen internal order: white balance, exposure, tone, vibrance, saturation. White
-        // balance is not implemented yet; its unit goes first, before exposure, when it lands.
+        let temperature = value_of(&values, TEMPERATURE);
+        let tint = value_of(&values, TINT);
+        if temperature != NEUTRAL || tint != NEUTRAL {
+            units.push(Arc::new(WhiteBalance::new(temperature, tint)));
+        }
+        let exposure = value_of(&values, EXPOSURE);
         if exposure != NEUTRAL {
             units.push(Arc::new(Exposure::new(exposure)));
         }
+        let contrast = value_of(&values, CONTRAST);
+        let highlights = value_of(&values, HIGHLIGHTS);
+        let shadows = value_of(&values, SHADOWS);
+        let whites = value_of(&values, WHITES);
+        let blacks = value_of(&values, BLACKS);
         if [contrast, highlights, shadows, whites, blacks] != [NEUTRAL; 5] {
             units.push(Arc::new(Tone::new(
                 contrast, highlights, shadows, whites, blacks,
             )));
         }
         // Colour units run last, in the frozen internal order: vibrance, then saturation.
+        let vibrance = value_of(&values, VIBRANCE);
         if vibrance != NEUTRAL {
             units.push(Arc::new(Vibrance::new(vibrance)));
         }
+        let saturation = value_of(&values, SATURATION);
         if saturation != NEUTRAL {
             units.push(Arc::new(Saturation::new(saturation)));
         }
         Ok(Processing::Color(ColorOperation::new(units)))
+    }
+
+    /// The neutral picker, the one query this module declares.
+    ///
+    /// The patch is read from the stage the Basic layer receives — the stage at that layer's index,
+    /// or at the index a first commit would take when no layer exists — so a pick sees the image
+    /// before this module's own correction and picking the same patch twice gives the same answer
+    /// whatever is already set. Every sample is a point query through the host's compiled
+    /// evaluation, so at most 25 points are evaluated at `O(layers)` each and no frame is
+    /// allocated.
+    fn query(
+        &self,
+        query_id: &str,
+        parameters: &Map<String, Value>,
+        context: &StageContext<'_>,
+    ) -> Result<Value, Error> {
+        if query_id != NEUTRAL_SAMPLE {
+            return Err(validation(format!("unknown query {query_id}")));
+        }
+        let coordinate = |name: &str| -> Result<i64, Error> {
+            parameters
+                .get(name)
+                .and_then(Value::as_i64)
+                .ok_or_else(|| validation(format!("neutral sample needs an integer {name}")))
+        };
+        let (centre_x, centre_y) = (coordinate("x")?, coordinate("y")?);
+
+        let index = match locate_index(context.layers)? {
+            Some(index) => index,
+            None => (context.insertion_index)(EffectStage::Color),
+        };
+        let stage = (context.stage_before)(index)?;
+        let outside = || {
+            validation(format!(
+                "outside the stage: ({centre_x}, {centre_y}) is not inside the {}x{} stage this \
+                 Basic layer receives",
+                stage.width, stage.height
+            ))
+        };
+        if centre_x < 0
+            || centre_y < 0
+            || centre_x >= i64::from(stage.width)
+            || centre_y >= i64::from(stage.height)
+        {
+            return Err(outside());
+        }
+
+        // Up to 5x5 pixel centres, clipped at the stage's edges: a position outside the stage is
+        // dropped rather than clamped or wrapped, so a corner patch can be as small as one pixel
+        // and is never empty for an in-bounds centre.
+        let left = (centre_x - 2).max(0);
+        let top = (centre_y - 2).max(0);
+        let right = (centre_x + 2).min(i64::from(stage.width) - 1);
+        let bottom = (centre_y + 2).min(i64::from(stage.height) - 1);
+        let mut pixels: Vec<[u8; 3]> = Vec::with_capacity(25);
+        for y in top..=bottom {
+            for x in left..=right {
+                let sampled = (context.sample_before)(index, x as u32, y as u32)?;
+                let rgba = sampled.ok_or_else(outside)?;
+                pixels.push([rgba[0], rgba[1], rgba[2]]);
+            }
+        }
+
+        let mean =
+            white_balance::average_patch(&pixels).map_err(|reason| validation(reason.message()))?;
+        let (temperature, tint) =
+            white_balance::neutral_settings(mean).map_err(|reason| validation(reason.message()))?;
+        Ok(serde_json::json!({
+            TEMPERATURE: temperature,
+            TINT: tint,
+            "patch": {
+                "x": left,
+                "y": top,
+                "width": right - left + 1,
+                "height": bottom - top + 1,
+                "pixels": pixels,
+                "mean_linear": mean,
+            },
+        }))
     }
 }
 
@@ -722,7 +966,6 @@ mod tests {
         assert_eq!(descriptor.effects[0].id, BASIC_EFFECT);
         assert_eq!(descriptor.effects[0].format, 1);
         assert_eq!(descriptor.effects[0].stage, EffectStage::Color);
-        assert!(descriptor.canvas.is_none(), "Basic drives no canvas mode");
         assert_eq!(
             descriptor.reset,
             Some(ResetAction {
@@ -734,10 +977,15 @@ mod tests {
         let set = descriptor.action(SET_BASIC).expect("set-basic");
         assert!(set.patch, "every slider sends one field");
         assert!(set.summary.is_none());
+        assert_eq!(set.parameters.len(), 10);
         assert_eq!(
-            set.parameters.len(),
-            8,
-            "exposure, the five Tone fields, vibrance and saturation are implemented"
+            set.parameters
+                .iter()
+                .map(|parameter| parameter.name.as_str())
+                .collect::<Vec<_>>(),
+            FIELDS,
+            "every implemented field is a declared parameter of the one patch action, in FIELDS \
+             order"
         );
         let exposure = set.parameter(EXPOSURE).expect("the exposure parameter");
         assert_eq!(
@@ -795,6 +1043,30 @@ mod tests {
         assert_eq!(
             descriptor.controls,
             vec![
+                Control::Group {
+                    label: "White balance".into(),
+                    reset: Some(ResetAction {
+                        action: SET_BASIC.into(),
+                        preset: [
+                            ("temperature".to_owned(), json!(0.0)),
+                            ("tint".to_owned(), json!(0.0)),
+                        ]
+                        .into_iter()
+                        .collect(),
+                    }),
+                    controls: vec![
+                        Control::Number {
+                            action: SET_BASIC.into(),
+                            parameter: "temperature".into(),
+                            label: "Temperature".into(),
+                        },
+                        Control::Number {
+                            action: SET_BASIC.into(),
+                            parameter: "tint".into(),
+                            label: "Tint".into(),
+                        },
+                    ],
+                },
                 Control::Group {
                     label: "Tone".into(),
                     reset: Some(ResetAction {
@@ -868,9 +1140,111 @@ mod tests {
                     ],
                 },
             ],
-            "the Tone group's six sliders, then the Colour group's two, each with a group reset \
-             naming all of its fields"
+            "the White balance group's two sliders, then the Tone group's six, then the Colour \
+             group's two, each with a group reset naming all of its fields"
         );
+    }
+
+    /// The White balance group, its two sliders, its own reset preset and the neutral picker it
+    /// puts on the canvas mode strip.
+    #[test]
+    fn the_descriptor_declares_the_white_balance_group_and_the_neutral_picker() {
+        let module = BasicModule::new();
+        let descriptor = module.descriptor();
+        descriptor.validate().expect("a valid descriptor");
+        assert_eq!(
+            descriptor.controls.first(),
+            Some(&Control::Group {
+                label: "White balance".into(),
+                reset: Some(ResetAction {
+                    action: SET_BASIC.into(),
+                    preset: [
+                        ("temperature".to_owned(), json!(0.0)),
+                        ("tint".to_owned(), json!(0.0)),
+                    ]
+                    .into_iter()
+                    .collect(),
+                }),
+                controls: vec![
+                    Control::Number {
+                        action: SET_BASIC.into(),
+                        parameter: "temperature".into(),
+                        label: "Temperature".into(),
+                    },
+                    Control::Number {
+                        action: SET_BASIC.into(),
+                        parameter: "tint".into(),
+                        label: "Tint".into(),
+                    },
+                ],
+            }),
+            "white balance is the first group, before tone"
+        );
+
+        let set = descriptor.action(SET_BASIC).expect("set-basic");
+        for (name, expected_label) in [(TEMPERATURE, "warms"), (TINT, "magenta")] {
+            let parameter = set.parameter(name).unwrap_or_else(|| panic!("{name}"));
+            assert_eq!(
+                parameter.kind,
+                ParameterKind::Number {
+                    min: -100.0,
+                    max: 100.0
+                },
+                "{name}"
+            );
+            assert!(!parameter.required, "{name}");
+            assert_eq!(parameter.default, Some(json!(0.0)), "{name}");
+            assert_eq!(parameter.unit, None, "{name}: not Kelvin, not a unit");
+            assert_eq!(parameter.step, Some(1.0), "{name}");
+            assert_eq!(parameter.precision, Some(0), "{name}");
+            assert!(
+                parameter.notes.contains("relative")
+                    && parameter.notes.contains("rendered JPEG")
+                    && parameter.notes.contains(expected_label),
+                "{name}: {}",
+                parameter.notes
+            );
+        }
+
+        let query = descriptor.query(NEUTRAL_SAMPLE).expect("neutral-sample");
+        assert_eq!(query.title, "Neutral sample");
+        assert!(!query.patch);
+        assert_eq!(
+            query
+                .parameters
+                .iter()
+                .map(|parameter| parameter.name.as_str())
+                .collect::<Vec<_>>(),
+            ["x", "y"]
+        );
+        for parameter in &query.parameters {
+            assert_eq!(
+                parameter.kind,
+                ParameterKind::Integer { min: 0, max: 16383 }
+            );
+            assert!(parameter.required);
+            assert!(
+                parameter.notes.contains("render.locate"),
+                "{}",
+                parameter.notes
+            );
+        }
+        assert_eq!(
+            descriptor.canvas,
+            Some(CanvasInteraction::SampleApply {
+                query: NEUTRAL_SAMPLE.into(),
+                x: "x".into(),
+                y: "y".into(),
+                action: SET_BASIC.into(),
+                title: "Neutral picker".into(),
+                shortcut: Some("W".into()),
+            })
+        );
+        assert_eq!(
+            descriptor.canvas.as_ref().unwrap().title(),
+            "Neutral picker"
+        );
+        assert_eq!(descriptor.canvas.as_ref().unwrap().shortcut(), Some("W"));
     }
 
     #[test]
@@ -1194,6 +1568,24 @@ mod tests {
             "a mixed non-reset patch names how many fields it touched"
         );
         assert_eq!(
+            label(SET_BASIC, json!({"temperature": 25.0})).as_deref(),
+            Some("Temperature +25")
+        );
+        assert_eq!(
+            label(SET_BASIC, json!({"tint": -15.0})).as_deref(),
+            Some("Tint -15")
+        );
+        assert_eq!(
+            label(SET_BASIC, json!({"temperature": 0.0, "tint": 0.0})).as_deref(),
+            Some("Reset White balance"),
+            "the White balance group's fields at neutral, together, is that group's reset"
+        );
+        assert_eq!(
+            label(SET_BASIC, json!({"temperature": 20.0, "tint": -10.0})).as_deref(),
+            Some("Basic (2 fields)"),
+            "the same two fields away from neutral are a plain patch, not the group reset"
+        );
+        assert_eq!(
             label(RESET_BASIC, json!({})).as_deref(),
             Some("Reset Basic")
         );
@@ -1214,6 +1606,8 @@ mod tests {
                 .values(BASIC_EFFECT, 1, &json!({"exposure": 0.5}))
                 .unwrap(),
             json!({
+                "temperature": 0.0,
+                "tint": 0.0,
                 "exposure": 0.5,
                 "contrast": 0.0,
                 "highlights": 0.0,
@@ -1230,6 +1624,8 @@ mod tests {
         assert_eq!(
             module.values(BASIC_EFFECT, 1, &json!({})).unwrap(),
             json!({
+                "temperature": 0.0,
+                "tint": 0.0,
                 "exposure": 0.0,
                 "contrast": 0.0,
                 "highlights": 0.0,
@@ -1253,6 +1649,8 @@ mod tests {
                 )
                 .unwrap(),
             json!({
+                "temperature": 0.0,
+                "tint": 0.0,
                 "exposure": 0.0,
                 "contrast": 0.0,
                 "highlights": 0.0,
@@ -1346,10 +1744,24 @@ mod tests {
             }
             other => panic!("expected a colour operation, got {other:?}"),
         }
-        // The frozen internal order over every implemented field: exposure, tone, vibrance, then
-        // saturation, whichever fields the payload set.
+        // One non-neutral white balance field compiles the one white-balance unit, holding both.
+        match compiled(json!({"temperature": 20.0})) {
+            Processing::Color(operation) => {
+                assert_eq!(operation.len(), 1);
+                assert!(operation.is_finite());
+                assert_eq!(operation.units()[0].describe(), "white-balance(+20, +0)");
+            }
+            other => panic!("expected a colour operation, got {other:?}"),
+        }
+        // The frozen internal order over every implemented field: white balance, exposure, tone,
+        // vibrance, then saturation, whichever fields the payload set.
         match compiled(json!({
-            "exposure": 1.0, "contrast": 20.0, "vibrance": 20.0, "saturation": 10.0,
+            "temperature": 20.0,
+            "tint": -5.0,
+            "exposure": 1.0,
+            "contrast": 20.0,
+            "vibrance": 20.0,
+            "saturation": 10.0,
         })) {
             Processing::Color(operation) => {
                 let described = operation
@@ -1357,11 +1769,12 @@ mod tests {
                     .iter()
                     .map(|unit| unit.describe())
                     .collect::<Vec<_>>();
-                assert_eq!(described.len(), 4);
-                assert_eq!(described[0], "exposure(+1.00)");
-                assert!(described[1].starts_with("tone("));
-                assert_eq!(described[2], "vibrance(+20)");
-                assert_eq!(described[3], "saturation(+10)");
+                assert_eq!(described.len(), 5);
+                assert_eq!(described[0], "white-balance(+20, -5)");
+                assert_eq!(described[1], "exposure(+1.00)");
+                assert!(described[2].starts_with("tone("));
+                assert_eq!(described[3], "vibrance(+20)");
+                assert_eq!(described[4], "saturation(+10)");
             }
             other => panic!("expected a colour operation, got {other:?}"),
         }
@@ -1387,6 +1800,424 @@ mod tests {
                 .is_err(),
             "a vibrance value outside the declared range never compiles"
         );
+    }
+
+    // -----------------------------------------------------------------------------------------
+    // The neutral picker query
+    // -----------------------------------------------------------------------------------------
+
+    /// A synthetic input stage the query samples, recording which layer index each sample asked
+    /// about so a test can prove the patch was read *before* the Basic layer rather than after it.
+    struct Probe {
+        width: u32,
+        height: u32,
+        pixels: Vec<[u8; 3]>,
+        asked: std::cell::RefCell<Vec<(usize, u32, u32)>>,
+    }
+
+    impl Probe {
+        /// A stage filled with `background`, with `patch` written as a 5x5 block whose top-left
+        /// corner is `(at_x, at_y)`.
+        fn with_patch(
+            width: u32,
+            height: u32,
+            background: [u8; 3],
+            at_x: u32,
+            at_y: u32,
+            patch: &[[u8; 3]],
+        ) -> Self {
+            let mut pixels = vec![background; (width * height) as usize];
+            for (index, pixel) in patch.iter().enumerate() {
+                let (x, y) = (at_x + index as u32 % 5, at_y + index as u32 / 5);
+                if x < width && y < height {
+                    pixels[(y * width + x) as usize] = *pixel;
+                }
+            }
+            Self {
+                width,
+                height,
+                pixels,
+                asked: std::cell::RefCell::new(Vec::new()),
+            }
+        }
+
+        fn uniform(width: u32, height: u32, colour: [u8; 3]) -> Self {
+            Self::with_patch(width, height, colour, 0, 0, &[])
+        }
+    }
+
+    /// Run the neutral picker the way the host does: generic parameter check, then the module's
+    /// query against a stack whose stage questions the probe answers.
+    fn queried(probe: &Probe, layers: &[Layer], x: i64, y: i64) -> Result<Value, Error> {
+        let module = BasicModule::new();
+        let declared = module
+            .descriptor()
+            .query(NEUTRAL_SAMPLE)
+            .expect("a declared query");
+        let checked = check_parameters(declared, &json!({"x": x, "y": y}))?;
+        let stage = Stage {
+            width: probe.width,
+            height: probe.height,
+        };
+        let sampler = |_: u32, _: u32| Ok(None);
+        let stage_before = |_: usize| Ok(stage);
+        // A colour layer joins the stack before the geometry tail; this stack has none, so a first
+        // commit would land at the end.
+        let insertion_index = |_: EffectStage| layers.len();
+        let sample_before = |index: usize, x: u32, y: u32| {
+            probe.asked.borrow_mut().push((index, x, y));
+            Ok((x < probe.width && y < probe.height).then(|| {
+                let pixel = probe.pixels[(y * probe.width + x) as usize];
+                [pixel[0], pixel[1], pixel[2], 255]
+            }))
+        };
+        module.query(
+            NEUTRAL_SAMPLE,
+            &checked,
+            &StageContext {
+                stage,
+                layers,
+                sampler: &sampler,
+                stage_before: &stage_before,
+                insertion_index: &insertion_index,
+                sample_before: &sample_before,
+            },
+        )
+    }
+
+    #[derive(serde::Deserialize)]
+    struct SolverCase {
+        description: String,
+        patch_u8: Vec<[u8; 3]>,
+        expected_solution: Option<[i64; 2]>,
+    }
+
+    /// The committed solver corpus, so the query is tied to the same frozen numbers the unit is.
+    fn solver_cases() -> Vec<SolverCase> {
+        #[derive(serde::Deserialize)]
+        struct Cases {
+            solver_cases: Vec<SolverCase>,
+        }
+        let raw = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../fixtures/basic/white-balance-cases.json"
+        ))
+        .expect("the committed fixture");
+        serde_json::from_str::<Cases>(&raw)
+            .expect("white-balance cases")
+            .solver_cases
+    }
+
+    /// A full 5x5 patch from the frozen corpus, read through the query, returns exactly the
+    /// settings that corpus predicts, plus the patch rectangle and mean it averaged.
+    #[test]
+    fn the_query_returns_the_settings_the_solver_corpus_predicts() {
+        let mut covered = 0;
+        for case in solver_cases() {
+            let (Some(expected), 25) = (case.expected_solution, case.patch_u8.len()) else {
+                continue;
+            };
+            covered += 1;
+            // The patch sits away from every edge, so all 25 samples are in bounds.
+            let probe = Probe::with_patch(11, 11, [128, 128, 128], 3, 3, &case.patch_u8);
+            let result =
+                queried(&probe, &[], 5, 5).unwrap_or_else(|e| panic!("{}: {e}", case.description));
+            assert_eq!(
+                (result["temperature"].as_i64(), result["tint"].as_i64()),
+                (Some(expected[0]), Some(expected[1])),
+                "{}",
+                case.description
+            );
+            assert_eq!(
+                result["patch"],
+                json!({
+                    "x": 3, "y": 3, "width": 5, "height": 5,
+                    "pixels": case.patch_u8,
+                    "mean_linear": result["patch"]["mean_linear"],
+                }),
+                "{}",
+                case.description
+            );
+            let mean = result["patch"]["mean_linear"]
+                .as_array()
+                .expect("three linear channels");
+            assert_eq!(mean.len(), 3);
+            assert!(
+                mean.iter()
+                    .all(|value| value.as_f64().is_some_and(f64::is_finite))
+            );
+        }
+        assert_eq!(covered, 121, "every full-patch round-trip case of the grid");
+    }
+
+    /// The picker reads the stage the Basic layer *receives*: the layer's own index when one
+    /// exists, and the index a first commit would take when none does. A pick therefore sees the
+    /// image before this module's correction, however strong that correction already is.
+    #[test]
+    fn the_patch_is_sampled_before_the_basic_layer() {
+        let case = solver_cases()
+            .into_iter()
+            .find(|case| case.expected_solution == Some([20, -20]))
+            .expect("a grid case");
+        let patch = case.patch_u8;
+        let probe = Probe::with_patch(11, 11, [128, 128, 128], 3, 3, &patch);
+        let without = queried(&probe, &[], 5, 5).expect("a solved patch");
+        assert!(
+            probe.asked.borrow().iter().all(|(index, _, _)| *index == 0),
+            "with no Basic layer the picker samples the insertion index"
+        );
+
+        // The same stack with a strong white balance already applied. The picker asks about the
+        // Basic layer's own index, so it reads the same stage and returns the same answer.
+        let strong = basic_layer(json!({"temperature": 80.0, "tint": -40.0}));
+        let after = Probe::with_patch(11, 11, [128, 128, 128], 3, 3, &patch);
+        let with = queried(&after, std::slice::from_ref(&strong), 5, 5).expect("a solved patch");
+        assert_eq!(
+            after
+                .asked
+                .borrow()
+                .iter()
+                .map(|(index, _, _)| *index)
+                .collect::<std::collections::BTreeSet<_>>(),
+            [0].into_iter().collect(),
+            "the Basic layer sits at index 0, so its input stage is the prefix before it"
+        );
+        assert_eq!(with, without, "the layer's own correction is not sampled");
+
+        // A pixel replacement before the Basic layer *is* part of that input stage, so the picker
+        // asks about the Basic layer's index, not about the content stage's index 0.
+        let stack = [Layer::pixel(0, 0, [1, 2, 3]), strong];
+        let later = Probe::with_patch(11, 11, [128, 128, 128], 3, 3, &patch);
+        assert_eq!(
+            queried(&later, &stack, 5, 5).expect("a solved patch"),
+            without
+        );
+        assert!(
+            later.asked.borrow().iter().all(|(index, _, _)| *index == 1),
+            "the stage at the Basic layer's index carries the replacement before it"
+        );
+    }
+
+    /// The patch is clipped at the stage's edges rather than clamped or wrapped: a corner pick
+    /// averages the pixels that exist and says which rectangle it read.
+    #[test]
+    fn the_patch_is_clipped_at_the_stage_edges() {
+        let grey = [150, 150, 150];
+        for (case, (x, y), expected) in [
+            ("the top-left corner", (0, 0), (0, 0, 3, 3)),
+            ("one in from the corner", (1, 1), (0, 0, 4, 4)),
+            ("the far corner", (7, 7), (5, 5, 3, 3)),
+            ("the middle", (4, 4), (2, 2, 5, 5)),
+            ("a left edge", (0, 4), (0, 2, 3, 5)),
+        ] {
+            let probe = Probe::uniform(8, 8, grey);
+            let result = queried(&probe, &[], x, y).unwrap_or_else(|e| panic!("{case}: {e}"));
+            let patch = &result["patch"];
+            assert_eq!(
+                (
+                    patch["x"].as_i64().unwrap(),
+                    patch["y"].as_i64().unwrap(),
+                    patch["width"].as_i64().unwrap(),
+                    patch["height"].as_i64().unwrap(),
+                ),
+                (expected.0, expected.1, expected.2, expected.3),
+                "{case}"
+            );
+            assert_eq!(
+                patch["pixels"].as_array().unwrap().len() as i64,
+                expected.2 * expected.3,
+                "{case}: every sampled pixel is reported"
+            );
+            assert!(
+                probe
+                    .asked
+                    .borrow()
+                    .iter()
+                    .all(|(_, sx, sy)| *sx < 8 && *sy < 8),
+                "{case}: no sample outside the stage"
+            );
+            // A neutral grey needs no correction at all.
+            assert_eq!(
+                (result["temperature"].as_i64(), result["tint"].as_i64()),
+                (Some(0), Some(0)),
+                "{case}"
+            );
+        }
+    }
+
+    /// Every refusal is structured, names its reason first and commits nothing.
+    #[test]
+    fn a_clipped_dark_or_out_of_stage_pick_is_refused_with_its_reason() {
+        for (case, probe, x, y, prefix) in [
+            (
+                "a blown highlight in the patch",
+                Probe::with_patch(11, 11, [200, 200, 200], 3, 3, &[[255, 250, 250]]),
+                5,
+                5,
+                "clipped:",
+            ),
+            (
+                "a crushed shadow in the patch",
+                Probe::with_patch(11, 11, [200, 200, 200], 5, 5, &[[0, 4, 4]]),
+                5,
+                5,
+                "clipped:",
+            ),
+            (
+                "a near-black region",
+                Probe::uniform(11, 11, [20, 20, 20]),
+                5,
+                5,
+                "near-black:",
+            ),
+            (
+                "a strongly saturated region",
+                Probe::uniform(11, 11, [240, 60, 60]),
+                5,
+                5,
+                "out-of-range:",
+            ),
+            (
+                "a point past the right edge",
+                Probe::uniform(8, 8, [150, 150, 150]),
+                8,
+                4,
+                "outside the stage:",
+            ),
+            (
+                "a point past the bottom edge",
+                Probe::uniform(8, 8, [150, 150, 150]),
+                4,
+                100,
+                "outside the stage:",
+            ),
+        ] {
+            let error = queried(&probe, &[], x, y).expect_err(case);
+            assert_eq!(error.kind, ErrorKind::Validation, "{case}");
+            assert!(error.detail.starts_with(prefix), "{case}: {}", error.detail);
+        }
+        // A point outside the declared coordinate range never reaches the module at all.
+        let probe = Probe::uniform(8, 8, [150, 150, 150]);
+        assert!(queried(&probe, &[], -1, 0).is_err());
+        assert!(queried(&probe, &[], 0, 99_999).is_err());
+        assert!(
+            probe.asked.borrow().is_empty(),
+            "a refused request samples nothing"
+        );
+    }
+
+    /// Two Basic layers are ambiguous for the picker exactly as they are for an action: it refuses
+    /// to guess which layer's input stage a pick addresses, and rewrites nothing.
+    #[test]
+    fn the_query_refuses_an_ambiguous_stack_and_an_unknown_query() {
+        let probe = Probe::uniform(11, 11, [150, 150, 150]);
+        let stack = [
+            basic_layer(json!({"temperature": 10.0})),
+            basic_layer(json!({"tint": -10.0})),
+        ];
+        let error = queried(&probe, &stack, 5, 5).expect_err("an ambiguous stack");
+        assert_eq!(error.kind, ErrorKind::Validation);
+        assert_eq!(error.detail, AMBIGUOUS);
+
+        let module = BasicModule::new();
+        let sampler = |_: u32, _: u32| Ok(None);
+        let stage_before = |_: usize| Ok(STAGE);
+        let insertion_index = |_: EffectStage| 0usize;
+        let sample_before = |_: usize, _: u32, _: u32| Ok(Some([128, 128, 128, 255]));
+        let error = module
+            .query(
+                "histogram",
+                &json!({"x": 0, "y": 0}).as_object().cloned().unwrap(),
+                &StageContext {
+                    stage: STAGE,
+                    layers: &[],
+                    sampler: &sampler,
+                    stage_before: &stage_before,
+                    insertion_index: &insertion_index,
+                    sample_before: &sample_before,
+                },
+            )
+            .expect_err("an undeclared query");
+        assert_eq!(error.kind, ErrorKind::Validation);
+        assert!(error.detail.contains("unknown query histogram"), "{error}");
+    }
+
+    /// Applying the settings a pick returns to that same patch neutralizes it: the three corrected
+    /// channels land within one 8-bit code of each other.
+    #[test]
+    fn the_settings_a_pick_returns_neutralize_the_patch_it_read() {
+        let module = BasicModule::new();
+        for case in solver_cases() {
+            let (Some(_), 25) = (case.expected_solution, case.patch_u8.len()) else {
+                continue;
+            };
+            let probe = Probe::with_patch(11, 11, [128, 128, 128], 3, 3, &case.patch_u8);
+            let result = queried(&probe, &[], 5, 5).expect("a solved patch");
+            let payload = json!({
+                "temperature": result["temperature"],
+                "tint": result["tint"],
+            });
+            let Processing::Color(operation) = module
+                .compile(BASIC_EFFECT, EFFECT_FORMAT, &payload, STAGE)
+                .expect("a compiled correction")
+            else {
+                panic!("expected a colour operation");
+            };
+            // The patch's own average, corrected by the settings the picker returned.
+            let mean = result["patch"]["mean_linear"]
+                .as_array()
+                .expect("the averaged patch");
+            let mut row = [[
+                mean[0].as_f64().unwrap() as f32,
+                mean[1].as_f64().unwrap() as f32,
+                mean[2].as_f64().unwrap() as f32,
+            ]];
+            for unit in operation.units() {
+                unit.apply_row(&mut row);
+            }
+            let codes = row[0].map(|value| {
+                let clamped = f64::from(value).clamp(0.0, 1.0);
+                let encoded = if clamped <= 0.003_130_8 {
+                    12.92 * clamped
+                } else {
+                    1.055 * clamped.powf(1.0 / 2.4) - 0.055
+                };
+                (255.0 * encoded + 0.5).floor() as i32
+            });
+            let spread = codes.iter().max().unwrap() - codes.iter().min().unwrap();
+            assert!(
+                spread <= 1,
+                "{}: corrected patch {codes:?} is not neutral to the code",
+                case.description
+            );
+        }
+    }
+
+    /// A module that declares no queries says so rather than answering one.
+    #[test]
+    fn a_module_without_queries_refuses_the_call() {
+        let module = crate::modules::TransformModule::new();
+        assert!(module.descriptor().queries.is_empty());
+        let sampler = |_: u32, _: u32| Ok(None);
+        let stage_before = |_: usize| Ok(STAGE);
+        let insertion_index = |_: EffectStage| 0usize;
+        let sample_before = |_: usize, _: u32, _: u32| Ok(None);
+        let error = module
+            .query(
+                NEUTRAL_SAMPLE,
+                &Map::new(),
+                &StageContext {
+                    stage: STAGE,
+                    layers: &[],
+                    sampler: &sampler,
+                    stage_before: &stage_before,
+                    insertion_index: &insertion_index,
+                    sample_before: &sample_before,
+                },
+            )
+            .expect_err("no queries");
+        assert_eq!(error.kind, ErrorKind::Validation);
+        assert!(error.detail.contains("declares no queries"), "{error}");
     }
 
     /// The module finds its own layer wherever the host placed it, including a stack that already

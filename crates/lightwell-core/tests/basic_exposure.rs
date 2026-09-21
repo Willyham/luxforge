@@ -567,6 +567,8 @@ fn history_stores_the_patch_as_sent_with_its_label_and_describes_the_layer() {
     assert_eq!(
         row.values,
         json!({
+            "temperature": 0.0,
+            "tint": 0.0,
             "exposure": 0.5,
             "contrast": 0.0,
             "highlights": 0.0,
@@ -578,7 +580,8 @@ fn history_stores_the_patch_as_sent_with_its_label_and_describes_the_layer() {
         })
         .as_object()
         .cloned()
-        .unwrap()
+        .unwrap(),
+        "the row reports every implemented field, neutral ones included"
     );
 
     // The group reset and the module reset each carry their own label. The Tone group reset names
@@ -637,6 +640,8 @@ fn history_stores_the_patch_as_sent_with_its_label_and_describes_the_layer() {
     assert_eq!(
         row.values,
         json!({
+            "temperature": 0.0,
+            "tint": 0.0,
             "exposure": 0.0,
             "contrast": 0.0,
             "highlights": 0.0,
@@ -648,8 +653,10 @@ fn history_stores_the_patch_as_sent_with_its_label_and_describes_the_layer() {
         })
         .as_object()
         .cloned()
-        .unwrap()
+        .unwrap(),
+        "every implemented field reports its neutral value"
     );
+    assert_eq!(row.values.get("exposure"), Some(&json!(0.0)));
 
     drop(service);
     fs::remove_file(path).expect("the catalog is removed");
@@ -1050,6 +1057,15 @@ fn an_independent_client_discovers_basic_and_drives_one_gesture_as_a_draft() {
         json!([
             {
                 "kind": "group",
+                "label": "White balance",
+                "reset": {"action": "set-basic", "preset": {"temperature": 0.0, "tint": 0.0}},
+                "controls": [
+                    {"kind": "number", "action": "set-basic", "parameter": "temperature", "label": "Temperature"},
+                    {"kind": "number", "action": "set-basic", "parameter": "tint", "label": "Tint"},
+                ],
+            },
+            {
+                "kind": "group",
                 "label": "Tone",
                 "reset": {"action": "set-basic", "preset": {
                     "exposure": 0.0,
@@ -1077,7 +1093,8 @@ fn an_independent_client_discovers_basic_and_drives_one_gesture_as_a_draft() {
                     {"kind": "number", "action": "set-basic", "parameter": "saturation", "label": "Saturation"},
                 ],
             },
-        ])
+        ]),
+        "White balance, then Tone, then Colour, each with its sliders and its own group reset"
     );
 
     let schema = call(&owner, client, "schema.list", json!({}));
@@ -1089,7 +1106,28 @@ fn an_independent_client_discovers_basic_and_drives_one_gesture_as_a_draft() {
         set["optional"]["exposure"].is_string(),
         "every patch field is optional: {set}"
     );
-    let exposure = set["parameters"][0].clone();
+    assert_eq!(
+        set["parameters"]
+            .as_array()
+            .expect("the declared parameters")
+            .iter()
+            .map(|parameter| parameter["name"].as_str().expect("a name"))
+            .collect::<Vec<_>>(),
+        [
+            "temperature",
+            "tint",
+            "exposure",
+            "contrast",
+            "highlights",
+            "shadows",
+            "whites",
+            "blacks",
+            "vibrance",
+            "saturation",
+        ],
+        "the schema lists every implemented field in the payload's declared order"
+    );
+    let exposure = set["parameters"][2].clone();
     assert_eq!(exposure["name"], json!("exposure"));
     assert_eq!(exposure["kind"], json!("number"));
     assert_eq!(exposure["min"], json!(-5.0));
