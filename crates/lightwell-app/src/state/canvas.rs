@@ -77,6 +77,9 @@ pub(crate) enum NoticeTone {
 pub(crate) enum NoticeAction {
     DiscardDraft,
     ReapplyDraft,
+    /// The same two decisions for an open slider gesture's draft, which the core holds.
+    DiscardSliderDraft,
+    ReapplySliderDraft,
     ReturnCurrent,
 }
 
@@ -226,6 +229,25 @@ fn draft_bar(inputs: &Inputs<'_>) -> Option<DraftBar> {
 /// mapping from an error kind to a cause is editing knowledge.
 fn notices(inputs: &Inputs<'_>) -> Vec<Notice> {
     let mut notices = Vec::new();
+    // A slider gesture's draft conflicts exactly as the crop draft does, and offers the same two
+    // decisions. Only one draft exists at a time, so only one of these two ever appears.
+    if inputs.slider_draft.is_some_and(|draft| draft.conflicted) {
+        let revision = inputs.state.map(|state| state.revision);
+        notices.push(Notice {
+            tone: NoticeTone::Warning,
+            title: "Changed elsewhere".into(),
+            body: match revision {
+                Some(revision) => format!(
+                    "Another client committed revision {revision} while your slider draft was open. Your draft is kept."
+                ),
+                None => "Another client committed while your slider draft was open. Your draft is kept.".into(),
+            },
+            actions: vec![
+                ("Discard".into(), NoticeAction::DiscardSliderDraft),
+                ("Reapply".into(), NoticeAction::ReapplySliderDraft),
+            ],
+        });
+    }
     if inputs.draft.is_some_and(|draft| draft.conflicted) {
         let revision = inputs.state.map(|state| state.revision);
         notices.push(Notice {

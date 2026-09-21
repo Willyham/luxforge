@@ -416,6 +416,13 @@ fn digest(
                 .map(|(declared, parameter)| (declared.as_str(), parameter.as_str()))
                 .hash(&mut hasher);
         }
+        // A slider gesture belongs to the module whose action it drafts, so its conflict state
+        // reaches that section alone.
+        inputs
+            .slider_draft
+            .filter(|draft| draft.action == action.id)
+            .map(|draft| (draft.parameter.as_str(), draft.conflicted))
+            .hash(&mut hasher);
     }
     if let Some(state) = inputs.state {
         for layer in &state.current_entry.snapshot.recipe.layers {
@@ -793,6 +800,41 @@ pub(crate) fn declared_parameter<'a>(
     parameter: &str,
 ) -> Option<&'a ParameterDescriptor> {
     module.action(action)?.parameter(parameter)
+}
+
+/// This action merges the fields it is sent into the state it already holds, so each of its
+/// generated controls submits its own parameter alone and its gesture is a draft.
+pub(crate) fn is_patch(modules: &[ModuleDescriptor], action: &str) -> bool {
+    declared_action(modules, action).is_some_and(|declared| declared.patch)
+}
+
+/// The label a generated control carries for one field, as the panel and the status line name it.
+pub(crate) fn control_label(
+    modules: &[ModuleDescriptor],
+    action: &str,
+    parameter: &str,
+) -> Option<String> {
+    modules
+        .iter()
+        .find_map(|module| labelled_control(&module.controls, action, parameter))
+        .map(str::to_owned)
+}
+
+fn labelled_control<'a>(controls: &'a [Control], action: &str, parameter: &str) -> Option<&'a str> {
+    controls.iter().find_map(|control| match classify(control) {
+        Rendered::Group { controls, .. } => labelled_control(controls, action, parameter),
+        Rendered::Number {
+            action: declared,
+            parameter: named,
+            label,
+        }
+        | Rendered::Color {
+            action: declared,
+            parameter: named,
+            label,
+        } if declared == action && named == parameter => Some(label),
+        _ => None,
+    })
 }
 
 /// The module that declares this id, when it is registered.

@@ -54,10 +54,60 @@ pub(crate) enum Step {
         params: Map<String, Value>,
     },
     Draft(DraftStep),
+    /// One slider gesture on a generated control: the exact messages a drag sends.
+    Slider(SliderStep),
+    /// What one generated field is typed into, and whether Enter is pressed in it.
+    Field(FieldStep),
+    /// A module or group reset, through the control that declares it.
+    Reset(ResetStep),
+    /// The decision an open slider draft's Changed elsewhere notice offers.
+    SliderDraft(SliderDraftStep),
     View(ViewStep),
     Workspace(WorkspaceStep),
     Preview(PreviewStep),
     Palette(PaletteStep),
+}
+
+/// One slider gesture. Every value becomes one `SliderMoved` with a tick between them, exactly as
+/// a pointer drag and the gated subscription produce them; the gesture then ends the way `end`
+/// says, or stays open when it says nothing.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct SliderStep {
+    pub(crate) action: String,
+    pub(crate) parameter: String,
+    pub(crate) values: Vec<f64>,
+    pub(crate) end: SliderEnd,
+}
+
+/// How a scripted gesture ends: released (committed), Escape (cancelled), or left open so the
+/// frame shows the draft mid-gesture.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum SliderEnd {
+    Release,
+    Cancel,
+    Open,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct FieldStep {
+    pub(crate) action: String,
+    pub(crate) parameter: String,
+    pub(crate) text: String,
+    /// Enter in the field, which commits that one field without a draft.
+    pub(crate) submit: bool,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct ResetStep {
+    pub(crate) module: String,
+    /// A control group's label; without one the module's own header reset runs.
+    pub(crate) group: Option<String>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum SliderDraftStep {
+    Discard,
+    Reapply,
 }
 
 /// Any of the panels, mode or thirds; every field is optional, exactly as `workspace.set` takes
@@ -115,6 +165,25 @@ impl Step {
         match self {
             Self::Api { method, params } => json!({"api":{"method":method,"params":params}}),
             Self::Draft(draft) => json!({"draft":draft.record()}),
+            Self::Slider(slider) => json!({"slider":{
+                "action": slider.action,
+                "parameter": slider.parameter,
+                "values": slider.values,
+                "release": slider.end == SliderEnd::Release,
+                "cancel": slider.end == SliderEnd::Cancel,
+            }}),
+            Self::Field(field) => json!({"field":{
+                "action": field.action,
+                "parameter": field.parameter,
+                "text": field.text,
+                "submit": field.submit,
+            }}),
+            Self::Reset(reset) => match &reset.group {
+                Some(group) => json!({"reset":{"module":reset.module,"group":group}}),
+                None => json!({"reset":{"module":reset.module}}),
+            },
+            Self::SliderDraft(SliderDraftStep::Discard) => json!({"slider_draft":"discard"}),
+            Self::SliderDraft(SliderDraftStep::Reapply) => json!({"slider_draft":"reapply"}),
             Self::View(ViewStep::Fit) => json!({"view":{"zoom":"fit"}}),
             Self::View(ViewStep::Percent(value)) => json!({"view":{"zoom":value}}),
             Self::Workspace(workspace) => json!({"workspace":workspace.record()}),
@@ -176,6 +245,10 @@ pub(crate) enum Settle {
     Session,
     /// A history or current-state selection's pixels must reach the GPU.
     Preview,
+    /// An open slider gesture must have drained: the preview on screen is the one rendered from
+    /// its newest settings, with nothing in flight and nothing waiting. A refused or conflicted
+    /// gesture settles here too, because its frame is the evidence of the refusal.
+    SliderDraft,
 }
 
 impl Editor {
@@ -201,6 +274,10 @@ impl Editor {
         match step {
             Step::Api { method, params } => self.api_step(method, params),
             Step::Draft(draft) => self.draft_step(draft),
+            Step::Slider(slider) => self.slider_step(slider),
+            Step::Field(field) => self.field_step(field),
+            Step::Reset(reset) => self.reset_step(reset),
+            Step::SliderDraft(decision) => self.slider_draft_step(decision),
             Step::View(view) => self.view_step(view),
             Step::Workspace(workspace) => self.workspace_step(workspace),
             Step::Preview(preview) => self.preview_step(preview),
@@ -335,6 +412,144 @@ impl Editor {
         }
         self.capture_next_frame();
         Task::batch(tasks)
+    }
+
+    /// One slider gesture, driven as the exact messages a pointer drag produces: one `SliderMoved`
+    /// per value with the gated tick between them, then the release, Escape or nothing at all.
+    /// Nothing here reaches the owner directly; the gesture's own driver does, under its own bound.
+    fn slider_step(&mut self, step: SliderStep) -> Task<Message> {
+        if self.state.is_none() {
+            return self.fail_step("no photograph is open");
+        }
+        if crate::state::tools::declared_action(&self.modules, &step.action).is_none() {
+            return self.fail_step(format!("no module declares the action {}", step.action));
+        }
+        if step.values.is_empty() {
+            return self.fail_step("a slider step needs at least one value");
+        }
+        let mut tasks = Vec::new();
+        for value in &step.values {
+            tasks.push(self.update(Message::SliderMoved {
+                action: step.action.clone(),
+                parameter: step.parameter.clone(),
+                value: *value,
+            }));
+            tasks.push(self.update(Message::SliderDraftTick));
+        }
+        if self.slider_draft.is_none() && step.end != SliderEnd::Cancel {
+            return self.fail_step(format!(
+                "the {} draft could not be opened: {}",
+                step.action, self.status
+            ));
+        }
+        match step.end {
+            // The committed pixels are the evidence, so this waits for the render the commit
+            // produces; a return-to-start gesture settles the same step with no entry at all.
+            SliderEnd::Release => {
+                self.await_step(Settle::Preview);
+                tasks.push(self.update(Message::SliderReleased {
+                    action: step.action.clone(),
+                    parameter: step.parameter.clone(),
+                }));
+            }
+            // Escape, through the same message the keyboard table produces.
+            SliderEnd::Cancel => {
+                self.await_step(Settle::Preview);
+                tasks.push(self.update(Message::SliderDraftCancel));
+            }
+            // Left open: the frame shows the drafted preview, captured once the gesture has
+            // drained, so the pixels belong to the newest value it sent.
+            SliderEnd::Open => self.await_step(Settle::SliderDraft),
+        }
+        Task::batch(tasks)
+    }
+
+    /// Type into one generated field and, when the step says so, press Enter in it, which commits
+    /// that one field without a draft.
+    fn field_step(&mut self, step: FieldStep) -> Task<Message> {
+        if self.state.is_none() {
+            return self.fail_step("no photograph is open");
+        }
+        if crate::state::tools::declared_action(&self.modules, &step.action)
+            .and_then(|declared| declared.parameter(&step.parameter))
+            .is_none()
+        {
+            return self.fail_step(format!(
+                "{} declares no parameter {}",
+                step.action, step.parameter
+            ));
+        }
+        let mut tasks = vec![
+            self.update(Message::EditValue {
+                action: step.action.clone(),
+                parameter: step.parameter.clone(),
+            }),
+            self.update(Message::Field {
+                action: step.action.clone(),
+                parameter: step.parameter.clone(),
+                text: step.text.clone(),
+            }),
+        ];
+        if !step.submit {
+            self.capture_next_frame();
+            return Task::batch(tasks);
+        }
+        self.begin_request();
+        tasks.push(self.update(Message::Submit {
+            action: step.action,
+            parameter: Some(step.parameter),
+        }));
+        if !self.busy {
+            return self.fail_step(format!("the field was not submitted: {}", self.status));
+        }
+        Task::batch(tasks)
+    }
+
+    /// A module's header reset, or one control group's reset found by its declared label. Both run
+    /// the action the descriptor declares, with its preset, exactly as the buttons do.
+    fn reset_step(&mut self, step: ResetStep) -> Task<Message> {
+        if self.state.is_none() {
+            return self.fail_step("no photograph is open");
+        }
+        let Some(module) = crate::state::tools::module_of(&self.modules, &step.module) else {
+            return self.fail_step(format!("no module is registered as {}", step.module));
+        };
+        let message = match &step.group {
+            None => Message::ResetModule(step.module.clone()),
+            Some(label) => {
+                let Some(path) = group_path(&module.controls, label) else {
+                    return self.fail_step(format!("{} declares no group {label}", step.module));
+                };
+                Message::ResetGroup {
+                    module_id: step.module.clone(),
+                    path,
+                }
+            }
+        };
+        self.begin_request();
+        let task = self.update(message);
+        if !self.busy {
+            return self.fail_step(format!("the reset did not run: {}", self.status));
+        }
+        task
+    }
+
+    /// Answer an open slider draft's Changed elsewhere notice, through the same messages its two
+    /// buttons raise.
+    fn slider_draft_step(&mut self, step: SliderDraftStep) -> Task<Message> {
+        if self.slider_draft.is_none() {
+            return self.fail_step("no slider draft is open");
+        }
+        match step {
+            SliderDraftStep::Discard => {
+                self.await_step(Settle::Preview);
+                self.update(Message::SliderDraftCancel)
+            }
+            SliderDraftStep::Reapply => {
+                self.await_step(Settle::SliderDraft);
+                self.update(Message::SliderDraftReapply)
+            }
+        }
     }
 
     /// A view change through the same session call the zoom controls make.
@@ -606,20 +821,157 @@ fn sole(object: &Map<String, Value>) -> Result<(&str, &Value), String> {
 
 fn parse_step(step: &Value) -> Result<Step, String> {
     let object = step.as_object().ok_or(
-        "a step is an object with one key: api, draft, view, workspace, preview or palette",
+        "a step is an object with one key: api, draft, slider, slider_draft, field, reset, view, workspace, preview or palette",
     )?;
     let (kind, value) = sole(object)?;
     match kind {
         "api" => parse_api(value),
         "draft" => Ok(Step::Draft(parse_draft(value)?)),
+        "slider" => Ok(Step::Slider(parse_slider(value)?)),
+        "slider_draft" => Ok(Step::SliderDraft(parse_slider_draft(value)?)),
+        "field" => Ok(Step::Field(parse_field_step(value)?)),
+        "reset" => Ok(Step::Reset(parse_reset(value)?)),
         "view" => Ok(Step::View(parse_view(value)?)),
         "workspace" => Ok(Step::Workspace(parse_workspace(value)?)),
         "preview" => Ok(Step::Preview(parse_preview(value)?)),
         "palette" => Ok(Step::Palette(parse_palette(value)?)),
         other => Err(format!(
-            "unknown step kind {other}; expected api, draft, view, workspace, preview or palette"
+            "unknown step kind {other}; expected api, draft, slider, slider_draft, field, reset, view, workspace, preview or palette"
         )),
     }
+}
+
+/// The named string field of a step object, required and non-empty.
+fn required_text(object: &Map<String, Value>, field: &str, step: &str) -> Result<String, String> {
+    object
+        .get(field)
+        .and_then(Value::as_str)
+        .filter(|text| !text.trim().is_empty())
+        .map(str::to_owned)
+        .ok_or_else(|| format!("{step} needs a {field}"))
+}
+
+fn optional_flag(object: &Map<String, Value>, field: &str, step: &str) -> Result<bool, String> {
+    match object.get(field) {
+        None | Some(Value::Null) => Ok(false),
+        Some(Value::Bool(value)) => Ok(*value),
+        Some(_) => Err(format!("{step} {field} takes true or false")),
+    }
+}
+
+fn known_fields(object: &Map<String, Value>, allowed: &[&str], step: &str) -> Result<(), String> {
+    for key in object.keys() {
+        if !allowed.contains(&key.as_str()) {
+            return Err(format!("unknown {step} field {key}"));
+        }
+    }
+    Ok(())
+}
+
+fn parse_slider(value: &Value) -> Result<SliderStep, String> {
+    let object = value
+        .as_object()
+        .ok_or("slider takes an object with an action, a parameter and values")?;
+    known_fields(
+        object,
+        &["action", "parameter", "values", "release", "cancel"],
+        "slider",
+    )?;
+    let values: Vec<f64> = object
+        .get("values")
+        .and_then(Value::as_array)
+        .ok_or("slider needs a values array")?
+        .iter()
+        .map(|value| {
+            value
+                .as_f64()
+                .filter(|value| value.is_finite())
+                .ok_or_else(|| "slider values are finite numbers".to_owned())
+        })
+        .collect::<Result<_, _>>()?;
+    if values.is_empty() {
+        return Err("slider needs at least one value".into());
+    }
+    let (release, cancel) = (
+        optional_flag(object, "release", "slider")?,
+        optional_flag(object, "cancel", "slider")?,
+    );
+    if release && cancel {
+        return Err("a slider step either releases or cancels, not both".into());
+    }
+    Ok(SliderStep {
+        action: required_text(object, "action", "slider")?,
+        parameter: required_text(object, "parameter", "slider")?,
+        values,
+        end: match (release, cancel) {
+            (true, _) => SliderEnd::Release,
+            (_, true) => SliderEnd::Cancel,
+            _ => SliderEnd::Open,
+        },
+    })
+}
+
+fn parse_slider_draft(value: &Value) -> Result<SliderDraftStep, String> {
+    match value.as_str().map(str::trim) {
+        Some("discard") => Ok(SliderDraftStep::Discard),
+        Some("reapply") => Ok(SliderDraftStep::Reapply),
+        _ => Err("slider_draft takes \"discard\" or \"reapply\"".into()),
+    }
+}
+
+fn parse_field_step(value: &Value) -> Result<FieldStep, String> {
+    let object = value
+        .as_object()
+        .ok_or("field takes an object with an action, a parameter and text")?;
+    known_fields(object, &["action", "parameter", "text", "submit"], "field")?;
+    let text = match object.get("text") {
+        Some(Value::String(text)) => text.clone(),
+        Some(value) if value.is_number() => value.to_string(),
+        _ => return Err("field needs text".into()),
+    };
+    Ok(FieldStep {
+        action: required_text(object, "action", "field")?,
+        parameter: required_text(object, "parameter", "field")?,
+        text,
+        submit: optional_flag(object, "submit", "field")?,
+    })
+}
+
+fn parse_reset(value: &Value) -> Result<ResetStep, String> {
+    let object = value
+        .as_object()
+        .ok_or("reset takes an object with a module and an optional group")?;
+    known_fields(object, &["module", "group"], "reset")?;
+    Ok(ResetStep {
+        module: required_text(object, "module", "reset")?,
+        group: match object.get("group") {
+            None | Some(Value::Null) => None,
+            Some(_) => Some(required_text(object, "group", "reset")?),
+        },
+    })
+}
+
+/// Where a control group with this label sits inside a module's controls, as the position the
+/// panel's own reset button names.
+fn group_path(controls: &[lightwell_core::Control], label: &str) -> Option<Vec<usize>> {
+    for (index, control) in controls.iter().enumerate() {
+        let lightwell_core::Control::Group {
+            label: declared,
+            controls: children,
+            ..
+        } = control
+        else {
+            continue;
+        };
+        if declared == label {
+            return Some(vec![index]);
+        }
+        if let Some(mut path) = group_path(children, label) {
+            path.insert(0, index);
+            return Some(path);
+        }
+    }
+    None
 }
 
 fn parse_api(value: &Value) -> Result<Step, String> {
@@ -911,6 +1263,40 @@ mod tests {
             (r#"[{"palette":{"filter":"x"}}]"#, "unknown palette field"),
             (r#"[{"zoom":"fit"}]"#, "unknown step kind"),
             ("not json", "not JSON"),
+            (
+                r#"[{"slider":{"parameter":"exposure","values":[1]}}]"#,
+                "slider needs a action",
+            ),
+            (
+                r#"[{"slider":{"action":"a","parameter":"b","values":[]}}]"#,
+                "at least one value",
+            ),
+            (
+                r#"[{"slider":{"action":"a","parameter":"b","values":["1"]}}]"#,
+                "finite numbers",
+            ),
+            (
+                r#"[{"slider":{"action":"a","parameter":"b","values":[1],"release":true,"cancel":true}}]"#,
+                "not both",
+            ),
+            (
+                r#"[{"slider":{"action":"a","parameter":"b","values":[1],"nowhere":true}}]"#,
+                "unknown slider field",
+            ),
+            (r#"[{"slider_draft":"apply"}]"#, "discard"),
+            (
+                r#"[{"field":{"action":"a","parameter":"b"}}]"#,
+                "field needs text",
+            ),
+            (
+                r#"[{"field":{"action":"a","parameter":"b","text":"1","nowhere":1}}]"#,
+                "unknown field field",
+            ),
+            (r#"[{"reset":{}}]"#, "reset needs a module"),
+            (
+                r#"[{"reset":{"module":"m","nowhere":1}}]"#,
+                "unknown reset field",
+            ),
         ] {
             let error = parse_script(script).expect_err(script);
             assert!(error.contains(expected), "{script}: {error}");
@@ -923,6 +1309,75 @@ mod tests {
             .expect_err("too many steps")
             .contains("at most")
         );
+    }
+
+    /// The gesture, field, reset and conflict-resolution steps parse into exactly the shapes the
+    /// runner writes, and record themselves back in the same shape.
+    #[test]
+    fn the_slider_field_and_reset_steps_round_trip_their_scripts() {
+        let steps = parse_script(
+            r#"[{"slider":{"action":"set-basic","parameter":"exposure","values":[0.25,0.5,0.75],"release":true}},
+                {"slider":{"action":"set-basic","parameter":"exposure","values":[1.0],"cancel":true}},
+                {"slider":{"action":"set-basic","parameter":"exposure","values":[1.0]}},
+                {"slider_draft":"discard"},
+                {"slider_draft":"reapply"},
+                {"field":{"action":"set-basic","parameter":"exposure","text":"1.5","submit":true}},
+                {"reset":{"module":"lightwell.basic"}},
+                {"reset":{"module":"lightwell.basic","group":"Tone"}}]"#,
+        )
+        .expect("a valid script");
+        assert_eq!(steps.len(), 8);
+        assert_eq!(
+            steps[0],
+            Step::Slider(SliderStep {
+                action: "set-basic".into(),
+                parameter: "exposure".into(),
+                values: vec![0.25, 0.5, 0.75],
+                end: SliderEnd::Release,
+            })
+        );
+        assert_eq!(
+            steps[1].record(),
+            json!({"slider":{"action":"set-basic","parameter":"exposure","values":[1.0],"release":false,"cancel":true}})
+        );
+        assert!(matches!(
+            steps[2],
+            Step::Slider(SliderStep {
+                end: SliderEnd::Open,
+                ..
+            })
+        ));
+        assert_eq!(steps[3], Step::SliderDraft(SliderDraftStep::Discard));
+        assert_eq!(steps[4].record(), json!({"slider_draft":"reapply"}));
+        assert_eq!(
+            steps[5],
+            Step::Field(FieldStep {
+                action: "set-basic".into(),
+                parameter: "exposure".into(),
+                text: "1.5".into(),
+                submit: true,
+            })
+        );
+        assert_eq!(
+            steps[6],
+            Step::Reset(ResetStep {
+                module: "lightwell.basic".into(),
+                group: None,
+            })
+        );
+        assert_eq!(
+            steps[7].record(),
+            json!({"reset":{"module":"lightwell.basic","group":"Tone"}})
+        );
+        // A group's position inside a module's controls is found by its declared label.
+        let basic = lightwell_core::ModuleRegistry::builtin()
+            .descriptors()
+            .into_iter()
+            .find(|module| module.id == "lightwell.basic")
+            .expect("the Basic module is registered")
+            .clone();
+        assert_eq!(group_path(&basic.controls, "Tone"), Some(vec![0]));
+        assert_eq!(group_path(&basic.controls, "Nowhere"), None);
     }
 
     #[test]

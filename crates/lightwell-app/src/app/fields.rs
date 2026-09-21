@@ -204,13 +204,25 @@ pub(crate) fn unsupported_label(kind: &str) -> String {
     format!("Unsupported control: {kind}")
 }
 
-/// The request fields for one action: preset values merged over the parsed field text, preset
-/// wins. A parameter with a declared default is left out so the host applies that default.
+/// The request fields for one action.
+///
+/// A **patch** action sends exactly the fields it was given and nothing else: a generated control
+/// submits its own parameter, and a reset or action control submits its declared preset. Filling
+/// the other declared parameters would turn one slider's move into a patch over the whole module,
+/// which is the difference between "set Exposure" and "set every Basic field to whatever the panel
+/// happens to show".
+///
+/// Every other action keeps sending every parameter it declares: preset values merged over the
+/// parsed field text, preset wins, so crop and pixel requests are unchanged. A parameter with a
+/// declared default is left out so the host applies that default.
 pub(crate) fn action_params(
     action: &ActionDescriptor,
     preset: &Map<String, Value>,
     fields: &Fields,
 ) -> Result<Map<String, Value>, String> {
+    if action.patch {
+        return Ok(preset.clone());
+    }
     let mut params = Map::new();
     for parameter in &action.parameters {
         if let Some(value) = preset.get(&parameter.name) {
@@ -224,19 +236,59 @@ pub(crate) fn action_params(
     Ok(params)
 }
 
-/// Enter in a field runs the first control that invokes that action, with its preset.
+/// What one generated control submits when it is released, or when Enter is pressed in its field.
+///
+/// A control of a patch action submits its own parameter alone, read from the field exactly as it
+/// is displayed; every other control keeps submitting the preset of the first control that invokes
+/// the action, which [`action_params`] then merges over the remaining fields.
 pub(crate) fn submit_preset(
     modules: &[ModuleDescriptor],
     action: &str,
+    parameter: Option<&str>,
+    fields: &Fields,
+) -> Result<Map<String, Value>, String> {
+    let declared = crate::state::tools::declared_action(modules, action)
+        .ok_or_else(|| format!("No module declares the action {action}"))?;
+    if declared.patch {
+        let Some(parameter) = parameter else {
+            // A patch action reached without a field is a control that carries its own preset,
+            // such as a group reset; the preset is the whole request.
+            return Ok(control_preset_of(modules, action));
+        };
+        let declared = declared
+            .parameter(parameter)
+            .ok_or_else(|| undeclared_label(action, parameter))?;
+        let text = fields.get(action, parameter).unwrap_or_default();
+        let value = parse_field(declared, text)?;
+        return Ok([(parameter.to_owned(), value)].into_iter().collect());
+    }
+    Ok(control_preset_of(modules, action))
+}
+
+/// The preset of the first generated control that invokes this action, if any.
+fn control_preset_of(modules: &[ModuleDescriptor], action: &str) -> Map<String, Value> {
+    modules
+        .iter()
+        .find_map(|module| control_preset(&module.controls, action))
+        .cloned()
+        .unwrap_or_default()
+}
+
+/// What a double-click on a label submits: that one field at its declared default. A patch action
+/// runs it as one action; every other action only refills the text, which is what it has always
+/// done, because there is no way to send one field of a non-patch action on its own.
+pub(crate) fn reset_field_preset(
+    modules: &[ModuleDescriptor],
+    action: &str,
+    parameter: &str,
 ) -> Option<Map<String, Value>> {
-    crate::state::tools::declared_action(modules, action)?;
-    Some(
-        modules
-            .iter()
-            .find_map(|module| control_preset(&module.controls, action))
-            .cloned()
-            .unwrap_or_default(),
-    )
+    let declared = crate::state::tools::declared_action(modules, action)?;
+    if !declared.patch {
+        return None;
+    }
+    let declared = declared.parameter(parameter)?;
+    let value = parse_field(declared, &seed_text(declared)).ok()?;
+    Some([(parameter.to_owned(), value)].into_iter().collect())
 }
 
 fn control_preset<'a>(controls: &'a [Control], action: &str) -> Option<&'a Map<String, Value>> {
@@ -481,11 +533,12 @@ mod tests {
     #[test]
     fn enter_in_a_field_runs_the_first_control_that_invokes_the_action() {
         let modules = descriptors();
-        let (action, _, _) = point_pick(&modules).expect("a canvas pick");
+        let fields = Fields::seeded(&modules);
+        let (action, x, _) = point_pick(&modules).expect("a canvas pick");
         assert_eq!(
-            submit_preset(&modules, action),
-            Some(Map::new()),
-            "the pixel action is driven by its fields alone"
+            submit_preset(&modules, action, Some(x), &fields),
+            Ok(Map::new()),
+            "the pixel action is not a patch, so its fields all travel together"
         );
         // The transform module's controls are action buttons rather than fields, which is the
         // shape this submit rule is about; Basic's are sliders of a patch action.
@@ -503,8 +556,118 @@ mod tests {
         else {
             unreachable!("the first transform control invokes an action")
         };
-        assert_eq!(submit_preset(&modules, action).as_ref(), Some(preset));
-        assert_eq!(submit_preset(&modules, "no-such-action"), None);
+        assert_eq!(
+            submit_preset(&modules, action, None, &fields).as_ref(),
+            Ok(preset)
+        );
+        assert!(submit_preset(&modules, "no-such-action", None, &fields).is_err());
+    }
+
+    /// The generic submit rule, proved on the descriptors the desktop actually fetches: a control
+    /// of a patch action submits its own parameter alone, a reset control of one submits its
+    /// declared preset alone, and every other control keeps sending the action's whole parameter
+    /// list, so crop and pixel requests are unchanged.
+    #[test]
+    fn a_patch_actions_control_submits_its_own_field_and_nothing_else() {
+        let modules = descriptors();
+        let mut fields = Fields::seeded(&modules);
+        let patch = modules
+            .iter()
+            .flat_map(|module| module.actions.iter())
+            .find(|action| action.patch)
+            .expect("a built-in declares a field patch");
+        let parameter = patch.parameters.first().expect("a declared field");
+        fields.set(&patch.id, &parameter.name, "1.25".into());
+
+        let preset = submit_preset(&modules, &patch.id, Some(&parameter.name), &fields).unwrap();
+        assert_eq!(
+            preset,
+            json!({ parameter.name.clone(): 1.25 })
+                .as_object()
+                .cloned()
+                .unwrap(),
+            "a slider of a patch action submits its own parameter only"
+        );
+        assert_eq!(
+            action_params(patch, &preset, &fields).unwrap(),
+            preset,
+            "and the request is exactly that patch, with no declared default filled in"
+        );
+
+        // A reset control of the same action submits its declared preset and nothing else.
+        let reset = modules
+            .iter()
+            .flat_map(|module| group_resets(&module.controls))
+            .find(|reset| reset.action == patch.id)
+            .expect("the patch action declares a group reset");
+        assert_eq!(
+            action_params(patch, &reset.preset, &fields).unwrap(),
+            reset.preset,
+            "a group reset submits its preset alone"
+        );
+        assert!(
+            !reset.preset.is_empty(),
+            "a group reset names the fields it neutralizes"
+        );
+
+        // An unreadable field stops the submit with the range it needs, and mutates nothing.
+        fields.set(&patch.id, &parameter.name, "sideways".into());
+        let message = submit_preset(&modules, &patch.id, Some(&parameter.name), &fields)
+            .expect_err("an unparsable field commits nothing");
+        assert!(message.contains(&parameter.name), "{message}");
+
+        // Every non-patch action still sends its whole declared parameter list.
+        let (action, x, y) = point_pick(&modules).expect("a canvas pick");
+        let declared = declared_action(&modules, action).expect("the declared action");
+        assert!(!declared.patch);
+        let fields = Fields::seeded(&modules);
+        let preset = submit_preset(&modules, action, Some(x), &fields).unwrap();
+        let params = action_params(declared, &preset, &fields).unwrap();
+        for name in [x, y] {
+            assert!(
+                params.contains_key(name),
+                "{action} must keep sending {name}: {params:?}"
+            );
+        }
+    }
+
+    /// A double-click on a patch action's label is one action setting that field to its default.
+    #[test]
+    fn a_double_click_resets_one_field_of_a_patch_action() {
+        let modules = descriptors();
+        let patch = modules
+            .iter()
+            .flat_map(|module| module.actions.iter())
+            .find(|action| action.patch)
+            .expect("a built-in declares a field patch");
+        let parameter = patch.parameters.first().expect("a declared field");
+        let preset = reset_field_preset(&modules, &patch.id, &parameter.name)
+            .expect("a patch action resets one field as one action");
+        assert_eq!(preset.len(), 1);
+        assert_eq!(
+            preset[&parameter.name],
+            parameter.default.clone().expect("a declared default")
+        );
+        // A non-patch action cannot send one field alone, so the double-click only refills text.
+        let (action, x, _) = point_pick(&modules).expect("a canvas pick");
+        assert_eq!(reset_field_preset(&modules, action, x), None);
+    }
+
+    /// Every group reset a module's controls declare, in order.
+    fn group_resets(controls: &[Control]) -> Vec<lightwell_core::ResetAction> {
+        controls
+            .iter()
+            .flat_map(|control| match classify(control) {
+                Rendered::Group {
+                    controls, reset, ..
+                } => reset
+                    .cloned()
+                    .into_iter()
+                    .chain(group_resets(controls))
+                    .collect::<Vec<_>>(),
+                _ => Vec::new(),
+            })
+            .collect()
     }
 
     #[test]

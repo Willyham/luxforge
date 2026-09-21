@@ -135,6 +135,9 @@ pub struct PreviewResult {
     /// The identity of the job that produced this frame, so the desktop can submit the report under
     /// the identity a later `analysis.request` will look up.
     pub identity: AnalysisIdentity,
+    /// The draft revision the rendered recipe was planned from, carried through from the job so a
+    /// displayed frame correlates with the gesture settings that produced it.
+    pub draft_revision: Option<u64>,
     pub result: Result<Raster, Error>,
     /// The exact reduction of the raster in `result`, when the job asked for it. `None` means the
     /// job did not ask, or the render failed; it never means an empty histogram.
@@ -175,6 +178,7 @@ impl PreviewQueue {
         let (sender, receiver) = sync_channel(1);
         std::thread::spawn(move || {
             let entry_id = job.entry.id.clone();
+            let draft_revision = job.draft_revision;
             // A truncated job copies the layer prefix only; the whole stack is rendered in place.
             let prefix = job.layer_count.map(|count| Recipe {
                 format: job.recipe.format,
@@ -198,6 +202,7 @@ impl PreviewQueue {
                 entry_id,
                 identity: job.identity,
                 report,
+                draft_revision,
                 result,
             });
         });

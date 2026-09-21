@@ -15,6 +15,9 @@ use lightwell_core::POINTER_MODE;
 pub(crate) struct KeyContext {
     /// A crop draft is open, so Enter, Escape, Space and Option drive it.
     pub(crate) drafting: bool,
+    /// A slider gesture's draft is open, so Escape discards it and the arrow key that is stepping
+    /// it commits it on key-up.
+    pub(crate) slider_drafting: bool,
     /// The command palette is open, so Escape closes it rather than reaching a draft.
     pub(crate) palette_open: bool,
     /// The declared canvas-mode shortcut letters and the module each one selects.
@@ -36,6 +39,19 @@ pub(crate) fn keymap(event: &Event, status: Status, context: &KeyContext) -> Opt
         && character(key, "\\")
     {
         return Some(Message::CompareEnd);
+    }
+    // Iced's slider steps on an arrow key-press and reports no key-up of its own, so the one thing
+    // that can end an arrow-key gesture is the key-up the window reports here. A held arrow is
+    // therefore one gesture that commits once, exactly as a pointer drag does. The key-up only
+    // acts while a slider draft is actually open, so it can never reach anything else.
+    if context.slider_drafting
+        && let Keys::KeyReleased { key, .. } = keyboard
+        && matches!(
+            key,
+            Key::Named(Named::ArrowUp) | Key::Named(Named::ArrowDown)
+        )
+    {
+        return Some(Message::SliderDraftCommit);
     }
     // The modifier the canvas reads lives in the app, so it follows every change while drafting.
     if context.drafting {
@@ -106,6 +122,12 @@ pub(crate) fn keymap(event: &Event, status: Status, context: &KeyContext) -> Opt
         } else {
             Message::FocusNext
         });
+    }
+    // Escape discards an open slider gesture. It is checked before `status` because the slider's
+    // rail captures the arrow keys that may be driving it, and a discarded gesture must never
+    // depend on which widget last saw a key.
+    if context.slider_drafting && matches!(key, Key::Named(Named::Escape)) {
+        return Some(Message::SliderDraftCancel);
     }
     if status != Status::Ignored {
         return None;
@@ -194,6 +216,7 @@ mod tests {
     fn context() -> KeyContext {
         KeyContext {
             drafting: false,
+            slider_drafting: false,
             palette_open: false,
             modes: vec![('R', "lightwell.crop".into())],
         }

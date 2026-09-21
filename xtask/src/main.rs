@@ -1,3 +1,4 @@
+mod basic_smoke;
 mod crop_smoke;
 mod diagnostics;
 mod editor_acceptance;

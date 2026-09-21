@@ -175,6 +175,8 @@ fn notice_view(notice: &Notice) -> Element<'_, Message> {
                 match action {
                     NoticeAction::DiscardDraft => Message::Crop(CropMessage::Cancel),
                     NoticeAction::ReapplyDraft => Message::Crop(CropMessage::Reapply),
+                    NoticeAction::DiscardSliderDraft => Message::SliderDraftCancel,
+                    NoticeAction::ReapplySliderDraft => Message::SliderDraftReapply,
                     NoticeAction::ReturnCurrent => Message::ReturnCurrent,
                 },
             )

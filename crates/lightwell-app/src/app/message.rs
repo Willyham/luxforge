@@ -7,7 +7,7 @@ use crate::{
 };
 use iced_runtime::image as image_memory;
 use lightwell_core::{
-    ClientSession, ContentPoint, EntryId, HistoryPage, ModuleDescriptor, PreviewJob,
+    ClientSession, ContentPoint, Draft, EntryId, HistoryPage, ModuleDescriptor, PreviewJob,
     RecipeDescription, Version,
 };
 use serde_json::{Map, Value};
@@ -36,8 +36,12 @@ impl Panel {
 pub(crate) enum MenuTarget {
     /// A saved version's chip: Delete.
     Version(String),
-    /// A generated control: Copy as JSON request.
-    Control { action: String },
+    /// A generated control: Copy as JSON request. `parameter` names the one field a control of a
+    /// patch action submits, so the copied request is exactly what that control would send.
+    Control {
+        action: String,
+        parameter: Option<String>,
+    },
     /// The open crop draft's own Apply: Copy as JSON request for its current values.
     Draft,
 }
@@ -163,9 +167,11 @@ pub(crate) enum Message {
         parameter: String,
         text: String,
     },
-    /// Enter in a generated field runs that field's action when it is runnable.
+    /// Enter in a generated field runs that field's action when it is runnable. `parameter` names
+    /// the field the key was pressed in, which is the only field a patch action submits.
     Submit {
         action: String,
+        parameter: Option<String>,
     },
     /// A slider drag: the field text follows the pointer and no request is sent.
     SliderMoved {
@@ -173,9 +179,37 @@ pub(crate) enum Message {
         parameter: String,
         value: f64,
     },
-    /// A slider drag ended, which commits exactly as Enter in the field does.
+    /// A slider drag ended: it commits the open draft of a patch action, and otherwise runs the
+    /// control's action once, exactly as Enter in the field does.
     SliderReleased {
         action: String,
+        parameter: String,
+    },
+    /// The 16 ms tick that drives an open slider draft. It is gated on that draft, so a desktop
+    /// with no gesture in progress runs no timer of its own.
+    SliderDraftTick,
+    /// `draft.begin` answered.
+    SliderDraftBegun(Result<Box<Draft>, String>),
+    /// One `draft.set` and the preview job for the settings it accepted.
+    SliderDraftSet(Result<Box<(Draft, PreviewJob)>, String>),
+    /// End the open slider draft and commit it once.
+    SliderDraftCommit,
+    /// `draft.commit` answered. `None` is a no-op outcome: the gesture returned to its start, so
+    /// there is no entry and no history to refresh.
+    SliderDraftCommitted(Result<Option<Box<Refresh>>, String>),
+    /// Discard the open slider draft: Escape, the Changed elsewhere notice or a script.
+    SliderDraftCancel,
+    /// `draft.cancel` answered; the draft is over either way.
+    SliderDraftEnded(Result<(), String>),
+    /// Rebase the conflicted slider draft on the current revision and re-send its value.
+    SliderDraftReapply,
+    /// `draft.reapply` answered.
+    SliderDraftReapplied(Result<Box<Draft>, String>),
+    /// Return one generated field to its declared default. On a patch action that is one action
+    /// submitting that field alone; otherwise it only refills the text, as it always has.
+    ResetField {
+        action: String,
+        parameter: String,
     },
     /// A value is being typed, so the field shows the text rather than the formatted value.
     EditValue {
@@ -222,6 +256,7 @@ pub(crate) enum Message {
     /// Copy the JSON request this control would send to the clipboard.
     CopyRequest {
         action: String,
+        parameter: Option<String>,
     },
     /// Copy the JSON request the open crop draft's own Apply would send.
     CopyDraftRequest,

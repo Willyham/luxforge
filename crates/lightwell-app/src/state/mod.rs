@@ -39,6 +39,8 @@ pub(crate) struct Inputs<'a> {
     pub(crate) dragging: Option<&'a (String, String)>,
     /// Sections the person collapsed or expanded; everything else follows the default.
     pub(crate) expanded: &'a BTreeMap<String, bool>,
+    /// The open slider gesture's draft, when a control of a patch action is being moved.
+    pub(crate) slider_draft: Option<&'a crate::app::slider::SliderDraft>,
     pub(crate) draft: Option<&'a CropDraft>,
     /// The truncated preview that opens a draft is in flight.
     pub(crate) draft_pending: bool,
@@ -232,6 +234,7 @@ mod tests {
                 editing: self.editing.as_ref(),
                 dragging: self.dragging.as_ref(),
                 expanded: &self.expanded,
+                slider_draft: None,
                 draft: self.draft.as_ref(),
                 draft_pending: false,
                 drafting: self.draft.is_some(),

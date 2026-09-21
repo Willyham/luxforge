@@ -31,6 +31,7 @@ Doctor reports missing tools and the graphics environment without installing any
 | Rendered smoke scenario, needs a native graphical session | `cargo xtask smoke --scenario NAME --output NEW_DIR [--binary PATH]` |
 | Rendered crop workflow and overlay | `cargo xtask smoke --scenario crop --output NEW_DIR`, `--scenario crop-draft` |
 | Rendered workspace panels, mode, preview, conflict and palette; unavailable-provider notice | `cargo xtask smoke --scenario workspace --output NEW_DIR`, `--scenario unavailable` |
+| Rendered Basic slider gesture: draft, commit, typed value, undo, reset and conflict | `cargo xtask smoke --scenario basic --output NEW_DIR` |
 | Inspect a capture | `cargo xtask check-capture --image PNG [--orientation N]` |
 | Process failure checks; macOS measurement | `cargo xtask hardening --binary PATH --output NEW_DIR`, `cargo xtask measure --binary PATH --output NEW_DIR [--samples N]` |
 | Package; dependency inventory | `cargo xtask package --output NEW_DIR`, `cargo xtask inventory --output NEW_DIR` |
@@ -87,6 +88,18 @@ Each step is an object with exactly one key.
   top-left then bottom-right), `swap`, `lock`, `option`, `guide`, `apply`, `cancel`. `start` and
   `reapply` wait for the crop layer's truncated input-stage preview, `apply` waits for its committed
   pixels, and the rest are captured on the next rendered frame.
+- `slider` drives one gesture on a generated control: `{"action": "set-basic", "parameter":
+  "exposure", "values": [0.25, 0.5, 0.75]}` sends one pointer move per value with the gated draft
+  tick between them, exactly as a drag and the subscription produce them. `"release": true` ends it
+  with the control's release, which commits once; `"cancel": true` ends it with Escape; neither
+  leaves the gesture open and captures the frame once the draft has drained, so the pixels belong to
+  the newest value it sent. A second `slider` step naming the same control continues the same
+  gesture.
+- `slider_draft` answers an open gesture's Changed elsewhere notice: `"discard"` or `"reapply"`.
+- `field` types into one generated field: `{"action": "set-basic", "parameter": "exposure", "text":
+  "1.5"}`, with `"submit": true` for Enter, which commits that one field without a draft.
+- `reset` runs a declared reset: `{"module": "lightwell.basic"}` is the module's own header reset and
+  `{"module": "lightwell.basic", "group": "Tone"}` is that control group's, found by its label.
 - `view` sets the zoom through `view.set`: `{"zoom": "fit"}` or a percentage from 10 to 1600.
 - `workspace` sets any of `state_panel`, `tools_panel`, `mode` and `thirds` through `workspace.set`,
   naming only the fields that actually differ from the session's own; captured on that round trip,
@@ -122,6 +135,19 @@ is set; that the draft frames report the crop module as the workspace mode and t
 reports `pointer`; that the palette frame's `state.palette` records it open with its query; and that
 the thirds frame's fitted photograph reads brighter at its one-third column than beside it. It writes
 `app/workspace-checks.json`.
+
+`basic` opens the same fixture at 1440 × 900 and drives the whole Exposure gesture: a drag to
++1.00 EV left open, the same gesture released, a second drag that returns to +1.00 and releases, a
+typed −0.50 with Enter, `history.undo`, the Tone group's reset, a drag to +2.00 EV, a commit by
+another route while that drag is open, and the notice's Reapply and Discard in turn. The runner
+checks, per frame, `state.draft` (its identity, the field it holds, both revisions and whether it is
+conflicted), the revision, the current entry's stored label, what the Exposure field shows, the one
+Basic layer's stored payload, and the photograph's own mean Rec. 709 luminance over a centred window
+of the photo surface: +1.00 EV and +2.00 EV read brighter than neutral by at least 10 codes, −0.50 EV
+reads darker, the committed render matches the drafted one it replaced within 2 codes, and the
+reset and discarded frames match the committed stack within the same tolerance. It writes
+`app/basic-checks.json` with every measured mean and both tolerances. The scope is displayed
+brightness read back from the renderer, not a colorimetric claim.
 
 `unavailable` is not one launch but two, since a module can only be disabled at startup. The first
 opens the fixture and commits a 16:9 `edit.crop-fit` with every built-in module registered. The

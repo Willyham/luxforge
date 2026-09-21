@@ -4,9 +4,10 @@
 use crate::app::message::Message;
 use iced::Task;
 use lightwell_core::{
-    ApiRequest, AssetId, ClientId, ClientSession, ContentPoint, EditorState, EntryId, EventsResult,
-    HistoryEntry, HistoryPage, HistorySelection, Lineage, ModuleDescriptor, Mutation, OwnerHandle,
-    PreviewJob, PreviewRequest, RecipeDescription, Version,
+    ApiRequest, AssetId, ClientId, ClientSession, ContentPoint, Draft, DraftId, EditorState,
+    EntryId, EventsResult, HistoryEntry, HistoryPage, HistorySelection, Lineage, ModuleDescriptor,
+    Mutation, MutationOutcome, MutationResult, OwnerHandle, PreviewJob, PreviewRequest,
+    RecipeDescription, Version,
 };
 use serde_json::{Value, json};
 use std::{
@@ -47,6 +48,8 @@ pub(crate) struct PreviewPayload {
 #[derive(Clone, Debug)]
 pub(crate) struct Upload {
     pub(crate) generation: u64,
+    /// The draft revision this frame was rendered from, when a draft produced it.
+    pub(crate) draft_revision: Option<u64>,
     pub(crate) width: u32,
     pub(crate) height: u32,
     pub(crate) entry_id: EntryId,
@@ -263,6 +266,138 @@ pub(crate) fn crop_preview_task(
                 result.map(Box::new),
             ))
         },
+    )
+}
+
+/// Open this client's one draft of a patch action. The gesture sends nothing else until this
+/// answers, so the draft identity every later request needs is known before any of them.
+pub(crate) fn draft_begin_task(
+    owner: OwnerHandle,
+    client: ClientId,
+    asset_id: AssetId,
+    action: String,
+) -> Task<Message> {
+    Task::perform(
+        async move {
+            let (draft, _) = call(
+                &owner,
+                client,
+                "draft.begin",
+                json!({"asset_id":asset_id,"action":action}),
+            )?;
+            parse::<Draft>(draft)
+        },
+        |result| Message::SliderDraftBegun(result.map(Box::new)),
+    )
+}
+
+/// One `draft.set` and the one preview job for the settings it accepted, as a single round trip.
+/// The gesture's bound is one of these per tick, so pairing them here is what keeps a preview from
+/// being requested for settings the core never accepted.
+pub(crate) fn draft_set_task(
+    owner: OwnerHandle,
+    client: ClientId,
+    draft_id: DraftId,
+    asset_id: AssetId,
+    fields: Value,
+) -> Task<Message> {
+    Task::perform(
+        async move {
+            let (draft, _) = call(
+                &owner,
+                client,
+                "draft.set",
+                json!({"draft_id":draft_id,"fields":fields}),
+            )?;
+            let draft = parse::<Draft>(draft)?;
+            let job = owner
+                .preview_job(PreviewRequest::new(client, asset_id).draft(draft_id))
+                .map_err(|error| error.to_string())?;
+            Ok((draft, job))
+        },
+        |result| Message::SliderDraftSet(result.map(Box::new)),
+    )
+}
+
+/// Commit the draft once. A real outcome is read back exactly as any other command's is; a no-op
+/// outcome created no entry, so nothing is refreshed and the gesture simply ends.
+pub(crate) fn draft_commit_task(
+    owner: OwnerHandle,
+    client: ClientId,
+    draft_id: DraftId,
+    asset_id: AssetId,
+    mutation: Mutation,
+) -> Task<Message> {
+    Task::perform(
+        async move {
+            let (committed, sequence) = call(
+                &owner,
+                client,
+                "draft.commit",
+                json!({"draft_id":draft_id,"mutation":mutation}),
+            )?;
+            let result = parse::<MutationResult>(committed)?;
+            if result.outcome == MutationOutcome::NoOp {
+                return Ok(None);
+            }
+            refresh(&owner, client, asset_id, false, sequence).map(Some)
+        },
+        |result| Message::SliderDraftCommitted(result.map(|refresh| refresh.map(Box::new))),
+    )
+}
+
+pub(crate) fn draft_cancel_task(
+    owner: OwnerHandle,
+    client: ClientId,
+    draft_id: DraftId,
+) -> Task<Message> {
+    Task::perform(
+        async move { call(&owner, client, "draft.cancel", json!({"draft_id":draft_id})).map(|_| ()) },
+        Message::SliderDraftEnded,
+    )
+}
+
+pub(crate) fn draft_reapply_task(
+    owner: OwnerHandle,
+    client: ClientId,
+    draft_id: DraftId,
+) -> Task<Message> {
+    Task::perform(
+        async move {
+            let (draft, _) = call(
+                &owner,
+                client,
+                "draft.reapply",
+                json!({"draft_id":draft_id}),
+            )?;
+            parse::<Draft>(draft)
+        },
+        |result| Message::SliderDraftReapplied(result.map(Box::new)),
+    )
+}
+
+/// The displayed entry's own preview again, without a draft: what the canvas must show once a
+/// gesture ended without committing. One preview job and one session read, no state or history
+/// request and no history refresh.
+pub(crate) fn current_preview_task(
+    owner: OwnerHandle,
+    client: ClientId,
+    asset_id: AssetId,
+    entry_id: Option<EntryId>,
+) -> Task<Message> {
+    Task::perform(
+        async move {
+            let job = owner
+                .preview_job(PreviewRequest::new(client, asset_id).entry(entry_id))
+                .map_err(|error| error.to_string())?;
+            let (session, sequence) = call(&owner, client, "session.state", json!({}))?;
+            Ok(PreviewPayload {
+                job,
+                session: parse::<ClientSession>(session)?,
+                sequence,
+            })
+        },
+        |result| Message::PreviewLoaded(result.map(Box::new)),
     )
 }
 

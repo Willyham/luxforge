@@ -95,39 +95,54 @@ fn control_view<'a>(
     }
 }
 
-/// Whether the control that owns `action` is the one whose context menu is open.
-fn menu_open_for(menu: Option<&MenuTarget>, action: &str) -> bool {
-    matches!(menu, Some(MenuTarget::Control { action: open }) if open == action)
+/// Whether this control is the one whose context menu is open. A patch action's controls are one
+/// per field, so the field is part of the identity.
+fn menu_open_for(menu: Option<&MenuTarget>, action: &str, parameter: Option<&str>) -> bool {
+    matches!(
+        menu,
+        Some(MenuTarget::Control { action: open, parameter: named })
+            if open == action && named.as_deref() == parameter
+    )
+}
+
+/// The control's own context-menu target.
+fn control_target(action: &str, parameter: Option<&str>) -> MenuTarget {
+    MenuTarget::Control {
+        action: action.to_owned(),
+        parameter: parameter.map(str::to_owned),
+    }
 }
 
 /// The "Copy as JSON request" / "Cancel" menu a generated control's context menu opens, for the
 /// exact `edit.<action>` request its current values would send.
-fn control_menu(action: &str) -> Element<'static, Message> {
+fn control_menu(action: &str, parameter: Option<&str>) -> Element<'static, Message> {
     inline_menu(vec![
         (
             "Copy as JSON request".to_owned(),
             Message::CopyRequest {
                 action: action.to_owned(),
+                parameter: parameter.map(str::to_owned),
             },
         ),
         ("Cancel".to_owned(), Message::CloseMenu),
     ])
 }
 
-/// Wrap a generated control so a right-click on it opens its action's context menu, and append the
+/// Wrap a generated control so a right-click on it opens its own context menu, and append the
 /// menu itself directly under the control when it is the one currently open.
 fn with_control_menu<'a>(
     control: Element<'a, Message>,
     action: &str,
+    parameter: Option<&str>,
     menu: Option<&MenuTarget>,
 ) -> Element<'a, Message> {
     let area: Element<'a, Message> = mouse_area(control)
-        .on_right_press(Message::OpenMenu(MenuTarget::Control {
-            action: action.to_owned(),
-        }))
+        .on_right_press(Message::OpenMenu(control_target(action, parameter)))
         .into();
-    if menu_open_for(menu, action) {
-        column![area, control_menu(action)].spacing(4.0).into()
+    if menu_open_for(menu, action, parameter) {
+        column![area, control_menu(action, parameter)]
+            .spacing(4.0)
+            .into()
     } else {
         area
     }
@@ -165,13 +180,9 @@ fn slider_view<'a>(
     let (action, parameter) = (field.action.clone(), field.parameter.clone());
     let (change_action, change_parameter) = (action.clone(), parameter.clone());
     let (text_action, text_parameter) = (action.clone(), parameter.clone());
-    let release_action = action.clone();
-    let submit_action = action.clone();
-    let reset_message = Message::Field {
-        action,
-        parameter,
-        text: field.default.clone(),
-    };
+    let (release_action, release_parameter) = (action.clone(), parameter.clone());
+    let (submit_action, submit_parameter) = (action.clone(), parameter.clone());
+    let reset_message = Message::ResetField { action, parameter };
     let control: Element<'a, Message> = slider(
         &SliderModel {
             label: field.label.clone(),
@@ -194,6 +205,7 @@ fn slider_view<'a>(
         },
         Message::SliderReleased {
             action: release_action,
+            parameter: release_parameter,
         },
         Message::EditValue {
             action: text_action.clone(),
@@ -206,10 +218,11 @@ fn slider_view<'a>(
         },
         Message::Submit {
             action: submit_action,
+            parameter: Some(submit_parameter),
         },
         reset_message,
     );
-    with_control_menu(control, &field.action, menu)
+    with_control_menu(control, &field.action, Some(&field.parameter), menu)
 }
 
 fn enum_view<'a>(
@@ -218,9 +231,7 @@ fn enum_view<'a>(
     menu: Option<&'a MenuTarget>,
 ) -> Element<'a, Message> {
     let label = mouse_area(lightwell_ui::label(choice.label.clone())).on_right_press(
-        Message::OpenMenu(MenuTarget::Control {
-            action: choice.action.clone(),
-        }),
+        Message::OpenMenu(control_target(&choice.action, Some(&choice.parameter))),
     );
     let mut field = column![label].spacing(4.0);
     let (action, parameter) = (choice.action.clone(), choice.parameter.clone());
@@ -257,8 +268,8 @@ fn enum_view<'a>(
         });
         field = field.push(Row::new().spacing(4.0).extend(chips).wrap());
     }
-    if menu_open_for(menu, &choice.action) {
-        field = field.push(control_menu(&choice.action));
+    if menu_open_for(menu, &choice.action, Some(&choice.parameter)) {
+        field = field.push(control_menu(&choice.action, Some(&choice.parameter)));
     }
     field.into()
 }
@@ -269,9 +280,7 @@ fn color_view<'a>(
     menu: Option<&'a MenuTarget>,
 ) -> Element<'a, Message> {
     let label = mouse_area(lightwell_ui::label(color.label.clone())).on_right_press(
-        Message::OpenMenu(MenuTarget::Control {
-            action: color.action.clone(),
-        }),
+        Message::OpenMenu(control_target(&color.action, Some(&color.parameter))),
     );
     let mut channels = row![label].spacing(4.0).align_y(Alignment::Center);
     for (index, value) in color.channels.iter().enumerate() {
@@ -293,6 +302,7 @@ fn color_view<'a>(
                 }))
                 .on_submit(Message::Submit {
                     action: color.action.clone(),
+                    parameter: Some(color.parameter.clone()),
                 }),
         );
     }
@@ -300,8 +310,8 @@ fn color_view<'a>(
     if let Some(message) = &color.invalid {
         field = field.push(error_caption(message.clone()));
     }
-    if menu_open_for(menu, &color.action) {
-        field = field.push(control_menu(&color.action));
+    if menu_open_for(menu, &color.action, Some(&color.parameter)) {
+        field = field.push(control_menu(&color.action, Some(&color.parameter)));
     }
     field.into()
 }
@@ -342,7 +352,7 @@ fn action_view<'a>(
             action: action.action.clone(),
             preset: action.preset.clone(),
         }));
-    let control = with_control_menu(control.into(), &action.action, menu);
+    let control = with_control_menu(control.into(), &action.action, None, menu);
     match &action.reason {
         Some(reason) if !action.runnable => iced::widget::tooltip(
             control,

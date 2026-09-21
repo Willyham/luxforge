@@ -6,6 +6,7 @@ pub(crate) mod evidence;
 pub(crate) mod fields;
 pub(crate) mod keymap;
 pub(crate) mod message;
+pub(crate) mod slider;
 pub(crate) mod tasks;
 #[cfg(test)]
 pub(crate) mod testing;
@@ -19,7 +20,7 @@ use crate::{
 };
 use crop::PendingDraft;
 use evidence::{EVIDENCE_DEADLINE, Evidence, Settle};
-use fields::{Fields, action_params, number_text, submit_preset};
+use fields::{Fields, action_params, number_text, reset_field_preset, submit_preset};
 use iced::{Element, Subscription, Task, widget::operation};
 use iced_runtime::image as image_memory;
 use lightwell_core::{
@@ -29,6 +30,7 @@ use lightwell_core::{
 };
 use message::{CropMessage, MenuTarget, Message, PaletteAction, Panel};
 use serde_json::{Map, Value, json};
+use slider::SliderDraft;
 use std::{
     collections::{BTreeMap, HashSet},
     path::PathBuf,
@@ -259,6 +261,11 @@ pub(crate) struct Editor {
     pub(crate) editing: Option<(String, String)>,
     /// The (action, parameter) whose slider is being dragged.
     pub(crate) dragging: Option<(String, String)>,
+    /// The open slider gesture's draft, when a control of a patch action is being moved. At most
+    /// one draft exists per client, so this and the crop draft exclude each other.
+    pub(crate) slider_draft: Option<SliderDraft>,
+    /// The draft revision the displayed preview was rendered from, for correlation.
+    pub(crate) displayed_draft_revision: Option<u64>,
     /// Sections the person collapsed or expanded; every other follows the default.
     pub(crate) expanded: BTreeMap<String, bool>,
     /// The displayed entry's layers as the recipe panel reads them.
@@ -382,6 +389,8 @@ impl Editor {
             fields: Fields::default(),
             editing: None,
             dragging: None,
+            slider_draft: None,
+            displayed_draft_revision: None,
             expanded: BTreeMap::new(),
             recipe: None,
             menu: None,
@@ -445,7 +454,27 @@ impl Editor {
 
     /// The state correlated with every event and captured frame; never includes source paths.
     pub(crate) fn snapshot(&self) -> Value {
-        json!({"run_id":self.run_id,"mode":if self.evidence.is_some() {"evidence"} else {"editor"},"orientation":self.activity.orientation,"phase":self.activity.phase,"requested_generation":self.activity.requested,"displayed_generation":self.activity.displayed,"source_dimensions":self.activity.source_dimensions,"preview_dimensions":self.activity.preview_dimensions,"backend":self.activity.backend,"status":self.status,"error_code":self.activity.error_code,"modules":module_summary(&self.modules),"controls":self.fields.summary(),"crop":self.crop_summary(),"stack":self.stack_summary(),"workspace":serde_json::to_value(&self.session.workspace).unwrap_or(Value::Null),"developer":self.developer,"expanded":self.workspace.expanded(),"notices":self.notice_titles(),"compare":self.compare_return.is_some(),"render_error":self.render_error_summary(),"palette":{"open":self.palette_open,"query":self.palette_query}})
+        json!({"run_id":self.run_id,"mode":if self.evidence.is_some() {"evidence"} else {"editor"},"orientation":self.activity.orientation,"phase":self.activity.phase,"requested_generation":self.activity.requested,"displayed_generation":self.activity.displayed,"displayed_draft_revision":self.displayed_draft_revision,"source_dimensions":self.activity.source_dimensions,"preview_dimensions":self.activity.preview_dimensions,"backend":self.activity.backend,"status":self.status,"error_code":self.activity.error_code,"modules":module_summary(&self.modules),"controls":self.fields.summary(),"crop":self.crop_summary(),"draft":self.draft_summary(),"stack":self.stack_summary(),"workspace":serde_json::to_value(&self.session.workspace).unwrap_or(Value::Null),"developer":self.developer,"expanded":self.workspace.expanded(),"notices":self.notice_titles(),"compare":self.compare_return.is_some(),"render_error":self.render_error_summary(),"palette":{"open":self.palette_open,"query":self.palette_query}})
+    }
+
+    /// The core draft this client holds, as `session.state` reports it. The desktop adopts every
+    /// draft response into its own copy of the session, so a captured frame carries the identity,
+    /// the fields, both revisions and the conflict state the gesture was evaluated against. An open
+    /// gesture whose session copy has not caught up reports what the desktop itself knows, so a
+    /// frame never shows "no draft" while one is plainly on screen.
+    fn draft_summary(&self) -> Value {
+        match (&self.session.draft, &self.slider_draft) {
+            (Some(draft), _) => json!({
+                "draft_id": draft.draft_id.as_str(),
+                "action": draft.action,
+                "fields": draft.fields,
+                "base_revision": draft.base_revision,
+                "draft_revision": draft.draft_revision,
+                "conflicted": draft.conflicted,
+            }),
+            (None, Some(gesture)) => gesture.summary(),
+            (None, None) => Value::Null,
+        }
     }
 
     /// The notices the captured frame drew, by title, so a frame's chrome is observable.
@@ -484,7 +513,7 @@ impl Editor {
                         json!({"id":layer.id.as_str(),"effect":layer.effect_id,"payload":layer.payload})
                     })
                     .collect();
-                json!({"revision":state.revision,"entry":state.current_entry.id.as_str(),"layers":layers})
+                json!({"revision":state.revision,"entry":state.current_entry.id.as_str(),"label":state.current_entry.label,"layers":layers})
             }
             None => Value::Null,
         }
@@ -605,6 +634,7 @@ impl Editor {
             editing: self.editing.as_ref(),
             dragging: self.dragging.as_ref(),
             expanded: &self.expanded,
+            slider_draft: self.slider_draft.as_ref(),
             draft: self.crop.as_ref(),
             draft_pending: self.crop_pending.is_some(),
             drafting: self.drafting(),
@@ -851,7 +881,10 @@ impl Editor {
                 self.settle_step(Settle::Session);
             }
             Message::RecipeDescribed(result) => match result {
-                Ok(recipe) => self.recipe = Some(*recipe),
+                Ok(recipe) => {
+                    self.recipe = Some(*recipe);
+                    self.seed_values();
+                }
                 Err(error) => self.status = format!("Recipe unavailable: {error}"),
             },
             Message::PanSynced(result) => {
@@ -932,6 +965,7 @@ impl Editor {
                             }
                             let upload = Upload {
                                 generation: result.generation,
+                                draft_revision: result.draft_revision,
                                 width: raster.width,
                                 height: raster.height,
                                 entry_id: result.entry_id,
@@ -981,13 +1015,20 @@ impl Editor {
                         self.photo = Some(allocation);
                         self.dimensions = Some((upload.width, upload.height));
                         self.display_entry = Some(upload.entry_id.clone());
+                        self.displayed_draft_revision = upload.draft_revision;
                         // A frame on screen is the proof the last failure is over.
                         self.render_error = None;
                         self.activity.render_ms =
                             Some(self.activity.request_started.elapsed().as_secs_f64() * 1000.);
                         // A scripted preview selection settles on these same pixels, whether or not
                         // this upload also belongs to the one open request evidence tracks below.
-                        self.settle_step(Settle::Preview);
+                        // While a slider gesture is open the drafted previews replace one another,
+                        // so a scripted gesture waits for the one whose settings are the newest.
+                        match &self.slider_draft {
+                            Some(draft) if draft.drained() => self.settle_step(Settle::SliderDraft),
+                            Some(_) => {}
+                            None => self.settle_step(Settle::Preview),
+                        }
                         if self.activity.pending {
                             self.activity.pending = false;
                             self.activity.displayed = self.activity.requested;
@@ -1063,25 +1104,86 @@ impl Editor {
                 parameter,
                 value,
             } => {
-                // A drag changes the field text and nothing else; no request leaves the desktop.
+                // A control of a patch action drafts: the move updates the field and the draft's
+                // pending value, and the gated tick is the only thing that sends anything. Every
+                // other slider keeps its old behaviour, which is to change the text and nothing
+                // else until release.
+                if tools::is_patch(&self.modules, &action) {
+                    return self.slider_moved(action, parameter, value);
+                }
                 self.fields.set(&action, &parameter, number_text(value));
                 self.editing = None;
                 self.dragging = Some((action, parameter));
             }
             Message::EditValue { action, parameter } => self.editing = Some((action, parameter)),
             Message::CancelEdit => self.editing = None,
-            Message::Submit { action } | Message::SliderReleased { action } => {
+            Message::SliderReleased { action, parameter } => {
+                // Release ends the gesture: an open draft commits once, and a slider that never
+                // drafted submits its own field exactly as Enter in that field does.
+                if self.slider_draft.is_some() {
+                    return self.slider_commit();
+                }
+                return self.dispatch(Message::Submit {
+                    action,
+                    parameter: Some(parameter),
+                });
+            }
+            Message::Submit { action, parameter } => {
                 self.dragging = None;
-                let Some(preset) =
-                    submit_preset(&self.modules, &action).filter(|_| self.editable())
-                else {
+                if !self.editable() {
                     return Task::none();
-                };
-                // The field only stops editing once the submit actually runs; a rejected submit
-                // (nothing declares the action, or editing is disabled right now) leaves the typed
-                // text on screen rather than silently reverting to the last committed value.
+                }
+                let preset =
+                    match submit_preset(&self.modules, &action, parameter.as_deref(), &self.fields)
+                    {
+                        Ok(preset) => preset,
+                        // The field only stops editing once the submit actually runs; a rejected
+                        // submit leaves the typed text on screen with its reason rather than
+                        // silently reverting to the last committed value.
+                        Err(message) => {
+                            self.status = message;
+                            return Task::none();
+                        }
+                    };
                 self.editing = None;
                 return self.dispatch(Message::RunAction { action, preset });
+            }
+            Message::ResetField { action, parameter } => {
+                let default = tools::declared_action(&self.modules, &action)
+                    .and_then(|declared| declared.parameter(&parameter))
+                    .map(fields::seed_text);
+                let Some(default) = default else {
+                    self.status = fields::undeclared_label(&action, &parameter);
+                    return Task::none();
+                };
+                self.fields.set(&action, &parameter, default);
+                self.editing = None;
+                // One field of a patch action is one action; a non-patch action has no way to send
+                // one field alone, so the double-click only refills the text there, as before.
+                if let Some(preset) = reset_field_preset(&self.modules, &action, &parameter)
+                    .filter(|_| self.editable())
+                {
+                    return self.dispatch(Message::RunAction { action, preset });
+                }
+            }
+            Message::SliderDraftTick => return self.slider_tick(),
+            Message::SliderDraftBegun(result) => {
+                return self.slider_begun(result.map(|draft| *draft));
+            }
+            Message::SliderDraftSet(result) => return self.slider_set(result.map(|both| *both)),
+            Message::SliderDraftCommit => return self.slider_commit(),
+            Message::SliderDraftCommitted(result) => {
+                return self.slider_committed(result.map(|refresh| refresh.map(|boxed| *boxed)));
+            }
+            Message::SliderDraftCancel => return self.slider_cancel(),
+            Message::SliderDraftEnded(result) => {
+                if let Err(error) = result {
+                    self.status = error;
+                }
+            }
+            Message::SliderDraftReapply => return self.slider_reapply(),
+            Message::SliderDraftReapplied(result) => {
+                return self.slider_reapplied(result.map(|draft| *draft));
             }
             Message::ToggleSection(module_id) => {
                 let expanded = self
@@ -1139,6 +1241,13 @@ impl Editor {
                     self.status = "Apply or Cancel the crop draft before leaving this mode".into();
                     return Task::none();
                 }
+                // One draft per client: a canvas mode would need its own, so an open slider
+                // gesture is finished deliberately rather than replaced.
+                if mode != self.session.workspace.mode && self.slider_draft.is_some() {
+                    self.status =
+                        "Finish or discard the slider draft before entering this mode".into();
+                    return Task::none();
+                }
                 let opens_draft = tools::crop_frame(&self.modules)
                     .is_some_and(|frame| frame.module.id == mode)
                     && self.crop.is_none()
@@ -1164,6 +1273,12 @@ impl Editor {
                 if self.crop.is_some() {
                     self.status =
                         "Apply or Cancel the crop draft before comparing with the original".into();
+                    return Task::none();
+                }
+                if self.slider_draft.is_some() {
+                    self.status =
+                        "Finish or discard the slider draft before comparing with the original"
+                            .into();
                     return Task::none();
                 }
                 let (Some(state), Some(original)) = (&self.state, self.original_entry.clone())
@@ -1258,8 +1373,8 @@ impl Editor {
             }
             Message::OpenMenu(target) => self.menu = Some(target),
             Message::CloseMenu => self.menu = None,
-            Message::CopyRequest { action } => {
-                let Some(request) = self.request_for(&action) else {
+            Message::CopyRequest { action, parameter } => {
+                let Some(request) = self.request_for(&action, parameter.as_deref()) else {
                     return Task::none();
                 };
                 self.status = format!("Copied the edit.{action} request");
@@ -1543,8 +1658,10 @@ impl Editor {
             .map(|entry| entry.sequence)
     }
 
-    /// The JSON request one control would send right now, with this desktop's own envelope.
-    fn request_for(&mut self, action: &str) -> Option<Value> {
+    /// The JSON request one control would send right now, with this desktop's own envelope. A
+    /// control of a patch action names its own field, so the copied request is the one that
+    /// control sends and not a patch over the whole module.
+    pub(crate) fn request_for(&mut self, action: &str, parameter: Option<&str>) -> Option<Value> {
         let Some(state) = &self.state else {
             self.status = "No photograph is open".into();
             return None;
@@ -1553,7 +1670,13 @@ impl Editor {
             self.status = format!("No module declares the action {action}");
             return None;
         };
-        let preset = submit_preset(&self.modules, action).unwrap_or_default();
+        let preset = match submit_preset(&self.modules, action, parameter, &self.fields) {
+            Ok(preset) => preset,
+            Err(message) => {
+                self.status = message;
+                return None;
+            }
+        };
         let params = match action_params(declared, &preset, &self.fields) {
             Ok(params) => params,
             Err(message) => {
@@ -1598,7 +1721,70 @@ impl Editor {
         self.display_entry = Some(refresh.job.entry.id.clone());
         self.preview_generation = self.preview_queue.request(refresh.job);
         self.status = "Rendering selected history state…".into();
+        // Generated fields follow the displayed entry, so a slider shows the authoritative current
+        // or historical value of the module's one layer. This reads the values already fetched with
+        // the recipe: no extra request, no render.
+        self.seed_values();
         self.settle_draft(revision, &entry);
+        self.settle_slider_draft(revision);
+    }
+
+    /// Seed every generated field of every module from the displayed entry's values for that
+    /// module's one layer, leaving the field being typed or dragged exactly as it is.
+    ///
+    /// A **patch** action's fields mirror one persistent layer: that is what a patch is, a merge
+    /// into the state the module already holds. So they follow that layer wherever it goes, and a
+    /// module without one shows its declared defaults. Every other action's fields are request
+    /// inputs, not a mirror: they take a reported value when the layer offers one and are never
+    /// reset by a refresh, so a typed coordinate survives somebody else's edit.
+    pub(crate) fn seed_values(&mut self) {
+        let Some(recipe) = self.recipe.clone() else {
+            return;
+        };
+        let modules = std::mem::take(&mut self.modules);
+        for module in &modules {
+            let mut layers = recipe
+                .layers
+                .iter()
+                .filter(|layer| layer.module.as_deref() == Some(module.id.as_str()));
+            // "The one layer of that module": a stack holding two of them says nothing about which
+            // one the controls represent, so nothing is seeded rather than guessing.
+            let values = match (layers.next(), layers.next()) {
+                (Some(layer), None) => Some(&layer.values),
+                (Some(_), Some(_)) => continue,
+                (None, _) => None,
+            };
+            for action in &module.actions {
+                for parameter in &action.parameters {
+                    let key = (action.id.clone(), parameter.name.clone());
+                    if self.fields.get(&key.0, &key.1).is_none() {
+                        continue;
+                    }
+                    if self.editing.as_ref() == Some(&key) || self.dragging.as_ref() == Some(&key) {
+                        continue;
+                    }
+                    let reported = values
+                        .and_then(|values| values.get(&parameter.name))
+                        .and_then(|value| match value {
+                            Value::Number(_) => value
+                                .as_f64()
+                                .filter(|value| value.is_finite())
+                                .map(number_text),
+                            Value::String(text) => Some(text.clone()),
+                            _ => None,
+                        });
+                    match reported {
+                        Some(text) => self.fields.set(&key.0, &key.1, text),
+                        None if action.patch => {
+                            self.fields
+                                .set(&key.0, &key.1, fields::seed_text(parameter));
+                        }
+                        None => {}
+                    }
+                }
+            }
+        }
+        self.modules = modules;
     }
 
     /// A new authoritative revision arrived while a draft was open. The draft's own Apply ends it;
@@ -1717,6 +1903,7 @@ impl Editor {
     fn key_context(&self) -> keymap::KeyContext {
         keymap::KeyContext {
             drafting: self.crop.is_some(),
+            slider_drafting: self.slider_draft.is_some(),
             palette_open: self.palette_open,
             modes: self
                 .modules
@@ -1734,6 +1921,13 @@ impl Editor {
         let mut subscriptions = vec![iced::event::listen_with(raw_event)];
         if self.preview_queue.is_busy() {
             subscriptions.push(iced::time::every(Duration::from_millis(16)).map(|_| Message::Poll));
+        }
+        // The gesture's one bound, gated exactly as the preview poll above is: a desktop with no
+        // open slider draft runs no timer for it at all.
+        if self.slider_draft.is_some() {
+            subscriptions.push(
+                iced::time::every(Duration::from_millis(16)).map(|_| Message::SliderDraftTick),
+            );
         }
         if self.state.is_some() && self.evidence.is_none() {
             subscriptions
@@ -1809,6 +2003,587 @@ mod tests {
         attach_log, boot, crop_descriptor, descriptors, entry, finish, logged, opened, pick_events,
         pick_fields, picking, refresh_for,
     };
+
+    /// The first patch action any registered module declares, and its first field: the tests below
+    /// drive that control, so no module or parameter is named here either.
+    fn patch_control(editor: &Editor) -> (String, String) {
+        let action = editor
+            .modules
+            .iter()
+            .flat_map(|module| module.actions.iter())
+            .find(|action| action.patch)
+            .expect("a built-in declares a field patch");
+        (
+            action.id.clone(),
+            action
+                .parameters
+                .first()
+                .expect("the patch declares a field")
+                .name
+                .clone(),
+        )
+    }
+
+    /// An editor with every registered module discovered, one asset open and a diagnostics log
+    /// attached, so the requests a gesture sends can be counted from the records the harness reads.
+    fn drafting() -> (Editor, PathBuf, PathBuf, AssetId, String, String) {
+        let (mut editor, catalog) = boot();
+        let _ = editor.update(Message::ModulesLoaded(Ok(descriptors())));
+        let asset = AssetId::new();
+        let current = entry(&asset, 4, None);
+        let refresh = refresh_for(&asset, &current, vec![current.clone()], &[&current], false);
+        let _ = editor.update(Message::Refreshed(Ok(Box::new(refresh))));
+        let log = attach_log(&mut editor);
+        let (action, parameter) = patch_control(&editor);
+        (editor, catalog, log, asset, action, parameter)
+    }
+
+    /// The `draft.begin` answer the core would send, so the state machine runs on real messages
+    /// without a running task executor.
+    fn begun(editor: &mut Editor, asset: &AssetId, action: &str, revision: u64) {
+        let draft = lightwell_core::Draft::new(action, asset.clone(), revision);
+        let _ = editor.update(Message::SliderDraftBegun(Ok(Box::new(draft))));
+    }
+
+    /// The `draft.set` answer for the fields the gesture last sent, with the preview job that
+    /// carries its draft revision.
+    fn was_set(editor: &mut Editor, asset: &AssetId, current: &lightwell_core::HistoryEntry) {
+        let mut draft = editor
+            .session
+            .draft
+            .clone()
+            .expect("the draft was begun before it was set");
+        draft.draft_revision += 1;
+        let job = refresh_for(asset, current, Vec::new(), &[current], false).job;
+        let _ = editor.update(Message::SliderDraftSet(Ok(Box::new((draft, job)))));
+    }
+
+    /// Every `draft.*` request this run logged, by event name.
+    fn draft_events<'a>(records: &'a [Value], event: &str) -> Vec<&'a Value> {
+        records
+            .iter()
+            .filter(|record| record["event"] == json!(event))
+            .map(|record| &record["detail"])
+            .collect()
+    }
+
+    /// A drag of a patch action's slider opens exactly one draft, sends exactly one `draft.set`
+    /// per tick for the newest value, and sends nothing at all while a round trip is in flight.
+    #[test]
+    fn a_drag_sends_one_draft_set_per_tick_for_the_newest_value() {
+        let (mut editor, catalog, log, asset, action, parameter) = drafting();
+        let current = editor
+            .state
+            .as_ref()
+            .expect("an open asset")
+            .current_entry
+            .clone();
+
+        // Every move inside one tick is one pending value: the tick that follows sends the last.
+        for value in [0.25, 0.5, 0.75] {
+            let _ = editor.update(Message::SliderMoved {
+                action: action.clone(),
+                parameter: parameter.clone(),
+                value,
+            });
+            // Nothing can be sent yet: `draft.begin` has not answered.
+            let _ = editor.update(Message::SliderDraftTick);
+        }
+        assert_eq!(
+            editor.fields.get(&action, &parameter),
+            Some("0.75"),
+            "the field follows the pointer"
+        );
+        assert_eq!(editor.dragging, Some((action.clone(), parameter.clone())));
+        assert!(
+            editor.status.starts_with("Drafting "),
+            "the status bar names the gesture: {}",
+            editor.status
+        );
+
+        begun(&mut editor, &asset, &action, 4);
+        let _ = editor.update(Message::SliderDraftTick);
+        let _ = editor.update(Message::SliderDraftTick);
+        let _ = editor.update(Message::SliderDraftTick);
+
+        let records = logged(&mut editor, &log);
+        assert_eq!(
+            draft_events(&records, "slider_draft_begin").len(),
+            1,
+            "a gesture opens one draft"
+        );
+        let sets = draft_events(&records, "slider_draft_set");
+        assert_eq!(
+            sets.len(),
+            1,
+            "three ticks with one round trip in flight send one draft.set: {sets:?}"
+        );
+        assert_eq!(
+            sets[0]["fields"],
+            json!({ parameter.clone(): 0.75 }),
+            "and it carries the newest value, as one field patch"
+        );
+
+        // The tick is gated on the draft exactly as the preview poll is on an in-flight preview.
+        let log = attach_log(&mut editor);
+        was_set(&mut editor, &asset, &current);
+        let _ = editor.update(Message::SliderDraftTick);
+        let _ = editor.update(Message::SliderDraftTick);
+        assert!(
+            draft_events(&logged(&mut editor, &log), "slider_draft_set").is_empty(),
+            "a tick with nothing pending sends nothing"
+        );
+        assert_eq!(
+            editor
+                .session
+                .draft
+                .as_ref()
+                .map(|draft| draft.draft_revision),
+            Some(1),
+            "the adopted draft carries the revision the frame is correlated with"
+        );
+        finish(editor, catalog);
+    }
+
+    /// Release commits exactly once, through `draft.commit` with the draft's own base revision.
+    /// A no-op outcome ends the gesture with no entry and no history refresh.
+    #[test]
+    fn release_commits_once_and_a_return_to_start_commits_nothing() {
+        let (mut editor, catalog, log, asset, action, parameter) = drafting();
+        let current = editor
+            .state
+            .as_ref()
+            .expect("an open asset")
+            .current_entry
+            .clone();
+        let history = editor.history.entries.len();
+        let _ = editor.update(Message::SliderMoved {
+            action: action.clone(),
+            parameter: parameter.clone(),
+            value: 1.0,
+        });
+        begun(&mut editor, &asset, &action, 4);
+        let _ = editor.update(Message::SliderDraftTick);
+        was_set(&mut editor, &asset, &current);
+
+        let _ = editor.update(Message::SliderReleased {
+            action: action.clone(),
+            parameter: parameter.clone(),
+        });
+        let _ = editor.update(Message::SliderReleased {
+            action: action.clone(),
+            parameter: parameter.clone(),
+        });
+        let records = logged(&mut editor, &log);
+        let commits = draft_events(&records, "slider_draft_commit");
+        assert_eq!(commits.len(), 1, "one gesture is one commit: {commits:?}");
+        assert_eq!(
+            commits[0]["expected_revision"],
+            json!(4),
+            "the commit names the revision the draft was based on"
+        );
+        assert!(editor.dragging.is_none(), "release ends the drag");
+
+        // The gesture returned to its start: a no-op outcome, no entry, no history refresh.
+        let _ = editor.update(Message::SliderDraftCommitted(Ok(None)));
+        assert!(editor.slider_draft.is_none(), "the gesture is over");
+        assert!(editor.session.draft.is_none(), "and so is the core draft");
+        assert_eq!(
+            editor.history.entries.len(),
+            history,
+            "a no-op adds no history entry"
+        );
+        assert_eq!(editor.snapshot()["draft"], json!(null));
+        finish(editor, catalog);
+    }
+
+    /// Escape discards the gesture: `draft.cancel`, no commit, and the field returns to the
+    /// authoritative value the displayed entry reports.
+    #[test]
+    fn escape_cancels_the_gesture_and_commits_nothing() {
+        let (mut editor, catalog, log, asset, action, parameter) = drafting();
+        let default = editor
+            .fields
+            .get(&action, &parameter)
+            .expect("a seeded field")
+            .to_owned();
+        let current = editor
+            .state
+            .as_ref()
+            .expect("an open asset")
+            .current_entry
+            .clone();
+        let _ = editor.update(Message::SliderMoved {
+            action: action.clone(),
+            parameter: parameter.clone(),
+            value: 2.0,
+        });
+        begun(&mut editor, &asset, &action, 4);
+        let _ = editor.update(Message::SliderDraftTick);
+        was_set(&mut editor, &asset, &current);
+
+        // Exactly the message the keyboard table raises for Escape while a gesture is open.
+        let context = keymap::KeyContext {
+            slider_drafting: true,
+            ..editor.key_context()
+        };
+        let escape = keymap::keymap(
+            &iced::Event::Keyboard(iced::keyboard::Event::KeyPressed {
+                key: iced::keyboard::Key::Named(iced::keyboard::key::Named::Escape),
+                modified_key: iced::keyboard::Key::Named(iced::keyboard::key::Named::Escape),
+                physical_key: iced::keyboard::key::Physical::Unidentified(
+                    iced::keyboard::key::NativeCode::Unidentified,
+                ),
+                location: iced::keyboard::Location::Standard,
+                modifiers: iced::keyboard::Modifiers::empty(),
+                text: None,
+                repeat: false,
+            }),
+            iced::event::Status::Ignored,
+            &context,
+        );
+        assert!(
+            matches!(escape, Some(Message::SliderDraftCancel)),
+            "Escape discards an open slider gesture: {escape:?}"
+        );
+        let _ = editor.update(escape.expect("the mapped message"));
+
+        let records = logged(&mut editor, &log);
+        assert_eq!(draft_events(&records, "slider_draft_cancelled").len(), 1);
+        assert!(
+            draft_events(&records, "slider_draft_commit").is_empty(),
+            "a cancelled gesture commits nothing"
+        );
+        assert!(editor.slider_draft.is_none());
+        assert_eq!(
+            editor.fields.get(&action, &parameter),
+            Some(default.as_str()),
+            "the field returns to the authoritative value"
+        );
+        finish(editor, catalog);
+    }
+
+    /// An external revision during a gesture keeps the draft, marks it conflicted, raises the
+    /// Changed elsewhere notice and refuses the commit until Discard or Reapply answers it.
+    #[test]
+    fn an_external_commit_during_a_gesture_conflicts_it_and_reapply_clears_it() {
+        let (mut editor, catalog, log, asset, action, parameter) = drafting();
+        let current = editor
+            .state
+            .as_ref()
+            .expect("an open asset")
+            .current_entry
+            .clone();
+        let _ = editor.update(Message::SliderMoved {
+            action: action.clone(),
+            parameter: parameter.clone(),
+            value: 1.5,
+        });
+        begun(&mut editor, &asset, &action, 4);
+        let _ = editor.update(Message::SliderDraftTick);
+        was_set(&mut editor, &asset, &current);
+
+        // Somebody else committed, which is also what this desktop's own undo looks like.
+        let newer = entry(&asset, 9, None);
+        let refresh = refresh_for(&asset, &newer, vec![newer.clone()], &[&newer], false);
+        let _ = editor.update(Message::Synced(Ok(SyncResult::Changed(Box::new(refresh)))));
+        let draft = editor.slider_draft.as_ref().expect("the draft is kept");
+        assert!(draft.conflicted);
+        assert_eq!(
+            editor.fields.get(&action, &parameter),
+            Some("1.5"),
+            "the drafted value stays on the slider"
+        );
+        assert_eq!(
+            editor.snapshot()["notices"],
+            json!(["Changed elsewhere"]),
+            "the captured frame records the chrome it drew"
+        );
+        assert_eq!(editor.snapshot()["draft"]["conflicted"], json!(true));
+
+        // Commit is refused while it is conflicted; nothing is sent.
+        let conflicts = logged(&mut editor, &log);
+        assert_eq!(
+            draft_events(&conflicts, "slider_draft_conflicted").len(),
+            1,
+            "the conflict is recorded once, with the revision that caused it"
+        );
+        let log2 = attach_log(&mut editor);
+        let _ = editor.update(Message::SliderDraftCommit);
+        assert!(
+            draft_events(&logged(&mut editor, &log2), "slider_draft_commit").is_empty(),
+            "a conflicted gesture refuses to commit"
+        );
+        assert!(editor.slider_draft.as_ref().expect("kept").conflicted);
+
+        // Reapply rebases it on the new revision and re-sends the value this client set.
+        let log3 = attach_log(&mut editor);
+        let mut rebased = lightwell_core::Draft::new(&action, asset.clone(), 9);
+        rebased.draft_revision = 1;
+        rebased.fields = json!({ parameter.clone(): 1.5 })
+            .as_object()
+            .cloned()
+            .expect("an object");
+        rebased.conflicted = false;
+        let _ = editor.update(Message::SliderDraftReapply);
+        let _ = editor.update(Message::SliderDraftReapplied(Ok(Box::new(rebased))));
+        let draft = editor.slider_draft.as_ref().expect("the rebased draft");
+        assert!(!draft.conflicted);
+        assert_eq!(draft.base_revision, 9);
+        let records = logged(&mut editor, &log3);
+        let sets = draft_events(&records, "slider_draft_set");
+        assert_eq!(
+            sets.len(),
+            1,
+            "a reapply re-sends the drafted value and re-requests its preview"
+        );
+        assert_eq!(sets[0]["fields"], json!({ parameter.clone(): 1.5 }));
+        assert!(editor.workspace.canvas.notices.is_empty());
+        finish(editor, catalog);
+    }
+
+    /// The gesture's request is the request an independent JSON client sends: `draft.set` carries
+    /// exactly the one field the slider moved, and it is the same field `edit.<action>` carries
+    /// when the same value is typed and submitted with Enter.
+    #[test]
+    fn a_gesture_and_a_json_client_send_the_same_one_field_patch() {
+        let (mut editor, catalog, log, asset, action, parameter) = drafting();
+        let current = editor
+            .state
+            .as_ref()
+            .expect("an open asset")
+            .current_entry
+            .clone();
+        let _ = editor.update(Message::SliderMoved {
+            action: action.clone(),
+            parameter: parameter.clone(),
+            value: 1.0,
+        });
+        begun(&mut editor, &asset, &action, 4);
+        let _ = editor.update(Message::SliderDraftTick);
+        let sets = {
+            let records = logged(&mut editor, &log);
+            draft_events(&records, "slider_draft_set")
+                .first()
+                .cloned()
+                .cloned()
+                .expect("one draft.set")
+        };
+        was_set(&mut editor, &asset, &current);
+        let _ = editor.update(Message::SliderDraftCancel);
+
+        // The same value typed into the field and submitted with Enter.
+        editor.busy = false;
+        let request = editor
+            .request_for(&action, Some(&parameter))
+            .expect("the control's own request");
+        assert_eq!(request["method"], json!(format!("edit.{action}")));
+        let params = request["params"]
+            .as_object()
+            .expect("an object")
+            .clone()
+            .into_iter()
+            .filter(|(key, _)| key != "asset_id" && key != "mutation")
+            .collect::<Map<String, Value>>();
+        // The gesture's fields and the client's parameters are the same patch, field for field.
+        let declared = tools::declared_action(&editor.modules, &action).expect("declared");
+        assert!(declared.patch);
+        assert_eq!(params.len(), 1, "a patch sends one field: {params:?}");
+        assert_eq!(
+            sets["fields"]
+                .as_object()
+                .expect("an object")
+                .keys()
+                .collect::<Vec<_>>(),
+            params.keys().collect::<Vec<_>>(),
+            "the drag and the JSON client name the same field"
+        );
+
+        // Enter in the field runs exactly that request.
+        let _ = editor.update(Message::Submit {
+            action: action.clone(),
+            parameter: Some(parameter.clone()),
+        });
+        assert!(
+            editor.status.starts_with(&format!("Running edit.{action}")),
+            "{}",
+            editor.status
+        );
+        finish(editor, catalog);
+    }
+
+    /// Generated fields follow the displayed entry's values for the module's one layer, except the
+    /// one being typed or dragged; a module whose layer is gone shows its defaults again, and a
+    /// module that reports no values keeps whatever was typed into it.
+    #[test]
+    fn fields_are_seeded_from_the_displayed_entrys_values() {
+        let (mut editor, catalog) = opened_with_modules(descriptors(), 4);
+        let (action, parameter) = patch_control(&editor);
+        let (pick, x, _) = tools::point_pick(&editor.modules).expect("a canvas pick");
+        let (pick, x) = (pick.to_owned(), x.to_owned());
+        editor.fields.set(&pick, &x, "42".into());
+        let asset = editor.state.as_ref().expect("open").asset.id.clone();
+        let module = editor
+            .modules
+            .iter()
+            .find(|module| module.action(&action).is_some())
+            .expect("the declaring module")
+            .id
+            .clone();
+
+        let seeded = |editor: &mut Editor, values: Option<Value>| {
+            let current = editor.state.as_ref().expect("open").current_entry.clone();
+            let mut refresh =
+                refresh_for(&asset, &current, vec![current.clone()], &[&current], false);
+            refresh.recipe.layers = values
+                .into_iter()
+                .map(|values| lightwell_core::LayerDescription {
+                    id: lightwell_core::LayerId::new(),
+                    effect: "test.effect".into(),
+                    module: Some(module.clone()),
+                    title: Some("Test".into()),
+                    summary: "Test".into(),
+                    values: values.as_object().cloned().unwrap_or_default(),
+                    available: true,
+                })
+                .collect();
+            let _ = editor.update(Message::Refreshed(Ok(Box::new(refresh))));
+        };
+
+        seeded(&mut editor, Some(json!({ parameter.clone(): -1.25 })));
+        assert_eq!(
+            editor.fields.get(&action, &parameter),
+            Some("-1.25"),
+            "the slider shows the authoritative value of the module's one layer"
+        );
+        assert_eq!(
+            editor.fields.get(&pick, &x),
+            Some("42"),
+            "a module that reports no values keeps what was typed into it"
+        );
+
+        // A field being dragged is not overwritten by the refresh that arrives under it.
+        editor.dragging = Some((action.clone(), parameter.clone()));
+        editor.fields.set(&action, &parameter, "3".into());
+        seeded(&mut editor, Some(json!({ parameter.clone(): -1.25 })));
+        assert_eq!(editor.fields.get(&action, &parameter), Some("3"));
+        editor.dragging = None;
+
+        // The same for a field being typed.
+        editor.editing = Some((action.clone(), parameter.clone()));
+        editor.fields.set(&action, &parameter, "2.5".into());
+        seeded(&mut editor, Some(json!({ parameter.clone(): -1.25 })));
+        assert_eq!(editor.fields.get(&action, &parameter), Some("2.5"));
+        editor.editing = None;
+
+        // The layer is gone: the fields it reported values for show their declared defaults.
+        seeded(&mut editor, None);
+        let default = tools::declared_action(&editor.modules, &action)
+            .and_then(|declared| declared.parameter(&parameter))
+            .map(fields::seed_text)
+            .expect("a declared default");
+        assert_eq!(
+            editor.fields.get(&action, &parameter),
+            Some(default.as_str())
+        );
+        assert_eq!(editor.fields.get(&pick, &x), Some("42"));
+        finish(editor, catalog);
+    }
+
+    /// A drag re-derives the section whose action it drafts and leaves every other section exactly
+    /// as it was, which is the per-section version rule the panel is built on.
+    #[test]
+    fn a_drag_re_derives_only_the_drafting_modules_section() {
+        let (mut editor, catalog) = opened_with_modules(descriptors(), 4);
+        editor.developer = true;
+        editor.rederive();
+        let (action, parameter) = patch_control(&editor);
+        let owner = editor
+            .modules
+            .iter()
+            .find(|module| module.action(&action).is_some())
+            .expect("the declaring module")
+            .id
+            .clone();
+        let versions = |editor: &Editor| -> BTreeMap<String, u64> {
+            editor
+                .workspace
+                .tools
+                .all()
+                .map(|section| (section.module_id.clone(), section.version))
+                .collect()
+        };
+        let before = versions(&editor);
+        assert!(before.len() > 1, "more than one section is on screen");
+
+        let _ = editor.update(Message::SliderMoved {
+            action,
+            parameter,
+            value: 0.5,
+        });
+        let after = versions(&editor);
+        for (module, version) in &before {
+            if module == &owner {
+                assert!(
+                    after[module] > *version,
+                    "{module} follows its own field: {version} to {}",
+                    after[module]
+                );
+            } else {
+                assert_eq!(
+                    after[module], *version,
+                    "{module} was re-derived by a drag in another module"
+                );
+            }
+        }
+        finish(editor, catalog);
+    }
+
+    /// At most one draft per client: a gesture is refused while the crop draft is open, and the
+    /// crop mode and Compare are refused while a gesture is open.
+    #[test]
+    fn one_draft_at_a_time_is_refused_from_either_side() {
+        let (mut editor, catalog, _, asset, action, parameter) = drafting();
+        let crop = tools::crop_frame(&editor.modules)
+            .expect("a declared crop frame")
+            .module
+            .id
+            .to_owned();
+
+        // A gesture while the crop draft is open.
+        let _ = editor.update(Message::Crop(CropMessage::Start));
+        editor.open_draft(CropStage {
+            width: 480,
+            height: 320,
+            angle: 0.0,
+        });
+        let _ = editor.update(Message::SliderMoved {
+            action: action.clone(),
+            parameter: parameter.clone(),
+            value: 1.0,
+        });
+        assert!(editor.slider_draft.is_none(), "{}", editor.status);
+        assert!(editor.status.contains("crop draft"), "{}", editor.status);
+        let _ = editor.update(Message::Crop(CropMessage::Cancel));
+
+        // The crop mode and Compare while a gesture is open.
+        editor.busy = false;
+        let _ = editor.update(Message::SliderMoved {
+            action,
+            parameter,
+            value: 1.0,
+        });
+        begun(&mut editor, &asset, "unused", 4);
+        assert!(editor.slider_draft.is_some());
+        let _ = editor.update(Message::SetMode(crop));
+        assert!(editor.crop.is_none() && editor.crop_pending.is_none());
+        assert!(editor.status.contains("slider draft"), "{}", editor.status);
+        editor.original_entry = Some(entry(&asset, 0, None).id);
+        let _ = editor.update(Message::CompareBegin);
+        assert!(editor.compare_return.is_none());
+        assert!(editor.status.contains("slider draft"), "{}", editor.status);
+        finish(editor, catalog);
+    }
 
     #[test]
     fn a_canvas_pick_fills_the_located_content_coordinate_without_committing() {
@@ -1935,6 +2710,7 @@ mod tests {
         assert_eq!(editor.api_sequence, 0, "a drag calls nothing");
         let _ = editor.update(Message::SliderReleased {
             action: action.clone(),
+            parameter: x.clone(),
         });
         assert!(editor.dragging.is_none(), "release ends the drag");
         // Editing a value and cancelling leaves the text exactly as it was.
@@ -1983,6 +2759,7 @@ mod tests {
         }
         let _ = editor.update(Message::SliderReleased {
             action: action.clone(),
+            parameter: x.clone(),
         });
         assert!(editor.busy, "release submits exactly one request");
         assert!(
@@ -1993,7 +2770,10 @@ mod tests {
 
         // A second release while the first request is still in flight sends nothing further.
         let busy_status = editor.status.clone();
-        let _ = editor.update(Message::SliderReleased { action });
+        let _ = editor.update(Message::SliderReleased {
+            action,
+            parameter: x,
+        });
         assert_eq!(
             editor.status, busy_status,
             "already busy: no second request"
@@ -2018,7 +2798,7 @@ mod tests {
             let declared = tools::declared_action(&modules, &action)
                 .unwrap_or_else(|| panic!("{action} is not declared by any module"));
             let request = editor
-                .request_for(&action)
+                .request_for(&action, None)
                 .unwrap_or_else(|| panic!("{action}: {}", editor.status));
             assert_eq!(request["method"], json!(format!("edit.{action}")));
             let params = request["params"].as_object().expect("an object");
@@ -2158,7 +2938,7 @@ mod tests {
     fn copy_as_json_request_writes_what_the_control_would_send() {
         let (mut editor, catalog, asset, _) = opened(Vec::new(), 5);
         let request = editor
-            .request_for("crop-reset")
+            .request_for("crop-reset", None)
             .expect("a copyable request");
         assert_eq!(request["method"], json!("edit.crop-reset"));
         assert_eq!(request["params"]["asset_id"], json!(asset));
@@ -2171,6 +2951,7 @@ mod tests {
         );
         let _ = editor.update(Message::CopyRequest {
             action: "crop-reset".into(),
+            parameter: None,
         });
         assert!(editor.status.contains("Copied"), "{}", editor.status);
         finish(editor, catalog);
@@ -2388,6 +3169,7 @@ mod tests {
         editor.history.entries.push(older.clone());
         let upload = Upload {
             generation: 1,
+            draft_revision: None,
             width: 480,
             height: 320,
             entry_id: older.id.clone(),
