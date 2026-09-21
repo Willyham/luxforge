@@ -8,11 +8,12 @@
     {
       "id": "TASK-001",
       "description": "Extend the core descriptor with the boolean and curve parameter kinds, the number hints (soft range, fine step, zero), the toggle, choice and curve control kinds, the style and rail hints on number, color and action controls, and icon names on actions; validate every binding at registration and every request against the new kinds.",
-      "status": "pending",
+      "status": "completed",
       "dependencies": [],
       "extra_context": [
         "The host validates and stores exactly what it is sent; hints change what a client draws, never what the host accepts. A curve is an ordered list of [x, y] fractions with strictly increasing x, monotone when declared, and fixed x values when declared.",
-        "The string parameter kind, the text control and the pad control are the second slice and are not added here. Existing built-in modules keep their descriptors; only the descriptor types, validation and module.list change."
+        "The string parameter kind, the text control and the pad control are the second slice and are not added here. Existing built-in modules keep their descriptors; only the descriptor types, validation and module.list change.",
+        "Evidence: 510827b; lightwell-core unit and integration suites pass (245 library tests; existing fixture-dependent ignored cases retained); descriptor JSON roundtrip, invalid bindings/hints, boolean/curve request checks and module.list assertions pass. check-repository passes. Descriptor-only registration/request validation adds no frame work, timers or queues."
       ],
       "context_links": [
         {
@@ -60,7 +61,7 @@
     {
       "id": "TASK-002",
       "description": "Add the basic widgets to lightwell-ui: the soft-range and rail-decorated slider, the factored number field, the stepper, the toggle, the menu choice, and the named Icon enumeration drawn as vector paths, with pure geometry functions and gallery states.",
-      "status": "pending",
+      "status": "in_progress",
       "dependencies": [],
       "extra_context": [
         "Every widget takes a plain-data model and messages and holds no state; fractions are mapped to values by the caller. Canvas-drawn icons cache their geometry.",
@@ -111,11 +112,12 @@
     {
       "id": "TASK-003",
       "description": "Add the colour swatch, the colour picker and the curve editor to lightwell-ui as canvas widgets with cached geometry, pure HSV, hex and hit-test functions, and gallery states.",
-      "status": "pending",
+      "status": "completed",
       "dependencies": [],
       "extra_context": [
         "The curve editor draws a polyline the host supplies and never interpolates; the picker maps pointer positions to fractions and the caller turns them into channel values.",
-        "Tessellated geometry is cached on the model's version the way the histogram plot caches its polygons, so an unchanged model costs nothing per frame."
+        "Tessellated geometry is cached on the model's version the way the histogram plot caches its polygons, so an unchanged model costs nothing per frame.",
+        "Evidence: e3f6b5b and 7f0fccf; lightwell-ui 38 tests pass, including exhaustive 8-bit RGB HSV/hex round trips, offset hit testing, keyboard release and version-cache checks. Gallery includes swatch, picker and curve rest/dragging/disabled, histogram and two-channel states; check-repository passes. Native captures remain TASK-006."
       ],
       "context_links": [
         {
