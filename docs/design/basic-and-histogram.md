@@ -166,11 +166,15 @@ Prove identity, finite output, nondecreasing neutral-ramp response over all allo
 
 These controls reshape retained information. A clipped JPEG plateau cannot regain missing detail. Adobe describes its tone controls as image-adaptive; its formulas and numeric behavior are not this contract. [Adobe tone procedure](https://helpx.adobe.com/lightroom-classic/desktop/help/tone-control-adjustment.html)
 
+Frozen: [Tone mathematics](basic-tone.md). Luminance is Rec. 709 on linear sRGB; the curve runs on the analytically continued sRGB encoding with the pivot at encoded 0.5; Whites and Blacks are an endpoint remap with a crossing-prevention clamp, Highlights and Shadows are windowed odds-bias curves (`K_HS = 1.5`), Contrast is a normalized logistic S-curve, composed in that order; RGB is reconstructed by the luminance ratio with an additive near-black rule; the composed curve is nondecreasing for every parameter combination (minimum slope about 0.033 inside [0, 1], strictly positive on the extended domain), and production is checked against the independent f64 reference within `1e-5 + 1e-5 × |reference|`. Its documented limitation is the one a global curve has: lifted shadow noise loses some local contrast, and an edge-aware stage stays a later proposal.
+
 ### White balance and neutral picker
 
 Recommend a documented relative chromatic-adaptation or channel-gain transform with luminance normalization, not multiplying encoded bytes. The numerical task selects one, fixes its matrices/gain mapping and produces warm/cool, green/magenta, near-black and saturated-patch references. Zero/zero means the JPEG's existing rendering, shown as Original; do not imply the camera's RAW white balance is recoverable. A custom value shows Custom.
 
 The neutral picker samples a bounded patch (default 5×5 at input-stage pixel centers, clipped at image edges), evaluates before the target Basic layer, and computes reproducible parameters. Store the resulting numeric settings in the recipe; the sampled position/statistics may be action metadata, not a dependency on a future screen image. Map displayed coordinates back through subsequent geometry. Reject near-black, clipped or non-invertible/invalid samples with an explanation; do not guess. If the relative axes cannot represent the correction within range, report it rather than silently clamping. Freeze averaging, rejection thresholds and solver tolerance in the numerical task. UI and API use the same sample coordinates and solver; cancel commits nothing.
+
+Frozen: [White balance mathematics](basic-white-balance.md). A von Kries adaptation in Bradford LMS anchored at the sRGB D65 white, Temperature as a mired shift along the daylight locus (about 3900 K to 20000 K across ±100) and Tint as a perpendicular CIE 1960 uv offset with positive tint magenta; 0/0 is the exact identity; the neutral picker averages the 5 × 5 patch in linear light, rejects clipped, near-black and non-finite samples with a reason, solves by bounded Newton iteration, rounds to whole steps and refuses corrections outside ±100 rather than clamping.
 
 ### Saturation and vibrance
 
