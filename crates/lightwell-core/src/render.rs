@@ -955,6 +955,22 @@ pub fn locate(
     })
 }
 
+/// The output stage one recipe produces over this source: the dimensions an analysis job, a
+/// preview or an export of it will have. Cost is linear in the layer count — it compiles the stack
+/// and allocates only the per-segment operation lists — and it reads no pixels and rasterizes
+/// nothing, so the catalog owner may call it while building a job.
+pub fn extents(
+    registry: &ModuleRegistry,
+    source: &SourceImage,
+    recipe: &Recipe,
+) -> Result<(u32, u32), Error> {
+    check_source(source)?;
+    let stage = registry
+        .compile(source.width, source.height, recipe)?
+        .stage();
+    Ok((stage.width, stage.height))
+}
+
 pub fn render(
     registry: &ModuleRegistry,
     source: &SourceImage,

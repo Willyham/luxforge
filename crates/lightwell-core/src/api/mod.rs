@@ -6,6 +6,7 @@ mod transport;
 
 pub use methods::schemas;
 pub use owner::{ClientId, OwnerHandle, PreviewRequest};
+
 pub use transport::{LocalServer, LocalSessionInfo, serve_json_lines};
 
 use crate::{Draft, Error, ErrorKind, PreviewSession};
@@ -88,8 +89,10 @@ pub struct EventsResult {
     pub gap: bool,
 }
 
-/// Per-client workspace state: which panels are open, which canvas mode is active and whether the
-/// thirds overlay is on. It is a client preference the owner holds, never authoritative edit state.
+/// Per-client workspace state: which panels are open, which canvas mode is active, whether the
+/// thirds overlay is on and which clipping overlays are shown. It is a client preference the owner
+/// holds, never authoritative edit state: an overlay never alters the raster, the saved recipe, the
+/// histogram population or a future export.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct WorkspaceState {
@@ -98,6 +101,12 @@ pub struct WorkspaceState {
     /// `pointer`, or the id of an available module that declares a canvas interaction.
     pub mode: String,
     pub thirds: bool,
+    /// Show the shadow (any channel at code 0) clipping overlay.
+    #[serde(default)]
+    pub clip_shadows: bool,
+    /// Show the highlight (any channel at code 255) clipping overlay.
+    #[serde(default)]
+    pub clip_highlights: bool,
 }
 
 /// The pointer mode: the canvas shows the photograph and nothing else.
@@ -110,6 +119,8 @@ impl Default for WorkspaceState {
             tools_panel: true,
             mode: POINTER_MODE.into(),
             thirds: false,
+            clip_shadows: false,
+            clip_highlights: false,
         }
     }
 }

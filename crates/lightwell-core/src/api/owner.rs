@@ -1,9 +1,12 @@
 //! One thread owns the catalog and every client session; all clients call it in turn.
 use super::{ApiEvent, ApiRequest, ApiResponse, ClientSession, EventsResult, methods};
 use crate::{
-    AssetId, DraftId, EditorService, EntryId, Error, ErrorKind, ModuleRegistry, PreviewJob,
+    AnalysisPlan, AnalysisSelection, AssetId, DraftId, EditorService, EntryId, Error, ErrorKind,
+    JobId, ModuleRegistry, PreviewJob,
+    analysis::{AnalysisIdentity, AnalysisJob, AnalysisQueue, AnalysisRead, AnalysisStore, Report},
 };
 use serde::Deserialize;
+use serde_json::{Value, json};
 use std::{
     collections::{HashMap, VecDeque},
     path::Path,
@@ -21,6 +24,14 @@ const EVENT_CAPACITY: usize = 256;
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct ClientId(u64);
 
+#[cfg(test)]
+impl ClientId {
+    /// A client identity for tests that drive the store without an owner loop.
+    pub(crate) fn testing(id: u64) -> Self {
+        Self(id)
+    }
+}
+
 struct OwnerCall {
     client: ClientId,
     request: ApiRequest,
@@ -32,6 +43,18 @@ enum OwnerMessage {
     Preview {
         request: PreviewRequest,
         response: SyncSender<Result<PreviewJob, Error>>,
+    },
+    /// The analysis worker finished a job. Nothing polls for this: the worker posts it into the
+    /// owner's own channel, so the owner stays asleep until there is something to do.
+    AnalysisFinished {
+        job_id: JobId,
+        result: Result<Box<Report>, Error>,
+    },
+    /// A report the desktop's preview worker already produced for this identity, so an API request
+    /// for the same identity is a cache hit and no second render happens.
+    AnalysisSubmitted {
+        identity: Box<AnalysisIdentity>,
+        report: Box<Report>,
     },
     Disconnect(ClientId),
     Stop,
@@ -49,6 +72,10 @@ pub struct PreviewRequest {
     pub layer_count: Option<usize>,
     /// Render this client's open draft instead of the stored stack.
     pub draft: Option<DraftId>,
+    /// Also reduce the rendered frame into a histogram report, which the worker returns beside the
+    /// raster. Refused together with `layer_count`: a truncated job renders a layer prefix its
+    /// identity does not describe.
+    pub analyse: bool,
 }
 
 impl PreviewRequest {
@@ -60,6 +87,7 @@ impl PreviewRequest {
             entry_id: None,
             layer_count: None,
             draft: None,
+            analyse: false,
         }
     }
     /// Show this entry instead of the current one.
@@ -75,6 +103,12 @@ impl PreviewRequest {
     /// Render the effective recipe of this client's draft.
     pub fn draft(mut self, draft: DraftId) -> Self {
         self.draft = Some(draft);
+        self
+    }
+    /// Reduce the rendered frame into a histogram report as well, so the displayed target needs no
+    /// second render.
+    pub fn analyse(mut self) -> Self {
+        self.analyse = true;
         self
     }
 }
@@ -98,7 +132,10 @@ impl OwnerHandle {
     ) -> Result<(Self, JoinHandle<()>), Error> {
         let service = EditorService::open_with(catalog, registry)?;
         let (sender, receiver) = sync_channel(64);
-        let join = std::thread::spawn(move || owner_loop(service, receiver));
+        // The analysis worker posts its results back through this same channel, so the owner needs
+        // one clone of its own sender. The loop ends on `Stop`, never on the senders dropping.
+        let completions = sender.clone();
+        let join = std::thread::spawn(move || owner_loop(service, completions, receiver));
         Ok((
             Self {
                 sender,
@@ -150,17 +187,56 @@ impl OwnerHandle {
             .recv()
             .map_err(|_| Error::new(ErrorKind::Protocol, "catalog owner stopped before preview"))?
     }
+
+    /// Hand the owner a report the caller's own preview worker produced for this identity. The next
+    /// `analysis.request` for the same identity is then a cache hit, so a displayed target is never
+    /// rendered twice. Fire and forget: it answers nothing and emits no event.
+    pub fn submit_analysis(&self, identity: AnalysisIdentity, report: Report) {
+        let _ = self.sender.send(OwnerMessage::AnalysisSubmitted {
+            identity: Box::new(identity),
+            report: Box::new(report),
+        });
+    }
 }
 
-fn owner_loop(mut service: EditorService, receiver: Receiver<OwnerMessage>) {
+fn owner_loop(
+    mut service: EditorService,
+    completions: SyncSender<OwnerMessage>,
+    receiver: Receiver<OwnerMessage>,
+) {
     let mut sequence = 0u64;
     let mut events = VecDeque::with_capacity(EVENT_CAPACITY);
     let mut sessions: HashMap<ClientId, ClientSession> = HashMap::new();
+    let mut store = AnalysisStore::default();
+    // One analysis worker with one active and one replaceable pending job, globally. The worker
+    // sends its report back into this loop; nothing here waits on it or polls for it.
+    let mut queue = AnalysisQueue::new(Arc::new(move |job_id, result| {
+        let _ = completions.send(OwnerMessage::AnalysisFinished {
+            job_id,
+            result: result.map(Box::new),
+        });
+    }));
     while let Ok(message) = receiver.recv() {
         match message {
             OwnerMessage::Stop => break,
             OwnerMessage::Disconnect(client) => {
                 sessions.remove(&client);
+                // A gone client releases its analysis interests exactly as a cancel does; a job
+                // nobody else wants is dropped from the pending slot, or its result is discarded
+                // when it arrives from the worker.
+                for job_id in store.disconnect(client) {
+                    queue.drop_pending(&job_id);
+                    store.cancel(&job_id);
+                }
+            }
+            OwnerMessage::AnalysisFinished { job_id, result } => {
+                if store.awaits(&job_id) {
+                    store.complete(&job_id, result.map(|report| *report));
+                }
+                queue.finished(&job_id);
+            }
+            OwnerMessage::AnalysisSubmitted { identity, report } => {
+                store.submit(*identity, *report);
             }
             OwnerMessage::Preview { request, response } => {
                 // A draft is session state, so the owner looks it up in the requesting client's own
@@ -181,24 +257,67 @@ fn owner_loop(mut service: EditorService, receiver: Receiver<OwnerMessage>) {
                         }),
                 };
                 let job = draft.and_then(|draft| {
-                    service.preview_job(
-                        &request.asset_id,
-                        request.entry_id.as_ref(),
-                        request.layer_count,
-                        draft,
-                    )
+                    if request.analyse && request.layer_count.is_some() {
+                        return Err(Error::new(
+                            ErrorKind::Validation,
+                            "a truncated preview renders a layer prefix its identity does not describe, so it cannot be analysed",
+                        ));
+                    }
+                    service
+                        .preview_job(
+                            &request.asset_id,
+                            request.entry_id.as_ref(),
+                            request.layer_count,
+                            draft,
+                        )
+                        .map(|mut job| {
+                            job.analyse = request.analyse;
+                            job
+                        })
                 });
                 let _ = response.send(job);
             }
             OwnerMessage::Call(call) => {
-                let session = sessions.entry(call.client).or_default();
                 // Discovery and dispatch resolve through the same registry-aware lookup.
                 let method = methods::find(&service, &call.request.method);
                 let response = match method {
+                    // The methods the owner answers from its own state: the event log, and the
+                    // analysis jobs, whose store, worker slots and client drafts all live here.
                     Some(method) if method.owner_answered() => {
-                        event_response(&call.request, sequence, &events)
+                        let request = &call.request;
+                        match request.method.as_str() {
+                            "analysis.request" => answer(
+                                request,
+                                sequence,
+                                analysis_request(
+                                    &service,
+                                    &sessions,
+                                    &mut store,
+                                    &mut queue,
+                                    call.client,
+                                    &request.params,
+                                ),
+                            ),
+                            "analysis.read" => answer(
+                                request,
+                                sequence,
+                                analysis_read(&store, call.client, &request.params),
+                            ),
+                            "analysis.cancel" => answer(
+                                request,
+                                sequence,
+                                analysis_cancel(
+                                    &mut store,
+                                    &mut queue,
+                                    call.client,
+                                    &request.params,
+                                ),
+                            ),
+                            _ => event_response(request, sequence, &events),
+                        }
                     }
                     Some(method) => {
+                        let session = sessions.entry(call.client).or_default();
                         let response =
                             methods::dispatch(&mut service, session, &call.request, sequence);
                         if response.error.is_none()
@@ -221,12 +340,155 @@ fn owner_loop(mut service: EditorService, receiver: Receiver<OwnerMessage>) {
                             response
                         }
                     }
-                    None => methods::dispatch(&mut service, session, &call.request, sequence),
+                    None => {
+                        let session = sessions.entry(call.client).or_default();
+                        methods::dispatch(&mut service, session, &call.request, sequence)
+                    }
                 };
                 let _ = call.response.send(response);
             }
         }
     }
+}
+
+/// Wrap one owner-answered result in the shared response envelope.
+fn answer(request: &ApiRequest, sequence: u64, result: Result<Value, Error>) -> ApiResponse {
+    match result {
+        Ok(result) => ApiResponse::success(request.id.clone(), sequence, result),
+        Err(error) => ApiResponse::failure(request.id.clone(), sequence, error),
+    }
+}
+
+/// Which evaluated stack the caller wants analysed.
+#[derive(Deserialize)]
+#[serde(tag = "kind", rename_all = "kebab-case", deny_unknown_fields)]
+enum AnalysisTarget {
+    /// The asset's current entry.
+    Current,
+    /// One frozen historical entry, which a later commit never relabels.
+    Entry { entry_id: EntryId },
+    /// This client's own open draft, at the `draft_revision` it holds now.
+    Draft { draft_id: DraftId },
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct AnalysisJobParams {
+    job_id: JobId,
+}
+
+/// `analysis.request`. Everything the owner does here is bookkeeping and `O(layers)` planning: a
+/// state read, the cached verified source, the draft's plan and one compile to learn the output
+/// stage. No frame is allocated and nothing is rasterized on this thread.
+fn analysis_request(
+    service: &EditorService,
+    sessions: &HashMap<ClientId, ClientSession>,
+    store: &mut AnalysisStore,
+    queue: &mut AnalysisQueue,
+    client: ClientId,
+    params: &Value,
+) -> Result<Value, Error> {
+    #[derive(Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct Params {
+        asset_id: AssetId,
+        target: AnalysisTarget,
+    }
+    let request: Params = methods::params(params)?;
+    // A draft is session state, so it resolves from the calling client's own session: another
+    // client's draft, or one that has ended, is simply not this session's.
+    let held;
+    let selection = match &request.target {
+        AnalysisTarget::Current => AnalysisSelection::Current,
+        AnalysisTarget::Entry { entry_id } => AnalysisSelection::Entry(entry_id),
+        AnalysisTarget::Draft { draft_id } => {
+            held = sessions
+                .get(&client)
+                .and_then(|session| session.draft.as_ref())
+                .filter(|draft| &draft.draft_id == draft_id)
+                .ok_or_else(|| {
+                    Error::new(
+                        ErrorKind::Validation,
+                        format!("unknown draft {draft_id} for this client"),
+                    )
+                })?;
+            AnalysisSelection::Draft(held)
+        }
+    };
+    let AnalysisPlan {
+        identity,
+        source,
+        registry,
+        recipe,
+        failure,
+    } = service.analysis_plan(&request.asset_id, selection)?;
+    // An identical identity joins the job that already covers it, whether it is still running or
+    // already holds a report: the same work is never done twice.
+    let (job_id, fresh) = store.request(identity.clone(), client);
+    if fresh {
+        match failure {
+            // The effective recipe resolved but has no output stage the host can evaluate, so no
+            // worker is started: the job is failed from the start and carries the reason.
+            Some(error) => store.fail(&job_id, error),
+            None => {
+                if let Some(displaced) = queue.submit(AnalysisJob {
+                    job_id: job_id.clone(),
+                    identity,
+                    source,
+                    registry,
+                    recipe,
+                }) {
+                    store.supersede(&displaced);
+                }
+            }
+        }
+    }
+    let read = store
+        .state_of(&job_id)
+        .expect("the job was just opened or joined");
+    let mut value = analysis_value(&read)?;
+    value["job_id"] = json!(job_id);
+    Ok(value)
+}
+
+/// `analysis.read`. A job this client never requested is not its own.
+fn analysis_read(store: &AnalysisStore, client: ClientId, params: &Value) -> Result<Value, Error> {
+    let params: AnalysisJobParams = methods::params(params)?;
+    analysis_value(&store.read(&params.job_id, client)?)
+}
+
+/// `analysis.cancel`. Dropping the last interest drops a pending job outright; an active render is
+/// not interrupted mid-way — it runs to completion on the worker and its result is discarded on
+/// arrival, which costs nothing the render was not already spending.
+fn analysis_cancel(
+    store: &mut AnalysisStore,
+    queue: &mut AnalysisQueue,
+    client: ClientId,
+    params: &Value,
+) -> Result<Value, Error> {
+    let params: AnalysisJobParams = methods::params(params)?;
+    if store.release(&params.job_id, client)? == crate::analysis::Release::Cancelled {
+        queue.drop_pending(&params.job_id);
+        store.cancel(&params.job_id);
+    }
+    Ok(json!({"cancelled": true}))
+}
+
+/// One job's state as a client reads it. Only `ready` ever carries `report`, so pending, failed,
+/// superseded and cancelled can never be mistaken for a valid but empty histogram.
+fn analysis_value(read: &AnalysisRead<'_>) -> Result<Value, Error> {
+    let mut value = json!({
+        "status": read.status,
+        "identity": read.identity,
+    });
+    if let Some(report) = read.report {
+        value["report"] = serde_json::to_value(report)
+            .map_err(|error| Error::new(ErrorKind::Internal, error.to_string()))?;
+    }
+    if let Some(error) = read.error {
+        value["error"] = json!({"code": error.kind.code(), "message": error.detail});
+    }
+    Ok(value)
 }
 
 fn event_response(request: &ApiRequest, sequence: u64, events: &VecDeque<ApiEvent>) -> ApiResponse {
@@ -272,6 +534,106 @@ mod tests {
     }
     fn fixture() -> PathBuf {
         Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/s0/orientation-1.jpg")
+    }
+
+    /// One JSON call against the owner, as an independent client would make it.
+    fn send(
+        owner: &OwnerHandle,
+        client: ClientId,
+        id: &str,
+        method: &str,
+        params: Value,
+    ) -> ApiResponse {
+        owner
+            .call(
+                client,
+                ApiRequest {
+                    id: id.into(),
+                    method: method.into(),
+                    params,
+                    token: None,
+                },
+            )
+            .expect("the owner answered")
+    }
+
+    fn ok(owner: &OwnerHandle, client: ClientId, id: &str, method: &str, params: Value) -> Value {
+        let response = send(owner, client, id, method, params);
+        assert!(response.error.is_none(), "{id}: {:?}", response.error);
+        response.result.expect("a result")
+    }
+
+    fn failure(
+        owner: &OwnerHandle,
+        client: ClientId,
+        id: &str,
+        method: &str,
+        params: Value,
+    ) -> super::super::ApiFailure {
+        send(owner, client, id, method, params)
+            .error
+            .unwrap_or_else(|| panic!("{id} was expected to fail"))
+    }
+
+    /// Poll `analysis.read` until the job leaves `pending`. Nothing in the owner polls: this is the
+    /// test standing in for a client that would rather be told, and it fails on a deadline instead
+    /// of spinning forever.
+    fn settled(owner: &OwnerHandle, client: ClientId, job_id: &Value) -> Value {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+        loop {
+            let read = ok(
+                owner,
+                client,
+                "read",
+                "analysis.read",
+                json!({"job_id": job_id}),
+            );
+            if read["status"] != json!("pending") {
+                return read;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the analysis job never settled"
+            );
+            std::thread::yield_now();
+        }
+    }
+
+    /// The exact report the contract says a target must produce: render that entry's own stack from
+    /// the verified source and reduce the resulting raster. This is the independent reference the
+    /// API answer is compared against, not a copy of the API's own arithmetic.
+    fn expected_report(owner: &OwnerHandle, request: PreviewRequest) -> Value {
+        let job = owner.preview_job(request).expect("a preview job");
+        let raster = crate::render(
+            &job.registry,
+            &job.source,
+            job.entry.snapshot.id.clone(),
+            &job.recipe,
+        )
+        .expect("a rendered frame");
+        serde_json::to_value(crate::analysis::reduce_raster(&raster).expect("a reduction"))
+            .expect("an encodable report")
+    }
+
+    fn pixel_edit(
+        owner: &OwnerHandle,
+        client: ClientId,
+        asset: &Value,
+        revision: u64,
+        request: &str,
+        rgb: [u8; 3],
+    ) -> Value {
+        ok(
+            owner,
+            client,
+            request,
+            "edit.set-pixel",
+            json!({
+                "asset_id": asset,
+                "mutation": {"expected_revision": revision, "request_id": request, "actor": "test"},
+                "x": 0, "y": 0, "rgb": rgb,
+            }),
+        )
     }
 
     #[test]
@@ -547,6 +909,739 @@ mod tests {
                 .expect_err("the draft has ended")
                 .kind,
             ErrorKind::Validation
+        );
+        owner.stop();
+        join.join().unwrap();
+        std::fs::remove_file(catalog).unwrap();
+    }
+
+    /// Two independent JSON clients ask for the exact histogram of the same evaluated image, share
+    /// one job, and keep correct independent results while edits continue: the frozen historical
+    /// result stays attached to its entry and is never relabelled current.
+    #[test]
+    fn two_clients_share_one_job_and_keep_independent_current_and_historical_results() {
+        let catalog = temp("analysis-share.sqlite");
+        let _ = std::fs::remove_file(&catalog);
+        let (owner, join) = OwnerHandle::start(&catalog).unwrap();
+        let viewer = owner.register();
+        let agent = owner.register();
+        let imported = ok(
+            &owner,
+            viewer,
+            "import",
+            "catalog.import",
+            json!({"path": fixture()}),
+        );
+        let asset = imported["asset"]["id"].clone();
+        let original = imported["current_entry"]["id"].clone();
+        let asset_id = crate::AssetId::parse(asset.as_str().unwrap()).unwrap();
+
+        // Both clients ask for the current composition. The identities are equal, so this is one
+        // job and one render, not two.
+        let first = ok(
+            &owner,
+            viewer,
+            "request",
+            "analysis.request",
+            json!({"asset_id": asset, "target": {"kind": "current"}}),
+        );
+        let second = ok(
+            &owner,
+            agent,
+            "request",
+            "analysis.request",
+            json!({"asset_id": asset, "target": {"kind": "current"}}),
+        );
+        assert_eq!(
+            first["job_id"], second["job_id"],
+            "identical identities share one job"
+        );
+        assert_eq!(first["identity"], second["identity"]);
+        let identity = first["identity"].clone();
+        assert_eq!(identity["asset_id"], asset);
+        assert_eq!(identity["entry_id"], original);
+        assert_eq!(identity["domain"], json!("srgb-8bit-output"));
+        assert_eq!(identity["width"], json!(480));
+        assert_eq!(identity["height"], json!(320));
+        assert_eq!(
+            identity["recipe_hash"].as_str().unwrap().len(),
+            64,
+            "SHA-256 as hex"
+        );
+        assert!(identity.get("draft").is_none(), "no draft is involved");
+
+        let settled_viewer = settled(&owner, viewer, &first["job_id"]);
+        assert_eq!(settled_viewer["status"], json!("ready"));
+        assert_eq!(settled_viewer["identity"], identity);
+        let reference = expected_report(&owner, PreviewRequest::new(viewer, asset_id.clone()));
+        assert_eq!(
+            settled_viewer["report"], reference,
+            "the counts are the exact reduction of that entry's rendered frame"
+        );
+        assert!(settled_viewer.get("error").is_none());
+        // The other client reads the very same shared result.
+        assert_eq!(
+            settled(&owner, agent, &second["job_id"])["report"],
+            reference
+        );
+
+        // The agent commits while the viewer holds a report of the original entry.
+        pixel_edit(&owner, agent, &asset, 0, "edit", [255, 255, 255]);
+
+        // Asking for that historical entry answers from its own immutable stack: same identity,
+        // same counts, still named by the original entry rather than the new current one.
+        let historical = ok(
+            &owner,
+            viewer,
+            "historical",
+            "analysis.request",
+            json!({"asset_id": asset, "target": {"kind": "entry", "entry_id": original}}),
+        );
+        assert_eq!(
+            historical["status"],
+            json!("ready"),
+            "the stored report answers without a second render"
+        );
+        assert_eq!(historical["identity"], identity);
+        assert_eq!(historical["report"], reference);
+        assert_eq!(historical["identity"]["entry_id"], original);
+
+        // The current composition is now different work with a different identity and counts.
+        let current = ok(
+            &owner,
+            viewer,
+            "current",
+            "analysis.request",
+            json!({"asset_id": asset, "target": {"kind": "current"}}),
+        );
+        assert_ne!(current["job_id"], first["job_id"]);
+        assert_ne!(current["identity"]["entry_id"], original);
+        assert_ne!(current["identity"]["recipe_hash"], identity["recipe_hash"]);
+        let settled_current = settled(&owner, viewer, &current["job_id"]);
+        assert_eq!(settled_current["status"], json!("ready"));
+        assert_ne!(
+            settled_current["report"], reference,
+            "one replaced pixel moves the counts"
+        );
+        assert_eq!(
+            settled_current["report"],
+            expected_report(&owner, PreviewRequest::new(viewer, asset_id))
+        );
+        // The earlier result is untouched by the commit.
+        assert_eq!(
+            settled(&owner, viewer, &first["job_id"])["report"],
+            reference
+        );
+
+        // A job this client never requested is not its own, and neither is one that does not exist.
+        let foreign = owner.register();
+        for (id, method) in [("foreign", "analysis.read"), ("fc", "analysis.cancel")] {
+            assert_eq!(
+                failure(
+                    &owner,
+                    foreign,
+                    id,
+                    method,
+                    json!({"job_id": first["job_id"]})
+                )
+                .code,
+                "validation"
+            );
+        }
+        assert_eq!(
+            failure(
+                &owner,
+                viewer,
+                "missing",
+                "analysis.read",
+                json!({"job_id": crate::JobId::new()}),
+            )
+            .code,
+            "validation"
+        );
+        assert_eq!(
+            failure(
+                &owner,
+                viewer,
+                "malformed",
+                "analysis.read",
+                json!({"job_id": "not-a-job"}),
+            )
+            .code,
+            "validation"
+        );
+        assert_eq!(
+            failure(
+                &owner,
+                viewer,
+                "unknown-asset",
+                "analysis.request",
+                json!({"asset_id": crate::AssetId::new(), "target": {"kind": "current"}}),
+            )
+            .code,
+            "validation"
+        );
+        owner.stop();
+        join.join().unwrap();
+        std::fs::remove_file(catalog).unwrap();
+    }
+
+    /// A caller-owned draft is analysed at the revision it holds now, its effective recipe is never
+    /// persisted, and no other client can name it.
+    #[test]
+    fn a_draft_target_analyses_the_drafted_recipe_and_belongs_to_one_session() {
+        let catalog = temp("analysis-draft.sqlite");
+        let _ = std::fs::remove_file(&catalog);
+        let (owner, join) = OwnerHandle::start(&catalog).unwrap();
+        let client = owner.register();
+        let other = owner.register();
+        let imported = ok(
+            &owner,
+            client,
+            "import",
+            "catalog.import",
+            json!({"path": fixture()}),
+        );
+        let asset = imported["asset"]["id"].clone();
+        let asset_id = crate::AssetId::parse(asset.as_str().unwrap()).unwrap();
+
+        let current = ok(
+            &owner,
+            client,
+            "current",
+            "analysis.request",
+            json!({"asset_id": asset, "target": {"kind": "current"}}),
+        );
+        let baseline = settled(&owner, client, &current["job_id"])["report"].clone();
+
+        let begun = ok(
+            &owner,
+            client,
+            "begin",
+            "draft.begin",
+            json!({"asset_id": asset, "action": "set-pixel"}),
+        );
+        let draft_id = begun["draft_id"].clone();
+        let draft = ok(
+            &owner,
+            client,
+            "set",
+            "draft.set",
+            json!({"draft_id": draft_id, "fields": {"x": 0, "y": 0, "rgb": [255, 255, 255]}}),
+        );
+        assert_eq!(draft["draft_revision"], json!(1));
+
+        let drafted = ok(
+            &owner,
+            client,
+            "drafted",
+            "analysis.request",
+            json!({"asset_id": asset, "target": {"kind": "draft", "draft_id": draft_id}}),
+        );
+        assert_eq!(drafted["identity"]["draft"]["draft_id"], draft_id);
+        assert_eq!(drafted["identity"]["draft"]["draft_revision"], json!(1));
+        let settled_draft = settled(&owner, client, &drafted["job_id"]);
+        assert_eq!(settled_draft["status"], json!("ready"));
+        assert_ne!(
+            settled_draft["report"], baseline,
+            "the drafted white pixel moves the counts"
+        );
+        assert_eq!(
+            settled_draft["report"],
+            expected_report(
+                &owner,
+                PreviewRequest::new(client, asset_id)
+                    .draft(crate::DraftId::parse(draft_id.as_str().unwrap()).unwrap()),
+            )
+        );
+        // Exactly one pixel changed: the red channel's population moves by one at two codes.
+        let moved: u64 = settled_draft["report"]["r"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .zip(baseline["r"].as_array().unwrap())
+            .map(|(after, before)| after.as_u64().unwrap().abs_diff(before.as_u64().unwrap()))
+            .sum();
+        assert_eq!(moved, 2, "one pixel left one bin and joined another");
+
+        // A draft belongs to one session.
+        assert_eq!(
+            failure(
+                &owner,
+                other,
+                "foreign-draft",
+                "analysis.request",
+                json!({"asset_id": asset, "target": {"kind": "draft", "draft_id": draft_id}}),
+            )
+            .code,
+            "validation"
+        );
+        // Cancelling the draft ends it; the same request is then refused for its own client too.
+        ok(
+            &owner,
+            client,
+            "cancel-draft",
+            "draft.cancel",
+            json!({"draft_id": draft_id}),
+        );
+        assert_eq!(
+            failure(
+                &owner,
+                client,
+                "ended-draft",
+                "analysis.request",
+                json!({"asset_id": asset, "target": {"kind": "draft", "draft_id": draft_id}}),
+            )
+            .code,
+            "validation"
+        );
+        // Nothing was persisted: the current composition is still the baseline.
+        assert_eq!(
+            settled(&owner, client, &current["job_id"])["report"],
+            baseline
+        );
+        owner.stop();
+        join.join().unwrap();
+        std::fs::remove_file(catalog).unwrap();
+    }
+
+    /// One active job plus one replaceable pending job, globally: a third request displaces the
+    /// pending one, which reads `superseded` and carries no counts. Cancel and disconnect release
+    /// only the withdrawing client's interest.
+    #[test]
+    fn racing_requests_supersede_the_pending_job_and_withdrawal_releases_only_its_own_interest() {
+        let catalog = temp("analysis-race.sqlite");
+        let _ = std::fs::remove_file(&catalog);
+        let (owner, join) = OwnerHandle::start(&catalog).unwrap();
+        let viewer = owner.register();
+        let agent = owner.register();
+        let imported = ok(
+            &owner,
+            viewer,
+            "import",
+            "catalog.import",
+            json!({"path": fixture()}),
+        );
+        let asset = imported["asset"]["id"].clone();
+        let mut entries = vec![imported["current_entry"]["id"].clone()];
+        for (index, channel) in [10u8, 20, 30, 40, 50, 60].into_iter().enumerate() {
+            let edited = pixel_edit(
+                &owner,
+                viewer,
+                &asset,
+                index as u64,
+                &format!("edit-{channel}"),
+                [channel, channel, channel],
+            );
+            entries.push(edited["current_entry_id"].clone());
+        }
+        let entry_request = |client: ClientId, id: &str, entry: &Value| {
+            ok(
+                &owner,
+                client,
+                id,
+                "analysis.request",
+                json!({"asset_id": asset, "target": {"kind": "entry", "entry_id": entry}}),
+            )
+        };
+        // A requester of a superseded job simply asks again, which is what the contract says a
+        // client does. Retrying here keeps the test independent of which job the one worker
+        // happened to be running when a later request took the pending slot.
+        let settle_ready = |client: ClientId, id: &str, entry: &Value| -> Value {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+            loop {
+                let requested = entry_request(client, id, entry);
+                let read = settled(&owner, client, &requested["job_id"]);
+                if read["status"] == json!("ready") {
+                    assert!(read["report"].is_object());
+                    return read;
+                }
+                assert_eq!(read["status"], json!("superseded"), "{read}");
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "a retried request never ran"
+                );
+            }
+        };
+
+        // Three requests back to back. The owner is single-threaded and each of these costs only a
+        // state read and an O(layers) plan, while the worker is rendering and reducing 153,600
+        // pixels, so the second request lands in the pending slot and the third displaces it.
+        let active = entry_request(viewer, "a", &entries[0]);
+        let displaced = entry_request(viewer, "b", &entries[1]);
+        let winner = entry_request(viewer, "c", &entries[2]);
+        assert_eq!(displaced["status"], json!("pending"));
+        let superseded = ok(
+            &owner,
+            viewer,
+            "read-b",
+            "analysis.read",
+            json!({"job_id": displaced["job_id"]}),
+        );
+        assert_eq!(
+            superseded["status"],
+            json!("superseded"),
+            "the single pending slot was taken by the newer request"
+        );
+        assert!(
+            superseded.get("report").is_none(),
+            "a superseded job carries no counts"
+        );
+        assert!(superseded.get("error").is_none());
+        // Re-requesting a superseded identity is allowed and gets fresh work.
+        let again = entry_request(viewer, "b-again", &entries[1]);
+        assert_ne!(again["job_id"], displaced["job_id"]);
+        // The job that was already running finishes; the other two are whatever the single pending
+        // slot left them, and a requester of a superseded job simply asks again until it runs.
+        assert_eq!(
+            settled(&owner, viewer, &active["job_id"])["status"],
+            json!("ready")
+        );
+        settle_ready(viewer, "retry-b", &entries[1]);
+        settle_ready(viewer, "retry-c", &entries[2]);
+        let _ = (&again, &winner);
+
+        // Cancelling one client's interest in a shared job leaves the other client's result intact.
+        let shared_viewer = entry_request(viewer, "shared-v", &entries[3]);
+        let shared_agent = entry_request(agent, "shared-a", &entries[3]);
+        assert_eq!(shared_viewer["job_id"], shared_agent["job_id"]);
+        assert_eq!(
+            ok(
+                &owner,
+                viewer,
+                "cancel",
+                "analysis.cancel",
+                json!({"job_id": shared_viewer["job_id"]}),
+            ),
+            json!({"cancelled": true})
+        );
+        let kept = settled(&owner, agent, &shared_agent["job_id"]);
+        assert_eq!(
+            kept["status"],
+            json!("ready"),
+            "the other client still wants it"
+        );
+        assert!(kept["report"].is_object());
+        assert_eq!(
+            ok(
+                &owner,
+                viewer,
+                "read-shared",
+                "analysis.read",
+                json!({"job_id": shared_viewer["job_id"]}),
+            )["report"],
+            kept["report"],
+            "one client's cancel did not invalidate the shared result"
+        );
+
+        // The last interest withdrawing drops a job that had not started yet: it reads `cancelled`
+        // and carries no counts, and the requester may still read the outcome it asked for.
+        let running = entry_request(agent, "running", &entries[4]);
+        let queued = entry_request(agent, "queued", &entries[5]);
+        assert_eq!(queued["status"], json!("pending"));
+        ok(
+            &owner,
+            agent,
+            "cancel-queued",
+            "analysis.cancel",
+            json!({"job_id": queued["job_id"]}),
+        );
+        let withdrawn = ok(
+            &owner,
+            agent,
+            "read-queued",
+            "analysis.read",
+            json!({"job_id": queued["job_id"]}),
+        );
+        assert_eq!(withdrawn["status"], json!("cancelled"), "{withdrawn}");
+        assert!(
+            withdrawn.get("report").is_none(),
+            "a cancelled job carries no counts"
+        );
+        let _ = &running;
+        settle_ready(agent, "running-again", &entries[4]);
+
+        // A disconnect releases every interest that client held, exactly as a cancel does: the
+        // identity becomes re-requestable and a later request gets a fresh job.
+        let before = entry_request(agent, "before", &entries[6]);
+        owner.disconnect(agent);
+        let reconnected = owner.register();
+        let after = ok(
+            &owner,
+            reconnected,
+            "after",
+            "analysis.request",
+            json!({"asset_id": asset, "target": {"kind": "entry", "entry_id": entries[6]}}),
+        );
+        assert_ne!(
+            after["job_id"], before["job_id"],
+            "the released identity is re-requestable"
+        );
+        assert_eq!(
+            failure(
+                &owner,
+                agent,
+                "gone",
+                "analysis.read",
+                json!({"job_id": before["job_id"]}),
+            )
+            .code,
+            "validation",
+            "a disconnected client owns no job"
+        );
+        let _ = &after;
+        settle_ready(reconnected, "after-again", &entries[6]);
+        owner.stop();
+        join.join().unwrap();
+        std::fs::remove_file(catalog).unwrap();
+    }
+
+    /// A stack whose provider is missing cannot be evaluated at all: the job reads `failed` with the
+    /// structured error and never a report, and its identity carries no output stage, so nothing can
+    /// be mistaken for a valid but empty histogram. The stored layer is kept, not rewritten.
+    #[test]
+    fn a_stack_with_an_unavailable_provider_reads_failed_with_its_error_and_no_counts() {
+        let catalog = temp("analysis-unavailable.sqlite");
+        let _ = std::fs::remove_file(&catalog);
+        let asset;
+        {
+            let (owner, join) = OwnerHandle::start(&catalog).unwrap();
+            let client = owner.register();
+            let imported = ok(
+                &owner,
+                client,
+                "import",
+                "catalog.import",
+                json!({"path": fixture()}),
+            );
+            asset = imported["asset"]["id"].clone();
+            pixel_edit(&owner, client, &asset, 0, "edit", [1, 2, 3]);
+            owner.stop();
+            join.join().unwrap();
+        }
+        // The same catalog reopened with the pixel provider registered as unavailable.
+        let mut registry = ModuleRegistry::new();
+        registry
+            .register(crate::modules::TestModule::shared(
+                "lightwell.pixel",
+                crate::PIXEL_EFFECT,
+                "set-pixel",
+                crate::Availability::Unavailable {
+                    reason: "test: the pixel provider is not installed".into(),
+                },
+            ))
+            .unwrap();
+        let (owner, join) = OwnerHandle::start_with(&catalog, Arc::new(registry)).unwrap();
+        let client = owner.register();
+        let requested = ok(
+            &owner,
+            client,
+            "request",
+            "analysis.request",
+            json!({"asset_id": asset, "target": {"kind": "current"}}),
+        );
+        assert_eq!(requested["status"], json!("failed"));
+        assert!(requested.get("report").is_none());
+        assert_eq!(requested["identity"]["width"], json!(0));
+        assert_eq!(requested["identity"]["height"], json!(0));
+        let read = ok(
+            &owner,
+            client,
+            "read",
+            "analysis.read",
+            json!({"job_id": requested["job_id"]}),
+        );
+        assert_eq!(read["status"], json!("failed"));
+        assert!(
+            read.get("report").is_none(),
+            "a failed job carries no counts"
+        );
+        assert_eq!(read["error"]["code"], json!("incompatible"));
+        assert!(
+            read["error"]["message"]
+                .as_str()
+                .unwrap()
+                .contains("unavailable effect"),
+            "{}",
+            read["error"]["message"]
+        );
+        // The layer is still there: nothing was discarded to make the stack renderable.
+        assert_eq!(
+            ok(
+                &owner,
+                client,
+                "describe",
+                "recipe.describe",
+                json!({"asset_id": asset}),
+            )["layers"]
+                .as_array()
+                .unwrap()
+                .len(),
+            1
+        );
+        owner.stop();
+        join.join().unwrap();
+        std::fs::remove_file(catalog).unwrap();
+    }
+
+    /// The desktop's own preview evaluation is reused: an analysing preview job returns the exact
+    /// reduction of the frame it rendered, submitting it makes the matching API request a cache hit,
+    /// and no path decodes the original a second time.
+    #[test]
+    fn a_submitted_preview_report_answers_the_matching_request_without_a_second_render() {
+        let catalog = temp("analysis-preview.sqlite");
+        let _ = std::fs::remove_file(&catalog);
+        let (owner, join) = OwnerHandle::start(&catalog).unwrap();
+        let desktop = owner.register();
+        let agent = owner.register();
+        let imported = ok(
+            &owner,
+            desktop,
+            "import",
+            "catalog.import",
+            json!({"path": fixture()}),
+        );
+        let asset = imported["asset"]["id"].clone();
+        let asset_id = crate::AssetId::parse(asset.as_str().unwrap()).unwrap();
+
+        // A truncated job renders a layer prefix its identity does not describe, so it is refused.
+        assert_eq!(
+            owner
+                .preview_job(
+                    PreviewRequest::new(desktop, asset_id.clone())
+                        .layers(0)
+                        .analyse()
+                )
+                .expect_err("a truncated analysing preview")
+                .kind,
+            ErrorKind::Validation
+        );
+
+        let job = owner
+            .preview_job(PreviewRequest::new(desktop, asset_id.clone()).analyse())
+            .expect("an analysing preview job");
+        assert!(job.analyse);
+        let source = job.source.rgba.clone();
+        let mut queue = crate::PreviewQueue::default();
+        queue.request(job);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+        let result = loop {
+            if let Some(result) = queue.poll() {
+                break result;
+            }
+            assert!(std::time::Instant::now() < deadline, "no preview arrived");
+            std::thread::yield_now();
+        };
+        let raster = result.result.expect("a frame");
+        let report = result.report.expect("the job asked for a report");
+        assert_eq!(
+            report,
+            crate::analysis::reduce_raster(&raster).unwrap(),
+            "the report is the exact reduction of the frame that was rendered"
+        );
+        let encoded = serde_json::to_value(&report).unwrap();
+        owner.submit_analysis(result.identity.clone(), report);
+
+        // The API request for that identity is now answered from the store, ready, without work.
+        let requested = ok(
+            &owner,
+            agent,
+            "request",
+            "analysis.request",
+            json!({"asset_id": asset, "target": {"kind": "current"}}),
+        );
+        assert_eq!(
+            requested["status"],
+            json!("ready"),
+            "the submitted report is a cache hit"
+        );
+        assert_eq!(
+            requested["identity"],
+            serde_json::to_value(&result.identity).unwrap()
+        );
+        assert_eq!(requested["report"], encoded);
+
+        // Nothing re-read or re-decoded the original: every path served the one cached decode.
+        let after = owner
+            .preview_job(PreviewRequest::new(desktop, asset_id))
+            .expect("another preview job");
+        assert!(
+            Arc::ptr_eq(&source, &after.source.rgba),
+            "the verified source cache served every request; no duplicate decode"
+        );
+        assert!(!after.analyse, "a plain preview asks for no reduction");
+        owner.stop();
+        join.join().unwrap();
+        std::fs::remove_file(catalog).unwrap();
+    }
+
+    /// Clipping overlay settings are per-client session state, reported by `session.state` and set
+    /// through `workspace.set`; they mutate nothing and emit no event. Discovery lists the three
+    /// analysis methods, so an independent JSON client needs no GUI and no hand-written list.
+    #[test]
+    fn the_clipping_overlay_flags_round_trip_and_the_analysis_methods_are_discoverable() {
+        let catalog = temp("analysis-workspace.sqlite");
+        let _ = std::fs::remove_file(&catalog);
+        let (owner, join) = OwnerHandle::start(&catalog).unwrap();
+        let one = owner.register();
+        let two = owner.register();
+        let state = ok(&owner, one, "state", "session.state", json!({}));
+        assert_eq!(state["workspace"]["clip_shadows"], json!(false));
+        assert_eq!(state["workspace"]["clip_highlights"], json!(false));
+        let set = ok(
+            &owner,
+            one,
+            "set",
+            "workspace.set",
+            json!({"clip_shadows": true, "clip_highlights": true}),
+        );
+        assert_eq!(set["workspace"]["clip_shadows"], json!(true));
+        assert_eq!(set["workspace"]["clip_highlights"], json!(true));
+        assert_eq!(
+            set["workspace"]["thirds"],
+            json!(false),
+            "nothing else moved"
+        );
+        let off = ok(
+            &owner,
+            one,
+            "off",
+            "workspace.set",
+            json!({"clip_highlights": false}),
+        );
+        assert_eq!(off["workspace"]["clip_shadows"], json!(true));
+        assert_eq!(off["workspace"]["clip_highlights"], json!(false));
+        assert_eq!(
+            ok(&owner, one, "read", "session.state", json!({}))["workspace"]["clip_shadows"],
+            json!(true)
+        );
+        // Another client's overlay settings are its own.
+        assert_eq!(
+            ok(&owner, two, "other", "session.state", json!({}))["workspace"]["clip_shadows"],
+            json!(false)
+        );
+        let schema = ok(&owner, one, "schema", "schema.list", json!({}));
+        let workspace = &schema["methods"]["workspace.set"]["optional"];
+        assert!(workspace["clip_shadows"].is_string());
+        assert!(workspace["clip_highlights"].is_string());
+        for method in ["analysis.request", "analysis.read", "analysis.cancel"] {
+            assert_eq!(
+                schema["methods"][method]["mutates"],
+                json!(false),
+                "{method} mutates nothing"
+            );
+        }
+        assert_eq!(
+            schema["methods"]["analysis.request"]["required"],
+            json!(["asset_id", "target"])
+        );
+        assert_eq!(
+            schema["methods"]["analysis.read"]["required"],
+            json!(["job_id"])
+        );
+        assert_eq!(
+            schema["methods"]["analysis.cancel"]["required"],
+            json!(["job_id"])
         );
         owner.stop();
         join.join().unwrap();

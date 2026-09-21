@@ -1,7 +1,9 @@
 use crate::{
     AssetId, ContentPoint, Draft, DraftId, EntryId, Error, ErrorKind, HistoryEntry, Layer, LayerId,
     ModuleRegistry, Mutation, PreviewJob, Raster, Recipe, Snapshot, SnapshotId, SourceImage,
-    Transform, locate,
+    Transform,
+    analysis::AnalysisIdentity,
+    locate,
     modules::{
         ActionInput, ActionPlan, EffectStage, Stage, StageContext, action_label, check_parameters,
     },
@@ -123,8 +125,29 @@ pub struct PixelSample {
     pub draft: Option<DraftStamp>,
 }
 
-/// Which draft, at which revision, a sample or a preview was evaluated against.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// Which evaluated stack an analysis job should describe: the asset's current entry, one frozen
+/// historical entry, or the caller's own open draft.
+#[derive(Clone, Copy, Debug)]
+pub enum AnalysisSelection<'a> {
+    Current,
+    Entry(&'a EntryId),
+    Draft(&'a Draft),
+}
+
+/// One planned analysis job. `failure` is set when the effective recipe resolved but has no output
+/// stage the host can evaluate — an unavailable provider, or a payload the registry refuses — in
+/// which case the job is recorded failed and no worker is started.
+#[derive(Debug)]
+pub struct AnalysisPlan {
+    pub identity: AnalysisIdentity,
+    pub source: SourceImage,
+    pub registry: Arc<ModuleRegistry>,
+    pub recipe: Recipe,
+    pub failure: Option<Error>,
+}
+
+/// Which draft, at which revision, a sample, a preview or an analysis was evaluated against.
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct DraftStamp {
     pub draft_id: DraftId,
@@ -625,13 +648,95 @@ impl EditorService {
                 format!("preview layer count {count} exceeds the {layers} layers of this entry"),
             ));
         }
+        let source = self.verified_source(&state.asset)?;
+        // The identity is computed exactly as an analysis job's is, so a report the preview worker
+        // produces from this frame is a cache hit for a later `analysis.request`.
+        let draft_stamp = draft.map(|draft| DraftStamp {
+            draft_id: draft.draft_id.clone(),
+            draft_revision: draft.draft_revision,
+        });
+        let (identity, _) =
+            self.analysis_identity(asset_id, &source, &entry, &recipe, draft_stamp)?;
         Ok(PreviewJob {
-            source: self.verified_source(&state.asset)?,
+            source,
             entry,
             registry: self.registry.clone(),
             recipe,
             layer_count,
             draft_revision,
+            identity,
+            analyse: false,
+        })
+    }
+
+    /// The identity of the analysis of one evaluated stack, and the reason that stack has no output
+    /// stage when the host cannot compile it. `O(layers)`: it compiles the stack to learn its output
+    /// dimensions and hashes the recipe, and it reads no pixels and rasterizes nothing, so the
+    /// catalog owner may call it while building a job.
+    pub fn analysis_identity(
+        &self,
+        asset_id: &AssetId,
+        source: &SourceImage,
+        entry: &HistoryEntry,
+        recipe: &Recipe,
+        draft: Option<DraftStamp>,
+    ) -> Result<(AnalysisIdentity, Option<Error>), Error> {
+        let stage = crate::extents(&self.registry, source, recipe);
+        let failure = stage.as_ref().err().cloned();
+        let identity = AnalysisIdentity::of(
+            asset_id,
+            &source.fingerprint,
+            entry,
+            recipe,
+            draft,
+            stage.ok(),
+        )?;
+        Ok((identity, failure))
+    }
+
+    /// Everything one analysis job needs, planned on the catalog owner: the identity that names the
+    /// result, the cached verified source, the shared registry and the effective recipe to render.
+    /// Costs a state read, a cached source verification and an `O(layers)` plan and compile; no
+    /// frame is allocated here and nothing is persisted.
+    pub fn analysis_plan(
+        &self,
+        asset_id: &AssetId,
+        selection: AnalysisSelection<'_>,
+    ) -> Result<AnalysisPlan, Error> {
+        let state = self.state(asset_id)?;
+        let (entry, recipe, draft) = match selection {
+            AnalysisSelection::Current => {
+                let entry = state.current_entry.clone();
+                let recipe = entry.snapshot.recipe.clone();
+                (entry, recipe, None)
+            }
+            // A historical entry answers from its own immutable stack, so a later commit by any
+            // client never relabels this result as current.
+            AnalysisSelection::Entry(entry_id) => {
+                let entry = self.entry(asset_id, entry_id)?;
+                let recipe = entry.snapshot.recipe.clone();
+                (entry, recipe, None)
+            }
+            // A draft is evaluated at the revision it holds now: its effective recipe is planned
+            // against the current stack and never persisted.
+            AnalysisSelection::Draft(draft) => {
+                let (recipe, drafted) = self.draft_recipe(asset_id, draft)?;
+                let stamp = DraftStamp {
+                    draft_id: draft.draft_id.clone(),
+                    draft_revision: draft.draft_revision,
+                };
+                (drafted.current_entry, recipe, Some(stamp))
+            }
+        };
+        let source = self.verified_source(&state.asset)?;
+        let (identity, failure) =
+            self.analysis_identity(asset_id, &source, &entry, &recipe, draft)?;
+        Ok(AnalysisPlan {
+            identity,
+            source,
+            registry: self.registry.clone(),
+            recipe,
+            failure,
         })
     }
 

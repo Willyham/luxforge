@@ -352,14 +352,28 @@ fn the_workspace_additions_are_reachable_through_the_json_api() {
     // Workspace state is per-client session state, reported like the view.
     assert_eq!(
         call("session.state", json!({}))["workspace"],
-        json!({"state_panel": true, "tools_panel": true, "mode": "pointer", "thirds": false})
+        json!({
+            "state_panel": true,
+            "tools_panel": true,
+            "mode": "pointer",
+            "thirds": false,
+            "clip_shadows": false,
+            "clip_highlights": false,
+        })
     );
     assert_eq!(
         call(
             "workspace.set",
             json!({"mode": "lightwell.crop", "tools_panel": false})
         )["workspace"],
-        json!({"state_panel": true, "tools_panel": false, "mode": "lightwell.crop", "thirds": false})
+        json!({
+            "state_panel": true,
+            "tools_panel": false,
+            "mode": "lightwell.crop",
+            "thirds": false,
+            "clip_shadows": false,
+            "clip_highlights": false,
+        })
     );
     let refused = request("workspace.set", json!({"mode": "lightwell.transform"}))
         .expect_err("a module without a canvas is not a mode");
@@ -367,6 +381,65 @@ fn the_workspace_additions_are_reachable_through_the_json_api() {
     assert_eq!(
         call("session.state", json!({}))["workspace"]["mode"],
         json!("lightwell.crop")
+    );
+    // Clipping overlay settings are the same kind of per-client view state, and they mutate
+    // nothing: a `workspace.set` emits no event and the asset's revision does not move.
+    let revision = call("asset.state", json!({"asset_id": asset}))["revision"].clone();
+    let overlays = call("workspace.set", json!({"clip_shadows": true}))["workspace"].clone();
+    assert_eq!(overlays["clip_shadows"], json!(true));
+    assert_eq!(overlays["clip_highlights"], json!(false));
+    assert_eq!(
+        call("asset.state", json!({"asset_id": asset}))["revision"],
+        revision
+    );
+
+    // Read-only analysis works from this JSON client with no GUI and no change of selection: the
+    // frozen current composition is requested, read to completion and then cancelled.
+    let requested = call(
+        "analysis.request",
+        json!({"asset_id": asset, "target": {"kind": "current"}}),
+    );
+    assert_eq!(requested["identity"]["domain"], json!("srgb-8bit-output"));
+    assert!(matches!(
+        requested["status"].as_str(),
+        Some("pending" | "ready")
+    ));
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+    let report = loop {
+        let read = call("analysis.read", json!({"job_id": requested["job_id"]}));
+        if read["status"] == json!("ready") {
+            break read["report"].clone();
+        }
+        assert_eq!(read["status"], json!("pending"), "{read}");
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the analysis job never settled"
+        );
+        std::thread::yield_now();
+    };
+    // Every channel's bins sum to the output pixel count, and nothing was committed.
+    for channel in ["r", "g", "b"] {
+        let sum: u64 = report[channel]
+            .as_array()
+            .expect("256 bins")
+            .iter()
+            .map(|count| count.as_u64().expect("a count"))
+            .sum();
+        assert_eq!(
+            sum,
+            u64::from(requested["identity"]["width"].as_u64().unwrap() as u32)
+                * u64::from(requested["identity"]["height"].as_u64().unwrap() as u32),
+            "{channel} channel population"
+        );
+    }
+    assert_eq!(
+        call("analysis.cancel", json!({"job_id": requested["job_id"]})),
+        json!({"cancelled": true})
+    );
+    assert_eq!(
+        call("asset.state", json!({"asset_id": asset}))["revision"],
+        revision,
+        "analysis mutates nothing"
     );
     owner.stop();
     join.join().unwrap();

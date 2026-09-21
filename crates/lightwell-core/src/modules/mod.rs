@@ -26,7 +26,7 @@ pub use processing::{
 };
 pub use registry::ModuleRegistry;
 #[cfg(test)]
-pub(crate) use registry::tests::{PATCH_ACTION, PATCH_MODULE, PatchModule};
+pub(crate) use registry::tests::{PATCH_ACTION, PATCH_MODULE, PatchModule, TestModule};
 pub use transform::TransformModule;
 
 use crate::{Error, Layer};

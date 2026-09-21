@@ -80,6 +80,34 @@ A draft's effective recipe is the current snapshot with its action's plan applie
 
 Rendering and point sampling resolve every layer's effect through the registry: `compile` runs per layer at its input stage, exact geometry composes into one mapping per segment, point replacements map through the suffix geometry of their segment, and a resample separates segments. A preview job may truncate the stack to its first `n` layers; the desktop uses that to show a crop layer's input stage while drafting. `render.locate {asset_id, entry_id?, x, y}` maps one rendered pixel back through the geometry tail to the content pixel it shows, returning `{content_x, content_y, width, height}`; the desktop's canvas pick uses the same mapping to fill point-pick parameters.
 
+## Histogram analysis
+
+The histogram is not a recipe effect and writes no history. It is a read-only **analysis job** over the rendered SDR sRGB output of one evaluated stack, run off the catalog owner thread and keyed to an identity that says exactly which image the counts describe.
+
+`analysis.request {asset_id, target}` returns `{job_id, status, identity}` promptly, with `report` included when the store already holds it. `target` is one of `{"kind": "current"}`, `{"kind": "entry", "entry_id"}` (a frozen historical entry, which a later commit by any client never relabels) or `{"kind": "draft", "draft_id"}` — the calling session's own draft, evaluated at the `draft_revision` it holds now; another client's draft, or one that has ended, is a `validation` error. `analysis.read {job_id}` returns `{status, identity, report?, error?}` and `analysis.cancel {job_id}` returns `{cancelled: true}`. A job this client never requested is a `validation` error on read and on cancel. None of the three mutates anything or emits an event, and none requires a GUI or a change of selection.
+
+`status` is one of:
+
+| Status | Meaning |
+| --- | --- |
+| `pending` | Queued or running on the analysis worker |
+| `ready` | Complete; `report` carries the counts |
+| `failed` | The stack could not be evaluated; `error` carries the structured reason |
+| `superseded` | A newer request took the single pending slot; the requester may simply ask again |
+| `cancelled` | Every interested client withdrew before the work finished |
+
+Only `ready` ever carries `report`. Pending, failed, superseded and cancelled results have no counts at all, so no state can be read as a valid but empty histogram.
+
+The identity is `{asset_id, source_fingerprint, entry_id, snapshot_id, recipe_hash, draft?, width, height, domain}`. `recipe_hash` is the SHA-256 of the effective recipe's canonical JSON, `draft` is `{draft_id, draft_revision}` when a draft was analysed, `width`/`height` are the **output** stage, and `domain` is always `srgb-8bit-output`. A `failed` job whose stack has no output stage at all — an unavailable provider, or a payload the registry refuses — reports `width` and `height` as `0` and carries its error; nothing is rewritten or discarded to make such a stack renderable.
+
+Scheduling and bounds. One analysis worker runs one active job with one replaceable pending job, globally. Requesting a third job while one is active and one pending replaces the pending one, which reads `superseded`. Identical identities share one job: a second request joins its interest set and gets the same `job_id`, so the same work is never done twice. `analysis.cancel` drops only the calling client's interest; the job is cancelled only when no interested client is left, and a disconnect releases that client's interests the same way. A cancel drops a job that has not started; a render already under way is not interrupted, and its result is discarded when it arrives. The owner keeps at most eight completed reports and at most 32 job records, evicting the oldest first, and a report is bounded to 16 KiB. No raster is retained per result.
+
+Building a job on the owner costs a state read, the cached verified source and an `O(layers)` plan and compile to learn the output stage; the render and the reduction happen on the worker. The worker posts its report back into the owner's own channel, so nothing polls and no timer is added.
+
+Preview reuse. `PreviewJob.analyse` (via `PreviewRequest::analyse()`) makes the preview worker reduce the frame it just rendered and return the `Report` beside the raster, with the job's `AnalysisIdentity` for correlation. The desktop hands that report to `OwnerHandle::submit_analysis(identity, report)`, and an `analysis.request` for the same identity is then a cache hit: a displayed target is never rendered twice. A preview job's identity is computed exactly as an analysis job's is; a truncated job (`layer_count`) renders a layer prefix its identity does not describe and cannot be analysed.
+
+Overlays. `workspace.set` accepts `clip_shadows` and `clip_highlights` booleans and `session.state` reports them; they are per-client view state and change no raster, recipe, histogram population or export. The display overlay itself is derived from the same final raster by `analysis::overlay(rgba, width, height, cells_w, cells_h)`, which ORs the shared `clip_class` predicate over every source pixel of each display cell — one byte per cell, `0` none, `1` shadow, `2` highlight, `3` both — so an isolated clipped pixel survives a Fit reduction and a cell grid equal to the image is one to one. No full-resolution mask is allocated; the grid is bounded to 4096 cells a side.
+
 ## Registry
 
 `ModuleRegistry::builtin()` links the pixel, Basic, transform and crop modules, in that order; `register` accepts any `ToolModule` and rejects: an invalid module, effect or action identity; a duplicate module, effect or action ID; a control naming an undeclared action or parameter; a preset or default outside the parameter's range; a parameter without a kind. Registration builds hash lookups from descriptors only and touches no image or catalog resource. A module that needs an expensive resource initializes it on first `compile` or `plan`; registration and first-use costs are measured separately.

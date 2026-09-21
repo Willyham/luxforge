@@ -187,8 +187,13 @@ pub(super) const METHODS: &[MethodSpec] = &[
                 "pointer or an available module id that declares a canvas interaction",
             ),
             ("thirds", "bool"),
+            ("clip_shadows", "bool; show the shadow clipping overlay"),
+            (
+                "clip_highlights",
+                "bool; show the highlight clipping overlay",
+            ),
         ],
-        notes: "session workspace state: panels, canvas mode and the thirds overlay; returns the session",
+        notes: "session workspace state: panels, canvas mode, the thirds overlay and the clipping overlays; returns the session",
         handler: Some(workspace_set),
     },
     MethodSpec {
@@ -275,6 +280,32 @@ pub(super) const METHODS: &[MethodSpec] = &[
         required: &["after"],
         optional: &[],
         notes: "gap=true requires an asset.state refresh",
+        handler: None,
+    },
+    // The analysis methods are answered by the catalog owner, because the job store, the worker
+    // slots and every client's draft live there. They mutate nothing and emit no event.
+    MethodSpec {
+        name: "analysis.request",
+        mutates: false,
+        required: &["asset_id", "target"],
+        optional: &[],
+        notes: "queues the exact RGB histogram and output-clipping reduction of one evaluated stack and returns {job_id, status, identity} promptly, with the report included when the store already holds it; target is {kind:current}, {kind:entry,entry_id} or {kind:draft,draft_id} for this client's own draft; identical identities share one job",
+        handler: None,
+    },
+    MethodSpec {
+        name: "analysis.read",
+        mutates: false,
+        required: &["job_id"],
+        optional: &[],
+        notes: "{status, identity, report?, error?}; status is pending, ready, failed, superseded or cancelled and only ready carries counts, so no state can be read as an empty histogram; a job this client did not request is a validation error",
+        handler: None,
+    },
+    MethodSpec {
+        name: "analysis.cancel",
+        mutates: false,
+        required: &["job_id"],
+        optional: &[],
+        notes: "drops this client's interest in the job and cancels the work only when no other client holds it; returns {cancelled: true}",
         handler: None,
     },
 ];
@@ -714,6 +745,8 @@ fn workspace_set(
         tools_panel: Option<bool>,
         mode: Option<String>,
         thirds: Option<bool>,
+        clip_shadows: Option<bool>,
+        clip_highlights: Option<bool>,
     }
     let p = parse::<P>(params)?;
     // Validate before changing anything, so a rejected request leaves the session as it was.
@@ -737,6 +770,13 @@ fn workspace_set(
     }
     if let Some(thirds) = p.thirds {
         session.workspace.thirds = thirds;
+    }
+    // Overlay settings are per-client view state: they change no raster, recipe or histogram.
+    if let Some(clip_shadows) = p.clip_shadows {
+        session.workspace.clip_shadows = clip_shadows;
+    }
+    if let Some(clip_highlights) = p.clip_highlights {
+        session.workspace.clip_highlights = clip_highlights;
     }
     session.touch();
     session_value(service, session)
@@ -1151,7 +1191,14 @@ mod tests {
                 .expect("the workspace fields")
                 .keys()
                 .collect::<Vec<_>>(),
-            ["mode", "state_panel", "thirds", "tools_panel"]
+            [
+                "clip_highlights",
+                "clip_shadows",
+                "mode",
+                "state_panel",
+                "thirds",
+                "tools_panel"
+            ]
         );
         // The descriptor additions the workspace renders from reach a client through module.list.
         let modules = module_list(&mut service, &mut session, &json!({})).unwrap();
@@ -1655,7 +1702,14 @@ mod tests {
         let mut session = ClientSession::default();
         assert_eq!(
             ok(&mut service, &mut session, "session.state", json!({}))["workspace"],
-            json!({"state_panel": true, "tools_panel": true, "mode": "pointer", "thirds": false}),
+            json!({
+                "state_panel": true,
+                "tools_panel": true,
+                "mode": "pointer",
+                "thirds": false,
+                "clip_shadows": false,
+                "clip_highlights": false,
+            }),
             "a fresh session opens with both panels, the pointer and no overlay"
         );
         let set = ok(
@@ -1666,7 +1720,14 @@ mod tests {
         );
         assert_eq!(
             set["workspace"],
-            json!({"state_panel": false, "tools_panel": true, "mode": "lightwell.crop", "thirds": true})
+            json!({
+                "state_panel": false,
+                "tools_panel": true,
+                "mode": "lightwell.crop",
+                "thirds": true,
+                "clip_shadows": false,
+                "clip_highlights": false,
+            })
         );
         assert_eq!(set["revision"], json!(1), "a session change is a revision");
         assert_eq!(

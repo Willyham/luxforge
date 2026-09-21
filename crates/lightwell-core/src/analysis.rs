@@ -6,6 +6,17 @@
 //! integration contract's "Analysis jobs and identity"). It reduces the **rendered SDR sRGB
 //! output** of a composition, not scene-linear or RAW/sensor data.
 
+mod jobs;
+mod overlay;
+
+pub use jobs::{
+    AnalysisDomain, AnalysisIdentity, AnalysisJob, AnalysisQueue, AnalysisRead, AnalysisStatus,
+    AnalysisStore, MAX_JOB_RECORDS, MAX_READY_REPORTS, Release,
+};
+pub use overlay::{
+    MAX_OVERLAY_CELLS, OVERLAY_BOTH, OVERLAY_HIGHLIGHT, OVERLAY_NONE, OVERLAY_SHADOW, overlay,
+};
+
 use crate::{Error, ErrorKind, Raster};
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
@@ -18,13 +29,13 @@ const PARALLEL_REDUCE_PIXELS: u64 = 1_000_000;
 /// The histogram and clipping contract's declared output domain: the rendered SDR sRGB output of
 /// the full current composition, after crop and edits, before UI overlays or display scaling. Not
 /// the camera/RAW histogram.
-const DOMAIN: &str = "srgb-8bit-output";
+pub(crate) const DOMAIN: &str = "srgb-8bit-output";
 
 /// A report is bounded to 16 KiB of counters/metadata before protocol encoding (the histogram and
 /// clipping contract, and "Resource and responsiveness constraints").
 pub const REPORT_BOUND_BYTES: usize = 16 * 1024;
 
-fn deserialize_domain<'de, D>(deserializer: D) -> Result<&'static str, D::Error>
+pub(crate) fn deserialize_domain<'de, D>(deserializer: D) -> Result<&'static str, D::Error>
 where
     D: serde::Deserializer<'de>,
 {

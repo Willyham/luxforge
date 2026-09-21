@@ -243,6 +243,17 @@ pub(crate) fn refresh_for(
             entry: current.clone(),
             layer_count: None,
             draft_revision: None,
+            // The histogram is a later task; this preview asks for no reduction.
+            identity: lightwell_core::analysis::AnalysisIdentity::of(
+                &current.asset_id,
+                "f",
+                current,
+                &current.snapshot.recipe,
+                None,
+                Some((1, 1)),
+            )
+            .expect("a test analysis identity"),
+            analyse: false,
         },
         session: ClientSession::default(),
         sequence: 7,

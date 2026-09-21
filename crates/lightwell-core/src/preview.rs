@@ -1,4 +1,8 @@
-use crate::{EntryId, Error, HistoryEntry, ModuleRegistry, Raster, Recipe, SourceImage, render};
+use crate::{
+    EntryId, Error, HistoryEntry, ModuleRegistry, Raster, Recipe, SourceImage,
+    analysis::{AnalysisIdentity, Report},
+    render,
+};
 use serde::{Deserialize, Serialize};
 use std::sync::{
     Arc,
@@ -115,13 +119,26 @@ pub struct PreviewJob {
     /// The draft revision this recipe was planned from, for correlating a frame with the settings
     /// that produced it. `None` when no draft was involved.
     pub draft_revision: Option<u64>,
+    /// Which evaluated image this frame is, computed exactly as an analysis job's identity is. It
+    /// describes the whole planned stack, so a truncated job's identity is the stack it was planned
+    /// from, not the prefix it renders — which is why a truncated job is never analysed.
+    pub identity: AnalysisIdentity,
+    /// Reduce the rendered raster into a [`Report`] and return it with the frame, so the displayed
+    /// target needs no second render. Refused together with [`PreviewJob::layer_count`].
+    pub analyse: bool,
 }
 
 #[derive(Debug)]
 pub struct PreviewResult {
     pub generation: u64,
     pub entry_id: EntryId,
+    /// The identity of the job that produced this frame, so the desktop can submit the report under
+    /// the identity a later `analysis.request` will look up.
+    pub identity: AnalysisIdentity,
     pub result: Result<Raster, Error>,
+    /// The exact reduction of the raster in `result`, when the job asked for it. `None` means the
+    /// job did not ask, or the render failed; it never means an empty histogram.
+    pub report: Option<Report>,
 }
 
 struct Active {
@@ -169,9 +186,18 @@ impl PreviewQueue {
                 job.entry.snapshot.id.clone(),
                 prefix.as_ref().unwrap_or(&job.recipe),
             );
+            // The histogram is reduced from the frame this worker just produced, in place and
+            // without a second render or a copy. A failed reduction leaves no report rather than
+            // reporting zeroes.
+            let report = match (job.analyse, &result) {
+                (true, Ok(raster)) => crate::analysis::reduce_raster(raster).ok(),
+                _ => None,
+            };
             let _ = sender.send(PreviewResult {
                 generation,
                 entry_id,
+                identity: job.identity,
+                report,
                 result,
             });
         });
@@ -215,9 +241,39 @@ mod tests {
     use std::time::{Duration, Instant};
 
     fn entry(color: u8) -> PreviewJob {
+        job(color, false)
+    }
+
+    fn job(color: u8, analyse: bool) -> PreviewJob {
         let asset = AssetId::new();
         let original = Snapshot::original(asset.clone());
         let snapshot = original.append(Layer::pixel(0, 0, [color, 0, 0])).unwrap();
+        let entry = HistoryEntry {
+            id: EntryId::new(),
+            asset_id: asset,
+            sequence: u64::from(color),
+            action_id: "set-pixel".into(),
+            label: "Pixel 0, 0".into(),
+            parameters: json!({}),
+            actor: "test".into(),
+            timestamp_ms: 0,
+            request_id: None,
+            base_revision: 0,
+            result_revision: 0,
+            snapshot,
+            undo_parent: None,
+            restore_target: None,
+        };
+        let recipe = entry.snapshot.recipe.clone();
+        let identity = AnalysisIdentity::of(
+            &entry.asset_id.clone(),
+            "test",
+            &entry,
+            &recipe,
+            None,
+            Some((1, 1)),
+        )
+        .unwrap();
         PreviewJob {
             source: SourceImage {
                 width: 1,
@@ -227,25 +283,12 @@ mod tests {
                 orientation: 1,
             },
             registry: Arc::new(ModuleRegistry::builtin()),
-            recipe: snapshot.recipe.clone(),
+            recipe,
             layer_count: None,
             draft_revision: None,
-            entry: HistoryEntry {
-                id: EntryId::new(),
-                asset_id: asset,
-                sequence: u64::from(color),
-                action_id: "set-pixel".into(),
-                label: "Pixel 0, 0".into(),
-                parameters: json!({}),
-                actor: "test".into(),
-                timestamp_ms: 0,
-                request_id: None,
-                base_revision: 0,
-                result_revision: 0,
-                snapshot,
-                undo_parent: None,
-                restore_target: None,
-            },
+            identity,
+            analyse,
+            entry,
         }
     }
 
@@ -263,6 +306,44 @@ mod tests {
                 break;
             }
             assert!(Instant::now() < deadline);
+            std::thread::yield_now();
+        }
+    }
+
+    /// The preview worker reduces the frame it just rendered, so a displayed target needs no second
+    /// render. The report must equal the reduction of that very raster, byte for byte.
+    #[test]
+    fn an_analysing_preview_returns_the_exact_reduction_of_the_frame_it_rendered() {
+        let mut queue = PreviewQueue::default();
+        let wanted = queue.request(job(9, true));
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            if let Some(result) = queue.poll() {
+                assert_eq!(result.generation, wanted);
+                let raster = result.result.expect("a frame");
+                assert_eq!(
+                    result.report.expect("the job asked for a report"),
+                    crate::analysis::reduce_raster(&raster).unwrap()
+                );
+                assert!(result.identity.has_output_stage());
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "the analysing preview never came"
+            );
+            std::thread::yield_now();
+        }
+        // A job that does not ask carries no report: `None` is "not asked", never empty counts.
+        let wanted = queue.request(job(9, false));
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            if let Some(result) = queue.poll() {
+                assert_eq!(result.generation, wanted);
+                assert!(result.report.is_none());
+                break;
+            }
+            assert!(Instant::now() < deadline, "the plain preview never came");
             std::thread::yield_now();
         }
     }
