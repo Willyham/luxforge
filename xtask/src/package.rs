@@ -1,5 +1,41 @@
 use crate::*;
 use std::io::Write;
+
+fn native_raw_notices(root: &Path, out: &Path) -> Result {
+    let source = root.join("crates/lightwell-raw");
+    let notices = [
+        ("THIRD_PARTY.md", "lightwell-raw/THIRD_PARTY.md"),
+        (
+            "vendor/libraw-0.22.2/LICENSE.LGPL",
+            "libraw-0.22.2/LICENSE.LGPL",
+        ),
+        (
+            "vendor/libraw-0.22.2/LICENSE.CDDL",
+            "libraw-0.22.2/LICENSE.CDDL",
+        ),
+        ("vendor/libraw-0.22.2/README.md", "libraw-0.22.2/README.md"),
+        (
+            "vendor/librtprocess-9a858270/LICENSE.txt",
+            "librtprocess-9a858270/LICENSE.txt",
+        ),
+        (
+            "vendor/librtprocess-9a858270/README.md",
+            "librtprocess-9a858270/README.md",
+        ),
+    ];
+    for (from, to) in notices {
+        let input = source.join(from);
+        ensure(
+            input.is_file(),
+            &format!("Missing bundled RAW notice: {}", input.display()),
+        )?;
+        let destination = out.join("native").join(to);
+        fs::create_dir_all(destination.parent().ok_or("Notice parent")?)?;
+        fs::copy(input, destination)?;
+    }
+    Ok(())
+}
+
 pub fn inventory(root: &Path, out: &Path) -> Result {
     let target = host(root)?;
     let data: Value = serde_json::from_str(&output(
@@ -48,9 +84,33 @@ pub fn inventory(root: &Path, out: &Path) -> Result {
             }
         }
     }
+    native_raw_notices(root, out)?;
     write_json(
         &out.join("dependencies.json"),
-        &json!({"target":target,"packages":packages,"review_status":"Inventory only; manual license review deferred"}),
+        &json!({
+            "target":target,
+            "packages":packages,
+            "native_sources":[
+                {
+                    "name":"LibRaw",
+                    "version":"0.22.2",
+                    "revision":"b93f6e45c194f5df9b02a43b1af9a54b4f41f33f",
+                    "selected_license":"LGPL-2.1",
+                    "notices":"native/libraw-0.22.2",
+                    "build":"Bundled source; no USE_ZLIB, USE_JPEG, USE_RAWSPEED, USE_DNGSDK, USE_LCMS"
+                },
+                {
+                    "name":"librtprocess",
+                    "version":"0.11.0",
+                    "revision":"9a858270acb2096e2e403d932760ee688fcac425",
+                    "selected_license":"GPL-3.0-or-later",
+                    "notices":"native/librtprocess-9a858270",
+                    "build":"Bundled RCD, Markesteijn and border source; no OpenMP"
+                }
+            ],
+            "native_provenance":"native/lightwell-raw/THIRD_PARTY.md",
+            "review_status":"Inventory only; manual license, native and asset reviews deferred"
+        }),
     )?;
     println!("Inventory: {} configured packages", packages.len());
     Ok(())
@@ -133,6 +193,24 @@ pub fn package(root: &Path, out: &Path) -> Result {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn copies_bundled_raw_native_notices() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        native_raw_notices(root, tmp.path()).unwrap();
+        let libraw_license =
+            fs::read_to_string(tmp.path().join("native/libraw-0.22.2/LICENSE.LGPL")).unwrap();
+        assert!(libraw_license.contains("GNU LESSER GENERAL PUBLIC LICENSE"));
+        let rtprocess_license =
+            fs::read_to_string(tmp.path().join("native/librtprocess-9a858270/LICENSE.txt"))
+                .unwrap();
+        assert!(rtprocess_license.contains("GNU GENERAL PUBLIC LICENSE"));
+        assert!(
+            tmp.path()
+                .join("native/lightwell-raw/THIRD_PARTY.md")
+                .is_file()
+        );
+    }
     #[test]
     fn archives_preserve_payload_and_zip_executable() {
         let tmp = tempfile::tempdir().unwrap();
