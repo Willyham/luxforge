@@ -124,7 +124,7 @@ Tone, white balance and colour equations, ranges and tolerances are frozen by th
 
 ## Basic controls and interaction
 
-Exposure is implemented as the Basic module's first and only parameter, at the range, step and precision below; every other row is still a starting range for a control that does not exist yet.
+Exposure, Vibrance and Saturation are implemented, at the ranges, steps and precisions below; every other row is still a starting range for a control that does not exist yet.
 
 These are the starting Lightwell ranges and units, taken from the [Lightroom research](../research/lightroom/tone-and-color-tools.md) as the owner decided, not claims of numeric equivalence to Lightroom. Defaults are neutral, zero. The numerical tasks may adjust a range against independent references before a control ships. Ranges, step, display precision, defaults and descriptions belong in descriptors and API schemas.
 
@@ -135,7 +135,7 @@ These are the starting Lightwell ranges and units, taken from the [Lightroom res
 | Tone / Highlights, Shadows | −100 to +100, step 1 | Smoothly change bright/dark ranges while retaining ordering and exposing retained detail |
 | Tone / Whites, Blacks | −100 to +100, step 1 | Control bright/dark endpoints separately from broad highlight/shadow shaping |
 | White Balance / Temperature, Tint | −100 to +100, step 1 | Relative warm/cool and green/magenta correction of rendered JPEGs; not Kelvin |
-| Color / Vibrance, Saturation | −100 to +100, step 1 | Chroma-dependent versus uniform color-intensity adjustment; saturation −100 is neutral grayscale |
+| Color / Vibrance, Saturation — **implemented** | −100 to +100, step 1 | Chroma-dependent versus uniform color-intensity adjustment; saturation −100 is neutral grayscale |
 
 Each slider has editable numeric text, keyboard steps, an accessible name/value/unit, and an explicit reset action. Double-click reset can be an additional shortcut. Group reset and Reset Basic preserve other groups/effects as appropriate and commit once. Reset on a neutral layer is a no-op; resetting an existing layer retains its ID with neutral parameters. No hidden group-enable/bypass feature is required.
 

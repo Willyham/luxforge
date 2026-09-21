@@ -84,6 +84,24 @@ the [Basic design](../design/basic-and-histogram.md#resource-and-responsiveness-
 desktop measurement that this core-only diagnostic does not make. Recorded here with that scope; no
 threshold is claimed met or missed from these numbers alone.
 
+With Vibrance and Saturation added to the Basic module (TASK-016), the same diagnostic on 24 and
+60 MP, 30 samples each, release, warm cache, M4 Pro, re-measured against the same
+`colour_baseline_same_stack_without_colour` row on this run (32.7 / 35.1 ms at 24 MP,
+87.6 / 100.9 ms at 60 MP; run-to-run variance against the table above, same scope: core render
+only, no desktop scheduling, GPU upload or presentation):
+
+| Measurement | 24 MP | 60 MP |
+| --- | --- | --- |
+| The crop stack with one `vibrance: 50, saturation: 20` Basic layer (two Oklab units; p50 / p95) | 150.8 / 163.2 ms | 402.3 / 594.1 ms |
+
+Each Oklab unit round-trips every pixel through `to_oklab`/`from_oklab` once (two signed cube
+roots and two 3×3 matrix products each way), so two units (vibrance, then saturation) cost close to
+double one exposure unit's single multiply-only pass: against this run's own baseline the colour
+pass is about 118 ms at 24 MP and 315 ms at 60 MP at the median, versus about 17 ms and 33 ms for
+the single-unit `+1 EV` exposure pass measured the same way. The 60 MP p95 (594 ms) sits well above
+its median for the same allocator-tail reason noted above; no desktop responsiveness threshold is
+claimed met or missed from this core-only number.
+
 Editor process measurements from `measure`, five app-cold launches per workload plus one repeated
 60 MP run, on the same host. Launch to observed frame is an upper bound: it includes the harness's
 capture readback, not scanout.

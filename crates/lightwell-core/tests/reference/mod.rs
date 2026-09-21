@@ -115,11 +115,15 @@ pub fn code_threshold(k: u8) -> f64 {
     decode_encoded((f64::from(k) - 0.5) / 255.0)
 }
 
-/// One stepwise colour operation. Only `Exposure` exists so far; later tasks add tone,
-/// white-balance and colour ops here without touching the pixel-evaluation shape.
+/// One stepwise colour operation. Later tasks add tone and white-balance ops here without
+/// touching the pixel-evaluation shape.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum RefOp {
     Exposure(f64),
+    /// Runs `colour::apply_vibrance`, the frozen Oklab vibrance equation.
+    Vibrance(f64),
+    /// Runs `colour::apply_saturation`, the frozen Oklab saturation equation.
+    Saturation(f64),
 }
 
 /// Decode `rgb` to linear light, apply `ops` in order without clamping between them, then
@@ -137,6 +141,12 @@ pub fn evaluate_pixel(rgb: [u8; 3], ops: &[RefOp]) -> [u8; 3] {
                 for channel in &mut channels {
                     *channel = exposure(*channel, ev);
                 }
+            }
+            RefOp::Vibrance(v) => {
+                channels = colour::apply_vibrance(channels, v);
+            }
+            RefOp::Saturation(s) => {
+                channels = colour::apply_saturation(channels, s);
             }
         }
     }

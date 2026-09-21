@@ -16,6 +16,18 @@ fn basic_exposure_layer(ev: f64) -> Layer {
     }
 }
 
+/// The Basic layer the Vibrance/Saturation row measures: the real module's payload compiling to
+/// its two colour units (vibrance then saturation, the frozen internal order), placed where the
+/// host would place a colour-stage commit.
+fn basic_vibrance_saturation_layer(vibrance: f64, saturation: f64) -> Layer {
+    Layer {
+        id: LayerId::new(),
+        effect_id: BASIC_EFFECT.into(),
+        effect_format: 1,
+        payload: json!({ "vibrance": vibrance, "saturation": saturation }),
+    }
+}
+
 /// Render one recipe repeatedly through a given registry, the way the preview worker does.
 fn recipe_render_samples(
     registry: &ModuleRegistry,
@@ -196,23 +208,37 @@ pub fn run(root: &Path, source: &Path, out: &Path, samples: usize) -> Result {
     let mut coloured = stack.clone();
     let index = colour_registry.insertion_index(&coloured.layers, EffectStage::Color);
     coloured.layers.insert(index, basic_exposure_layer(1.0));
+    // The Vibrance/Saturation row: the same crop stack with one Colour-group layer compiling to
+    // two units (vibrance then saturation), instead of the one exposure unit above, so the
+    // difference against the same `stack_render` baseline isolates the Oklab conversion's cost.
+    let mut vibrance_saturation = stack.clone();
+    vibrance_saturation
+        .layers
+        .insert(index, basic_vibrance_saturation_layer(50.0, 20.0));
     let (identity_samples, identity_stage) =
         recipe_render_samples(&colour_registry, &colour_job.source, &identity, samples)?;
     let (stack_samples, stack_stage) =
         recipe_render_samples(&colour_registry, &colour_job.source, &stack, samples)?;
     let (colour_samples, colour_stage) =
         recipe_render_samples(&colour_registry, &colour_job.source, &coloured, samples)?;
+    let (vibrance_saturation_samples, vibrance_saturation_stage) = recipe_render_samples(
+        &colour_registry,
+        &colour_job.source,
+        &vibrance_saturation,
+        samples,
+    )?;
     ensure(
         identity_stage == (state.asset.width, state.asset.height),
         "Identity colour baseline has wrong dimensions",
     )?;
     ensure(
-        stack_stage == colour_stage,
+        stack_stage == colour_stage && stack_stage == vibrance_saturation_stage,
         "A colour operation changed the output stage",
     )?;
     let identity_render = distribution(identity_samples);
     let stack_render = distribution(stack_samples);
     let colour_render = distribution(colour_samples);
+    let vibrance_saturation_render = distribution(vibrance_saturation_samples);
     drop(service);
 
     let service = EditorService::open(&catalog)?;
@@ -259,6 +285,7 @@ pub fn run(root: &Path, source: &Path, out: &Path, samples: usize) -> Result {
             "colour_identity_render":identity_render,
             "colour_baseline_same_stack_without_colour":stack_render,
             "colour_same_stack_with_one_1ev_basic_layer":colour_render,
+            "colour_same_stack_with_vibrance_50_saturation_20_basic_layer":vibrance_saturation_render,
             "reopen_source_and_preview_job":cold_source_and_job_ms,
             "reopen_original_render":cold_original_render_ms,
             "total":milliseconds(total),
@@ -270,6 +297,7 @@ pub fn run(root: &Path, source: &Path, out: &Path, samples: usize) -> Result {
             "One and 200 exact transform actions, composed into one orientation layer, render from the same immutable source",
             "A 10 degree crop-fit adds one resample stage boundary and renders its declared stage",
             "One +1 EV Basic exposure layer, compiled by the real lightwell.basic module, renders the same stage as the stack without it; the difference against that baseline is the streamed colour pass",
+            "One Basic layer with vibrance 50 and saturation 20, compiled to two real Oklab colour units, renders the same stage as the stack without it",
             "Catalog reopen reconstructs the original historical state",
             "Source SHA-256 is unchanged"
         ]

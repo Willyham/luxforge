@@ -322,6 +322,8 @@ mod tests {
                 .collect::<Vec<_>>(),
             [
                 "set-basic.exposure",
+                "set-basic.saturation",
+                "set-basic.vibrance",
                 "set-pixel.rgb",
                 "set-pixel.x",
                 "set-pixel.y"

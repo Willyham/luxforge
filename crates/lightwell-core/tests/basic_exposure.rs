@@ -566,7 +566,10 @@ fn history_stores_the_patch_as_sent_with_its_label_and_describes_the_layer() {
     assert!(row.available);
     assert_eq!(
         row.values,
-        json!({"exposure": 0.5}).as_object().cloned().unwrap()
+        json!({"exposure": 0.5, "vibrance": 0.0, "saturation": 0.0})
+            .as_object()
+            .cloned()
+            .unwrap()
     );
 
     // The group reset and the module reset each carry their own label.
@@ -616,7 +619,10 @@ fn history_stores_the_patch_as_sent_with_its_label_and_describes_the_layer() {
     assert_eq!(row.summary, "Neutral");
     assert_eq!(
         row.values,
-        json!({"exposure": 0.0}).as_object().cloned().unwrap()
+        json!({"exposure": 0.0, "vibrance": 0.0, "saturation": 0.0})
+            .as_object()
+            .cloned()
+            .unwrap()
     );
 
     drop(service);
@@ -1015,17 +1021,38 @@ fn an_independent_client_discovers_basic_and_drives_one_gesture_as_a_draft() {
     );
     assert_eq!(
         basic["controls"],
-        json!([{
-            "kind": "group",
-            "label": "Tone",
-            "reset": {"action": "set-basic", "preset": {"exposure": 0.0}},
-            "controls": [{
-                "kind": "number",
-                "action": "set-basic",
-                "parameter": "exposure",
-                "label": "Exposure",
-            }],
-        }])
+        json!([
+            {
+                "kind": "group",
+                "label": "Tone",
+                "reset": {"action": "set-basic", "preset": {"exposure": 0.0}},
+                "controls": [{
+                    "kind": "number",
+                    "action": "set-basic",
+                    "parameter": "exposure",
+                    "label": "Exposure",
+                }],
+            },
+            {
+                "kind": "group",
+                "label": "Colour",
+                "reset": {"action": "set-basic", "preset": {"vibrance": 0.0, "saturation": 0.0}},
+                "controls": [
+                    {
+                        "kind": "number",
+                        "action": "set-basic",
+                        "parameter": "vibrance",
+                        "label": "Vibrance",
+                    },
+                    {
+                        "kind": "number",
+                        "action": "set-basic",
+                        "parameter": "saturation",
+                        "label": "Saturation",
+                    },
+                ],
+            },
+        ])
     );
 
     let schema = call(&owner, client, "schema.list", json!({}));
