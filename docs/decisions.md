@@ -44,7 +44,7 @@ Accepted on 2026-09-20 for the [Develop workspace](design/develop-workspace.md) 
 
 ## Basic adjustments and histogram
 
-Accepted on 2026-09-21 for the [Basic and histogram design](design/basic-and-histogram.md). These settle the product questions; implementation was authorized on 2026-09-21.
+Accepted on 2026-09-21 for the [Basic and histogram design](design/basic-and-histogram.md). These settle the product questions; implementation was authorized the same day and is delivered.
 
 - JPEG first: the Basic controls and the histogram work on the supported SDR sRGB and greyscale JPEG subset. RAW is separate later work with its own input and colour contracts, not a prerequisite.
 - One Basic layer per recipe with a fixed internal group order (White balance, Exposure, tone curve, Vibrance, Saturation), placed by its colour stage before the geometry tail and updated in place at the same identity.
@@ -53,7 +53,7 @@ Accepted on 2026-09-21 for the [Basic and histogram design](design/basic-and-his
 - Numerical ranges and equations start from the Lightroom research and the design's proposed ranges and defaults; the numerical tasks select and freeze them against independent references before a control ships, and no value is claimed as Lightroom-equivalent.
 - Priority: Slice A (histogram, clipping and Exposure) next, then Slice B (the remaining Basic controls); export, Locate and MCP keep their own follow-up priority.
 
-The plan runs to completion on the defaults below without further owner input; the owner reviews and refines the result afterwards. Each default is provisional and recorded in the design, so a later change is a normal edit, not a silent reinterpretation.
+The work ran to completion on the defaults below without further owner input; the owner reviews and refines the result afterwards. Each default is provisional and recorded in the design, so a later change is a normal edit, not a silent reinterpretation. Measured results against the provisional thresholds are in [performance](specs/performance.md).
 
 - Performance targets are provisional thresholds: warm 24 MP slider-to-presented-frame p95 below 100 ms, settled exact histogram p95 below 200 ms, a 64 MiB aggregate scratch cap. A measured miss is reported with its figures and does not block delivery.
 - Global tone stays global. If the tone study finds a visual case a global curve cannot pass, the control ships with that limitation documented and an edge-aware proposal recorded as later work.

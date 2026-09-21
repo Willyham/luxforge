@@ -23,7 +23,7 @@ After M4: JPEG export (quality 90, no overwrites, optional metadata stripped by 
 
 ## Later phases
 
-Basic adjustments and histogram have a [design](design/basic-and-histogram.md) with the owner's product choices decided (JPEG first, one Basic layer, release commits, global tone first, Lightroom research as the numerical starting point) and a [task plan](../tasks/implementation-basic-histogram.json): first histogram/clipping and Exposure, then core Tone, White Balance and Color. Implementation is not yet authorized; the plan's first wave is preparation.
+Basic adjustments (white balance with a neutral picker, exposure, tone, vibrance and saturation as one colour-stage layer) and the histogram inspector with clipping overlays are implemented and verified on the M4 Mac against the [design](design/basic-and-histogram.md) and its frozen [tone](design/basic-tone.md), [white balance](design/basic-white-balance.md) and [colour](design/basic-colour.md) studies. The recorded defaults the work ran on (provisional performance thresholds, the overlay rule, the picker patch, the float tolerances, one Basic layer) are the owner's to refine; measured misses are listed in [performance](specs/performance.md).
 
 Relative priority still needs owner input; see the [open questions](decisions.md#open-product-questions).
 
