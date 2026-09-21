@@ -11,6 +11,7 @@ mod modules;
 mod preview;
 mod profile;
 mod render;
+mod source;
 pub use api::*;
 pub use draft::Draft;
 pub use editor::*;
@@ -19,7 +20,10 @@ use image::{ImageDecoder, ImageReader, Limits};
 pub use model::*;
 pub use modules::*;
 pub use preview::*;
-pub use render::{ContentPoint, Raster, Sample, ScratchBudget, extents, locate, render, sample};
+pub use render::{
+    ContentPoint, LinearImage, LinearSettings, Raster, Sample, ScratchBudget, extents, locate,
+    render, render_linear, sample, sample_linear,
+};
 use sha2::{Digest, Sha256};
 use std::{
     fs::File,
@@ -103,17 +107,21 @@ fn header(bytes: &[u8]) -> Result<(u32, u32, u8), Error> {
 }
 
 fn read_bounded(path: &Path) -> Result<Vec<u8>, Error> {
+    let mut file =
+        File::open(path).map_err(|e| Error::new(ErrorKind::FileAccess, e.kind().to_string()))?;
+    read_bounded_file(&mut file)
+}
+
+pub(crate) fn read_bounded_file(file: &mut File) -> Result<Vec<u8>, Error> {
     let file_error = |e: std::io::Error| Error::new(ErrorKind::FileAccess, e.kind().to_string());
-    if !path.metadata().map_err(file_error)?.is_file() {
+    if !file.metadata().map_err(file_error)?.is_file() {
         return Err(Error::new(
             ErrorKind::UnsupportedInput,
             "expected a regular file",
         ));
     }
     let mut bytes = Vec::new();
-    File::open(path)
-        .map_err(file_error)?
-        .take(128 * 1024 * 1024 + 1)
+    file.take(128 * 1024 * 1024 + 1)
         .read_to_end(&mut bytes)
         .map_err(file_error)?;
     if bytes.len() > 128 * 1024 * 1024 {
@@ -217,7 +225,17 @@ pub fn open(path: &Path) -> Result<Photo, Error> {
 
 /// Decode the complete upright source once for non-destructive recipe evaluation.
 pub fn open_source(path: &Path) -> Result<SourceImage, Error> {
-    let bytes = read_bounded(path)?;
+    let mut file =
+        File::open(path).map_err(|e| Error::new(ErrorKind::FileAccess, e.kind().to_string()))?;
+    open_source_file(&mut file)
+}
+
+/// Hash and decode one bounded snapshot read from an already opened handle.
+pub(crate) fn open_source_file(file: &mut File) -> Result<SourceImage, Error> {
+    open_source_bytes(read_bounded_file(file)?)
+}
+
+pub(crate) fn open_source_bytes(bytes: Vec<u8>) -> Result<SourceImage, Error> {
     let fingerprint = format!("{:x}", Sha256::digest(&bytes));
     let decoded = decode_upright(bytes)?;
     let rgba = decoded.upright.into_rgba8();

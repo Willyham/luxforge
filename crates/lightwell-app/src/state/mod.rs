@@ -227,6 +227,7 @@ mod tests {
                     byte_len: 0,
                     width: 1,
                     height: 1,
+                    source: lightwell_core::SourceKind::Jpeg,
                 },
                 revision: 3,
                 current_entry: current,
@@ -579,7 +580,7 @@ mod tests {
             .clone();
         let other = modules
             .iter()
-            .find(|module| module.id != pixel)
+            .find(|module| module.id != pixel && module.id != "lightwell.raw")
             .expect("a second module")
             .id
             .clone();

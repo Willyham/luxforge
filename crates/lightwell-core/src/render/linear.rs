@@ -1,0 +1,977 @@
+//! High precision scene-linear rendering for prepared RAW sources.
+//!
+//! This module is deliberately independent of a RAW decoder. A decoder or source-preparation
+//! worker supplies immutable planar RGB values in unbounded linear sRGB/D65. The recipe is then
+//! evaluated in f64 and converted to the existing byte [`Raster`] only at the terminal boundary.
+//! The byte JPEG evaluator in [`super::render`] remains unchanged.
+
+use super::{Compiled, Raster};
+use crate::{Error, ErrorKind, Recipe, SnapshotId, modules::ModuleRegistry};
+use rayon::prelude::*;
+use std::sync::{Arc, Weak};
+
+const MAX_PIXELS: u64 = 64_000_000;
+const MAX_SIDE: u32 = 16_384;
+const MAX_SOURCE_BYTES: u64 = 512 * 1024 * 1024;
+const MAX_RESAMPLES: usize = 1;
+const PARALLEL_RENDER_PIXELS: u64 = 1_000_000;
+
+fn layout(width: u32, height: u32) -> Result<(usize, usize), Error> {
+    if width == 0 || height == 0 {
+        return Err(Error::new(
+            ErrorKind::Validation,
+            "linear source dimensions must be nonzero",
+        ));
+    }
+    if width > MAX_SIDE || height > MAX_SIDE {
+        return Err(Error::new(
+            ErrorKind::ResourceLimit,
+            "linear source side exceeds 16384 pixels",
+        ));
+    }
+    let pixels = u64::from(width)
+        .checked_mul(u64::from(height))
+        .ok_or_else(|| {
+            Error::new(
+                ErrorKind::ResourceLimit,
+                "linear source dimensions overflow",
+            )
+        })?;
+    if pixels > MAX_PIXELS {
+        return Err(Error::new(
+            ErrorKind::ResourceLimit,
+            "linear source exceeds 64 megapixels",
+        ));
+    }
+    let values = pixels.checked_mul(3).ok_or_else(|| {
+        Error::new(
+            ErrorKind::ResourceLimit,
+            "linear source plane length overflow",
+        )
+    })?;
+    let bytes = values
+        .checked_mul(u64::from(std::mem::size_of::<f32>() as u32))
+        .ok_or_else(|| {
+            Error::new(
+                ErrorKind::ResourceLimit,
+                "linear source byte length overflow",
+            )
+        })?;
+    if bytes > MAX_SOURCE_BYTES {
+        return Err(Error::new(
+            ErrorKind::ResourceLimit,
+            "linear RGB source exceeds 512 MiB",
+        ));
+    }
+    let values = usize::try_from(values)
+        .map_err(|_| Error::new(ErrorKind::ResourceLimit, "linear source is not addressable"))?;
+    let plane_len = usize::try_from(pixels).map_err(|_| {
+        Error::new(
+            ErrorKind::ResourceLimit,
+            "linear source plane is not addressable",
+        )
+    })?;
+    Ok((values, plane_len))
+}
+
+fn output_len(width: u32, height: u32) -> Result<usize, Error> {
+    if width == 0 || height == 0 {
+        return Err(Error::new(
+            ErrorKind::Validation,
+            "linear output dimensions must be nonzero",
+        ));
+    }
+    if width > MAX_SIDE || height > MAX_SIDE {
+        return Err(Error::new(
+            ErrorKind::ResourceLimit,
+            "linear output side exceeds 16384 pixels",
+        ));
+    }
+    let pixels = u64::from(width)
+        .checked_mul(u64::from(height))
+        .ok_or_else(|| {
+            Error::new(
+                ErrorKind::ResourceLimit,
+                "linear output dimensions overflow",
+            )
+        })?;
+    if pixels > MAX_PIXELS {
+        return Err(Error::new(
+            ErrorKind::ResourceLimit,
+            "linear output exceeds 64 megapixels",
+        ));
+    }
+    let bytes = pixels.checked_mul(4).ok_or_else(|| {
+        Error::new(
+            ErrorKind::ResourceLimit,
+            "linear output byte length overflow",
+        )
+    })?;
+    if bytes > MAX_SOURCE_BYTES {
+        return Err(Error::new(
+            ErrorKind::ResourceLimit,
+            "linear output exceeds 512 MiB",
+        ));
+    }
+    usize::try_from(bytes)
+        .map_err(|_| Error::new(ErrorKind::ResourceLimit, "linear output is not addressable"))
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct View {
+    x: u32,
+    y: u32,
+    width: u32,
+    height: u32,
+    orientation: u8,
+}
+
+impl View {
+    fn output_dimensions(self) -> (u32, u32) {
+        if (5..=8).contains(&self.orientation) {
+            (self.height, self.width)
+        } else {
+            (self.width, self.height)
+        }
+    }
+
+    fn map(self, x: u32, y: u32) -> Option<(u32, u32)> {
+        let (source_x, source_y) = match self.orientation {
+            1 => (x, y),
+            2 => (self.width.checked_sub(1)?.checked_sub(x)?, y),
+            3 => (
+                self.width.checked_sub(1)?.checked_sub(x)?,
+                self.height.checked_sub(1)?.checked_sub(y)?,
+            ),
+            4 => (x, self.height.checked_sub(1)?.checked_sub(y)?),
+            5 => (y, x),
+            6 => (y, self.height.checked_sub(1)?.checked_sub(x)?),
+            7 => (
+                self.width.checked_sub(1)?.checked_sub(y)?,
+                self.height.checked_sub(1)?.checked_sub(x)?,
+            ),
+            8 => (self.width.checked_sub(1)?.checked_sub(y)?, x),
+            _ => return None,
+        };
+        Some((self.x + source_x, self.y + source_y))
+    }
+}
+
+/// Immutable planar f32 RGB prepared in linear sRGB/D65.
+///
+/// `planes` is laid out as one complete R plane, followed by G and B. Values may be negative or
+/// above one; only non-finite values are rejected. A view can crop and orient these planes without
+/// copying them, which lets a source adapter expose its active/upright content rectangle cheaply.
+/// The `Arc<Vec<f32>>` stores the caller's moved `Vec` without copying its pixel buffer.
+#[derive(Clone, Debug, PartialEq)]
+pub struct LinearImage {
+    base_width: u32,
+    base_height: u32,
+    planes: Arc<Vec<f32>>,
+    fingerprint: String,
+    view: View,
+}
+
+impl LinearImage {
+    /// Construct an identity-view image from contiguous planar R, G and B values.
+    pub fn new(width: u32, height: u32, planes: impl Into<Arc<Vec<f32>>>) -> Result<Self, Error> {
+        Self::with_fingerprint(width, height, planes, String::new())
+    }
+
+    /// Construct an identity-view image with the source identity copied to output rasters.
+    pub fn with_fingerprint(
+        width: u32,
+        height: u32,
+        planes: impl Into<Arc<Vec<f32>>>,
+        fingerprint: impl Into<String>,
+    ) -> Result<Self, Error> {
+        let planes = planes.into();
+        let (expected, _) = layout(width, height)?;
+        if planes.len() != expected {
+            return Err(Error::new(
+                ErrorKind::Validation,
+                format!("linear source needs {expected} planar values"),
+            ));
+        }
+        let capacity_bytes = u64::try_from(planes.capacity())
+            .ok()
+            .and_then(|capacity| capacity.checked_mul(u64::from(std::mem::size_of::<f32>() as u32)))
+            .ok_or_else(|| {
+                Error::new(ErrorKind::ResourceLimit, "linear source capacity overflows")
+            })?;
+        if capacity_bytes > MAX_SOURCE_BYTES {
+            return Err(Error::new(
+                ErrorKind::ResourceLimit,
+                "linear RGB source capacity exceeds 512 MiB",
+            ));
+        }
+        if planes.iter().any(|value| !value.is_finite()) {
+            return Err(Error::new(
+                ErrorKind::Validation,
+                "linear source contains a non-finite value",
+            ));
+        }
+        Ok(Self {
+            base_width: width,
+            base_height: height,
+            planes,
+            fingerprint: fingerprint.into(),
+            view: View {
+                x: 0,
+                y: 0,
+                width,
+                height,
+                orientation: 1,
+            },
+        })
+    }
+
+    /// Return a cropped/oriented view without copying the source planes.
+    ///
+    /// `crop` is `[x, y, width, height]` in the base source-plane coordinates. EXIF orientation
+    /// values 1 through 8 use the standard mappings and are applied exactly once to that crop.
+    pub fn with_view(&self, crop: [u32; 4], orientation: u8) -> Result<Self, Error> {
+        let [x, y, width, height] = crop;
+        if !(1..=8).contains(&orientation) {
+            return Err(Error::new(
+                ErrorKind::Validation,
+                "linear source orientation must be EXIF 1 through 8",
+            ));
+        }
+        let right = x.checked_add(width).ok_or_else(|| {
+            Error::new(ErrorKind::ResourceLimit, "linear crop exceeds dimensions")
+        })?;
+        let bottom = y.checked_add(height).ok_or_else(|| {
+            Error::new(ErrorKind::ResourceLimit, "linear crop exceeds dimensions")
+        })?;
+        if width == 0 || height == 0 || right > self.base_width || bottom > self.base_height {
+            return Err(Error::new(
+                ErrorKind::Validation,
+                "linear crop lies outside source planes",
+            ));
+        }
+        let view = View {
+            x,
+            y,
+            width,
+            height,
+            orientation,
+        };
+        let (output_width, output_height) = view.output_dimensions();
+        let _ = layout(output_width, output_height)?;
+        Ok(Self {
+            base_width: self.base_width,
+            base_height: self.base_height,
+            planes: Arc::clone(&self.planes),
+            fingerprint: self.fingerprint.clone(),
+            view,
+        })
+    }
+
+    pub fn width(&self) -> u32 {
+        self.view.output_dimensions().0
+    }
+
+    pub fn height(&self) -> u32 {
+        self.view.output_dimensions().1
+    }
+
+    pub fn fingerprint(&self) -> &str {
+        &self.fingerprint
+    }
+
+    pub fn view(&self) -> ([u32; 4], u8) {
+        (
+            [self.view.x, self.view.y, self.view.width, self.view.height],
+            self.view.orientation,
+        )
+    }
+
+    pub(crate) fn storage_weak(&self) -> Weak<Vec<f32>> {
+        Arc::downgrade(&self.planes)
+    }
+
+    pub fn planes(&self) -> &[f32] {
+        self.planes.as_slice()
+    }
+
+    /// Read one view pixel without allocating. This is also useful to a source-stage picker.
+    pub fn pixel(&self, x: u32, y: u32) -> Option<[f32; 3]> {
+        let (width, height) = self.view.output_dimensions();
+        if x >= width || y >= height {
+            return None;
+        }
+        let (base_x, base_y) = self.view.map(x, y)?;
+        let index =
+            usize::try_from(u64::from(base_y) * u64::from(self.base_width) + u64::from(base_x))
+                .ok()?;
+        let plane_len =
+            usize::try_from(u64::from(self.base_width) * u64::from(self.base_height)).ok()?;
+        Some([
+            self.planes[index],
+            self.planes[plane_len + index],
+            self.planes[2 * plane_len + index],
+        ])
+    }
+
+    fn pixel_f64(&self, x: u32, y: u32) -> Result<[f64; 3], Error> {
+        let pixel = self.pixel(x, y).ok_or_else(|| {
+            Error::new(
+                ErrorKind::Validation,
+                format!("linear source coordinate ({x}, {y}) is outside the view"),
+            )
+        })?;
+        let pixel = pixel.map(f64::from);
+        if pixel.iter().all(|value| value.is_finite()) {
+            Ok(pixel)
+        } else {
+            Err(Error::new(
+                ErrorKind::Render,
+                "linear source produced a non-finite pixel",
+            ))
+        }
+    }
+}
+
+/// Per-evaluation linear settings. Zero EV is the neutral default; the setting is applied to the
+/// source before recipe content edits and never to an intermediate display raster.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct LinearSettings {
+    pub exposure_ev: f64,
+}
+
+impl Default for LinearSettings {
+    fn default() -> Self {
+        Self { exposure_ev: 0.0 }
+    }
+}
+
+impl LinearSettings {
+    fn multiplier(self) -> Result<f64, Error> {
+        if !self.exposure_ev.is_finite() || !(-5.0..=5.0).contains(&self.exposure_ev) {
+            return Err(Error::new(
+                ErrorKind::Validation,
+                "linear exposure must be finite and between -5 and +5 EV",
+            ));
+        }
+        let multiplier = self.exposure_ev.exp2();
+        if multiplier.is_finite() {
+            Ok(multiplier)
+        } else {
+            Err(Error::new(
+                ErrorKind::Render,
+                "linear exposure multiplier overflow",
+            ))
+        }
+    }
+}
+
+fn decode_srgb(value: u8) -> f64 {
+    let encoded = f64::from(value) / 255.0;
+    if encoded <= 0.040_45 {
+        encoded / 12.92
+    } else {
+        ((encoded + 0.055) / 1.055).powf(2.4)
+    }
+}
+
+fn decode_rgb(value: [u8; 3]) -> [f64; 3] {
+    value.map(decode_srgb)
+}
+
+fn terminal_srgb(linear: f64) -> Result<u8, Error> {
+    if !linear.is_finite() {
+        return Err(Error::new(
+            ErrorKind::Render,
+            "linear evaluation produced a non-finite value",
+        ));
+    }
+    let linear = linear.clamp(0.0, 1.0);
+    let encoded = if linear <= 0.003_130_8 {
+        12.92 * linear
+    } else {
+        1.055 * linear.powf(1.0 / 2.4) - 0.055
+    };
+    let rounded = (encoded * 255.0).round();
+    if !rounded.is_finite() || !(0.0..=255.0).contains(&rounded) {
+        return Err(Error::new(
+            ErrorKind::Render,
+            "terminal sRGB conversion overflow",
+        ));
+    }
+    Ok(rounded as u8)
+}
+
+fn clamp_index(value: f64, limit: u32) -> u32 {
+    let last = limit.saturating_sub(1);
+    if value <= 0.0 {
+        0
+    } else if value >= f64::from(last) {
+        last
+    } else {
+        value as u32
+    }
+}
+
+fn linear_bilinear(
+    u: f64,
+    v: f64,
+    width: u32,
+    height: u32,
+    fetch: impl Fn(u32, u32) -> Result<[f64; 3], Error>,
+) -> Result<[f64; 3], Error> {
+    if !u.is_finite() || !v.is_finite() || width == 0 || height == 0 {
+        return Err(Error::new(
+            ErrorKind::Render,
+            "linear resample has invalid coordinates or dimensions",
+        ));
+    }
+    let x = u - 0.5;
+    let y = v - 0.5;
+    let left = x.floor();
+    let top = y.floor();
+    let weight_x = x - left;
+    let weight_y = y - top;
+    let (left_x, right_x) = (clamp_index(left, width), clamp_index(left + 1.0, width));
+    let (top_y, bottom_y) = (clamp_index(top, height), clamp_index(top + 1.0, height));
+    let corners = [
+        (fetch(left_x, top_y)?, (1.0 - weight_x) * (1.0 - weight_y)),
+        (fetch(right_x, top_y)?, weight_x * (1.0 - weight_y)),
+        (fetch(left_x, bottom_y)?, (1.0 - weight_x) * weight_y),
+        (fetch(right_x, bottom_y)?, weight_x * weight_y),
+    ];
+    let output = std::array::from_fn(|channel| {
+        corners
+            .iter()
+            .map(|(pixel, weight)| pixel[channel] * weight)
+            .sum::<f64>()
+    });
+    if output.iter().all(|value| value.is_finite()) {
+        Ok(output)
+    } else {
+        Err(Error::new(
+            ErrorKind::Render,
+            "linear resample produced a non-finite value",
+        ))
+    }
+}
+
+struct LinearEvaluation<'a> {
+    source: &'a LinearImage,
+    compiled: Compiled,
+    exposure_multiplier: f64,
+}
+
+impl<'a> LinearEvaluation<'a> {
+    fn new(
+        registry: &ModuleRegistry,
+        source: &'a LinearImage,
+        recipe: &Recipe,
+        settings: LinearSettings,
+    ) -> Result<Self, Error> {
+        let exposure_multiplier = settings.multiplier()?;
+        let compiled = registry.compile(source.width(), source.height(), recipe)?;
+        if compiled.segments.len() > MAX_RESAMPLES + 1 {
+            return Err(Error::new(
+                ErrorKind::Validation,
+                "linear evaluation supports at most one resample stage",
+            ));
+        }
+        Ok(Self {
+            source,
+            compiled,
+            exposure_multiplier,
+        })
+    }
+
+    fn stage(&self) -> (u32, u32) {
+        let segment = self
+            .compiled
+            .segments
+            .last()
+            .expect("compiled recipe has a segment");
+        (segment.width, segment.height)
+    }
+
+    fn source_pixel(&self, x: u32, y: u32) -> Result<[f64; 3], Error> {
+        let pixel = self.source.pixel_f64(x, y)?;
+        let output = pixel.map(|value| value * self.exposure_multiplier);
+        if output.iter().all(|value| value.is_finite()) {
+            Ok(output)
+        } else {
+            Err(Error::new(
+                ErrorKind::Render,
+                "linear exposure produced a non-finite value",
+            ))
+        }
+    }
+
+    fn pixel(&self, x: u32, y: u32) -> Result<Option<[f64; 3]>, Error> {
+        self.pixel_in(self.compiled.segments.len() - 1, x, y)
+    }
+
+    fn pixel_in(&self, index: usize, x: u32, y: u32) -> Result<Option<[f64; 3]>, Error> {
+        let segment = &self.compiled.segments[index];
+        let Some(resolved) = segment.resolve(x, y) else {
+            return Ok(None);
+        };
+        let mut pixel = match segment.entry {
+            None => self.source_pixel(resolved.input_x, resolved.input_y)?,
+            Some(resample) => {
+                let previous = &self.compiled.segments[index - 1];
+                let (u, v) = resample.input_at(resolved.input_x, resolved.input_y);
+                linear_bilinear(
+                    u,
+                    v,
+                    previous.width,
+                    previous.height,
+                    |sample_x, sample_y| {
+                        self.pixel_in(index - 1, sample_x, sample_y)
+                            .and_then(|pixel| {
+                                pixel.ok_or_else(|| {
+                                    Error::new(
+                                        ErrorKind::Render,
+                                        "linear recursive sample was outside stage",
+                                    )
+                                })
+                            })
+                    },
+                )?
+            }
+        };
+        if let Some((_, rgb)) = resolved.replacement {
+            pixel = decode_rgb(rgb);
+        }
+        // The colour phases are the 8-bit path's, applied to this one linear pixel: the replacement
+        // that wins here ends the runs before it, and every run after it processes the value in
+        // place. Nothing is quantized between runs, which is the whole point of the linear path: a
+        // scene value above 1 or below 0 survives to the next unit and only the terminal boundary
+        // encodes it.
+        if segment.has_color {
+            let after = resolved.replacement.map_or(0, |(index, _)| index + 1);
+            let mut linear = [pixel.map(|value| value as f32)];
+            for run in super::color_runs(&segment.operations).filter(|run| run.start >= after) {
+                super::apply_units(&run, &mut linear)?;
+            }
+            pixel = linear[0].map(f64::from);
+        }
+        if pixel.iter().all(|value| value.is_finite()) {
+            Ok(Some(pixel))
+        } else {
+            Err(Error::new(
+                ErrorKind::Render,
+                "linear evaluation produced a non-finite pixel",
+            ))
+        }
+    }
+}
+
+fn terminal_pixel(pixel: [f64; 3]) -> Result<[u8; 4], Error> {
+    Ok([
+        terminal_srgb(pixel[0])?,
+        terminal_srgb(pixel[1])?,
+        terminal_srgb(pixel[2])?,
+        255,
+    ])
+}
+
+/// Render a prepared linear source through the existing recipe and terminally produce bytes.
+pub fn render_linear(
+    registry: &ModuleRegistry,
+    source: &LinearImage,
+    snapshot_id: SnapshotId,
+    recipe: &Recipe,
+    settings: LinearSettings,
+) -> Result<Raster, Error> {
+    let evaluation = LinearEvaluation::new(registry, source, recipe, settings)?;
+    let (width, height) = evaluation.stage();
+    let output_len = output_len(width, height)?;
+    let row_bytes = usize::try_from(u64::from(width) * 4).map_err(|_| {
+        Error::new(
+            ErrorKind::ResourceLimit,
+            "linear output row is not addressable",
+        )
+    })?;
+    let mut output = vec![0; output_len];
+    let render_row = |row_index: usize, row: &mut [u8]| -> Result<(), Error> {
+        for x in 0..width {
+            let pixel = evaluation.pixel(x, row_index as u32)?.ok_or_else(|| {
+                Error::new(
+                    ErrorKind::Render,
+                    "linear output coordinate was outside stage",
+                )
+            })?;
+            let rgba = terminal_pixel(pixel)?;
+            let offset = x as usize * 4;
+            row[offset..offset + 4].copy_from_slice(&rgba);
+        }
+        Ok(())
+    };
+    if u64::from(width) * u64::from(height) >= PARALLEL_RENDER_PIXELS {
+        output
+            .par_chunks_exact_mut(row_bytes)
+            .enumerate()
+            .try_for_each(|(row, pixels)| render_row(row, pixels))?;
+    } else {
+        output
+            .chunks_exact_mut(row_bytes)
+            .enumerate()
+            .try_for_each(|(row, pixels)| render_row(row, pixels))?;
+    }
+    Ok(Raster {
+        width,
+        height,
+        rgba: output.into(),
+        source_fingerprint: source.fingerprint.clone(),
+        snapshot_id,
+    })
+}
+
+/// Evaluate one terminal output pixel without allocating a frame.
+pub fn sample_linear(
+    registry: &ModuleRegistry,
+    source: &LinearImage,
+    recipe: &Recipe,
+    settings: LinearSettings,
+    x: u32,
+    y: u32,
+) -> Result<super::Sample, Error> {
+    let evaluation = LinearEvaluation::new(registry, source, recipe, settings)?;
+    let (width, height) = evaluation.stage();
+    let _ = output_len(width, height)?;
+    let rgba = evaluation.pixel(x, y)?.map(terminal_pixel).transpose()?;
+    Ok(super::Sample {
+        width,
+        height,
+        rgba,
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{
+        Layer, Recipe, SnapshotId,
+        modules::{CropPayload, ModuleRegistry},
+    };
+
+    fn image(width: u32, height: u32, rgb: &[[f32; 3]]) -> LinearImage {
+        assert_eq!(rgb.len(), (width * height) as usize);
+        let plane_len = (width * height) as usize;
+        let mut planes = Vec::with_capacity(plane_len * 3);
+        for channel in 0..3 {
+            planes.extend(rgb.iter().map(|pixel| pixel[channel]));
+        }
+        LinearImage::with_fingerprint(width, height, planes, "sha256:linear-test").unwrap()
+    }
+
+    fn reference_srgb(value: f64) -> u8 {
+        let value = value.clamp(0.0, 1.0);
+        let encoded = if value <= 0.003_130_8 {
+            value * 12.92
+        } else {
+            1.055 * value.powf(1.0 / 2.4) - 0.055
+        };
+        (encoded * 255.0).round() as u8
+    }
+
+    /// A colour-stage layer reaches the linear path too: the Basic module's units run on the
+    /// scene-linear pixel, without the 8-bit decode and quantize the JPEG path needs, and the only
+    /// encoding is the terminal boundary. A RAW stack therefore never silently omits a Basic edit.
+    #[test]
+    fn a_colour_layer_runs_on_the_linear_pixel_and_encodes_only_at_the_boundary() {
+        let source = image(2, 1, &[[0.1, 0.2, 0.3], [0.05, 0.4, 0.6]]);
+        let recipe = Recipe {
+            format: crate::RECIPE_FORMAT,
+            layers: vec![Layer {
+                id: crate::LayerId::new(),
+                effect_id: crate::BASIC_EFFECT.into(),
+                effect_format: crate::EFFECT_FORMAT,
+                payload: serde_json::json!({"exposure": 1.0}),
+            }],
+        };
+        let raster = render_linear(
+            &ModuleRegistry::builtin(),
+            &source,
+            SnapshotId::new(),
+            &recipe,
+            LinearSettings::default(),
+        )
+        .unwrap();
+        // +1 EV doubles the linear value; the second pixel's blue clips only at the encoding.
+        assert_eq!(
+            raster.pixel(0, 0),
+            Some([
+                reference_srgb(0.2),
+                reference_srgb(0.4),
+                reference_srgb(0.6),
+                255
+            ])
+        );
+        assert_eq!(
+            raster.pixel(1, 0),
+            Some([
+                reference_srgb(0.1),
+                reference_srgb(0.8),
+                reference_srgb(1.0),
+                255
+            ])
+        );
+    }
+
+    #[test]
+    fn planar_source_keeps_negative_and_headroom_values_until_terminal_boundary() {
+        let source = image(
+            2,
+            2,
+            &[
+                [-0.25, 0.18, 1.5],
+                [0.5, 0.2, -0.1],
+                [1.25, 0.4, 0.75],
+                [2.0, -0.5, 0.25],
+            ],
+        );
+        assert_eq!(source.pixel(0, 0), Some([-0.25, 0.18, 1.5]));
+        let raster = render_linear(
+            &ModuleRegistry::builtin(),
+            &source,
+            SnapshotId::new(),
+            &Recipe::default(),
+            LinearSettings::default(),
+        )
+        .unwrap();
+        assert_eq!(
+            raster.pixel(0, 0),
+            Some([0, reference_srgb(0.18), 255, 255])
+        );
+        assert_eq!(
+            raster.pixel(1, 1),
+            Some([255, 0, reference_srgb(0.25), 255])
+        );
+    }
+
+    #[test]
+    fn exposure_is_f64_before_content_and_terminal_clipping() {
+        let source = image(1, 1, &[[0.18, -0.1, 0.5]]);
+        let raster = render_linear(
+            &ModuleRegistry::builtin(),
+            &source,
+            SnapshotId::new(),
+            &Recipe::default(),
+            LinearSettings { exposure_ev: 1.0 },
+        )
+        .unwrap();
+        assert_eq!(
+            raster.pixel(0, 0),
+            Some([reference_srgb(0.36), 0, reference_srgb(1.0), 255])
+        );
+        assert!(LinearSettings { exposure_ev: 5.01 }.multiplier().is_err());
+        assert!(
+            LinearSettings {
+                exposure_ev: f64::NAN
+            }
+            .multiplier()
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn exact_recipe_geometry_and_source_view_preserve_working_values() {
+        let source = image(
+            3,
+            2,
+            &[
+                [0.1, 1.1, -0.1],
+                [0.2, 1.2, -0.2],
+                [0.3, 1.3, -0.3],
+                [0.4, 1.4, -0.4],
+                [0.5, 1.5, -0.5],
+                [0.6, 1.6, -0.6],
+            ],
+        );
+        let view = source.with_view([0, 0, 3, 2], 6).unwrap();
+        assert_eq!(view.width(), 2);
+        assert_eq!(view.height(), 3);
+        assert_eq!(view.pixel(0, 0), Some([0.4, 1.4, -0.4]));
+        assert_eq!(view.pixel(1, 2), Some([0.3, 1.3, -0.3]));
+        let recipe = Recipe {
+            format: 1,
+            layers: vec![Layer::orientation(crate::Orientation {
+                mirror: false,
+                turns: 2,
+            })],
+        };
+        let evaluation = LinearEvaluation::new(
+            &ModuleRegistry::builtin(),
+            &view,
+            &recipe,
+            LinearSettings::default(),
+        )
+        .unwrap();
+        assert_eq!(
+            evaluation.pixel(1, 2).unwrap(),
+            Some([f64::from(0.4_f32), f64::from(1.4_f32), f64::from(-0.4_f32),])
+        );
+    }
+
+    #[test]
+    fn all_eight_source_view_orientations_match_independent_literals() {
+        let source = image(
+            2,
+            3,
+            &[
+                [1.0, 0.0, 0.0],
+                [2.0, 0.0, 0.0],
+                [3.0, 0.0, 0.0],
+                [4.0, 0.0, 0.0],
+                [5.0, 0.0, 0.0],
+                [6.0, 0.0, 0.0],
+            ],
+        );
+        let expected = [
+            (1, 2, 3, vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0]),
+            (2, 2, 3, vec![2.0, 1.0, 4.0, 3.0, 6.0, 5.0]),
+            (3, 2, 3, vec![6.0, 5.0, 4.0, 3.0, 2.0, 1.0]),
+            (4, 2, 3, vec![5.0, 6.0, 3.0, 4.0, 1.0, 2.0]),
+            (5, 3, 2, vec![1.0, 3.0, 5.0, 2.0, 4.0, 6.0]),
+            (6, 3, 2, vec![5.0, 3.0, 1.0, 6.0, 4.0, 2.0]),
+            (7, 3, 2, vec![6.0, 4.0, 2.0, 5.0, 3.0, 1.0]),
+            (8, 3, 2, vec![2.0, 4.0, 6.0, 1.0, 3.0, 5.0]),
+        ];
+        for (orientation, width, height, expected_red) in expected {
+            let view = source.with_view([0, 0, 2, 3], orientation).unwrap();
+            let mut actual = Vec::with_capacity((width * height) as usize);
+            for y in 0..height {
+                for x in 0..width {
+                    actual.push(view.pixel(x, y).unwrap()[0]);
+                }
+            }
+            assert_eq!(actual, expected_red, "orientation {orientation}");
+        }
+    }
+
+    #[test]
+    fn source_vec_storage_is_moved_without_pixel_copy_and_views_share_it() {
+        let mut planes = Vec::with_capacity(12);
+        planes.extend([0.0_f32, 1.0, 2.0, 3.0]);
+        planes.extend([4.0, 5.0, 6.0, 7.0]);
+        planes.extend([8.0, 9.0, 10.0, 11.0]);
+        let pointer = planes.as_ptr();
+        let source = LinearImage::new(2, 2, planes).unwrap();
+        let view = source.with_view([0, 0, 2, 2], 6).unwrap();
+        assert_eq!(source.planes().as_ptr(), pointer);
+        assert_eq!(view.planes().as_ptr(), pointer);
+        assert_eq!(view.pixel(0, 0), Some([2.0, 6.0, 10.0]));
+    }
+
+    #[test]
+    fn bilinear_preserves_headroom_and_point_replace_decodes_at_its_stage() {
+        let corners = [
+            [2.0, -1.0, 0.0],
+            [0.0, 1.0, 2.0],
+            [2.0, -1.0, 0.0],
+            [0.0, 1.0, 2.0],
+        ];
+        let actual =
+            linear_bilinear(1.0, 1.0, 2, 2, |x, y| Ok(corners[(y * 2 + x) as usize])).unwrap();
+        assert_eq!(actual, [1.0, 0.0, 1.0]);
+
+        let precise = [
+            [0.125_123_456_789, -0.543_210_987_654, 1.734_567_890_123],
+            [0.912_345_678_901, 0.234_567_890_123, -0.876_543_210_987],
+            [1.234_567_890_123, -1.345_678_901_234, 0.456_789_012_345],
+            [-0.321_098_765_432, 0.678_901_234_567, 1.890_123_456_789],
+        ];
+        let actual =
+            linear_bilinear(1.25, 1.25, 2, 2, |x, y| Ok(precise[(y * 2 + x) as usize])).unwrap();
+        let expected: [f64; 3] = std::array::from_fn(|channel| {
+            precise[0][channel] * 0.0625
+                + precise[1][channel] * 0.1875
+                + precise[2][channel] * 0.1875
+                + precise[3][channel] * 0.5625
+        });
+        for (actual, expected) in actual.into_iter().zip(expected) {
+            assert!((actual - expected).abs() < 1.0e-15);
+        }
+
+        let source = image(2, 2, &[[0.0, 0.0, 0.0]; 4]);
+        let recipe = Recipe {
+            format: 1,
+            layers: vec![Layer::pixel(1, 0, [128, 64, 255])],
+        };
+        let sample = sample_linear(
+            &ModuleRegistry::builtin(),
+            &source,
+            &recipe,
+            LinearSettings::default(),
+            1,
+            0,
+        )
+        .unwrap();
+        assert_eq!(
+            sample.rgba,
+            Some([
+                reference_srgb(decode_srgb(128)),
+                reference_srgb(decode_srgb(64)),
+                255,
+                255
+            ])
+        );
+    }
+
+    #[test]
+    fn sample_matches_full_render_and_crop_has_no_float_intermediate() {
+        let source = image(
+            4,
+            4,
+            &(0..16)
+                .map(|value| [value as f32 / 8.0, 0.25, -value as f32 / 16.0])
+                .collect::<Vec<_>>(),
+        );
+        let recipe = Recipe {
+            format: 1,
+            layers: vec![Layer::crop(CropPayload {
+                angle: 12.0,
+                x: 0.25,
+                y: 0.25,
+                width: 0.5,
+                height: 0.5,
+            })],
+        };
+        let registry = ModuleRegistry::builtin();
+        let raster = render_linear(
+            &registry,
+            &source,
+            SnapshotId::new(),
+            &recipe,
+            LinearSettings::default(),
+        )
+        .unwrap();
+        for y in 0..raster.height {
+            for x in 0..raster.width {
+                assert_eq!(
+                    sample_linear(&registry, &source, &recipe, LinearSettings::default(), x, y)
+                        .unwrap()
+                        .rgba,
+                    raster.pixel(x, y)
+                );
+            }
+        }
+        assert!(raster.width > 0 && raster.height > 0);
+    }
+
+    #[test]
+    fn malformed_sources_views_and_multiple_resamples_fail_closed() {
+        assert!(LinearImage::new(2, 2, vec![0.0; 11]).is_err());
+        assert!(LinearImage::new(2, 2, vec![f32::NAN; 12]).is_err());
+        assert!(LinearImage::new(0, 1, Vec::<f32>::new()).is_err());
+        assert!(LinearImage::new(16_385, 1, Vec::<f32>::new()).is_err());
+        assert!(output_len(8_192, 8_192).is_err());
+        let source = image(2, 2, &[[0.0, 0.0, 0.0]; 4]);
+        assert!(source.with_view([1, 1, 2, 2], 1).is_err());
+        assert!(source.with_view([u32::MAX, 0, 2, 1], 1).is_err());
+        assert!(source.with_view([0, 0, 2, 2], 9).is_err());
+        assert!(LinearSettings { exposure_ev: 5.1 }.multiplier().is_err());
+        assert!(linear_bilinear(1.0, 1.0, 2, 2, |_x, _y| Ok([f64::INFINITY; 3])).is_err());
+    }
+}

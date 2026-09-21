@@ -939,6 +939,7 @@ mod tests {
                 stage_before: &stage_before,
                 insertion_index: &insertion_index,
                 sample_before: &sample_before,
+                sensor_neutral: None,
             },
         )
     }
@@ -1901,6 +1902,7 @@ mod tests {
                 stage_before: &stage_before,
                 insertion_index: &insertion_index,
                 sample_before: &sample_before,
+                sensor_neutral: None,
             },
         )
     }
@@ -2155,6 +2157,7 @@ mod tests {
                     stage_before: &stage_before,
                     insertion_index: &insertion_index,
                     sample_before: &sample_before,
+                    sensor_neutral: None,
                 },
             )
             .expect_err("an undeclared query");
@@ -2233,6 +2236,7 @@ mod tests {
                     stage_before: &stage_before,
                     insertion_index: &insertion_index,
                     sample_before: &sample_before,
+                    sensor_neutral: None,
                 },
             )
             .expect_err("no queries");

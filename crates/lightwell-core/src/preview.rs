@@ -1,7 +1,8 @@
 use crate::{
-    EntryId, Error, HistoryEntry, ModuleRegistry, Raster, Recipe, SourceImage,
+    EntryId, Error, HistoryEntry, LinearImage, LinearSettings, ModuleRegistry, Raster, Recipe,
+    SourceImage,
     analysis::{AnalysisIdentity, Report},
-    render,
+    render, render_linear,
 };
 use serde::{Deserialize, Serialize};
 use std::sync::{
@@ -103,8 +104,73 @@ impl PreviewSession {
 }
 
 #[derive(Clone, Debug)]
+pub enum PreviewSource {
+    Jpeg(SourceImage),
+    Raw {
+        image: LinearImage,
+        settings: LinearSettings,
+    },
+}
+
+impl PreviewSource {
+    pub fn orientation(&self) -> u8 {
+        match self {
+            Self::Jpeg(image) => image.orientation,
+            Self::Raw { image, .. } => image.view().1,
+        }
+    }
+
+    /// The source fingerprint every frame and every report is stamped with.
+    pub fn fingerprint(&self) -> &str {
+        match self {
+            Self::Jpeg(image) => &image.fingerprint,
+            Self::Raw { image, .. } => image.fingerprint(),
+        }
+    }
+
+    /// The content-stage dimensions a recipe is compiled against.
+    pub fn dimensions(&self) -> (u32, u32) {
+        match self {
+            Self::Jpeg(image) => (image.width, image.height),
+            Self::Raw { image, .. } => (image.width(), image.height()),
+        }
+    }
+
+    /// Render this stack, through the path the source interpretation asks for.
+    pub fn render(
+        &self,
+        registry: &ModuleRegistry,
+        snapshot_id: crate::SnapshotId,
+        recipe: &Recipe,
+    ) -> Result<Raster, Error> {
+        match self {
+            Self::Jpeg(image) => render(registry, image, snapshot_id, recipe),
+            Self::Raw { image, settings } => {
+                render_linear(registry, image, snapshot_id, recipe, *settings)
+            }
+        }
+    }
+
+    /// One output pixel of this stack without rasterizing a frame, through the same two paths.
+    pub fn sample(
+        &self,
+        registry: &ModuleRegistry,
+        recipe: &Recipe,
+        x: u32,
+        y: u32,
+    ) -> Result<crate::Sample, Error> {
+        match self {
+            Self::Jpeg(image) => crate::sample(registry, image, recipe, x, y),
+            Self::Raw { image, settings } => {
+                crate::sample_linear(registry, image, recipe, *settings, x, y)
+            }
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
 pub struct PreviewJob {
-    pub source: SourceImage,
+    pub source: PreviewSource,
     /// The entry this preview shows. Its identity and snapshot correlate the frame with history;
     /// what is rendered is [`PreviewJob::recipe`], which differs from the entry's own stack while a
     /// draft is open.
@@ -184,12 +250,10 @@ impl PreviewQueue {
                 format: job.recipe.format,
                 layers: job.recipe.layers.iter().take(count).cloned().collect(),
             });
-            let result = render(
-                &job.registry,
-                &job.source,
-                job.entry.snapshot.id.clone(),
-                prefix.as_ref().unwrap_or(&job.recipe),
-            );
+            let recipe = prefix.as_ref().unwrap_or(&job.recipe);
+            let result = job
+                .source
+                .render(&job.registry, job.entry.snapshot.id.clone(), recipe);
             // The histogram is reduced from the frame this worker just produced, in place and
             // without a second render or a copy. A failed reduction leaves no report rather than
             // reporting zeroes.
@@ -280,13 +344,13 @@ mod tests {
         )
         .unwrap();
         PreviewJob {
-            source: SourceImage {
+            source: PreviewSource::Jpeg(SourceImage {
                 width: 1,
                 height: 1,
                 rgba: vec![0, 0, 0, 255].into(),
                 fingerprint: "test".into(),
                 orientation: 1,
-            },
+            }),
             registry: Arc::new(ModuleRegistry::builtin()),
             recipe,
             layer_count: None,

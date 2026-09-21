@@ -1,0 +1,88 @@
+# RAW integration contract
+
+Status: continuous RAW editing is implemented and verified on supplied files; broader qualification remains tracked. The editor opens the supplied Nikon Z6, Fujifilm X100VI and DJI Air 2S originals through the typed RAW path. Real-file adapter tests and background Metal renders pass; complete control, concurrency, resource and portability acceptance is tracked in [initial RAW](initial-raw.md) and the [task plan](../../tasks/implementation-initial-raw.json). The supplied FC3411 DNG uses required GainMap/WarpRectilinear corrections; its [contract](air2s-dng.md) records the precise encoding and float interpretation.
+
+## Source and interpretation
+
+`PreparedSource` is either the existing byte-exact JPEG `SourceImage` or a `RawPrepared`. RAW owns an immutable `Arc<RawSource>` containing the sensor mosaic and metadata, its resolved WB gains, and an optional `LinearImage` development. The optional development permits eviction without losing the unpacked mosaic. A display `Raster` never becomes an editing source.
+
+`EditorService::prepare_file` reads, hashes and decodes the same bounded file handle on one source worker. Handle and path signatures are checked before and after; the owner checks the completion again before committing. Cache hits validate file identity, length, modification and change markers without reading or hashing image payloads. A changed or missing original preserves its catalog and history and reports an explicit error. Direct synchronous `EditorService` helpers exist for diagnostics; the application command owner disables synchronous source misses.
+
+Catalog format 4 records the JPEG/RAW source kind and immutable interpretation metadata. RAW metadata includes camera and recording mode, sensor/active/default rectangles, CFA phase, per-site black calibration, sensor saturation, as-shot gains, camera matrices, orientation, provider build and warnings. DNG interpretation additionally requires correction order/version/payload hashes, clipping/interpolation identity and embedded calibration provenance. NEF/RAF source metadata keeps its existing shape. Reopen must reproduce the same interpretation. Unsupported catalog, recipe or interpretation data fails explicitly without migration or rewriting. Pixels and derived caches are never stored in SQLite or history.
+
+The selected native adapter is [LibRaw 0.22.2 plus pinned librtprocess](../research/raw-backend-selection.md). It returns owned u16 samples and copied metadata, releases the native decoder, and develops from the retained mosaic. Mutable native handles do not enter recipes or cross worker boundaries. The crate documents its [FFI invariants, build and allocation limits](../../crates/lightwell-raw/README.md).
+
+## Required source layer and controls
+
+Every RAW Original and descendant contains exactly one `lightwell.raw` source effect at index zero, with a stable layer identity. JPEG has none. `EffectStage::Source` precedes content/pixel effects and the geometry tail. The host enforces asset applicability and the required layer; the module owns parameter validation and generated controls. RAW actions update that layer in place through ordinary revision-checked transactions. Reset returns to the asset's captured as-shot defaults. Repeated equivalent requests are no-ops. Undo, redo, Restore, versions and historical previews use their saved source parameters.
+
+The payload retains exposure, WB mode, resolved camera gains, custom Temperature/Tint values when set, and captured camera calibration. Its as-shot gains and calibration matrix must agree with immutable asset metadata. Temperature and Tint are explicit custom targets, not an invented inverse representation of As shot; the sensor-neutral picker resolves gains from a bounded pre-WB patch. The same descriptor/action service drives GUI and JSON operations. `module.list` can filter by asset; JPEG panels and palette do not offer RAW-only controls. Missing providers retain the affected history and fail rendering explicitly rather than omitting the effect.
+
+RAW Exposure belongs to this source module. The separately planned JPEG Basic controls operate on already rendered JPEG data; they are not a second RAW WB or Exposure layer. Shared tools keep their declared input domain and stage. Export, Locate and MCP remain separate capabilities.
+
+## Numerical evaluation
+
+The retained image is three contiguous float32 planes in unbounded linear sRGB/D65. `Arc<Vec<f32>>` moves the producer's allocation without the full-frame copy that conversion to an `Arc<[f32]>` would require. Source crop and EXIF orientation are views over that allocation. Negative calibrated components and values above one are retained until terminal display conversion.
+
+Per-site black subtraction and sensor-white normalization precede camera WB. RCD develops Bayer; one-pass Markesteijn develops X-Trans. WB changes rerun that stage from the mosaic because those demosaicers are nonlinear. Exposure and composition reuse the prepared float image. For the qualified DNG, required gain-map and chromatic-warp operations first run in camera RGB using one reusable active-plane scratch; identity channels skip resampling. Values remain unclipped under Lightwell's existing source contract, which intentionally differs from normative per-opcode DNG clipping. LibRaw's `rgb_cam` then converts WB-balanced camera RGB in place to linear sRGB; applying `pre_mul` again would double-normalize the response. RCD's own nonnegative reconstruction is an upstream algorithm property, not permission to clip later calibrated values.
+
+`render_linear` reuses compiled geometry and point-replacement order. It evaluates exact transforms and one crop directly into a terminal RGBA buffer; it allocates no intermediate full float crop. Bilinear sampling and exposure use f64 arithmetic over the retained f32 values. Pixel proof's saved sRGB replacement is decoded into linear light at its saved stage. The terminal sRGB transfer, clamp and rounding are shared by full rendering and point sampling. JPEG keeps its existing exact byte evaluator and identity-buffer sharing.
+
+Point queries, dimension checks and no-op planning never rasterize. The neutral picker reads a fixed 13×13 sensor neighborhood after upright-content coordinates have been mapped through the source crop/orientation. It averages normalized samples by CFA channel, rejecting near-black, near-saturation and invalid patches, and produces positive green-normalized gains. DNG picking additionally maps each patch site through its channel's optical warp and accounts for spatial gain, rejecting dark/clipped sensor samples before gain. A missing prepared source returns a preparation job instead of doing image work on the owner.
+
+## Camera framing and qualified scope
+
+The owner Z6 has a 6064×4040 mosaic, a default crop at `(8,8)` of 6048×4024 and EXIF orientation 8; upright content is 4024×6048. A conflicting ImageArea tag does not introduce a DX crop. The adapter validates full-size 12/14-bit lossless NEF modes from container metadata.
+
+The owner X100VI has a 7872×5196 mosaic and the RAF camera crop `(12,21,7728,5152)`. The adapter honors that crop and records the different LibRaw inset as a warning. X-Trans CFA phase uses full-sensor coordinates. Uncompressed and lossless-compressed 14-bit RAF are the initial adapter modes. Full mode and scene qualification remains explicit in the [coverage manifest](../../fixtures/raw-coverage.json).
+
+The supplied DJI FC3411 DNG has a 5568×3648 sensor, active area `(96,0,5472,3648)` and default crop `(100,4,5464,3640)`. Required OpcodeList3 GainMap (9) and per-channel WarpRectilinear (1) operate in that order in active-local coordinates. The qualified encoding is one uncompressed 16-bit-stored CFA strip with unity scaling. Fixed D65 ColorMatrix2 supplies Temperature/Tint calibration; all advertised endpoints fit the shared 32× gain bound. Unknown mandatory operations, ambiguous calibration or unsupported layouts fail explicitly. Generic DNG, dual-illuminant profiles and other DJI encodings are not qualified.
+
+## Owner and job protocol
+
+There is one source worker, eight pending tasks, 64 retained terminal job results and one prepared-source cache. Pending/active development requests admit only one distinct sensor allocation; a second mosaic reports backpressure until the first releases. Queued file jobs contain paths/signatures, not decoded images. At most the admitted development mosaic and the current cache mosaic are retained by that service. Completed job results hold catalog state, not image buffers. The owner does only catalog transactions, bounded metadata/point work, revision checks and short file-signature checks; read/hash/unpack/develop and full rendering stay off it.
+
+The current API exposes:
+
+- `catalog.import`: return `{job_id,state}` and commit an asset only after successful preparation.
+- `job.status`: queued/preparing/ready/failed; a ready result includes the asset state.
+- `job.cancel`: detach this client's interest; another waiter keeps shared work alive.
+- `job.adopt`: adopt only this client's latest ready import into its session.
+- `source.prepare`: request preparation for an asset and optional historical entry.
+- `source.inspect`: inspect persisted interpretation and current readiness without decoding.
+
+A source-dependent call can return `preparation-required` with `error.job_id`. Clients await that job and retry against the then-current revision. Single-flight keys include canonical path, signature, expected fingerprint and, for redevelopment, resolved gains. New imports and changed WB cannot present stale settings merely because a file name or dimensions match. A completion validates file signature, fingerprint, sensor allocation identity and requested gains before installing development.
+
+The desktop tags imports with an open generation and ignores late completions. Waiting preview preparation checks session generation and selected/current entry identity every 50 ms; a superseded caller stops retrying. Its already queued bounded source job may finish once because another request can share the flight. Preview work retains one active and one replaceable pending job. Each immutable job carries its source, settings, entry and snapshot; presentation checks the requested identity. A failed replacement retains the last image and edits. Historical image identity is recorded separately from the authoritative current stack in evidence (`stack.displayed`). Crop drafts retain their normal conflict/reapply behavior across RAW edits.
+
+Source polling is gated to an outstanding job. The worker sleeps on a blocking queue when idle; its short memory-gate poll runs only while queued work is waiting for earlier float references to be released. Shutdown cancels jobs, releases the completion receiver and joins the worker without leaving a blocked send.
+
+## Allocation and liveness
+
+Hard adapter limits are 128 MiB encoded input, 64 MP, 16384 pixels per side and 512 MiB for the three float planes. The supported camera geometries are additionally checked before unpack. Native decode uses a 512 MiB LibRaw allocation setting; the adapter bounds metadata traversal, strides, black patterns and output arithmetic. These limits do not independently constitute a whole-process RSS promise.
+
+For the full Fuji sensor, the retained u16 mosaic is 78.02 MiB, the temporary normalized mosaic 156.03 MiB and the output RGB planes 468.10 MiB. Native demosaic row/tile scratch adds about 1.1 MiB in the selected serial configuration. Camera calibration overwrites the planes in place. The terminal camera-cropped RGBA image is 151.9 MiB; GPU textures and renderer overhead are additional.
+
+The owner evicts its cached float development when new source/development work is admitted. A worker gate tracks weak references to the actual plane allocation and waits for all old cache/active/pending-preview references to release it before allocating another RAW development. If another source task was already queued before a completion installed its cache, completion also evicts that development so the next task can progress. The display retains its completed RGBA rendition while preparation proceeds. The mosaic remains reusable for WB changes. This explicitly bounds overlapping float developments instead of assuming that evicting a cache entry frees an `Arc` held by a renderer.
+
+Thirty supplied-Fuji scripted editing journeys reached 1975 / 1992 MiB p50 / p95 sampled process RSS with per-step window readbacks. One trial peaked at 2436 MiB and had a 1038 ms crop update; its state/pixel/reopen checks passed, and the allocation cause remains unknown. Screenshot-free live JSON API controls showed a different profile: one eight-edit run plateaued near 1647 MiB after edit three, while a 24-edit run reached 1581.39 MiB at edit three and rose only 1.25 MiB through edit 24 (peak 1582.64 MiB). Both checked the displayed entry after every edit and preserved the source hash. Earlier captured series grew by roughly one readback allocation per frame; that allocator-lifetime explanation remains an inference, not an attribution of the final outlier. Full distributions and scope are in the [performance measurements](../specs/performance.md#current-raw-and-jpeg-measurements).
+
+These are release background runs on Apple M4 Pro, 48 GiB RAM, macOS 26.5.2, Metal, with a warm filesystem and roughly 50 ms process sampling. GPU memory is not separated from RSS. The screenshot-free peaks exceed the provisional 1.5 GiB (1536 MiB) investigation target by about 47–111 MiB. The observed plateaus are evidence for these series, not an accepted budget or a general memory proof. Native-only RSS, cache eviction and per-frame bounds do not establish whole-process acceptance. The Air 2S allocation ledger and scoped editor measurements are linked from its [design](air2s-dng.md). Full-resolution display upload remains a known cost; a future bounded Fit/detail strategy must preserve exact 100% inspection and recipe semantics.
+
+## Acceptance boundaries
+
+The independent numerical references, native real-file tests and actual-editor captures establish different facts. Exact mosaic comparisons prove unpacking; signed/headroom and stage references prove arithmetic; captures plus displayed identities prove the editor used the intended recipe. None alone establishes controlled color accuracy, all ISO/DR/shutter behavior, native Windows/Linux behavior or a completed manual dependency audit. Those gaps remain visible in the plan and coverage manifest.
+
+Verification combines repository checks, authentic RAW workflows, background rendered checks, repeated RAW measurements and the unchanged 24/60 MP JPEG performance diagnostic. Local evidence retains source hashes, errors and failed attempts. The RAW renderer will feed the shared frozen-snapshot exporter when that separately planned capability exists; no parallel RAW exporter or intermediate JPEG editing path is introduced.
+
+
+## Performance review answers
+
+- **Read/hash/decode:** `prepare_file_cancel` reads one bounded handle and verifies its signature before/after. JPEG takes the single fingerprint computed by `open_source_bytes`; RAW hashes its snapshot once before native decode. Cache hits do signature checks only, and WB redevelopment reuses the mosaic.
+- **Allocations/sharing:** the ledger above names encoded bytes, native unpack/scratch, u16 mosaic, float planes and terminal RGBA. `Arc<Vec<_>>` shares mosaic/float storage; source crop/orientation views do not copy planes. One live float-development allocation and bounded distinct-mosaic admission account for references held beyond the cache. GPU/upload allocations remain a separate measured cost.
+- **Point/no-op work:** parameter equality, compiled geometry and float sampling do no frame allocation. The sensor picker visits at most 169 sites. Missing source data returns preparation-needed; it never decodes on the caller thread.
+- **Owner work:** only catalog/session transactions, bounded metadata and point calculations, signature checks and completion validation. Source and preview workers own payload I/O, hashing, unpack/develop and rasterization.
+- **Desktop refresh:** import fetches state/history; ordinary mutations merge the returned current entry and request a preview. External event synchronization refreshes history. Historical selection fetches its recipe and preview; view-only zoom does not rasterize. Upload adopts only the requested entry/generation, and `preview_displayed` records every completed presentation, including external API edits.
+- **Timers:** 50 ms source-job polling exists only while waiting; the 25 ms float-liveness poll exists only while queued work is blocked by an older plane. Existing preview/event polling stays gated to preview work/an open asset. There is no RAW idle timer.
+- **Photo-sized evidence:** actual NEF/RAF editor journeys, source hashes, repeated WB controls and the same 24/60 MP JPEG diagnostic supply measurements; current scoped results belong in the [performance plan](../specs/performance.md). No tiny-fixture timing or isolated native peak is called editor performance.
+- **Exactness/sharing:** independent numerical references, Bayer/X-Trans patch fixtures, full-mosaic hashes, negative/headroom composition tests, all source orientation views and Arc-sharing checks complement the unchanged JPEG goldens. Authentic JSON and rendered evidence cover history/reopen and displayed controls; controlled chart/scene qualification remains open.

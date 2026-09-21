@@ -2,7 +2,8 @@
 //! action and query identity. Registration touches no image or catalog resource.
 use super::{
     ActionDescriptor, BasicModule, CanvasInteraction, CropModule, EffectDescriptor, EffectStage,
-    MAX_COLOR_UNITS, ModuleDescriptor, PixelModule, Processing, Stage, ToolModule, TransformModule,
+    MAX_COLOR_UNITS, ModuleDescriptor, PixelModule, Processing, RawModule, Stage, ToolModule,
+    TransformModule,
 };
 use crate::{
     Error, ErrorKind, Layer, RECIPE_FORMAT, Recipe,
@@ -67,6 +68,7 @@ impl ModuleRegistry {
         let mut registry = Self::new();
         for module in [
             Arc::new(PixelModule::new()) as Arc<dyn ToolModule>,
+            Arc::new(RawModule::new()),
             Arc::new(BasicModule::new()),
             Arc::new(TransformModule::new()),
             Arc::new(CropModule::new()),
@@ -183,13 +185,19 @@ impl ModuleRegistry {
     /// declares does not open the tail: such a stack cannot compile at all, and the host reports
     /// that rather than guessing a position. Cost is `O(layers)` and reads no pixels.
     pub fn insertion_index(&self, layers: &[Layer], stage: EffectStage) -> usize {
-        if stage == EffectStage::Geometry {
-            return layers.len();
+        match stage {
+            EffectStage::Source => 0,
+            EffectStage::Geometry => layers.len(),
+            EffectStage::Pixel | EffectStage::Color => layers
+                .iter()
+                .position(|layer| {
+                    self.effect_stage(&layer.effect_id) == Some(EffectStage::Geometry)
+                })
+                .unwrap_or(layers.len())
+                .max(usize::from(layers.first().is_some_and(|layer| {
+                    self.effect_stage(&layer.effect_id) == Some(EffectStage::Source)
+                }))),
         }
-        layers
-            .iter()
-            .position(|layer| self.effect_stage(&layer.effect_id) == Some(EffectStage::Geometry))
-            .unwrap_or(layers.len())
     }
 
     /// The provider that can evaluate this effect, or `None` when none is registered or the
@@ -264,7 +272,10 @@ impl ModuleRegistry {
         // stack here as well as when the module plans against it, and rewrites nothing.
         let mut single_effects: HashSet<&str> = HashSet::new();
         let mut segments = vec![Segment::new(None, source_width, source_height)];
-        for layer in layers {
+        for (index, layer) in layers.iter().enumerate() {
+            if self.effect_stage(&layer.effect_id) == Some(EffectStage::Source) && index != 0 {
+                return Err(validation("source-stage effect must be at index zero"));
+            }
             if !layer_ids.insert(&layer.id) {
                 return Err(validation("duplicate layer identity"));
             }
@@ -353,7 +364,7 @@ pub(crate) mod tests {
     use super::*;
     use crate::{
         AssetId, BASIC_EFFECT, CROP_EFFECT, EFFECT_FORMAT, LayerId, ORIENTATION_EFFECT,
-        Orientation, PIXEL_EFFECT, SnapshotId, SourceImage,
+        Orientation, PIXEL_EFFECT, RAW_EFFECT, SnapshotId, SourceImage,
         modules::{
             ActionInput, ActionPlan, Availability, CropPayload, EffectStage, ModuleDescriptor,
             StageContext,
@@ -628,7 +639,10 @@ pub(crate) mod tests {
         assert!(registry.action("set-basic").is_some());
         assert!(registry.action("reset-basic").is_some());
         assert!(registry.effect(BASIC_EFFECT).is_some());
-        assert_eq!(registry.descriptors().len(), 4);
+        assert!(registry.action("set-raw-exposure").is_some());
+        assert!(registry.action("reset-raw").is_some());
+        assert!(registry.effect(RAW_EFFECT).is_some());
+        assert_eq!(registry.descriptors().len(), 5);
         assert!(registry.action("edit.set-pixel").is_none());
 
         for (case, module) in [
@@ -674,7 +688,7 @@ pub(crate) mod tests {
         }
         assert_eq!(
             registry.descriptors().len(),
-            4,
+            5,
             "nothing was half-registered"
         );
         assert!(
@@ -687,7 +701,7 @@ pub(crate) mod tests {
                 ))
                 .is_ok()
         );
-        assert_eq!(registry.descriptors().len(), 5);
+        assert_eq!(registry.descriptors().len(), 6);
     }
 
     /// A module whose canvas claims one mode-strip letter.

@@ -13,7 +13,7 @@ Status: provisional budgets, not accepted requirements. The owner's M4 MacBook P
 | 100,000 metadata rows; 1,000,000-row stress catalog | Index selection, pagination and startup independent of image bytes (later library) |
 | At least 1,000 real images, then a larger owner dataset | Thumbnail decode and cache behavior synthetic rows cannot show |
 | Local SSD, later removable SSD and NAS | CPU/GPU throughput versus storage latency |
-| Nikon Z6 NEF and Fujifilm X100VI RAF in the owner's real modes | Later RAW decode quality and peak memory |
+| Nikon Z6 NEF, Fujifilm X100VI RAF and DJI Air 2S DNG in the owner's real modes | RAW decode/development, WB redevelopment, history, presentation and peak memory; see the [RAW integration contract](../design/raw-integration.md) |
 
 Datasets need provenance, dimensions, profile and orientation, and redistribution permission. Synthetic fixtures live in the repository; private originals stay in a local manifest and are never committed.
 
@@ -191,6 +191,141 @@ correlated state, events and pixel checks, and no latency is claimed from them.
 Core figures exclude desktop scheduling, GPU upload and presentation. Reproduce with `editor-performance` and `measure` as described in [development](../engineering/development.md).
 
 Current macOS `measure` runs use background-only bundles to preserve desktop focus. Launch-to-frame timings include copying the executable and creating its temporary bundle; they are background renderer measurements, not foreground activation measurements. Reports identify the launch mode. Earlier launch baselines above predate this wrapper and are not directly comparable.
+
+## Current RAW and JPEG measurements
+
+Native Apple M4 Pro, 48 GiB RAM, macOS 26.5.2 (25F84), Metal, 2× scale and a
+2880×1800 physical window; files on the internal 2 TB APFS SSD. Release builds,
+background-only launches, warm filesystem cache without an OS cache purge. The
+RAW application SHA-256 is `ff9eecabdbb3ceaa333885db6bdadb93d86870bfa766a4b95eef13437efa2ea1`;
+Cargo.lock SHA-256 is `0c6a739afc2d4830c73059ea2989814950b7607877c59ba945bb89038ea8bd7c`.
+The native adapter configuration is recorded in the [backend selection](../research/raw-backend-selection.md).
+
+Thirty complete trials per owner camera passed. Each trial has an isolated catalog,
+13 edit/history/view steps, per-step captures and a second-process reopen. The
+owner's Z6 is 14-bit lossless NEF; the X100VI is 14-bit uncompressed RAF. All four
+public minimum modes also pass one complete trial each; those are functional
+checks, not latency distributions. Original hashes, displayed entry/snapshot,
+controls, geometry and reopened photo samples are checked together.
+
+Times below are nearest-rank p50 / p95 in milliseconds. Upload readiness is the
+application event correlated with the next captured frame, not GPU scanout. Initial
+open timings stop at the CPU raster; history and view rows explicitly include
+capture readback. Launch-wrapper time and fine-grained stage attribution are not
+included in those open figures.
+
+| Measurement (ms, p50 / p95) | Z6 | X100VI |
+| --- | --- | --- |
+| Initial open → full-resolution CPU raster | 840.0 / 868.2 | 1828.6 / 1887.0 |
+| Exposure → upload readiness | 133.3 / 149.5 | 178.8 / 195.8 |
+| Red WB gain → upload readiness | 488.5 / 508.4 | 1529.3 / 1625.6 |
+| Custom temperature → upload readiness | 482.8 / 493.2 | 1532.1 / 1583.6 |
+| Custom tint → upload readiness | 483.9 / 501.2 | 1529.0 / 1575.7 |
+| Neutral pick → upload readiness | 483.2 / 501.6 | 1528.9 / 1570.0 |
+| Rotate → upload readiness | 118.4 / 126.4 | 234.4 / 243.1 |
+| Crop → upload readiness | 98.2 / 119.4 | 128.2 / 141.6 |
+| Undo → upload readiness | 116.3 / 124.0 | 231.7 / 240.0 |
+| Historical Original → captured frame | 507.5 / 524.8 | 1558.7 / 1600.5 |
+| Return current → captured frame | 491.3 / 500.5 | 1615.8 / 1666.4 |
+| 100% view → captured frame | 24.9 / 25.5 | 25.2 / 25.8 |
+| Edited catalog reopen → CPU raster | 1170.2 / 1222.2 | 3267.8 / 3383.2 |
+
+Sampled first-process peak RSS (roughly 50 ms sampling) is 1323 / 1339 MiB p50 / p95
+for Z6 and 1975 / 1992 MiB for Fuji. Fuji trial 25 has an unexplained 2436 MiB peak
+and a 1038 ms crop update (1007 ms source-to-raster); both tails are retained. Its
+pixel, state and reopen checks pass. The capture-heavy workflow cannot isolate
+CPU heap, native allocator retention, GPU resources or readback buffers. Separate
+screenshot-free live API runs peak at 1583–1647 MiB; the 24-edit run grows only
+1.25 MiB after edit three. This does not establish a whole-process bound or prove
+absence of leaks. GPU allocations are not measured separately.
+
+Initial development and warm exposure p95 meet their provisional investigation
+targets on these files; Fuji memory exceeds the 1536 MiB target. WB redevelopment
+is about 0.5 s for Nikon and 1.5–1.6 s for Fuji. The next resource work is to attribute
+the unexplained tail and native/GPU/readback lifetimes, then evaluate bounded
+Fit/detail rendering while preserving full-resolution 100% inspection. Budgets
+remain provisional; full idle-CPU, cancellation and per-stage measurements remain
+open.
+
+The unchanged JPEG core diagnostic was run before and after this integration,
+30 samples per recipe and size on the same host with warm filesystem cache.
+These exclude desktop scheduling, GPU upload and presentation. Values are p50 /
+p95 milliseconds; medians are similar or lower, with mixed tail variation. The
+24 MP composed-transform p95 increases by about 1 ms in this run; this is not a
+statistical claim of zero regression.
+
+| JPEG core render | 24 MP baseline | 24 MP current | 60 MP baseline | 60 MP current |
+| --- | --- | --- | --- | --- |
+| One exact transform | 10.43 / 11.22 | 10.45 / 11.42 | 23.27 / 32.26 | 22.01 / 28.84 |
+| 200 actions in one orientation layer | 10.33 / 10.81 | 10.52 / 11.80 | 23.45 / 25.16 | 22.14 / 23.35 |
+| Same stack plus 10° crop | 32.22 / 36.37 | 32.18 / 34.35 | 73.72 / 98.62 | 71.09 / 77.79 |
+
+Reproduce with `raw-editor --samples 30` and `editor-performance --samples 30`
+through xtask, using the manifest formats in [development](../engineering/development.md).
+Local reports retain every trial, percentile input, source/binary hash and failure;
+private photographs and captures are not repository assets. These observations
+qualify the recorded files and host, not other camera modes or platforms.
+
+## Air 2S DNG measurements
+
+The supplied FC3411 uncompressed DNG passes 30 complete background editor trials,
+each with the same 13-step editing/history/view journey and second-process reopen.
+Original hashes, correction provenance, geometry, displayed state and sampled
+photo pixels agree. These are native M4 Pro measurements under the configuration
+above, with a warm filesystem on a shared host; host isolation is not claimed.
+The release application SHA-256 is `aa24dfa57592c5b3363c34ac2c49b9d28827aa2aa0f77fbf34fce6a2db863e55`; Cargo.lock SHA-256 is `e1f96098ab03786e8976afd4e0ed78b0ed3d4c58cd071c032390552c97b4a600`.
+
+| Measurement (ms) | p50 | p95 | Maximum |
+| --- | ---: | ---: | ---: |
+| Initial open → full-resolution CPU raster | 1692.6 | 1811.9 | 1812.3 |
+| Exposure → upload readiness | 100.2 | 118.5 | 133.2 |
+| Red WB gain → upload readiness | 1462.3 | 1536.0 | 1570.6 |
+| Custom temperature → upload readiness | 1467.0 | 1530.7 | 1549.9 |
+| Custom tint → upload readiness | 1459.7 | 1567.1 | 1597.0 |
+| Neutral pick → upload readiness | 1460.0 | 1570.8 | 1659.8 |
+| Rotate → upload readiness | 125.7 | 159.3 | 162.0 |
+| Crop → upload readiness | 75.7 | 92.3 | 105.2 |
+| Undo → upload readiness | 126.1 | 159.4 | 164.6 |
+| Historical Original → captured frame | 1484.2 | 1567.7 | 1601.0 |
+| Return current → captured frame | 1522.9 | 1583.1 | 1628.1 |
+| 100% view → captured frame | 25.6 | 49.9 | 58.2 |
+| Edited catalog reopen → CPU raster | 3092.7 | 3412.0 | 3418.2 |
+
+Sampled first-process peak RSS is 1245.3 / 1250.5 MiB p50 / p95,
+with a 1258.8 MiB maximum; reopened processes measure
+718.6 / 731.3 MiB with a 731.4 MiB maximum. Sampling is
+roughly every 50 ms. The optical pass adds one reusable 76.15 MiB active-plane
+scratch after native demosaic scratch is released; the allocation ledger is in the
+[Air 2S design](../design/air2s-dng.md#allocation-and-performance-review).
+The captures, GPU resources and allocator retention are included in observed
+process memory, not separated. These values do not establish a process-wide bound,
+GPU-memory budget or native Windows/Linux result. The existing Fuji resource
+qualification above remains open.
+
+The same JPEG core diagnostic was measured before this change at `3c5def1` and
+on this DNG implementation, 30 samples per size/recipe. Values are p50 / p95 ms;
+these exclude desktop scheduling, GPU upload and presentation. Both 24 MP current
+runs are retained because the first showed higher timings. The repeat's medians
+fell below baseline, while crop tails remained higher; 60 MP medians and p95 fell.
+The mixed observations do not establish a systematic regression or zero regression
+on this shared host. No JPEG raster loop, allocation or desktop message changed.
+
+| JPEG core render | 24 MP before | 24 MP current | 24 MP repeat | 60 MP before | 60 MP current |
+| --- | --- | --- | --- | --- | --- |
+| One exact transform | 12.30 / 17.37 | 14.88 / 18.02 | 10.83 / 12.76 | 26.11 / 39.25 | 22.11 / 28.61 |
+| 200 actions in one orientation layer | 12.09 / 13.71 | 13.88 / 19.21 | 10.51 / 11.49 | 26.48 / 32.65 | 22.01 / 23.56 |
+| Same stack plus 10° crop | 37.59 / 43.42 | 44.80 / 51.38 | 32.25 / 52.32 | 84.71 / 91.98 | 74.96 / 88.99 |
+
+The 60 MP current crop has a retained 129.46 ms maximum. Reproduce with
+`raw-editor --samples 30` and `editor-performance --samples 30` as above. Local
+reports under `artifacts/air2s-editor-30-01/` and `artifacts/air2s-jpeg-*/`
+retain every sample, source hash and correlated state; private originals and
+captures are excluded from source control. Single-trial Nikon/Fujifilm editor
+regressions also pass, separately from the timing distributions.
+The host package passes one complete DNG journey with binary SHA-256
+`a13a54b0ce2d9c2bf8d7043897988898894931955dfe0a960620623967a2489c`;
+its bundled native notices are present and runtime linkage uses no system RAW library.
+This is an unsigned macOS development package, not a license audit or platform qualification.
 
 ## Method
 

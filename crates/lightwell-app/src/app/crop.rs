@@ -49,6 +49,9 @@ impl Editor {
                     self.status = "Rendering the crop's input stage…".into();
                 }
                 Err(error) => {
+                    if error == "superseded preview" {
+                        return Task::none();
+                    }
                     self.crop_pending = None;
                     self.status = error;
                     self.settle_step(Settle::Draft);

@@ -205,6 +205,7 @@ pub(crate) fn refresh_for(
                 byte_len: 0,
                 width: 1,
                 height: 1,
+                source: lightwell_core::SourceKind::Jpeg,
             },
             revision: current.sequence,
             current_entry: current.clone(),
@@ -234,13 +235,13 @@ pub(crate) fn refresh_for(
         original: None,
         job: PreviewJob {
             registry: std::sync::Arc::new(lightwell_core::ModuleRegistry::builtin()),
-            source: SourceImage {
+            source: lightwell_core::PreviewSource::Jpeg(SourceImage {
                 width: 1,
                 height: 1,
                 rgba: vec![0, 0, 0, 255].into(),
                 fingerprint: "f".into(),
                 orientation: 1,
-            },
+            }),
             recipe: current.snapshot.recipe.clone(),
             entry: current.clone(),
             layer_count: None,

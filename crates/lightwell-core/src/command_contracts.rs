@@ -27,6 +27,34 @@ fn fixture(name: &str) -> PathBuf {
         .join(name)
 }
 
+fn import_asset(owner: &OwnerHandle, client: ClientId, source: &Path) -> Value {
+    let call = |id: &str, method: &str, params: Value| -> Value {
+        let response = owner
+            .call(
+                client,
+                ApiRequest {
+                    id: id.into(),
+                    method: method.into(),
+                    params,
+                    token: None,
+                },
+            )
+            .unwrap();
+        assert!(response.error.is_none(), "{method}: {:?}", response.error);
+        response.result.unwrap()
+    };
+    let queued = call("import", "catalog.import", json!({"path":source}));
+    let id = queued["job_id"].as_str().unwrap();
+    loop {
+        let status = call("status", "job.status", json!({"job_id":id}));
+        match status["state"].as_str() {
+            Some("ready") => return status["asset"]["asset"]["id"].clone(),
+            Some("queued" | "preparing") => std::thread::sleep(std::time::Duration::from_millis(1)),
+            other => panic!("unexpected import job {other:?}: {status}"),
+        }
+    }
+}
+
 fn mutation(revision: u64, request: &str, actor: &str) -> Mutation {
     Mutation {
         expected_revision: revision,
@@ -136,7 +164,7 @@ fn api_journey(catalog: &Path, source: &Path) -> (Vec<Value>, Vec<Value>, Value)
         assert!(response.error.is_none(), "{method}: {:?}", response.error);
         response.result.unwrap()
     };
-    let asset = call(client, "catalog.import", json!({"path": source}))["asset"]["id"].clone();
+    let asset = import_asset(&owner, client, source);
     for (revision, request, method, mut params) in [
         (0, "a", "edit.set-pixel", json!({"x":0,"y":0,"rgb":[1,2,3]})),
         (
@@ -288,7 +316,7 @@ fn the_workspace_additions_are_reachable_through_the_json_api() {
     assert_eq!(module("lightwell.crop")["canvas"]["shortcut"], json!("R"));
     assert_eq!(module("lightwell.pixel")["developer"], json!(true));
 
-    let asset = call("catalog.import", json!({"path": source}))["asset"]["id"].clone();
+    let asset = import_asset(&owner, client, &source);
     let original = call("asset.state", json!({"asset_id": asset}))["current_entry"].clone();
     assert_eq!(original["label"], json!("Original"));
     call(
@@ -719,7 +747,7 @@ fn crop_actions_are_discoverable_and_identical_through_actions_and_the_api() {
         })
     );
 
-    let asset = call("catalog.import", json!({"path": source}))["asset"]["id"].clone();
+    let asset = import_asset(&owner, client, &source);
     for (revision, request, action, raw) in CROP_JOURNEY {
         let mut params = parameters(raw);
         let object = params.as_object_mut().unwrap();

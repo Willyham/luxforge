@@ -145,6 +145,8 @@ pub(crate) enum Message {
     Picked(Option<PathBuf>),
     /// Authoritative state read back after a change.
     Refreshed(Result<Box<Refresh>, String>),
+    /// A source-open result tied to the generation that requested it.
+    ImportRefreshed(u64, Result<Box<Refresh>, String>),
     /// A history selection's preview job and session.
     PreviewLoaded(Result<Box<PreviewPayload>, String>),
     /// A view change returned the owner's session.
@@ -316,6 +318,7 @@ pub(crate) enum Message {
     /// dropped instead of filling the fields with a coordinate from another image.
     PointLocated {
         entry: EntryId,
+        mode: String,
         view: (u32, u32),
         result: Result<ContentPoint, String>,
     },

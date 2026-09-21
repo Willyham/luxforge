@@ -1,7 +1,8 @@
 use crate::*;
 use lightwell_core::{
     BASIC_EFFECT, CROP_EFFECT, CropPayload, CropStage, EditorService, EffectStage, Layer, LayerId,
-    ModuleRegistry, Mutation, Raster, Recipe, SnapshotId, SourceImage, Transform, analysis, render,
+    ModuleRegistry, Mutation, PreviewSource, Raster, Recipe, SnapshotId, Transform, analysis,
+    render,
 };
 use std::time::Instant;
 
@@ -61,7 +62,7 @@ fn basic_white_balance_layer(temperature: f64, tint: f64) -> Layer {
 /// Render one recipe repeatedly through a given registry, the way the preview worker does.
 fn recipe_render_samples(
     registry: &ModuleRegistry,
-    source: &SourceImage,
+    source: &PreviewSource,
     recipe: &Recipe,
     samples: usize,
 ) -> Result<(Vec<f64>, (u32, u32))> {
@@ -69,7 +70,7 @@ fn recipe_render_samples(
     let mut stage = (0, 0);
     for _ in 0..samples {
         let started = Instant::now();
-        let raster = render(registry, source, SnapshotId::new(), recipe)?;
+        let raster = source.render(registry, SnapshotId::new(), recipe)?;
         timings.push(milliseconds(started));
         ensure(!raster.rgba.is_empty(), "Colour render was empty")?;
         stage = (raster.width, raster.height);
@@ -155,12 +156,15 @@ pub fn run(root: &Path, source: &Path, out: &Path, samples: usize) -> Result {
     let original_job = service.preview_job(&asset, Some(&original), None, None)?;
     let cached_preview_job_ms = milliseconds(started);
     let started = Instant::now();
-    let original_raster = render(
-        service.registry(),
-        &original_job.source,
-        original_job.entry.snapshot.id,
-        &original_job.entry.snapshot.recipe,
-    )?;
+    let original_raster = match &original_job.source {
+        PreviewSource::Jpeg(image) => render(
+            service.registry(),
+            image,
+            original_job.entry.snapshot.id,
+            &original_job.entry.snapshot.recipe,
+        )?,
+        PreviewSource::Raw { .. } => return Err("JPEG performance input expected".into()),
+    };
     let original_render_ms = milliseconds(started);
     ensure(
         (original_raster.width, original_raster.height) == (state.asset.width, state.asset.height),
@@ -327,12 +331,15 @@ pub fn run(root: &Path, source: &Path, out: &Path, samples: usize) -> Result {
     let cold_job = service.preview_job(&asset, Some(&original), None, None)?;
     let cold_source_and_job_ms = milliseconds(started);
     let started = Instant::now();
-    let cold_raster = render(
-        service.registry(),
-        &cold_job.source,
-        cold_job.entry.snapshot.id,
-        &cold_job.entry.snapshot.recipe,
-    )?;
+    let cold_raster = match &cold_job.source {
+        PreviewSource::Jpeg(image) => render(
+            service.registry(),
+            image,
+            cold_job.entry.snapshot.id,
+            &cold_job.entry.snapshot.recipe,
+        )?,
+        PreviewSource::Raw { .. } => return Err("JPEG performance input expected".into()),
+    };
     let cold_original_render_ms = milliseconds(started);
     ensure(
         (cold_raster.width, cold_raster.height) == (state.asset.width, state.asset.height),

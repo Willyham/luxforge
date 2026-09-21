@@ -8,7 +8,6 @@ use crate::{
 };
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::{Map, Value, json};
-use std::path::PathBuf;
 
 pub(super) type Handler =
     fn(&mut EditorService, &mut ClientSession, &Value) -> Result<Value, Error>;
@@ -37,8 +36,40 @@ pub(super) const METHODS: &[MethodSpec] = &[
         mutates: true,
         required: &["path"],
         optional: &[],
-        notes: "references an existing JPEG without copying it and returns the asset state",
-        handler: Some(catalog_import),
+        notes: "queues bounded source preparation; returns a job to inspect with job.status; commits only on verified success",
+        handler: None,
+    },
+    MethodSpec {
+        name: "job.status",
+        mutates: false,
+        required: &["job_id"],
+        optional: &[],
+        notes: "this client's bounded source job state; ready includes the committed asset state",
+        handler: None,
+    },
+    MethodSpec {
+        name: "job.adopt",
+        mutates: false,
+        required: &["job_id"],
+        optional: &[],
+        notes: "select the ready result of this client's latest import as current; stale imports are refused",
+        handler: None,
+    },
+    MethodSpec {
+        name: "job.cancel",
+        mutates: false,
+        required: &["job_id"],
+        optional: &[],
+        notes: "remove this client's interest in a source job without cancelling other clients",
+        handler: None,
+    },
+    MethodSpec {
+        name: "source.prepare",
+        mutates: false,
+        required: &["asset_id"],
+        optional: &[("entry_id", "historical entry; default current")],
+        notes: "queue signature-verified preparation of an imported source after reopen or cache eviction",
+        handler: None,
     },
     MethodSpec {
         name: "catalog.list",
@@ -55,6 +86,14 @@ pub(super) const METHODS: &[MethodSpec] = &[
         optional: &[],
         notes: "current entry, revision and redo path",
         handler: Some(asset_state),
+    },
+    MethodSpec {
+        name: "source.inspect",
+        mutates: false,
+        required: &["asset_id"],
+        optional: &[("entry_id", "historical entry; default current")],
+        notes: "persisted source identity, RAW interpretation, crop, backend and preparation readiness without decoding",
+        handler: Some(source_inspect),
     },
     MethodSpec {
         name: "history.list",
@@ -95,7 +134,7 @@ pub(super) const METHODS: &[MethodSpec] = &[
         name: "module.list",
         mutates: false,
         required: &[],
-        optional: &[],
+        optional: &[("asset_id", "filter controls for this asset source kind")],
         notes: "every registered module descriptor with its effects, actions, parameters and controls",
         handler: Some(module_list),
     },
@@ -499,22 +538,27 @@ fn schema_list(
 fn module_list(
     service: &mut EditorService,
     _: &mut ClientSession,
-    _: &Value,
-) -> Result<Value, Error> {
-    Ok(json!({"modules": service.registry().descriptors()}))
-}
-
-fn catalog_import(
-    service: &mut EditorService,
-    _: &mut ClientSession,
     params: &Value,
 ) -> Result<Value, Error> {
     #[derive(Deserialize)]
     #[serde(deny_unknown_fields)]
     struct P {
-        path: PathBuf,
+        asset_id: Option<AssetId>,
     }
-    value(service.import(&parse::<P>(params)?.path)?)
+    let p = parse::<P>(params)?;
+    let raw = p
+        .asset_id
+        .as_ref()
+        .map(|id| service.state(id))
+        .transpose()?
+        .is_some_and(|state| matches!(state.asset.source, crate::SourceKind::Raw { .. }));
+    let modules = service
+        .registry()
+        .descriptors()
+        .into_iter()
+        .filter(|module| p.asset_id.is_none() || module.id != "lightwell.raw" || raw)
+        .collect::<Vec<_>>();
+    Ok(json!({"modules": modules}))
 }
 
 fn catalog_list(
@@ -532,6 +576,21 @@ fn asset_state(
 ) -> Result<Value, Error> {
     let p = parse::<AssetParams>(params)?;
     value(service.state(&p.asset_id)?)
+}
+
+fn source_inspect(
+    service: &mut EditorService,
+    _: &mut ClientSession,
+    params: &Value,
+) -> Result<Value, Error> {
+    #[derive(Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct P {
+        asset_id: AssetId,
+        entry_id: Option<EntryId>,
+    }
+    let p = parse::<P>(params)?;
+    service.inspect_source(&p.asset_id, p.entry_id.as_ref())
 }
 
 fn history_list(
@@ -1227,6 +1286,14 @@ mod tests {
             generated,
             [
                 "edit.set-pixel",
+                "edit.set-raw-exposure",
+                "edit.set-raw-temperature",
+                "edit.set-raw-tint",
+                "edit.set-raw-red-gain",
+                "edit.set-raw-blue-gain",
+                "edit.pick-raw-neutral",
+                "edit.use-as-shot-wb",
+                "edit.reset-raw",
                 "edit.set-basic",
                 "edit.reset-basic",
                 "edit.transform",
@@ -1696,13 +1763,7 @@ mod tests {
                 EditorService::open_with(&catalog, MarkModule::registry(Availability::Available))
                     .unwrap();
             let mut session = ClientSession::default();
-            asset = ok(
-                &mut service,
-                &mut session,
-                "catalog.import",
-                json!({"path": fixture()}),
-            )["asset"]["id"]
-                .clone();
+            asset = json!(service.import(&fixture()).unwrap().asset.id);
             ok(
                 &mut service,
                 &mut session,
@@ -1851,8 +1912,8 @@ mod tests {
                 "an unknown mode",
                 json!({"mode": "lightwell.heal"}),
                 // The accepted modes are derived from the registry's canvas declarations, so the
-                // Basic module's neutral picker joins the list without a change here.
-                "mode must be one of pointer, lightwell.pixel, lightwell.basic, lightwell.crop",
+                // RAW and Basic neutral pickers join the list without a change here.
+                "mode must be one of pointer, lightwell.pixel, lightwell.raw, lightwell.basic, lightwell.crop",
             ),
             (
                 "a module that declares no canvas",

@@ -1,12 +1,14 @@
 # Lightwell user guide
 
-What works today: opening a JPEG, exact transforms and a Lightroom-style crop and straighten tool in the Develop workspace, all delivered as tool modules with generated controls, persistent history and the JSON API, verified on macOS. Export, Locate and MCP are planned; see [feature status](features.md).
+The Develop workspace opens supported JPEG, Nikon Z6 NEF, Fujifilm X100VI RAF and DJI Air 2S DNG originals, with exact transforms, crop/straighten, persistent history and the JSON API. RAW adds editable source exposure and white balance. Export, Locate and MCP are planned; see [feature status](features.md).
 
-Basic exposure, tone, white balance and color controls, plus a histogram and clipping inspector, have a [proposed design](design/basic-and-histogram.md). They are not available yet.
+JPEG Basic adjustments, tone/color controls, a histogram and clipping inspector have a [separate design](design/basic-and-histogram.md). They are not available yet.
+
+Initial RAW support covers full-size Z6 12/14-bit lossless NEF, X100VI 14-bit uncompressed/lossless RAF and the supplied Air 2S FC3411 uncompressed DNG mode with 16-bit stored samples. Air 2S development includes its required embedded gain-map and chromatic-warp corrections. Broader recording modes and controlled color/detail qualification remain in the [coverage manifest](../fixtures/raw-coverage.json); generic DNG support is not implied. A failed Open keeps the previous photo.
 
 ## Start the editor
 
-After [developer setup](engineering/development.md), start an optimized build with a catalog and an optional JPEG:
+After [developer setup](engineering/development.md), start an optimized build with a catalog and an optional original:
 
 ```sh
 cargo xtask develop --catalog /path/to/catalog.sqlite --open /path/to/photo.jpg
@@ -18,7 +20,7 @@ Omit `--catalog` to use the platform configuration directory. `--data-root DIREC
 
 For agent-driven API or rendered checks on macOS, add `--background` to keep the editor from taking desktop focus. Use a separate test catalog or `--evidence-dir NEW_DIR`; background evidence runs capture the editor and exit automatically. Smoke and diagnostic harnesses use background launches by default on macOS. Launch normally for keyboard, mouse and native-dialog interaction.
 
-Open references an existing supported sRGB or greyscale JPEG without copying or modifying it. Cmd+O on macOS and Ctrl+O elsewhere opens the picker. EXIF orientation is applied once before any edit. The catalog stores stable identities, the source fingerprint, ordered operations and history. It is not a backup of the original photo.
+Open references an existing supported original without copying or modifying it. JPEG input supports the existing sRGB/greyscale subset; RAW input is developed from sensor data. Cmd+O on macOS and Ctrl+O elsewhere opens the picker. EXIF orientation is applied once before any edit. The catalog stores stable identities, the source fingerprint, ordered operations and history. It is not a backup of the original photo.
 
 Choose Copy beside the status text at the bottom of the window to copy the complete message, including any error, to the clipboard. The message stays visible after copying. The rest of the status bar reports how many clients the live API has, what the renderer is doing or how long the displayed frame took, and the current zoom with what it means on this display.
 
@@ -64,6 +66,16 @@ The two small triangles in the plot's bottom corners are the clipping overlays, 
 
 Move the pointer over the photograph and the three output codes under it appear in the caption row, with the pixel's coordinates: `R 128 · G 64 · B 255 · 120, 80`. It reads the same evaluated picture the plot describes, clears when the pointer leaves, and asks for one pixel at a time however fast you move.
 
+### RAW development
+
+The NEF, RAF or DNG remains the original throughout editing. Exposure, white balance and composition are saved as recipe settings. History and versions retain those settings; reopening rebuilds the needed high-precision image from the original. Display previews are disposable.
+
+The RAW panel appears before composition tools for a RAW asset. Exposure spans −5 to +5 EV. As shot uses the captured camera-channel gains. Custom temperature spans 2000–12000 K; Custom tint spans −100 to +100 Lightwell units, with positive values making the result more magenta. Their initial 6504 K/0 values are a new custom target, not a measurement of As shot. Changing either control stores resolved sensor gains. These units do not promise numeric equivalence with another editor.
+
+Choose Neutral WB in the canvas strip, or press N, then click a neutral surface. It is the RAW picker, distinct from the Basic panel's own Neutral picker on `W`, which corrects the rendered image rather than the sensor. The picker maps the point back to the original sensor and averages a bounded patch before WB/exposure. A dark, clipped or unusable patch reports an error and commits nothing. As shot restores captured WB while keeping exposure; Reset RAW restores both source adjustments. Every successful change remains undoable. A WB change redevelops the retained mosaic; exposure and geometry reuse the prepared float image. The previous rendition stays visible during preparation.
+
+The neutral rendition uses camera calibration without film simulations, Picture Controls or automatic brightness. Air 2S applies its required embedded optical corrections and uses fixed daylight calibration for custom Temperature/Tint; additional lens profiles and dual-illuminant color-profile interpolation are not implemented. Sensor headroom remains available to exposure changes even when the current display is clipped. Camera crop metadata and EXIF orientation determine the initial frame.
+
 ### Keyboard
 
 Letters act only when no text field has focus. `F` fits, `1` is 100%, `O` toggles the thirds overlay, `J` toggles both clipping overlays, `V` returns to the pointer, and each module's declared letter (`R` for crop and straighten) enters its canvas mode. `\` holds Compare. Cmd+Option+[ and Cmd+Option+] show and hide the two side panels. Cmd+O / Ctrl+O opens a file, Cmd+Z / Ctrl+Z and Shift+Cmd+Z / Shift+Ctrl+Z undo and redo, and Tab and Shift+Tab move between fields.
@@ -97,24 +109,45 @@ Versions are chips naming saved states. Choose + to reveal the name field and Sa
 
 Undo and Redo navigate saved states without appending rows. Cmd+Z / Ctrl+Z and Shift+Cmd+Z / Shift+Ctrl+Z invoke the same service as the buttons. A new edit clears shortcut redo while every older entry remains available for preview or Restore. Layers, history, navigation state and stable IDs survive reopening the catalog.
 
-Missing or changed sources keep their catalog data and report why rendering is unavailable. Only the current catalog format (3, which stores each entry's label) and operation formats are supported during pre-release development. Unsupported formats fail explicitly; Lightwell never silently resets or drops them. If a catalog format is rejected, start with a new path using `--catalog /path/to/new-catalog.sqlite` and import the originals again.
+Missing or changed sources keep their catalog data and report why rendering is unavailable. Only the current catalog format (4, which stores typed source interpretation as well as entry labels) and operation formats are supported during pre-release development. Unsupported formats fail explicitly; Lightwell never silently resets or drops them. If a catalog format is rejected, start with a new path using `--catalog /path/to/new-catalog.sqlite` and import the originals again.
 
 ## JSON automation
 
 The headless owner reads one JSON request per line and writes one response per line. Diagnostics stay off stdout:
 
 ```sh
-printf '%s\n' \
-  '{"id":"schema","method":"schema.list","params":{}}' \
-  '{"id":"import","method":"catalog.import","params":{"path":"/path/to/photo.jpg"}}' \
-  | target/release/lightwell-json --catalog /path/to/catalog.sqlite
+target/release/lightwell-json --catalog /path/to/catalog.sqlite
 ```
 
-A request has `id`, `method` and `params`. A success carries the matching `id`, an event `sequence` and `result`; a failure carries a structured `error`. Start with `schema.list` for the authoritative method list and `catalog.list` for the referenced assets. Edit actions are generated from the registered tool modules: `module.list` returns every module with its effects, actions, parameter descriptors (kind, range, unit, default), semantic controls, hint, reset action, canvas title and shortcut, summary templates and developer flag, and each action `<id>` is callable as `edit.<id>` with its parameters as top-level fields beside `asset_id` and `mutation`. `recipe.describe` lists an entry's layers with each module's summary; `workspace.set` and `session.state` carry the per-client panels, canvas mode, thirds overlay and clipping overlays beside the view; every history entry carries its rendered `label`. Today that is `edit.set-pixel` (`x`, `y`, `rgb`), `edit.set-basic` (`temperature`, `tint`, `exposure`, `contrast`, `highlights`, `shadows`, `whites`, `blacks`, `vibrance`, `saturation`), `edit.reset-basic`, `edit.transform` (`transform`) and the crop module's three actions. A module may also declare read-only **queries**, which are generated the same way as `query.<id>`; they take `asset_id`, an optional `entry_id` defaulting to the session's selection, and their own parameters, and they write nothing. Today that is `query.neutral-sample` (`x`, `y`). Parameters are checked against the descriptors before the module sees them, so every client gets the same structured validation error. A number parameter may declare a `step` and a display `precision` for the control that drives it; they are hints, and a request is never rounded to them. An action listed with `patch: true` takes whichever of its fields you name: the fields you send are validated, nothing declared is filled in, the module merges them over what it already stores, the entry records the fields as sent, and a patch that changes nothing writes no entry. `version.create`, `version.list`, `version.delete` and `history.lineage` cover named states and the undo-parent chain. `render.sample` reads one rendered pixel and `render.locate` maps a rendered pixel back to the content pixel it shows. Mutations require `asset_id` and a `mutation` object:
+Keep the process and its input open while requests are in progress. For example, send:
+
+```json
+{"id":"schema","method":"schema.list","params":{}}
+{"id":"import","method":"catalog.import","params":{"path":"/path/to/photo.jpg"}}
+```
+
+Import returns a job acknowledgment. Poll `job.status` with the returned `job_id` until it is `ready` or `failed`; a ready result includes the asset state. `job.adopt` adopts the client's latest ready import into its session. `job.cancel` removes that client's interest in a job; another client's use of the same source continues. Ending the connection cancels its pending work.
+
+A source-dependent request after reopen can return `preparation-required` with `error.job_id`. Wait for that job and retry against the current asset revision. `source.prepare` also allows explicit preparation. Loading, hashing, decoding and RAW development run on a bounded worker so other catalog requests can continue.
+
+A request has `id`, `method` and `params`. A success carries the matching `id`, an event `sequence` and `result`; a failure carries a structured `error`. Start with `schema.list` for the authoritative method list and `catalog.list` for the referenced assets. Edit actions are generated from the registered tool modules: `module.list` returns every module with its effects, actions, parameter descriptors (kind, range, unit, default), semantic controls, hint, reset action, canvas title and shortcut, summary templates and developer flag, and each action `<id>` is callable as `edit.<id>` with its parameters as top-level fields beside `asset_id` and `mutation`. `recipe.describe` lists an entry's layers with each module's summary; `workspace.set` and `session.state` carry the per-client panels, canvas mode, thirds overlay and clipping overlays beside the view; every history entry carries its rendered `label`. Today that is `edit.set-pixel` (`x`, `y`, `rgb`), `edit.set-basic` (`temperature`, `tint`, `exposure`, `contrast`, `highlights`, `shadows`, `whites`, `blacks`, `vibrance`, `saturation`), `edit.reset-basic`, `edit.transform` (`transform`), the crop module's three actions and the RAW module's development actions. Pass `asset_id` to `module.list` to request only applicable modules; `source.inspect` reports source interpretation and readiness. A module may also declare read-only **queries**, which are generated the same way as `query.<id>`; they take `asset_id`, an optional `entry_id` defaulting to the session's selection, and their own parameters, and they write nothing. Today that is `query.neutral-sample` (`x`, `y`). Parameters are checked against the descriptors before the module sees them, so every client gets the same structured validation error. A number parameter may declare a `step` and a display `precision` for the control that drives it; they are hints, and a request is never rounded to them. An action listed with `patch: true` takes whichever of its fields you name: the fields you send are validated, nothing declared is filled in, the module merges them over what it already stores, the entry records the fields as sent, and a patch that changes nothing writes no entry. `version.create`, `version.list`, `version.delete` and `history.lineage` cover named states and the undo-parent chain. `render.sample` reads one rendered pixel and `render.locate` maps a rendered pixel back to the content pixel it shows. Mutations require `asset_id` and a `mutation` object:
 
 ```json
 {"id":"rotate","method":"edit.transform","params":{"asset_id":"asset-…","mutation":{"expected_revision":0,"request_id":"rotate-1","actor":"my-client"},"transform":"rotate-right"}}
 ```
+
+RAW actions use the same mutation envelope:
+
+| Method | Parameters |
+| --- | --- |
+| `edit.set-raw-exposure` | `ev` |
+| `edit.set-raw-temperature` | `kelvin` |
+| `edit.set-raw-tint` | `tint` |
+| `edit.pick-raw-neutral` | `x`, `y` in upright original-content coordinates |
+| `edit.use-as-shot-wb` | none |
+| `edit.reset-raw` | none |
+
+`render.locate` maps an edited-image point to the content coordinates needed by the picker. Explicit `edit.set-raw-red-gain` and `edit.set-raw-blue-gain` actions remain available to programs; each preserves the other effective camera gain and accepts 0.01–32×. RAW actions reject JPEG assets.
 
 `edit.crop-fit` (`aspect`, optional `aspect-width`/`aspect-height` with `aspect: "custom"`, `angle`, optional `center-x`/`center-y`) fits the largest rectangle of a ratio about a center without computing the box geometry by hand:
 

@@ -28,6 +28,8 @@ Doctor reports missing tools and the graphics environment without installing any
 | Exact current-editor journey, display-independent | `cargo run --release --locked --package xtask -- editor-acceptance --output NEW_DIR` |
 | Core timing on a real-sized JPEG | `cargo run --release --locked --package xtask -- editor-performance --source JPEG --output NEW_DIR [--samples N]` |
 | Verify golden fixtures; generate 24 and 60 MP workloads | `cargo xtask fixtures`, `cargo xtask generate-fixtures [--output NEW_DIR]` |
+| RAW corpus integrity; independent numerical stage references | `cargo xtask raw-corpus --manifest FILE --output NEW_DIR`, `cargo xtask raw-reference --output NEW_DIR` |
+| Authentic RAW editor journey, reopen and resource sampling | `cargo run --release --locked --package xtask -- raw-editor --manifest FILE --output NEW_DIR [--samples N] [--binary PATH]` |
 | Rendered smoke scenario, needs a native graphical session | `cargo xtask smoke --scenario NAME --output NEW_DIR [--binary PATH]` |
 | Rendered crop workflow and overlay | `cargo xtask smoke --scenario crop --output NEW_DIR`, `--scenario crop-draft` |
 | Rendered workspace panels, mode, preview, conflict and palette; unavailable-provider notice | `cargo xtask smoke --scenario workspace --output NEW_DIR`, `--scenario unavailable` |
@@ -51,13 +53,30 @@ The headless owner reads one JSON request per line:
 target/release/lightwell-json --catalog /path/to/catalog.sqlite < requests.jsonl
 ```
 
-Start with `schema.list`. Request shapes and live-session behavior are in the [user guide](../user-guide.md). Only one process owns a catalog at a time; a second instance exits with an explanatory error. Diagnostics go to stderr, or to isolated logs under an explicit data root, never to protocol stdout. Editor mode writes only the catalog and a temporary live-session file beside it; the source JPEG is never written.
+Start with `schema.list`. Request shapes and live-session behavior are in the [user guide](../user-guide.md). Only one process owns a catalog at a time; a second instance exits with an explanatory error. Diagnostics go to stderr, or to isolated logs under an explicit data root, never to protocol stdout. Editor mode writes only the catalog and a temporary live-session file beside it; the source original is never written.
 
-On macOS, `develop --background` builds the selected profile and runs a temporary copy in an `LSBackgroundOnly` app bundle, preventing desktop activation. Use an isolated catalog or `--evidence-dir NEW_DIR` for automated checks. The live API and native GPU renderer remain available; this mode is for API and capture work, not keyboard, mouse or native-dialog checks. The bundle is removed after exit, and the original executable and packaged app are untouched. Ordinary `develop` remains an interactive launch. `--background` fails explicitly on other platforms.
+On macOS, `develop --background` builds the selected profile and runs a temporary copy in an `LSBackgroundOnly` app bundle, preventing desktop activation. Use an isolated catalog or `--evidence-dir NEW_DIR` for automated checks. The live API and native GPU renderer remain available; this mode is for API and capture work, not keyboard, mouse or native-dialog checks. The bundle is removed after exit, and the original executable and packaged app are untouched. Restricted tool environments must permit macOS LaunchServices/window-server IPC: a background process can otherwise stall before image work, with only startup/open-request events and idle source/catalog workers. Retry with the required host access rather than activating the window. Ordinary `develop` remains an interactive launch. `--background` fails explicitly on other platforms.
 
 ## Rendered evidence
 
 Smoke runs the built or packaged editor through a deterministic evidence sequence (repeated `--open`, evidence directory, fixed window size, bounded deadlines); there is no separate viewer, so the captured frame is the editor window with its sidebar. Scenarios: `empty`, `load`, `replacement`, `invalid`, `repeated`, `alternating`, `large24`, `large60`, `crop`, `crop-draft`, `workspace`, `basic`, `histogram`, `unavailable`; generate the large fixtures first. Each run writes `result.json`, `app/events.jsonl`, `app/state.json`, `app/frame-*.png` (window-renderer readbacks, not OS screenshots), `subprocess.log` and `reproduce.md`. Each frame records `surface_columns`, the physical x range of the photo surface derived from the editor's layout constants, and the runner verifies fixture colors, Fit geometry and centering within that range, generation and state, backend, exit status and unchanged source hashes before writing `passed`; blank, stale or missing frames fail. The `render_ready` event marks the upload of the open request's preview raster, which is when a frame becomes capturable. A 25-second application deadline and a 35-second process deadline bound hangs.
+
+### Authentic RAW evidence
+
+`raw-editor` runs the actual background editor, then reopens the same isolated catalog in a second process. Each source passes exposure, gain and custom temperature/tint edits, a sensor-neutral pick, geometry, undo, Original/current history selection and Fit/100%. It checks displayed entry/snapshot/layers, bound control values, source hashes, actual photo pixels and exact reopened presentation. These comparisons prove reevaluation and state correlation, not controlled color accuracy.
+
+The local manifest has `format:1` and a `sources` array. Each source supplies `id`, `path`, `sha256`, `mode`, `make`, `model`, upright `source_dimensions:[width,height]`, `orientation` and a fixture-verified `neutral_point:[x,y]`. Supported mode strings are `NikonZ6Lossless12`, `NikonZ6Lossless14`, `FujifilmX100ViUncompressed14`, `FujifilmX100ViLossless14` and `DjiAir2sDng16`. The DJI source additionally supplies exact `sensor_dimensions`, `active_area` and `default_crop` expectations, and the harness verifies the mandatory correction order and persisted interpretation. Keep private paths and derived evidence ignored. `--samples` defaults to 30 (range1–100); one trial is useful for correctness but not a latency distribution. Use an explicit absolute `--binary` and the same `CARGO_TARGET_DIR` for build and harness when working across worktrees.
+
+Reports include binary/lock/manifest hashes, launch mode, stage events, frame checks and sampled process RSS. The filesystem cache is not purged; app-cold is not OS-cache-cold. GPU memory is not isolated from RSS, and capture readbacks can affect memory. Same-process editing without repeated captures is a separate resource control.
+
+Native and JSON authentic-file tests are opt-in, ignored in the normal test suite:
+
+```sh
+LIGHTWELL_RAW_OWNER_DIR=/path/to/private/raw LIGHTWELL_RAW_PUBLIC_DIR=/path/to/cc0/raw cargo test --release --locked -p lightwell-raw --test real_files -- --ignored --nocapture
+LIGHTWELL_RAW_OWNER_DIR=/path/to/private/raw cargo test --release --locked -p lightwell-app --test raw_json_cli -- --ignored --nocapture
+```
+
+The absence of private fixtures is a skip, not passing authentic-file evidence. Synthetic/reference tests remain normal CI checks.
 
 ### Evidence scripts
 

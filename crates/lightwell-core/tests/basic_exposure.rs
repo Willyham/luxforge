@@ -1001,6 +1001,36 @@ fn call(
     response.result.expect("a result")
 }
 
+/// Import an original and adopt it: the owner acknowledges with a bounded source job, the worker
+/// prepares the file, and `job.adopt` hands the asset state back to this client.
+fn import_asset(
+    owner: &OwnerHandle,
+    client: lightwell_core::ClientId,
+    path: &std::path::Path,
+) -> Value {
+    let queued = call(owner, client, "catalog.import", json!({"path": path}));
+    let job_id = queued["job_id"]
+        .as_str()
+        .expect("an import job id")
+        .to_owned();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    loop {
+        let status = call(owner, client, "job.status", json!({"job_id": job_id}));
+        match status["state"].as_str() {
+            Some("ready") => break,
+            Some("queued" | "preparing") => {
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "the import never became ready: {status}"
+                );
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            }
+            other => panic!("unexpected import job {other:?}: {status}"),
+        }
+    }
+    call(owner, client, "job.adopt", json!({"job_id": job_id}))["asset"].clone()
+}
+
 fn call_error(
     owner: &OwnerHandle,
     client: lightwell_core::ClientId,
@@ -1142,8 +1172,7 @@ fn an_independent_client_discovers_basic_and_drives_one_gesture_as_a_draft() {
     assert_eq!(reset["required"], json!(["asset_id", "mutation"]));
     assert_eq!(reset["parameters"], json!([]));
 
-    let asset =
-        call(&owner, client, "catalog.import", json!({"path": jpeg()}))["asset"]["id"].clone();
+    let asset = import_asset(&owner, client, &jpeg())["asset"]["id"].clone();
 
     // One gesture: pointer down begins the draft, moves set it, release commits once.
     let begun = call(

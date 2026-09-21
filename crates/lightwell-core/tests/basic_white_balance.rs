@@ -437,6 +437,36 @@ fn call(
     response.result.expect("a result")
 }
 
+/// Import an original and adopt it: the owner acknowledges with a bounded source job, the worker
+/// prepares the file, and `job.adopt` hands the asset state back to this client.
+fn import_asset(
+    owner: &OwnerHandle,
+    client: lightwell_core::ClientId,
+    path: &std::path::Path,
+) -> Value {
+    let queued = call(owner, client, "catalog.import", json!({"path": path}));
+    let job_id = queued["job_id"]
+        .as_str()
+        .expect("an import job id")
+        .to_owned();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    loop {
+        let status = call(owner, client, "job.status", json!({"job_id": job_id}));
+        match status["state"].as_str() {
+            Some("ready") => break,
+            Some("queued" | "preparing") => {
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "the import never became ready: {status}"
+                );
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            }
+            other => panic!("unexpected import job {other:?}: {status}"),
+        }
+    }
+    call(owner, client, "job.adopt", json!({"job_id": job_id}))["asset"].clone()
+}
+
 fn call_error(
     owner: &OwnerHandle,
     client: lightwell_core::ClientId,
@@ -519,13 +549,7 @@ fn a_client_discovers_the_picker_runs_it_and_applies_what_it_returns() {
         json!("lightwell.basic")
     );
 
-    let asset = call(
-        &owner,
-        client,
-        "catalog.import",
-        json!({"path": image.path}),
-    )["asset"]["id"]
-        .clone();
+    let asset = import_asset(&owner, client, &image.path)["asset"]["id"].clone();
     let (x, y) = image.neutral;
     let picked = call(
         &owner,
@@ -607,13 +631,7 @@ fn the_picker_reads_the_stage_before_the_basic_layer() {
     let catalog = temp("before.sqlite");
     let (owner, join) = OwnerHandle::start(&catalog).expect("the owner loop");
     let client = owner.register();
-    let asset = call(
-        &owner,
-        client,
-        "catalog.import",
-        json!({"path": image.path}),
-    )["asset"]["id"]
-        .clone();
+    let asset = import_asset(&owner, client, &image.path)["asset"]["id"].clone();
     let (x, y) = image.neutral;
     let params = json!({"asset_id": asset, "x": x, "y": y});
     let before = call(&owner, client, "query.neutral-sample", params.clone());
@@ -660,13 +678,7 @@ fn edges_are_clipped_and_bad_patches_are_refused_with_their_reason() {
     let catalog = temp("edges.sqlite");
     let (owner, join) = OwnerHandle::start(&catalog).expect("the owner loop");
     let client = owner.register();
-    let asset = call(
-        &owner,
-        client,
-        "catalog.import",
-        json!({"path": image.path}),
-    )["asset"]["id"]
-        .clone();
+    let asset = import_asset(&owner, client, &image.path)["asset"]["id"].clone();
     let pick = |x: i64, y: i64| json!({"asset_id": asset, "x": x, "y": y});
 
     // The four corners of the stage, and one edge: the patch shrinks and says which rectangle it
@@ -791,13 +803,7 @@ fn locate_then_query_matches_the_direct_content_coordinates_through_geometry() {
     let catalog = temp("locate.sqlite");
     let (owner, join) = OwnerHandle::start(&catalog).expect("the owner loop");
     let client = owner.register();
-    let asset = call(
-        &owner,
-        client,
-        "catalog.import",
-        json!({"path": image.path}),
-    )["asset"]["id"]
-        .clone();
+    let asset = import_asset(&owner, client, &image.path)["asset"]["id"].clone();
     let (content_x, content_y) = image.neutral;
     let direct = call(
         &owner,
@@ -900,8 +906,7 @@ fn a_query_is_read_only_and_two_clients_agree() {
     let (owner, join) = OwnerHandle::start(&catalog).expect("the owner loop");
     let first = owner.register();
     let second = owner.register();
-    let asset =
-        call(&owner, first, "catalog.import", json!({"path": image.path}))["asset"]["id"].clone();
+    let asset = import_asset(&owner, first, &image.path)["asset"]["id"].clone();
     let entries_before = call(
         &owner,
         first,

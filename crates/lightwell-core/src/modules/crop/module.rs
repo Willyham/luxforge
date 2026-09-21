@@ -664,6 +664,7 @@ mod tests {
                 stage_before: &stage_before,
                 insertion_index: &insertion_index,
                 sample_before: &sample_before,
+                sensor_neutral: None,
             },
         )
     }

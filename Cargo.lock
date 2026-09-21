@@ -1880,6 +1880,7 @@ name = "lightwell-core"
 version = "0.0.0"
 dependencies = [
  "image",
+ "lightwell-raw",
  "moxcms",
  "rayon",
  "rusqlite",
@@ -1887,6 +1888,16 @@ dependencies = [
  "serde_json",
  "sha2",
  "uuid",
+]
+
+[[package]]
+name = "lightwell-raw"
+version = "0.0.0"
+dependencies = [
+ "cc",
+ "serde",
+ "serde_json",
+ "sha2",
 ]
 
 [[package]]
@@ -4581,6 +4592,7 @@ dependencies = [
  "lightwell-core",
  "percent-encoding",
  "regex",
+ "serde",
  "serde_json",
  "sha2",
  "tar",

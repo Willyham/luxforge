@@ -14,7 +14,7 @@
 use super::{DOMAIN, Report, deserialize_domain, reduce_raster};
 use crate::{
     AssetId, ClientId, DraftStamp, EntryId, Error, ErrorKind, HistoryEntry, JobId, ModuleRegistry,
-    Recipe, SnapshotId, SourceImage, render,
+    PreviewSource, Recipe, SnapshotId,
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -156,7 +156,7 @@ pub enum AnalysisStatus {
 pub struct AnalysisJob {
     pub job_id: JobId,
     pub identity: AnalysisIdentity,
-    pub source: SourceImage,
+    pub source: PreviewSource,
     pub registry: Arc<ModuleRegistry>,
     pub recipe: Recipe,
 }
@@ -242,7 +242,8 @@ impl AnalysisQueue {
                 registry,
                 recipe,
             } = job;
-            let result = render::render(&registry, &source, identity.snapshot_id.clone(), &recipe)
+            let result = source
+                .render(&registry, identity.snapshot_id.clone(), &recipe)
                 .and_then(|raster| {
                     let report = reduce_raster(&raster);
                     // No per-result raster is retained: the frame is released here, before the
