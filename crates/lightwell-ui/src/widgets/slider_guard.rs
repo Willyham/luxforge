@@ -205,6 +205,12 @@ impl<'a, M: Clone + 'a> Widget<M, Theme, Renderer> for SliderGuard<'a, M> {
     }
 }
 
+impl<'a, M: Clone + 'a> From<SliderGuard<'a, M>> for Element<'a, M> {
+    fn from(guard: SliderGuard<'a, M>) -> Self {
+        Element::new(guard)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -218,11 +224,5 @@ mod tests {
         assert!(!forwards_to_slider(&wheel, false));
         assert!(!forwards_to_slider(&press, false));
         assert!(forwards_to_slider(&press, true));
-    }
-}
-
-impl<'a, M: Clone + 'a> From<SliderGuard<'a, M>> for Element<'a, M> {
-    fn from(guard: SliderGuard<'a, M>) -> Self {
-        Element::new(guard)
     }
 }

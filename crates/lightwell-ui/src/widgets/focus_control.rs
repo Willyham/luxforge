@@ -172,13 +172,14 @@ impl<M: Clone> Widget<M, Theme, Renderer> for FocusControl<'_, M> {
             shell,
             viewport,
         );
-        if self.enabled && !shell.is_event_captured() {
-            if matches!(
+        if self.enabled
+            && !shell.is_event_captured()
+            && matches!(
                 event,
                 Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left))
-            ) {
-                tree.state.downcast_mut::<FocusState>().focused = cursor.is_over(layout.bounds());
-            }
+            )
+        {
+            tree.state.downcast_mut::<FocusState>().focused = cursor.is_over(layout.bounds());
         }
     }
     fn draw(

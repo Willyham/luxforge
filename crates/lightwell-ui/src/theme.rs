@@ -338,17 +338,17 @@ pub fn slider_style_decorated(
 ) -> impl Fn(&Theme, slider::Status) -> slider::Style {
     move |theme, status| {
         let mut style = slider_style(fill, dragging)(theme, status);
-        if let RailDecoration::Colors(colors) = &decoration {
-            if !colors.is_empty() {
-                // The rail is split at the handle by Iced. A single gradient on either half
-                // would repeat the spectrum, so each half receives its own slice.
-                let fraction = handle_fraction.clamp(0.0, 1.0);
-                style.rail.backgrounds = (
-                    gradient_slice(colors, 0.0, fraction),
-                    gradient_slice(colors, fraction, 1.0),
-                );
-                style.rail.width = 4.0;
-            }
+        if let RailDecoration::Colors(colors) = &decoration
+            && !colors.is_empty()
+        {
+            // The rail is split at the handle by Iced. A single gradient on either half
+            // would repeat the spectrum, so each half receives its own slice.
+            let fraction = handle_fraction.clamp(0.0, 1.0);
+            style.rail.backgrounds = (
+                gradient_slice(colors, 0.0, fraction),
+                gradient_slice(colors, fraction, 1.0),
+            );
+            style.rail.width = 4.0;
         }
         style
     }

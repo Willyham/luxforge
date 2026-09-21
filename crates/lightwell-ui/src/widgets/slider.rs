@@ -11,17 +11,12 @@ use std::rc::Rc;
 
 pub use crate::widgets::number_field::ValueEdit;
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub enum RailDecoration {
+    #[default]
     Plain,
     /// Already chosen colours, ordered from left to right. At most eight are drawn by Iced.
     Colors(Vec<Color>),
-}
-
-impl Default for RailDecoration {
-    fn default() -> Self {
-        Self::Plain
-    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
