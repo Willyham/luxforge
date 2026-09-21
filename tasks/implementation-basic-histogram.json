@@ -868,7 +868,7 @@
     {
       "id": "TASK-013",
       "description": "Select relative JPEG white-balance mathematics and a reproducible neutral-picker solver.",
-      "status": "in_progress",
+      "status": "completed",
       "dependencies": [
         "TASK-001",
         "TASK-002"

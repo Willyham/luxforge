@@ -16,12 +16,6 @@
 pub mod colour;
 pub mod white_balance;
 
-/// The sRGB decode branch on an encoded value in [0, 1], shared by the study modules.
-#[allow(dead_code)]
-pub fn srgb_decode(encoded: f64) -> f64 {
-    decode_encoded(encoded)
-}
-
 /// Aliases so every study module can share one set of helpers.
 #[allow(dead_code)]
 pub fn code_to_linear(code: u8) -> f64 {
@@ -31,6 +25,29 @@ pub fn code_to_linear(code: u8) -> f64 {
 #[allow(dead_code)]
 pub fn linear_to_code(linear: f64) -> u8 {
     linear_to_srgb_code(linear)
+}
+
+/// One 8-bit code to linear light; the white-balance study's spelling of `srgb_to_linear`.
+#[allow(dead_code)]
+pub fn srgb_decode(code: u8) -> f64 {
+    srgb_to_linear(code)
+}
+
+/// Encode linear light without an upper clamp; the white-balance study quantizes separately.
+#[allow(dead_code)]
+pub fn srgb_encode(linear: f64) -> f64 {
+    let linear = linear.max(0.0);
+    if linear <= 0.003_130_8 {
+        12.92 * linear
+    } else {
+        1.055 * linear.powf(1.0 / 2.4) - 0.055
+    }
+}
+
+/// Quantize an encoded value with the contract's output rule, clamped to the code range.
+#[allow(dead_code)]
+pub fn srgb_quantize(encoded: f64) -> u8 {
+    (255.0 * encoded.clamp(0.0, 1.0) + 0.5).floor() as u8
 }
 
 /// Decode one sRGB-encoded value in `[0, 1]` to linear light, using the standard sRGB
