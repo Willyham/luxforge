@@ -740,6 +740,11 @@ impl ModuleDescriptor {
                 ..
             } => {
                 let declared = self.declared_action(action)?;
+                if declared.patch && preset.len() != 1 {
+                    return Err(validation(format!(
+                        "action control for patch action {action} needs exactly one preset field"
+                    )));
+                }
                 for (name, value) in preset {
                     check_value(self.declared_parameter(declared, name)?, value)?;
                 }
@@ -2662,7 +2667,7 @@ mod tests {
             Control::Action {
                 action: "set-controls".into(),
                 label: "Run".into(),
-                preset: Map::new(),
+                preset: json!({"amount": 0.0}).as_object().unwrap().clone(),
                 style: ActionStyle::Icon,
                 icon: Some("rotate-left".into()),
             },
@@ -2717,6 +2722,43 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    #[test]
+    fn patch_action_buttons_name_one_field_but_declared_resets_may_name_a_group() {
+        let mut descriptor = controls_descriptor();
+        for (preset, description) in [
+            (json!({}), "empty"),
+            (json!({"amount": 0.0, "enabled": true}), "multiple"),
+        ] {
+            if let Control::Action { preset: fields, .. } = &mut descriptor.controls[4] {
+                *fields = preset.as_object().unwrap().clone();
+            }
+            let error = descriptor.validate().expect_err(description);
+            assert_eq!(error.kind, ErrorKind::Validation, "{description}");
+            assert_eq!(
+                error.detail,
+                "action control for patch action set-controls needs exactly one preset field",
+                "{description}"
+            );
+        }
+        // A group reset is a separate declared gesture, and may intentionally restore several
+        // parameters of a patch action at once without making a button's patch ambiguous.
+        descriptor.controls[4] = Control::Action {
+            action: "set-controls".into(),
+            label: "Run".into(),
+            preset: json!({"amount": 0.0}).as_object().unwrap().clone(),
+            style: ActionStyle::Icon,
+            icon: Some("rotate-left".into()),
+        };
+        descriptor.reset = Some(ResetAction {
+            action: "set-controls".into(),
+            preset: json!({"amount": 0.0, "enabled": false})
+                .as_object()
+                .unwrap()
+                .clone(),
+        });
+        descriptor.validate().expect("a reset may restore a group");
     }
 
     #[test]
