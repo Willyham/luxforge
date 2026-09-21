@@ -27,7 +27,7 @@ fn native_raw_notices(root: &Path, out: &Path) -> Result {
         let input = source.join(from);
         ensure(
             input.is_file(),
-            &format!("Missing bundled RAW notice: {}", input.display()),
+            format!("Missing bundled RAW notice: {}", input.display()),
         )?;
         let destination = out.join("native").join(to);
         fs::create_dir_all(destination.parent().ok_or("Notice parent")?)?;
