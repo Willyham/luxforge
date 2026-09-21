@@ -11,6 +11,7 @@ use iced::{
     Color, Element, Length, Point, Rectangle, Renderer, Size, Theme,
     widget::{button, canvas, container, text, tooltip},
 };
+use std::cell::Cell;
 
 /// How many bins one channel has: one per 8-bit output code, fixed by the histogram contract.
 pub const BINS: usize = 256;
@@ -40,6 +41,12 @@ pub struct HistogramModel {
     pub channels: [HistogramChannel; 3],
     /// Dim the whole plot: the counts belong to an older generation than the one being rendered.
     pub stale: bool,
+    /// A cheap identity for the plotted geometry: the caller changes this whenever the bins or
+    /// `stale` change, and holds it steady otherwise. The plot tessellates its polygons only when
+    /// this changes, so a redraw driven by an unrelated timer (the periodic desktop sync) reuses
+    /// the cached geometry instead of rebuilding three 256-point fills that look identical to the
+    /// last frame. The widget never inspects what the number means, only whether it moved.
+    pub version: u64,
 }
 
 impl Default for HistogramModel {
@@ -60,6 +67,7 @@ impl Default for HistogramModel {
                 },
             ],
             stale: false,
+            version: 0,
         }
     }
 }
@@ -119,12 +127,22 @@ struct Plot {
     model: HistogramModel,
 }
 
+/// The program's persistent state: the tessellated geometry, and the model version it was
+/// tessellated from. This is what survives across `view` calls (a fresh [`Plot`] is built every
+/// time), which is what makes caching possible at all: the geometry a redraw reuses has to live
+/// somewhere other than the `Plot` the redraw is handed.
+#[derive(Default)]
+struct PlotState {
+    cache: canvas::Cache,
+    version: Cell<Option<u64>>,
+}
+
 impl<M> canvas::Program<M> for Plot {
-    type State = ();
+    type State = PlotState;
 
     fn draw(
         &self,
-        _state: &Self::State,
+        state: &Self::State,
         renderer: &Renderer,
         _theme: &Theme,
         bounds: Rectangle,
@@ -133,28 +151,38 @@ impl<M> canvas::Program<M> for Plot {
         if bounds.width <= 0.0 || bounds.height <= 0.0 {
             return Vec::new();
         }
-        let mut frame = canvas::Frame::new(renderer, bounds.size());
-        let dim = if self.model.stale { STALE_ALPHA } else { 1.0 };
-        for channel in &self.model.channels {
-            let points = polygon_points(&channel.bins, bounds.size());
-            let mut path = canvas::path::Builder::new();
-            let Some(first) = points.first() else {
-                continue;
-            };
-            path.move_to(*first);
-            for point in &points[1..] {
-                path.line_to(*point);
-            }
-            path.close();
-            frame.fill(
-                &path.build(),
-                Color {
-                    a: channel.color.a * theme::CHANNEL_ALPHA * dim,
-                    ..channel.color
-                },
-            );
+        // The bins (and so the polygons) only change when the caller's version moves; every other
+        // redraw — the periodic desktop sync chief among them — hits the cache and skips
+        // tessellation entirely. `Cache` itself still invalidates on a bounds change (a resize),
+        // so this only has to cover content the widget cannot infer from `bounds`.
+        if state.version.get() != Some(self.model.version) {
+            state.cache.clear();
+            state.version.set(Some(self.model.version));
         }
-        vec![frame.into_geometry()]
+        let dim = if self.model.stale { STALE_ALPHA } else { 1.0 };
+        let channels = self.model.channels;
+        let geometry = state.cache.draw(renderer, bounds.size(), |frame| {
+            for channel in &channels {
+                let points = polygon_points(&channel.bins, frame.size());
+                let mut path = canvas::path::Builder::new();
+                let Some(first) = points.first() else {
+                    continue;
+                };
+                path.move_to(*first);
+                for point in &points[1..] {
+                    path.line_to(*point);
+                }
+                path.close();
+                frame.fill(
+                    &path.build(),
+                    Color {
+                        a: channel.color.a * theme::CHANNEL_ALPHA * dim,
+                        ..channel.color
+                    },
+                );
+            }
+        });
+        vec![geometry]
     }
 
     fn mouse_interaction(

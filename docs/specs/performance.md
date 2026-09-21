@@ -241,8 +241,25 @@ compared against these.
 Idle CPU is the one figure that moved: 0.93% before against 1.29% after, one 30-second sample each
 with a 60 MP image open. The companion 24 MP run with a full Basic layer measured 1.46%. These are
 single samples, and the 500 ms event poll and the window's own redraws are inside all of them, but
-the direction is consistent and the histogram plot is now drawn on each of those redraws. It is a
-measurement to attribute, not an accepted regression, and it is reported as a miss below.
+the direction is consistent and the histogram plot is now drawn on each of those redraws.
+
+A follow-up gave the histogram plot's canvas program an `iced::widget::canvas::Cache`, held in the
+program's own persistent state and keyed by a version the view derives from the render identity and
+the `stale` flag (`crates/lightwell-ui/src/widgets/histogram.rs`,
+`crates/lightwell-app/src/view/tools_panel.rs::plot_version`), so a redraw with unchanged bins reuses
+the tessellated polygons instead of rebuilding three 256-point fills. Measured again on the same host,
+binary SHA-256 `db6ce15c…`, one 30-second sample each: **1.32%** with the 60 MP image open
+(`measure --binary target/release/lightwell --output artifacts/idle-after --samples 5`) and **1.38%**
+on the 24 MP full-Basic-layer workload (`editor-latency --source fixtures/generated/24mp.jpg --idle
+--samples 3 --output artifacts/idle-after-basic`), against 1.29% and 1.46% before the cache. Both are
+within a single sample's noise of the unfixed figures, not a resolution. The `histogram` smoke
+scenario (`artifacts/idle-histogram`) confirms the cached plot still renders and updates correctly.
+The likely dominant cost is not this widget: even a `SyncResult::Unchanged` reply to the 500 ms sync
+still drives two `Editor::update` calls and two full `view()` rebuilds of every panel every half
+second (`crates/lightwell-app/src/app/mod.rs`, `app/tasks.rs`), and re-tessellating three small
+polygons twice a second could not plausibly account for the whole 0.3–0.5 point regression on its
+own. That path is outside this change's scope and is being addressed separately. This is a
+measurement to attribute, not a resolved regression, and it is reported as a miss below.
 
 ### Provisional targets: measured
 
@@ -256,7 +273,7 @@ blocker, and no approximate processing, cache or timer was added to reach any of
 | Scratch aggregate at most 64 MiB | 13.46 MiB high-water at 24 MP, 12.82 MiB at 60 MP | **Pass** |
 | 24 MP single-image edit working set ≤ 600 MiB CPU-resident | 645.3 MiB peak in the process that commits the full Basic layer, which also retains two full-window capture readbacks; 568.2 MiB in a second process holding the same committed layer with no captures, settling to 408.0 MiB | **Miss by 45 MiB** on the capturing process, **pass** on the same stack without the harness's captures |
 | 60 MP peak ≤ 1 GiB process RSS | 975.0 MiB median peak on a 60 MP open; 1316.4 MiB after sixteen consecutive 60 MP loads | **Pass** on one image, **miss** on the sixteen-load workload (unchanged from before this work: 1316.0 MiB) |
-| Idle CPU < 1% of one core over 30 s | 1.29% with a 60 MP image open; 1.46% with a 24 MP full Basic layer; 0.93% for the same 60 MP workload before this work | **Miss** |
+| Idle CPU < 1% of one core over 30 s | 1.32% with a 60 MP image open and 1.38% with a 24 MP full Basic layer, after caching the histogram plot's tessellated geometry; 1.29% / 1.46% for the same two workloads before that cache; 0.93% on the 60 MP workload before the Basic panel and histogram existed at all | **Miss** |
 | Geometry input to presented preview p95 < 50 ms once the source preview is ready | not measured for geometry in this round | Open |
 
 The same two targets at 60 MP, which have no stated threshold and are recorded because the design

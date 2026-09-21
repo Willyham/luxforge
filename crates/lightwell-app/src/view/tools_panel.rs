@@ -82,6 +82,7 @@ fn inspector(model: &HistogramModel) -> Element<'_, Message> {
     let plot = histogram(&lightwell_ui::HistogramModel {
         channels,
         stale: model.stale,
+        version: plot_version(model),
     });
     let triangles = row![
         clip_triangle(
@@ -124,6 +125,32 @@ fn inspector(model: &HistogramModel) -> Element<'_, Message> {
     }
     debug_assert_eq!(BINS, 256, "one bin per 8-bit output code");
     block.into()
+}
+
+/// A cheap identity for the plot's geometry: it moves exactly when the bins or the dimming would,
+/// and holds steady across everything else a re-derive touches (a pointer move, a counter update,
+/// the periodic desktop sync that redraws the panel every 500 ms while an asset is open). The
+/// histogram widget hashes nothing itself — it takes this number and rebuilds its cached polygons
+/// only when it changes — so a redraw with nothing new to plot reuses the tessellated geometry
+/// instead of rebuilding three 256-point fills that look identical to the last frame.
+///
+/// `RenderIdentity` does not derive `Hash`, so this hashes its fields directly rather than adding
+/// that derive to the state model.
+fn plot_version(model: &HistogramModel) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    match &model.identity {
+        Some(identity) => {
+            identity.entry.hash(&mut hasher);
+            identity.draft_revision.hash(&mut hasher);
+            identity.generation.hash(&mut hasher);
+            identity.width.hash(&mut hasher);
+            identity.height.hash(&mut hasher);
+        }
+        None => 0u8.hash(&mut hasher),
+    }
+    model.stale.hash(&mut hasher);
+    hasher.finish()
 }
 
 fn section_view<'a>(
@@ -615,4 +642,59 @@ fn straighten_toggle(model: &CropSectionModel) -> Element<'_, Message> {
                 .then_some(Message::Crop(CropMessage::Guide(!model.guide))),
         )
         .into()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::state::histogram::RenderIdentity;
+
+    /// The plot's cache key changes exactly when the bins or the dimming would: a new render
+    /// identity or a toggled `stale` flag. It holds steady across everything else a re-derive
+    /// touches (the readout, the counters, the triangles), which is what lets the histogram widget
+    /// skip re-tessellating its polygons on a redraw the periodic desktop sync causes but nothing
+    /// visible changed.
+    #[test]
+    fn the_plot_version_moves_only_with_the_bins_or_the_stale_flag() {
+        let identity = RenderIdentity {
+            entry: "entry-1".into(),
+            draft_revision: None,
+            generation: 4,
+            width: 2,
+            height: 2,
+        };
+        let base = HistogramModel {
+            identity: Some(identity.clone()),
+            stale: false,
+            ..HistogramModel::default()
+        };
+        // A pointer move re-derives the readout only: same identity, same stale, same version.
+        let moved_pointer = HistogramModel {
+            readout: Some("R 1 \u{b7} G 2 \u{b7} B 3 \u{b7} 4, 5".into()),
+            ..base.clone()
+        };
+        assert_eq!(plot_version(&base), plot_version(&moved_pointer));
+        // A newer generation is a different render: the version moves.
+        let newer = HistogramModel {
+            identity: Some(RenderIdentity {
+                generation: 5,
+                ..identity.clone()
+            }),
+            ..base.clone()
+        };
+        assert_ne!(plot_version(&base), plot_version(&newer));
+        // Going stale dims every fill's colour, which is baked into the tessellated geometry, so it
+        // has to move the version too even though the bins themselves have not changed yet.
+        let gone_stale = HistogramModel {
+            stale: true,
+            ..base.clone()
+        };
+        assert_ne!(plot_version(&base), plot_version(&gone_stale));
+        // No report at all still hashes consistently rather than panicking or colliding by luck
+        // with a populated identity.
+        assert_eq!(
+            plot_version(&HistogramModel::default()),
+            plot_version(&HistogramModel::default())
+        );
+    }
 }

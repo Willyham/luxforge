@@ -391,6 +391,7 @@ pub fn gallery() -> Vec<Element<'static, ()>> {
             color: theme::CHANNEL_RED,
         }; 3],
         stale: false,
+        version: 0,
     }));
 
     // -- The clipping triangles: untinted (no endpoint pixels), tinted, tinted and active.
