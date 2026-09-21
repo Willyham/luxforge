@@ -288,13 +288,14 @@
     },
     {
       "id": "TASK-005",
-      "description": "Extend the evidence harness for a wild drag: a paced slider step (interval_ms sends one value per interval through a gated timer that exists only while the step runs), an editor-latency burst mode (three seconds of exposure values at 120 per second sweeping -2 to +2 EV and back) reporting presented frames per second, the staleness of every presented frame and the largest gap between presented frames, proxy dimensions in every report, editor-performance rows for the proxy build and the proxy render, and the new provisional targets in the verify timing summary.",
+      "description": "Extend the evidence harness for a wild drag: a paced slider step (interval_ms sends one value per interval through a gated timer that exists only while the step runs), an editor-latency burst mode (three seconds of exposure values at 120 per second sweeping -2 to +2 EV and back) reporting presented frames per second, the staleness of every presented frame and the largest gap between presented frames, proxy dimensions in every report and the new provisional targets in the verify timing summary.",
       "status": "pending",
       "dependencies": [],
       "extra_context": [
         "Staleness of a presented frame is its input's slider_draft_set time to its preview_displayed time, correlated by generation as the drag mode already does; a coalesced value that never reached the owner is counted, not measured. The report keeps every sample.",
         "The target rows read the burst and drag reports through exact JSON paths like the existing targets and take the thresholds from the design's table.",
-        "The paced step lives in the desktop's evidence driver; its timer follows the idle rule and is gated on the step being active."
+        "The paced step lives in the desktop's evidence driver; its timer follows the idle rule and is gated on the step being active.",
+        "The burst analysis tolerates events without the proxy fields (it reports them as null) so it can run against the current binary; the proxy fields arrive with the desktop change."
       ],
       "context_links": [
         {
@@ -309,12 +310,6 @@
           "label": "Latency harness",
           "target": "xtask/src/editor_latency.rs",
           "relevance": "The drag and commit modes the burst mode joins."
-        },
-        {
-          "kind": "file",
-          "label": "Core diagnostic",
-          "target": "xtask/src/editor_performance.rs",
-          "relevance": "The recipe rows the proxy rows join."
         },
         {
           "kind": "file",
@@ -333,7 +328,6 @@
       "acceptance_criteria": [
         "A script step {\"slider\":{...,\"values\":[...],\"interval_ms\":8}} sends one value per interval and records it; without interval_ms the step behaves exactly as today and every existing script parses.",
         "editor-latency --mode burst writes presented_fps, staleness p50/p95 with every sample, max_gap_ms and the counts of scripted, sent, presented and cancelled-exact frames, and refuses to run without the timing lock like the other modes.",
-        "editor-performance reports proxy_build and proxy_render rows on 24 MP and 60 MP with the same sample semantics as the other rows.",
         "verify's timing summary lists the new targets with their sources and verdicts, and its tests cover the new rows."
       ],
       "test_strategy": {
@@ -354,7 +348,7 @@
     },
     {
       "id": "TASK-006",
-      "description": "Qualify and document: run the timing suite (editor-performance on 24 and 60 MP; editor-latency drag, commit and burst on 24 MP, 60 MP and the 24 MP crop stack; raw-editor on the manifest when available; measure for idle and memory) at the documented sample counts on the M4 Mac, record the figures against every target in the performance plan, update the performance rules (remove the full-resolution upload known cost, add the proxy and cancellation rules), the architecture limits, the Basic and histogram design's gesture bound wording, the feature status, the user guide's Fit and 100% description and the roadmap, and decide from the figures whether the GPU colour stage proposal is needed.",
+      "description": "Qualify and document: add editor-performance rows for the proxy build and the proxy render on 24 and 60 MP, run the timing suite (editor-performance on 24 and 60 MP; editor-latency drag, commit and burst on 24 MP, 60 MP and the 24 MP crop stack; raw-editor on the manifest when available; measure for idle and memory) at the documented sample counts on the M4 Mac, record the figures against every target in the performance plan, update the performance rules (remove the full-resolution upload known cost, add the proxy and cancellation rules), the architecture limits, the Basic and histogram design's gesture bound wording, the feature status, the user guide's Fit and 100% description and the roadmap, and decide from the figures whether the GPU colour stage proposal is needed.",
       "status": "pending",
       "dependencies": [
         "TASK-004",
@@ -394,9 +388,16 @@
           "label": "User guide",
           "target": "docs/user-guide.md",
           "relevance": "The Fit and 100% description."
+        },
+        {
+          "kind": "file",
+          "label": "Core diagnostic",
+          "target": "xtask/src/editor_performance.rs",
+          "relevance": "The recipe rows the proxy rows join."
         }
       ],
       "acceptance_criteria": [
+        "editor-performance reports proxy_build and proxy_render rows on 24 MP and 60 MP with the same sample semantics as the other rows.",
         "The performance plan records the drained drag, commit and burst distributions for every listed workload with sample counts, and the verify timing summary reproduces the target verdicts.",
         "Every target in the design has a pass or a miss with its figure; a miss names the next step from the proposals.",
         "Feature status, user guide, performance rules, architecture and the Basic design describe the delivered behaviour and nothing proposed."
