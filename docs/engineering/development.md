@@ -21,7 +21,7 @@ Doctor reports missing tools and the graphics environment without installing any
 | --- | --- |
 | Environment report | `cargo xtask doctor` |
 | Full local and CI checks: repository links and task plans, formatting, Clippy, tests | `cargo xtask check` |
-| A whole verification tier with one summary | `cargo run --release --locked --package xtask -- verify --tier quick\|rendered\|timing\|full --output NEW_DIR [--binary PATH] [--manifest FILE]` |
+| A whole verification tier with one summary | `cargo run --release --locked --package xtask -- verify --tier quick\|rendered\|timing\|full --output NEW_DIR [--jobs N] [--binary PATH] [--manifest FILE]` |
 | Individual steps | `cargo xtask check-repository`, `fmt`, `lint`, `test`, `build [--release]` |
 | Run the editor, release build | `cargo xtask develop [--catalog FILE] [--open PATH] [--data-root DIR]` |
 | Run an unoptimized build, debugging only | `cargo xtask develop --debug ...` |
@@ -55,8 +55,8 @@ Every evidence command refuses an existing output directory: use a fresh `artifa
 | Tier | What it runs |
 | --- | --- |
 | `quick` | `check` and `editor-acceptance` |
-| `rendered` | quick plus every smoke scenario |
-| `timing` | quick plus `editor-performance`, `editor-latency` and `measure`, in that order, after everything else in the tier |
+| `rendered` | quick plus every smoke scenario, through a bounded pool |
+| `timing` | quick plus `editor-performance`, `editor-latency` and `measure`, in that order, serially, after everything else in the tier and behind the host-wide timing lock |
 | `full` | rendered plus timing plus `raw-reference` and, with `--manifest FILE`, `raw-editor` |
 
 The local default is `quick` per change; run `rendered` and `timing` at integration points and `full`
@@ -71,24 +71,57 @@ measures the same file. The rendered and timing tiers run `generate-fixtures` fi
 60 MP workloads are missing. A component that has stopped making progress is killed after twenty
 minutes and recorded as `timed_out`.
 
+The rendered scenarios are the one block that overlaps: they run through a bounded pool, three at a
+time by default and `--jobs N` otherwise, with `--jobs 1` as the serial run through the same path.
+Each scenario is already a separate child process with its own output directory, catalog and evidence
+directory; that every component's directory is its own is checked before anything starts. Scenarios
+are started in the fixed list order and each result is stored at its own place in that list, so the
+summary reads in list order however the completions interleave, and each one records the second of
+the run it started at beside its elapsed time. `check` and `editor-acceptance` still run first and
+serially, and the summary carries the pool's wall clock against the sum of the scenarios' own elapsed
+times.
+
+Timing components never overlap, with each other or with anything else on the machine. Before the
+first one starts, `verify` takes a host-wide lock — `lightwell-timing.lock` in the OS temporary
+directory, holding the pid, treated as stale only once that pid is no longer alive — and releases it
+at the end of the run, including on failure. `measure`, `editor-latency`, `editor-performance` and
+`raw-editor` take the same lock when run by hand, so an ad hoc timing run and a `verify` timing tier
+refuse each other. A run that cannot have the lock refuses rather than measuring: it exits non-zero
+naming the live pid, and its summary records `refused: another timing run (pid N) is alive` with
+nothing run.
+
+A figure is only as good as the host was. `verify` reads the one-minute load average immediately
+before each timing component and records it beside that component and its timing rows, along with the
+threshold of 8.0 — the baselines in the [performance plan](../specs/performance.md) were taken
+between 2.3 and 5.7 on this fourteen-core host. Every timing summary states the threshold and the
+load, on either side of it. When a component started above the threshold, all of its timing rows and
+target verdicts are marked `unreliable` instead of `pass` or `miss`: the measured figure, its sample
+count and the load are all still recorded, but the target is unanswered rather than met or missed,
+and the summary header names the component. Load never fails the run by itself.
+
 The console shows only the Markdown table. `<out>/summary.json` and `<out>/summary.md` hold, per
-component in run order, its status, elapsed time, exit code, first failure line, artifact paths and
-how many editor processes it started, then the p50/p95 timing rows of the timing tier with their
-source file and sample count, and each provisional performance target with its measured figure and a
-`pass`, `miss` or `not_measured` verdict. Both files are rewritten after every component, so a
-partial run still reports what it has; components that never ran are `not_run`. The exit status is
-non-zero when any component failed or timed out, and names them.
+component in plan order, its status, start offset, elapsed time, exit code, first failure line,
+artifact paths and how many editor processes it started, then the p50/p95 timing rows of the timing
+tier with their source file, sample count, load and reliability, and each provisional performance
+target with its measured figure and a `pass`, `miss`, `unreliable` or `not_measured` verdict. Both
+files are rewritten after every component, from whichever worker finished it, so a partial run still
+reports what it has; components that never ran are `not_run`. The exit status is non-zero when any
+component failed or timed out, and names them.
 
 The command never opens a frame. Read a capture as an image only for a failed scenario or a design
 review.
 
-Wall-clock on the owner's M4 Pro with the release build already current and the Cargo cache warm:
-`quick` 9 s at one-minute load average 5 and 45 s at load average 37, almost all of it `check`, which
-takes minutes whenever Cargo has to rebuild; `rendered` 41 s at load average 6 for 17 scenarios and
-19 editor launches; `timing` 133 s at load average 11 with the default sample counts, of which
-`measure` is 115 s and 92 launches; `full` without a manifest 182 s at load average 5. A timing
-figure is only as good as the host was, so the summary records the one-minute load average at the
-start of each timing component beside its rows.
+Wall-clock on the owner's M4 Pro, release build already current and the Cargo cache warm, on a host
+shared with other work. Back to back at one-minute load averages of 4.0 and 3.5, `rendered` with
+`--jobs 1` took 32.2 s and `rendered` with the default pool 17.7 s; `check` was 8.1 s of each, and
+the same 17 scenarios and 19 editor launches took 23.4 s of wall clock serially against 8.9 s
+through the pool, whose scenarios added up to 25.8 s of their own elapsed time. `check` dominates
+either tier and varies with how much Cargo has to redo, so the pool's wall clock against the
+scenario time inside the same run is the figure to read. `timing` took 67.7 s with the default
+sample counts at load averages of 4.80, 5.86 and 6.59 across its three components, of which
+`measure` was 49.2 s and 17 launches, `editor-performance` 4.2 s and `editor-latency` 5.1 s. On a
+busier run whose `measure` started at 8.33, that component's rows and target verdicts came back
+`unreliable` while the two components below the threshold still gave verdicts.
 
 ## Running the application
 

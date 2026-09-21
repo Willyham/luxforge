@@ -9,8 +9,17 @@
 use crate::*;
 use std::{
     process::Stdio,
+    sync::{
+        Mutex,
+        atomic::{AtomicUsize, Ordering},
+    },
     time::{Duration, Instant},
 };
+
+/// How many rendered scenarios run at once by default. Each one is its own child process with its
+/// own output directory, catalog and evidence directory, so the only thing they share is the host;
+/// three keeps the fourteen-core machine busy without making every scenario's own deadlines a race.
+pub const JOBS: usize = 3;
 
 /// How long any one component may run before it is killed and reaped. Every component already
 /// bounds its own editor launches, so this only catches a component that has stopped making
@@ -162,9 +171,10 @@ fn spec(name: &str, tier: &'static str, args: &[&str]) -> Spec {
     }
 }
 
-/// What each tier runs, in order. Every tier includes the ones below it. The timing components run
-/// strictly serially, in this order, after everything else in the tier, so nothing else on the
-/// machine is competing with them from this command.
+/// What each tier runs, in order. Every tier includes the ones below it. The rendered scenarios are
+/// the one block that runs through a pool; the timing components run strictly serially, in this
+/// order, after everything else in the tier and behind the host-wide timing lock, so nothing else
+/// on the machine is competing with them from this command.
 fn plan(tier: Tier, manifest: bool, fixtures: bool) -> Vec<Spec> {
     let mut specs = Vec::new();
     if !fixtures && tier != Tier::Quick {
@@ -238,11 +248,18 @@ fn plan(tier: Tier, manifest: bool, fixtures: bool) -> Vec<Spec> {
     specs
 }
 
+fn tenths(value: f64) -> f64 {
+    (value * 10.0).round() / 10.0
+}
+
 /// One component's outcome, as the summary records it.
 struct Entry {
     component: String,
     tier: String,
     status: Status,
+    /// Seconds from the start of the run to the start of this component. With the pool this is how
+    /// the summary shows which scenarios overlapped and which waited for a worker.
+    started_at_s: f64,
     elapsed_s: f64,
     exit_code: Option<i32>,
     error: Option<String>,
@@ -259,12 +276,15 @@ impl Entry {
             "component":self.component,
             "tier":self.tier,
             "status":self.status.name(),
-            "elapsed_s":(self.elapsed_s*10.0).round()/10.0,
+            "started_at_s":tenths(self.started_at_s),
+            "elapsed_s":tenths(self.elapsed_s),
             "exit_code":self.exit_code,
             "error":self.error,
             "artifacts":self.artifacts,
             "launches":self.launches,
             "load_average_1m":self.load,
+            "load_threshold":self.load.map(|_| launch::LOAD_THRESHOLD),
+            "unreliable":self.load.map(|load| launch::unreliable(Some(load))),
         })
     }
 }
@@ -304,9 +324,14 @@ fn execute(
     root: &Path,
     args: &[OsString],
     log: &Path,
+    env: Option<(&str, String)>,
 ) -> Result<(Option<i32>, bool)> {
     let file = fs::File::create(log)?;
-    let mut child = Command::new(program)
+    let mut command = Command::new(program);
+    if let Some((key, value)) = env {
+        command.env(key, value);
+    }
+    let mut child = command
         .args(args)
         .current_dir(root)
         .stdin(Stdio::null())
@@ -358,6 +383,26 @@ fn unit(metric: &str) -> &'static str {
     }
 }
 
+/// How a figure taken at this load is labelled. Every timing row and verdict carries the load and
+/// the threshold, whichever side of it the host was on, so a summary always says what it was
+/// measured against.
+fn reliability(load: Option<f64>) -> &'static str {
+    if launch::unreliable(load) {
+        "unreliable"
+    } else {
+        "ok"
+    }
+}
+
+/// Why a figure cannot be compared against its target.
+fn too_loaded(load: Option<f64>) -> String {
+    format!(
+        "one-minute load average {} at the start of the component exceeds the {} threshold; this figure is neither a pass nor a miss",
+        number(load.unwrap_or_default()),
+        number(launch::LOAD_THRESHOLD)
+    )
+}
+
 fn row(
     source: &str,
     metric: &str,
@@ -366,7 +411,7 @@ fn row(
     count: usize,
     load: Option<f64>,
 ) -> Value {
-    json!({"metric":metric,"unit":unit(metric),"p50":p50,"p95":p95,"count":count,"source":source,"load_average_1m":load})
+    json!({"metric":metric,"unit":unit(metric),"p50":p50,"p95":p95,"count":count,"source":source,"load_average_1m":load,"load_threshold":launch::LOAD_THRESHOLD,"reliability":reliability(load)})
 }
 
 /// How many values fed one `measure` summary statistic: the same collection the runner itself does,
@@ -524,10 +569,10 @@ impl Target {
             } else {
                 "timing tier did not run".into()
             };
-            return json!({"target":self.text,"unit":self.unit,"limit":self.limit,"source":format!("{} {}",self.file(),self.path),"measured":Value::Null,"samples":0,"verdict":"not_measured","reason":why,"note":self.note,"load_average_1m":load});
+            return json!({"target":self.text,"unit":self.unit,"limit":self.limit,"source":format!("{} {}",self.file(),self.path),"measured":Value::Null,"samples":0,"verdict":"not_measured","reason":why,"note":self.note,"load_average_1m":load,"load_threshold":launch::LOAD_THRESHOLD});
         };
         let Some(raw) = result.pointer(self.path).and_then(Value::as_f64) else {
-            return json!({"target":self.text,"unit":self.unit,"limit":self.limit,"source":format!("{} {}",self.file(),self.path),"measured":Value::Null,"samples":0,"verdict":"not_measured","reason":format!("{} holds no {}",self.file(),self.path),"note":self.note,"load_average_1m":load});
+            return json!({"target":self.text,"unit":self.unit,"limit":self.limit,"source":format!("{} {}",self.file(),self.path),"measured":Value::Null,"samples":0,"verdict":"not_measured","reason":format!("{} holds no {}",self.file(),self.path),"note":self.note,"load_average_1m":load,"load_threshold":launch::LOAD_THRESHOLD});
         };
         let value = raw * self.scale;
         let ok = if self.strict {
@@ -535,7 +580,17 @@ impl Target {
         } else {
             value <= self.limit
         };
-        json!({"target":self.text,"unit":self.unit,"limit":self.limit,"source":format!("{} {}",self.file(),self.path),"measured":value,"samples":self.samples(result),"verdict":if ok {"pass"} else {"miss"},"note":self.note,"load_average_1m":load})
+        // A figure taken while the host was busy is recorded with everything it came from, and is
+        // not turned into a verdict: the target is unanswered, not met and not missed.
+        let over = launch::unreliable(load);
+        let verdict = if over {
+            "unreliable"
+        } else if ok {
+            "pass"
+        } else {
+            "miss"
+        };
+        json!({"target":self.text,"unit":self.unit,"limit":self.limit,"source":format!("{} {}",self.file(),self.path),"measured":value,"samples":self.samples(result),"verdict":verdict,"reason":over.then(|| too_loaded(load)),"note":self.note,"load_average_1m":load,"load_threshold":launch::LOAD_THRESHOLD})
     }
 }
 
@@ -650,10 +705,15 @@ fn markdown(header: &Value, entries: &[Entry], rows: &[Value], targets: &[Value]
         .map(|e| e.component.clone())
         .collect();
     let mut text = String::from("# Verification summary\n\n");
+    let verdict = match header["refused"].as_str() {
+        Some(why) => format!("REFUSED ({why})"),
+        None if failed.is_empty() => "passed".to_owned(),
+        None => format!("FAILED ({})", failed.join(", ")),
+    };
     text.push_str(&format!(
         "Tier {}: {}. Host {}. Binary SHA-256 {} ({}). Cargo.lock SHA-256 {}. Total {} s. Output {}.\n\n",
         header["tier"].as_str().unwrap_or("?"),
-        if failed.is_empty() { "passed".to_owned() } else { format!("FAILED ({})", failed.join(", ")) },
+        verdict,
         header["host"].as_str().unwrap_or("unknown"),
         header["binary_sha256"].as_str().unwrap_or("unavailable"),
         header["binary"].as_str().unwrap_or("unavailable"),
@@ -661,13 +721,46 @@ fn markdown(header: &Value, entries: &[Entry], rows: &[Value], targets: &[Value]
         cell(&header["elapsed_s"]),
         header["output"].as_str().unwrap_or("."),
     ));
-    text.push_str("## Components\n\n| Component | Tier | Status | Elapsed s | Launches | Artifact | Error |\n| --- | --- | --- | --- | --- | --- | --- |\n");
+    if let Some(pool) = header["pool"].as_object() {
+        text.push_str(&format!(
+            "Rendered pool: {} {}, {} at a time, {} s of wall clock against {} s of scenario time. Each scenario is a separate process with its own output directory.\n\n",
+            pool["scenarios"],
+            if pool["scenarios"] == json!(1) { "scenario" } else { "scenarios" },
+            pool["jobs"],
+            cell(&pool["wall_clock_s"]),
+            cell(&pool["serial_equivalent_s"]),
+        ));
+    }
+    if let Some(threshold) = header["load_threshold"].as_f64() {
+        let over: Vec<String> = entries
+            .iter()
+            .filter(|e| launch::unreliable(e.load))
+            .map(|e| format!("{} ({})", e.component, number(e.load.unwrap_or_default())))
+            .collect();
+        text.push_str(&format!(
+            "Timing load threshold {} (one-minute average, read at the start of each timing component). {}\n\n",
+            number(threshold),
+            if header["refused"].is_string() {
+                "No timing component started.".to_owned()
+            } else if over.is_empty() {
+                "Every timing component started below it.".to_owned()
+            } else {
+                format!(
+                    "Above it: {}. Every timing row and target verdict from {} is marked unreliable rather than pass or miss.",
+                    over.join(", "),
+                    if over.len() == 1 { "it" } else { "them" }
+                )
+            },
+        ));
+    }
+    text.push_str("## Components\n\n| Component | Tier | Status | Started s | Elapsed s | Launches | Artifact | Error |\n| --- | --- | --- | --- | --- | --- | --- | --- |\n");
     for entry in entries {
         text.push_str(&format!(
-            "| {} | {} | {} | {} | {} | {} | {} |\n",
+            "| {} | {} | {} | {} | {} | {} | {} | {} |\n",
             entry.component,
             entry.tier,
             entry.status.name(),
+            number(entry.started_at_s),
             number(entry.elapsed_s),
             entry.launches,
             entry.artifacts.last().cloned().unwrap_or_default(),
@@ -675,16 +768,17 @@ fn markdown(header: &Value, entries: &[Entry], rows: &[Value], targets: &[Value]
         ));
     }
     if !rows.is_empty() {
-        text.push_str("\n## Timing rows\n\n| Metric | Unit | p50 | p95 | Samples | Load 1m | Source |\n| --- | --- | --- | --- | --- | --- | --- |\n");
+        text.push_str("\n## Timing rows\n\n| Metric | Unit | p50 | p95 | Samples | Load 1m | Reliability | Source |\n| --- | --- | --- | --- | --- | --- | --- | --- |\n");
         for r in rows {
             text.push_str(&format!(
-                "| {} | {} | {} | {} | {} | {} | {} |\n",
+                "| {} | {} | {} | {} | {} | {} | {} | {} |\n",
                 r["metric"].as_str().unwrap_or_default(),
                 r["unit"].as_str().unwrap_or_default(),
                 cell(&r["p50"]),
                 cell(&r["p95"]),
                 r["count"],
                 cell(&r["load_average_1m"]),
+                r["reliability"].as_str().unwrap_or_default(),
                 r["source"].as_str().unwrap_or_default(),
             ));
         }
@@ -712,7 +806,7 @@ fn markdown(header: &Value, entries: &[Entry], rows: &[Value], targets: &[Value]
         }
     }
     text.push_str(
-        "\nNo frame is opened by this command. Read a capture only for a failed scenario or a design review. A verdict from the default sample counts is a functional check, not a baseline.\n",
+        "\nNo frame is opened by this command. Read a capture only for a failed scenario or a design review. A verdict from the default sample counts is a functional check, not a baseline, and a figure marked unreliable is not a baseline at all.\n",
     );
     text
 }
@@ -727,7 +821,9 @@ fn write(
 ) -> Result<String> {
     let text = markdown(header, entries, rows, targets);
     let mut summary = header.clone();
-    summary["status"] = json!(if entries.iter().any(|e| e.status.failure()) {
+    summary["status"] = json!(if header["refused"].is_string() {
+        "refused"
+    } else if entries.iter().any(|e| e.status.failure()) {
         "failed"
     } else {
         "passed"
@@ -764,16 +860,249 @@ fn outcome(entries: &[Entry], out: &Path) -> Result {
     )
 }
 
+/// Everything a component needs to run, shared unchanged by the serial phases and the pool.
+struct Ctx<'a> {
+    root: &'a Path,
+    out: &'a Path,
+    xtask: PathBuf,
+    bin: PathBuf,
+    manifest: Option<PathBuf>,
+    started: Instant,
+}
+
+/// The exact argument array one component runs with. One place, so a scenario started by the pool
+/// and one started serially cannot differ, and so a test can check the whole plan's arrays at once.
+fn arguments(s: &Spec, dir: &Path, bin: &Path, manifest: Option<&Path>) -> Vec<OsString> {
+    let mut args: Vec<OsString> = s.args.iter().map(OsString::from).collect();
+    if s.output {
+        args.extend(["--output".into(), dir.join("run").into_os_string()]);
+    }
+    if s.binary {
+        args.extend(["--binary".into(), bin.to_path_buf().into_os_string()]);
+    }
+    if let (true, Some(path)) = (s.manifest, manifest) {
+        args.extend(["--manifest".into(), path.to_path_buf().into_os_string()]);
+    }
+    args
+}
+
+/// Every component's own directory, which is what makes running two of them at once safe: the
+/// output directory carries the component's catalog, evidence directory, captures and result file.
+fn directories(specs: &[Spec], out: &Path) -> Vec<PathBuf> {
+    specs.iter().map(|s| out.join(&s.name)).collect()
+}
+
+/// Run one component to completion and describe it. A component that cannot even be started is
+/// recorded as that component's failure rather than aborting the run, so the summary still names
+/// what went wrong, and so one scenario in the pool can never take the others down with it.
+fn component(
+    ctx: &Ctx,
+    s: &Spec,
+    started_at: f64,
+    load: Option<f64>,
+    env: Option<(&str, String)>,
+) -> Entry {
+    let dir = ctx.out.join(&s.name);
+    let mut entry = Entry {
+        component: s.name.clone(),
+        tier: s.tier.into(),
+        status: Status::NotRun,
+        started_at_s: started_at,
+        elapsed_s: 0.0,
+        exit_code: None,
+        error: None,
+        artifacts: vec![s.name.clone()],
+        launches: 0,
+        load,
+    };
+    if let Err(error) = fs::create_dir_all(&dir) {
+        entry.status = Status::Failed;
+        entry.error = Some(error.to_string());
+        return entry;
+    }
+    if let Some(why) = s.skip {
+        entry.status = Status::Skipped;
+        entry.error = Some(why.into());
+        return entry;
+    }
+    entry.artifacts = vec![format!("{}/console.log", s.name)];
+    if let Some(name) = s.result {
+        entry.artifacts.push(format!("{}/run/{name}", s.name));
+    }
+    let clock = Instant::now();
+    let ran = execute(
+        &ctx.xtask,
+        ctx.root,
+        &arguments(s, &dir, &ctx.bin, ctx.manifest.as_deref()),
+        &dir.join("console.log"),
+        env,
+    );
+    entry.elapsed_s = clock.elapsed().as_secs_f64();
+    match ran {
+        Ok((code, timed_out)) => {
+            let result = s
+                .result
+                .and_then(|name| optional(&dir.join("run").join(name)));
+            entry.exit_code = code;
+            entry.launches = s.launches.count(&dir, result.as_ref());
+            entry.status = match (timed_out, code) {
+                (true, _) => Status::TimedOut,
+                (false, Some(0)) => Status::Passed,
+                _ => Status::Failed,
+            };
+            if entry.status != Status::Passed {
+                entry.error = reason(&dir, result.as_ref());
+            }
+        }
+        Err(error) => {
+            entry.status = Status::Failed;
+            entry.error = Some(error.to_string());
+        }
+    }
+    entry
+}
+
+/// The summary as it stands. Both files are rewritten after every component, from whichever thread
+/// finished it, so a run that stops early still reports everything that finished.
+struct Progress<'a> {
+    out: &'a Path,
+    tier: Tier,
+    started: Instant,
+    header: Value,
+    entries: Vec<Entry>,
+}
+
+impl Progress<'_> {
+    fn write(&mut self) -> Result<String> {
+        self.header["elapsed_s"] = json!(tenths(self.started.elapsed().as_secs_f64()));
+        if self.tier.timing() {
+            self.header["unreliable_components"] = json!(
+                self.entries
+                    .iter()
+                    .filter(|e| launch::unreliable(e.load))
+                    .map(|e| e.component.clone())
+                    .collect::<Vec<_>>()
+            );
+        }
+        let (rows, targets) = collect(self.out, self.tier, &self.entries);
+        write(self.out, &self.header, &self.entries, &rows, &targets)
+    }
+}
+
+/// Run one block of scenarios through a bounded pool of `jobs` workers.
+///
+/// Every scenario is already a separate child process with its own output directory, catalog and
+/// evidence directory, which is the whole reason they can overlap; that separation is asserted
+/// before anything starts rather than assumed. Workers take the next scenario in list order, and
+/// each result is stored at its own index, so the summary reads in list order however the
+/// completions interleave. `jobs` of 1 is the serial run through the same path.
+fn pool(
+    ctx: &Ctx,
+    specs: &[Spec],
+    offset: usize,
+    jobs: usize,
+    progress: &Mutex<Progress>,
+) -> Result {
+    let next = AtomicUsize::new(0);
+    let failures: Mutex<Vec<String>> = Mutex::new(Vec::new());
+    let wall = Instant::now();
+    std::thread::scope(|scope| {
+        for _ in 0..jobs.clamp(1, specs.len().max(1)) {
+            scope.spawn(|| {
+                loop {
+                    let index = next.fetch_add(1, Ordering::SeqCst);
+                    let Some(s) = specs.get(index) else { return };
+                    let entry = component(ctx, s, ctx.started.elapsed().as_secs_f64(), None, None);
+                    let mut state = progress.lock().expect("summary lock");
+                    state.entries[offset + index] = entry;
+                    if let Err(error) = state.write() {
+                        failures
+                            .lock()
+                            .expect("failure lock")
+                            .push(error.to_string());
+                    }
+                }
+            });
+        }
+    });
+    let elapsed = wall.elapsed().as_secs_f64();
+    let mut state = progress.lock().expect("summary lock");
+    let serial: f64 = (0..specs.len())
+        .map(|index| state.entries[offset + index].elapsed_s)
+        .sum();
+    state.header["pool"] = json!({
+        "jobs":jobs,
+        "scenarios":specs.len(),
+        "wall_clock_s":tenths(elapsed),
+        "serial_equivalent_s":tenths(serial),
+        "output_directories_distinct":true,
+    });
+    state.write()?;
+    drop(state);
+    let failures = failures.into_inner().expect("failure lock");
+    ensure(
+        failures.is_empty(),
+        format!("The summary could not be written: {}", failures.join("; ")),
+    )
+}
+
+/// Refuse a run outright, with the refusal in both summary files and in the exit error.
+fn refuse(out: &Path, tier: Tier, specs: &[Spec], why: &str) -> Result {
+    let entries: Vec<Entry> = specs
+        .iter()
+        .map(|s| Entry {
+            component: s.name.clone(),
+            tier: s.tier.into(),
+            status: Status::NotRun,
+            started_at_s: 0.0,
+            elapsed_s: 0.0,
+            exit_code: None,
+            error: Some(why.to_owned()),
+            artifacts: vec![s.name.clone()],
+            launches: 0,
+            load: None,
+        })
+        .collect();
+    let header = json!({
+        "format":1,
+        "tier":tier.name(),
+        "output":out,
+        "elapsed_s":0.0,
+        "refused":why,
+        "load_threshold":launch::LOAD_THRESHOLD,
+        "note":"Timing runs hold a host-wide lock so two of them can never overlap. Nothing was run.",
+    });
+    println!("{}", write(out, &header, &entries, &[], &[])?);
+    Err(format!("Verification refused: {why}").into())
+}
+
 pub fn run(
     root: &Path,
     out: &Path,
     tier: Tier,
     selected_binary: Option<PathBuf>,
     manifest: Option<PathBuf>,
+    jobs: usize,
 ) -> Result {
     ensure(!out.exists(), "Verification output must be new")?;
+    ensure(
+        (1..=16).contains(&jobs),
+        "--jobs is 1 to 16 rendered scenarios at a time",
+    )?;
     fs::create_dir_all(out)?;
     let started = Instant::now();
+
+    let fixtures = GENERATED.iter().all(|p| root.join(p).is_file());
+    let specs = plan(tier, manifest.is_some(), fixtures);
+
+    // A timing tier that cannot have the host to itself is refused before it spends minutes on the
+    // rest of the tier. The lock is still taken for real before the first timing component, because
+    // another run can take it in between.
+    if tier.timing()
+        && let Some(pid) = launch::TimingGate::holder()?
+    {
+        return refuse(out, tier, &specs, &launch::TimingGate::refusal(pid));
+    }
 
     // Build once up front so every component measures the same executable and no component's own
     // build time lands in its elapsed figure. Cargo's output goes to a file, never the terminal.
@@ -804,7 +1133,7 @@ pub fn run(
         .unwrap_or_else(|| release.clone());
     let manifest = manifest.map(|path| absolute(root, &path));
 
-    let mut header = json!({
+    let header = json!({
         "format":1,
         "tier":tier.name(),
         "host":host(root).unwrap_or_else(|_| "unknown".into()),
@@ -814,18 +1143,19 @@ pub fn run(
         "output":out,
         "manifest":manifest,
         "elapsed_s":0.0,
-        "build":{"status":if built.success() {"passed"} else {"failed"},"elapsed_s":(build_started.elapsed().as_secs_f64()*10.0).round()/10.0,"log":"build.log"},
-        "note":"Components run as child processes of the release xtask executable, serially, with their console output in <component>/console.log. A skip is not a pass.",
+        "jobs":jobs,
+        "load_threshold":tier.timing().then_some(launch::LOAD_THRESHOLD),
+        "build":{"status":if built.success() {"passed"} else {"failed"},"elapsed_s":tenths(build_started.elapsed().as_secs_f64()),"log":"build.log"},
+        "note":"Components run as child processes of the release xtask executable, with their console output in <component>/console.log. The rendered scenarios run through a bounded pool; every other component, and every timing component in particular, runs serially. A skip is not a pass.",
     });
 
-    let fixtures = GENERATED.iter().all(|p| root.join(p).is_file());
-    let specs = plan(tier, manifest.is_some(), fixtures);
     let mut entries: Vec<Entry> = specs
         .iter()
         .map(|s| Entry {
             component: s.name.clone(),
             tier: s.tier.into(),
             status: Status::NotRun,
+            started_at_s: 0.0,
             elapsed_s: 0.0,
             exit_code: None,
             error: None,
@@ -844,66 +1174,88 @@ pub fn run(
         return Err("Verification failed: the release build failed. See build.log".into());
     }
 
-    for (index, s) in specs.iter().enumerate() {
-        let dir = out.join(&s.name);
-        fs::create_dir_all(&dir)?;
-        if let Some(why) = s.skip {
-            entries[index].status = Status::Skipped;
-            entries[index].error = Some(why.into());
-            let (rows, targets) = collect(out, tier, &entries);
-            header["elapsed_s"] = json!((started.elapsed().as_secs_f64() * 10.0).round() / 10.0);
-            write(out, &header, &entries, &rows, &targets)?;
+    // Two components writing into one directory would make the pool unsafe and every result
+    // ambiguous. Checked here, over the plan that is about to run, rather than trusted to the names.
+    let dirs = directories(&specs, out);
+    let mut distinct = dirs.clone();
+    distinct.sort();
+    distinct.dedup();
+    ensure(
+        distinct.len() == dirs.len(),
+        "Two components would share an output directory",
+    )?;
+
+    let ctx = Ctx {
+        root,
+        out,
+        xtask,
+        bin,
+        manifest,
+        started,
+    };
+    let progress = Mutex::new(Progress {
+        out,
+        tier,
+        started,
+        header,
+        entries,
+    });
+    // The host-wide timing lock, held from the first timing component to the end of the run and
+    // released by its own drop, including on failure.
+    let mut gate: Option<launch::TimingGate> = None;
+
+    let mut index = 0;
+    while index < specs.len() {
+        // The rendered scenarios are the one block that overlaps; everything else, and every timing
+        // component in particular, runs alone.
+        if specs[index].tier == "rendered" {
+            let end = index
+                + specs[index..]
+                    .iter()
+                    .take_while(|s| s.tier == "rendered")
+                    .count();
+            pool(&ctx, &specs[index..end], index, jobs, &progress)?;
+            index = end;
             continue;
         }
-        let mut args: Vec<OsString> = s.args.iter().map(OsString::from).collect();
-        if s.output {
-            args.extend(["--output".into(), dir.join("run").into_os_string()]);
+        let s = &specs[index];
+        if s.tier == "timing" && gate.is_none() {
+            match launch::TimingGate::take()? {
+                Ok(taken) => gate = Some(taken),
+                Err(pid) => {
+                    let why = launch::TimingGate::refusal(pid);
+                    let mut state = progress.lock().expect("summary lock");
+                    state.header["refused"] = json!(why);
+                    for entry in state.entries.iter_mut().filter(|e| e.tier == "timing") {
+                        entry.error = Some(why.clone());
+                    }
+                    println!("{}", state.write()?);
+                    return Err(format!("Verification refused: {why}").into());
+                }
+            }
         }
-        if s.binary {
-            args.extend(["--binary".into(), bin.clone().into_os_string()]);
-        }
-        if let (true, Some(path)) = (s.manifest, &manifest) {
-            args.extend(["--manifest".into(), path.clone().into_os_string()]);
-        }
-        if s.tier == "timing" {
-            entries[index].load = load_average(root);
-        }
-        let component = Instant::now();
-        let (code, timed_out) = execute(&xtask, root, &args, &dir.join("console.log"))?;
-        let result = s
-            .result
-            .and_then(|name| optional(&dir.join("run").join(name)));
-        let entry = &mut entries[index];
-        entry.elapsed_s = component.elapsed().as_secs_f64();
-        entry.exit_code = code;
-        entry.launches = s.launches.count(&dir, result.as_ref());
-        entry.artifacts = vec![format!("{}/console.log", s.name)];
-        if let Some(name) = s.result {
-            entry.artifacts.push(format!("{}/run/{name}", s.name));
-        }
-        entry.status = match (timed_out, code) {
-            (true, _) => Status::TimedOut,
-            (false, Some(0)) => Status::Passed,
-            _ => Status::Failed,
-        };
-        if entry.status != Status::Passed {
-            entry.error = reason(&dir, result.as_ref());
-        }
+        let load = (s.tier == "timing").then(|| load_average(root)).flatten();
+        let env = (s.tier == "timing")
+            .then(|| gate.as_ref().map(launch::TimingGate::child_env))
+            .flatten();
+        let at = started.elapsed().as_secs_f64();
+        let entry = component(&ctx, s, at, load, env);
         let status = entry.status;
-        header["elapsed_s"] = json!((started.elapsed().as_secs_f64() * 10.0).round() / 10.0);
-        let (rows, targets) = collect(out, tier, &entries);
-        write(out, &header, &entries, &rows, &targets)?;
+        let mut state = progress.lock().expect("summary lock");
+        state.entries[index] = entry;
+        state.write()?;
+        drop(state);
         // A prerequisite that fails leaves the rest unprovable, so the remaining components stay
         // `not_run` rather than failing for a reason that is already recorded.
         if status != Status::Passed && s.tier == "setup" {
             break;
         }
+        index += 1;
     }
 
-    header["elapsed_s"] = json!((started.elapsed().as_secs_f64() * 10.0).round() / 10.0);
-    let (rows, targets) = collect(out, tier, &entries);
-    println!("{}", write(out, &header, &entries, &rows, &targets)?);
-    outcome(&entries, out)
+    let mut state = progress.lock().expect("summary lock");
+    println!("{}", state.write()?);
+    outcome(&state.entries, out)
 }
 
 #[cfg(test)]
@@ -974,6 +1326,7 @@ mod tests {
             component: component.into(),
             tier: "rendered".into(),
             status,
+            started_at_s: 0.5,
             elapsed_s: 12.25,
             exit_code: (status == Status::Failed).then_some(1),
             error: (status != Status::Passed).then(|| "Application exit code 1".into()),
@@ -997,9 +1350,9 @@ mod tests {
         assert!(text.contains("Host aarch64-apple-darwin"));
         assert!(text.contains("Total 61.50 s"));
         assert!(text.contains(
-            "| smoke-load | rendered | passed | 12.25 | 1 | smoke-load/run/result.json |  |"
+            "| smoke-load | rendered | passed | 0.500 | 12.25 | 1 | smoke-load/run/result.json |  |"
         ));
-        assert!(text.contains("| smoke-crop | rendered | failed | 12.25 | 1 | smoke-crop/run/result.json | Application exit code 1 |"));
+        assert!(text.contains("| smoke-crop | rendered | failed | 0.500 | 12.25 | 1 | smoke-crop/run/result.json | Application exit code 1 |"));
         assert!(text.contains("| raw-editor | rendered | skipped |"));
         assert!(text.contains("| measure | rendered | not_run |"));
         assert!(text.contains("| editor-latency | rendered | timed_out |"));
@@ -1016,7 +1369,7 @@ mod tests {
             .find(|l| l.starts_with("| smoke-load"))
             .unwrap();
         assert!(line.contains("a \\| b c"), "{line}");
-        assert_eq!(line.matches(" | ").count(), 6);
+        assert_eq!(line.matches(" | ").count(), 7);
     }
     #[test]
     fn target_verdicts_follow_the_measured_figure() {
@@ -1151,7 +1504,7 @@ mod tests {
     fn an_existing_output_directory_is_refused() {
         let tmp = tempfile::tempdir().unwrap();
         assert!(
-            run(&root().unwrap(), tmp.path(), Tier::Quick, None, None)
+            run(&root().unwrap(), tmp.path(), Tier::Quick, None, None, JOBS)
                 .unwrap_err()
                 .to_string()
                 .contains("must be new")
@@ -1166,6 +1519,278 @@ mod tests {
         assert_eq!(unit("idle.cpu_percent_one_core"), "% of one core");
         assert_eq!(unit("idle.duration_s"), "s");
     }
+    /// A block of "scenarios" that are nothing but sleeps, so the pool's ordering and placement can
+    /// be tested without launching an editor. The first one outlasts all the others, so completion
+    /// order cannot be list order.
+    fn sleeps(seconds: &[&str]) -> Vec<Spec> {
+        seconds
+            .iter()
+            .enumerate()
+            .map(|(index, duration)| Spec {
+                output: false,
+                ..spec(&format!("smoke-{index}"), "rendered", &[duration])
+            })
+            .collect()
+    }
+
+    fn pooled(specs: &[Spec], jobs: usize, out: &Path) -> Vec<Entry> {
+        let started = Instant::now();
+        let ctx = Ctx {
+            root: out,
+            out,
+            xtask: "/bin/sleep".into(),
+            bin: PathBuf::new(),
+            manifest: None,
+            started,
+        };
+        let entries = specs
+            .iter()
+            .map(|s| Entry {
+                component: s.name.clone(),
+                tier: s.tier.into(),
+                status: Status::NotRun,
+                started_at_s: 0.0,
+                elapsed_s: 0.0,
+                exit_code: None,
+                error: None,
+                artifacts: vec![s.name.clone()],
+                launches: 0,
+                load: None,
+            })
+            .collect();
+        let progress = Mutex::new(Progress {
+            out,
+            tier: Tier::Rendered,
+            started,
+            header: json!({"tier":"rendered","output":out}),
+            entries,
+        });
+        pool(&ctx, specs, 0, jobs, &progress).unwrap();
+        progress.into_inner().unwrap().entries
+    }
+
+    #[test]
+    fn the_pool_overlaps_scenarios_but_keeps_every_result_at_its_own_index() {
+        let specs = sleeps(&["0.8", "0.1", "0.1", "0.1", "0.1", "0.1"]);
+        let tmp = tempfile::tempdir().unwrap();
+        let entries = pooled(&specs, 3, tmp.path());
+
+        // Every result is at its own index, in list order, however the completions interleaved.
+        assert_eq!(
+            entries
+                .iter()
+                .map(|e| e.component.as_str())
+                .collect::<Vec<_>>(),
+            [
+                "smoke-0", "smoke-1", "smoke-2", "smoke-3", "smoke-4", "smoke-5"
+            ]
+        );
+        assert!(
+            entries.iter().all(|e| e.status == Status::Passed),
+            "{:?}",
+            entries
+                .iter()
+                .map(|e| (e.component.clone(), e.status))
+                .collect::<Vec<_>>()
+        );
+        // The summary table is written in list order too, not completion order.
+        let text = fs::read_to_string(tmp.path().join("summary.md")).unwrap();
+        let listed: Vec<&str> = text
+            .lines()
+            .filter_map(|l| l.strip_prefix("| smoke-"))
+            .filter_map(|l| l.split(' ').next())
+            .collect();
+        assert_eq!(listed, ["0", "1", "2", "3", "4", "5"]);
+
+        // The long first scenario really did overlap the ones after it.
+        let first_ends = entries[0].started_at_s + entries[0].elapsed_s;
+        assert!(
+            entries[1..].iter().any(|e| e.started_at_s < first_ends),
+            "nothing overlapped the first scenario"
+        );
+        let summary: Value = read_json(&tmp.path().join("summary.json")).unwrap();
+        let wall = summary["pool"]["wall_clock_s"].as_f64().unwrap();
+        let serial = summary["pool"]["serial_equivalent_s"].as_f64().unwrap();
+        assert_eq!(summary["pool"]["jobs"], 3);
+        assert_eq!(summary["pool"]["scenarios"], 6);
+        assert!(wall < serial, "pool {wall} s against {serial} s serial");
+    }
+
+    #[test]
+    fn one_job_is_the_serial_run_through_the_same_path() {
+        let specs = sleeps(&["0.2", "0.2", "0.2"]);
+        let tmp = tempfile::tempdir().unwrap();
+        let entries = pooled(&specs, 1, tmp.path());
+        assert!(entries.iter().all(|e| e.status == Status::Passed));
+        // Each scenario starts only after the one before it has finished.
+        for pair in entries.windows(2) {
+            assert!(
+                pair[1].started_at_s >= pair[0].started_at_s + pair[0].elapsed_s,
+                "{} overlapped {}",
+                pair[1].component,
+                pair[0].component
+            );
+        }
+        let summary: Value = read_json(&tmp.path().join("summary.json")).unwrap();
+        assert_eq!(summary["pool"]["jobs"], 1);
+    }
+
+    #[test]
+    fn no_two_components_share_an_output_directory() {
+        let out = Path::new("/tmp/verify");
+        let bin = Path::new("/tmp/lightwell");
+        let manifest = PathBuf::from("/tmp/raw.json");
+        let specs = plan(Tier::Full, true, true);
+
+        let dirs = directories(&specs, out);
+        let mut distinct = dirs.clone();
+        distinct.sort();
+        distinct.dedup();
+        assert_eq!(distinct.len(), specs.len(), "{dirs:?}");
+
+        // The same holds of what each component is actually told on its command line: the argument
+        // arrays, not just the directory names.
+        let mut outputs = Vec::new();
+        for (s, dir) in specs.iter().zip(&dirs) {
+            let args = arguments(s, dir, bin, Some(&manifest));
+            if let Some(index) = args.iter().position(|a| a == "--output") {
+                outputs.push(args[index + 1].clone());
+            } else {
+                assert!(!s.output, "{} takes --output", s.name);
+            }
+            assert_eq!(
+                args.iter().filter(|a| *a == "--binary").count(),
+                usize::from(s.binary)
+            );
+            assert_eq!(
+                args.iter().filter(|a| *a == "--manifest").count(),
+                usize::from(s.manifest)
+            );
+        }
+        let mut distinct_outputs = outputs.clone();
+        distinct_outputs.sort();
+        distinct_outputs.dedup();
+        assert_eq!(distinct_outputs.len(), outputs.len(), "{outputs:?}");
+        // Every rendered scenario is one of them, each under its own directory.
+        assert_eq!(
+            outputs
+                .iter()
+                .filter(|o| o.to_string_lossy().contains("/smoke-"))
+                .count(),
+            smoke::SCENARIOS.len()
+        );
+    }
+
+    #[test]
+    fn load_over_the_threshold_marks_rows_and_verdicts_unreliable() {
+        let quiet = row(
+            "measure/run/measurements.json",
+            "24mp.open_to_raster_ms",
+            json!(120.0),
+            json!(140.0),
+            5,
+            Some(5.7),
+        );
+        assert_eq!(quiet["reliability"], "ok");
+        assert_eq!(quiet["load_threshold"], 8.0);
+        let busy = row(
+            "measure/run/measurements.json",
+            "24mp.open_to_raster_ms",
+            json!(120.0),
+            json!(140.0),
+            5,
+            Some(19.4),
+        );
+        assert_eq!(busy["reliability"], "unreliable");
+        assert_eq!(busy["load_average_1m"], 19.4);
+        assert_eq!(busy["load_threshold"], 8.0);
+
+        // The same figure is a pass below the threshold and neither a pass nor a miss above it.
+        let latency = json!({"timings_ms":{"input_to_presented_frame":{"count":30,"p50_ms":74.8,"p95_ms":83.4}}});
+        let below = TARGETS[0].verdict(Some(&latency), true, Some(5.7));
+        assert_eq!(below["verdict"], "pass");
+        assert_eq!(below["reason"], Value::Null);
+        let above = TARGETS[0].verdict(Some(&latency), true, Some(19.4));
+        assert_eq!(above["verdict"], "unreliable");
+        assert_eq!(above["measured"], 83.4);
+        assert_eq!(above["samples"], 30);
+        assert!(
+            above["reason"].as_str().unwrap().contains("19.40")
+                && above["reason"].as_str().unwrap().contains("8.00"),
+            "{}",
+            above["reason"]
+        );
+        // A miss is withheld the same way.
+        let missing = json!({"timings_ms":{"input_to_presented_frame":{"count":30,"p50_ms":180.0,"p95_ms":220.0}}});
+        assert_eq!(
+            TARGETS[0].verdict(Some(&missing), true, Some(5.7))["verdict"],
+            "miss"
+        );
+        assert_eq!(
+            TARGETS[0].verdict(Some(&missing), true, Some(8.01))["verdict"],
+            "unreliable"
+        );
+        // Exactly at the threshold is still a verdict.
+        assert_eq!(
+            TARGETS[0].verdict(Some(&missing), true, Some(8.0))["verdict"],
+            "miss"
+        );
+        // And the threshold is recorded even where nothing was measured.
+        assert_eq!(TARGETS[0].verdict(None, true, None)["load_threshold"], 8.0);
+    }
+
+    #[test]
+    fn the_summary_states_the_threshold_and_names_what_exceeded_it() {
+        let mut busy = entry("measure", Status::Passed);
+        busy.tier = "timing".into();
+        busy.load = Some(19.4);
+        let header = json!({"tier":"timing","load_threshold":launch::LOAD_THRESHOLD});
+        let text = markdown(&header, &[busy], &[], &[]);
+        assert!(text.contains("Timing load threshold 8.00"), "{text}");
+        assert!(text.contains("Above it: measure (19.40)"), "{text}");
+        assert!(
+            text.contains("marked unreliable rather than pass or miss"),
+            "{text}"
+        );
+
+        let mut quiet = entry("measure", Status::Passed);
+        quiet.tier = "timing".into();
+        quiet.load = Some(4.1);
+        let calm = markdown(&header, &[quiet], &[], &[]);
+        assert!(
+            calm.contains("Every timing component started below it."),
+            "{calm}"
+        );
+
+        // A refusal says so instead of reporting a pass, and the summary status follows.
+        let tmp = tempfile::tempdir().unwrap();
+        let refused = json!({"tier":"timing","load_threshold":launch::LOAD_THRESHOLD,"refused":launch::TimingGate::refusal(4242)});
+        let entries = [entry("measure", Status::NotRun)];
+        let text = write(tmp.path(), &refused, &entries, &[], &[]).unwrap();
+        assert!(
+            text.contains("REFUSED (another timing run (pid 4242) is alive)"),
+            "{text}"
+        );
+        assert!(text.contains("No timing component started."), "{text}");
+        let summary: Value = read_json(&tmp.path().join("summary.json")).unwrap();
+        assert_eq!(summary["status"], "refused");
+        assert_eq!(summary["refused"], "another timing run (pid 4242) is alive");
+    }
+
+    #[test]
+    fn the_pool_block_reports_what_it_ran() {
+        let tmp = tempfile::tempdir().unwrap();
+        let entries = pooled(&sleeps(&["0.05"]), 3, tmp.path());
+        assert_eq!(entries.len(), 1);
+        let summary: Value = read_json(&tmp.path().join("summary.json")).unwrap();
+        assert_eq!(summary["pool"]["output_directories_distinct"], true);
+        let text = fs::read_to_string(tmp.path().join("summary.md")).unwrap();
+        assert!(
+            text.contains("Rendered pool: 1 scenario, 3 at a time"),
+            "{text}"
+        );
+    }
+
     #[test]
     fn tier_names_round_trip_and_reject_anything_else() {
         for tier in [Tier::Quick, Tier::Rendered, Tier::Timing, Tier::Full] {

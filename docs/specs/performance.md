@@ -297,7 +297,9 @@ above that `editor-latency` and `measure` can answer, with the measured figure, 
 exact JSON path it came from and a `pass`, `miss` or `not_measured` verdict, next to the one-minute
 load average of the host at the time. A verdict produced from those commands' default sample counts
 is a functional check that the targets are still roughly where this table says, not a baseline: a
-figure recorded here needs the sample count its own row states, on an otherwise quiet machine.
+figure recorded here needs the sample count its own row states, on an otherwise quiet machine. A
+summary row or verdict marked `unreliable`, meaning the one-minute load average exceeded 8.0 when its
+component started, is never quoted as a baseline or as a pass or a miss.
 
 Core figures exclude desktop scheduling, GPU upload and presentation. Reproduce with
 `editor-performance`, `editor-latency` and `measure` as described in

@@ -319,6 +319,7 @@ fn main_result() -> Result {
                 .map(|path| absolute(&root, path))
                 .map(Ok)
                 .unwrap_or_else(|| binary(&root))?;
+            let _gate = launch::TimingGate::acquire()?;
             raw_editor::run(&root, &manifest, &out, &bin, samples)?;
         }
         "inventory" | "package" => {
@@ -344,6 +345,7 @@ fn main_result() -> Result {
             let out = absolute(&root, &a.path("--output")?);
             let samples = samples(&mut a, 10)?;
             a.done()?;
+            let _gate = launch::TimingGate::acquire()?;
             editor_performance::run(&root, &source, &out, samples)?;
         }
         "editor-latency" => {
@@ -365,6 +367,7 @@ fn main_result() -> Result {
                 Some(other) => return Err(format!("--mode is drag or commit, not {other}").into()),
             };
             a.done()?;
+            let _gate = launch::TimingGate::acquire()?;
             editor_latency::run(
                 &root,
                 &out,
@@ -412,8 +415,13 @@ fn main_result() -> Result {
                 .unwrap_or(verify::Tier::Quick);
             let bin = a.value("--binary")?.map(PathBuf::from);
             let manifest = a.value("--manifest")?.map(PathBuf::from);
+            let jobs = a
+                .value("--jobs")?
+                .map(|s| s.to_string_lossy().parse::<usize>())
+                .transpose()?
+                .unwrap_or(verify::JOBS);
             a.done()?;
-            verify::run(&root, &out, tier, bin, manifest)?;
+            verify::run(&root, &out, tier, bin, manifest, jobs)?;
         }
         "check-capture" => {
             let path = absolute(&root, &a.path("--image")?);
@@ -457,6 +465,8 @@ fn main_result() -> Result {
             if op == "hardening" {
                 diagnostics::hardening(&root, &out, &bin)?
             } else {
+                // Timing runs never overlap, whether they were started by `verify` or by hand.
+                let _gate = launch::TimingGate::acquire()?;
                 diagnostics::measure(&root, &out, &bin, samples)?;
             }
         }
@@ -472,7 +482,7 @@ fn main_result() -> Result {
         }
         "__hang" => std::thread::sleep(std::time::Duration::from_secs(60)),
         "help" => println!(
-            "cargo xtask doctor|check|check-repository|fmt|lint|test|build [--release]|develop [--debug] [--background] [app args]|fixtures|generate-fixtures [--output NEW]|audit|raw-corpus --manifest FILE --output NEW|raw-reference --output NEW|raw-editor --manifest FILE --output NEW [--samples N] [--binary PATH]|editor-acceptance --output NEW|editor-performance --source JPEG --output NEW [--samples N]|editor-latency --source JPEG --output NEW [--binary PATH] [--samples N] [--mode drag|commit] [--crop DEGREES] [--idle]|inventory --output NEW|package --output NEW|smoke --output NEW [--scenario NAME] [--binary PATH]|verify --output NEW [--tier quick|rendered|timing|full] [--binary PATH] [--manifest FILE]|check-capture --image PNG [--orientation N] [--aspect R] [--columns LEFT,RIGHT]|hardening --binary PATH --output NEW|measure --binary PATH --output NEW [--samples N]|probe --candidate iced|egui --output NEW"
+            "cargo xtask doctor|check|check-repository|fmt|lint|test|build [--release]|develop [--debug] [--background] [app args]|fixtures|generate-fixtures [--output NEW]|audit|raw-corpus --manifest FILE --output NEW|raw-reference --output NEW|raw-editor --manifest FILE --output NEW [--samples N] [--binary PATH]|editor-acceptance --output NEW|editor-performance --source JPEG --output NEW [--samples N]|editor-latency --source JPEG --output NEW [--binary PATH] [--samples N] [--mode drag|commit] [--crop DEGREES] [--idle]|inventory --output NEW|package --output NEW|smoke --output NEW [--scenario NAME] [--binary PATH]|verify --output NEW [--tier quick|rendered|timing|full] [--jobs N] [--binary PATH] [--manifest FILE]|check-capture --image PNG [--orientation N] [--aspect R] [--columns LEFT,RIGHT]|hardening --binary PATH --output NEW|measure --binary PATH --output NEW [--samples N]|probe --candidate iced|egui --output NEW"
         ),
         _ => return Err("Unknown command; use cargo xtask help".into()),
     }
