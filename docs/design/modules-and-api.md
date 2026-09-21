@@ -1,6 +1,6 @@
 # Tool modules and the shared core
 
-Status: implemented (M3, M4). The pixel, RAW, Basic, transform and crop tools are the built-in modules; the controls proof is registered only with `--developer`; the host owns everything a module does not declare here. The registry, descriptors and built-in modules live in `crates/lightwell-core/src/modules/`; the desktop models them in `crates/lightwell-app/src/state/` and renders them in `crates/lightwell-app/src/view/`, and the crop-frame editor's own draft and canvas live in `crates/lightwell-app/src/crop_draft.rs` and `crop_canvas.rs`.
+Status: implemented (M3, M4). The pixel, RAW, Basic, transform and crop tools are the built-in modules; the controls proof is registered only in developer mode; the host owns everything a module does not declare here. The registry, descriptors and built-in modules live in `crates/lightwell-core/src/modules/`; the desktop models them in `crates/lightwell-app/src/state/` and renders them in `crates/lightwell-app/src/view/`, and the crop-frame editor's own draft and canvas live in `crates/lightwell-app/src/crop_draft.rs` and `crop_canvas.rs`.
 
 An operation is semantic and programmable: set one pixel, rotate, set crop parameters, restore history, select a preview or change view state. Scripts never simulate pointer movement. Exposure, masks, clone strokes and lifecycle actions inherit this rule when they arrive.
 
@@ -115,7 +115,14 @@ Overlays. `workspace.set` accepts `clip_shadows` and `clip_highlights` booleans 
 
 `ModuleRegistry::builtin()` links the pixel, RAW, Basic, transform and crop modules, in that order; `register` accepts any `ToolModule` and rejects: an invalid module, effect, action or query identity; a duplicate module, effect, action or query ID; a control naming an undeclared action or parameter; a canvas interaction naming an undeclared action, query or coordinate parameter, or a coordinate parameter of the wrong kind; a preset or default outside the parameter's range; a parameter without a kind; a canvas shortcut letter another module already claims. Queries have their own identity namespace, because `query.<id>` and `edit.<id>` are different methods. Registration builds hash lookups from descriptors only and touches no image or catalog resource. A module that needs an expensive resource initializes it on first `compile` or `plan`; registration and first-use costs are measured separately.
 
-The desktop registers `lightwell.controls` only with `--developer`. It declares the complete delivered control vocabulary over `edit.set-controls`, which accepts one field per request, plus the non-patch `edit.reset-controls` for module/group resets. Its two-channel curve query returns 257 piecewise-linear samples. The stored colour-stage layer compiles to identity and shares unchanged source pixels. Without the flag the module and its methods are absent; a catalog containing its layer reports an unavailable provider explicitly.
+The desktop registers `lightwell.controls` only in developer mode (automatic in debug builds, explicit `--developer` in optimized builds). It declares the complete delivered control vocabulary over `edit.set-controls`, which accepts one field per request, plus the non-patch `edit.reset-controls` for module/group resets. Its two-channel curve query returns 257 piecewise-linear samples. The stored colour-stage layer compiles to identity and shares unchanged source pixels. Outside developer mode the module and its methods are absent; a catalog containing its layer reports an unavailable provider explicitly.
+
+## Developer workspace
+
+The developer components gallery is per-client workspace state, exposed by `workspace.set` and
+`session.state` as `component_gallery`: pages 0–9, or `null` for the editor. It requires no asset,
+changes no recipe and submits no rendering job. Normal optimized desktops keep the diagnostic
+button and board hidden; debug builds and `--developer` runs expose them.
 
 ## Missing effects
 

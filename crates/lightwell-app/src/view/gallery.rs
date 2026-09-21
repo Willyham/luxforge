@@ -4,9 +4,9 @@
 use crate::app::message::Message;
 use iced::{
     Element, Length,
-    widget::{column, container, row, scrollable, text},
+    widget::{button, column, container, row, scrollable, text},
 };
-use lightwell_ui::{caption, gallery_named_states, theme, title};
+use lightwell_ui::{MenuChoiceModel, caption, gallery_named_states, menu_choice, theme, title};
 
 /// Small pages keep every example visible in a native 1440×1000 background capture. The two
 /// large canvases get their own pages, while related compact states stay together.
@@ -60,7 +60,7 @@ pub(crate) fn gallery(page: usize) -> Element<'static, Message> {
                 text(format!("{:02} · {name}", first + offset + 1))
                     .size(theme::SIZE_CAPTION)
                     .color(theme::TEXT_SECONDARY),
-                widget.map(|_| Message::CloseMenu),
+                widget.map(|_| Message::GalleryPreview),
             ]
             .spacing(theme::SPACING / 2.0),
         )
@@ -73,9 +73,35 @@ pub(crate) fn gallery(page: usize) -> Element<'static, Message> {
             right = right.push(card);
         }
     }
+    let navigation = row![
+        button(lightwell_ui::label("Back to editor"))
+            .style(theme::button_plain)
+            .on_press(Message::Gallery(None)),
+        container(menu_choice(
+            &MenuChoiceModel {
+                label: "Page".into(),
+                options: PAGES
+                    .iter()
+                    .map(|(label, _, _)| (*label).to_owned())
+                    .collect(),
+                selected: page,
+                enabled: true,
+            },
+            |page| Message::Gallery(Some(page))
+        ))
+        .width(Length::Fixed(330.0)),
+        button(lightwell_ui::label("Previous"))
+            .style(theme::button_plain)
+            .on_press_maybe(page.checked_sub(1).map(|page| Message::Gallery(Some(page)))),
+        button(lightwell_ui::label("Next"))
+            .style(theme::button_plain)
+            .on_press_maybe((page + 1 < page_count()).then_some(Message::Gallery(Some(page + 1)))),
+    ]
+    .spacing(theme::SPACING)
+    .align_y(iced::Alignment::Center);
     let content = column![
         row![
-            title("Components board"),
+            title("Developer · Components"),
             iced::widget::Space::new().width(Length::Fill),
             caption(format!(
                 "Page {} of {} · {page_title}",
@@ -84,6 +110,10 @@ pub(crate) fn gallery(page: usize) -> Element<'static, Message> {
             )),
         ]
         .align_y(iced::Alignment::Center),
+        navigation,
+        caption(
+            "Reference states · examples do not edit your photo · Escape returns to the editor"
+        ),
         row![
             left.width(Length::FillPortion(1)),
             right.width(Length::FillPortion(1))

@@ -58,7 +58,7 @@ pub(crate) struct Inputs<'a> {
     pub(crate) status: &'a str,
     pub(crate) busy: bool,
     pub(crate) can_open: bool,
-    /// The desktop was started with `--developer`, so developer modules are listed.
+    /// Developer mode is active (debug build or `--developer`), so diagnostic UI is listed.
     pub(crate) developer: bool,
     pub(crate) compare_held: bool,
     pub(crate) scale_factor: f32,

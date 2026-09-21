@@ -140,6 +140,10 @@ pub(crate) enum CropMessage {
 pub(crate) enum Message {
     /// One raw window or keyboard event, handed to the keyboard table with the live context.
     Key(iced::Event, iced::event::Status),
+    /// Browse a developer component page, or return to the editor with None.
+    Gallery(Option<usize>),
+    /// Reference gallery examples never operate the photograph.
+    GalleryPreview,
     /// Open the native file picker.
     Open,
     /// Copy the status message to the clipboard.

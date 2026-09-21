@@ -6,7 +6,7 @@ pub const PAGES: usize = 10;
 pub const STATES: usize = 63;
 
 pub fn frames(scenario: &str) -> Option<usize> {
-    (scenario == "gallery").then_some(PAGES + 1)
+    (scenario == "gallery").then_some(PAGES + 2)
 }
 
 pub fn script(scenario: &str) -> Option<Value> {
@@ -14,6 +14,7 @@ pub fn script(scenario: &str) -> Option<Value> {
         Value::Array(
             (0..PAGES)
                 .map(|page| json!({"gallery":{"page":page}}))
+                .chain(std::iter::once(json!({"gallery":{"page":null}})))
                 .collect(),
         )
     })
@@ -30,9 +31,9 @@ fn board_content(path: &Path) -> Result<Value> {
         "Gallery capture is too small to review",
     )?;
     // The board deliberately anchors its cards at the left edge; the named-icons page is a
-    // narrow column there. Exclude only the title band and the outer padding, not most of the
+    // narrow column there. Exclude the title/navigation band and the outer padding, not most of the
     // actual content as a centred crop would.
-    let (left, right, top, bottom) = (width / 100, width * 99 / 100, height / 25, height * 3 / 4);
+    let (left, right, top, bottom) = (width / 100, width * 99 / 100, height / 10, height * 3 / 4);
     let mut colours = std::collections::BTreeSet::new();
     let mut changed = 0u32;
     let background = image.get_pixel(width / 2, height - 20).0;
@@ -66,7 +67,7 @@ fn board_content(path: &Path) -> Result<Value> {
 pub fn verify(evidence: &Path, app: &Value, events: &[Value]) -> Result {
     let frames = app["frames"].as_array().ok_or("Missing gallery frames")?;
     ensure(
-        frames.len() == PAGES + 1 && app["had_input_errors"] == false,
+        frames.len() == PAGES + 2 && app["had_input_errors"] == false,
         "Gallery run is incomplete or reported an input error",
     )?;
     let script = script("gallery").expect("static gallery script");
@@ -75,7 +76,10 @@ pub fn verify(evidence: &Path, app: &Value, events: &[Value]) -> Result {
         .iter()
         .filter(|event| event["event"] == "script_step")
         .collect();
-    ensure(logged.len() == PAGES, "A gallery script event is missing")?;
+    ensure(
+        logged.len() == PAGES + 1,
+        "A gallery script event is missing",
+    )?;
     let initial = frame_identity(evidence, app, &frames[0])?;
     let original = controls_smoke::identity_photo(&initial, &frames[0])?;
     let mut checks = vec![json!({"frame":frames[0]["file"],"original_photo":original})];
@@ -85,7 +89,9 @@ pub fn verify(evidence: &Path, app: &Value, events: &[Value]) -> Result {
         let path = frame_identity(evidence, app, frame)?;
         let info = &frame["state"]["gallery"];
         ensure(
-            info["page"] == page && info["count"] == PAGES,
+            info["page"] == page
+                && info["count"] == PAGES
+                && frame["state"]["workspace"]["component_gallery"] == page,
             format!("Gallery capture {page} describes another page: {info}"),
         )?;
         let count = info["state_count"]
@@ -113,6 +119,23 @@ pub fn verify(evidence: &Path, app: &Value, events: &[Value]) -> Result {
         states == STATES,
         format!("Gallery pages contain {states} states, expected all {STATES}"),
     )?;
+    let returned = frames.last().unwrap();
+    let path = frame_identity(evidence, app, returned)?;
+    let returned_photo = controls_smoke::identity_photo(&path, returned)?;
+    ensure(
+        returned["state"]["gallery"].is_null()
+            && returned["state"]["workspace"] == frames[0]["state"]["workspace"]
+            && returned["state"]["stack"] == frames[0]["state"]["stack"]
+            && returned["state"]["displayed_generation"]
+                == frames[0]["state"]["displayed_generation"]
+            && returned["step"]["request"] == steps[PAGES]
+            && logged[PAGES]["detail"]["request"] == steps[PAGES],
+        "Returning from gallery changed the editor or failed request/session correlation",
+    )?;
+    checks.push(
+        json!({"frame":returned["file"],"returned_photo":returned_photo,
+        "editor_preserved":true}),
+    );
     write_json(&evidence.join("gallery-checks.json"), &json!(checks))?;
     Ok(())
 }

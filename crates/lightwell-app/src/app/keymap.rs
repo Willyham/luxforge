@@ -13,6 +13,7 @@ use lightwell_core::POINTER_MODE;
 /// the canvas modes the registry offers.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct KeyContext {
+    pub(crate) gallery_open: bool,
     /// A crop draft is open, so Enter, Escape, Space and Option drive it.
     pub(crate) drafting: bool,
     /// A slider gesture's draft is open, so Escape discards it and the arrow key that is stepping
@@ -36,6 +37,25 @@ pub(crate) fn keymap(event: &Event, status: Status, context: &KeyContext) -> Opt
     let Event::Keyboard(keyboard) = event else {
         return None;
     };
+    // Gallery previews must never send editor shortcuts to the hidden photograph.
+    if context.gallery_open {
+        return match keyboard {
+            Keys::KeyPressed {
+                key: Key::Named(Named::Escape),
+                ..
+            } => Some(Message::Gallery(None)),
+            Keys::KeyPressed {
+                key: Key::Named(Named::Tab),
+                modifiers,
+                ..
+            } => Some(if modifiers.shift() {
+                Message::FocusPrevious
+            } else {
+                Message::FocusNext
+            }),
+            _ => None,
+        };
+    }
     // Compare is a hold, so its release must arrive whatever has focus: a field that swallowed the
     // press would otherwise leave the original preview on screen with nothing to end it.
     if let Keys::KeyReleased { key, .. } = keyboard
@@ -218,11 +238,37 @@ mod tests {
 
     fn context() -> KeyContext {
         KeyContext {
+            gallery_open: false,
             drafting: false,
             slider_drafting: false,
             palette_open: false,
             mode_active: false,
             modes: vec![('R', "lightwell.crop".into())],
+        }
+    }
+
+    #[test]
+    fn gallery_escape_returns_without_forwarding_photo_shortcuts() {
+        let context = KeyContext {
+            gallery_open: true,
+            ..context()
+        };
+        assert!(matches!(
+            keymap(
+                &pressed(Key::Named(Named::Escape), Modifiers::empty()),
+                Status::Captured,
+                &context
+            ),
+            Some(Message::Gallery(None))
+        ));
+        for (key, modifiers) in [
+            (letter("z"), Modifiers::LOGO),
+            (letter("o"), Modifiers::LOGO),
+            (letter("r"), Modifiers::empty()),
+            (letter("j"), Modifiers::empty()),
+            (Key::Named(Named::Enter), Modifiers::empty()),
+        ] {
+            assert!(keymap(&pressed(key, modifiers), Status::Ignored, &context).is_none());
         }
     }
 

@@ -43,7 +43,6 @@ pub(crate) struct Evidence {
     pub(crate) saving: bool,
     pub(crate) had_errors: bool,
     /// The gallery page shown instead of the workspace for a scripted capture.
-    pub(crate) gallery_page: Option<usize>,
     /// Requested tools-panel scroll fraction, retained beside the capture for correlation.
     pub(crate) tools_scroll: Option<f64>,
 }
@@ -67,7 +66,7 @@ pub(crate) enum Step {
     Curve(CurveStep),
     Group(GroupStep),
     Section(SectionStep),
-    Gallery(usize),
+    Gallery(Option<usize>),
     ToolsScroll(f64),
     /// What one generated field is typed into, and whether Enter is pressed in it.
     Field(FieldStep),
@@ -904,20 +903,17 @@ impl Editor {
         task
     }
 
-    fn gallery_step(&mut self, page: usize) -> Task<Message> {
-        let Some(info) = crate::view::gallery_page_info(page) else {
-            return self.fail_step(format!("gallery has no page {page}"));
-        };
-        if let Some(evidence) = &mut self.evidence {
-            evidence.gallery_page = Some(page);
+    fn gallery_step(&mut self, page: Option<usize>) -> Task<Message> {
+        if !self.developer
+            || page.is_some_and(|page| crate::view::gallery_page_info(page).is_none())
+        {
+            return self.fail_step("gallery requires developer mode and an existing page");
         }
-        self.event(
-            "gallery_page",
-            json!({"page":info.page,"count":info.count,
-            "title":info.title,"state_count":info.state_count}),
-        );
-        self.capture_next_frame();
-        Task::none()
+        if page.is_some() && !self.workspace.title.can_open_gallery {
+            return self.fail_step("gallery cannot interrupt the current operation");
+        }
+        self.await_step(Settle::Session);
+        self.update(Message::Gallery(page))
     }
 
     fn tools_scroll_step(&mut self, fraction: f64) -> Task<Message> {
@@ -1632,10 +1628,17 @@ fn parse_section(value: &Value) -> Result<SectionStep, String> {
     })
 }
 
-fn parse_gallery(value: &Value) -> Result<usize, String> {
+fn parse_gallery(value: &Value) -> Result<Option<usize>, String> {
     let object = value.as_object().ok_or("gallery takes an object")?;
     known_fields(object, &["page"], "gallery")?;
-    required_index(object, "page", "gallery")
+    if object.get("page").is_some_and(Value::is_null) {
+        return Ok(None);
+    }
+    let page = required_index(object, "page", "gallery")?;
+    if crate::view::gallery_page_info(page).is_none() {
+        return Err("gallery page is outside the component board".into());
+    }
+    Ok(Some(page))
 }
 
 #[cfg(test)]
@@ -1663,7 +1666,7 @@ mod control_script_tests {
             parsed[2],
             Step::Controls(ControlsStep::Slider { .. })
         ));
-        assert!(matches!(parsed[9], Step::Gallery(8)));
+        assert!(matches!(parsed[9], Step::Gallery(Some(8))));
     }
 
     #[test]

@@ -398,7 +398,6 @@ impl Editor {
                 capture_pending: false,
                 saving: false,
                 had_errors: false,
-                gallery_page: None,
                 tools_scroll: None,
             }
         });
@@ -575,9 +574,7 @@ impl Editor {
             }
         }
         let gallery = self
-            .evidence
-            .as_ref()
-            .and_then(|evidence| evidence.gallery_page)
+            .gallery_page()
             .and_then(view::gallery_page_info)
             .map(|info| {
                 json!({"page":info.page,"count":info.count,
@@ -1096,6 +1093,31 @@ impl Editor {
                     Some(message) => self.dispatch(message),
                     None => Task::none(),
                 };
+            }
+            Message::GalleryPreview => return Task::none(),
+            Message::Gallery(page) => {
+                if !self.developer
+                    || page.is_some_and(|page| view::gallery_page_info(page).is_none())
+                {
+                    return Task::none();
+                }
+                if page.is_some()
+                    && (self.busy
+                        || self.crop.is_some()
+                        || self.crop_pending.is_some()
+                        || self.slider_draft.is_some()
+                        || self.compare_return.is_some())
+                {
+                    self.status = "Finish the current operation before opening Components".into();
+                    return Task::none();
+                }
+                self.palette_open = false;
+                self.menu = None;
+                return workspace_task(
+                    self.owner.clone(),
+                    self.client,
+                    json!({"component_gallery": page}),
+                );
             }
             Message::CopyStatus => return iced::clipboard::write(self.status.clone()),
             Message::Open => {
@@ -2757,12 +2779,14 @@ impl Editor {
         self.crop.is_some() && self.draft_photo.is_some() && self.session.preview.can_edit()
     }
 
+    fn gallery_page(&self) -> Option<usize> {
+        self.developer
+            .then_some(self.session.workspace.component_gallery)
+            .flatten()
+    }
+
     fn view(&self) -> Element<'_, Message> {
-        if let Some(page) = self
-            .evidence
-            .as_ref()
-            .and_then(|evidence| evidence.gallery_page)
-        {
+        if let Some(page) = self.gallery_page() {
             return view::gallery(page);
         }
         view::workspace(
@@ -2779,6 +2803,7 @@ impl Editor {
     /// What the keyboard table depends on right now.
     fn key_context(&self) -> keymap::KeyContext {
         keymap::KeyContext {
+            gallery_open: self.gallery_page().is_some(),
             drafting: self.crop.is_some(),
             slider_drafting: self.slider_draft.is_some(),
             palette_open: self.palette_open,
@@ -2965,6 +2990,44 @@ mod tests {
         attach_log, boot, crop_descriptor, descriptors, entry, finish, logged, opened, pick_events,
         pick_fields, pick_mode, picking, refresh_for, sample_mode,
     };
+
+    #[test]
+    fn gallery_uses_session_state_without_a_photo_and_respects_developer_mode() {
+        let (mut editor, catalog) = boot();
+        assert!(!editor.workspace.title.developer);
+        assert!(editor.gallery_page().is_none());
+        editor.developer = true;
+        editor.rederive();
+        assert!(editor.workspace.title.can_open_gallery);
+        assert!(editor.state.is_none());
+        assert_eq!(
+            view::gallery_page_info(0).unwrap().count,
+            lightwell_core::COMPONENT_GALLERY_PAGE_COUNT
+        );
+        let mut session = editor.session.clone();
+        session.workspace.component_gallery = Some(6);
+        session.revision += 1;
+        let _ = editor.update(Message::WorkspaceUpdated(Ok((session, 0))));
+        assert_eq!(editor.gallery_page(), Some(6));
+        assert_eq!(editor.snapshot()["gallery"]["page"], json!(6));
+        let before = editor.session.clone();
+        let generation = editor.activity.requested;
+        let _ = editor.update(Message::GalleryPreview);
+        assert_eq!(editor.session, before);
+        assert_eq!(editor.activity.requested, generation);
+        editor.developer = false;
+        editor.rederive();
+        assert!(editor.gallery_page().is_none());
+        assert!(!editor.workspace.title.developer);
+        editor.developer = true;
+        editor.busy = true;
+        editor.rederive();
+        assert!(!editor.workspace.title.can_open_gallery);
+        let _ = editor.update(Message::Gallery(Some(0)));
+        assert_eq!(editor.session, before);
+        assert!(editor.status.contains("Finish the current operation"));
+        finish(editor, catalog);
+    }
 
     /// The first patch action any registered module declares, and its first field: the tests below
     /// drive that control, so no module or parameter is named here either.

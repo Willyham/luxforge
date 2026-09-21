@@ -99,6 +99,23 @@ The editable input inside `number_field` is also used by the RGB/hex fields, cur
 
 The components board gains a row per new widget and state, `gallery_states()` builds every one, and a `gallery` smoke scenario renders the gallery in the real app so the board and the build are compared with correlated captures rather than by eye alone.
 
+## Developer gallery
+
+The title bar exposes **Developer** in debug builds and in optimized builds started with
+`--developer`. It opens the existing 63 reference states across ten component pages, using the
+same widget constructors as the editor. A page menu and Previous/Next buttons browse the board;
+Back to editor or Escape restores the workspace. No photograph is required. The examples display
+reference states and do not edit the photograph; the Controls proof provides live editing tests.
+Opening is disabled during an active draft, import or Compare hold. Photo shortcuts are suppressed
+while the board is shown. The editor retains its photo, recipe, selection, panels and controls.
+
+Navigation uses the shared command service: `workspace.set {"component_gallery": 0}` opens the
+first page, pages 0–9 select a page, and `{"component_gallery": null}` returns to the editor.
+Omitting the field preserves it; invalid pages are refused atomically. `session.state` reports this
+per-client preference. The API accepts the preference independently of the developer UI flag;
+normal optimized desktops do not show the board. Navigation creates no edit, preview job or timer.
+The gallery smoke uses these same navigation messages and verifies the return to the editor.
+
 ## Desktop mapping and gesture rules
 
 The generated tools panel maps a declared control to a view model with the rules the workspace design already fixes, extended one kind at a time:
@@ -114,7 +131,7 @@ The crop section keeps its own draft and panel. Its ratio chips, custom ratio fi
 
 ## Controls proof module
 
-A developer test module `lightwell.controls` declares one control of every kind bound to one field-patch action `set-controls` with a parameter of every kind, an `action` in each style with an icon, and a `curve` with two channels and a histogram background, and compiles to a no-op colour stage. It is registered and listed only with `--developer`; without that flag both `module.list` and the workspace omit it. The existing pixel proof remains in the built-in API registry and is shown in the workspace only with `--developer`. `edit.set-controls` accepts exactly one field; the module and group use the separate non-patch `edit.reset-controls` action. `query.sample-controls-curve` returns 257 piecewise-linear samples. The identity layer shares the source pixel allocation. It is how UI/API parity is proven for the vocabulary as a whole rather than for whichever module happens to use a kind first: every control's message produces the request an independent JSON client sends, and every request the client sends is reflected in the control.
+A developer test module `lightwell.controls` declares one control of every kind bound to one field-patch action `set-controls` with a parameter of every kind, an `action` in each style with an icon, and a `curve` with two channels and a histogram background, and compiles to a no-op colour stage. It is registered and listed only in developer mode (automatic in debug builds, `--developer` in optimized builds); outside that mode both `module.list` and the workspace omit it. The existing pixel proof remains in the built-in API registry and is shown in the workspace only with `--developer`. `edit.set-controls` accepts exactly one field; the module and group use the separate non-patch `edit.reset-controls` action. `query.sample-controls-curve` returns 257 piecewise-linear samples. The identity layer shares the source pixel allocation. It is how UI/API parity is proven for the vocabulary as a whole rather than for whichever module happens to use a kind first: every control's message produces the request an independent JSON client sends, and every request the client sends is reflected in the control.
 
 ## Verification and acceptance
 

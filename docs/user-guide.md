@@ -40,7 +40,19 @@ Toggles commit on click or Space. Choices use segments, chips or a menu and comm
 
 Slider, stepper, picker and curve gestures on patch actions open one draft, preview through the existing 16 ms tick and commit once on release. Escape cancels the gesture. Fields commit on Enter; toggles, choices and action buttons commit once. Tab follows the generated control order. Right-click any generated control to inspect its action/parameter and copy the JSON request with the current revision.
 
-The Controls proof under `--developer` demonstrates this vocabulary without changing photo pixels. Its edits still create normal history entries; `edit.set-controls` changes one field and `edit.reset-controls` restores the defaults. Tone Curve, Detail and the colour mixer are not photo tools yet. Text and 2D pad controls are deferred.
+The Controls proof in developer mode demonstrates this vocabulary without changing photo pixels. Its edits still create normal history entries; `edit.set-controls` changes one field and `edit.reset-controls` restores the defaults. Tone Curve, Detail and the colour mixer are not photo tools yet. Text and 2D pad controls are deferred.
+
+### Developer components gallery
+
+Debug builds show a **Developer** button in the title bar. For the optimized development build,
+start with `cargo xtask develop --developer`. Click Developer to browse the ten pages of shared
+UI components, including their disabled, editing and dragging states. Use the page chooser or
+Previous/Next, then **Back to editor** or Escape to return. A photo is not required; an open photo
+and its edits are preserved. Finish an active draft before opening the gallery.
+
+These are reference previews. For live control interactions, expand the Controls proof in the
+tools panel in developer mode. Gallery navigation is also exposed as
+`workspace.set {"component_gallery": 0}` (pages 0–9); use `null` to return to the editor.
 
 ### Basic
 
@@ -75,7 +87,7 @@ Some patches cannot answer, and the status bar says which:
 
 A refusal commits nothing and changes nothing on screen. The picker is refused, with the reason, while a slider drag or a crop draft is open: finish or discard that first.
 
-Pixel proof lives under Developer with `--developer`. It accepts integer x/y coordinates and RGB values from 0 to 255. Coordinates are content coordinates: the photograph after EXIF orientation, with a top-left origin, x right and y down, regardless of any crop or rotation applied afterwards. Clicking the photo at Fit or any zoom fills X and Y with the content pixel shown under the pointer without committing anything, so a click in the corner of a cropped view names the pixel of the photograph that is drawn there. Changing the crop later never moves an edit; it only changes what is visible. Apply pixel creates one layer and one attributed history action when the resulting pixel changes. Invalid, out-of-bounds and same-value requests add nothing.
+Pixel proof lives in the Developer section in developer mode. It accepts integer x/y coordinates and RGB values from 0 to 255. Coordinates are content coordinates: the photograph after EXIF orientation, with a top-left origin, x right and y down, regardless of any crop or rotation applied afterwards. Clicking the photo at Fit or any zoom fills X and Y with the content pixel shown under the pointer without committing anything, so a click in the corner of a cropped view names the pixel of the photograph that is drawn there. Changing the crop later never moves an edit; it only changes what is visible. Apply pixel creates one layer and one attributed history action when the resulting pixel changes. Invalid, out-of-bounds and same-value requests add nothing.
 
 Exact transforms are Rotate left, Rotate right, Mirror horizontal and Flip vertical. Quarter-turns swap dimensions. Repeated transforms fold into one orientation layer while it is the last layer of the stack, so four Rotate right actions leave one neutral layer and four history actions to undo through; a transform made after a crop starts a new orientation layer so the crop is carried with it. Pixel edits always sit before the transforms and crop, so they move with the image.
 

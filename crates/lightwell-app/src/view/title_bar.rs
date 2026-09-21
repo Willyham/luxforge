@@ -118,7 +118,7 @@ fn compare(held: bool, can_view: bool) -> Element<'static, Message> {
 /// edge. Clipping drives both overlays together, exactly as `J` does; the histogram's own two
 /// triangles drive them one at a time.
 pub(crate) fn actions(model: &TitleBarModel) -> Element<'_, Message> {
-    row![
+    let mut actions = row![
         icon_button(
             &IconButtonModel {
                 icon: Icon::Clipping,
@@ -166,6 +166,14 @@ pub(crate) fn actions(model: &TitleBarModel) -> Element<'_, Message> {
         ),
     ]
     .spacing(4.0)
-    .align_y(Alignment::Center)
-    .into()
+    .align_y(Alignment::Center);
+    if model.developer {
+        actions = actions.push(
+            button(lightwell_ui::label("Developer"))
+                .padding([4.0, 10.0])
+                .style(theme::button_plain)
+                .on_press_maybe(model.can_open_gallery.then_some(Message::Gallery(Some(0)))),
+        );
+    }
+    actions.into()
 }
