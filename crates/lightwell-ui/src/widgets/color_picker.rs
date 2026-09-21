@@ -213,6 +213,7 @@ impl<M: Clone> canvas::Program<M> for PickerCanvas<'_, M> {
         cursor: Cursor,
     ) -> Option<Action<M>> {
         if !self.model.enabled {
+            state.dragging = false;
             return None;
         }
         match event {
@@ -293,7 +294,11 @@ impl<M: Clone> canvas::Program<M> for PickerCanvas<'_, M> {
                     },
                 ),
                 Stroke::default()
-                    .with_color(theme::TEXT_PRIMARY)
+                    .with_color(if self.model.dragging {
+                        theme::ACCENT
+                    } else {
+                        theme::TEXT_PRIMARY
+                    })
                     .with_width(2.0),
             );
         });

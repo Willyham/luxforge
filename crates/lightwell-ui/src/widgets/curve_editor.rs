@@ -230,6 +230,9 @@ impl<M: Clone> canvas::Program<M> for CurveCanvas<'_, M> {
         cursor: Cursor,
     ) -> Option<Action<M>> {
         if !self.model.enabled {
+            state.active = None;
+            state.nudge_active = false;
+            state.focused = false;
             return None;
         }
         match event {
@@ -428,7 +431,7 @@ impl<M: Clone> canvas::Program<M> for CurveCanvas<'_, M> {
                             3.5
                         },
                     ),
-                    if model.selected == Some(index) {
+                    if model.selected == Some(index) && model.dragging {
                         theme::ACCENT
                     } else {
                         theme::TEXT_PRIMARY
