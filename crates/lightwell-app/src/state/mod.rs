@@ -1155,18 +1155,21 @@ mod tests {
         assert!(
             matches!(group.controls[1], ControlModel::Slider(ref field) if field.style == tools::NumberControlStyle::Stepper)
         );
-        assert!(matches!(group.controls[2], ControlModel::Toggle(ref field) if !field.on));
         assert!(
-            matches!(group.controls[3], ControlModel::Enum(ref field) if field.style == tools::ChoiceControlStyle::Menu)
+            matches!(group.controls[2], ControlModel::Slider(ref field) if field.style == tools::NumberControlStyle::Field)
+        );
+        assert!(matches!(group.controls[3], ControlModel::Toggle(ref field) if !field.on));
+        assert!(
+            matches!(group.controls[4], ControlModel::Enum(ref field) if field.style == tools::ChoiceControlStyle::Menu)
         );
         assert!(
-            matches!(group.controls[4], ControlModel::Color(ref field) if field.style == tools::ColorControlStyle::Picker && field.rgb == [32,64,128])
+            matches!(group.controls[5], ControlModel::Color(ref field) if field.style == tools::ColorControlStyle::Picker && field.rgb == [32,64,128])
         );
         assert!(
-            matches!(group.controls[5], ControlModel::Curve(ref field) if field.channels.len() == 2 && field.sample_query == "fixture-samples" && field.points.len() == 3)
+            matches!(group.controls[6], ControlModel::Curve(ref field) if field.channels.len() == 2 && field.sample_query == "fixture-samples" && field.points.len() == 3)
         );
         assert!(
-            matches!(group.controls[6], ControlModel::Action(ref field) if field.style == tools::ActionControlStyle::Icon && field.icon.as_deref() == Some("reset"))
+            matches!(group.controls[7], ControlModel::Action(ref field) if field.style == tools::ActionControlStyle::Icon && field.icon.as_deref() == Some("reset"))
         );
         let crop_version = section(&workspace, "lightwell.crop").version;
         let fixture_version = fixture_section.version;
@@ -1199,7 +1202,7 @@ mod tests {
         };
         assert!(!group.expanded);
         assert!(
-            matches!(group.controls[5], ControlModel::Curve(ref field) if field.selected_channel == 1 && field.selected_point == Some(2) && field.sampled.len() == 2)
+            matches!(group.controls[6], ControlModel::Curve(ref field) if field.selected_channel == 1 && field.selected_point == Some(2) && field.sampled.len() == 2)
         );
         workspace.derive(&scene.inputs());
         assert_eq!(
@@ -1216,7 +1219,7 @@ mod tests {
             panic!("group")
         };
         assert!(
-            matches!(group.controls[5], ControlModel::Curve(ref field) if field.sampled.is_empty()),
+            matches!(group.controls[6], ControlModel::Curve(ref field) if field.sampled.is_empty()),
             "old sampled geometry is hidden until the query matches the current points"
         );
         assert_eq!(section(&workspace, "lightwell.crop").version, crop_version);
