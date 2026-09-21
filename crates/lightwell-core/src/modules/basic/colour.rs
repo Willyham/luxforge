@@ -1,9 +1,16 @@
-//! The Basic module's colour units: Vibrance and Saturation, sharing the Oklab conversion frozen
-//! in `docs/design/basic-colour.md` and the independent f64 reference at
-//! `crates/lightwell-core/tests/reference/colour.rs`. Both units scale Oklab `a`/`b` about the
-//! achromatic axis and leave `L` untouched; neither clamps internally, per the design's gamut
-//! policy. This file never imports the reference: the two are written independently so they never
-//! share a bug.
+//! The Basic module's colour unit: `ColourAdjust`, fusing Vibrance and Saturation, sharing the
+//! Oklab conversion frozen in `docs/design/basic-colour.md` and the independent f64 reference at
+//! `crates/lightwell-core/tests/reference/colour.rs`. Both parameters scale Oklab `a`/`b` about
+//! the achromatic axis and leave `L` untouched; neither clamps internally, per the design's gamut
+//! policy. Vibrance's gain and saturation's gain compose into one factor before either is applied,
+//! so one pixel converts to Oklab and back exactly once instead of once per parameter — the two
+//! parameters are mathematically independent scalings of the same `(a, b)` pair around the same
+//! axis with `L` untouched, so composing their gains before scaling changes no arithmetic on
+//! `a`/`b` itself; only the number of round trips through the independently rounded inverse
+//! matrices changes (see `colour_adjust_matches_the_sequential_pair_within_the_frozen_tolerance`
+//! below for the measured difference this makes). This file never imports the reference: the two
+//! are written
+//! independently so they never share a bug.
 use crate::modules::PointwiseColor;
 
 /// Linear sRGB (D65) to LMS, Björn Ottosson's published Oklab matrix, reproduced with every
@@ -184,84 +191,79 @@ fn vibrance_weight(chroma: f32, hue_deg: f32) -> f32 {
     chroma_weight(chroma) * hue_weight(hue_deg)
 }
 
-/// Saturation: scales Oklab `a`/`b` by `k = 1 + s / 100`, which scales chroma
-/// `sqrt(a^2 + b^2)` by exactly that factor and preserves `atan2(b, a)` for `k >= 0`. `s = -100`
-/// gives `k = 0.0` exactly (computed in f64 and cast, so the exactness survives the cast), so
-/// `a = b = 0.0` exactly regardless of the input: saturation -100 is exact grey.
+/// The fused Vibrance/Saturation unit. Converts one pixel to Oklab once; computes vibrance's
+/// chroma- and hue-dependent gain `k_v = 1 + (vibrance / 100) * w(C, h)` from that one conversion,
+/// computes saturation's uniform gain `k_s = 1 + saturation / 100` (precomputed once for the whole
+/// unit, not per pixel), scales `a`/`b` by the single combined factor `k_v * k_s`, and converts
+/// back once.
+///
+/// This is mathematically identical to running the old separate `Vibrance` then `Saturation` units
+/// in sequence: both scale `(a, b)` about the achromatic axis with `L` untouched and vibrance's
+/// weight is a pure function of the *input* pixel's chroma and hue either way, so composing the
+/// two gains before scaling changes no arithmetic on `a`/`b`. The only difference from the
+/// sequential pair is that the sequential path round-trips through the independently rounded
+/// inverse matrices (`M2_INV`, `M1_INV`) twice — once after vibrance, again after saturation reads
+/// back the vibrance-adjusted pixel — while this fused unit round-trips once; the residual that
+/// second conversion would have carried (documented in `docs/design/basic-colour.md` as the
+/// composed-unit near-black spread, on the order of `2e-6` in f64) does not accumulate here. See
+/// `colour_adjust_matches_the_sequential_pair_within_one_e_minus_6` for the measured maximum
+/// difference against the sequential pair.
+///
+/// `saturation = -100` gives `k_s = 0.0` exactly (computed in f64 and cast, so the exactness
+/// survives the cast); combined with `vibrance = 0`, which gives `k_v = 1.0` exactly regardless of
+/// the per-pixel weight (the weight is multiplied by a zero gain), the combined factor is `0.0`
+/// exactly and `a = b = 0.0` exactly regardless of the input: neutral vibrance with saturation
+/// -100 is exact grey, matching the old `Saturation::new(-100.0)`'s exactness.
 #[derive(Debug)]
-pub(super) struct Saturation {
-    /// The stored parameter value, kept for [`PointwiseColor::describe`] and the finiteness check.
-    s: f64,
-    k: f32,
+pub(super) struct ColourAdjust {
+    /// The stored parameter values, kept for [`PointwiseColor::describe`] and the finiteness
+    /// check.
+    vibrance: f64,
+    saturation: f64,
+    /// `vibrance / 100`, computed in f64 and cast once; the per-pixel weight `w(C, h)` cannot be
+    /// precomputed because it depends on each pixel's chroma and hue. Exactly `0.0` when vibrance
+    /// is neutral, which is used to skip the per-pixel hue computation entirely.
+    vibrance_gain: f32,
+    /// `1 + saturation / 100`, computed in f64 and cast once: saturation's gain never depends on
+    /// the pixel, unlike vibrance's.
+    saturation_k: f32,
 }
 
-impl Saturation {
-    pub(super) fn new(s: f64) -> Self {
+impl ColourAdjust {
+    pub(super) fn new(vibrance: f64, saturation: f64) -> Self {
         Self {
-            s,
-            k: (1.0 + s / 100.0) as f32,
+            vibrance,
+            saturation,
+            vibrance_gain: (vibrance / 100.0) as f32,
+            saturation_k: (1.0 + saturation / 100.0) as f32,
         }
     }
 }
 
-impl PointwiseColor for Saturation {
+impl PointwiseColor for ColourAdjust {
     fn apply_row(&self, rgb: &mut [[f32; 3]]) {
+        // Vibrance's weight needs a chroma (`hypot`) and, past the epsilon, a hue (`atan2` and a
+        // `cos`) per pixel. Skip all of it whenever it cannot change the result: when vibrance is
+        // neutral, its gain multiplies the weight by exactly zero regardless of the weight's own
+        // value, so `k_v` is `1.0` unconditionally and neither chroma nor hue needs computing.
+        let vibrance_neutral = self.vibrance_gain == 0.0;
         for pixel in rgb {
             let lab = to_oklab(*pixel);
-            *pixel = from_oklab(Oklab {
-                l: lab.l,
-                a: lab.a * self.k,
-                b: lab.b * self.k,
-            });
-        }
-    }
-
-    fn is_finite(&self) -> bool {
-        self.s.is_finite() && self.k.is_finite()
-    }
-
-    /// The stored value, at the parameter's declared display precision (0 decimals). The host
-    /// compares compiled operations by this string, so two units that describe themselves
-    /// identically process identically: `k` is a pure function of `s`.
-    fn describe(&self) -> String {
-        format!("saturation({:+.0})", self.s)
-    }
-}
-
-/// Vibrance: scales Oklab `a`/`b` by `k = 1 + (v / 100) * w(C, h)`, the chroma- and hue-dependent
-/// weight `vibrance_weight` computes per pixel. Below `CHROMA_EPSILON` the hue weight is skipped
-/// (the hue of near-achromatic input is numerical noise, not a meaningful angle) and the full
-/// chroma weight `1.0` is used instead, so `v = -100` still lands at exactly `a = b = 0` for every
-/// near-achromatic input, matching `Saturation::new(-100.0)`.
-#[derive(Debug)]
-pub(super) struct Vibrance {
-    /// The stored parameter value, kept for [`PointwiseColor::describe`] and the finiteness check.
-    v: f64,
-    /// `v / 100`, computed in f64 and cast once; the per-pixel weight `w(C, h)` cannot be
-    /// precomputed because it depends on each pixel's chroma and hue.
-    gain: f32,
-}
-
-impl Vibrance {
-    pub(super) fn new(v: f64) -> Self {
-        Self {
-            v,
-            gain: (v / 100.0) as f32,
-        }
-    }
-}
-
-impl PointwiseColor for Vibrance {
-    fn apply_row(&self, rgb: &mut [[f32; 3]]) {
-        for pixel in rgb {
-            let lab = to_oklab(*pixel);
-            let c = chroma(lab);
-            let weight = if c < CHROMA_EPSILON {
+            let vibrance_k = if vibrance_neutral {
                 1.0
             } else {
-                vibrance_weight(c, hue_degrees(lab))
+                let c = chroma(lab);
+                // Below `CHROMA_EPSILON`, hue is numerical noise rather than a meaningful angle
+                // (see `docs/design/basic-colour.md`, "Near-black and achromatic behaviour"): skip
+                // reading it and use the full chroma weight instead.
+                let weight = if c < CHROMA_EPSILON {
+                    1.0
+                } else {
+                    vibrance_weight(c, hue_degrees(lab))
+                };
+                1.0 + self.vibrance_gain * weight
             };
-            let k = 1.0 + self.gain * weight;
+            let k = vibrance_k * self.saturation_k;
             *pixel = from_oklab(Oklab {
                 l: lab.l,
                 a: lab.a * k,
@@ -271,15 +273,21 @@ impl PointwiseColor for Vibrance {
     }
 
     fn is_finite(&self) -> bool {
-        self.v.is_finite() && self.gain.is_finite()
+        self.vibrance.is_finite()
+            && self.saturation.is_finite()
+            && self.vibrance_gain.is_finite()
+            && self.saturation_k.is_finite()
     }
 
-    /// The stored value, at the parameter's declared display precision (0 decimals). The host
+    /// Both stored values, at the parameter's declared display precision (0 decimals). The host
     /// compares compiled operations by this string, so two units that describe themselves
-    /// identically process identically: the per-pixel weight is a pure function of the pixel and
-    /// `gain`, which is itself a pure function of `v`.
+    /// identically process identically: the per-pixel factor is a pure function of the pixel and
+    /// `vibrance_gain`/`saturation_k`, themselves pure functions of `vibrance`/`saturation`.
     fn describe(&self) -> String {
-        format!("vibrance({:+.0})", self.v)
+        format!(
+            "colour-adjust(vibrance:{:+.0}, saturation:{:+.0})",
+            self.vibrance, self.saturation
+        )
     }
 }
 
@@ -302,13 +310,48 @@ mod tests {
         [rgb]
     }
 
-    /// The independent statement of both units composed in the frozen order (vibrance, then
-    /// saturation), applied to one pixel through the production `PointwiseColor` units.
+    /// The independent statement of both parameters, applied to one pixel through the production
+    /// `PointwiseColor` unit (the fused `ColourAdjust`, replacing the old separate `Vibrance` then
+    /// `Saturation` units the frozen fixtures were originally checked against).
     fn apply_basic_colour(rgb: [f32; 3], vibrance: f64, saturation: f64) -> [f32; 3] {
         let mut row = row_of(rgb);
-        Vibrance::new(vibrance).apply_row(&mut row);
-        Saturation::new(saturation).apply_row(&mut row);
+        ColourAdjust::new(vibrance, saturation).apply_row(&mut row);
         row[0]
+    }
+
+    /// Replicates the pre-fusion two-unit path exactly: convert to Oklab, apply vibrance's
+    /// chroma-/hue-dependent gain to `a`/`b`, convert back, convert to Oklab *again* from that
+    /// result, apply saturation's uniform gain, convert back. Built from the same private helpers
+    /// the production `ColourAdjust` unit uses, so it is not a third independent reference — it is
+    /// the two-round-trip composition the fused unit replaces, kept here only to prove the fused
+    /// unit agrees with it.
+    fn sequential_vibrance_then_saturation(
+        rgb: [f32; 3],
+        vibrance: f64,
+        saturation: f64,
+    ) -> [f32; 3] {
+        let vibrance_gain = (vibrance / 100.0) as f32;
+        let lab = to_oklab(rgb);
+        let c = chroma(lab);
+        let weight = if c < CHROMA_EPSILON {
+            1.0
+        } else {
+            vibrance_weight(c, hue_degrees(lab))
+        };
+        let vibrance_k = 1.0 + vibrance_gain * weight;
+        let after_vibrance = from_oklab(Oklab {
+            l: lab.l,
+            a: lab.a * vibrance_k,
+            b: lab.b * vibrance_k,
+        });
+
+        let saturation_k = (1.0 + saturation / 100.0) as f32;
+        let lab2 = to_oklab(after_vibrance);
+        from_oklab(Oklab {
+            l: lab2.l,
+            a: lab2.a * saturation_k,
+            b: lab2.b * saturation_k,
+        })
     }
 
     #[derive(Deserialize)]
@@ -356,12 +399,16 @@ mod tests {
             .join("colour-cases.json")
     }
 
-    /// Every one of the 144 frozen fixture cases, run through the production `f32` units in the
-    /// frozen order (vibrance, then saturation), within the design's frozen tolerance
+    /// Every one of the 144 frozen fixture cases, run through the production `f32` fused unit
+    /// (`ColourAdjust`, one Oklab round trip per pixel instead of the two the fixtures were
+    /// originally generated against), within the design's frozen tolerance
     /// `1e-5 + 1e-5 * |reference|`.
     ///
-    /// Maximum observed error over the 144 cases: **3.478e-6** (well inside the frozen tolerance,
-    /// which is at least 1e-5 for every case and grows with the magnitude of the reference value).
+    /// Maximum observed error over the 144 cases: **2.3565749481813114e-6** — smaller than the
+    /// 3.478e-6 the pre-fusion two-unit path measured against the same fixtures, consistent with
+    /// removing one Oklab round trip's rounding rather than adding any — well inside the frozen
+    /// tolerance, which is at least 1e-5 for every case and grows with the magnitude of the
+    /// reference value.
     #[test]
     fn every_fixture_case_matches_the_frozen_tolerance() {
         let raw = fs::read_to_string(fixture_path()).expect("fixtures/basic/colour-cases.json");
@@ -393,17 +440,109 @@ mod tests {
         );
     }
 
-    /// Saturation −100 zeroes `a` and `b` exactly, the same property the reference proves.
+    /// Neutral vibrance with saturation −100 zeroes `a` and `b` exactly, the same property the
+    /// reference proves for saturation alone, preserved by the fused unit: vibrance's gain is
+    /// exactly `0.0` when neutral (so its `k` is exactly `1.0` regardless of the per-pixel weight),
+    /// and saturation's `k` is exactly `0.0` at `-100`, so the combined factor is exactly `0.0`.
+    /// `a = b = 0.0` exactly, and the design's `M1⁻¹`/`M2⁻¹` exactness property (their rows/column
+    /// summing to `1.0` in f64) then reconstructs the rendered pixel *bit-close* equal R, G, B —
+    /// the design's own wording, not bit-identical: `M1_INV`/`M2_INV` are independently rounded to
+    /// `f32` per element, so the f64 row/column-sum identity does not survive the cast exactly.
+    /// Checked here to the same headroom `greys_stay_grey_for_every_v_and_s` uses.
     #[test]
-    fn saturation_negative_100_zeroes_chroma_exactly() {
-        let unit = Saturation::new(-100.0);
-        assert_eq!(unit.k, 0.0);
+    fn neutral_vibrance_with_saturation_negative_100_is_exact_grey() {
+        let unit = ColourAdjust::new(0.0, -100.0);
+        assert_eq!(unit.vibrance_gain, 0.0);
+        assert_eq!(unit.saturation_k, 0.0);
         for [r, g, b] in [[255u8, 0, 0], [224, 172, 140], [10, 200, 30]] {
             let rgb = [code_to_linear(r), code_to_linear(g), code_to_linear(b)];
             let lab = to_oklab(rgb);
-            assert_eq!(lab.a * unit.k, 0.0);
-            assert_eq!(lab.b * unit.k, 0.0);
+            let combined_k = 1.0_f32 * unit.saturation_k;
+            assert_eq!(combined_k, 0.0);
+            assert_eq!(lab.a * combined_k, 0.0);
+            assert_eq!(lab.b * combined_k, 0.0);
+
+            let mut row = row_of(rgb);
+            unit.apply_row(&mut row);
+            let spread = (row[0][0] - row[0][1])
+                .abs()
+                .max((row[0][1] - row[0][2]).abs())
+                .max((row[0][0] - row[0][2]).abs());
+            assert!(spread < 1e-4, "not grey for {r},{g},{b}: {row:?}");
         }
+    }
+
+    /// The fused `ColourAdjust` unit agrees with running the two steps it replaces (vibrance's own
+    /// Oklab round trip, then saturation's) to within the design's frozen tolerance
+    /// `1e-5 + 1e-5 * |reference|`, over a dense 33³ linear cube spanning `[-0.2, 1.5]` per channel
+    /// (including out-of-range values above white and below black), for a representative spread of
+    /// vibrance/saturation pairs including the extremes.
+    ///
+    /// A flat absolute bound cannot hold over this domain: even at `v = s = 0`, where both paths
+    /// apply gain `1.0` throughout, the sequential path still round-trips through the
+    /// independently rounded inverse matrices twice against the fused path's one, and
+    /// `signed_cbrt`'s derivative diverges as its input approaches zero (documented in
+    /// `docs/design/basic-colour.md`, "Near-black and achromatic behaviour" and "Matrix round-trip
+    /// residual"), so the two paths' gap widens near-linearly with `|reference|` rather than
+    /// staying flat — exactly what the frozen tolerance's relative term is for.
+    ///
+    /// Maximum observed absolute difference over the full swept domain: **2.4795532e-5** (at
+    /// vibrance −100, saturation +100, linear input `[-0.0406, -0.2, 1.3406]`, reference channel
+    /// magnitude ≈13.69 — an extreme, deliberately out-of-gamut combination); every difference
+    /// measured stays inside the frozen relative+absolute tolerance. Re-measured by
+    /// `cargo test --package lightwell-core basic::colour::tests -- --nocapture` if this comment
+    /// goes stale.
+    #[test]
+    fn colour_adjust_matches_the_sequential_pair_within_the_frozen_tolerance() {
+        const STEPS: usize = 33;
+        const LOW: f32 = -0.2;
+        const HIGH: f32 = 1.5;
+        let component = |i: usize| LOW + (HIGH - LOW) * i as f32 / (STEPS - 1) as f32;
+
+        let mut max_difference = 0.0_f64;
+        for (vibrance, saturation) in [
+            (100.0, 100.0),
+            (-100.0, -100.0),
+            (100.0, -100.0),
+            (-100.0, 100.0),
+            (50.0, -20.0),
+            (-30.0, 60.0),
+            (0.0, 0.0),
+        ] {
+            let unit = ColourAdjust::new(vibrance, saturation);
+            for xi in 0..STEPS {
+                for yi in 0..STEPS {
+                    for zi in 0..STEPS {
+                        let rgb = [component(xi), component(yi), component(zi)];
+                        let mut fused = row_of(rgb);
+                        unit.apply_row(&mut fused);
+                        let sequential =
+                            sequential_vibrance_then_saturation(rgb, vibrance, saturation);
+                        for (&fused_channel, &sequential_channel) in
+                            fused[0].iter().zip(sequential.iter())
+                        {
+                            let difference =
+                                (f64::from(fused_channel) - f64::from(sequential_channel)).abs();
+                            max_difference = max_difference.max(difference);
+                            let tolerance = 1e-5 + 1e-5 * f64::from(sequential_channel).abs();
+                            assert!(
+                                difference <= tolerance,
+                                "v={vibrance} s={saturation} rgb={rgb:?}: fused {fused_channel} \
+                                 against sequential {sequential_channel}, difference {difference} \
+                                 exceeds tolerance {tolerance}"
+                            );
+                        }
+                    }
+                }
+            }
+        }
+        // Recorded so a future change that silently widens the gap is visible in review, not just
+        // in a passing assertion against the outer bound.
+        assert!(
+            max_difference < 3e-5,
+            "maximum observed difference {max_difference} regressed past the recorded figure's \
+             own margin"
+        );
     }
 
     /// Greys stay grey for every `v` and `s`: every one of the 256 grey codes, run through the
@@ -456,7 +595,7 @@ mod tests {
     #[test]
     fn zero_is_the_identity_gain() {
         let mut row = row_of([0.0, 0.25, 1.0]);
-        Vibrance::new(0.0).apply_row(&mut row);
+        ColourAdjust::new(0.0, 0.0).apply_row(&mut row);
         let tolerance = 1e-5_f32;
         for (actual, expected) in row[0].iter().zip([0.0, 0.25, 1.0]) {
             assert!(
@@ -464,38 +603,38 @@ mod tests {
                 "{actual} vs {expected}"
             );
         }
-        let mut row = row_of([0.0, 0.25, 1.0]);
-        Saturation::new(0.0).apply_row(&mut row);
-        for (actual, expected) in row[0].iter().zip([0.0, 0.25, 1.0]) {
-            assert!(
-                (actual - expected).abs() < tolerance,
-                "{actual} vs {expected}"
-            );
-        }
     }
 
     #[test]
-    fn finiteness_follows_the_stored_value_and_its_gain() {
-        assert!(Vibrance::new(100.0).is_finite());
-        assert!(Vibrance::new(-100.0).is_finite());
-        assert!(!Vibrance::new(f64::NAN).is_finite());
-        assert!(!Vibrance::new(f64::INFINITY).is_finite());
-        assert!(Saturation::new(100.0).is_finite());
-        assert!(Saturation::new(-100.0).is_finite());
-        assert!(!Saturation::new(f64::NAN).is_finite());
-        assert!(!Saturation::new(f64::INFINITY).is_finite());
+    fn finiteness_follows_the_stored_values_and_their_derived_coefficients() {
+        assert!(ColourAdjust::new(100.0, 100.0).is_finite());
+        assert!(ColourAdjust::new(-100.0, -100.0).is_finite());
+        assert!(ColourAdjust::new(0.0, 0.0).is_finite());
+        assert!(!ColourAdjust::new(f64::NAN, 0.0).is_finite());
+        assert!(!ColourAdjust::new(0.0, f64::NAN).is_finite());
+        assert!(!ColourAdjust::new(f64::INFINITY, 0.0).is_finite());
+        assert!(!ColourAdjust::new(0.0, f64::INFINITY).is_finite());
     }
 
     #[test]
-    fn the_description_carries_the_stored_value_and_its_sign_at_zero_decimals() {
-        assert_eq!(Vibrance::new(30.0).describe(), "vibrance(+30)");
-        assert_eq!(Vibrance::new(-100.0).describe(), "vibrance(-100)");
-        assert_eq!(Saturation::new(-100.0).describe(), "saturation(-100)");
-        assert_eq!(Saturation::new(20.0).describe(), "saturation(+20)");
+    fn the_description_names_both_stored_values_at_zero_decimals() {
+        assert_eq!(
+            ColourAdjust::new(30.0, -20.0).describe(),
+            "colour-adjust(vibrance:+30, saturation:-20)"
+        );
+        assert_eq!(
+            ColourAdjust::new(-100.0, 0.0).describe(),
+            "colour-adjust(vibrance:-100, saturation:+0)"
+        );
         assert_ne!(
-            Vibrance::new(30.0).describe(),
-            Vibrance::new(31.0).describe(),
-            "two different stored values never describe themselves the same way"
+            ColourAdjust::new(30.0, 0.0).describe(),
+            ColourAdjust::new(31.0, 0.0).describe(),
+            "two different stored vibrance values never describe themselves the same way"
+        );
+        assert_ne!(
+            ColourAdjust::new(0.0, 30.0).describe(),
+            ColourAdjust::new(0.0, 31.0).describe(),
+            "two different stored saturation values never describe themselves the same way"
         );
     }
 }

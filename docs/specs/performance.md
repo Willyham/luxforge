@@ -107,23 +107,46 @@ here versus 35.2 ms in the row above, both from independent `editor-performance`
 same host) is a useful reminder that these are diagnostic samples, not a controlled A/B on identical
 process state.
 
-With Vibrance and Saturation added to the Basic module (TASK-016), the same diagnostic on 24 and
-60 MP, 30 samples each, release, warm cache, M4 Pro, re-measured against the same
-`colour_baseline_same_stack_without_colour` row on this run (32.7 / 35.1 ms at 24 MP,
-87.6 / 100.9 ms at 60 MP; run-to-run variance against the table above, same scope: core render
-only, no desktop scheduling, GPU upload or presentation):
+With Vibrance and Saturation added to the Basic module (TASK-016) as two separate `PointwiseColor`
+units, the same diagnostic on 24 and 60 MP, 30 samples each, release, warm cache, M4 Pro, measured
+against the same `colour_baseline_same_stack_without_colour` row on that run (32.7 / 35.1 ms at
+24 MP, 87.6 / 100.9 ms at 60 MP; run-to-run variance against the table above, same scope: core
+render only, no desktop scheduling, GPU upload or presentation), gave a `vibrance: 50, saturation:
+20` Basic layer (two Oklab units, one per parameter) a p50/p95 of 150.8 / 163.2 ms at 24 MP and
+402.3 / 594.1 ms at 60 MP — a colour-pass cost, against that run's own baseline, of about 118 ms at
+24 MP and 315 ms at 60 MP, against about 17 ms and 33 ms for the single-unit `+1 EV` exposure pass
+measured the same way. Each Oklab unit round-trips every pixel through `to_oklab`/`from_oklab` once
+(two signed cube roots and two 3×3 matrix products each way), so the two separate units cost close
+to double one exposure unit's single multiply-only pass, with a second, avoidable round trip: the
+saturation unit re-converts the pixel vibrance already adjusted, discarding and immediately
+recomputing values the vibrance unit already held.
+
+Vibrance and Saturation were subsequently fused into one `ColourAdjust` unit (`colour.rs`): it
+converts to Oklab once, computes vibrance's chroma-/hue-dependent gain and saturation's uniform
+gain from that one conversion, scales `a`/`b` by their combined factor, and converts back once,
+mathematically identical to the sequential pair (`docs/design/basic-colour.md`'s frozen equations
+are unchanged; the two are within `1e-6` to `2.5e-5` of each other depending on how far out of
+gamut the input is — see `colour_adjust_matches_the_sequential_pair_within_the_frozen_tolerance` in
+`colour.rs`) but without the second round trip. Re-measured the same way, 30 samples each, release,
+warm cache, M4 Pro (host under heavy concurrent load from other sessions at measurement time — load
+average around 14–20 on a 14-core M4 Pro, so these figures carry more run-to-run noise than usual,
+particularly at 60 MP; a second back-to-back run's 60 MP delta ranged from 169 ms to 233 ms against
+the same 118 ms/315 ms before-figures above):
 
 | Measurement | 24 MP | 60 MP |
 | --- | --- | --- |
-| The crop stack with one `vibrance: 50, saturation: 20` Basic layer (two Oklab units; p50 / p95) | 150.8 / 163.2 ms | 402.3 / 594.1 ms |
+| Before: two separate Oklab units (p50 / p95) | 150.8 / 163.2 ms | 402.3 / 594.1 ms |
+| After: one fused `ColourAdjust` Oklab unit (p50 / p95) | 107.6 / 112.4 ms | 357.8 / 440.3 ms |
 
-Each Oklab unit round-trips every pixel through `to_oklab`/`from_oklab` once (two signed cube
-roots and two 3×3 matrix products each way), so two units (vibrance, then saturation) cost close to
-double one exposure unit's single multiply-only pass: against this run's own baseline the colour
-pass is about 118 ms at 24 MP and 315 ms at 60 MP at the median, versus about 17 ms and 33 ms for
-the single-unit `+1 EV` exposure pass measured the same way. The 60 MP p95 (594 ms) sits well above
-its median for the same allocator-tail reason noted above; no desktop responsiveness threshold is
-claimed met or missed from this core-only number.
+Against each run's own baseline (32.7 ms / 87.6 ms before; 31.7 ms / 188.8 ms after — the 60 MP
+baseline itself moved between runs under the load noted above, which is why the delta below, not
+the raw after-figure, is the comparable number), the colour pass's own added cost dropped from about
+118 ms to about 76 ms at 24 MP (roughly a third less) and from about 315 ms to somewhere in the
+169–233 ms range at 60 MP across repeated runs (roughly a quarter to close to half less), consistent
+with removing one of the two round trips through the independently rounded inverse matrices while
+keeping the same per-pixel vibrance weight computation. The 60 MP p95 sits well above its median for
+the same allocator-tail reason noted above; no desktop responsiveness threshold is claimed met or
+missed from this core-only number.
 
 With the Basic module's Temperature and Tint, `editor-performance` re-run on 24 and 60 MP, 30 samples
 each, release, warm cache, on the M4 Pro; core render only, with no desktop scheduling, GPU upload or

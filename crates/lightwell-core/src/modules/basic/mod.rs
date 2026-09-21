@@ -30,7 +30,7 @@ use super::{
     PointwiseColor, Processing, ResetAction, Stage, StageContext, ToolModule,
 };
 use crate::{BASIC_EFFECT, EFFECT_FORMAT, Error, ErrorKind, Layer, LayerId};
-use colour::{Saturation, Vibrance};
+use colour::ColourAdjust;
 use exposure::Exposure;
 use serde_json::{Map, Number, Value};
 use std::sync::Arc;
@@ -804,14 +804,14 @@ impl ToolModule for BasicModule {
                 contrast, highlights, shadows, whites, blacks,
             )));
         }
-        // Colour units run last, in the frozen internal order: vibrance, then saturation.
+        // Colour runs last: vibrance and saturation compile into one fused `ColourAdjust` unit
+        // (see `colour.rs`) whenever at least one of the two fields is non-neutral, so a layer
+        // that moves either slider alone still costs exactly one unit, and moving both costs one
+        // unit rather than two.
         let vibrance = value_of(&values, VIBRANCE);
-        if vibrance != NEUTRAL {
-            units.push(Arc::new(Vibrance::new(vibrance)));
-        }
         let saturation = value_of(&values, SATURATION);
-        if saturation != NEUTRAL {
-            units.push(Arc::new(Saturation::new(saturation)));
+        if vibrance != NEUTRAL || saturation != NEUTRAL {
+            units.push(Arc::new(ColourAdjust::new(vibrance, saturation)));
         }
         Ok(Processing::Color(ColorOperation::new(units)))
     }
@@ -1717,11 +1717,16 @@ mod tests {
             }
             other => panic!("expected a colour operation, got {other:?}"),
         }
+        // A single non-neutral Colour field is enough to compile the fused Colour unit, holding
+        // both fields (the neutral one included) at its stored value.
         match compiled(json!({"vibrance": 30.0})) {
             Processing::Color(operation) => {
                 assert_eq!(operation.len(), 1);
                 assert!(operation.is_finite());
-                assert_eq!(operation.units()[0].describe(), "vibrance(+30)");
+                assert_eq!(
+                    operation.units()[0].describe(),
+                    "colour-adjust(vibrance:+30, saturation:+0)"
+                );
             }
             other => panic!("expected a colour operation, got {other:?}"),
         }
@@ -1729,7 +1734,22 @@ mod tests {
             Processing::Color(operation) => {
                 assert_eq!(operation.len(), 1);
                 assert!(operation.is_finite());
-                assert_eq!(operation.units()[0].describe(), "saturation(-100)");
+                assert_eq!(
+                    operation.units()[0].describe(),
+                    "colour-adjust(vibrance:+0, saturation:-100)"
+                );
+            }
+            other => panic!("expected a colour operation, got {other:?}"),
+        }
+        // Both Colour fields non-neutral together still compile to the one fused unit.
+        match compiled(json!({"vibrance": 30.0, "saturation": -100.0})) {
+            Processing::Color(operation) => {
+                assert_eq!(operation.len(), 1);
+                assert!(operation.is_finite());
+                assert_eq!(
+                    operation.units()[0].describe(),
+                    "colour-adjust(vibrance:+30, saturation:-100)"
+                );
             }
             other => panic!("expected a colour operation, got {other:?}"),
         }
@@ -1754,7 +1774,8 @@ mod tests {
             other => panic!("expected a colour operation, got {other:?}"),
         }
         // The frozen internal order over every implemented field: white balance, exposure, tone,
-        // vibrance, then saturation, whichever fields the payload set.
+        // then the fused Colour unit, whichever fields the payload set. Vibrance and saturation
+        // together still cost one unit, not two.
         match compiled(json!({
             "temperature": 20.0,
             "tint": -5.0,
@@ -1769,12 +1790,11 @@ mod tests {
                     .iter()
                     .map(|unit| unit.describe())
                     .collect::<Vec<_>>();
-                assert_eq!(described.len(), 5);
+                assert_eq!(described.len(), 4);
                 assert_eq!(described[0], "white-balance(+20, -5)");
                 assert_eq!(described[1], "exposure(+1.00)");
                 assert!(described[2].starts_with("tone("));
-                assert_eq!(described[3], "vibrance(+20)");
-                assert_eq!(described[4], "saturation(+10)");
+                assert_eq!(described[3], "colour-adjust(vibrance:+20, saturation:+10)");
             }
             other => panic!("expected a colour operation, got {other:?}"),
         }
