@@ -74,7 +74,7 @@
     {
       "id": "TASK-002",
       "description": "Add cargo xtask verify with quick, rendered, timing and full tiers that runs the selected commands and writes one summary.",
-      "status": "ready",
+      "status": "completed",
       "dependencies": [],
       "extra_context": [
         "quick = check plus editor-acceptance; rendered adds every smoke scenario; timing adds editor-performance, editor-latency and measure; full adds raw-editor and raw-reference when a manifest is given.",
