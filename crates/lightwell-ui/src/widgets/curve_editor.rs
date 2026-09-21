@@ -3,6 +3,10 @@
 use crate::{ValueEdit, theme};
 use iced::{
     Alignment, Element, Length, Point, Rectangle, Renderer, Size, Theme,
+    advanced::{
+        self, Clipboard, Shell, Widget, layout, renderer,
+        widget::{Operation, Tree, operation, tree},
+    },
     keyboard::{self, Key, key::Named},
     mouse::{self, Cursor},
     widget::{
@@ -21,9 +25,9 @@ pub const POINT_HIT_RADIUS: f32 = 9.0;
 const DOUBLE_CLICK: Duration = Duration::from_millis(350);
 
 /// Keep the cache across unrelated redraws; Iced's cache handles size changes itself.
-pub(crate) fn invalidate_on_version_change(
-    current: &Cell<Option<u64>>,
-    next: u64,
+pub(crate) fn invalidate_on_version_change<K: Copy + PartialEq>(
+    current: &Cell<Option<K>>,
+    next: K,
     clear: impl FnOnce(),
 ) {
     if current.get() != Some(next) {
@@ -141,14 +145,10 @@ pub fn curve_editor<'a, M: Clone + 'a>(
         }
         body = body.push(choices);
     }
-    body = body.push(
-        canvas::Canvas::new(CurveCanvas {
-            model: model.clone(),
-            on_event: on_event.clone(),
-        })
-        .width(Length::Fixed(200.0))
-        .height(Length::Fixed(200.0)),
-    );
+    body = body.push(FocusableCurveCanvas {
+        model: model.clone(),
+        on_event: on_event.clone(),
+    });
     for (index, fields) in model.point_rows.iter().enumerate() {
         let select_callback = on_event.clone();
         let mut point_row = row![
@@ -204,7 +204,7 @@ pub fn curve_editor<'a, M: Clone + 'a>(
     body.into()
 }
 
-struct CurveCanvas<'a, M> {
+struct FocusableCurveCanvas<'a, M> {
     model: CurveEditorModel,
     on_event: Rc<dyn Fn(CurveEditorEvent) -> M + 'a>,
 }
@@ -212,14 +212,26 @@ struct CurveCanvas<'a, M> {
 #[derive(Default)]
 struct CurveState {
     cache: canvas::Cache,
-    version: Cell<Option<u64>>,
+    version: Cell<Option<(u64, bool)>>,
     active: Option<usize>,
     last_click: Option<(Instant, Point)>,
     focused: bool,
     nudge_active: bool,
 }
 
-impl<M: Clone> canvas::Program<M> for CurveCanvas<'_, M> {
+impl operation::Focusable for CurveState {
+    fn is_focused(&self) -> bool {
+        self.focused
+    }
+    fn focus(&mut self) {
+        self.focused = true;
+    }
+    fn unfocus(&mut self) {
+        self.focused = false;
+    }
+}
+
+impl<M: Clone> canvas::Program<M> for FocusableCurveCanvas<'_, M> {
     type State = CurveState;
 
     fn update(
@@ -285,6 +297,13 @@ impl<M: Clone> canvas::Program<M> for CurveCanvas<'_, M> {
             Event::Keyboard(keyboard::Event::KeyPressed { key, modifiers, .. })
                 if state.focused =>
             {
+                if matches!(key, Key::Named(Named::Tab)) {
+                    if state.nudge_active {
+                        state.nudge_active = false;
+                        return Some(Action::publish((self.on_event)(CurveEditorEvent::Release)));
+                    }
+                    return None;
+                }
                 if matches!(key, Key::Named(Named::Escape)) {
                     state.active = None;
                     state.nudge_active = false;
@@ -350,11 +369,20 @@ impl<M: Clone> canvas::Program<M> for CurveCanvas<'_, M> {
         if bounds.width <= 0.0 || bounds.height <= 0.0 {
             return Vec::new();
         }
-        invalidate_on_version_change(&state.version, self.model.version, || state.cache.clear());
+        invalidate_on_version_change(&state.version, (self.model.version, state.focused), || {
+            state.cache.clear()
+        });
         let model = &self.model;
         vec![state.cache.draw(renderer, bounds.size(), |frame| {
             let size = frame.size();
             frame.fill_rectangle(Point::ORIGIN, size, theme::CONTROL);
+            if state.focused {
+                frame.stroke_rectangle(
+                    Point::ORIGIN,
+                    size,
+                    Stroke::default().with_color(theme::ACCENT).with_width(1.0),
+                );
+            }
             if let Some(background) = &model.background {
                 let mut path = canvas::path::Builder::new();
                 path.move_to(Point::new(0.0, size.height));
@@ -455,6 +483,114 @@ impl<M: Clone> canvas::Program<M> for CurveCanvas<'_, M> {
     }
 }
 
+impl<M: Clone> Widget<M, Theme, Renderer> for FocusableCurveCanvas<'_, M> {
+    fn tag(&self) -> tree::Tag {
+        tree::Tag::of::<CurveState>()
+    }
+
+    fn state(&self) -> tree::State {
+        tree::State::new(CurveState::default())
+    }
+
+    fn size(&self) -> Size<Length> {
+        Size::new(Length::Fixed(200.0), Length::Fixed(200.0))
+    }
+
+    fn layout(
+        &mut self,
+        _tree: &mut Tree,
+        _renderer: &Renderer,
+        limits: &layout::Limits,
+    ) -> layout::Node {
+        layout::atomic(limits, Length::Fixed(200.0), Length::Fixed(200.0))
+    }
+
+    fn operate(
+        &mut self,
+        tree: &mut Tree,
+        layout: advanced::Layout<'_>,
+        _renderer: &Renderer,
+        operation: &mut dyn Operation,
+    ) {
+        let state = tree.state.downcast_mut::<CurveState>();
+        if self.model.enabled {
+            operation.focusable(None, layout.bounds(), state);
+        } else {
+            state.focused = false;
+        }
+    }
+
+    fn update(
+        &mut self,
+        tree: &mut Tree,
+        event: &Event,
+        layout: advanced::Layout<'_>,
+        cursor: Cursor,
+        _renderer: &Renderer,
+        _clipboard: &mut dyn Clipboard,
+        shell: &mut Shell<'_, M>,
+        _viewport: &Rectangle,
+    ) {
+        let state = tree.state.downcast_mut::<CurveState>();
+        if let Some(action) = canvas::Program::update(self, state, event, layout.bounds(), cursor) {
+            let (message, redraw, status) = action.into_inner();
+            shell.request_redraw_at(redraw);
+            if let Some(message) = message {
+                shell.publish(message);
+            }
+            if status == iced::event::Status::Captured {
+                shell.capture_event();
+            }
+        }
+    }
+
+    fn draw(
+        &self,
+        tree: &Tree,
+        renderer: &mut Renderer,
+        theme: &Theme,
+        _style: &renderer::Style,
+        layout: advanced::Layout<'_>,
+        cursor: Cursor,
+        _viewport: &Rectangle,
+    ) {
+        use iced::advanced::Renderer as _;
+        use iced::advanced::graphics::geometry::Renderer as _;
+        let bounds = layout.bounds();
+        if bounds.width < 1.0 || bounds.height < 1.0 {
+            return;
+        }
+        let state = tree.state.downcast_ref::<CurveState>();
+        renderer.with_translation(iced::Vector::new(bounds.x, bounds.y), |renderer| {
+            for geometry in canvas::Program::draw(self, state, renderer, theme, bounds, cursor) {
+                renderer.draw_geometry(geometry);
+            }
+        });
+    }
+
+    fn mouse_interaction(
+        &self,
+        tree: &Tree,
+        layout: advanced::Layout<'_>,
+        cursor: Cursor,
+        _viewport: &Rectangle,
+        _renderer: &Renderer,
+    ) -> mouse::Interaction {
+        canvas::Program::mouse_interaction(
+            self,
+            tree.state.downcast_ref::<CurveState>(),
+            layout.bounds(),
+            cursor,
+        )
+    }
+}
+
+impl<'a, M: Clone + 'a> From<FocusableCurveCanvas<'a, M>> for Element<'a, M> {
+    fn from(widget: FocusableCurveCanvas<'a, M>) -> Self {
+        Element::new(widget)
+    }
+}
+
 fn plot_point(point: [f32; 2], size: Size) -> Point {
     Point::new(
         point[0].clamp(0.0, 1.0) * size.width,
@@ -522,7 +658,7 @@ mod tests {
 
     #[test]
     fn double_click_uses_local_coordinates_even_with_offset_bounds() {
-        let canvas = CurveCanvas {
+        let canvas = FocusableCurveCanvas {
             model: model(),
             on_event: Rc::new(|event| event),
         };
@@ -546,7 +682,7 @@ mod tests {
             Location, Modifiers,
             key::{Code, Physical},
         };
-        let canvas = CurveCanvas {
+        let canvas = FocusableCurveCanvas {
             model: model(),
             on_event: Rc::new(|event| event),
         };
@@ -594,5 +730,47 @@ mod tests {
             message(canvas.update(&mut state, &up, bounds, Cursor::Unavailable)),
             None
         );
+    }
+
+    #[test]
+    fn focus_operation_enables_keyboard_nudge_without_pointer_hover() {
+        use keyboard::{
+            Location, Modifiers,
+            key::{Code, Physical},
+        };
+        let canvas = FocusableCurveCanvas {
+            model: model(),
+            on_event: Rc::new(|event| event),
+        };
+        let mut state = CurveState::default();
+        operation::Focusable::focus(&mut state);
+        assert!(operation::Focusable::is_focused(&state));
+        let key = Key::Named(Named::ArrowUp);
+        let down = Event::Keyboard(keyboard::Event::KeyPressed {
+            key: key.clone(),
+            modified_key: key,
+            physical_key: Physical::Code(Code::ArrowUp),
+            location: Location::Standard,
+            modifiers: Modifiers::empty(),
+            text: None,
+            repeat: false,
+        });
+        assert_eq!(
+            message(canvas.update(
+                &mut state,
+                &down,
+                Rectangle::new(Point::ORIGIN, Size::new(200.0, 200.0)),
+                Cursor::Unavailable
+            )),
+            Some(CurveEditorEvent::Nudge {
+                index: 0,
+                dx: 0,
+                dy: 1,
+                shift: false,
+                option: false
+            })
+        );
+        operation::Focusable::unfocus(&mut state);
+        assert!(!operation::Focusable::is_focused(&state));
     }
 }
