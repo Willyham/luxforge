@@ -164,6 +164,13 @@ pub enum Control {
         #[serde(default)]
         preset: Map<String, Value>,
     },
+    /// The module's own canvas pick, offered beside the controls that pick fills rather than in a
+    /// mode strip. It binds to the [`CanvasInteraction`] this module declares — a `point-pick` or a
+    /// `sample-apply`, never a `crop-frame` — and carries no action of its own: entering and
+    /// leaving the mode is `workspace.set`, and the pick itself is what the canvas declares. A
+    /// module declares at most one, and a module that declares a pick canvas declares exactly one,
+    /// so every pick mode is reachable from the panel.
+    Picker { label: String },
 }
 
 /// How a module lets the canvas drive its action. Neither kind commits by itself.
@@ -325,6 +332,15 @@ impl ModuleDescriptor {
         for control in &self.controls {
             self.check_control(control, 1)?;
         }
+        // One picker stands for one pick mode, so two would be two ways into the same mode and a
+        // panel could not say which is selected.
+        let pickers = Self::pickers(&self.controls);
+        if pickers > 1 {
+            return Err(validation(format!(
+                "module {} declares {pickers} picker controls; a module declares at most one",
+                self.id
+            )));
+        }
         self.check_reset(self.reset.as_ref())?;
         match &self.canvas {
             Some(CanvasInteraction::PointPick {
@@ -335,6 +351,7 @@ impl ModuleDescriptor {
                 shortcut,
             }) => {
                 self.check_canvas_mode(title, shortcut.as_deref())?;
+                self.check_picker(pickers)?;
                 let declared = self.declared_action(action)?;
                 for name in [x, y] {
                     let parameter = self.declared_parameter(declared, name)?;
@@ -354,6 +371,7 @@ impl ModuleDescriptor {
                 shortcut,
             }) => {
                 self.check_canvas_mode(title, shortcut.as_deref())?;
+                self.check_picker(pickers)?;
                 // The query answers the pick and the action receives its result, so both identities
                 // and both coordinate parameters must be declared here before a client sees them.
                 let declared = self.declared_query(query)?;
@@ -419,6 +437,18 @@ impl ModuleDescriptor {
             }
             _ => Ok(()),
         }
+    }
+
+    /// A pick mode is entered from the panel, so the module that declares one declares the picker
+    /// control that reaches it. Without this a pick would be reachable only by its letter.
+    fn check_picker(&self, pickers: usize) -> Result<(), Error> {
+        if pickers == 1 {
+            return Ok(());
+        }
+        Err(validation(format!(
+            "module {} declares a pick canvas but no picker control",
+            self.id
+        )))
     }
 
     /// A reset is validated exactly like an action control: the action must be declared here and
@@ -529,8 +559,41 @@ impl ModuleDescriptor {
                     check_value(self.declared_parameter(declared, name)?, value)?;
                 }
             }
+            // A picker is the panel's way into this module's own pick mode, so the module must
+            // declare one. A crop frame takes the whole canvas and has its own controls; it is not
+            // a pick and a picker cannot stand for it.
+            Control::Picker { label } => {
+                if label.trim().is_empty() {
+                    return Err(validation(format!(
+                        "module {} has an unlabelled picker",
+                        self.id
+                    )));
+                }
+                match &self.canvas {
+                    Some(CanvasInteraction::PointPick { .. })
+                    | Some(CanvasInteraction::SampleApply { .. }) => {}
+                    Some(CanvasInteraction::CropFrame { .. }) | None => {
+                        return Err(validation(format!(
+                            "module {} declares a picker control without a point-pick or sample-apply canvas",
+                            self.id
+                        )));
+                    }
+                }
+            }
         }
         Ok(())
+    }
+
+    /// How many picker controls this module declares, at any depth.
+    fn pickers(controls: &[Control]) -> usize {
+        controls
+            .iter()
+            .map(|control| match control {
+                Control::Picker { .. } => 1,
+                Control::Group { controls, .. } => Self::pickers(controls),
+                _ => 0,
+            })
+            .sum()
     }
 }
 
@@ -1016,7 +1079,10 @@ mod tests {
     fn sample_descriptor() -> ModuleDescriptor {
         ModuleDescriptor {
             queries: vec![query()],
-            controls: Vec::new(),
+            // A pick canvas declares the picker control that reaches it.
+            controls: vec![Control::Picker {
+                label: "Pick".into(),
+            }],
             canvas: Some(sample_apply("neutral-sample", "x", "y", "set-thing")),
             ..descriptor()
         }
@@ -1145,6 +1211,34 @@ mod tests {
         assert_eq!(
             sample_descriptor().query("neutral-sample").map(|q| &q.id),
             Some(&"neutral-sample".to_owned())
+        );
+        // A picker is a declared control bound to the module's own pick canvas, with the serialized
+        // shape a client discovers it by, and it nests in a group like every other control.
+        assert_eq!(
+            serde_json::to_value(Control::Picker {
+                label: "Neutral picker".into()
+            })
+            .unwrap(),
+            json!({"kind": "picker", "label": "Neutral picker"})
+        );
+        let nested = ModuleDescriptor {
+            controls: vec![Control::Group {
+                label: "White balance".into(),
+                reset: None,
+                controls: vec![Control::Picker {
+                    label: "Pick".into(),
+                }],
+            }],
+            ..sample_descriptor()
+        };
+        assert!(
+            nested.validate().is_ok(),
+            "a picker inside a group satisfies the module's one-picker rule"
+        );
+        assert_eq!(
+            ModuleDescriptor::parse(&serde_json::to_value(&nested).unwrap()).unwrap(),
+            nested,
+            "a picker round-trips through JSON"
         );
         assert!(
             descriptor().queries.is_empty(),
@@ -1653,6 +1747,72 @@ mod tests {
                         shortcut: Some("w".into()),
                     }),
                     ..sample_descriptor()
+                },
+            ),
+            // A picker binds to the module's own pick canvas, so it needs one and there is
+            // exactly one of it; and a pick canvas needs the control that reaches it.
+            (
+                "a picker on a module with no canvas at all",
+                ModuleDescriptor {
+                    controls: vec![Control::Picker {
+                        label: "Pick".into(),
+                    }],
+                    ..descriptor()
+                },
+            ),
+            (
+                "a picker on a crop-frame canvas, which is not a pick",
+                ModuleDescriptor {
+                    controls: vec![Control::Picker {
+                        label: "Pick".into(),
+                    }],
+                    ..frame_descriptor()
+                },
+            ),
+            (
+                "two pickers in one module",
+                ModuleDescriptor {
+                    controls: vec![
+                        Control::Picker {
+                            label: "Pick".into(),
+                        },
+                        Control::Group {
+                            label: "Nested".into(),
+                            reset: None,
+                            controls: vec![Control::Picker {
+                                label: "Pick again".into(),
+                            }],
+                        },
+                    ],
+                    ..sample_descriptor()
+                },
+            ),
+            (
+                "an unlabelled picker",
+                ModuleDescriptor {
+                    controls: vec![Control::Picker { label: "  ".into() }],
+                    ..sample_descriptor()
+                },
+            ),
+            (
+                "a sample-apply canvas with no picker control",
+                ModuleDescriptor {
+                    controls: Vec::new(),
+                    ..sample_descriptor()
+                },
+            ),
+            (
+                "a point-pick canvas with no picker control",
+                ModuleDescriptor {
+                    controls: Vec::new(),
+                    canvas: Some(CanvasInteraction::PointPick {
+                        action: "set-thing".into(),
+                        x: "x".into(),
+                        y: "x".into(),
+                        title: "Pick".into(),
+                        shortcut: Some("W".into()),
+                    }),
+                    ..descriptor()
                 },
             ),
             (

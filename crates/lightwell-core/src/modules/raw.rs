@@ -264,6 +264,10 @@ impl RawModule {
                             parameter: "tint".into(),
                             label: "Custom tint".into(),
                         },
+                        // The sensor neutral pick, beside the temperature and tint it sets.
+                        Control::Picker {
+                            label: "Neutral WB".into(),
+                        },
                         Control::Action {
                             action: AS_SHOT.into(),
                             label: "As shot".into(),
