@@ -83,14 +83,17 @@ pub fn run(root: &Path, source: &Path, out: &Path, samples: usize) -> Result {
     )?;
     let one_transform = distribution(render_samples(&service, &asset, samples)?);
 
+    // Every further transform composes into the same orientation layer, so this measures 200
+    // actions against one layer, not 200 layers: the render cost is the commit path's, not the
+    // stack's.
     for index in 1..200u64 {
         service.apply_transform(
             &asset,
-            mutation(index, format!("performance-layer-{index:03}")),
+            mutation(index, format!("performance-action-{index:03}")),
             Transform::MirrorHorizontal,
         )?;
     }
-    let two_hundred_transforms = distribution(render_samples(&service, &asset, samples)?);
+    let two_hundred_transform_actions = distribution(render_samples(&service, &asset, samples)?);
 
     // One straightened crop on top of the exact stack: the resample is a stage boundary, so this
     // measures the interpolating pass on the photo-sized input as well as the exact pass before it.
@@ -110,7 +113,7 @@ pub fn run(root: &Path, source: &Path, out: &Path, samples: usize) -> Result {
         .find(|layer| layer.effect_id == CROP_EFFECT)
         .ok_or("The fit did not produce a crop layer")?;
     let crop_payload: CropPayload = serde_json::from_value(crop_layer.payload.clone())?;
-    // Two hundred quarter turns and reflections of a landscape source leave its dimensions swapped.
+    // A quarter turn and 199 reflections of a landscape source leave its dimensions swapped.
     let crop_input = CropStage {
         width: state.asset.height,
         height: state.asset.width,
@@ -165,9 +168,9 @@ pub fn run(root: &Path, source: &Path, out: &Path, samples: usize) -> Result {
             "cached_preview_job":cached_preview_job_ms,
             "original_render":original_render_ms,
             "one_transform":one_transform,
-            "two_hundred_transforms":two_hundred_transforms,
+            "two_hundred_transform_actions_in_one_orientation_layer":two_hundred_transform_actions,
             "crop_fit_commit":crop_fit_commit_ms,
-            "two_hundred_transforms_and_a_10_degree_crop":angled_crop,
+            "two_hundred_transform_actions_and_a_10_degree_crop":angled_crop,
             "reopen_source_and_preview_job":cold_source_and_job_ms,
             "reopen_original_render":cold_original_render_ms,
             "total":milliseconds(total),
@@ -175,7 +178,7 @@ pub fn run(root: &Path, source: &Path, out: &Path, samples: usize) -> Result {
         "checks":[
             "Decoded source is cached after import",
             "Original render dimensions are exact",
-            "One and 200 exact transforms render from the same immutable source",
+            "One and 200 exact transform actions, composed into one orientation layer, render from the same immutable source",
             "A 10 degree crop-fit adds one resample stage boundary and renders its declared stage",
             "Catalog reopen reconstructs the original historical state",
             "Source SHA-256 is unchanged"

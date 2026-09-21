@@ -4,9 +4,9 @@
 use crate::app::message::Message;
 use iced::Task;
 use lightwell_core::{
-    ApiRequest, AssetId, ClientId, ClientSession, EditorState, EntryId, EventsResult, HistoryEntry,
-    HistoryPage, HistorySelection, Lineage, ModuleDescriptor, Mutation, OwnerHandle, PreviewJob,
-    RecipeDescription, Version,
+    ApiRequest, AssetId, ClientId, ClientSession, ContentPoint, EditorState, EntryId, EventsResult,
+    HistoryEntry, HistoryPage, HistorySelection, Lineage, ModuleDescriptor, Mutation, OwnerHandle,
+    PreviewJob, RecipeDescription, Version,
 };
 use serde_json::{Value, json};
 use std::{
@@ -289,6 +289,37 @@ pub(crate) fn workspace_task(owner: OwnerHandle, client: ClientId, params: Value
             Ok((parse::<ClientSession>(result)?, sequence))
         },
         Message::WorkspaceUpdated,
+    )
+}
+
+/// Where one picked view pixel lands in the content stage. This is `render.locate`, the same method
+/// an API client calls, so the canvas and the API share one mapping and the desktop holds none of
+/// it. It reads only, costs `O(layers)` in the core and rasterizes nothing, so it runs off the
+/// update loop like every other owner call and no pick blocks the pointer.
+pub(crate) fn locate_task(
+    owner: OwnerHandle,
+    client: ClientId,
+    asset_id: AssetId,
+    entry: EntryId,
+    x: u32,
+    y: u32,
+) -> Task<Message> {
+    let picked = entry.clone();
+    Task::perform(
+        async move {
+            let (located, _) = call(
+                &owner,
+                client,
+                "render.locate",
+                json!({"asset_id":asset_id,"entry_id":entry,"x":x,"y":y}),
+            )?;
+            parse::<ContentPoint>(located)
+        },
+        move |result| Message::PointLocated {
+            entry: picked.clone(),
+            view: (x, y),
+            result,
+        },
     )
 }
 

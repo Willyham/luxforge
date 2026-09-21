@@ -590,7 +590,7 @@ impl ToolModule for CropModule {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{LayerId, PIXEL_EFFECT, TRANSFORM_EFFECT, modules::check_parameters};
+    use crate::{ORIENTATION_EFFECT, Orientation, PIXEL_EFFECT, modules::check_parameters};
     use serde_json::json;
 
     const INPUT: Stage = Stage {
@@ -619,6 +619,10 @@ mod tests {
             assert!(index < layers.len(), "the crop layer is in the stack");
             Ok(INPUT)
         };
+        let insertion_index = |_: EffectStage| layers.len();
+        let sample_before = |_: usize, _: u32, _: u32| -> Result<Option<[u8; 4]>, Error> {
+            panic!("planning a crop never samples a pixel")
+        };
         module.plan(
             &input,
             &StageContext {
@@ -626,6 +630,8 @@ mod tests {
                 layers,
                 sampler: &sampler,
                 stage_before: &stage_before,
+                insertion_index: &insertion_index,
+                sample_before: &sample_before,
             },
         )
     }
@@ -782,7 +788,7 @@ mod tests {
         );
         assert_eq!(
             module
-                .describe_layer(TRANSFORM_EFFECT, EFFECT_FORMAT, &json!({}))
+                .describe_layer(ORIENTATION_EFFECT, EFFECT_FORMAT, &json!({}))
                 .unwrap_err()
                 .kind,
             ErrorKind::Incompatible
@@ -1145,7 +1151,7 @@ mod tests {
         for (case, effect, format, kind) in [
             (
                 "wrong effect",
-                TRANSFORM_EFFECT,
+                ORIENTATION_EFFECT,
                 EFFECT_FORMAT,
                 ErrorKind::Incompatible,
             ),
@@ -1234,12 +1240,10 @@ mod tests {
                 width: 0.5,
                 height: 0.5,
             }),
-            Layer {
-                id: LayerId::new(),
-                effect_id: TRANSFORM_EFFECT.into(),
-                effect_format: EFFECT_FORMAT,
-                payload: json!("rotate-right"),
-            },
+            Layer::orientation(Orientation {
+                mirror: false,
+                turns: 1,
+            }),
         ];
         let payload =
             committed(planned(CROP_FIT_ACTION, json!({"aspect":"original"}), &layers).unwrap());

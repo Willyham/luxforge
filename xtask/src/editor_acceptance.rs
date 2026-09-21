@@ -1,7 +1,7 @@
 use crate::*;
 use lightwell_core::{
     CROP_EFFECT, CropPayload, CropStage, EditorService, ModuleRegistry, Mutation, MutationOutcome,
-    Transform,
+    ORIENTATION_EFFECT, Transform,
 };
 use std::time::Instant;
 
@@ -128,6 +128,25 @@ pub fn run(root: &Path, out: &Path) -> Result {
             format!("Expected 208 retained entries, found {listed}"),
         )?;
 
+        // Two hundred and three transform actions are 203 history entries and one orientation
+        // layer: the stack describes the resulting orientation, not the gestures that reached it.
+        let orientations: Vec<Value> = service
+            .state(&asset)?
+            .current_entry
+            .snapshot
+            .recipe
+            .layers
+            .iter()
+            .filter(|layer| layer.effect_id == ORIENTATION_EFFECT)
+            .map(|layer| layer.payload.clone())
+            .collect();
+        ensure(
+            orientations == [json!({"mirror": false, "turns": 3})],
+            format!(
+                "Expected one orientation layer at three quarter turns, found {orientations:?}"
+            ),
+        )?;
+
         // Crop: one angle-zero rectangle that must be an exact copy of its input stage, then a
         // straightened 16:9 fit that updates the same layer in place.
         let before_crop = service.render_current(&asset)?;
@@ -178,11 +197,87 @@ pub fn run(root: &Path, out: &Path) -> Result {
             "Exact crop origin pixel does not match its input stage",
         )?;
 
+        // Content-space edits: a pixel set on the cropped photograph addresses the content stage
+        // (the 480x320 source), lands before the orientation layer and the crop, and stays put
+        // while the crop moves. Three quarter turns map content (10, 10) to (10, 469) of the
+        // 320x480 stage the crop reads, which the quarter crop at (80, 120) does not show.
+        let content_pixel_entry = service
+            .apply_action(
+                &asset,
+                mutation(210, "content-pixel"),
+                "set-pixel",
+                json!({"x":10,"y":10,"rgb":[7,8,9]}),
+            )?
+            .current_entry_id;
+        let content_layers = service
+            .entry(&asset, &content_pixel_entry)?
+            .snapshot
+            .recipe
+            .layers;
+        let pixel_index = content_layers
+            .iter()
+            .position(|layer| layer.payload == json!({"x":10,"y":10,"rgb":[7,8,9]}))
+            .ok_or("The content pixel layer is missing")?;
+        let geometry_index = content_layers
+            .iter()
+            .position(|layer| layer.effect_id == ORIENTATION_EFFECT)
+            .ok_or("The orientation layer is missing")?;
+        ensure(
+            pixel_index < geometry_index,
+            "The content pixel was not placed before the geometry tail",
+        )?;
+        ensure(
+            service.render_current(&asset)?.rgba == cropped.rgba,
+            "A content pixel outside the quarter crop changed its rendered bytes",
+        )?;
+        // Moving the crop to the lower-left quarter uncovers the pixel at (10, 229) of the output
+        // and is never rejected because of it; moving it back keeps the same crop layer.
+        service.apply_action(
+            &asset,
+            mutation(211, "crop-lower-left"),
+            "crop",
+            json!({"x":0.0,"y":0.5,"width":0.5,"height":0.5}),
+        )?;
+        let uncovered = service.render_current(&asset)?;
+        ensure(
+            (uncovered.width, uncovered.height) == (160, 240)
+                && uncovered.pixel(10, 229) == Some([7, 8, 9, 255]),
+            format!(
+                "The content pixel did not stay at content (10, 10) through the crop move: {:?}",
+                uncovered.pixel(10, 229)
+            ),
+        )?;
+        let located =
+            service.locate_entry(&asset, &service.state(&asset)?.current_entry.id, 10, 229)?;
+        ensure(
+            (located.content_x, located.content_y) == (10, 10),
+            format!("render.locate answered {located:?} for the content pixel"),
+        )?;
+        service.apply_action(
+            &asset,
+            mutation(212, "crop-back"),
+            "crop",
+            json!({"x":0.25,"y":0.25,"width":0.5,"height":0.5}),
+        )?;
+        ensure(
+            service.render_current(&asset)?.pixel(0, 0) == Some(crop_corner)
+                && service
+                    .state(&asset)?
+                    .current_entry
+                    .snapshot
+                    .recipe
+                    .layers
+                    .iter()
+                    .filter(|layer| layer.effect_id == CROP_EFFECT)
+                    .all(|layer| layer.id == crop_layer),
+            "Moving the crop back did not restore the exact quarter on the same layer",
+        )?;
+
         let fit_started = Instant::now();
         let fitted_entry = service
             .apply_action(
                 &asset,
-                mutation(210, "crop-fit-16-9"),
+                mutation(213, "crop-fit-16-9"),
                 "crop-fit",
                 json!({"aspect":"16:9","angle":10.0}),
             )?
@@ -232,7 +327,7 @@ pub fn run(root: &Path, out: &Path) -> Result {
         let service = EditorService::open(&catalog)?;
         let reopened = service.state(&asset)?;
         let reopen_ms = reopen_started.elapsed().as_secs_f64() * 1000.0;
-        ensure(reopened.revision == 211, "Revision did not survive reopen")?;
+        ensure(reopened.revision == 214, "Revision did not survive reopen")?;
         ensure(
             service
                 .entry(&asset, &original)?
@@ -278,10 +373,10 @@ pub fn run(root: &Path, out: &Path) -> Result {
             }
         }
         ensure(
-            retained == listed + 2,
+            retained == listed + 5,
             format!(
-                "Expected {} retained entries after crop, found {retained}",
-                listed + 2
+                "Expected {} retained entries after the crop journey, found {retained}",
+                listed + 5
             ),
         )?;
         ensure(hash(&fixture)? == fixture_hash, "Original source changed")?;
@@ -294,10 +389,17 @@ pub fn run(root: &Path, out: &Path) -> Result {
         result["history_entries_after_crop"] = json!(retained);
         result["current_dimensions"] = json!([current.width, current.height]);
         result["current_layers"] = json!(reopened_layers.len());
+        result["orientation_layers"] = json!(orientations);
         result["source_pixel_before_edits"] = json!(source_pixel);
         result["crop_layer_id"] = json!(crop_layer);
         result["crop_entry_id"] = json!(cropped_entry);
         result["crop_fit_entry_id"] = json!(fitted_entry);
+        result["content_pixel"] = json!({
+            "entry_id": content_pixel_entry,
+            "layer_index": pixel_index,
+            "first_geometry_index": geometry_index,
+            "located": [located.content_x, located.content_y],
+        });
         result["exact_crop"] = json!({
             "input_dimensions":[before_crop.width,before_crop.height],
             "output_dimensions":[cropped.width,cropped.height],
@@ -330,7 +432,7 @@ pub fn run(root: &Path, out: &Path) -> Result {
             "Read-only historical preview",
             "Undo/redo and Restore A -> pixel C",
             "Exact rotate-right, mirror-horizontal and flip-vertical",
-            "Two hundred additional exact layers with bounded history paging",
+            "Two hundred and three transform actions compose into one orientation layer, with bounded history paging over their 203 entries",
             "Angle-zero crop is a byte-for-byte copy of its input stage with exact dimensions",
             "Straightened 16:9 crop-fit updates the one crop layer in place and renders its declared stage",
             "Catalog reopen retains revision, identities, snapshots, the crop layer and dimensions",

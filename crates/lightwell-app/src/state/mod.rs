@@ -126,7 +126,8 @@ mod tests {
     };
     use crate::app::testing::{crop_descriptor, crop_layer, descriptors, entry};
     use lightwell_core::{
-        AssetId, AssetRecord, Availability, CropPayload, LayerDescription, POINTER_MODE,
+        AssetId, AssetRecord, Availability, CropPayload, LayerDescription, Orientation,
+        POINTER_MODE,
     };
     use serde_json::json;
     use std::path::PathBuf;
@@ -610,6 +611,41 @@ mod tests {
             height: 0.5,
         })]);
         assert!(section(&cropped.derive(), &crop.id).active);
+
+        // The orientation layer is the same story: four quarter turns leave a layer holding the
+        // identity, which is stored but is not an edit; anything else is.
+        let transforms = descriptors()
+            .into_iter()
+            .find(|module| {
+                module
+                    .effects
+                    .iter()
+                    .any(|effect| effect.id == lightwell_core::ORIENTATION_EFFECT)
+            })
+            .expect("the registered transform module");
+        let oriented = |orientation| {
+            Scene::new(vec![transforms.clone()])
+                .opened(vec![lightwell_core::Layer::orientation(orientation)])
+        };
+        assert!(
+            !section(&oriented(Orientation::NEUTRAL).derive(), &transforms.id).active,
+            "the neutral orientation is stored but is not an edit"
+        );
+        for turned in [
+            Orientation {
+                mirror: false,
+                turns: 1,
+            },
+            Orientation {
+                mirror: true,
+                turns: 0,
+            },
+        ] {
+            assert!(
+                section(&oriented(turned).derive(), &transforms.id).active,
+                "{turned:?} changes the image"
+            );
+        }
     }
 
     #[test]

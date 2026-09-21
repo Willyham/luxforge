@@ -98,7 +98,9 @@ pub(crate) struct CanvasModel {
     pub(crate) thirds: bool,
     pub(crate) draft_bar: Option<DraftBar>,
     pub(crate) notices: Vec<Notice>,
-    /// A module declares a pick and the current state can be edited.
+    /// A module declares a pick and the current state can be edited. The view's whole share of the
+    /// work is turning a reported point into a pixel of the raster on screen; the core maps that
+    /// to the content stage.
     pub(crate) picking: bool,
     pub(crate) pointer: Option<(u32, u32)>,
     pub(crate) surface_mode: SurfaceMode,

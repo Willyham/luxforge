@@ -17,6 +17,8 @@ Each milestone starts from the previous working result and ends with a native M4
 
 ## Editor follow-ups
 
+Implemented after M4: [content-space edits](design/content-space-edits.md) place pixel-stage edits before quarter-turns and the crop, with a content-coordinate pick and `render.locate`, and the [orientation layer](design/orientation-layer.md) folds repeated transforms into one layer.
+
 After M4: JPEG export (quality 90, no overwrites, optional metadata stripped by default with a Keep metadata option, verified color and geometry), manual Locate for moved originals, a standards-compliant MCP adapter over the existing service, and complete native packaging and performance verification. Native Windows/Linux desktop checks and manual license reviews stay deferred until the owner asks.
 
 ## Later phases

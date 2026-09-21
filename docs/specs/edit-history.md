@@ -20,15 +20,15 @@ Example: Original → A → B → Restore A → C keeps A and B. Undo C returns 
 
 ## Read-only preview
 
-The history browser lists Original and bounded pages of attributed actions, marking the current committed state separately from the selected entry, with explicit Previewing, Return to current and Restore controls. Selecting or rendering an entry changes no committed stack, revision, log or redo state. Return to current shows the latest committed snapshot even after an external edit during preview. A headless snapshot render does not change GUI selection unless the caller invokes session selection. Every preview result identifies its source, snapshot, entry and render generation; rapid selection supersedes obsolete work. Editing while previewing requires Return to current or Restore first. Export later captures the committed stack; exporting a historical stack requires restoring it.
+The history browser lists Original and bounded pages of attributed actions, marking the current committed state separately from the selected entry, with explicit Previewing, Return to current and Restore controls. Selecting or rendering an entry changes no committed stack, revision, log or redo state. Selecting the current entry is Return to current, in the UI and through `preview.select`: the latest state is never a historical preview. Return to current shows the latest committed snapshot even after an external edit during preview. A headless snapshot render does not change GUI selection unless the caller invokes session selection. Every preview result identifies its source, snapshot, entry and render generation; rapid selection supersedes obsolete work. Editing while previewing requires Return to current or Restore first. Export later captures the committed stack; exporting a historical stack requires restoring it.
 
 ## Pixel proof
 
-The pixel editor exposes x/y and RGB controls, Apply and optional pointer picking, backed by one semantic command. Coordinates are integers in the input stage after EXIF orientation, x right and y down; values are 8-bit sRGB; invalid input fails explicitly. Replacing a pixel with its current value is a reported no-op. Exact lossless buffers on synthetic fixtures are the correctness oracle; JPEG re-encoding is not. Two writes to the same location prove ordering: the later wins and undo exposes the earlier.
+The pixel editor exposes x/y and RGB controls, Apply and optional pointer picking, backed by one semantic command. Coordinates are integers in the content stage, the source after EXIF orientation, x right and y down, whatever transforms or crop follow; a coordinate inside the photograph but outside the current crop is accepted and simply not visible; values are 8-bit sRGB; invalid input fails explicitly. Replacing a pixel with its current value is a reported no-op. Exact lossless buffers on synthetic fixtures are the correctness oracle; JPEG re-encoding is not. Two writes to the same location prove ordering: the later wins and undo exposes the earlier.
 
 ## Exact transforms
 
-Coordinates use a top-left origin, x right, y down. Every layer addresses its input stage.
+Coordinates use a top-left origin, x right, y down. Every layer addresses its input stage; pixel-stage layers are placed before the geometry tail, so their input stage is the content stage.
 
 | Operation | Input to output mapping | Output size |
 | --- | --- | --- |
@@ -37,7 +37,9 @@ Coordinates use a top-left origin, x right, y down. Every layer addresses its in
 | Mirror horizontal | `(x, y) → (w - 1 - x, y)` | `w × h` |
 | Flip vertical | `(x, y) → (x, h - 1 - y)` | `w × h` |
 
-Mappings are integer-exact with no interpolation, accumulated raster edits or irreversible writes. Four matching quarter-turns and two matching reflections are identities. Order stays observable: a pixel edit before a transform moves with the image, one after it uses the transformed dimensions. Tests cover identities, non-commuting combinations, EXIF-mirrored sources and every interleaving with pixel edits.
+Mappings are integer-exact with no interpolation, accumulated raster edits or irreversible writes. Four matching quarter-turns and two matching reflections are identities. Pixel edits sit before the geometry tail and move with the image under every transform; the renderer still evaluates any layer order exactly, and tests cover identities, non-commuting combinations, EXIF-mirrored sources and every interleaving with pixel edits.
+
+The four actions keep their durable history identities (`rotate-left`, `rotate-right`, `mirror-horizontal`, `flip-vertical`) but share one **orientation** layer: effect `lightwell.geometry.orientation`, format 1, geometry stage, payload `{"mirror": bool, "turns": 0..3}`, meaning mirror horizontally when `mirror` is true, then rotate clockwise by `turns` quarter-turns. Each of the eight exact orientations has exactly one payload, and `{"mirror": false, "turns": 0}` is the neutral identity. Applying an action to `(m, k)` gives Rotate right `(m, k + 1 mod 4)`, Rotate left `(m, k + 3 mod 4)`, Mirror horizontal `(not m, 4 − k mod 4)` and Flip vertical `(not m, 2 − k mod 4)`. When the last layer of the stack is an orientation layer the action updates it in place, keeping its identity, so four rotations leave one neutral layer and four history entries; otherwise the action appends a new orientation layer, so a transform after a crop is carried by the crop as the crop contract describes. A transform is never a no-op. The retired per-action transform effect is refused as an unavailable effect, never rewritten. Design: [orientation layer](../design/orientation-layer.md).
 
 ## Versions and lineage
 

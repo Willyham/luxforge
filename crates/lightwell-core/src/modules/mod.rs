@@ -38,16 +38,19 @@ pub struct ActionInput {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ActionPlan {
     NoOp,
-    /// Append a new layer to the end of the stack.
+    /// Add a new layer to the stack. The host, not the module, chooses its position from the
+    /// effect's declared stage: a pixel-stage layer joins the stack before the geometry tail, a
+    /// geometry-stage layer extends that tail. [`StageContext::insertion_index`] answers where.
     Commit(Layer),
     /// Replace the layer with the same identity in place, keeping its position and every other
     /// layer. The host rejects an identity that is not in the stack.
     Update(Layer),
 }
 
-/// The current output stage, the current ordered layers and a point sampler over the current
-/// stack. The sampler evaluates one pixel without rasterizing, so planning an action never
-/// allocates a frame.
+/// What a module may ask about the current stack while planning: the output stage, the ordered
+/// layers, the stage any position receives, where a commit of a given stage would land, and point
+/// samplers over the whole stack or over any prefix of it. Every sampler evaluates one pixel
+/// without rasterizing, so planning an action never allocates a frame.
 pub struct StageContext<'a> {
     pub stage: Stage,
     /// The current recipe's layers in evaluation order, so a module can find its own layer to
@@ -61,6 +64,17 @@ pub struct StageContext<'a> {
     /// recipe prefix, so this costs `O(layers)` and rasterizes nothing.
     #[allow(clippy::type_complexity)]
     pub stage_before: &'a dyn Fn(usize) -> Result<Stage, Error>,
+    /// Where the host would put a [`ActionPlan::Commit`] of a layer with this effect stage: the
+    /// index of the first geometry-stage layer for a pixel-stage effect, `layers.len()` for a
+    /// geometry-stage one. A module plans against that position instead of choosing one, so
+    /// `stage_before` of this index is the stage its coordinates address.
+    #[allow(clippy::type_complexity)]
+    pub insertion_index: &'a dyn Fn(EffectStage) -> usize,
+    /// One pixel of the stage the first `index` layers produce, or `None` outside that stage.
+    /// Evaluated segment by segment like [`StageContext::sampler`], so a module that plans against
+    /// an insertion stage still allocates no frame.
+    #[allow(clippy::type_complexity)]
+    pub sample_before: &'a dyn Fn(usize, u32, u32) -> Result<Option<[u8; 4]>, Error>,
 }
 
 pub trait ToolModule: Send + Sync {

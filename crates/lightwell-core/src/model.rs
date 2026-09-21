@@ -5,7 +5,7 @@ use std::collections::HashSet;
 
 pub const RECIPE_FORMAT: u32 = 1;
 pub const PIXEL_EFFECT: &str = "lightwell.pixel.replace";
-pub const TRANSFORM_EFFECT: &str = "lightwell.geometry.transform";
+pub const ORIENTATION_EFFECT: &str = "lightwell.geometry.orientation";
 pub const CROP_EFFECT: &str = "lightwell.geometry.crop";
 pub const EFFECT_FORMAT: u32 = 1;
 
@@ -90,12 +90,14 @@ impl Layer {
             payload: json!({"x": x, "y": y, "rgb": rgb}),
         }
     }
-    pub fn transform(transform: Transform) -> Self {
+    /// The one orientation layer of a stage: the composed quarter turns and reflections that every
+    /// exact transform action applied there reaches.
+    pub fn orientation(orientation: Orientation) -> Self {
         Self {
             id: LayerId::new(),
-            effect_id: TRANSFORM_EFFECT.into(),
+            effect_id: ORIENTATION_EFFECT.into(),
             effect_format: EFFECT_FORMAT,
-            payload: serde_json::to_value(transform).expect("transform is serializable"),
+            payload: serde_json::to_value(orientation).expect("orientation is serializable"),
         }
     }
     /// The one crop layer of a stack: straightening and a rectangle over its own input stage.
@@ -128,6 +130,8 @@ pub struct PixelReplace {
     pub rgb: [u8; 3],
 }
 
+/// The action vocabulary of the transform module: what a person or a client asks for. The stack
+/// stores the resulting [`Orientation`], not the gestures that reached it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum Transform {
@@ -145,6 +149,31 @@ impl Transform {
             Self::MirrorHorizontal => "mirror-horizontal",
             Self::FlipVertical => "flip-vertical",
         }
+    }
+}
+
+/// The composed exact orientation one layer holds: mirror horizontally when `mirror` is set, then
+/// rotate clockwise by `turns` quarter turns. Each of the eight exact orientations is exactly one
+/// of these payloads, so any number of [`Transform`] actions applied to one stage stay one layer.
+/// [`Orientation::NEUTRAL`] maps every pixel to itself and leaves the stage unchanged.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Orientation {
+    pub mirror: bool,
+    pub turns: u8,
+}
+
+impl Orientation {
+    /// The identity mapping: no reflection and no quarter turn.
+    pub const NEUTRAL: Self = Self {
+        mirror: false,
+        turns: 0,
+    };
+}
+
+impl Default for Orientation {
+    fn default() -> Self {
+        Self::NEUTRAL
     }
 }
 
@@ -185,9 +214,25 @@ impl Recipe {
         Ok(())
     }
     pub fn appended(&self, layer: Layer) -> Result<Self, Error> {
+        self.with_layer_inserted(self.layers.len(), layer)
+    }
+    /// Insert a layer at `index`, keeping every other layer and its order; `layers.len()` appends.
+    /// The host chooses the index from the effect's declared stage, so a pixel-stage layer joins
+    /// the stack before the geometry tail that must carry it. An index past the end is a
+    /// validation error.
+    pub fn with_layer_inserted(&self, index: usize, layer: Layer) -> Result<Self, Error> {
         layer.validate()?;
+        if index > self.layers.len() {
+            return Err(Error::new(
+                ErrorKind::Validation,
+                format!(
+                    "layer index {index} is outside the {} layers of the stack",
+                    self.layers.len()
+                ),
+            ));
+        }
         let mut next = self.clone();
-        next.layers.push(layer);
+        next.layers.insert(index, layer);
         next.validate()?;
         Ok(next)
     }
@@ -229,10 +274,15 @@ impl Snapshot {
         }
     }
     pub fn append(&self, layer: Layer) -> Result<Self, Error> {
+        self.with_layer_inserted(self.recipe.layers.len(), layer)
+    }
+    /// A new snapshot whose stack carries this layer at `index`. Earlier snapshots keep their own
+    /// recipe, so history stays immutable whatever the position.
+    pub fn with_layer_inserted(&self, index: usize, layer: Layer) -> Result<Self, Error> {
         Ok(Self {
             id: SnapshotId::new(),
             asset_id: self.asset_id.clone(),
-            recipe: self.recipe.appended(layer)?,
+            recipe: self.recipe.with_layer_inserted(index, layer)?,
         })
     }
     /// A new snapshot whose stack differs only in the layer with this identity. Earlier snapshots
@@ -341,6 +391,46 @@ mod tests {
             }
             .validate()
             .is_ok()
+        );
+    }
+
+    #[test]
+    fn a_layer_is_inserted_at_its_position_and_an_index_past_the_end_is_rejected() {
+        let recipe = Recipe {
+            format: RECIPE_FORMAT,
+            layers: vec![Layer::pixel(0, 0, [1, 2, 3]), Layer::pixel(1, 1, [4, 5, 6])],
+        };
+        let joined = Layer::orientation(Orientation::NEUTRAL);
+        for index in 0..=recipe.layers.len() {
+            let next = recipe.with_layer_inserted(index, joined.clone()).unwrap();
+            assert_eq!(next.layers.len(), 3);
+            assert_eq!(next.layers[index], joined, "inserted at {index}");
+            let kept: Vec<&Layer> = next
+                .layers
+                .iter()
+                .filter(|layer| layer.id != joined.id)
+                .collect();
+            assert_eq!(kept, recipe.layers.iter().collect::<Vec<_>>(), "order kept");
+            assert_eq!(recipe.layers.len(), 2, "the original recipe is untouched");
+        }
+        assert_eq!(
+            recipe.appended(joined.clone()).unwrap(),
+            recipe
+                .with_layer_inserted(recipe.layers.len(), joined.clone())
+                .unwrap(),
+            "appending is inserting at the end"
+        );
+        let error = recipe.with_layer_inserted(3, joined).unwrap_err();
+        assert_eq!(error.kind, ErrorKind::Validation);
+        assert_eq!(
+            error.detail,
+            "layer index 3 is outside the 2 layers of the stack"
+        );
+        let duplicate = recipe.layers[1].clone();
+        assert_eq!(
+            recipe.with_layer_inserted(0, duplicate).unwrap_err().kind,
+            ErrorKind::Validation,
+            "a duplicate identity is rejected wherever it is inserted"
         );
     }
 }

@@ -9,15 +9,16 @@
 | Referenced assets in a SQLite catalog | Implemented (M1) | Stable IDs, fingerprints, explicit missing or changed-source errors |
 | Copyable status and error messages | Implemented | Copy in the desktop status bar copies the full text; JSON failures expose code and message |
 | Ordered non-destructive edit layers | Implemented (M1) | Stable layer IDs, immutable complete recipe snapshots |
-| Test pixel-change tool | Implemented (M1) | Integer x/y and 8-bit sRGB; exact lossless-buffer proof |
+| Test pixel-change tool | Implemented (M1) | Integer x/y in the content stage and 8-bit sRGB; placed before the geometry tail so crop changes never move it; exact lossless-buffer proof |
 | Persistent history, undo/redo, append-only Restore | Implemented (M1) | Every committed action; all branches retained |
 | History list, inspect, select and preview in UI and API | Implemented (M1) | Read-only preview and Return to current |
 | Save and reopen layers, history and navigation | Implemented (M1) | Atomic writes in the current catalog format; unsupported formats are refused |
 | Fit, numeric zoom, 100% source detail and pan | Implemented (M1) | Physical-pixel 100%; per-client session state |
 | Live JSON API and single-owner IPC | Implemented (M1) | Same service and history while the GUI is open |
-| Rotate left/right, mirror horizontal, flip vertical | Implemented (M2) | Exact integer mappings |
+| Rotate left/right, mirror horizontal, flip vertical | Implemented (M2) | Exact integer mappings composed into one orientation layer updated in place; four rotations leave one neutral layer ([design](design/orientation-layer.md)) |
 | Named versions and lineage view | Implemented | A version names a retained entry; lineage query and branch markers; catalog format 3 ([design](design/versions-and-lineage.md)) |
 | Cached source and compiled one-pass rendering | Implemented | Point queries never rasterize; [performance rules](engineering/performance-rules.md) |
+| Content-space edits and `render.locate` | Implemented | Pixel-stage layers precede quarter-turns, reflections and crop; the canvas pick and the query map a rendered pixel to its content pixel ([design](design/content-space-edits.md)) |
 | Declarative tool-module interface | Implemented (M3) | Descriptor-validated registry, generated `edit.<action>` methods and `module.list`; [modules](design/modules-and-api.md) |
 | Pixel and transform tools as modules | Implemented (M3) | Registered effects and actions use the current payload shapes |
 | Generic module controls and canvas pick in the desktop | Implemented (M3) | Controls rendered from descriptors; pointer pick fills coordinates without committing (pixel proof, `--developer`) |

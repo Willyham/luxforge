@@ -304,19 +304,32 @@ mod tests {
             json!({"asset_id":asset,"x":0,"y":0}),
         )["rgba"]
             .clone();
-        call(
+        let edited = call(
             viewer,
             "a",
             "edit.set-pixel",
             json!({"asset_id":asset,"mutation":{"expected_revision":0,"request_id":"a","actor":"viewer"},"x":0,"y":0,"rgb":[1,2,3]}),
         );
+        // Selecting the current entry is the live state, not a historical preview.
+        let latest = call(
+            viewer,
+            "latest",
+            "preview.select",
+            json!({"asset_id":asset,"entry_id":edited["current_entry_id"]}),
+        );
+        assert_eq!(latest["session"]["preview"]["selection"], json!("current"));
+        assert!(latest["generation"].is_u64());
         let selected = call(
             viewer,
             "preview",
             "preview.select",
             json!({"asset_id":asset,"entry_id":original}),
         );
-        assert_eq!(selected["session"]["revision"], json!(1));
+        assert_eq!(selected["session"]["revision"], json!(2));
+        assert_eq!(
+            selected["session"]["preview"]["selection"],
+            json!({"entry": original})
+        );
         // The other client's session is independent and unaffected.
         assert_eq!(
             call(agent, "agent-session", "session.state", json!({}))["revision"],
@@ -336,7 +349,7 @@ mod tests {
         );
         assert_eq!(preview["rgba"], baseline);
         let returned = call(viewer, "current", "preview.return-current", json!({}));
-        assert_eq!(returned["session"]["revision"], json!(2));
+        assert_eq!(returned["session"]["revision"], json!(3));
         let current = call(
             viewer,
             "sample-current",

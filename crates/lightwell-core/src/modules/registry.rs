@@ -1,8 +1,8 @@
 //! The provider index: descriptors validated once at registration, then hash lookups by effect
 //! and action identity. Registration touches no image or catalog resource.
 use super::{
-    ActionDescriptor, CanvasInteraction, CropModule, EffectDescriptor, ModuleDescriptor,
-    PixelModule, Processing, Stage, ToolModule, TransformModule,
+    ActionDescriptor, CanvasInteraction, CropModule, EffectDescriptor, EffectStage,
+    ModuleDescriptor, PixelModule, Processing, Stage, ToolModule, TransformModule,
 };
 use crate::{
     Error, ErrorKind, Layer, RECIPE_FORMAT, Recipe,
@@ -146,6 +146,27 @@ impl ModuleRegistry {
         Some((module, &module.descriptor().effects[*position]))
     }
 
+    /// The stage an effect's payload addresses, or `None` when no provider declares it.
+    pub fn effect_stage(&self, effect_id: &str) -> Option<EffectStage> {
+        self.effect(effect_id).map(|(_, effect)| effect.stage)
+    }
+
+    /// Where a committed layer of this stage joins a stack. A pixel-stage layer is inserted
+    /// immediately before the first geometry-stage layer, so the quarter-turns, reflections and
+    /// crop that form the geometry tail carry it and no later geometry change moves or invalidates
+    /// it; a geometry-stage layer appends, extending that tail. A layer whose effect no provider
+    /// declares does not open the tail: such a stack cannot compile at all, and the host reports
+    /// that rather than guessing a position. Cost is `O(layers)` and reads no pixels.
+    pub fn insertion_index(&self, layers: &[Layer], stage: EffectStage) -> usize {
+        if stage == EffectStage::Geometry {
+            return layers.len();
+        }
+        layers
+            .iter()
+            .position(|layer| self.effect_stage(&layer.effect_id) == Some(EffectStage::Geometry))
+            .unwrap_or(layers.len())
+    }
+
     /// The provider that can evaluate this effect, or `None` when none is registered or the
     /// registered one reports itself unavailable.
     fn provider(&self, effect_id: &str) -> Option<&dyn ToolModule> {
@@ -273,10 +294,11 @@ impl ModuleRegistry {
 pub(crate) mod tests {
     use super::*;
     use crate::{
-        AssetId, CROP_EFFECT, EFFECT_FORMAT, LayerId, PIXEL_EFFECT, SnapshotId, SourceImage,
-        TRANSFORM_EFFECT, Transform,
+        AssetId, CROP_EFFECT, EFFECT_FORMAT, LayerId, ORIENTATION_EFFECT, Orientation,
+        PIXEL_EFFECT, SnapshotId, SourceImage,
         modules::{
-            ActionInput, ActionPlan, Availability, EffectStage, ModuleDescriptor, StageContext,
+            ActionInput, ActionPlan, Availability, CropPayload, EffectStage, ModuleDescriptor,
+            StageContext,
         },
         render, sample,
     };
@@ -378,7 +400,7 @@ pub(crate) mod tests {
         assert!(registry.action("set-pixel").is_some());
         assert!(registry.action("transform").is_some());
         assert!(registry.effect(PIXEL_EFFECT).is_some());
-        assert!(registry.effect(TRANSFORM_EFFECT).is_some());
+        assert!(registry.effect(ORIENTATION_EFFECT).is_some());
         assert!(registry.action("crop").is_some());
         assert!(registry.effect(CROP_EFFECT).is_some());
         assert_eq!(registry.descriptors().len(), 3);
@@ -527,14 +549,19 @@ pub(crate) mod tests {
             described(&Layer::pixel(3, 4, [1, 2, 3])),
             "Pixel 3, 4 → 1,2,3"
         );
-        assert_eq!(
-            described(&Layer::transform(Transform::RotateLeft)),
-            "Rotate left"
-        );
-        assert_eq!(
-            described(&Layer::transform(Transform::MirrorHorizontal)),
-            "Mirror horizontal"
-        );
+        // An orientation layer holds a composed state, so its row names the orientation it is in,
+        // not the actions that reached it. All eight are named and the neutral one says so.
+        let orientation = |mirror: bool, turns: u8| -> String {
+            described(&Layer::orientation(Orientation { mirror, turns }))
+        };
+        assert_eq!(orientation(false, 0), "Upright");
+        assert_eq!(orientation(false, 1), "Rotate right");
+        assert_eq!(orientation(false, 2), "Rotate 180°");
+        assert_eq!(orientation(false, 3), "Rotate left");
+        assert_eq!(orientation(true, 0), "Mirror horizontal");
+        assert_eq!(orientation(true, 1), "Mirror horizontal · Rotate right");
+        assert_eq!(orientation(true, 2), "Flip vertical");
+        assert_eq!(orientation(true, 3), "Mirror horizontal · Rotate left");
         assert_eq!(
             described(&Layer::crop(crate::CropPayload::NEUTRAL)),
             "Whole image"
@@ -564,7 +591,10 @@ pub(crate) mod tests {
             format: RECIPE_FORMAT,
             layers: vec![
                 first.clone(),
-                Layer::transform(Transform::RotateRight),
+                Layer::orientation(Orientation {
+                    mirror: false,
+                    turns: 1,
+                }),
                 second.clone(),
             ],
         };
@@ -604,6 +634,39 @@ pub(crate) mod tests {
         let _ = AssetId::new();
     }
 
+    /// Current shapes only: the retired per-action transform effect has no provider, so a stack
+    /// holding it is refused exactly like any other unavailable effect. Nothing rewrites it, so
+    /// the data survives the refusal and the owner can open it with a build that provides it.
+    #[test]
+    fn a_stack_holding_the_retired_transform_effect_is_refused_without_being_rewritten() {
+        let registry = ModuleRegistry::builtin();
+        let retired = Layer {
+            id: LayerId::new(),
+            effect_id: "lightwell.geometry.transform".into(),
+            effect_format: EFFECT_FORMAT,
+            payload: json!("rotate-right"),
+        };
+        assert!(registry.effect("lightwell.geometry.transform").is_none());
+        let recipe = Recipe {
+            format: RECIPE_FORMAT,
+            layers: vec![retired.clone()],
+        };
+        let expected = format!(
+            "unavailable effect lightwell.geometry.transform (layers {})",
+            retired.id
+        );
+        for error in [
+            registry.validate_recipe(&recipe).unwrap_err(),
+            registry.validate_layer(&retired).unwrap_err(),
+            render(&registry, &source(), SnapshotId::new(), &recipe).unwrap_err(),
+            sample(&registry, &source(), &recipe, 0, 0).unwrap_err(),
+        ] {
+            assert_eq!(error.kind, ErrorKind::Incompatible);
+            assert_eq!(error.detail, expected);
+        }
+        assert_eq!(recipe.layers, vec![retired], "the refused stack is kept");
+    }
+
     #[test]
     fn payload_format_and_shape_are_validated_by_the_providing_module() {
         let registry = ModuleRegistry::builtin();
@@ -623,18 +686,88 @@ pub(crate) mod tests {
             registry.validate_layer(&wrong_payload).unwrap_err().kind,
             ErrorKind::Validation
         );
-        let wrong_transform = Layer {
-            payload: json!("rotate-sideways"),
-            ..Layer::transform(Transform::RotateLeft)
-        };
-        assert_eq!(
-            registry.validate_layer(&wrong_transform).unwrap_err().kind,
-            ErrorKind::Validation
+        for wrong_orientation in [
+            json!("rotate-sideways"),
+            json!({"mirror": false, "turns": 4}),
+            json!({"mirror": false, "turns": 0, "flip": true}),
+        ] {
+            let layer = Layer {
+                payload: wrong_orientation.clone(),
+                ..Layer::orientation(Orientation::NEUTRAL)
+            };
+            assert_eq!(
+                registry.validate_layer(&layer).unwrap_err().kind,
+                ErrorKind::Validation,
+                "{wrong_orientation}"
+            );
+        }
+        assert!(
+            registry
+                .validate_layer(&Layer::orientation(Orientation::NEUTRAL))
+                .is_ok()
         );
         assert!(
             registry
                 .validate_layer(&Layer::pixel(0, 0, [1, 2, 3]))
                 .is_ok()
         );
+    }
+
+    #[test]
+    fn a_pixel_layer_joins_the_stack_before_the_first_geometry_layer() {
+        let registry = ModuleRegistry::builtin();
+        let pixel = || Layer::pixel(0, 0, [1, 2, 3]);
+        let turn = || {
+            Layer::orientation(Orientation {
+                mirror: false,
+                turns: 1,
+            })
+        };
+        let crop = || {
+            Layer::crop(CropPayload {
+                angle: 0.0,
+                x: 0.0,
+                y: 0.0,
+                width: 1.0,
+                height: 1.0,
+            })
+        };
+        for (case, layers, expected) in [
+            ("an empty stack", vec![], 0),
+            ("geometry only", vec![turn(), crop()], 0),
+            ("pixels only", vec![pixel(), pixel()], 2),
+            ("a pixel before the tail", vec![pixel(), crop(), turn()], 1),
+            (
+                // Such a stack renders as it always did; a new edit still joins the content stage.
+                "an interleaved pixel after geometry",
+                vec![pixel(), turn(), pixel(), crop()],
+                1,
+            ),
+            (
+                "a layer no provider declares does not open the tail",
+                vec![test_layer("test.absent"), turn()],
+                1,
+            ),
+        ] {
+            assert_eq!(
+                registry.insertion_index(&layers, EffectStage::Pixel),
+                expected,
+                "{case}"
+            );
+            assert_eq!(
+                registry.insertion_index(&layers, EffectStage::Geometry),
+                layers.len(),
+                "{case}: geometry extends the tail"
+            );
+        }
+        assert_eq!(
+            registry.effect_stage(PIXEL_EFFECT),
+            Some(EffectStage::Pixel)
+        );
+        assert_eq!(
+            registry.effect_stage(CROP_EFFECT),
+            Some(EffectStage::Geometry)
+        );
+        assert_eq!(registry.effect_stage("test.absent"), None);
     }
 }

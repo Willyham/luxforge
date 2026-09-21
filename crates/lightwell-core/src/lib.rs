@@ -16,7 +16,7 @@ use image::{ImageDecoder, ImageReader, Limits};
 pub use model::*;
 pub use modules::*;
 pub use preview::*;
-pub use render::{Raster, Sample, render, sample};
+pub use render::{ContentPoint, Raster, Sample, locate, render, sample};
 use sha2::{Digest, Sha256};
 use std::{
     fs::File,
@@ -294,6 +294,73 @@ mod tests {
                 Some([1, 2, 3, 255])
             );
             assert_eq!(std::fs::read(path).unwrap(), bytes);
+        }
+    }
+    /// Every sequence of up to three transform actions on every EXIF orientation, including the
+    /// mirrored ones, renders byte-identically whether the actions are separate single-action
+    /// orientation layers or one layer holding their composition. The source is untouched.
+    #[test]
+    fn composed_and_separate_orientations_agree_on_every_exif_orientation() {
+        let registry = ModuleRegistry::builtin();
+        let transforms = [
+            Transform::RotateLeft,
+            Transform::RotateRight,
+            Transform::MirrorHorizontal,
+            Transform::FlipVertical,
+        ];
+        for orientation in 1..=8 {
+            let path = fixture(&format!("orientation-{orientation}.jpg"));
+            let bytes = std::fs::read(&path).unwrap();
+            let source = open_source(&path).unwrap();
+            let rendered = |layers: Vec<Layer>| {
+                render(
+                    &registry,
+                    &source,
+                    SnapshotId::new(),
+                    &Recipe {
+                        format: RECIPE_FORMAT,
+                        layers,
+                    },
+                )
+                .unwrap()
+            };
+            // Every sequence of one and two actions on every fixture, and every sequence of three
+            // on the mirrored ones, where a reflection composed the wrong way round would show.
+            let mut sequences: Vec<Vec<Transform>> = Vec::new();
+            for first in transforms {
+                sequences.push(vec![first]);
+                for second in transforms {
+                    sequences.push(vec![first, second]);
+                    if matches!(orientation, 2 | 4 | 5 | 7) {
+                        for third in transforms {
+                            sequences.push(vec![first, second, third]);
+                        }
+                    }
+                }
+            }
+            for actions in sequences {
+                let separate: Vec<Layer> = actions
+                    .iter()
+                    .map(|transform| Layer::orientation(Orientation::of(*transform)))
+                    .collect();
+                let composed = actions
+                    .iter()
+                    .fold(Orientation::NEUTRAL, |state, transform| {
+                        state.then(*transform)
+                    });
+                let stepwise = rendered(separate);
+                let collapsed = rendered(vec![Layer::orientation(composed)]);
+                assert_eq!(
+                    (stepwise.width, stepwise.height),
+                    (collapsed.width, collapsed.height),
+                    "orientation {orientation}: {actions:?}"
+                );
+                assert_eq!(
+                    stepwise.rgba, collapsed.rgba,
+                    "orientation {orientation}: {actions:?}"
+                );
+            }
+            assert_eq!(std::fs::read(path).unwrap(), bytes, "source unchanged");
         }
     }
     #[test]

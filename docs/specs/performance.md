@@ -61,6 +61,8 @@ resample is a stage boundary, so the difference between the two rows is the inte
 | Core render of 200 composed exact transforms (p50 / p95) | 10.7 / 11.1 ms | 22.5 / 24.2 ms |
 | The same stack with a 10° `crop-fit` on top (p50 / p95) | 33.2 / 37.7 ms | 70.5 / 77.0 ms |
 | Crop output stage that measures | 3695 × 2077 from a 4000 × 6000 input | 5542 × 3116 from a 6000 × 10000 input |
+
+With the orientation layer and content-space placement, the 24 MP rows re-measured on the M4 Pro (release, 30 samples, warm cache, core request-to-render only) at 10.3 / 14.3 ms for one transform, 10.5 / 11.1 ms for 200 transform actions folded into one orientation layer and 31.5 / 34.0 ms with the 10° `crop-fit` on top; the crop-fit commit fell from 1.2 to 0.6 ms because it plans against a one-layer prefix instead of two hundred. 60 MP was not re-measured.
 | `crop-fit` commit: validation, fitting, compile and persistence, no render | 1.3 ms | 0.9 ms |
 | Identity render from the cached decode (shared buffer, no copy) | under 0.01 ms | under 0.01 ms |
 

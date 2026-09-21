@@ -1,4 +1,6 @@
-//! The pixel proof module: one exact 8-bit sRGB replacement at integer input-stage coordinates.
+//! The pixel proof module: one exact 8-bit sRGB replacement at integer content-stage coordinates,
+//! the source after EXIF orientation. The host inserts the layer before the geometry tail, so the
+//! quarter-turns, reflections and crop after it carry the edit instead of moving it.
 use super::{
     ActionDescriptor, ActionInput, ActionPlan, Availability, CanvasInteraction, Control,
     EffectDescriptor, EffectStage, ModuleDescriptor, ParameterDescriptor, ParameterKind,
@@ -25,7 +27,9 @@ fn coordinate(name: &str) -> ParameterDescriptor {
         required: true,
         default: None,
         unit: Some("px".into()),
-        notes: format!("{name} in the current input stage after EXIF orientation, origin top left"),
+        notes: format!(
+            "{name} in the content stage, the source after EXIF orientation, origin top left"
+        ),
     }
 }
 
@@ -55,7 +59,7 @@ impl PixelModule {
                 actions: vec![ActionDescriptor {
                     id: SET_PIXEL.into(),
                     title: "Set pixel".into(),
-                    notes: "replaces one pixel of the current stage; replacing a pixel with its current value is a reported no-op".into(),
+                    notes: "replaces one pixel of the content stage, the source after EXIF orientation; later rotations, reflections and the crop carry the edit, and replacing a pixel with its current value is a reported no-op".into(),
                     summary: Some("Pixel {x}, {y}".into()),
                     parameters: vec![
                         coordinate("x"),
@@ -190,16 +194,21 @@ impl ToolModule for PixelModule {
         let x = coordinate_value(&input.parameters, "x")?;
         let y = coordinate_value(&input.parameters, "y")?;
         let rgb = color_value(&input.parameters)?;
+        // The coordinates address the stage this layer will be inserted at, not the output stage:
+        // a pixel outside a crop is still a pixel of the photograph, and replacing one with the
+        // value the content already holds is a no-op whatever a later resample shows there.
+        let index = (stage.insertion_index)(EffectStage::Pixel);
+        let content = (stage.stage_before)(index)?;
         let outside = || {
             validation(format!(
-                "pixel ({x}, {y}) is outside {}x{} input stage",
-                stage.stage.width, stage.stage.height
+                "pixel ({x}, {y}) is outside the {}x{} content stage",
+                content.width, content.height
             ))
         };
-        if x >= stage.stage.width || y >= stage.stage.height {
+        if x >= content.width || y >= content.height {
             return Err(outside());
         }
-        let current = (stage.sampler)(x, y)?.ok_or_else(outside)?;
+        let current = (stage.sample_before)(index, x, y)?.ok_or_else(outside)?;
         if current[..3] == rgb {
             return Ok(ActionPlan::NoOp);
         }

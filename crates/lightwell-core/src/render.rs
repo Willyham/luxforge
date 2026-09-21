@@ -1,8 +1,9 @@
 use crate::{
-    Error, ErrorKind, Recipe, SnapshotId, SourceImage,
+    Error, ErrorKind, Layer, Recipe, SnapshotId, SourceImage,
     modules::{ExactGeometry, ModuleRegistry, Processing, Resample, Stage},
 };
 use rayon::prelude::*;
+use serde::{Deserialize, Serialize};
 use std::{collections::HashSet, sync::Arc, sync::LazyLock};
 
 const PARALLEL_RENDER_PIXELS: u64 = 1_000_000;
@@ -86,6 +87,22 @@ fn bilinear(
         .sum();
     pixel[3] = alpha.round().clamp(0.0, 255.0) as u8;
     pixel
+}
+
+/// The input pixel one continuous input coordinate falls in, clamped to the frame exactly as the
+/// sampler clamps its own indices. A resample maps an output pixel center between input pixels, and
+/// this is the corner the bilinear blend weights most, so it is the pixel that output pixel shows.
+#[inline]
+fn nearest_index(value: f64, limit: u32) -> u32 {
+    let last = limit.saturating_sub(1);
+    let index = value.floor();
+    if index <= 0.0 {
+        0
+    } else if index >= f64::from(last) {
+        last
+    } else {
+        index as u32
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -451,6 +468,18 @@ pub struct Sample {
     pub rgba: Option<[u8; 4]>,
 }
 
+/// One located pixel of a recipe's content stage: the source after EXIF orientation, which is the
+/// stage the first layer receives and the stage a pixel-stage edit addresses.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ContentPoint {
+    pub content_x: u32,
+    pub content_y: u32,
+    /// The content stage's dimensions.
+    pub width: u32,
+    pub height: u32,
+}
+
 /// One compiled recipe bound to its source: the stage it produces and point queries that never
 /// allocate a frame. Compiling once serves any number of sampled pixels.
 pub(crate) struct Evaluation<'a> {
@@ -468,6 +497,21 @@ impl<'a> Evaluation<'a> {
         Ok(Self {
             source,
             compiled: registry.compile(source.width, source.height, recipe)?,
+        })
+    }
+
+    /// One evaluation over an ordered prefix of a stack, for planning a layer against the stage it
+    /// will be inserted at. The recipe format is the caller's to check; compiling the prefix costs
+    /// `O(layers)` and allocates no frame, so sampling that stage still rasterizes nothing.
+    pub(crate) fn over_layers(
+        registry: &ModuleRegistry,
+        source: &'a SourceImage,
+        layers: &[Layer],
+    ) -> Result<Self, Error> {
+        check_source(source)?;
+        Ok(Self {
+            source,
+            compiled: registry.compile_layers(source.width, source.height, layers)?,
         })
     }
 
@@ -502,6 +546,35 @@ impl<'a> Evaluation<'a> {
         }
         Some(rgba)
     }
+
+    /// The content-stage pixel one output-stage pixel shows. `None` when the coordinate lies outside
+    /// the output stage.
+    pub(crate) fn locate(&self, x: u32, y: u32) -> Option<(u32, u32)> {
+        self.locate_in(self.compiled.segments.len() - 1, x, y)
+    }
+
+    /// Walk one segment backwards, the same walk `pixel_in` makes to fetch a color: the composed
+    /// exact geometry unmaps to the segment's input frame by its integer inverse, and a resample
+    /// takes the nearest pixel of the previous stage to the input coordinate its output pixel center
+    /// samples. Cost is linear in the segment count and no frame is allocated.
+    fn locate_in(&self, index: usize, x: u32, y: u32) -> Option<(u32, u32)> {
+        let segment = &self.compiled.segments[index];
+        if x >= segment.width || y >= segment.height {
+            return None;
+        }
+        let (input_x, input_y) = segment.geometry.unmap(x, y);
+        let Some(resample) = segment.entry else {
+            // The first segment reads the source, which is the content stage.
+            return Some((input_x, input_y));
+        };
+        let previous = &self.compiled.segments[index - 1];
+        let (u, v) = resample.input_at(input_x, input_y);
+        self.locate_in(
+            index - 1,
+            nearest_index(u, previous.width),
+            nearest_index(v, previous.height),
+        )
+    }
 }
 
 /// Evaluate one output pixel without rasterizing; cost is linear in the layer count and, for a
@@ -519,6 +592,36 @@ pub fn sample(
         width: stage.width,
         height: stage.height,
         rgba: evaluation.pixel(x, y),
+    })
+}
+
+/// Map one pixel of a recipe's output stage back to the content-stage pixel it shows: the source
+/// after EXIF orientation, the stage the first layer receives. A point outside the output stage is a
+/// validation error naming that stage. Cost is linear in the layer count and no frame is allocated,
+/// so the canvas pick and the API query share one implementation.
+pub fn locate(
+    registry: &ModuleRegistry,
+    source: &SourceImage,
+    recipe: &Recipe,
+    x: u32,
+    y: u32,
+) -> Result<ContentPoint, Error> {
+    let evaluation = Evaluation::new(registry, source, recipe)?;
+    let stage = evaluation.stage();
+    let (content_x, content_y) = evaluation.locate(x, y).ok_or_else(|| {
+        Error::new(
+            ErrorKind::Validation,
+            format!(
+                "point ({x}, {y}) is outside the {}x{} rendered image",
+                stage.width, stage.height
+            ),
+        )
+    })?;
+    Ok(ContentPoint {
+        content_x,
+        content_y,
+        width: source.width,
+        height: source.height,
     })
 }
 
@@ -581,8 +684,8 @@ pub fn render(
 mod tests {
     use super::*;
     use crate::{
-        AssetId, EFFECT_FORMAT, Layer, LayerId, PIXEL_EFFECT, PixelReplace, Recipe, Snapshot,
-        TRANSFORM_EFFECT, Transform,
+        AssetId, EFFECT_FORMAT, Layer, LayerId, ORIENTATION_EFFECT, Orientation, PIXEL_EFFECT,
+        PixelReplace, Recipe, Snapshot, Transform,
         modules::{
             ActionInput, ActionPlan, Availability, BoxRect, CropPayload, CropStage,
             EffectDescriptor, EffectStage, ModuleDescriptor, StageContext, ToolModule,
@@ -609,6 +712,26 @@ mod tests {
     fn red(raster: &Raster) -> Vec<u8> {
         raster.rgba.chunks_exact(4).map(|p| p[0]).collect()
     }
+    /// One single-action orientation layer: what a transform commits when the stack does not end
+    /// in an orientation layer. A sequence of these is the stepwise form every proof below uses.
+    fn turn(transform: Transform) -> Layer {
+        Layer::orientation(Orientation::of(transform))
+    }
+
+    /// The elementary steps one orientation payload means: the mirror, then the quarter turns. The
+    /// stepwise references apply these one at a time, independently of the composed mapping.
+    fn steps(payload: &Value) -> Vec<Transform> {
+        let orientation: Orientation = serde_json::from_value(payload.clone()).unwrap();
+        let mut steps = Vec::new();
+        if orientation.mirror {
+            steps.push(Transform::MirrorHorizontal);
+        }
+        for _ in 0..orientation.turns {
+            steps.push(Transform::RotateRight);
+        }
+        steps
+    }
+
     fn rendered(source: &SourceImage, layers: Vec<Layer>) -> Raster {
         render(
             &registry(),
@@ -631,30 +754,32 @@ mod tests {
                     let offset = ((pixel.y * width + pixel.x) * 4) as usize;
                     rgba[offset..offset + 3].copy_from_slice(&pixel.rgb);
                 }
-                TRANSFORM_EFFECT => {
-                    let transform: Transform =
-                        serde_json::from_value(layer.payload.clone()).unwrap();
-                    let (next_width, next_height) = match transform {
-                        Transform::RotateLeft | Transform::RotateRight => (height, width),
-                        Transform::MirrorHorizontal | Transform::FlipVertical => (width, height),
-                    };
-                    let mut next = vec![0; (next_width * next_height * 4) as usize];
-                    for y in 0..height {
-                        for x in 0..width {
-                            let (next_x, next_y) = match transform {
-                                Transform::RotateRight => (height - 1 - y, x),
-                                Transform::RotateLeft => (y, width - 1 - x),
-                                Transform::MirrorHorizontal => (width - 1 - x, y),
-                                Transform::FlipVertical => (x, height - 1 - y),
-                            };
-                            let from = ((y * width + x) * 4) as usize;
-                            let to = ((next_y * next_width + next_x) * 4) as usize;
-                            next[to..to + 4].copy_from_slice(&rgba[from..from + 4]);
+                ORIENTATION_EFFECT => {
+                    for transform in steps(&layer.payload) {
+                        let (next_width, next_height) = match transform {
+                            Transform::RotateLeft | Transform::RotateRight => (height, width),
+                            Transform::MirrorHorizontal | Transform::FlipVertical => {
+                                (width, height)
+                            }
+                        };
+                        let mut next = vec![0; (next_width * next_height * 4) as usize];
+                        for y in 0..height {
+                            for x in 0..width {
+                                let (next_x, next_y) = match transform {
+                                    Transform::RotateRight => (height - 1 - y, x),
+                                    Transform::RotateLeft => (y, width - 1 - x),
+                                    Transform::MirrorHorizontal => (width - 1 - x, y),
+                                    Transform::FlipVertical => (x, height - 1 - y),
+                                };
+                                let from = ((y * width + x) * 4) as usize;
+                                let to = ((next_y * next_width + next_x) * 4) as usize;
+                                next[to..to + 4].copy_from_slice(&rgba[from..from + 4]);
+                            }
                         }
+                        width = next_width;
+                        height = next_height;
+                        rgba = next;
                     }
-                    width = next_width;
-                    height = next_height;
-                    rgba = next;
                 }
                 TEST_CROP_EFFECT => {
                     let crop: CropPayload = serde_json::from_value(layer.payload.clone()).unwrap();
@@ -681,6 +806,59 @@ mod tests {
             }
         }
         (width, height, rgba)
+    }
+
+    /// Where one pixel of a stage lands after the exact layers that follow it, evaluated one layer
+    /// at a time and independently of the renderer: the direction `locate` walks backwards. `None`
+    /// when a crop discards it. Pixel layers move nothing, so they are skipped.
+    fn forward(width: u32, height: u32, layers: &[Layer], x: u32, y: u32) -> Option<(u32, u32)> {
+        let (mut width, mut height, mut x, mut y) = (width, height, x, y);
+        for layer in layers {
+            match layer.effect_id.as_str() {
+                PIXEL_EFFECT => {}
+                ORIENTATION_EFFECT => {
+                    for transform in steps(&layer.payload) {
+                        (x, y) = match transform {
+                            Transform::RotateRight => (height - 1 - y, x),
+                            Transform::RotateLeft => (y, width - 1 - x),
+                            Transform::MirrorHorizontal => (width - 1 - x, y),
+                            Transform::FlipVertical => (x, height - 1 - y),
+                        };
+                        (width, height) = match transform {
+                            Transform::RotateLeft | Transform::RotateRight => (height, width),
+                            Transform::MirrorHorizontal | Transform::FlipVertical => {
+                                (width, height)
+                            }
+                        };
+                    }
+                }
+                TEST_CROP_EFFECT => {
+                    let crop: CropPayload = serde_json::from_value(layer.payload.clone()).unwrap();
+                    assert_eq!(crop.angle, 0.0, "the stepwise reference never straightens");
+                    let (origin_x, origin_y) = (
+                        (crop.x * f64::from(width)).round() as u32,
+                        (crop.y * f64::from(height)).round() as u32,
+                    );
+                    width = (crop.width * f64::from(width)).round().max(1.0) as u32;
+                    height = (crop.height * f64::from(height)).round().max(1.0) as u32;
+                    if x < origin_x
+                        || y < origin_y
+                        || x >= origin_x + width
+                        || y >= origin_y + height
+                    {
+                        return None;
+                    }
+                    (x, y) = (x - origin_x, y - origin_y);
+                }
+                other => panic!("unexpected test effect {other}"),
+            }
+        }
+        Some((x, y))
+    }
+
+    /// The pixel index a continuous index-space position is nearest to, clamped to the frame.
+    fn nearest(position: f64, limit: u32) -> u32 {
+        position.round().clamp(0.0, f64::from(limit - 1)) as u32
     }
 
     /// A test-only module that compiles crop payloads and plain scaling into the host's primitives.
@@ -889,6 +1067,16 @@ mod tests {
             }
         }
 
+        /// The continuous source position, in index space, that one output pixel center samples.
+        fn position(&self, source: &SourceImage, i: u32, j: u32) -> (f64, f64) {
+            let x = self.origin.0 + f64::from(i) + 0.5 - self.box_width / 2.0;
+            let y = self.origin.1 + f64::from(j) + 0.5 - self.box_height / 2.0;
+            (
+                self.cos * x + self.sin * y + f64::from(source.width) / 2.0 - 0.5,
+                -self.sin * x + self.cos * y + f64::from(source.height) / 2.0 - 0.5,
+            )
+        }
+
         fn pixel(&self, source: &SourceImage, i: u32, j: u32) -> [u8; 4] {
             let decode = |value: u8| -> f64 {
                 let encoded = f64::from(value) / 255.0;
@@ -907,10 +1095,7 @@ mod tests {
                 };
                 (encoded * 255.0).round() as u8
             };
-            let x = self.origin.0 + f64::from(i) + 0.5 - self.box_width / 2.0;
-            let y = self.origin.1 + f64::from(j) + 0.5 - self.box_height / 2.0;
-            let u = self.cos * x + self.sin * y + f64::from(source.width) / 2.0 - 0.5;
-            let v = -self.sin * x + self.cos * y + f64::from(source.height) / 2.0 - 0.5;
+            let (u, v) = self.position(source, i, j);
             let (left, top) = (u.floor(), v.floor());
             let (fraction_x, fraction_y) = (u - left, v - top);
             let at = |x: f64, y: f64| -> [u8; 4] {
@@ -955,10 +1140,7 @@ mod tests {
         for (width, height) in [(6000_u32, 4000_u32), (9504, 6336)] {
             let source = gradient(width, height);
             for (label, layers) in [
-                (
-                    "exact rotate",
-                    vec![Layer::transform(Transform::RotateRight)],
-                ),
+                ("exact rotate", vec![turn(Transform::RotateRight)]),
                 (
                     "crop 0 deg",
                     vec![crop_layer(fitted_crop(
@@ -981,7 +1163,7 @@ mod tests {
                     "crop 10 deg then rotate",
                     vec![
                         crop_layer(fitted_crop(width, height, 10.0, [0.1, 0.1, 0.8, 0.8])),
-                        Layer::transform(Transform::RotateRight),
+                        turn(Transform::RotateRight),
                     ],
                 ),
             ] {
@@ -1086,10 +1268,9 @@ mod tests {
                     vec![Transform::RotateLeft],
                     vec![Transform::FlipVertical],
                 ] {
-                    let mut layers: Vec<Layer> =
-                        stack.iter().copied().map(Layer::transform).collect();
+                    let mut layers: Vec<Layer> = stack.iter().copied().map(turn).collect();
                     layers.push(crop_layer(crop));
-                    layers.extend(after.iter().copied().map(Layer::transform));
+                    layers.extend(after.iter().copied().map(turn));
                     let recipe = Recipe {
                         format: 1,
                         layers: layers.clone(),
@@ -1132,13 +1313,167 @@ mod tests {
     }
 
     #[test]
+    fn locating_maps_exact_geometry_back_to_the_content_pixel() {
+        let registry = geometry_registry();
+        let source = source(7, 5);
+        let crops = [
+            CropPayload::NEUTRAL,
+            CropPayload {
+                angle: 0.0,
+                x: 2.0 / 7.0,
+                y: 1.0 / 5.0,
+                width: 4.0 / 7.0,
+                height: 3.0 / 5.0,
+            },
+            CropPayload {
+                angle: 0.0,
+                x: 0.0,
+                y: 4.0 / 5.0,
+                width: 1.0,
+                height: 1.0 / 5.0,
+            },
+        ];
+        for crop in crops {
+            for before in [
+                vec![],
+                vec![Transform::RotateRight],
+                vec![Transform::MirrorHorizontal],
+                vec![Transform::RotateLeft, Transform::FlipVertical],
+            ] {
+                for after in [
+                    vec![],
+                    vec![Transform::RotateLeft],
+                    vec![Transform::FlipVertical],
+                    vec![Transform::MirrorHorizontal, Transform::RotateRight],
+                ] {
+                    let mut layers: Vec<Layer> = before.iter().copied().map(turn).collect();
+                    layers.push(crop_layer(crop));
+                    layers.extend(after.iter().copied().map(turn));
+                    let recipe = Recipe {
+                        format: 1,
+                        layers: layers.clone(),
+                    };
+                    let raster = render(&registry, &source, SnapshotId::new(), &recipe).unwrap();
+                    // Every output pixel names a content pixel that the stepwise forward map puts
+                    // back where it was found, and the rendered bytes are that content pixel's.
+                    for y in 0..raster.height {
+                        for x in 0..raster.width {
+                            let located = locate(&registry, &source, &recipe, x, y).unwrap();
+                            let content = (located.content_x, located.content_y);
+                            assert_eq!(
+                                (located.width, located.height),
+                                (source.width, source.height),
+                                "{layers:?}"
+                            );
+                            assert_eq!(
+                                forward(source.width, source.height, &layers, content.0, content.1),
+                                Some((x, y)),
+                                "({x}, {y}) of {layers:?}"
+                            );
+                            assert_eq!(
+                                raster.pixel(x, y),
+                                Some(source_pixel(&source, content.0, content.1)),
+                                "({x}, {y}) of {layers:?}"
+                            );
+                        }
+                    }
+                    // And every content pixel the stack keeps is located from where it lands.
+                    for y in 0..source.height {
+                        for x in 0..source.width {
+                            let Some((out_x, out_y)) =
+                                forward(source.width, source.height, &layers, x, y)
+                            else {
+                                continue;
+                            };
+                            let located =
+                                locate(&registry, &source, &recipe, out_x, out_y).unwrap();
+                            assert_eq!(
+                                (located.content_x, located.content_y),
+                                (x, y),
+                                "({x}, {y}) of {layers:?}"
+                            );
+                        }
+                    }
+                    // A point outside the output stage is refused, not clamped.
+                    for (x, y) in [(raster.width, 0), (0, raster.height)] {
+                        let error = locate(&registry, &source, &recipe, x, y)
+                            .expect_err(&format!("({x}, {y}) is outside {layers:?}"));
+                        assert_eq!(error.kind, ErrorKind::Validation);
+                        assert!(
+                            error
+                                .detail
+                                .contains(&format!("{}x{}", raster.width, raster.height)),
+                            "{error}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_rotated_crop_locates_the_nearest_pixel_its_sampler_read() {
+        let registry = geometry_registry();
+        for (width, height, angle, rect, after) in [
+            (40_u32, 24_u32, 12.0_f64, [0.2, 0.15, 0.6, 0.65], vec![]),
+            (
+                28,
+                36,
+                -30.0,
+                [0.25, 0.2, 0.5, 0.55],
+                vec![Transform::RotateRight],
+            ),
+            (
+                32,
+                24,
+                7.5,
+                [0.3, 0.25, 0.45, 0.5],
+                vec![Transform::MirrorHorizontal, Transform::FlipVertical],
+            ),
+        ] {
+            let source = gradient(width, height);
+            let crop = fitted_crop(width, height, angle, rect);
+            let tail: Vec<Layer> = after.iter().copied().map(turn).collect();
+            // A pixel layer before the crop moves nothing; the walk back is geometry only.
+            let mut layers = vec![Layer::pixel(2, 3, [250, 1, 2]), crop_layer(crop)];
+            layers.extend(tail.iter().cloned());
+            let recipe = Recipe {
+                format: 1,
+                layers: layers.clone(),
+            };
+            let raster = render(&registry, &source, SnapshotId::new(), &recipe).unwrap();
+            let reference = CropReference::new(&source, crop);
+            let case = format!("{width}x{height} at {angle}");
+            assert_eq!(
+                u64::from(raster.width) * u64::from(raster.height),
+                u64::from(reference.width) * u64::from(reference.height),
+                "{case}: output pixel count"
+            );
+            for j in 0..reference.height {
+                for i in 0..reference.width {
+                    let (x, y) = forward(reference.width, reference.height, &tail, i, j)
+                        .expect("exact transforms keep every pixel");
+                    let located = locate(&registry, &source, &recipe, x, y).unwrap();
+                    let (u, v) = reference.position(&source, i, j);
+                    assert_eq!(
+                        (located.content_x, located.content_y),
+                        (nearest(u, width), nearest(v, height)),
+                        "{case}: ({i}, {j}) of the crop's output"
+                    );
+                    assert_eq!((located.width, located.height), (width, height), "{case}");
+                }
+            }
+        }
+    }
+
+    #[test]
     fn a_translation_with_a_smaller_output_composes_and_is_bounds_checked() {
         let registry = geometry_registry();
         let source = source(7, 5);
         // Two translations and a quarter turn compose into one mapping over the source.
         let layers = vec![
             offset_layer(1, 1, 5, 4),
-            Layer::transform(Transform::RotateRight),
+            turn(Transform::RotateRight),
             offset_layer(1, 2, 2, 3),
         ];
         let recipe = Recipe {
@@ -1204,12 +1539,12 @@ mod tests {
                 Layer::pixel(3, 4, [250, 1, 2]),
                 crop_layer(fitted_crop(40, 24, -20.0, [0.25, 0.25, 0.5, 0.5])),
                 Layer::pixel(1, 1, [3, 251, 4]),
-                Layer::transform(Transform::RotateRight),
+                turn(Transform::RotateRight),
                 Layer::pixel(0, 2, [5, 6, 252]),
             ],
             // Two resamples: a point query blends four recursively evaluated blends.
             vec![
-                Layer::transform(Transform::MirrorHorizontal),
+                turn(Transform::MirrorHorizontal),
                 crop_layer(fitted_crop(40, 24, 45.0, [0.3, 0.3, 0.4, 0.4])),
                 scale_layer(1.5),
                 Layer::pixel(0, 0, [7, 8, 253]),
@@ -1325,31 +1660,19 @@ mod tests {
     fn exact_transform_coordinate_tables_for_asymmetric_input() {
         let source = source(3, 2);
         assert_eq!(
-            red(&rendered(
-                &source,
-                vec![Layer::transform(Transform::RotateRight)]
-            )),
+            red(&rendered(&source, vec![turn(Transform::RotateRight)])),
             vec![3, 0, 4, 1, 5, 2]
         );
         assert_eq!(
-            red(&rendered(
-                &source,
-                vec![Layer::transform(Transform::RotateLeft)]
-            )),
+            red(&rendered(&source, vec![turn(Transform::RotateLeft)])),
             vec![2, 5, 1, 4, 0, 3]
         );
         assert_eq!(
-            red(&rendered(
-                &source,
-                vec![Layer::transform(Transform::MirrorHorizontal)]
-            )),
+            red(&rendered(&source, vec![turn(Transform::MirrorHorizontal)])),
             vec![2, 1, 0, 5, 4, 3]
         );
         assert_eq!(
-            red(&rendered(
-                &source,
-                vec![Layer::transform(Transform::FlipVertical)]
-            )),
+            red(&rendered(&source, vec![turn(Transform::FlipVertical)])),
             vec![3, 4, 5, 0, 1, 2]
         );
     }
@@ -1363,21 +1686,31 @@ mod tests {
             (Transform::MirrorHorizontal, 2),
             (Transform::FlipVertical, 2),
         ] {
-            let layers = (0..count).map(|_| Layer::transform(transform)).collect();
+            let layers = (0..count).map(|_| turn(transform)).collect();
             assert_eq!(rendered(&source, layers).rgba, source.rgba);
+            // The same actions composed into one layer reach the neutral orientation, whose
+            // identity mapping shares the source buffer instead of copying it.
+            let mut composed = Orientation::NEUTRAL;
+            for _ in 0..count {
+                composed = composed.then(transform);
+            }
+            assert_eq!(composed, Orientation::NEUTRAL, "{transform:?}");
+            let collapsed = rendered(&source, vec![Layer::orientation(composed)]);
+            assert_eq!(collapsed.rgba, source.rgba);
+            assert!(Arc::ptr_eq(&collapsed.rgba, &source.rgba));
         }
         let before = rendered(
             &source,
             vec![
                 Layer::pixel(0, 0, [250, 0, 0]),
-                Layer::transform(Transform::RotateRight),
+                turn(Transform::RotateRight),
             ],
         );
         assert_eq!(before.pixel(2, 0), Some([250, 0, 0, 255]));
         let after = rendered(
             &source,
             vec![
-                Layer::transform(Transform::RotateRight),
+                turn(Transform::RotateRight),
                 Layer::pixel(0, 0, [250, 0, 0]),
             ],
         );
@@ -1399,17 +1732,76 @@ mod tests {
                 for third in transforms {
                     let layers = vec![
                         Layer::pixel(1, 1, [201, 1, 2]),
-                        Layer::transform(first),
+                        turn(first),
                         Layer::pixel(0, 0, [3, 202, 4]),
-                        Layer::transform(second),
+                        turn(second),
                         Layer::pixel(1, 1, [5, 6, 203]),
-                        Layer::transform(third),
+                        turn(third),
                         Layer::pixel(0, 0, [204, 8, 9]),
                     ];
                     let expected = reference(&source, &layers);
                     let actual = rendered(&source, layers);
                     assert_eq!((actual.width, actual.height), (expected.0, expected.1));
                     assert_eq!(actual.rgba.as_ref(), expected.2);
+                }
+            }
+        }
+    }
+
+    /// One orientation layer holding the composed state renders exactly what the same actions
+    /// render as separate single-action layers, and both match the stepwise reference. Every one
+    /// of the eight orientations against every action, and every sequence of three actions, on a
+    /// non-square source so a wrongly composed quarter turn changes the dimensions.
+    #[test]
+    fn a_composed_orientation_renders_what_its_separate_action_layers_render() {
+        let source = source(5, 3);
+        let transforms = [
+            Transform::RotateLeft,
+            Transform::RotateRight,
+            Transform::MirrorHorizontal,
+            Transform::FlipVertical,
+        ];
+        let orientations = [false, true]
+            .into_iter()
+            .flat_map(|mirror| (0..4).map(move |turns| Orientation { mirror, turns }));
+        for state in orientations {
+            for transform in transforms {
+                let separate = vec![Layer::orientation(state), turn(transform)];
+                let expected = reference(&source, &separate);
+                let collapsed = rendered(&source, vec![Layer::orientation(state.then(transform))]);
+                let stepwise = rendered(&source, separate);
+                for raster in [&collapsed, &stepwise] {
+                    assert_eq!(
+                        (raster.width, raster.height),
+                        (expected.0, expected.1),
+                        "{state:?} then {transform:?}"
+                    );
+                    assert_eq!(
+                        raster.rgba.as_ref(),
+                        expected.2,
+                        "{state:?} then {transform:?}"
+                    );
+                }
+            }
+        }
+        for first in transforms {
+            for second in transforms {
+                for third in transforms {
+                    let separate = vec![turn(first), turn(second), turn(third)];
+                    let composed = Orientation::of(first).then(second).then(third);
+                    let expected = reference(&source, &separate);
+                    let collapsed = rendered(&source, vec![Layer::orientation(composed)]);
+                    assert_eq!(
+                        (collapsed.width, collapsed.height),
+                        (expected.0, expected.1),
+                        "{first:?} {second:?} {third:?}"
+                    );
+                    assert_eq!(
+                        collapsed.rgba.as_ref(),
+                        expected.2,
+                        "{first:?} {second:?} {third:?}"
+                    );
+                    assert_eq!(rendered(&source, separate).rgba, collapsed.rgba);
                 }
             }
         }
@@ -1430,9 +1822,9 @@ mod tests {
             format: 1,
             layers: vec![
                 Layer::pixel(1, 1, [201, 1, 2]),
-                Layer::transform(Transform::RotateLeft),
+                turn(Transform::RotateLeft),
                 Layer::pixel(0, 0, [3, 202, 4]),
-                Layer::transform(Transform::MirrorHorizontal),
+                turn(Transform::MirrorHorizontal),
                 Layer::pixel(0, 0, [204, 8, 9]),
                 Layer::pixel(0, 0, [205, 10, 11]),
             ],

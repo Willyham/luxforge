@@ -37,9 +37,9 @@ use std::{
     time::{Duration, Instant},
 };
 use tasks::{
-    ACTOR, Refresh, SyncResult, Upload, import_task, merge_current_entry, modules_task, mutation,
-    older_task, pan_task, preview_task, recipe_task, session_task, state_task, sync_task,
-    versions_task, workspace_task,
+    ACTOR, Refresh, SyncResult, Upload, import_task, locate_task, merge_current_entry,
+    modules_task, mutation, older_task, pan_task, preview_task, recipe_task, session_task,
+    state_task, sync_task, versions_task, workspace_task,
 };
 
 /// What the editor was last asked to show, correlated with logged events and captured frames.
@@ -1303,6 +1303,36 @@ impl Editor {
             }
             Message::PointerMoved(point) => self.pointer = point,
             Message::PointPicked { x, y } => {
+                // The widget hands over a pixel of the raster on screen. Which content pixel that
+                // is belongs to the core, so the pick leaves here as a read and fills nothing yet.
+                if tools::point_pick(&self.modules).is_none() {
+                    return Task::none();
+                }
+                let Some(state) = &self.state else {
+                    return Task::none();
+                };
+                let entry = self
+                    .display_entry
+                    .clone()
+                    .unwrap_or_else(|| state.current_entry.id.clone());
+                return locate_task(
+                    self.owner.clone(),
+                    self.client,
+                    state.asset.id.clone(),
+                    entry,
+                    x,
+                    y,
+                );
+            }
+            Message::PointLocated {
+                entry,
+                view: (view_x, view_y),
+                result,
+            } => {
+                if self.displayed_entry() != Some(entry) {
+                    // The canvas has moved to another stack; this answer describes the old one.
+                    return Task::none();
+                }
                 let Some((action, x_parameter, y_parameter)) = tools::point_pick(&self.modules)
                 else {
                     return Task::none();
@@ -1312,10 +1342,28 @@ impl Editor {
                     x_parameter.to_owned(),
                     y_parameter.to_owned(),
                 );
-                self.fields.set(&action, &x_parameter, x.to_string());
-                self.fields.set(&action, &y_parameter, y.to_string());
-                self.event("canvas_pick", json!({"action":action,"x":x,"y":y}));
-                self.status = format!("Picked ({x}, {y}) into {action}");
+                match result {
+                    Ok(point) => {
+                        let (x, y) = (point.content_x, point.content_y);
+                        self.fields.set(&action, &x_parameter, x.to_string());
+                        self.fields.set(&action, &y_parameter, y.to_string());
+                        self.event(
+                            "canvas_pick",
+                            json!({"action":action,"view_x":view_x,"view_y":view_y,"x":x,"y":y}),
+                        );
+                        self.status = format!(
+                            "Picked ({x}, {y}) from view ({view_x}, {view_y}) into {action}"
+                        );
+                    }
+                    Err(error) => {
+                        // Outside the content stage: say so and leave the fields as they were.
+                        self.event(
+                            "canvas_pick",
+                            json!({"action":action,"view_x":view_x,"view_y":view_y,"error":error}),
+                        );
+                        self.status = error;
+                    }
+                }
             }
             Message::FocusNext => return operation::focus_next(),
             Message::FocusPrevious => return operation::focus_previous(),
@@ -1338,6 +1386,11 @@ impl Editor {
                 };
                 if self.busy {
                     return Task::none();
+                }
+                // The current row is the live state: selecting it returns to current instead of
+                // starting a historical preview, which is also what the API does with that entry.
+                if state.current_entry.id == entry_id {
+                    return self.update(Message::ReturnCurrent);
                 }
                 let params = json!({"asset_id":state.asset.id,"entry_id":entry_id});
                 let asset = state.asset.id.clone();
@@ -1632,6 +1685,16 @@ impl Editor {
         self.state.is_some() && self.session.preview.can_edit() && !self.busy
     }
 
+    /// The entry whose stack the canvas is showing: the uploaded preview's entry, or the current
+    /// one before the first preview has arrived. A pick is answered against exactly this stack.
+    pub(crate) fn displayed_entry(&self) -> Option<lightwell_core::EntryId> {
+        self.display_entry.clone().or_else(|| {
+            self.state
+                .as_ref()
+                .map(|state| state.current_entry.id.clone())
+        })
+    }
+
     /// The crop draft is displayed instead of the plain preview only while its own input stage is on
     /// the GPU and the session shows the current state.
     pub(crate) fn drafting(&self) -> bool {
@@ -1740,26 +1803,48 @@ fn module_summary(modules: &[ModuleDescriptor]) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use lightwell_core::{AssetId, POINTER_MODE, Zoom};
-    use testing::{boot, crop_descriptor, descriptors, entry, finish, opened, refresh_for};
+    use lightwell_core::{AssetId, ContentPoint, EntryId, POINTER_MODE, Zoom};
+    use testing::{
+        attach_log, boot, crop_descriptor, descriptors, entry, finish, logged, opened, pick_events,
+        pick_fields, picking, refresh_for,
+    };
 
     #[test]
-    fn a_canvas_pick_fills_the_declared_coordinate_fields_without_committing() {
-        let (mut editor, catalog) = boot();
-        let _ = editor.update(Message::ModulesLoaded(Ok(descriptors())));
-        assert!(editor.modules_ready);
-        let (action, x, y) = tools::point_pick(&editor.modules).expect("a canvas pick");
-        let (action, x, y) = (action.to_owned(), x.to_owned(), y.to_owned());
+    fn a_canvas_pick_fills_the_located_content_coordinate_without_committing() {
+        let (mut editor, catalog, entry_id) = picking();
+        let (action, x, y) = pick_fields(&editor);
+        let log = attach_log(&mut editor);
         let _ = editor.update(Message::PointerMoved(Some((7, 9))));
         assert_eq!(editor.pointer, Some((7, 9)));
+        // The click itself fills nothing: which content pixel it is is the core's answer.
         let _ = editor.update(Message::PointPicked { x: 7, y: 9 });
-        assert_eq!(editor.fields.get(&action, &x), Some("7"));
-        assert_eq!(editor.fields.get(&action, &y), Some("9"));
-        assert!(
-            editor.state.is_none(),
-            "a pick opens no asset and commits nothing"
+        assert_eq!(editor.fields.get(&action, &x), Some("0"));
+        assert_eq!(editor.fields.get(&action, &y), Some("0"));
+        let _ = editor.update(Message::PointLocated {
+            entry: entry_id,
+            view: (7, 9),
+            result: Ok(ContentPoint {
+                content_x: 100,
+                content_y: 42,
+                width: 400,
+                height: 300,
+            }),
+        });
+        assert_eq!(editor.fields.get(&action, &x), Some("100"));
+        assert_eq!(editor.fields.get(&action, &y), Some("42"));
+        assert_eq!(
+            editor.status,
+            format!("Picked (100, 42) from view (7, 9) into {action}")
         );
-        assert_eq!(editor.api_sequence, 0);
+        // The evidence carries both pixels, so a capture can be read against the view and the stack.
+        assert_eq!(
+            pick_events(&logged(&mut editor, &log)),
+            vec![&json!({"action":action,"view_x":7,"view_y":9,"x":100,"y":42})]
+        );
+        // A pick commits nothing: the open stack and its revision are untouched.
+        let state = editor.state.as_ref().expect("the open asset");
+        assert_eq!(state.revision, 4);
+        assert!(state.current_entry.snapshot.recipe.layers.is_empty());
         let _ = editor.update(Message::Field {
             action: action.clone(),
             parameter: x.clone(),
@@ -1776,7 +1861,60 @@ mod tests {
         );
         assert_eq!(snapshot["developer"], json!(false));
         assert_eq!(snapshot["workspace"]["mode"], json!(POINTER_MODE));
-        assert!(!editor.editable(), "nothing is open");
+        finish(editor, catalog);
+    }
+
+    #[test]
+    fn a_located_point_for_another_entry_is_dropped() {
+        let (mut editor, catalog, _) = picking();
+        let (action, x, y) = pick_fields(&editor);
+        let log = attach_log(&mut editor);
+        let before = editor.status.clone();
+        // The canvas moved to another stack while the mapping was in flight.
+        let _ = editor.update(Message::PointLocated {
+            entry: EntryId::new(),
+            view: (7, 9),
+            result: Ok(ContentPoint {
+                content_x: 100,
+                content_y: 42,
+                width: 400,
+                height: 300,
+            }),
+        });
+        assert_eq!(editor.fields.get(&action, &x), Some("0"));
+        assert_eq!(editor.fields.get(&action, &y), Some("0"));
+        assert_eq!(editor.status, before);
+        assert!(pick_events(&logged(&mut editor, &log)).is_empty());
+        finish(editor, catalog);
+    }
+
+    #[test]
+    fn a_point_outside_the_content_stage_reports_and_fills_nothing() {
+        let (mut editor, catalog, entry_id) = picking();
+        let (action, x, y) = pick_fields(&editor);
+        let _ = editor.update(Message::Field {
+            action: action.clone(),
+            parameter: x.clone(),
+            text: "5".into(),
+        });
+        let log = attach_log(&mut editor);
+        let refusal = "validation: point (7, 9) is outside the 4x3 rendered image";
+        let _ = editor.update(Message::PointLocated {
+            entry: entry_id,
+            view: (7, 9),
+            result: Err(refusal.into()),
+        });
+        assert_eq!(
+            editor.fields.get(&action, &x),
+            Some("5"),
+            "nothing is filled"
+        );
+        assert_eq!(editor.fields.get(&action, &y), Some("0"));
+        assert_eq!(editor.status, refusal);
+        assert_eq!(
+            pick_events(&logged(&mut editor, &log)),
+            vec![&json!({"action":action,"view_x":7,"view_y":9,"error":refusal})]
+        );
         finish(editor, catalog);
     }
 
@@ -2223,6 +2361,19 @@ mod tests {
         assert_eq!(
             view::surface_columns(width, scale, &editor.workspace),
             [0, (width * scale) as u32]
+        );
+        finish(editor, catalog);
+    }
+
+    #[test]
+    fn selecting_the_current_entry_returns_to_current_instead_of_previewing() {
+        let (mut editor, catalog, _, entry_id) = opened(Vec::new(), 1);
+        let _ = editor.update(Message::Preview(entry_id));
+        assert!(editor.busy);
+        assert!(
+            editor.status.starts_with("Returning to current"),
+            "{}",
+            editor.status
         );
         finish(editor, catalog);
     }

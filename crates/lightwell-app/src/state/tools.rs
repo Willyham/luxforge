@@ -14,7 +14,8 @@ use crate::{
 };
 use lightwell_core::{
     ActionDescriptor, CanvasInteraction, Control, CropPayload, EffectStage, Layer,
-    ModuleDescriptor, ParameterDescriptor, ParameterKind, ResetAction,
+    ModuleDescriptor, ORIENTATION_EFFECT, Orientation, ParameterDescriptor, ParameterKind,
+    ResetAction,
 };
 use serde_json::{Map, Value};
 use std::{
@@ -371,9 +372,15 @@ fn active(module: &ModuleDescriptor, inputs: &Inputs<'_>) -> bool {
         })
 }
 
-/// A neutral layer is stored but changes nothing, so it is not an edit. A crop-frame module's
-/// neutral payload is the whole image; no other declared interaction has one yet.
+/// A neutral layer is stored but changes nothing, so it is not an edit. Two stored payloads have a
+/// neutral form: the orientation layer's identity, which is what four quarter turns leave behind,
+/// and a crop-frame module's whole image. A payload with no neutral form is always an edit.
 fn neutral(module: &ModuleDescriptor, layer: &Layer) -> bool {
+    if layer.effect_id == ORIENTATION_EFFECT {
+        return serde_json::from_value::<Orientation>(layer.payload.clone())
+            .map(|orientation| orientation == Orientation::NEUTRAL)
+            .unwrap_or(false);
+    }
     if !matches!(module.canvas, Some(CanvasInteraction::CropFrame { .. })) {
         return false;
     }

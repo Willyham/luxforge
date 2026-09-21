@@ -288,6 +288,55 @@ pub(crate) fn scripted(steps: &str) -> (Editor, PathBuf, AssetId, PathBuf) {
     (editor, catalog, asset, dir)
 }
 
+/// An editor with the registered modules discovered and one empty-stack asset open, which is what
+/// a canvas pick needs: a declared pick action, a stack to locate in and a displayed entry.
+pub(crate) fn picking() -> (Editor, PathBuf, EntryId) {
+    let (mut editor, catalog, _, entry_id) = opened(Vec::new(), 4);
+    let _ = editor.update(Message::ModulesLoaded(Ok(descriptors())));
+    assert!(editor.modules_ready);
+    assert_eq!(editor.displayed_entry(), Some(entry_id.clone()));
+    (editor, catalog, entry_id)
+}
+
+/// The names the pick action declares for its coordinate fields.
+pub(crate) fn pick_fields(editor: &Editor) -> (String, String, String) {
+    let (action, x, y) = crate::state::tools::point_pick(&editor.modules).expect("a canvas pick");
+    (action.to_owned(), x.to_owned(), y.to_owned())
+}
+
+/// Attach a real diagnostics log so the evidence records a pick writes can be read back.
+pub(crate) fn attach_log(editor: &mut Editor) -> PathBuf {
+    let path = std::env::temp_dir().join(format!(
+        "lightwell-pick-{}-{}.jsonl",
+        std::process::id(),
+        REQUEST_NUMBER.fetch_add(1, Ordering::Relaxed)
+    ));
+    editor.diagnostics = Some(crate::diagnostics::Diagnostics::start(&path).expect("a fresh log"));
+    path
+}
+
+/// Close the attached log and return the records the harness would read.
+pub(crate) fn logged(editor: &mut Editor, path: &PathBuf) -> Vec<Value> {
+    assert!(
+        editor.diagnostics.take().expect("an attached log").finish(),
+        "the log flushed"
+    );
+    let text = std::fs::read_to_string(path).expect("the log file");
+    std::fs::remove_file(path).expect("the log is removed");
+    text.lines()
+        .map(|line| serde_json::from_str(line).expect("a JSON record"))
+        .collect()
+}
+
+/// The `canvas_pick` details the diagnostics log holds, in order.
+pub(crate) fn pick_events(records: &[Value]) -> Vec<&Value> {
+    records
+        .iter()
+        .filter(|record| record["event"] == json!("canvas_pick"))
+        .map(|record| &record["detail"])
+        .collect()
+}
+
 pub(crate) fn evidence(editor: &Editor) -> &Evidence {
     editor.evidence.as_ref().expect("an evidence run")
 }

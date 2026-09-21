@@ -7,7 +7,8 @@ use crate::{
 };
 use iced_runtime::image as image_memory;
 use lightwell_core::{
-    ClientSession, EntryId, HistoryPage, ModuleDescriptor, PreviewJob, RecipeDescription, Version,
+    ClientSession, ContentPoint, EntryId, HistoryPage, ModuleDescriptor, PreviewJob,
+    RecipeDescription, Version,
 };
 use serde_json::{Map, Value};
 use std::path::PathBuf;
@@ -229,12 +230,22 @@ pub(crate) enum Message {
         action: String,
         preset: Map<String, Value>,
     },
-    /// The last pointer position over the photo, already mapped to image pixels.
+    /// The last pointer position over the photo, already mapped to the displayed raster's pixels.
+    /// That is the view pixel; the content pixel behind it is asked for only when a pick happens.
     PointerMoved(Option<(u32, u32)>),
-    /// A canvas pick fills the declared coordinate fields; it never commits.
+    /// A canvas pick asks the core where that view pixel lands in the content stage; it never
+    /// commits and it fills nothing until the answer arrives.
     PointPicked {
         x: u32,
         y: u32,
+    },
+    /// The content pixel one picked view pixel shows, as the core's mapping answered it. The entry
+    /// it was located in travels with it so an answer for a stack that has since been replaced is
+    /// dropped instead of filling the fields with a coordinate from another image.
+    PointLocated {
+        entry: EntryId,
+        view: (u32, u32),
+        result: Result<ContentPoint, String>,
     },
     /// Move focus to the next generated field.
     FocusNext,

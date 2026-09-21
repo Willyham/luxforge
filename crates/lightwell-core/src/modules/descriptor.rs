@@ -35,7 +35,9 @@ pub fn valid_name(value: &str) -> bool {
     valid_segments(value, '-', false)
 }
 
-/// Where an effect acts: geometry changes the stage, pixel effects address their input stage.
+/// Where an effect acts, and so where the host puts a new layer: a geometry effect changes the
+/// stage and extends the tail at the end of the stack; a pixel effect addresses its input stage and
+/// joins the stack before that tail, so the geometry after it carries the edit.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum EffectStage {

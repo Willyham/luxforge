@@ -374,6 +374,86 @@ fn the_workspace_additions_are_reachable_through_the_json_api() {
     std::fs::remove_dir_all(dir).unwrap();
 }
 
+/// The orientation layer changes what the stack holds, not what anyone can ask for: the four
+/// durable action identities, the `edit.transform` method with its enum and the four generated
+/// controls stay exactly as they were, and the module declares the one orientation effect.
+#[test]
+fn transform_actions_controls_and_the_orientation_effect_stay_discoverable() {
+    const IDENTITIES: [&str; 4] = [
+        "rotate-left",
+        "rotate-right",
+        "mirror-horizontal",
+        "flip-vertical",
+    ];
+    let dir = temp("transform-discovery");
+    let (owner, join) = OwnerHandle::start(&dir.join("api.sqlite")).unwrap();
+    let client = owner.register();
+    let call = |method: &str| -> Value {
+        let response = owner
+            .call(
+                client,
+                ApiRequest {
+                    id: method.into(),
+                    method: method.into(),
+                    params: json!({}),
+                    token: None,
+                },
+            )
+            .unwrap();
+        assert!(response.error.is_none(), "{method}: {:?}", response.error);
+        response.result.unwrap()
+    };
+
+    let schema = call("schema.list");
+    let method = schema["methods"]["edit.transform"].clone();
+    assert!(method["mutates"].as_bool().unwrap());
+    assert_eq!(
+        method["required"],
+        json!(["asset_id", "mutation", "transform"])
+    );
+    let declared = method["parameters"]
+        .as_array()
+        .expect("the declared parameters")
+        .clone();
+    assert_eq!(declared.len(), 1);
+    assert_eq!(declared[0]["name"], json!("transform"));
+    assert_eq!(declared[0]["kind"], json!("enum"));
+    assert_eq!(declared[0]["options"], json!(IDENTITIES));
+
+    let modules = call("module.list");
+    let transform = modules["modules"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|module| module["id"] == json!("lightwell.transform"))
+        .expect("the transform module descriptor")
+        .clone();
+    assert_eq!(
+        transform["effects"],
+        json!([{"id":"lightwell.geometry.orientation","format":1,"stage":"geometry"}]),
+        "one geometry effect, holding the composed orientation"
+    );
+    let grouped = transform["controls"].as_array().unwrap();
+    assert_eq!(grouped.len(), 1);
+    assert_eq!(grouped[0]["kind"], json!("group"));
+    let controls = grouped[0]["controls"].as_array().unwrap();
+    assert_eq!(
+        controls
+            .iter()
+            .map(|control| {
+                assert_eq!(control["kind"], json!("action"));
+                assert_eq!(control["action"], json!("transform"));
+                control["preset"]["transform"].clone()
+            })
+            .collect::<Vec<_>>(),
+        IDENTITIES.map(Value::from).to_vec(),
+        "one control per durable action identity"
+    );
+    owner.stop();
+    join.join().unwrap();
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
 /// The crop journey used for parity: one rectangle, a ratio fit at an angle, a reset and an angled
 /// rectangle, as (expected revision, request id, action, parameters).
 const CROP_JOURNEY: [(u64, &str, &str, &str); 4] = [
@@ -471,6 +551,37 @@ fn crop_actions_are_discoverable_and_identical_through_actions_and_the_api() {
     };
     let schema = call("schema.list", json!({}));
     let methods = schema["methods"].as_object().unwrap();
+    // The published contract says which stage a pixel edit's coordinates address.
+    for name in ["x", "y"] {
+        let coordinate = methods["edit.set-pixel"]["parameters"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|parameter| parameter["name"] == json!(name))
+            .expect("a declared coordinate")
+            .clone();
+        assert!(
+            coordinate["notes"]
+                .as_str()
+                .unwrap()
+                .contains("content stage"),
+            "{coordinate}"
+        );
+    }
+    assert!(
+        methods["edit.set-pixel"]["notes"]
+            .as_str()
+            .unwrap()
+            .contains("content stage"),
+        "the action notes describe the content stage"
+    );
+    assert!(
+        schema["coordinate_space"]
+            .as_str()
+            .unwrap()
+            .contains("content stage"),
+        "the coordinate note describes the content stage"
+    );
     for method in ["edit.crop", "edit.crop-fit", "edit.crop-reset"] {
         assert!(methods.contains_key(method), "{method} is not listed");
         assert!(methods[method]["mutates"].as_bool().unwrap(), "{method}");
