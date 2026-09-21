@@ -15,7 +15,7 @@ use iced::{
     Alignment, Element, Length,
     widget::{button, mouse_area, row, text, text_input},
 };
-use lightwell_ui::{IconButtonModel, SegmentedModel, icon_button, segmented, theme};
+use lightwell_ui::{Icon, IconButtonModel, SegmentedModel, icon_button, segmented, theme};
 
 /// How wide the typed-percentage field is: enough for four digits and the caret.
 const ZOOM_FIELD_WIDTH: f32 = 56.0;
@@ -116,7 +116,7 @@ pub(crate) fn actions(model: &TitleBarModel) -> Element<'_, Message> {
     row![
         icon_button(
             &IconButtonModel {
-                glyph: "\u{25f0}".into(),
+                icon: Icon::Clipping,
                 tooltip: "Clipping overlays (J)".into(),
                 enabled: model.can_view,
                 selected: model.clipping_on,
@@ -125,7 +125,7 @@ pub(crate) fn actions(model: &TitleBarModel) -> Element<'_, Message> {
         ),
         icon_button(
             &IconButtonModel {
-                glyph: "\u{21b6}".into(),
+                icon: Icon::Undo,
                 tooltip: "Undo".into(),
                 enabled: model.can_undo,
                 selected: false,
@@ -134,7 +134,7 @@ pub(crate) fn actions(model: &TitleBarModel) -> Element<'_, Message> {
         ),
         icon_button(
             &IconButtonModel {
-                glyph: "\u{21b7}".into(),
+                icon: Icon::Redo,
                 tooltip: "Redo".into(),
                 enabled: model.can_redo,
                 selected: false,
@@ -143,7 +143,7 @@ pub(crate) fn actions(model: &TitleBarModel) -> Element<'_, Message> {
         ),
         icon_button(
             &IconButtonModel {
-                glyph: "\u{25e7}".into(),
+                icon: Icon::StatePanel,
                 tooltip: "Toggle the state panel".into(),
                 enabled: true,
                 selected: model.state_panel_open,
@@ -152,7 +152,7 @@ pub(crate) fn actions(model: &TitleBarModel) -> Element<'_, Message> {
         ),
         icon_button(
             &IconButtonModel {
-                glyph: "\u{25e8}".into(),
+                icon: Icon::ToolsPanel,
                 tooltip: "Toggle the tools panel".into(),
                 enabled: true,
                 selected: model.tools_panel_open,

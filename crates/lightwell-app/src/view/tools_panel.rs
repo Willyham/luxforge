@@ -10,21 +10,27 @@ use crate::{
     state::{
         histogram::{HIGHLIGHT_GLYPH, HIGHLIGHT_RULE, HistogramModel, SHADOW_GLYPH, SHADOW_RULE},
         tools::{
-            ActionControl, ColorControl, ControlModel, CropSectionModel, EnumControl, GroupControl,
-            SectionModel, SliderControl, ToolsModel, ValueEdit,
+            ActionControl, ActionControlStyle, ChoiceControlStyle, ColorControl, ColorControlStyle,
+            ControlModel, CropSectionModel, CurveControl, EnumControl, GroupControl,
+            NumberControlStyle, RailStyle, SectionModel, SliderControl, ToggleControl, ToolsModel,
+            ValueEdit,
         },
     },
 };
 use iced::{
-    Alignment, Element, Length,
+    Alignment, Color, Element, Length,
     widget::{Row, button, column, mouse_area, row, scrollable, text_input},
 };
 use lightwell_ui::{
-    BINS, ChipModel, ClipTriangleModel, HistogramChannel, IconButtonModel, SectionHeaderModel,
-    SegmentedModel, SliderModel, SubGroupHeaderModel, caption, chip, clip_triangle, error_caption,
-    histogram, icon_button, inline_menu, section_header, section_label, segmented, slider,
-    sub_group_header, theme,
+    BINS, ChipModel, ClipTriangleModel, ColorPickerModel, ColorSwatchModel, ControlKey,
+    ControlKeyEvent, CurveEditorModel, CurvePointRow, HistogramChannel, Icon, IconButtonModel,
+    MenuChoiceModel, NumberFieldModel, RailDecoration, SectionHeaderModel, SegmentedModel,
+    SliderModel, StepperModel, SubGroupHeaderModel, ToggleModel, caption, chip, clip_triangle,
+    color_picker, color_swatch, curve_editor, error_caption, focus_control, histogram, icon_button,
+    inline_menu, menu_choice, number_field, section_header, section_label, segmented, slider,
+    stepper, sub_group_header, theme, toggle,
 };
+use serde_json::{Map, Value};
 
 pub(crate) fn tools_panel<'a>(
     model: &'a ToolsModel,
@@ -49,12 +55,12 @@ pub(crate) fn tools_panel<'a>(
     // workspace layout reserves.
     panel = panel.push(inspector(plot));
     for section in &model.sections {
-        panel = panel.push(section_view(section, menu));
+        panel = panel.push(section_view(section, menu, plot));
     }
     if !model.developer.is_empty() {
         panel = panel.push(section_label("Developer"));
         for section in &model.developer {
-            panel = panel.push(section_view(section, menu));
+            panel = panel.push(section_view(section, menu, plot));
         }
     }
     scrollable(panel).height(Length::Fill).into()
@@ -153,9 +159,21 @@ fn plot_version(model: &HistogramModel) -> u64 {
     hasher.finish()
 }
 
+fn curve_version(version: u64, background: bool, plot: &HistogramModel) -> u64 {
+    if !background {
+        return version;
+    }
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    version.hash(&mut hasher);
+    plot_version(plot).hash(&mut hasher);
+    hasher.finish()
+}
+
 fn section_view<'a>(
     section: &'a SectionModel,
     menu: Option<&'a MenuTarget>,
+    plot: &HistogramModel,
 ) -> Element<'a, Message> {
     let header = section_header(
         &SectionHeaderModel {
@@ -180,6 +198,7 @@ fn section_view<'a>(
                 section.enabled,
                 control,
                 menu,
+                plot,
             ));
         }
     }
@@ -191,12 +210,15 @@ fn control_view<'a>(
     enabled: bool,
     control: &'a ControlModel,
     menu: Option<&'a MenuTarget>,
+    plot: &HistogramModel,
 ) -> Element<'a, Message> {
     match control {
-        ControlModel::Slider(field) => slider_view(enabled, field, menu),
+        ControlModel::Slider(field) => number_view(enabled, field, menu),
+        ControlModel::Toggle(toggle) => toggle_view(enabled, toggle, menu),
         ControlModel::Enum(choice) => enum_view(enabled, choice, menu),
         ControlModel::Color(color) => color_view(enabled, color, menu),
-        ControlModel::Group(group) => group_view(module_id, enabled, group, menu),
+        ControlModel::Curve(curve) => curve_view(enabled, curve, menu, plot),
+        ControlModel::Group(group) => group_view(module_id, enabled, group, menu, plot),
         ControlModel::Action(action) => action_view(action, menu),
         ControlModel::Unsupported(message) => error_caption(message.clone()),
         ControlModel::CropFrame(frame) => crop_section_view(frame, menu),
@@ -205,35 +227,59 @@ fn control_view<'a>(
 
 /// Whether this control is the one whose context menu is open. A patch action's controls are one
 /// per field, so the field is part of the identity.
-fn menu_open_for(menu: Option<&MenuTarget>, action: &str, parameter: Option<&str>) -> bool {
+fn menu_open_for_preset(
+    menu: Option<&MenuTarget>,
+    action: &str,
+    parameter: Option<&str>,
+    preset: Option<&Map<String, Value>>,
+) -> bool {
     matches!(
         menu,
-        Some(MenuTarget::Control { action: open, parameter: named })
-            if open == action && named.as_deref() == parameter
+        Some(MenuTarget::Control { action: open, parameter: named, preset: saved })
+            if open == action && named.as_deref() == parameter && saved.as_ref() == preset
     )
 }
 
 /// The control's own context-menu target.
-fn control_target(action: &str, parameter: Option<&str>) -> MenuTarget {
+fn control_target_preset(
+    action: &str,
+    parameter: Option<&str>,
+    preset: Option<&Map<String, Value>>,
+) -> MenuTarget {
     MenuTarget::Control {
         action: action.to_owned(),
         parameter: parameter.map(str::to_owned),
+        preset: preset.cloned(),
     }
 }
 
 /// The "Copy as JSON request" / "Cancel" menu a generated control's context menu opens, for the
 /// exact `edit.<action>` request its current values would send.
-fn control_menu(action: &str, parameter: Option<&str>) -> Element<'static, Message> {
-    inline_menu(vec![
-        (
-            "Copy as JSON request".to_owned(),
-            Message::CopyRequest {
-                action: action.to_owned(),
-                parameter: parameter.map(str::to_owned),
-            },
-        ),
-        ("Cancel".to_owned(), Message::CloseMenu),
-    ])
+fn control_menu_preset(
+    action: &str,
+    parameter: Option<&str>,
+    preset: Option<&Map<String, Value>>,
+) -> Element<'static, Message> {
+    let name = match parameter {
+        Some(parameter) => format!("edit.{action} · {parameter}"),
+        None => format!("edit.{action}"),
+    };
+    column![
+        caption(name),
+        inline_menu(vec![
+            (
+                "Copy as JSON request".to_owned(),
+                Message::CopyRequest {
+                    action: action.to_owned(),
+                    parameter: parameter.map(str::to_owned),
+                    preset: preset.cloned(),
+                },
+            ),
+            ("Cancel".to_owned(), Message::CloseMenu),
+        ])
+    ]
+    .spacing(3.0)
+    .into()
 }
 
 /// Wrap a generated control so a right-click on it opens its own context menu, and append the
@@ -244,11 +290,23 @@ fn with_control_menu<'a>(
     parameter: Option<&str>,
     menu: Option<&MenuTarget>,
 ) -> Element<'a, Message> {
+    with_control_menu_preset(control, action, parameter, None, menu)
+}
+
+fn with_control_menu_preset<'a>(
+    control: Element<'a, Message>,
+    action: &str,
+    parameter: Option<&str>,
+    preset: Option<&Map<String, Value>>,
+    menu: Option<&MenuTarget>,
+) -> Element<'a, Message> {
     let area: Element<'a, Message> = mouse_area(control)
-        .on_right_press(Message::OpenMenu(control_target(action, parameter)))
+        .on_right_press(Message::OpenMenu(control_target_preset(
+            action, parameter, preset,
+        )))
         .into();
-    if menu_open_for(menu, action, parameter) {
-        column![area, control_menu(action, parameter)]
+    if menu_open_for_preset(menu, action, parameter, preset) {
+        column![area, control_menu_preset(action, parameter, preset)]
             .spacing(4.0)
             .into()
     } else {
@@ -256,81 +314,219 @@ fn with_control_menu<'a>(
     }
 }
 
-/// The generic step for a non-integer slider: a fraction of its range, rounded to a power of ten.
-fn generic_step(min: f64, max: f64) -> f64 {
-    let span = (max - min).abs();
-    if !span.is_finite() || span <= 0.0 {
-        return 0.01;
+fn ui_edit(edit: &ValueEdit, display: &str, invalid: &Option<String>) -> lightwell_ui::ValueEdit {
+    match edit {
+        ValueEdit::Typing(_) => lightwell_ui::ValueEdit::Editing {
+            text: edit.text(display).to_owned(),
+            invalid: invalid.clone(),
+        },
+        ValueEdit::None => lightwell_ui::ValueEdit::Display,
     }
-    10f64.powf((span / 200.0).log10().round())
 }
 
-fn slider_view<'a>(
+fn rail_decoration(rail: &RailStyle) -> RailDecoration {
+    let colors: Vec<[u8; 3]> = match rail {
+        RailStyle::Plain => return RailDecoration::Plain,
+        RailStyle::Hue => (0..=6)
+            .map(|index| lightwell_ui::hsv_to_rgb([index as f64 / 6.0, 1.0, 1.0]))
+            .collect(),
+        RailStyle::Temperature => vec![[72, 132, 235], [225, 225, 225], [236, 163, 70]],
+        RailStyle::Tint => vec![[87, 168, 96], [225, 225, 225], [207, 99, 168]],
+        RailStyle::Gradient(stops) => stops.clone(),
+    };
+    RailDecoration::Colors(
+        colors
+            .into_iter()
+            .map(|[r, g, b]| Color::from_rgb8(r, g, b))
+            .collect(),
+    )
+}
+
+fn number_view<'a>(
     enabled: bool,
     field: &'a SliderControl,
     menu: Option<&'a MenuTarget>,
 ) -> Element<'a, Message> {
-    let step = if field.integer {
-        1.0
-    } else {
-        generic_step(field.min, field.max)
-    };
-    let zero = (field.min < 0.0 && field.max > 0.0).then_some(field.zero);
-    // `ValueEdit::text` is the one place that resolves "what a field shows right now" (what was
-    // typed, else the formatted value); the widget's own `Editing`/`Display` split follows it.
-    let edit = match &field.edit {
-        ValueEdit::Typing(_) => lightwell_ui::ValueEdit::Editing {
-            text: field.edit.text(&field.display).to_owned(),
-            invalid: field.invalid.clone(),
-        },
-        ValueEdit::None => lightwell_ui::ValueEdit::Display,
-    };
+    let step = field.step;
+    let edit = ui_edit(&field.edit, &field.display, &field.invalid);
     let (action, parameter) = (field.action.clone(), field.parameter.clone());
-    let (change_action, change_parameter) = (action.clone(), parameter.clone());
-    let (text_action, text_parameter) = (action.clone(), parameter.clone());
-    let (release_action, release_parameter) = (action.clone(), parameter.clone());
-    let (submit_action, submit_parameter) = (action.clone(), parameter.clone());
-    let reset_message = Message::ResetField { action, parameter };
-    let control: Element<'a, Message> = slider(
-        &SliderModel {
-            label: field.label.clone(),
-            min: field.min,
-            max: field.max,
-            value: field.value,
-            step,
-            shift_step: step * 10.0,
-            zero,
-            unit: field.unit.clone(),
-            display: field.display.clone(),
-            edit,
-            dragging: field.dragging,
+    let edit_start = Message::EditValue {
+        action: action.clone(),
+        parameter: parameter.clone(),
+    };
+    let submit = Message::Submit {
+        action: action.clone(),
+        parameter: Some(parameter.clone()),
+    };
+    let reset = Message::ResetField {
+        action: action.clone(),
+        parameter: parameter.clone(),
+    };
+    let text_action = action.clone();
+    let text_parameter = parameter.clone();
+    let on_text = move |text| Message::Field {
+        action: text_action.clone(),
+        parameter: text_parameter.clone(),
+        text,
+    };
+    let field_model = NumberFieldModel {
+        label: field.label.clone(),
+        display: field.display.clone(),
+        edit: edit.clone(),
+        unit: field.unit.clone(),
+        enabled,
+        id: Some(field.id.clone()),
+    };
+    let control: Element<'a, Message> = match field.style {
+        NumberControlStyle::Slider => {
+            let move_action = action.clone();
+            let move_parameter = parameter.clone();
+            slider(
+                &SliderModel {
+                    id: Some(field.id.clone()),
+                    label: field.label.clone(),
+                    min: field.min,
+                    max: field.max,
+                    soft_min: field.soft_min,
+                    soft_max: field.soft_max,
+                    value: field.value,
+                    step,
+                    shift_step: step * 10.0,
+                    fine_step: field.fine_step,
+                    zero: (field.soft_min..=field.soft_max)
+                        .contains(&field.zero)
+                        .then_some(field.zero),
+                    rail: rail_decoration(&field.rail),
+                    over_range: lightwell_ui::geometry::over_range_side(
+                        field.soft_min,
+                        field.soft_max,
+                        field.value,
+                    ),
+                    unit: field.unit.clone(),
+                    display: field.display.clone(),
+                    edit,
+                    dragging: field.dragging,
+                    enabled,
+                },
+                move |fraction| Message::ControlFraction {
+                    action: move_action.clone(),
+                    parameter: move_parameter.clone(),
+                    fraction,
+                },
+                Message::ControlReleased {
+                    action: action.clone(),
+                    parameter: parameter.clone(),
+                },
+                edit_start,
+                on_text,
+                submit,
+                reset,
+            )
+        }
+        NumberControlStyle::Field => number_field(&field_model, edit_start, on_text, submit, reset),
+        NumberControlStyle::Stepper => stepper(
+            &StepperModel {
+                field: field_model,
+                decrement_enabled: field.value > field.min,
+                increment_enabled: field.value < field.max,
+                decrement_tooltip: "Decrease".into(),
+                increment_tooltip: "Increase".into(),
+            },
+            Message::ControlStep {
+                action: action.clone(),
+                parameter: parameter.clone(),
+                direction: -1,
+            },
+            Message::ControlStep {
+                action: action.clone(),
+                parameter: parameter.clone(),
+                direction: 1,
+            },
+            edit_start,
+            on_text,
+            submit,
+            reset,
+        ),
+    };
+    let control = if field.style == NumberControlStyle::Slider {
+        control
+    } else {
+        let action = field.action.clone();
+        let parameter = field.parameter.clone();
+        focus_control(control, enabled, move |event| match event {
+            ControlKeyEvent::Pressed { key, shift, option } => {
+                key_direction(key).map(|direction| Message::ControlKeyNudge {
+                    action: action.clone(),
+                    parameter: parameter.clone(),
+                    direction,
+                    shift,
+                    option,
+                })
+            }
+            ControlKeyEvent::Released(key) if key_direction(key).is_some() => {
+                Some(Message::ControlReleased {
+                    action: action.clone(),
+                    parameter: parameter.clone(),
+                })
+            }
+            _ => None,
+        })
+    };
+    with_control_menu(control, &field.action, Some(&field.parameter), menu)
+}
+
+fn key_direction(key: ControlKey) -> Option<i8> {
+    match key {
+        ControlKey::Left | ControlKey::Down => Some(-1),
+        ControlKey::Right | ControlKey::Up => Some(1),
+        _ => None,
+    }
+}
+
+fn activates(event: ControlKeyEvent) -> bool {
+    matches!(
+        event,
+        ControlKeyEvent::Pressed {
+            key: ControlKey::Space | ControlKey::Enter,
+            ..
+        }
+    )
+}
+
+fn toggle_view<'a>(
+    enabled: bool,
+    control: &'a ToggleControl,
+    menu: Option<&'a MenuTarget>,
+) -> Element<'a, Message> {
+    let action = control.action.clone();
+    let parameter = control.parameter.clone();
+    let widget = toggle(
+        &ToggleModel {
+            label: control.label.clone(),
+            on: control.on,
             enabled,
         },
-        move |value| Message::SliderMoved {
-            action: change_action.clone(),
-            parameter: change_parameter.clone(),
-            value,
+        move |on| Message::ControlDiscrete {
+            action: action.clone(),
+            parameter: parameter.clone(),
+            value: Value::Bool(on),
         },
-        Message::SliderReleased {
-            action: release_action,
-            parameter: release_parameter,
-        },
-        Message::EditValue {
-            action: text_action.clone(),
-            parameter: text_parameter.clone(),
-        },
-        move |text| Message::Field {
-            action: text_action.clone(),
-            parameter: text_parameter.clone(),
-            text,
-        },
-        Message::Submit {
-            action: submit_action,
-            parameter: Some(submit_parameter),
-        },
-        reset_message,
     );
-    with_control_menu(control, &field.action, Some(&field.parameter), menu)
+    let action = control.action.clone();
+    let parameter = control.parameter.clone();
+    let on = control.on;
+    let widget = focus_control(widget, enabled, move |event| match event {
+        ControlKeyEvent::Pressed {
+            key: ControlKey::Space | ControlKey::Enter,
+            ..
+        } => Some(Message::ControlDiscrete {
+            action: action.clone(),
+            parameter: parameter.clone(),
+            value: Value::Bool(!on),
+        }),
+        _ => None,
+    });
+    with_control_menu(widget, &control.action, Some(&control.parameter), menu)
 }
 
 fn enum_view<'a>(
@@ -338,48 +534,82 @@ fn enum_view<'a>(
     choice: &'a EnumControl,
     menu: Option<&'a MenuTarget>,
 ) -> Element<'a, Message> {
-    let label = mouse_area(lightwell_ui::label(choice.label.clone())).on_right_press(
-        Message::OpenMenu(control_target(&choice.action, Some(&choice.parameter))),
+    let (action, parameter, options) = (
+        choice.action.clone(),
+        choice.parameter.clone(),
+        choice.options.clone(),
     );
-    let mut field = column![label].spacing(4.0);
-    let (action, parameter) = (choice.action.clone(), choice.parameter.clone());
-    if choice.segmented {
-        let options = choice.options.clone();
-        field = field.push(segmented(
-            &SegmentedModel {
-                options: choice.options.clone(),
-                selected: choice.selected.unwrap_or(0),
-                enabled,
-            },
-            move |index| Message::Field {
-                action: action.clone(),
-                parameter: parameter.clone(),
-                text: options[index].clone(),
-            },
-        ));
-    } else {
-        let chips = choice.options.iter().enumerate().map(|(index, option)| {
-            chip(
-                &ChipModel {
-                    label: option.clone(),
-                    trailing: None,
-                    selected: choice.selected == Some(index),
+    let mut field = column![lightwell_ui::label(choice.label.clone())].spacing(4.0);
+    match choice.style {
+        ChoiceControlStyle::Segmented => {
+            field = field.push(segmented(
+                &SegmentedModel {
+                    options: choice.options.clone(),
+                    selected: choice.selected.unwrap_or(0),
                     enabled,
                 },
-                Some(Message::Field {
+                move |index| Message::ControlDiscrete {
                     action: action.clone(),
                     parameter: parameter.clone(),
-                    text: option.clone(),
-                }),
-                None,
-            )
-        });
-        field = field.push(Row::new().spacing(4.0).extend(chips).wrap());
+                    value: Value::String(options[index].clone()),
+                },
+            ));
+        }
+        ChoiceControlStyle::Chips => {
+            let chips = choice.options.iter().enumerate().map(|(index, option)| {
+                chip(
+                    &ChipModel {
+                        label: option.clone(),
+                        trailing: None,
+                        selected: choice.selected == Some(index),
+                        enabled,
+                    },
+                    Some(Message::ControlDiscrete {
+                        action: action.clone(),
+                        parameter: parameter.clone(),
+                        value: Value::String(option.clone()),
+                    }),
+                    None,
+                )
+            });
+            field = field.push(Row::new().spacing(4.0).extend(chips).wrap());
+        }
+        ChoiceControlStyle::Menu => {
+            let action = choice.action.clone();
+            let parameter = choice.parameter.clone();
+            let options = choice.options.clone();
+            field = field.push(menu_choice(
+                &MenuChoiceModel {
+                    label: choice.label.clone(),
+                    options: options.clone(),
+                    selected: choice.selected.unwrap_or(0),
+                    enabled,
+                },
+                move |index| Message::ControlDiscrete {
+                    action: action.clone(),
+                    parameter: parameter.clone(),
+                    value: Value::String(options[index].clone()),
+                },
+            ));
+        }
     }
-    if menu_open_for(menu, &choice.action, Some(&choice.parameter)) {
-        field = field.push(control_menu(&choice.action, Some(&choice.parameter)));
-    }
-    field.into()
+    let action = choice.action.clone();
+    let parameter = choice.parameter.clone();
+    let options = choice.options.clone();
+    let selected = choice.selected.unwrap_or(0);
+    let widget = focus_control(field.into(), enabled, move |event| match event {
+        ControlKeyEvent::Pressed { key, .. } => key_direction(key).and_then(|direction| {
+            let next = (selected as isize + direction as isize)
+                .clamp(0, options.len().saturating_sub(1) as isize) as usize;
+            options.get(next).map(|option| Message::ControlDiscrete {
+                action: action.clone(),
+                parameter: parameter.clone(),
+                value: Value::String(option.clone()),
+            })
+        }),
+        _ => None,
+    });
+    with_control_menu(widget, &choice.action, Some(&choice.parameter), menu)
 }
 
 fn color_view<'a>(
@@ -387,41 +617,164 @@ fn color_view<'a>(
     color: &'a ColorControl,
     menu: Option<&'a MenuTarget>,
 ) -> Element<'a, Message> {
-    let label = mouse_area(lightwell_ui::label(color.label.clone())).on_right_press(
-        Message::OpenMenu(control_target(&color.action, Some(&color.parameter))),
+    let swatch = color_swatch(
+        &ColorSwatchModel {
+            rgb: color.rgb,
+            enabled: enabled && color.style == ColorControlStyle::Picker,
+            open: color.picker_open,
+        },
+        Message::TogglePicker {
+            action: color.action.clone(),
+            parameter: color.parameter.clone(),
+        },
     );
-    let mut channels = row![label].spacing(4.0).align_y(Alignment::Center);
-    for (index, value) in color.channels.iter().enumerate() {
-        let (action, parameter, current) = (
-            color.action.clone(),
-            color.parameter.clone(),
-            color.text.clone(),
-        );
-        channels = channels.push(
-            text_input(fields::CHANNELS[index], value)
-                .id(color.ids[index].clone())
-                .style(theme::text_input_style(color.invalid.is_some()))
-                .size(theme::SIZE_CONTROL)
-                .width(Length::Fixed(48.0))
-                .on_input_maybe(enabled.then_some(move |text: String| Message::Field {
-                    action: action.clone(),
-                    parameter: parameter.clone(),
-                    text: fields::replace_channel(&current, index, &text),
-                }))
-                .on_submit(Message::Submit {
-                    action: color.action.clone(),
-                    parameter: Some(color.parameter.clone()),
+    let action = color.action.clone();
+    let parameter = color.parameter.clone();
+    let swatch = focus_control(
+        swatch,
+        enabled && color.style == ColorControlStyle::Picker,
+        move |event| {
+            activates(event).then(|| Message::TogglePicker {
+                action: action.clone(),
+                parameter: parameter.clone(),
+            })
+        },
+    );
+    let mut body = column![
+        row![lightwell_ui::label(color.label.clone()), swatch]
+            .spacing(4.0)
+            .align_y(Alignment::Center)
+    ]
+    .spacing(4.0);
+    match color.style {
+        ColorControlStyle::Fields => {
+            let mut channels = row![].spacing(4.0).align_y(Alignment::Center);
+            for (index, value) in color.channels.iter().enumerate() {
+                let (action, parameter, current) = (
+                    color.action.clone(),
+                    color.parameter.clone(),
+                    color.text.clone(),
+                );
+                channels = channels.push(
+                    text_input(fields::CHANNELS[index], value)
+                        .id(color.ids[index].clone())
+                        .style(theme::text_input_style(color.invalid.is_some()))
+                        .size(theme::SIZE_CONTROL)
+                        .width(Length::Fixed(48.0))
+                        .on_input_maybe(enabled.then_some(move |text: String| Message::Field {
+                            action: action.clone(),
+                            parameter: parameter.clone(),
+                            text: fields::replace_channel(&current, index, &text),
+                        }))
+                        .on_submit_maybe(enabled.then_some(Message::Submit {
+                            action: color.action.clone(),
+                            parameter: Some(color.parameter.clone()),
+                        })),
+                );
+            }
+            body = body.push(channels);
+        }
+        ColorControlStyle::Picker if color.picker_open => {
+            let hsv = lightwell_ui::rgb_to_hsv(color.rgb);
+            let model = ColorPickerModel {
+                hue: hsv[0] as f32,
+                saturation: hsv[1] as f32,
+                value: hsv[2] as f32,
+                rgb: color.rgb,
+                channels: std::array::from_fn(|index| {
+                    ui_edit(
+                        &color.channel_edits[index],
+                        &color.channels[index],
+                        &color.invalid,
+                    )
                 }),
-        );
+                hex: ui_edit(
+                    &color.hex_edit,
+                    &lightwell_ui::rgb_to_hex(color.rgb),
+                    &color.invalid,
+                ),
+                dragging: color.dragging,
+                enabled,
+                version: color.version,
+            };
+            let action = color.action.clone();
+            let parameter = color.parameter.clone();
+            body = body.push(color_picker(&model, move |event| Message::ControlPicker {
+                action: action.clone(),
+                parameter: parameter.clone(),
+                event,
+            }));
+        }
+        ColorControlStyle::Picker => {}
     }
-    let mut field = column![channels].spacing(4.0);
     if let Some(message) = &color.invalid {
-        field = field.push(error_caption(message.clone()));
+        body = body.push(error_caption(message.clone()));
     }
-    if menu_open_for(menu, &color.action, Some(&color.parameter)) {
-        field = field.push(control_menu(&color.action, Some(&color.parameter)));
-    }
-    field.into()
+    with_control_menu(body.into(), &color.action, Some(&color.parameter), menu)
+}
+
+fn curve_view<'a>(
+    enabled: bool,
+    curve: &'a CurveControl,
+    menu: Option<&'a MenuTarget>,
+    plot: &HistogramModel,
+) -> Element<'a, Message> {
+    let Some(channel) = curve
+        .channels
+        .get(curve.selected_channel)
+        .or_else(|| curve.channels.first())
+    else {
+        return error_caption(format!("{} has no curve channel", curve.label));
+    };
+    let background = if curve.background {
+        plot.bins.as_ref().map(|bins| {
+            std::array::from_fn(|index| {
+                bins.iter()
+                    .map(|channel| channel[index])
+                    .fold(0.0_f32, f32::max)
+            })
+        })
+    } else {
+        None
+    };
+    let point_rows = curve
+        .point_rows
+        .iter()
+        .map(|row| CurvePointRow {
+            display: row.display.clone(),
+            edit: std::array::from_fn(|axis| ui_edit(&row.edit[axis], &row.display[axis], &None)),
+        })
+        .collect();
+    let version = curve_version(curve.version, curve.background, plot);
+    let model = CurveEditorModel {
+        points: curve.points.clone(),
+        sampled: curve.sampled.clone(),
+        point_rows,
+        selected: curve.selected_point,
+        background,
+        identity: curve.identity,
+        channels: curve
+            .channels
+            .iter()
+            .map(|channel| channel.label.clone())
+            .collect(),
+        selected_channel: curve.selected_channel,
+        dragging: curve.dragging,
+        enabled,
+        version,
+    };
+    let action = curve.action.clone();
+    let parameter = channel.parameter.clone();
+    let widget = column![
+        lightwell_ui::label(curve.label.clone()),
+        curve_editor(&model, move |event| Message::ControlCurve {
+            action: action.clone(),
+            parameter: parameter.clone(),
+            event,
+        })
+    ]
+    .spacing(4.0);
+    with_control_menu(widget.into(), &curve.action, Some(&channel.parameter), menu)
 }
 
 fn group_view<'a>(
@@ -429,6 +782,7 @@ fn group_view<'a>(
     enabled: bool,
     group: &'a GroupControl,
     menu: Option<&'a MenuTarget>,
+    plot: &HistogramModel,
 ) -> Element<'a, Message> {
     let header = sub_group_header(
         &SubGroupHeaderModel {
@@ -442,26 +796,92 @@ fn group_view<'a>(
             path: group.path.clone(),
         },
     );
+    let header = if let Some(reset) = &group.reset {
+        let module_id = module_id.to_owned();
+        let path = group.path.clone();
+        let header = focus_control(header, enabled, move |event| {
+            activates(event).then(|| Message::ResetGroup {
+                module_id: module_id.clone(),
+                path: path.clone(),
+            })
+        });
+        with_control_menu_preset(header, &reset.action, None, Some(&reset.preset), menu)
+    } else {
+        header
+    };
     let indent = iced::Padding::default().left(theme::SPACING);
     let mut inner = column![].spacing(theme::SPACING).padding(indent);
-    for control in &group.controls {
-        inner = inner.push(control_view(module_id, enabled, control, menu));
+    if group.expanded {
+        for control in &group.controls {
+            inner = inner.push(control_view(module_id, enabled, control, menu, plot));
+        }
     }
-    column![header, inner].spacing(theme::SPACING / 2.0).into()
+    let toggle = button(lightwell_ui::label(if group.expanded {
+        "Collapse"
+    } else {
+        "Expand"
+    }))
+    .style(theme::button_plain)
+    .on_press(Message::ToggleGroup {
+        module_id: module_id.to_owned(),
+        path: group.path.clone(),
+    });
+    let toggle = focus_control(toggle.into(), enabled, {
+        let module_id = module_id.to_owned();
+        let path = group.path.clone();
+        move |event| {
+            activates(event).then(|| Message::ToggleGroup {
+                module_id: module_id.clone(),
+                path: path.clone(),
+            })
+        }
+    });
+    column![row![toggle, header].align_y(Alignment::Center), inner]
+        .spacing(theme::SPACING / 2.0)
+        .into()
 }
 
 fn action_view<'a>(
     action: &'a ActionControl,
     menu: Option<&'a MenuTarget>,
 ) -> Element<'a, Message> {
-    let control = button(lightwell_ui::label(action.label.clone()))
-        .padding([4.0, 10.0])
-        .style(theme::button_plain)
-        .on_press_maybe(action.runnable.then(|| Message::RunAction {
-            action: action.action.clone(),
-            preset: action.preset.clone(),
-        }));
-    let control = with_control_menu(control.into(), &action.action, None, menu);
+    let press = action.runnable.then(|| Message::RunAction {
+        action: action.action.clone(),
+        preset: action.preset.clone(),
+    });
+    let control: Element<'a, Message> = match (
+        action.style,
+        action.icon.as_deref().and_then(Icon::from_name),
+    ) {
+        (ActionControlStyle::Icon, Some(icon)) => icon_button(
+            &IconButtonModel {
+                icon,
+                tooltip: action.label.clone(),
+                enabled: action.runnable,
+                selected: false,
+            },
+            press,
+        ),
+        (style, _) => button(lightwell_ui::label(action.label.clone()))
+            .padding([4.0, 10.0])
+            .style(if style == ActionControlStyle::Primary {
+                theme::button_accent
+            } else {
+                theme::button_plain
+            })
+            .on_press_maybe(press)
+            .into(),
+    };
+    let action_name = action.action.clone();
+    let preset = action.preset.clone();
+    let control = focus_control(control, action.runnable, move |event| {
+        activates(event).then(|| Message::RunAction {
+            action: action_name.clone(),
+            preset: preset.clone(),
+        })
+    });
+    let control =
+        with_control_menu_preset(control, &action.action, None, Some(&action.preset), menu);
     match &action.reason {
         Some(reason) if !action.runnable => iced::widget::tooltip(
             control,
@@ -521,7 +941,7 @@ fn crop_section_view<'a>(
     }
     if !model.presets.is_empty() {
         let chips = model.presets.iter().map(|preset| {
-            chip(
+            let control = chip(
                 &ChipModel {
                     label: preset.label.clone(),
                     trailing: None,
@@ -532,24 +952,50 @@ fn crop_section_view<'a>(
                     .enabled
                     .then_some(Message::Crop(CropMessage::Preset(preset.index))),
                 None,
-            )
+            );
+            let index = preset.index;
+            focus_control(control, model.enabled, move |event| {
+                activates(event).then(|| Message::Crop(CropMessage::Preset(index)))
+            })
         });
         panel = panel.push(Row::new().spacing(4.0).extend(chips).wrap());
     }
     panel = panel.push(
         row![
-            text_input("W", &model.custom.0)
-                .id(model.custom_ids.0.clone())
-                .style(theme::text_input_style(false))
-                .size(theme::SIZE_CONTROL)
-                .width(Length::Fixed(48.0))
-                .on_input(|text| Message::Crop(CropMessage::CustomWidth(text))),
-            text_input("H", &model.custom.1)
-                .id(model.custom_ids.1.clone())
-                .style(theme::text_input_style(false))
-                .size(theme::SIZE_CONTROL)
-                .width(Length::Fixed(48.0))
-                .on_input(|text| Message::Crop(CropMessage::CustomHeight(text))),
+            number_field(
+                &NumberFieldModel {
+                    label: "W".into(),
+                    display: model.custom.0.clone(),
+                    edit: lightwell_ui::ValueEdit::Editing {
+                        text: model.custom.0.clone(),
+                        invalid: None
+                    },
+                    unit: None,
+                    enabled: model.enabled,
+                    id: Some(model.custom_ids.0.clone()),
+                },
+                Message::Crop(CropMessage::CustomWidth(model.custom.0.clone())),
+                |text| Message::Crop(CropMessage::CustomWidth(text)),
+                Message::Crop(CropMessage::CustomWidth(model.custom.0.clone())),
+                Message::Crop(CropMessage::CustomWidth(model.custom.0.clone()))
+            ),
+            number_field(
+                &NumberFieldModel {
+                    label: "H".into(),
+                    display: model.custom.1.clone(),
+                    edit: lightwell_ui::ValueEdit::Editing {
+                        text: model.custom.1.clone(),
+                        invalid: None
+                    },
+                    unit: None,
+                    enabled: model.enabled,
+                    id: Some(model.custom_ids.1.clone()),
+                },
+                Message::Crop(CropMessage::CustomHeight(model.custom.1.clone())),
+                |text| Message::Crop(CropMessage::CustomHeight(text)),
+                Message::Crop(CropMessage::CustomHeight(model.custom.1.clone())),
+                Message::Crop(CropMessage::CustomHeight(model.custom.1.clone()))
+            ),
             button(lightwell_ui::label(model.lock_label.clone()))
                 .padding([4.0, 10.0])
                 .style(theme::button_plain)
@@ -564,34 +1010,53 @@ fn crop_section_view<'a>(
     );
     panel = panel.push(
         row![
-            icon_button(
-                &IconButtonModel {
-                    glyph: "\u{2212}".into(),
-                    tooltip: format!("−{}°", model.nudge),
-                    enabled: model.enabled,
-                    selected: false,
-                },
-                model
-                    .enabled
-                    .then_some(Message::Crop(CropMessage::NudgeAngle(-model.nudge))),
-            ),
-            text_input("0", &model.angle)
-                .id(model.angle_id.clone())
-                .style(theme::text_input_style(false))
-                .size(theme::SIZE_CONTROL)
-                .width(Length::Fixed(60.0))
-                .on_input(|text| Message::Crop(CropMessage::AngleText(text)))
-                .on_submit(Message::Crop(CropMessage::SubmitAngle)),
-            icon_button(
-                &IconButtonModel {
-                    glyph: "+".into(),
-                    tooltip: format!("+{}°", model.nudge),
-                    enabled: model.enabled,
-                    selected: false,
-                },
-                model
-                    .enabled
-                    .then_some(Message::Crop(CropMessage::NudgeAngle(model.nudge))),
+            focus_control(
+                stepper(
+                    &StepperModel {
+                        field: NumberFieldModel {
+                            label: "Angle".into(),
+                            display: model.angle.clone(),
+                            edit: lightwell_ui::ValueEdit::Editing {
+                                text: model.angle.clone(),
+                                invalid: None
+                            },
+                            unit: Some("°".into()),
+                            enabled: model.enabled,
+                            id: Some(model.angle_id.clone()),
+                        },
+                        decrement_enabled: model.enabled,
+                        increment_enabled: model.enabled,
+                        decrement_tooltip: format!("−{}°", model.nudge),
+                        increment_tooltip: format!("+{}°", model.nudge),
+                    },
+                    Message::Crop(CropMessage::NudgeAngle(-model.nudge)),
+                    Message::Crop(CropMessage::NudgeAngle(model.nudge)),
+                    Message::Crop(CropMessage::AngleText(model.angle.clone())),
+                    |text| Message::Crop(CropMessage::AngleText(text)),
+                    Message::Crop(CropMessage::SubmitAngle),
+                    Message::Crop(CropMessage::AngleText("0".into()))
+                ),
+                model.enabled,
+                {
+                    let step = model.nudge;
+                    move |event| match event {
+                        ControlKeyEvent::Pressed { key, shift, option } => {
+                            key_direction(key).map(|direction| {
+                                let factor = if shift {
+                                    10.0
+                                } else if option {
+                                    0.1
+                                } else {
+                                    1.0
+                                };
+                                Message::Crop(CropMessage::NudgeAngle(
+                                    f64::from(direction) * step * factor,
+                                ))
+                            })
+                        }
+                        _ => None,
+                    }
+                }
             ),
             straighten_toggle(model),
         ]
@@ -628,20 +1093,18 @@ fn crop_section_view<'a>(
 }
 
 fn straighten_toggle(model: &CropSectionModel) -> Element<'_, Message> {
-    let style = if model.guide {
-        theme::button_selected
-    } else {
-        theme::button_plain
-    };
-    button(lightwell_ui::label("Straighten guide"))
-        .padding([4.0, 10.0])
-        .style(style)
-        .on_press_maybe(
-            model
-                .enabled
-                .then_some(Message::Crop(CropMessage::Guide(!model.guide))),
-        )
-        .into()
+    let control = toggle(
+        &ToggleModel {
+            label: "Straighten guide".into(),
+            on: model.guide,
+            enabled: model.enabled,
+        },
+        |on| Message::Crop(CropMessage::Guide(on)),
+    );
+    let on = model.guide;
+    focus_control(control, model.enabled, move |event| {
+        activates(event).then(|| Message::Crop(CropMessage::Guide(!on)))
+    })
 }
 
 #[cfg(test)]
@@ -695,6 +1158,35 @@ mod tests {
         assert_eq!(
             plot_version(&HistogramModel::default()),
             plot_version(&HistogramModel::default())
+        );
+    }
+
+    #[test]
+    fn curve_background_cache_key_tracks_histogram_generation() {
+        let base = HistogramModel {
+            identity: Some(RenderIdentity {
+                entry: "entry-1".into(),
+                draft_revision: None,
+                generation: 4,
+                width: 2,
+                height: 2,
+            }),
+            ..HistogramModel::default()
+        };
+        let newer = HistogramModel {
+            identity: Some(RenderIdentity {
+                generation: 5,
+                ..base.identity.clone().unwrap()
+            }),
+            ..base.clone()
+        };
+        assert_ne!(
+            curve_version(7, true, &base),
+            curve_version(7, true, &newer)
+        );
+        assert_eq!(
+            curve_version(7, false, &base),
+            curve_version(7, false, &newer)
         );
     }
 }
