@@ -824,7 +824,11 @@ impl Editor {
         mut tasks: Vec<Task<Message>>,
         kind: GeneratedKind,
     ) -> Task<Message> {
-        if self.slider_draft.is_none() {
+        if !self
+            .slider_draft
+            .as_ref()
+            .is_some_and(|draft| draft.action == action && draft.parameter == parameter)
+        {
             return self.fail_step(format!(
                 "the {action} draft could not be opened: {}",
                 self.status

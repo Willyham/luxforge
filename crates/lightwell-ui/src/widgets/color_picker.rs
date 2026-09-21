@@ -3,7 +3,7 @@
 use super::curve_editor::invalidate_on_version_change;
 use crate::{ColorSwatchModel, ValueEdit, color_swatch, theme};
 use iced::{
-    Alignment, Color, Element, Length, Point, Rectangle, Renderer, Size, Theme,
+    Alignment, Color, Element, Length, Point, Rectangle, Renderer, Theme,
     mouse::{self, Cursor},
     widget::{
         canvas::{self, Action, Event, Path, Stroke},
@@ -256,25 +256,31 @@ impl<M: Clone> canvas::Program<M> for PickerCanvas<'_, M> {
         let hue = self.model.hue;
         let geometry = state.cache.draw(renderer, bounds.size(), |frame| {
             let size = frame.size();
-            let cells = if matches!(part, Part::Plane) { 24 } else { 48 };
-            let rows = if matches!(part, Part::Plane) { 16 } else { 1 };
-            let w = size.width / cells as f32;
-            let h = size.height / rows as f32;
-            for y in 0..rows {
-                for x in 0..cells {
-                    let rgb = match part {
-                        Part::Plane => hsv_to_rgb([
-                            f64::from(hue),
-                            (x as f64 + 0.5) / cells as f64,
-                            1.0 - (y as f64 + 0.5) / rows as f64,
-                        ]),
-                        Part::Hue => hsv_to_rgb([(x as f64 + 0.5) / cells as f64, 1.0, 1.0]),
-                    };
-                    frame.fill_rectangle(
-                        Point::new(x as f32 * w, y as f32 * h),
-                        Size::new(w + 0.3, h + 0.3),
-                        Color::from_rgb8(rgb[0], rgb[1], rgb[2]),
-                    );
+            match part {
+                Part::Plane => {
+                    // Two GPU gradient fills make a continuous saturation/value plane. The
+                    // geometry is retained by the versioned canvas cache; no bitmap is built.
+                    let pure = hsv_to_rgb([f64::from(hue), 1.0, 1.0]);
+                    let saturation =
+                        canvas::gradient::Linear::new(Point::ORIGIN, Point::new(size.width, 0.0))
+                            .add_stop(0.0, Color::WHITE)
+                            .add_stop(1.0, Color::from_rgb8(pure[0], pure[1], pure[2]));
+                    frame.fill_rectangle(Point::ORIGIN, size, saturation);
+                    let value =
+                        canvas::gradient::Linear::new(Point::ORIGIN, Point::new(0.0, size.height))
+                            .add_stop(0.0, Color::TRANSPARENT)
+                            .add_stop(1.0, Color::BLACK);
+                    frame.fill_rectangle(Point::ORIGIN, size, value);
+                }
+                Part::Hue => {
+                    let mut rail =
+                        canvas::gradient::Linear::new(Point::ORIGIN, Point::new(size.width, 0.0));
+                    for index in 0..=6 {
+                        let rgb = hsv_to_rgb([index as f64 / 6.0, 1.0, 1.0]);
+                        rail = rail
+                            .add_stop(index as f32 / 6.0, Color::from_rgb8(rgb[0], rgb[1], rgb[2]));
+                    }
+                    frame.fill_rectangle(Point::ORIGIN, size, rail);
                 }
             }
             let marker = match part {
@@ -301,6 +307,16 @@ impl<M: Clone> canvas::Program<M> for PickerCanvas<'_, M> {
                     })
                     .with_width(2.0),
             );
+            if !self.model.enabled {
+                frame.fill_rectangle(
+                    Point::ORIGIN,
+                    size,
+                    Color {
+                        a: 0.58,
+                        ..theme::PANEL
+                    },
+                );
+            }
         });
         vec![geometry]
     }
@@ -331,6 +347,7 @@ impl<M> PickerCanvas<'_, M> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use iced::Size;
     use iced::widget::canvas::Program;
 
     fn model() -> ColorPickerModel {
