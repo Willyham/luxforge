@@ -1,13 +1,13 @@
 //! HSV picker. It maps pointer locations to fractions; the host owns channel values and edits.
 
 use super::curve_editor::invalidate_on_version_change;
-use crate::{ColorSwatchModel, ValueEdit, color_swatch, theme};
+use crate::{ColorSwatchModel, ValueEdit, color_swatch, theme, value_input};
 use iced::{
     Alignment, Color, Element, Length, Point, Rectangle, Renderer, Theme,
     mouse::{self, Cursor},
     widget::{
         canvas::{self, Action, Event, Path, Stroke},
-        column, row, text, text_input,
+        column, row, text,
     },
 };
 use std::{cell::Cell, rc::Rc};
@@ -153,18 +153,15 @@ pub fn color_picker<'a, M: Clone + 'a>(
         let text_callback = on_event.clone();
         let submit_callback = on_event.clone();
         fields = fields.push(text(label).size(theme::SIZE_CAPTION)).push(
-            text_input("", &value)
-                .size(theme::SIZE_CONTROL)
-                .width(Length::FillPortion(if index == 3 { 2 } else { 1 }))
-                .style(theme::text_input_style(invalid))
-                .on_input_maybe(model.enabled.then_some(move |text| {
-                    text_callback(ColorPickerEvent::Text { field: index, text })
-                }))
-                .on_submit_maybe(
-                    model
-                        .enabled
-                        .then_some(submit_callback(ColorPickerEvent::Submit(index))),
-                ),
+            value_input(
+                "",
+                &value,
+                invalid,
+                model.enabled,
+                move |text| text_callback(ColorPickerEvent::Text { field: index, text }),
+                submit_callback(ColorPickerEvent::Submit(index)),
+            )
+            .width(Length::FillPortion(if index == 3 { 2 } else { 1 })),
         );
     }
     let reset = iced::widget::button(text("Reset").size(theme::SIZE_CAPTION))

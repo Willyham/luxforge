@@ -13,9 +13,11 @@ use crate::{
 };
 use iced::{
     Alignment, Element, Length,
-    widget::{button, mouse_area, row, text, text_input},
+    widget::{button, mouse_area, row, text},
 };
-use lightwell_ui::{Icon, IconButtonModel, SegmentedModel, icon_button, segmented, theme};
+use lightwell_ui::{
+    Icon, IconButtonModel, SegmentedModel, icon_button, segmented, theme, value_input,
+};
 
 /// How wide the typed-percentage field is: enough for four digits and the caret.
 const ZOOM_FIELD_WIDTH: f32 = 56.0;
@@ -69,12 +71,15 @@ pub(crate) fn view_controls(model: &Workspace) -> Element<'_, Message> {
     debug_assert_eq!(SEGMENT_HUNDRED, 1, "the second segment is 100%");
     row![
         zoom,
-        text_input("%", &title.zoom_text)
-            .on_input(Message::Zoom)
-            .on_submit(Message::ApplyZoom)
-            .style(theme::text_input_style(false))
-            .size(theme::SIZE_CONTROL)
-            .width(Length::Fixed(ZOOM_FIELD_WIDTH)),
+        value_input(
+            "%",
+            &title.zoom_text,
+            false,
+            true,
+            Message::Zoom,
+            Message::ApplyZoom
+        )
+        .width(Length::Fixed(ZOOM_FIELD_WIDTH)),
         compare(title.compare_held, can_view),
     ]
     .spacing(theme::SPACING / 2.0)

@@ -1,6 +1,8 @@
 //! Point curve plot. The host supplies sampled geometry and owns all point validation.
 
-use crate::{Icon, IconButtonModel, ValueEdit, icon_button, theme};
+use crate::{
+    Icon, IconButtonModel, SegmentedModel, ValueEdit, icon_button, segmented, theme, value_input,
+};
 use iced::{
     Alignment, Element, Length, Point, Rectangle, Renderer, Size, Theme,
     advanced::{
@@ -12,7 +14,7 @@ use iced::{
     widget::{
         button,
         canvas::{self, Action, Event, Path, Stroke},
-        column, row, text, text_input,
+        column, row, text,
     },
 };
 use std::{
@@ -126,24 +128,15 @@ pub fn curve_editor<'a, M: Clone + 'a>(
     let on_event: Rc<dyn Fn(CurveEditorEvent) -> M + 'a> = Rc::new(on_event);
     let mut body = column![].spacing(5.0);
     if model.channels.len() > 1 {
-        let mut choices = row![].spacing(3.0);
-        for (index, label) in model.channels.iter().enumerate() {
-            let callback = on_event.clone();
-            choices = choices.push(
-                button(text(label.clone()).size(theme::SIZE_CAPTION))
-                    .style(if index == model.selected_channel {
-                        theme::button_selected
-                    } else {
-                        theme::button_plain
-                    })
-                    .on_press_maybe(
-                        model
-                            .enabled
-                            .then_some(callback(CurveEditorEvent::Channel(index))),
-                    ),
-            );
-        }
-        body = body.push(choices);
+        let callback = on_event.clone();
+        body = body.push(segmented(
+            &SegmentedModel {
+                options: model.channels.clone(),
+                selected: model.selected_channel,
+                enabled: model.enabled,
+            },
+            move |index| callback(CurveEditorEvent::Channel(index)),
+        ));
     }
     body = body.push(FocusableCurveCanvas {
         model: model.clone(),
@@ -173,21 +166,19 @@ pub fn curve_editor<'a, M: Clone + 'a>(
             };
             let text_callback = on_event.clone();
             let submit_callback = on_event.clone();
-            point_row =
-                point_row
-                    .push(text(if axis == 0 { "X" } else { "Y" }).size(theme::SIZE_CAPTION))
-                    .push(
-                        text_input("", &value)
-                            .size(theme::SIZE_CONTROL)
-                            .width(Length::FillPortion(1))
-                            .style(theme::text_input_style(invalid))
-                            .on_input_maybe(model.enabled.then_some(move |text| {
-                                text_callback(CurveEditorEvent::Text { index, axis, text })
-                            }))
-                            .on_submit_maybe(model.enabled.then_some(submit_callback(
-                                CurveEditorEvent::Submit { index, axis },
-                            ))),
-                    );
+            point_row = point_row
+                .push(text(if axis == 0 { "X" } else { "Y" }).size(theme::SIZE_CAPTION))
+                .push(
+                    value_input(
+                        "",
+                        &value,
+                        invalid,
+                        model.enabled,
+                        move |text| text_callback(CurveEditorEvent::Text { index, axis, text }),
+                        submit_callback(CurveEditorEvent::Submit { index, axis }),
+                    )
+                    .width(Length::FillPortion(1)),
+                );
         }
         let remove_callback = on_event.clone();
         point_row = point_row.push(icon_button(

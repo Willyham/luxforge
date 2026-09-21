@@ -19,7 +19,7 @@ use crate::{
 };
 use iced::{
     Alignment, Color, Element, Length,
-    widget::{Row, button, column, mouse_area, row, scrollable, text_input},
+    widget::{Row, button, column, mouse_area, row, scrollable},
 };
 use lightwell_ui::{
     BINS, ChipModel, ClipTriangleModel, ColorPickerModel, ColorSwatchModel, ControlKey,
@@ -28,7 +28,7 @@ use lightwell_ui::{
     SliderModel, StepperModel, SubGroupHeaderModel, ToggleModel, caption, chip, clip_triangle,
     color_picker, color_swatch, curve_editor, error_caption, focus_control, histogram, icon_button,
     inline_menu, menu_choice, number_field, section_header, section_label, segmented, slider,
-    stepper, sub_group_header, theme, toggle,
+    stepper, sub_group_header, theme, toggle, value_input,
 };
 use serde_json::{Map, Value};
 
@@ -719,20 +719,23 @@ fn color_view<'a>(
                     color.text.clone(),
                 );
                 channels = channels.push(
-                    text_input(fields::CHANNELS[index], value)
-                        .id(color.ids[index].clone())
-                        .style(theme::text_input_style(color.invalid.is_some()))
-                        .size(theme::SIZE_CONTROL)
-                        .width(Length::Fixed(48.0))
-                        .on_input_maybe(enabled.then_some(move |text: String| Message::Field {
+                    value_input(
+                        fields::CHANNELS[index],
+                        value,
+                        color.invalid.is_some(),
+                        enabled,
+                        move |text| Message::Field {
                             action: action.clone(),
                             parameter: parameter.clone(),
                             text: fields::replace_channel(&current, index, &text),
-                        }))
-                        .on_submit_maybe(enabled.then_some(Message::Submit {
+                        },
+                        Message::Submit {
                             action: color.action.clone(),
                             parameter: Some(color.parameter.clone()),
-                        })),
+                        },
+                    )
+                    .id(color.ids[index].clone())
+                    .width(Length::Fixed(48.0)),
                 );
             }
             body = body.push(channels);

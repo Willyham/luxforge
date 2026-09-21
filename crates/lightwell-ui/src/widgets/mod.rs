@@ -49,7 +49,7 @@ pub use list_row::{ListRowModel, Marker, list_row};
 pub use menu_choice::{MenuChoiceModel, menu_choice};
 pub use mode_strip::{ModeEntry, ToggleEntry, mode_strip};
 pub use notice_card::{NoticeCardModel, Tone, notice_card};
-pub use number_field::{NumberFieldModel, ValueEdit, number_field};
+pub use number_field::{NumberFieldModel, ValueEdit, number_field, value_input};
 pub use section_header::{SectionHeaderModel, section_header};
 pub use segmented::{SegmentedModel, segmented};
 pub use slider::{RailDecoration, SliderModel, slider};

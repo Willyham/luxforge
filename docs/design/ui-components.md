@@ -95,6 +95,8 @@ Every widget is a function from a plain-data model and messages to an `Element`,
 
 Fractions everywhere: a widget maps pointer positions to `0..=1` on its own axes and the view model maps fractions to values with the parameter's range, step and precision. The pure mapping functions (`geometry::value_from_fraction` today, the picker's HSV and hex conversions, the curve editor's hit test and the pad's polar mapping) are tested without a renderer. Canvas-drawn widgets (the curve editor, the picker plane, the pad, icons) cache their tessellated geometry the way the histogram plot does, keyed on the model's version, so an unchanged model costs no re-tessellation per frame.
 
+The editable input inside `number_field` is also used by the RGB/hex fields, curve coordinates and zoom; the curve channel selector uses the shared segmented control. This input primitive adds no descriptor-level text control.
+
 The components board gains a row per new widget and state, `gallery_states()` builds every one, and a `gallery` smoke scenario renders the gallery in the real app so the board and the build are compared with correlated captures rather than by eye alone.
 
 ## Desktop mapping and gesture rules

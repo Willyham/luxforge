@@ -27,6 +27,24 @@ pub struct NumberFieldModel {
     pub enabled: bool,
 }
 
+/// The editable input shared by number fields, RGB/hex fields, curve coordinates and zoom.
+/// Layout stays with the containing widget; parsing, validation and commit handling stay with
+/// the caller. This is an input primitive, not a descriptor-level text control.
+pub fn value_input<'a, M: Clone + 'a>(
+    placeholder: &str,
+    value: &str,
+    invalid: bool,
+    enabled: bool,
+    on_text: impl Fn(String) -> M + 'a,
+    on_submit: M,
+) -> iced::widget::TextInput<'a, M> {
+    text_input(placeholder, value)
+        .size(theme::SIZE_CONTROL)
+        .style(theme::text_input_style(invalid))
+        .on_input_maybe(enabled.then_some(on_text))
+        .on_submit_maybe(enabled.then_some(on_submit))
+}
+
 pub fn number_field<'a, M: Clone + 'a>(
     model: &NumberFieldModel,
     on_edit_start: M,
@@ -85,13 +103,16 @@ pub(crate) fn field_header<'a, M: Clone + 'a>(
                 .into()
         }
         ValueEdit::Editing { text, .. } => {
-            let input = text_input("", text)
-                .size(theme::SIZE_CONTROL)
-                .width(Length::Fixed(theme::VALUE_WIDTH))
-                .align_x(Horizontal::Right)
-                .style(theme::text_input_style(invalid.is_some()))
-                .on_input_maybe(model.enabled.then_some(on_text))
-                .on_submit_maybe(model.enabled.then_some(on_submit));
+            let input = value_input(
+                "",
+                text,
+                invalid.is_some(),
+                model.enabled,
+                on_text,
+                on_submit,
+            )
+            .width(Length::Fixed(theme::VALUE_WIDTH))
+            .align_x(Horizontal::Right);
             match &model.id {
                 Some(id) => input.id(iced::widget::Id::from(id.clone())).into(),
                 None => input.into(),
