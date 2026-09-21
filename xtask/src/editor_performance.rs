@@ -282,7 +282,7 @@ pub fn run(root: &Path, source: &Path, out: &Path, samples: usize) -> Result {
     // identity render shares the source buffer and allocates no frame, so it is the floor; the
     // same stack without the colour layer is the honest baseline for the pass itself, because it
     // materializes exactly the same frames.
-    let colour_job = service.preview_job(&asset, Some(&crop_entry), None)?;
+    let colour_job = service.preview_job(&asset, Some(&crop_entry), None, None)?;
     let mut colour_registry = ModuleRegistry::builtin();
     colour_registry.register(DiagnosticColorModule::shared())?;
     let stack = colour_job.entry.snapshot.recipe.clone();

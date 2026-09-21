@@ -135,7 +135,7 @@
     {
       "id": "TASK-003",
       "description": "Add the core draft lifecycle, step and display precision, and the Basic field-patch action.",
-      "status": "in_progress",
+      "status": "completed",
       "dependencies": [
         "TASK-001"
       ],
@@ -358,7 +358,7 @@
     {
       "id": "TASK-006",
       "description": "Expose bounded histogram jobs through the shared service and independent JSON clients.",
-      "status": "pending",
+      "status": "in_progress",
       "dependencies": [
         "TASK-003",
         "TASK-005"
@@ -506,7 +506,7 @@
     {
       "id": "TASK-008",
       "description": "Implement Exposure as the first persistent Basic action and compiled processor.",
-      "status": "pending",
+      "status": "in_progress",
       "dependencies": [
         "TASK-003",
         "TASK-004"
