@@ -99,11 +99,24 @@ impl Editor {
                 .controls_ui
                 .curve_samples
                 .get(&(action.clone(), parameter.clone()))
-                .is_some_and(|samples| samples.source == value)
+                .is_some_and(|samples| {
+                    samples.source == value
+                        && samples.entry == entry
+                        && self
+                            .state
+                            .as_ref()
+                            .is_some_and(|state| samples.asset == state.asset.id)
+                })
                 || self
                     .curve_sample_requested_source
                     .get(&(action.clone(), parameter.clone()))
-                    == Some(&(entry.clone(), value.clone()))
+                    .is_some_and(|(asset, requested_entry, points)| {
+                        self.state
+                            .as_ref()
+                            .is_some_and(|state| asset == &state.asset.id)
+                            && requested_entry == &entry
+                            && points == &value
+                    })
             {
                 continue;
             }
@@ -369,17 +382,28 @@ impl Editor {
             .unwrap_or([0, 0, 0]);
         match event {
             ColorPickerEvent::Plane([s, v]) => {
-                let mut hsv = rgb_to_hsv(rgb);
-                hsv[1] = f64::from(s);
-                hsv[2] = f64::from(v);
-                self.control_value(action, parameter, json!(hsv_to_rgb(hsv)), true)
+                let mut hsv = self.picker_hsv(&key, rgb);
+                hsv[1] = picker_fraction(s);
+                hsv[2] = picker_fraction(v);
+                self.picker_fraction_changed(action, parameter, rgb, hsv)
             }
             ColorPickerEvent::Hue(h) => {
-                let mut hsv = rgb_to_hsv(rgb);
-                hsv[0] = f64::from(h);
-                self.control_value(action, parameter, json!(hsv_to_rgb(hsv)), true)
+                let mut hsv = self.picker_hsv(&key, rgb);
+                hsv[0] = picker_fraction(h);
+                self.picker_fraction_changed(action, parameter, rgb, hsv)
             }
-            ColorPickerEvent::Release => self.control_release(action, parameter),
+            ColorPickerEvent::Release => {
+                if self
+                    .slider_draft
+                    .as_ref()
+                    .is_some_and(|draft| draft.action == action && draft.parameter == parameter)
+                    || self.dragging.as_ref() == Some(&key)
+                {
+                    self.control_release(action, parameter)
+                } else {
+                    Task::none()
+                }
+            }
             ColorPickerEvent::Text { field, text } => {
                 if field == 3 {
                     self.controls_ui.color_hex.insert(key, text);
@@ -430,6 +454,39 @@ impl Editor {
                 }
             }
             ColorPickerEvent::Reset => self.dispatch(Message::ResetField { action, parameter }),
+        }
+    }
+
+    fn picker_hsv(&self, key: &(String, String), rgb: [u8; 3]) -> [f64; 3] {
+        self.controls_ui
+            .picker_hsv
+            .get(key)
+            .filter(|picker| picker.rgb == rgb)
+            .map(|picker| picker.hsv)
+            .unwrap_or_else(|| rgb_to_hsv(rgb))
+    }
+
+    fn picker_fraction_changed(
+        &mut self,
+        action: String,
+        parameter: String,
+        rgb: [u8; 3],
+        hsv: [f64; 3],
+    ) -> Task<Message> {
+        if !self.editable() {
+            return Task::none();
+        }
+        let next = hsv_to_rgb(hsv);
+        self.controls_ui.picker_hsv.insert(
+            (action.clone(), parameter.clone()),
+            tools::PickerHsv { rgb: next, hsv },
+        );
+        if next == rgb {
+            // Gray and black have no representable hue in RGB. Remember the selected fraction
+            // without opening a draft or committing an edit that changes nothing.
+            Task::none()
+        } else {
+            self.control_value(action, parameter, json!(next), true)
         }
     }
 
@@ -689,7 +746,11 @@ impl Editor {
             .insert((action.into(), parameter.into()), identity.sequence);
         self.curve_sample_requested_source.insert(
             (action.into(), parameter.into()),
-            (identity.entry.clone(), identity.points.clone()),
+            (
+                identity.asset.clone(),
+                identity.entry.clone(),
+                identity.points.clone(),
+            ),
         );
         let request = CurveSampleRequest { identity, query };
         if self.curve_sample_in_flight {
@@ -737,6 +798,10 @@ impl Editor {
             .curve_sample_requested
             .get(&(identity.action.clone(), identity.parameter.clone()))
             == Some(&identity.sequence)
+            && self
+                .state
+                .as_ref()
+                .is_some_and(|state| state.asset.id == identity.asset)
             && self.displayed_entry() == Some(identity.entry.clone())
             && self.control_field_value(&identity.action, &identity.parameter)
                 == Some(identity.points.clone())
@@ -756,6 +821,8 @@ impl Editor {
                         self.controls_ui.curve_samples.insert(
                             (identity.action, identity.parameter),
                             tools::CurveSamples {
+                                asset: identity.asset,
+                                entry: identity.entry,
                                 points: points
                                     .into_iter()
                                     .map(|[x, y]| [x as f32, y as f32])
@@ -784,6 +851,13 @@ fn hard_min(kind: &ParameterKind) -> f64 {
         ParameterKind::Number { min, .. } => *min,
         ParameterKind::Integer { min, .. } => *min as f64,
         _ => 0.0,
+    }
+}
+fn picker_fraction(fraction: f32) -> f64 {
+    if fraction.is_finite() {
+        f64::from(fraction.clamp(0.0, 1.0))
+    } else {
+        0.0
     }
 }
 fn hard_max(kind: &ParameterKind) -> f64 {

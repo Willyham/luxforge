@@ -13,8 +13,8 @@ use crate::{
     state::Inputs,
 };
 use lightwell_core::{
-    ActionDescriptor, ActionStyle, CanvasInteraction, ChoiceStyle, ColorStyle, Control,
-    CropPayload, CurveBackground, EffectStage, Layer, ModuleDescriptor, NumberStyle,
+    ActionDescriptor, ActionStyle, AssetId, CanvasInteraction, ChoiceStyle, ColorStyle, Control,
+    CropPayload, CurveBackground, EffectStage, EntryId, Layer, ModuleDescriptor, NumberStyle,
     ORIENTATION_EFFECT, Orientation, ParameterDescriptor, ParameterKind, RailDecoration,
     ResetAction,
 };
@@ -37,10 +37,21 @@ pub(crate) struct ControlsUi {
     pub(crate) color_open: BTreeMap<(String, String), bool>,
     pub(crate) color_channels: BTreeMap<(String, String, usize), String>,
     pub(crate) color_hex: BTreeMap<(String, String), String>,
+    /// Hue and saturation cannot be recovered from gray/black RGB. Keep the picker's fractions
+    /// only while its associated RGB still matches the authoritative field.
+    pub(crate) picker_hsv: BTreeMap<(String, String), PickerHsv>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct PickerHsv {
+    pub(crate) rgb: [u8; 3],
+    pub(crate) hsv: [f64; 3],
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
 pub(crate) struct CurveSamples {
+    pub(crate) asset: AssetId,
+    pub(crate) entry: EntryId,
     pub(crate) source: Value,
     pub(crate) points: Vec<[f32; 2]>,
     pub(crate) version: u64,
@@ -216,7 +227,7 @@ pub(crate) struct ToggleControl {
 }
 
 #[allow(dead_code)]
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub(crate) struct ColorControl {
     pub(crate) action: String,
     pub(crate) parameter: String,
@@ -228,6 +239,7 @@ pub(crate) struct ColorControl {
     pub(crate) invalid: Option<String>,
     pub(crate) style: ColorControlStyle,
     pub(crate) rgb: [u8; 3],
+    pub(crate) picker_hsv: Option<[f64; 3]>,
     pub(crate) picker_open: bool,
     pub(crate) dragging: bool,
     pub(crate) hex_edit: ValueEdit,
@@ -566,6 +578,12 @@ fn digest(
     module.id.hash(&mut hasher);
     format!("{:?}", module.availability).hash(&mut hasher);
     (expanded, enabled, active, inputs.developer).hash(&mut hasher);
+    // Sampled curves may depend on the query's entry context even when their point fields are
+    // unchanged. Other modules retain their section version across an unrelated entry switch.
+    if contains_curve(&module.controls) {
+        inputs.display_entry.hash(&mut hasher);
+        inputs.state.map(|state| &state.asset.id).hash(&mut hasher);
+    }
     for action in &module.actions {
         action.id.hash(&mut hasher);
         for parameter in &action.parameters {
@@ -624,6 +642,14 @@ fn digest(
                 (parameter, channel, text).hash(&mut hasher);
             }
         }
+        for ((picker_action, parameter), picker) in &inputs.control_ui.picker_hsv {
+            if picker_action == &action.id {
+                (parameter, picker.rgb).hash(&mut hasher);
+                for fraction in picker.hsv {
+                    fraction.to_bits().hash(&mut hasher);
+                }
+            }
+        }
     }
     for (key, value) in &inputs.control_ui.group_expanded {
         if key
@@ -651,6 +677,14 @@ fn digest(
         draft_digest(inputs).hash(&mut hasher);
     }
     hasher.finish()
+}
+
+fn contains_curve(controls: &[Control]) -> bool {
+    controls.iter().any(|control| match control {
+        Control::Curve { .. } => true,
+        Control::Group { controls, .. } => contains_curve(controls),
+        _ => false,
+    })
 }
 
 /// Everything the crop section shows, as one string. The draft is transient state, so a section
@@ -923,18 +957,8 @@ fn value_model(
         ParameterKind::Number { min, max } => ControlModel::Slider(slider(
             action, parameter, label, declared, text, invalid, typing, inputs, *min, *max, false,
         )),
-        ParameterKind::Color => ControlModel::Color(ColorControl {
-            action: action.to_owned(),
-            parameter: parameter.to_owned(),
-            ids: [0, 1, 2].map(|index| {
-                field_id(action, parameter, Some(crate::app::fields::CHANNELS[index]))
-            }),
-            label: labelled(label, declared),
-            channels: [0, 1, 2].map(|index| channel_text(text, index).to_owned()),
-            text: text.to_owned(),
-            invalid,
-            style: ColorControlStyle::Fields,
-            rgb: parse_field(declared, text)
+        ParameterKind::Color => {
+            let rgb = parse_field(declared, text)
                 .ok()
                 .and_then(|value| value.as_array().cloned())
                 .and_then(|values| {
@@ -944,36 +968,61 @@ fn value_model(
                         values.get(2)?.as_u64()? as u8,
                     ])
                 })
-                .unwrap_or([0, 0, 0]),
-            picker_open: inputs
+                .unwrap_or([0, 0, 0]);
+            let picker_hsv = inputs
                 .control_ui
-                .color_open
+                .picker_hsv
                 .get(&(action.to_owned(), parameter.to_owned()))
-                .copied()
-                .unwrap_or(false),
-            dragging: inputs
+                .filter(|picker| picker.rgb == rgb)
+                .map(|picker| picker.hsv);
+            let dragging = inputs
                 .dragging
-                .is_some_and(|(a, p)| a == action && p == parameter),
-            hex_edit: inputs
-                .control_ui
-                .color_hex
-                .get(&(action.to_owned(), parameter.to_owned()))
-                .map(|text| ValueEdit::Typing(text.clone()))
-                .unwrap_or_default(),
-            channel_edits: [0, 1, 2].map(|index| {
-                inputs
+                .is_some_and(|(a, p)| a == action && p == parameter);
+            ControlModel::Color(ColorControl {
+                action: action.to_owned(),
+                parameter: parameter.to_owned(),
+                ids: [0, 1, 2].map(|index| {
+                    field_id(action, parameter, Some(crate::app::fields::CHANNELS[index]))
+                }),
+                label: labelled(label, declared),
+                channels: [0, 1, 2].map(|index| channel_text(text, index).to_owned()),
+                text: text.to_owned(),
+                invalid,
+                style: ColorControlStyle::Fields,
+                rgb,
+                picker_hsv,
+                picker_open: inputs
                     .control_ui
-                    .color_channels
-                    .get(&(action.to_owned(), parameter.to_owned(), index))
+                    .color_open
+                    .get(&(action.to_owned(), parameter.to_owned()))
+                    .copied()
+                    .unwrap_or(false),
+                dragging,
+                hex_edit: inputs
+                    .control_ui
+                    .color_hex
+                    .get(&(action.to_owned(), parameter.to_owned()))
                     .map(|text| ValueEdit::Typing(text.clone()))
-                    .unwrap_or_default()
-            }),
-            version: {
-                let mut hasher = DefaultHasher::new();
-                text.hash(&mut hasher);
-                hasher.finish()
-            },
-        }),
+                    .unwrap_or_default(),
+                channel_edits: [0, 1, 2].map(|index| {
+                    inputs
+                        .control_ui
+                        .color_channels
+                        .get(&(action.to_owned(), parameter.to_owned(), index))
+                        .map(|text| ValueEdit::Typing(text.clone()))
+                        .unwrap_or_default()
+                }),
+                version: {
+                    let mut hasher = DefaultHasher::new();
+                    text.hash(&mut hasher);
+                    dragging.hash(&mut hasher);
+                    for fraction in picker_hsv.unwrap_or_default() {
+                        fraction.to_bits().hash(&mut hasher);
+                    }
+                    hasher.finish()
+                },
+            })
+        }
         ParameterKind::Enum { options } => ControlModel::Enum(EnumControl {
             action: action.to_owned(),
             parameter: parameter.to_owned(),
@@ -1130,11 +1179,22 @@ fn curve_model(
         .control_ui
         .curve_samples
         .get(&(action.to_owned(), parameter.to_owned()))
-        .filter(|samples| parsed.as_ref() == Some(&samples.source));
+        .filter(|samples| {
+            parsed.as_ref() == Some(&samples.source)
+                && inputs.display_entry == Some(&samples.entry)
+                && inputs
+                    .state
+                    .is_some_and(|state| state.asset.id == samples.asset)
+        });
     let mut hasher = DefaultHasher::new();
     text.hash(&mut hasher);
     selected_channel.hash(&mut hasher);
+    selected_point.hash(&mut hasher);
     samples.map(|samples| samples.version).hash(&mut hasher);
+    let dragging = inputs
+        .dragging
+        .is_some_and(|(a, p)| a == action && p == parameter);
+    dragging.hash(&mut hasher);
     ControlModel::Curve(CurveControl {
         id,
         action: action.to_owned(),
@@ -1156,9 +1216,7 @@ fn curve_model(
             .map(|samples| samples.points.clone())
             .unwrap_or_default(),
         point_rows,
-        dragging: inputs
-            .dragging
-            .is_some_and(|(a, p)| a == action && p == parameter),
+        dragging,
         version: hasher.finish(),
     })
 }

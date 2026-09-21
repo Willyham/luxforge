@@ -1184,6 +1184,8 @@ mod tests {
         scene.control_ui.curve_samples.insert(
             ("fixture-set".into(), "red".into()),
             tools::CurveSamples {
+                asset: scene.state.as_ref().unwrap().asset.id.clone(),
+                entry: scene.display_entry.clone().unwrap(),
                 source: json!([[0.0, 0.0], [0.5, 0.5], [1.0, 1.0]]),
                 points: vec![[0.0, 0.0], [1.0, 1.0]],
                 version: 7,
@@ -1209,6 +1211,17 @@ mod tests {
             section(&workspace, &fixture.id).version,
             fixture_version + 1
         );
+        let original_entry = scene.display_entry.replace(EntryId::new()).unwrap();
+        workspace.derive(&scene.inputs());
+        let ControlModel::Group(group) = &section(&workspace, &fixture.id).controls[0] else {
+            panic!("group")
+        };
+        assert!(
+            matches!(group.controls[6], ControlModel::Curve(ref field) if field.sampled.is_empty()),
+            "a different entry cannot reuse sampled geometry for identical control points"
+        );
+        scene.display_entry = Some(original_entry);
+        workspace.derive(&scene.inputs());
         scene.fields.set(
             "fixture-set",
             "red",
@@ -1223,5 +1236,51 @@ mod tests {
             "old sampled geometry is hidden until the query matches the current points"
         );
         assert_eq!(section(&workspace, "lightwell.crop").version, crop_version);
+    }
+
+    #[test]
+    fn cached_canvas_versions_track_picker_fractions_selection_and_drag_state() {
+        let fixture = controls_descriptor();
+        let mut scene = Scene::new(vec![fixture.clone()]).opened(Vec::new());
+        let mut workspace = Workspace::default();
+        workspace.derive(&scene.inputs());
+        let versions = |workspace: &Workspace| {
+            let ControlModel::Group(group) = &section(workspace, &fixture.id).controls[0] else {
+                panic!("group")
+            };
+            let (ControlModel::Color(color), ControlModel::Curve(curve)) =
+                (&group.controls[5], &group.controls[6])
+            else {
+                panic!("canvas controls")
+            };
+            (color.version, curve.version, color.picker_hsv)
+        };
+        let initial = versions(&workspace);
+        scene.dragging = Some(("fixture-set".into(), "rgb".into()));
+        workspace.derive(&scene.inputs());
+        assert_ne!(versions(&workspace).0, initial.0);
+        scene.dragging = Some(("fixture-set".into(), "master".into()));
+        workspace.derive(&scene.inputs());
+        assert_ne!(versions(&workspace).1, initial.1);
+        scene.dragging = None;
+        scene
+            .control_ui
+            .curve_points
+            .insert(("fixture-set".into(), "master".into()), 1);
+        workspace.derive(&scene.inputs());
+        assert_ne!(versions(&workspace).1, initial.1);
+        scene.control_ui.picker_hsv.insert(
+            ("fixture-set".into(), "rgb".into()),
+            tools::PickerHsv {
+                rgb: [32, 64, 128],
+                hsv: [0.7, 0.75, 0.5],
+            },
+        );
+        workspace.derive(&scene.inputs());
+        assert_eq!(versions(&workspace).2, Some([0.7, 0.75, 0.5]));
+        assert_ne!(versions(&workspace).0, initial.0);
+        scene.fields.set("fixture-set", "rgb", "[0,255,0]".into());
+        workspace.derive(&scene.inputs());
+        assert_eq!(versions(&workspace).2, None, "the field is authoritative");
     }
 }

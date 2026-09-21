@@ -1,6 +1,6 @@
 //! Point curve plot. The host supplies sampled geometry and owns all point validation.
 
-use crate::{ValueEdit, theme};
+use crate::{Icon, IconButtonModel, ValueEdit, icon_button, theme};
 use iced::{
     Alignment, Element, Length, Point, Rectangle, Renderer, Size, Theme,
     advanced::{
@@ -190,15 +190,17 @@ pub fn curve_editor<'a, M: Clone + 'a>(
                     );
         }
         let remove_callback = on_event.clone();
-        point_row = point_row.push(
-            button(text("−").size(theme::SIZE_CONTROL))
-                .style(theme::button_plain)
-                .on_press_maybe(
-                    model
-                        .enabled
-                        .then_some(remove_callback(CurveEditorEvent::Remove(index))),
-                ),
-        );
+        point_row = point_row.push(icon_button(
+            &IconButtonModel {
+                icon: Icon::Minus,
+                tooltip: format!("Remove point {}", index + 1),
+                enabled: model.enabled,
+                selected: false,
+            },
+            model
+                .enabled
+                .then_some(remove_callback(CurveEditorEvent::Remove(index))),
+        ));
         body = body.push(point_row);
     }
     body.into()

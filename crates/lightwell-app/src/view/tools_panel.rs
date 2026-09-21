@@ -8,7 +8,7 @@ use crate::{
         message::{ClipEndpoint, CropMessage, MenuTarget, Message},
     },
     state::{
-        histogram::{HIGHLIGHT_GLYPH, HIGHLIGHT_RULE, HistogramModel, SHADOW_GLYPH, SHADOW_RULE},
+        histogram::{HIGHLIGHT_RULE, HistogramModel, SHADOW_RULE},
         tools::{
             ActionControl, ActionControlStyle, ChoiceControlStyle, ColorControl, ColorControlStyle,
             ControlModel, CropSectionModel, CurveControl, EnumControl, GroupControl,
@@ -100,7 +100,7 @@ fn inspector(model: &HistogramModel) -> Element<'_, Message> {
     let triangles = row![
         clip_triangle(
             &ClipTriangleModel {
-                glyph: SHADOW_GLYPH.into(),
+                icon: Icon::ShadowClipping,
                 tooltip: SHADOW_RULE.into(),
                 tint: theme::CLIPPING_SHADOW,
                 tinted: model.shadow.tinted,
@@ -112,7 +112,7 @@ fn inspector(model: &HistogramModel) -> Element<'_, Message> {
         iced::widget::Space::new().width(Length::Fill),
         clip_triangle(
             &ClipTriangleModel {
-                glyph: HIGHLIGHT_GLYPH.into(),
+                icon: Icon::HighlightClipping,
                 tooltip: HIGHLIGHT_RULE.into(),
                 tint: theme::CLIPPING_HIGHLIGHT,
                 tinted: model.highlight.tinted,
@@ -729,7 +729,9 @@ fn color_view<'a>(
             body = body.push(channels);
         }
         ColorControlStyle::Picker if color.picker_open => {
-            let hsv = lightwell_ui::rgb_to_hsv(color.rgb);
+            let hsv = color
+                .picker_hsv
+                .unwrap_or_else(|| lightwell_ui::rgb_to_hsv(color.rgb));
             let model = ColorPickerModel {
                 hue: hsv[0] as f32,
                 saturation: hsv[1] as f32,

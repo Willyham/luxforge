@@ -168,6 +168,81 @@ fn picker_and_curve_share_bounded_draft_and_commit_once() {
 }
 
 #[test]
+fn picker_remembers_unrepresentable_gray_hue_without_a_noop_commit() {
+    let (mut editor, catalog, _) = editor();
+    editor.set_control_field_value(ACTION, "rgb", &json!([128, 128, 128]));
+    let hue = 0.67_f32;
+    let _ = editor.update(Message::ControlPicker {
+        action: ACTION.into(),
+        parameter: "rgb".into(),
+        event: ColorPickerEvent::Hue(hue),
+    });
+    assert_eq!(
+        editor.control_field_value(ACTION, "rgb"),
+        Some(json!([128, 128, 128]))
+    );
+    assert!(editor.slider_draft.is_none());
+    let _ = editor.update(Message::ControlPicker {
+        action: ACTION.into(),
+        parameter: "rgb".into(),
+        event: ColorPickerEvent::Release,
+    });
+    assert!(!editor.busy, "a hue-only gray gesture changes no RGB field");
+    let _ = editor.update(Message::ControlPicker {
+        action: ACTION.into(),
+        parameter: "rgb".into(),
+        event: ColorPickerEvent::Plane([1.0, 0.5]),
+    });
+    let expected = lightwell_ui::hsv_to_rgb([f64::from(hue), 1.0, 0.5]);
+    assert_eq!(field_request(&mut editor, "rgb"), json!(expected));
+    assert!(editor.slider_draft.is_some());
+    finish(editor, catalog);
+}
+
+#[test]
+fn picker_rejects_cached_hsv_when_the_rgb_field_changes_elsewhere() {
+    let (mut editor, catalog, _) = editor();
+    editor.set_control_field_value(ACTION, "rgb", &json!([0, 0, 0]));
+    let _ = editor.update(Message::ControlPicker {
+        action: ACTION.into(),
+        parameter: "rgb".into(),
+        event: ColorPickerEvent::Hue(0.67),
+    });
+    editor.set_control_field_value(ACTION, "rgb", &json!([0, 255, 0]));
+    let _ = editor.update(Message::ControlPicker {
+        action: ACTION.into(),
+        parameter: "rgb".into(),
+        event: ColorPickerEvent::Plane([1.0, 0.5]),
+    });
+    assert_eq!(field_request(&mut editor, "rgb"), json!([0, 128, 0]));
+    finish(editor, catalog);
+}
+
+#[test]
+fn picker_keeps_black_saturation_until_value_becomes_visible() {
+    let (mut editor, catalog, _) = editor();
+    editor.set_control_field_value(ACTION, "rgb", &json!([0, 0, 0]));
+    for event in [
+        ColorPickerEvent::Plane([1.0, 0.0]),
+        ColorPickerEvent::Hue(0.5),
+    ] {
+        let _ = editor.update(Message::ControlPicker {
+            action: ACTION.into(),
+            parameter: "rgb".into(),
+            event,
+        });
+    }
+    assert!(editor.slider_draft.is_none());
+    let _ = editor.update(Message::ControlPicker {
+        action: ACTION.into(),
+        parameter: "rgb".into(),
+        event: ColorPickerEvent::Plane([1.0, 0.5]),
+    });
+    assert_eq!(field_request(&mut editor, "rgb"), json!([0, 128, 128]));
+    finish(editor, catalog);
+}
+
+#[test]
 fn curve_channel_selection_changes_no_request_value_or_recipe() {
     let (mut editor, catalog, _) = editor();
     let fields = editor.fields.clone();
