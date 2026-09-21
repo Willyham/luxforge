@@ -49,7 +49,14 @@ pub(crate) fn tools_panel<'a>(
     let menu = model.menu.as_ref();
     let mut panel = column![]
         .spacing(theme::SPACING)
-        .padding(theme::SPACING)
+        // The scroll handle overlays the content edge. Reserve its width so the number fields
+        // remain legible even at the panel's narrowest supported width.
+        .padding(iced::Padding {
+            right: theme::SPACING * 3.0,
+            top: theme::SPACING,
+            bottom: theme::SPACING,
+            left: theme::SPACING,
+        })
         .width(Length::Fill);
     // The histogram sits above the first module section with no header of its own, as the Develop
     // workspace layout reserves.
@@ -448,29 +455,76 @@ fn number_view<'a>(
             reset,
         ),
     };
-    let control = if field.style == NumberControlStyle::Slider {
-        control
-    } else {
-        let action = field.action.clone();
-        let parameter = field.parameter.clone();
-        focus_control(control, enabled, move |event| match event {
-            ControlKeyEvent::Pressed { key, shift, option } => {
-                key_direction(key).map(|direction| Message::ControlKeyNudge {
+    let control = match field.style {
+        NumberControlStyle::Slider => control,
+        NumberControlStyle::Field => {
+            let action = field.action.clone();
+            let parameter = field.parameter.clone();
+            let enter = if matches!(field.edit, ValueEdit::Typing(_)) {
+                Message::Submit {
+                    action: action.clone(),
+                    parameter: Some(parameter.clone()),
+                }
+            } else {
+                Message::EditValue {
                     action: action.clone(),
                     parameter: parameter.clone(),
-                    direction,
-                    shift,
-                    option,
-                })
-            }
-            ControlKeyEvent::Released(key) if key_direction(key).is_some() => {
-                Some(Message::ControlReleased {
+                }
+            };
+            focus_control(control, enabled, move |event| match event {
+                ControlKeyEvent::Pressed {
+                    key: ControlKey::Enter,
+                    ..
+                } => Some(enter.clone()),
+                ControlKeyEvent::Pressed { key, shift, option } => {
+                    key_direction(key).map(|direction| Message::ControlFieldNudge {
+                        action: action.clone(),
+                        parameter: parameter.clone(),
+                        direction,
+                        shift,
+                        option,
+                    })
+                }
+                _ => None,
+            })
+        }
+        NumberControlStyle::Stepper => {
+            let action = field.action.clone();
+            let parameter = field.parameter.clone();
+            let enter = if matches!(field.edit, ValueEdit::Typing(_)) {
+                Message::Submit {
+                    action: action.clone(),
+                    parameter: Some(parameter.clone()),
+                }
+            } else {
+                Message::EditValue {
                     action: action.clone(),
                     parameter: parameter.clone(),
-                })
-            }
-            _ => None,
-        })
+                }
+            };
+            focus_control(control, enabled, move |event| match event {
+                ControlKeyEvent::Pressed {
+                    key: ControlKey::Enter,
+                    ..
+                } => Some(enter.clone()),
+                ControlKeyEvent::Pressed { key, shift, option } => {
+                    key_direction(key).map(|direction| Message::ControlKeyNudge {
+                        action: action.clone(),
+                        parameter: parameter.clone(),
+                        direction,
+                        shift,
+                        option,
+                    })
+                }
+                ControlKeyEvent::Released(key) if key_direction(key).is_some() => {
+                    Some(Message::ControlReleased {
+                        action: action.clone(),
+                        parameter: parameter.clone(),
+                    })
+                }
+                _ => None,
+            })
+        }
     };
     with_control_menu(control, &field.action, Some(&field.parameter), menu)
 }
@@ -816,17 +870,27 @@ fn group_view<'a>(
             inner = inner.push(control_view(module_id, enabled, control, menu, plot));
         }
     }
-    let toggle = button(lightwell_ui::label(if group.expanded {
-        "Collapse"
-    } else {
-        "Expand"
-    }))
-    .style(theme::button_plain)
-    .on_press(Message::ToggleGroup {
-        module_id: module_id.to_owned(),
-        path: group.path.clone(),
-    });
-    let toggle = focus_control(toggle.into(), enabled, {
+    let toggle = icon_button(
+        &IconButtonModel {
+            icon: if group.expanded {
+                Icon::ChevronDown
+            } else {
+                Icon::ChevronRight
+            },
+            tooltip: format!(
+                "{} {}",
+                if group.expanded { "Collapse" } else { "Expand" },
+                group.label
+            ),
+            enabled,
+            selected: false,
+        },
+        enabled.then_some(Message::ToggleGroup {
+            module_id: module_id.to_owned(),
+            path: group.path.clone(),
+        }),
+    );
+    let toggle = focus_control(toggle, enabled, {
         let module_id = module_id.to_owned();
         let path = group.path.clone();
         move |event| {
