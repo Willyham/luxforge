@@ -12,7 +12,7 @@ Each JSON file is an independent plan. IDs start at `TASK-001` inside every file
 
 Editor follow-ups and later work wait until the owner asks for them.
 
-The Basic/histogram plan has its product choices decided and its [design](../docs/design/basic-and-histogram.md) records them with the integration dependencies; implementation is not yet authorized. Ready tasks identify runnable preparation, not approval to begin all work.
+The Basic/histogram plan has its product choices decided and recorded defaults for every later choice, so it runs to completion on agent judgement with the owner refining afterwards; its [design](../docs/design/basic-and-histogram.md) records them with the integration dependencies. Implementation starts when the owner says so.
 
 ## Conventions
 

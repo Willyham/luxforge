@@ -56,7 +56,7 @@
         "Define Basic layer targeting and field-patch semantics, draft lifecycle/reapply, internal order and integration extension points with precise input/output ownership, reusing the delivered number parameters, in-place updates and content-stage placement.",
         "Separate independent numerical/reducer work from descriptor, transaction and renderer integration.",
         "Freeze analysis target/result identity, job bounds and declared color boundaries; preserve existing crop semantics and refuse old catalogs explicitly.",
-        "The design states which downstream work is unblocked and which gates remain."
+        "The design states that every downstream task has a recorded default and no owner gate remains."
       ],
       "test_strategy": {
         "approach": "inspection",
@@ -668,7 +668,7 @@
       ],
       "extra_context": [
         "This is a delivery gate for a useful first slice; do not wait for White Balance/Tone/Color.",
-        "If crop has not landed, document that mixed-crop acceptance remains for the final gate rather than claiming it passed."
+        "Mixed-crop acceptance over the delivered crop resample belongs to the final gate; do not claim it here."
       ],
       "context_links": [
         {
@@ -711,7 +711,7 @@
       "acceptance_criteria": [
         "A real JPEG can be exposed with responsive image/histogram updates, explicit output-clipping feedback and one undo step per completed gesture.",
         "A native M4 journey covers UI/API parity, draft/history/current selection, restart, stale jobs and unchanged originals with correlated captures/logs.",
-        "24/60 MP release measurements separate core processing, reduction, scheduling/upload/presentation, memory and idle behavior against the proposed targets.",
+        "24/60 MP release measurements separate core processing, reduction, scheduling/upload/presentation, memory and idle behavior against the provisional default targets, reporting any miss with its figures rather than blocking.",
         "Update only the current Slice A behavior in the module contract, feature status and user guide; keep remaining controls proposed.",
         "The first slice is demonstrated with honest numerical, source-color, platform and any outstanding crop-integration limitations."
       ],
@@ -739,7 +739,7 @@
       ],
       "extra_context": [
         "Choose explicit Lightwell equations; do not assume Lightroom numerical equivalence.",
-        "Pointwise global Tone is a proposal. If visual acceptance needs edge-aware behavior, return a concrete scope decision before implementation.",
+        "Pointwise global Tone is decided. If visual acceptance needs edge-aware behavior, ship the global curve with that limitation documented and record an edge-aware proposal for later work; do not stop for a decision.",
         "Start from the Lightroom research and the design's starting ranges, as the owner decided; freeze the equations and tolerances against independent references before the control ships and claim no Lightroom equivalence."
       ],
       "context_links": [
@@ -779,7 +779,7 @@
         "Specify zero-luminance, negative/out-of-range, gamut, finite-value and endpoint-crossing behavior with frozen tolerances.",
         "Independent references prove neutral identity, nondecreasing neutral ramps, smooth transitions and distinct highlight/shadow versus white/black effects, including combined extremes.",
         "Photo comparisons demonstrate useful retained-detail adjustments and reveal noise/contrast/hue limits; identical patches in different surroundings prove the stated global behavior.",
-        "A documented formula set and expected outputs unblock production Tone, or a specific unmet visual requirement remains an explicit owner decision."
+        "A documented formula set and expected outputs unblock production Tone; any unmet visual requirement is recorded as a documented limitation with a later proposal."
       ],
       "test_strategy": {
         "approach": "mixed",
@@ -1301,7 +1301,7 @@
         "Exact/reference mixed stacks cover Basic before and after crop/straighten, exact transforms and point replacement, with stage and boundary semantics explicit.",
         "Complete API/UI history and recovery journeys pass, including field-preserving conflict resolution, selected historical frames and source/provider failures.",
         "Histogram counts/overlays remain exact for displayed drafts and final compositions, with no stale-generation adoption or viewport-dependent population.",
-        "Release 24/60 MP runs with at least 30 samples report end-to-end p50/p95, queue cancellation, startup/first-use, CPU RSS/scratch/GPU memory and idle, with deviations from provisional targets stated.",
+        "Release 24/60 MP runs with at least 30 samples report end-to-end p50/p95, queue cancellation, startup/first-use, CPU RSS/scratch/GPU memory and idle, with deviations from the provisional default targets stated as findings for the owner's review, not as blockers.",
         "Native M4 captures/logs and independent buffer/source-hash proofs support the acceptance; headless/VM checks and unverified portability are classified separately."
       ],
       "test_strategy": {
@@ -1328,7 +1328,8 @@
       ],
       "extra_context": [
         "Documentation states current behavior and remaining work only, not a run diary.",
-        "Follow the repository convention of removing a fully completed plan after outcomes live in specifications and feature status."
+        "Follow the repository convention of removing a fully completed plan after outcomes live in specifications and feature status.",
+        "Close with a short list of the defaults the plan ran on and any measured misses, so the owner can refine them after completion."
       ],
       "context_links": [
         {

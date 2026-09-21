@@ -52,6 +52,16 @@ Accepted on 2026-09-21 for the [Basic and histogram design](design/basic-and-his
 - Numerical ranges and equations start from the Lightroom research and the design's proposed ranges and defaults; the numerical tasks select and freeze them against independent references before a control ships, and no value is claimed as Lightroom-equivalent.
 - Priority: Slice A (histogram, clipping and Exposure) next, then Slice B (the remaining Basic controls); export, Locate and MCP keep their own follow-up priority.
 
+The plan runs to completion on the defaults below without further owner input; the owner reviews and refines the result afterwards. Each default is provisional and recorded in the design, so a later change is a normal edit, not a silent reinterpretation.
+
+- Performance targets are provisional thresholds: warm 24 MP slider-to-presented-frame p95 below 100 ms, settled exact histogram p95 below 200 ms, a 64 MiB aggregate scratch cap. A measured miss is reported with its figures and does not block delivery.
+- Global tone stays global. If the tone study finds a visual case a global curve cannot pass, the control ships with that limitation documented and an edge-aware proposal recorded as later work.
+- Clipping overlays: any channel at an endpoint counts; shadow clipping draws blue, highlight red, both magenta; tooltips state the rule.
+- Neutral picker: a 5 × 5 patch at input-stage pixel centres clipped at the image edges, evaluated before the Basic layer; near-black, clipped and non-invertible samples are rejected with a reason.
+- One Basic layer per recipe; more than one is never user-facing, and an imported stack with several reports ambiguity.
+- Float exactness: results match an f64 stepwise reference within `1e-6 + 1e-6 × |reference|` and at most one output code of rounding where the design permits it.
+- After Slice B, Tone Curve is the next module candidate; Detail, Texture and Clarity, Dehaze and the colour mixer follow in that order unless the owner reorders them.
+
 ## Programmable operations and modules
 
 Every operation is programmable, including future tools, masks, clone strokes, settings and module lifecycle. The core owns recipe transactions, history, invariants and bounded services; tool modules own parameters, validation, controls and algorithms through those APIs. M3 uses linked modules with cheap registration and lazy resources. Real external loading is required later, and a missing or disabled provider must never silently erase edits or produce an incomplete export. Still open: the first external use case, package and runtime format, trust and UI contribution. See [modules](design/modules-and-api.md).
