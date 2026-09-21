@@ -1,7 +1,7 @@
 //! The canvas model: the photograph, the mode strip, the draft bar and the notices over it.
 use crate::{
     app::fields::number_text,
-    state::{Inputs, tools::point_pick},
+    state::{Inputs, tools::point_pick_for_mode},
 };
 use lightwell_core::{
     Availability, CanvasInteraction, ErrorKind, ModuleDescriptor, POINTER_MODE, Zoom,
@@ -127,6 +127,12 @@ pub(crate) fn derive(inputs: &Inputs<'_>) -> CanvasModel {
             .iter()
             .filter(|module| module.is_available())
             .filter(|module| !module.developer || inputs.developer)
+            .filter(|module| {
+                module.id != "lightwell.raw"
+                    || inputs.state.is_some_and(|state| {
+                        matches!(state.asset.source, lightwell_core::SourceKind::Raw { .. })
+                    })
+            })
             .filter_map(|module| {
                 module.canvas.as_ref().map(|canvas| ModeEntry {
                     id: module.id.clone(),
@@ -149,7 +155,12 @@ pub(crate) fn derive(inputs: &Inputs<'_>) -> CanvasModel {
         thirds: inputs.session.workspace.thirds,
         draft_bar: draft_bar(inputs),
         notices: notices(inputs),
-        picking: editable && point_pick(inputs.modules).is_some(),
+        picking: editable
+            && point_pick_for_mode(inputs.modules, &inputs.session.workspace.mode).is_some()
+            && (inputs.session.workspace.mode != "lightwell.raw"
+                || inputs.state.is_some_and(|state| {
+                    matches!(state.asset.source, lightwell_core::SourceKind::Raw { .. })
+                })),
         pointer: inputs.pointer,
         surface_mode: if inputs.crop_space {
             SurfaceMode::Pan

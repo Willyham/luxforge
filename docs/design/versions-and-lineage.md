@@ -26,7 +26,7 @@ Restoring a version is the existing `history.restore` on the version's entry. Th
 
 `history.lineage` walks `undo_parent` from an entry (default current) newest first, returning entry id, sequence, action and parent per step, at most one hundred steps per call with `next_entry_id` to continue. It reads the `undo_parent_id` column rather than parsing entry JSON, so the desktop can afford it after every change. The desktop marks loaded entries that are not on the current lineage as branches; when the chain was truncated it marks nothing at or below the oldest returned step, because it cannot know.
 
-## Storage: catalog format 3
+## Storage: catalog format 4
 
 Entry JSON is the authoritative stored recipe snapshot; each entry also has an `undo_parent_id` for bounded lineage queries. The `versions` table holds named references to entries. History inserts name their columns explicitly.
 

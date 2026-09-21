@@ -22,7 +22,18 @@ pub(crate) struct PaletteModel {
 }
 
 pub(crate) fn derive(inputs: &Inputs<'_>) -> PaletteModel {
-    let mut raw = palette_entries(inputs.modules, inputs.developer);
+    let applicable: Vec<_> = inputs
+        .modules
+        .iter()
+        .filter(|module| {
+            module.id != "lightwell.raw"
+                || inputs.state.is_some_and(|state| {
+                    matches!(state.asset.source, lightwell_core::SourceKind::Raw { .. })
+                })
+        })
+        .cloned()
+        .collect();
+    let mut raw = palette_entries(&applicable, inputs.developer);
     raw.extend(host_entries(inputs));
     let entries: Vec<PaletteEntry> = filter(raw, inputs.palette_query)
         .into_iter()

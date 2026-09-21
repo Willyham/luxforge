@@ -5,6 +5,7 @@ mod crop;
 mod descriptor;
 mod pixel;
 mod processing;
+mod raw;
 mod registry;
 mod transform;
 
@@ -20,6 +21,9 @@ pub use descriptor::{
 };
 pub use pixel::PixelModule;
 pub use processing::{ExactGeometry, Processing, Resample, Stage};
+pub use raw::neutral::{SensorMosaic, sensor_neutral_gains};
+pub use raw::white_balance::gains_from_temperature_tint;
+pub use raw::{RawModule, RawPayload, WhiteBalanceMode};
 pub use registry::ModuleRegistry;
 pub use transform::TransformModule;
 
@@ -75,6 +79,9 @@ pub struct StageContext<'a> {
     /// an insertion stage still allocates no frame.
     #[allow(clippy::type_complexity)]
     pub sample_before: &'a dyn Fn(usize, u32, u32) -> Result<Option<[u8; 4]>, Error>,
+    /// A bounded pre-WB sensor patch at upright content coordinates, only for RAW sources.
+    #[allow(clippy::type_complexity)]
+    pub sensor_neutral: Option<&'a dyn Fn(u32, u32) -> Result<[f32; 3], Error>>,
 }
 
 pub trait ToolModule: Send + Sync {

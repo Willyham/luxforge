@@ -1,4 +1,7 @@
-use crate::{EntryId, Error, HistoryEntry, ModuleRegistry, Raster, Recipe, SourceImage, render};
+use crate::{
+    EntryId, Error, HistoryEntry, LinearImage, LinearSettings, ModuleRegistry, Raster, Recipe,
+    SourceImage, render, render_linear,
+};
 use serde::{Deserialize, Serialize};
 use std::sync::{
     Arc,
@@ -99,8 +102,26 @@ impl PreviewSession {
 }
 
 #[derive(Clone, Debug)]
+pub enum PreviewSource {
+    Jpeg(SourceImage),
+    Raw {
+        image: LinearImage,
+        settings: LinearSettings,
+    },
+}
+
+impl PreviewSource {
+    pub fn orientation(&self) -> u8 {
+        match self {
+            Self::Jpeg(image) => image.orientation,
+            Self::Raw { image, .. } => image.view().1,
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
 pub struct PreviewJob {
-    pub source: SourceImage,
+    pub source: PreviewSource,
     pub entry: HistoryEntry,
     /// The providers the worker evaluates this stack with; shared, never rebuilt per job.
     pub registry: Arc<ModuleRegistry>,
@@ -163,12 +184,19 @@ impl PreviewQueue {
                     .cloned()
                     .collect(),
             });
-            let result = render(
-                &job.registry,
-                &job.source,
-                job.entry.snapshot.id.clone(),
-                prefix.as_ref().unwrap_or(&job.entry.snapshot.recipe),
-            );
+            let recipe = prefix.as_ref().unwrap_or(&job.entry.snapshot.recipe);
+            let result = match &job.source {
+                PreviewSource::Jpeg(image) => {
+                    render(&job.registry, image, job.entry.snapshot.id.clone(), recipe)
+                }
+                PreviewSource::Raw { image, settings } => render_linear(
+                    &job.registry,
+                    image,
+                    job.entry.snapshot.id.clone(),
+                    recipe,
+                    *settings,
+                ),
+            };
             let _ = sender.send(PreviewResult {
                 generation,
                 entry_id,
@@ -219,13 +247,13 @@ mod tests {
         let original = Snapshot::original(asset.clone());
         let snapshot = original.append(Layer::pixel(0, 0, [color, 0, 0])).unwrap();
         PreviewJob {
-            source: SourceImage {
+            source: PreviewSource::Jpeg(SourceImage {
                 width: 1,
                 height: 1,
                 rgba: vec![0, 0, 0, 255].into(),
                 fingerprint: "test".into(),
                 orientation: 1,
-            },
+            }),
             registry: Arc::new(ModuleRegistry::builtin()),
             layer_count: None,
             entry: HistoryEntry {

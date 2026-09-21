@@ -181,7 +181,14 @@ fn normalized(value: f64, black: f64, white: f64) -> Result<(f64, bool)> {
         [value, black, white].iter().all(|x| x.is_finite()) && white > black,
         "Invalid sensor value or levels",
     )?;
-    Ok(((value - black) / (white - black), value >= white))
+    let denominator = white - black;
+    ensure(
+        denominator.is_finite() && denominator > 0.0,
+        "Sensor level range overflow",
+    )?;
+    let linear = (value - black) / denominator;
+    ensure(linear.is_finite(), "Sensor normalization overflow")?;
+    Ok((linear, value >= white))
 }
 
 fn exposure(rgb: [f64; 3], ev: f64) -> Result<[f64; 3]> {
@@ -282,12 +289,12 @@ fn cfa_channel(cfa: Cfa, row: usize, column: usize) -> char {
     match cfa {
         Cfa::BayerRggb => [['R', 'G'], ['G', 'B']][row % 2][column % 2],
         Cfa::XTrans6 => [
-            ['G', 'R', 'G', 'G', 'B', 'G'],
-            ['B', 'G', 'B', 'R', 'G', 'R'],
-            ['G', 'R', 'G', 'G', 'B', 'G'],
-            ['G', 'B', 'G', 'R', 'G', 'R'],
-            ['B', 'G', 'B', 'R', 'G', 'R'],
-            ['G', 'R', 'G', 'G', 'B', 'G'],
+            ['G', 'G', 'R', 'G', 'G', 'B'],
+            ['G', 'G', 'B', 'G', 'G', 'R'],
+            ['B', 'R', 'G', 'R', 'B', 'G'],
+            ['G', 'G', 'B', 'G', 'G', 'R'],
+            ['G', 'G', 'R', 'G', 'G', 'B'],
+            ['R', 'B', 'G', 'B', 'R', 'G'],
         ][row % 6][column % 6],
     }
 }
@@ -346,7 +353,7 @@ fn cfa_phase_vectors() -> Result<Value> {
     let xtrans_margin = (2usize, 1usize);
     let xtrans_width = 5usize;
     let xtrans_height = 5usize;
-    let xtrans_expected = "BRGRBGGBGGGRGRGBRGRBGGBGG";
+    let xtrans_expected = "BGGRGGRBGBBGGRGRGGBGGBRGR";
     let xtrans = (0..xtrans_height)
         .flat_map(|row| (0..xtrans_width).map(move |column| (row, column)))
         .map(|(row, column)| {
@@ -389,7 +396,7 @@ fn cfa_phase_vectors() -> Result<Value> {
             "wrong_phase_if_margin_ignored": wrong_bayer_phase,
         },
         "xtrans": {
-            "pattern": ["GRGGBG", "BGBRGR", "GRGGBG", "GBGRGR", "BGBRGR", "GRGGBG"],
+            "pattern": ["GGRGGB", "GGBGGR", "BRGRBG", "GGBGGR", "GGRGGB", "RBGBRG"],
             "sensor_dimensions": [9, 7],
             "active_margin_left_top": [xtrans_margin.0, xtrans_margin.1],
             "active_dimensions": [xtrans_width, xtrans_height],
@@ -731,10 +738,17 @@ fn picker_patch(
         "Invalid neutral picker source dimensions",
     )?;
     ensure(
-        radius <= center_x
-            && radius <= center_y
-            && center_x + radius < width
-            && center_y + radius < height,
+        center_x < width && center_y < height,
+        "Neutral picker center is outside source bounds",
+    )?;
+    let x_end = center_x
+        .checked_add(radius)
+        .ok_or("Neutral picker horizontal bounds overflow")?;
+    let y_end = center_y
+        .checked_add(radius)
+        .ok_or("Neutral picker vertical bounds overflow")?;
+    ensure(
+        radius <= center_x && radius <= center_y && x_end < width && y_end < height,
         "Neutral picker patch is outside source bounds",
     )?;
     let mut sum = [0.0; 3];
@@ -902,7 +916,7 @@ mod tests {
     fn synthetic_cfa_fixtures_apply_nonzero_margin_phase() {
         let value = cfa_phase_vectors().unwrap();
         assert_eq!(value["bayer"]["active_phase"], "BGBGGRGRBGBG");
-        assert_eq!(value["xtrans"]["active_phase"], "BRGRBGGBGGGRGRGBRGRBGGBGG");
+        assert_eq!(value["xtrans"]["active_phase"], "BGGRGGRBGBBGGRGRGGBGGBRGR");
         assert_ne!(
             value["bayer"]["active_phase"],
             value["bayer"]["wrong_phase_if_margin_ignored"]
@@ -943,6 +957,8 @@ mod tests {
     fn invalid_numerical_inputs_fail_instead_of_becoming_pixels() {
         assert!(normalized(1.0, 2.0, 2.0).is_err());
         assert!(normalized(f64::NAN, 0.0, 1.0).is_err());
+        assert!(normalized(f64::MAX, -f64::MAX, f64::MAX).is_err());
+        assert!(normalized(-f64::MAX, f64::MAX, f64::MAX).is_err());
         assert!(exposure([1.0; 3], f64::INFINITY).is_err());
         assert!(exposure([f64::MAX; 3], 5.0).is_err());
         assert!(neutral_gains([0.0, 0.5, 0.5]).is_err());
@@ -952,6 +968,9 @@ mod tests {
         assert!(matrix3_inverse([[0.0; 3]; 3]).is_err());
         assert!(bradford_adaptation([f64::NAN; 3], [1.0; 3]).is_err());
         assert!(orient(&[1u8, 2], 2, 1, 9).is_err());
+        let valid = vec![[0.25, 0.5, 0.125]; 9];
+        assert!(picker_patch(&valid, 3, 3, usize::MAX, 1, 0).is_err());
+        assert!(picker_patch(&valid, 3, 3, 1, 1, usize::MAX).is_err());
     }
     #[test]
     fn corpus_preserves_readonly_sources_and_refuses_reused_output() {

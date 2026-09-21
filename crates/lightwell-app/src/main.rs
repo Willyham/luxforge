@@ -83,7 +83,7 @@ fn arguments() -> Result<Config, String> {
             }
             Some("--help") => {
                 println!(
-                    "Lightwell: [--open JPEG]... [--catalog CATALOG] [--data-root DIRECTORY] [--developer] [--disable-module MODULE_ID]... [--evidence-dir NEW_DIRECTORY] [--evidence-script FILE] [--window-size WIDTH HEIGHT]\n--developer lists proof and diagnostic modules; --disable-module registers a built-in as unavailable, so a stack that uses it reports the unavailable effect instead of rendering without it.\nEvidence mode imports each --open in order into an isolated catalog, captures a frame after each, runs any evidence script with a frame per step and exits."
+                    "Lightwell: [--open IMAGE]... [--catalog CATALOG] [--data-root DIRECTORY] [--developer] [--disable-module MODULE_ID]... [--evidence-dir NEW_DIRECTORY] [--evidence-script FILE] [--window-size WIDTH HEIGHT]\n--developer lists proof and diagnostic modules; --disable-module registers a built-in as unavailable, so a stack that uses it reports the unavailable effect instead of rendering without it.\nEvidence mode imports each --open in order into an isolated catalog, captures a frame after each, runs any evidence script with a frame per step and exits."
                 );
                 std::process::exit(0)
             }

@@ -6,6 +6,9 @@ use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::{collections::HashSet, sync::Arc, sync::LazyLock};
 
+pub mod linear;
+pub use linear::{LinearImage, LinearSettings, render_linear, sample_linear};
+
 const PARALLEL_RENDER_PIXELS: u64 = 1_000_000;
 
 /// The sRGB transfer function over the 256 8-bit channel values: interpolation weights are applied
@@ -599,6 +602,53 @@ pub fn sample(
 /// after EXIF orientation, the stage the first layer receives. A point outside the output stage is a
 /// validation error naming that stage. Cost is linear in the layer count and no frame is allocated,
 /// so the canvas pick and the API query share one implementation.
+/// Locate through compiled geometry using dimensions only; source pixels are never needed.
+pub(crate) fn locate_dimensions(
+    registry: &ModuleRegistry,
+    width: u32,
+    height: u32,
+    recipe: &Recipe,
+    x: u32,
+    y: u32,
+) -> Result<ContentPoint, Error> {
+    fn walk(compiled: &Compiled, index: usize, x: u32, y: u32) -> Option<(u32, u32)> {
+        let segment = &compiled.segments[index];
+        if x >= segment.width || y >= segment.height {
+            return None;
+        }
+        let (input_x, input_y) = segment.geometry.unmap(x, y);
+        let Some(resample) = segment.entry else {
+            return Some((input_x, input_y));
+        };
+        let previous = &compiled.segments[index - 1];
+        let (u, v) = resample.input_at(input_x, input_y);
+        walk(
+            compiled,
+            index - 1,
+            nearest_index(u, previous.width),
+            nearest_index(v, previous.height),
+        )
+    }
+    let compiled = registry.compile(width, height, recipe)?;
+    let stage = compiled.stage();
+    let (content_x, content_y) =
+        walk(&compiled, compiled.segments.len() - 1, x, y).ok_or_else(|| {
+            Error::new(
+                ErrorKind::Validation,
+                format!(
+                    "point ({x}, {y}) is outside the {}x{} rendered image",
+                    stage.width, stage.height
+                ),
+            )
+        })?;
+    Ok(ContentPoint {
+        content_x,
+        content_y,
+        width,
+        height,
+    })
+}
+
 pub fn locate(
     registry: &ModuleRegistry,
     source: &SourceImage,

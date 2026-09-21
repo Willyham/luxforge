@@ -15,6 +15,7 @@ pub enum ErrorKind {
     Catalog,
     Incompatible,
     SourceUnavailable,
+    PreparationRequired,
     Protocol,
     Internal,
 }
@@ -35,6 +36,7 @@ impl ErrorKind {
             Self::Catalog => "catalog",
             Self::Incompatible => "incompatible",
             Self::SourceUnavailable => "source-unavailable",
+            Self::PreparationRequired => "preparation-required",
             Self::Protocol => "protocol",
             Self::Internal => "internal",
         }

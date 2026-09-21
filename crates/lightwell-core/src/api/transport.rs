@@ -235,15 +235,49 @@ mod tests {
     #[test]
     fn independent_json_client_drives_history_versions_and_lineage() {
         let catalog = temp("catalog.sqlite");
+        // This test focuses on independent history queries; prepare the source before the owner
+        // starts so a one-shot JSON stream does not discard its client-scoped import job at EOF.
+        let asset = {
+            let mut service = crate::EditorService::open(&catalog).unwrap();
+            service.import(&fixture()).unwrap().asset.id.to_string()
+        };
         let (owner, join) = OwnerHandle::start(&catalog).unwrap();
-        let input = request("import", "catalog.import", json!({"path":fixture()}));
-        let mut output = Vec::new();
-        serve_json_lines(Cursor::new(input), &mut output, &owner).unwrap();
-        let imported: ApiResponse = serde_json::from_slice(&output).unwrap();
-        let asset = imported.result.unwrap()["asset"]["id"]
-            .as_str()
+        let preparer = owner.register();
+        let queued = owner
+            .call(
+                preparer,
+                ApiRequest {
+                    id: "prepare".into(),
+                    method: "source.prepare".into(),
+                    params: json!({"asset_id":asset}),
+                    token: None,
+                },
+            )
             .unwrap()
-            .to_string();
+            .result
+            .unwrap();
+        let job_id = queued["job_id"].as_str().unwrap();
+        loop {
+            let response = owner
+                .call(
+                    preparer,
+                    ApiRequest {
+                        id: "status".into(),
+                        method: "job.status".into(),
+                        params: json!({"job_id":job_id}),
+                        token: None,
+                    },
+                )
+                .unwrap();
+            let status = response.result.unwrap();
+            match status["state"].as_str() {
+                Some("ready") => break,
+                Some("queued" | "preparing") => std::thread::sleep(Duration::from_millis(1)),
+                other => panic!("unexpected reopen preparation {other:?}: {status}"),
+            }
+        }
+        owner.disconnect(preparer);
+        let mut output = Vec::new();
         let input = [
             request("schema", "schema.list", json!({})),
             request("list", "catalog.list", json!({})),
@@ -273,8 +307,8 @@ mod tests {
         // After undo the lineage from current is only Original; the version keeps the edit reachable.
         assert_eq!(result(7)["steps"].as_array().unwrap().len(), 1);
         assert_eq!(result(7)["steps"][0]["sequence"], json!(0));
-        // Mutations advanced the event sequence; the no-op-free version create counted as one.
-        assert_eq!(responses[5].sequence, 4);
+        // The three catalog mutations advanced the sequence; source preparation did not.
+        assert_eq!(responses[5].sequence, 3);
         owner.stop();
         join.join().unwrap();
         std::fs::remove_file(catalog).unwrap();

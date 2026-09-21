@@ -13,7 +13,7 @@ Status: provisional budgets, not accepted requirements. The owner's M4 MacBook P
 | 100,000 metadata rows; 1,000,000-row stress catalog | Index selection, pagination and startup independent of image bytes (later library) |
 | At least 1,000 real images, then a larger owner dataset | Thumbnail decode and cache behavior synthetic rows cannot show |
 | Local SSD, later removable SSD and NAS | CPU/GPU throughput versus storage latency |
-| Nikon Z6 NEF and Fujifilm X100VI RAF in the owner's real modes | Later RAW decode quality and peak memory |
+| Nikon Z6 NEF and Fujifilm X100VI RAF in the owner's real modes | RAW decode/development, WB redevelopment, history, presentation and peak memory; see the [RAW integration contract](../design/raw-integration.md) |
 
 Datasets need provenance, dimensions, profile and orientation, and redistribution permission. Synthetic fixtures live in the repository; private originals stay in a local manifest and are never committed.
 
@@ -87,6 +87,80 @@ correlated state, events and pixel checks, and no latency is claimed from them.
 Core figures exclude desktop scheduling, GPU upload and presentation. Reproduce with `editor-performance` and `measure` as described in [development](../engineering/development.md).
 
 Current macOS `measure` runs use background-only bundles to preserve desktop focus. Launch-to-frame timings include copying the executable and creating its temporary bundle; they are background renderer measurements, not foreground activation measurements. Reports identify the launch mode. Earlier launch baselines above predate this wrapper and are not directly comparable.
+
+## Current RAW and JPEG measurements
+
+Native Apple M4 Pro, 48 GiB RAM, macOS 26.5.2 (25F84), Metal, 2× scale and a
+2880×1800 physical window; files on the internal 2 TB APFS SSD. Release builds,
+background-only launches, warm filesystem cache without an OS cache purge. The
+RAW application SHA-256 is `ff9eecabdbb3ceaa333885db6bdadb93d86870bfa766a4b95eef13437efa2ea1`;
+Cargo.lock SHA-256 is `0c6a739afc2d4830c73059ea2989814950b7607877c59ba945bb89038ea8bd7c`.
+The native adapter configuration is recorded in the [backend selection](../research/raw-backend-selection.md).
+
+Thirty complete trials per owner camera passed. Each trial has an isolated catalog,
+13 edit/history/view steps, per-step captures and a second-process reopen. The
+owner's Z6 is 14-bit lossless NEF; the X100VI is 14-bit uncompressed RAF. All four
+public minimum modes also pass one complete trial each; those are functional
+checks, not latency distributions. Original hashes, displayed entry/snapshot,
+controls, geometry and reopened photo samples are checked together.
+
+Times below are nearest-rank p50 / p95 in milliseconds. Upload readiness is the
+application event correlated with the next captured frame, not GPU scanout. Initial
+open timings stop at the CPU raster; history and view rows explicitly include
+capture readback. Launch-wrapper time and fine-grained stage attribution are not
+included in those open figures.
+
+| Measurement (ms, p50 / p95) | Z6 | X100VI |
+| --- | --- | --- |
+| Initial open → full-resolution CPU raster | 840.0 / 868.2 | 1828.6 / 1887.0 |
+| Exposure → upload readiness | 133.3 / 149.5 | 178.8 / 195.8 |
+| Red WB gain → upload readiness | 488.5 / 508.4 | 1529.3 / 1625.6 |
+| Custom temperature → upload readiness | 482.8 / 493.2 | 1532.1 / 1583.6 |
+| Custom tint → upload readiness | 483.9 / 501.2 | 1529.0 / 1575.7 |
+| Neutral pick → upload readiness | 483.2 / 501.6 | 1528.9 / 1570.0 |
+| Rotate → upload readiness | 118.4 / 126.4 | 234.4 / 243.1 |
+| Crop → upload readiness | 98.2 / 119.4 | 128.2 / 141.6 |
+| Undo → upload readiness | 116.3 / 124.0 | 231.7 / 240.0 |
+| Historical Original → captured frame | 507.5 / 524.8 | 1558.7 / 1600.5 |
+| Return current → captured frame | 491.3 / 500.5 | 1615.8 / 1666.4 |
+| 100% view → captured frame | 24.9 / 25.5 | 25.2 / 25.8 |
+| Edited catalog reopen → CPU raster | 1170.2 / 1222.2 | 3267.8 / 3383.2 |
+
+Sampled first-process peak RSS (roughly 50 ms sampling) is 1323 / 1339 MiB p50 / p95
+for Z6 and 1975 / 1992 MiB for Fuji. Fuji trial 25 has an unexplained 2436 MiB peak
+and a 1038 ms crop update (1007 ms source-to-raster); both tails are retained. Its
+pixel, state and reopen checks pass. The capture-heavy workflow cannot isolate
+CPU heap, native allocator retention, GPU resources or readback buffers. Separate
+screenshot-free live API runs peak at 1583–1647 MiB; the 24-edit run grows only
+1.25 MiB after edit three. This does not establish a whole-process bound or prove
+absence of leaks. GPU allocations are not measured separately.
+
+Initial development and warm exposure p95 meet their provisional investigation
+targets on these files; Fuji memory exceeds the 1536 MiB target. WB redevelopment
+is about 0.5 s for Nikon and 1.5–1.6 s for Fuji. The next resource work is to attribute
+the unexplained tail and native/GPU/readback lifetimes, then evaluate bounded
+Fit/detail rendering while preserving full-resolution 100% inspection. Budgets
+remain provisional; full idle-CPU, cancellation and per-stage measurements remain
+open.
+
+The unchanged JPEG core diagnostic was run before and after this integration,
+30 samples per recipe and size on the same host with warm filesystem cache.
+These exclude desktop scheduling, GPU upload and presentation. Values are p50 /
+p95 milliseconds; medians are similar or lower, with mixed tail variation. The
+24 MP composed-transform p95 increases by about 1 ms in this run; this is not a
+statistical claim of zero regression.
+
+| JPEG core render | 24 MP baseline | 24 MP current | 60 MP baseline | 60 MP current |
+| --- | --- | --- | --- | --- |
+| One exact transform | 10.43 / 11.22 | 10.45 / 11.42 | 23.27 / 32.26 | 22.01 / 28.84 |
+| 200 actions in one orientation layer | 10.33 / 10.81 | 10.52 / 11.80 | 23.45 / 25.16 | 22.14 / 23.35 |
+| Same stack plus 10° crop | 32.22 / 36.37 | 32.18 / 34.35 | 73.72 / 98.62 | 71.09 / 77.79 |
+
+Reproduce with `raw-editor --samples 30` and `editor-performance --samples 30`
+through xtask, using the manifest formats in [development](../engineering/development.md).
+Local reports retain every trial, percentile input, source/binary hash and failure;
+private photographs and captures are not repository assets. These observations
+qualify the recorded files and host, not other camera modes or platforms.
 
 ## Method
 
