@@ -42,26 +42,13 @@ const K_B: f64 = 0.25;
 /// +-100 range; it exists for defensive correctness if that range ever changes.
 const EPSILON_GAP: f64 = 0.05;
 
-/// Highlights tonal-weight bump window (curve domain): zero at and below 0.45,
-/// zero at and above 0.95, peak 1.0 at the midpoint 0.7. Chosen so the window's
-/// near edge sits close to the 0.5 pivot (a small, deliberate overlap with the
-/// Shadows window) while its far edge stays strictly below the encoded white
-/// point 1.0, so Highlights leaves pure white exactly unchanged (see
-/// "Highlights and Shadows" in the design doc).
-const HIGHLIGHT_WINDOW: (f64, f64) = (0.45, 0.95);
-/// Shadows tonal-weight bump window (curve domain): zero at and below 0.05,
-/// zero at and above 0.55, peak 1.0 at the midpoint 0.3. The mirror image of
-/// `HIGHLIGHT_WINDOW` about the pivot: its far edge sits close to 0.5 and its
-/// near edge stays strictly above the encoded black point 0.0, so Shadows
-/// leaves pure black exactly unchanged.
-const SHADOW_WINDOW: (f64, f64) = (0.05, 0.55);
-/// Maximum additive offset each of Highlights/Shadows contributes at
-/// parameter = +-100. See "Highlights and Shadows" in the design doc for the
-/// derivative bound this value must satisfy (must stay under ~0.0796 for the
-/// composed curve's derivative to stay positive by the conservative
-/// union-sum bound; 0.075 keeps a proven-positive minimum slope of ~0.0575,
-/// chosen close to that bound for a usable effect strength).
-const A_HS: f64 = 0.075;
+/// Highlights/Shadows odds-bias steepness scale: at parameter = +-100 the
+/// family's exponent `k` is +-K_HS. See "Highlights and Shadows" in the design
+/// doc: unlike a bump-weighted additive offset, this family's strength is not
+/// capped by a fixed derivative budget, so K_HS trades off effect strength
+/// against how gently the composed curve bends, not against a hard positivity
+/// ceiling.
+const K_HS: f64 = 1.5;
 
 /// Below this linear luminance, the luminance-ratio reconstruction switches to
 /// an additive rule to avoid dividing by (near) zero. See "Luminance ratio and
@@ -129,19 +116,6 @@ fn decode_srgb_extended(e: f64) -> f64 {
     }
 }
 
-/// A raised-cosine bump: 0 outside `[a, b]`, 1 at the midpoint, C1 (zero
-/// derivative at both ends, so it splices smoothly into the flat regions
-/// outside). `b'(x) = (PI / (b - a)) * sin(2*PI*(x - a) / (b - a))`, so its
-/// maximum slope magnitude is `PI / (b - a)`, attained a quarter and
-/// three-quarters of the way through the window.
-fn bump(x: f64, (a, b): (f64, f64)) -> f64 {
-    if x <= a || x >= b {
-        0.0
-    } else {
-        0.5 * (1.0 - (2.0 * std::f64::consts::PI * (x - a) / (b - a)).cos())
-    }
-}
-
 /// Stage 1: Whites/Blacks. An endpoint-anchored linear remap `y = (x - bp) /
 /// (wp - bp)`, with the white point `wp` and black point `bp` moved by the
 /// Whites and Blacks parameters. The crossing-prevention clamp holds
@@ -157,13 +131,71 @@ fn whites_blacks_stage(x: f64, whites: f64, blacks: f64) -> f64 {
     (x - bp) / (wp - bp)
 }
 
-/// Stage 2: Highlights/Shadows. An additive offset weighted by two raised-
-/// cosine bumps, one over the upper-tonal window and one over the lower-tonal
-/// window: `y = x + h * bump(x, HIGHLIGHT_WINDOW) + s * bump(x, SHADOW_WINDOW)`.
+/// The odds-bias curve `B_k(x) = x / (x + (1 - x) * exp(-k))` on `[0, 1]`,
+/// extended by passing values outside `[0, 1]` through unchanged (identity).
+/// `B_k` fixes `0` and `1` exactly for every finite `k` (both terms of the
+/// denominator are nonnegative combinations of the positive values `1` and
+/// `exp(-k)` when `x` is itself in `[0, 1]`, so the denominator is never zero
+/// there, and the pass-through choice matches `B_k` exactly at the boundary:
+/// `B_k(0) = 0`, `B_k(1) = 1`), so this extension is continuous with no
+/// special-casing at `x = 0` or `x = 1`. `k > 0` lifts (`B_k(x) > x` on
+/// `(0, 1)`), `k < 0` crushes, `k = 0` is the identity. See "Highlights and
+/// Shadows" in the design doc for why pass-through was chosen over a linear
+/// extrapolation (the tangent-slope extrapolation amplifies an
+/// already-stretched extended-domain input, which a pointwise pass-through
+/// does not).
+fn odds_bias(x: f64, k: f64) -> f64 {
+    if x <= 0.0 || x >= 1.0 {
+        x
+    } else {
+        x / (x + (1.0 - x) * (-k).exp())
+    }
+}
+
+/// The Shadows weight: `1` at `x = 0`, falling smoothly to `0` at `x = 1`, the
+/// input clamped to `[0, 1]` first so the weight itself never leaves `[0, 1]`
+/// outside the primary domain (a defensive clamp: `odds_bias`'s pass-through
+/// already makes the blend below independent of this weight's value outside
+/// `[0, 1]`, since `w * x + (1 - w) * x = x` for any `w`).
+fn shadow_weight(x: f64) -> f64 {
+    let clamped = x.clamp(0.0, 1.0);
+    (1.0 - clamped).powi(2)
+}
+
+/// Shadows: a blend between the lifting/crushing odds-bias curve and the
+/// identity, weighted by `shadow_weight`, so the effect is strongest near
+/// black and fades smoothly (not abruptly) toward white:
+/// `y = w(x) * B_{k_s}(x) + (1 - w(x)) * x`, `k_s = K_HS * shadows / 100`.
+/// Exact at both ends: `shadow_weight(0) = 1` and `B_{k_s}(0) = 0` give
+/// `y(0) = 0`; `shadow_weight(1) = 0` gives `y(1) = 1 * B + 0 = 1`. So Shadows
+/// leaves pure black *and* pure white exactly unchanged, for every `shadows`.
+fn shadows_stage(x: f64, shadows: f64) -> f64 {
+    let k_s = K_HS * (shadows / 100.0);
+    let w = shadow_weight(x);
+    w * odds_bias(x, k_s) + (1.0 - w) * x
+}
+
+/// Highlights: `shadows_stage` mirrored about the pivot's midpoint
+/// (`x` maps to `1 - x`, `k` maps to `-k`), so Highlights lifts/crushes the
+/// *upper* end with the same shape Shadows uses for the lower end, and by the
+/// same reasoning leaves both `0` and `1` exactly unchanged.
+/// `highlights = +100` lifts near white (mirroring Shadows' lift near
+/// black); `highlights = -100` crushes near white -- the "compresses the top
+/// end" direction the design calls for.
+fn highlights_stage(x: f64, highlights: f64) -> f64 {
+    let k = -K_HS * (highlights / 100.0);
+    let mirrored = 1.0 - x;
+    let w = shadow_weight(mirrored);
+    let inner = w * odds_bias(mirrored, k) + (1.0 - w) * mirrored;
+    1.0 - inner
+}
+
+/// Stage 2: Highlights/Shadows, composed as Shadows then Highlights (not
+/// folded into one expression, so each half keeps its own simple,
+/// independently-provable monotonicity argument; see "Highlights and
+/// Shadows" in the design doc).
 fn highlights_shadows_stage(x: f64, highlights: f64, shadows: f64) -> f64 {
-    let h = (highlights / 100.0) * A_HS;
-    let s = (shadows / 100.0) * A_HS;
-    x + h * bump(x, HIGHLIGHT_WINDOW) + s * bump(x, SHADOW_WINDOW)
+    highlights_stage(shadows_stage(x, shadows), highlights)
 }
 
 /// Stage 3: Contrast. A logistic S-curve normalized to fix `(0, 0)` and
@@ -236,15 +268,26 @@ mod internal_tests {
     }
 
     #[test]
-    fn bump_is_zero_outside_its_window_and_one_at_its_midpoint() {
-        for window in [HIGHLIGHT_WINDOW, SHADOW_WINDOW] {
-            let (a, b) = window;
-            assert_eq!(bump(a, window), 0.0);
-            assert_eq!(bump(b, window), 0.0);
-            assert_eq!(bump(a - 10.0, window), 0.0);
-            assert_eq!(bump(b + 10.0, window), 0.0);
-            let mid = (a + b) / 2.0;
-            assert!((bump(mid, window) - 1.0).abs() < 1e-12);
+    fn odds_bias_fixes_both_endpoints_and_passes_through_outside_them() {
+        for k in [-3.0, -1.5, -0.1, 0.1, 1.5, 3.0] {
+            assert_eq!(odds_bias(0.0, k), 0.0);
+            assert_eq!(odds_bias(1.0, k), 1.0);
+            assert_eq!(odds_bias(-1.0, k), -1.0);
+            assert_eq!(odds_bias(2.0, k), 2.0);
+        }
+        // k > 0 lifts strictly inside (0, 1); k < 0 crushes.
+        assert!(odds_bias(0.5, 1.5) > 0.5);
+        assert!(odds_bias(0.5, -1.5) < 0.5);
+        assert_eq!(odds_bias(0.5, 0.0), 0.5);
+    }
+
+    #[test]
+    fn shadows_and_highlights_leave_both_endpoints_exactly_unchanged() {
+        for amount in [-100.0, -50.0, 50.0, 100.0] {
+            assert_eq!(shadows_stage(0.0, amount), 0.0, "shadows={amount}");
+            assert_eq!(shadows_stage(1.0, amount), 1.0, "shadows={amount}");
+            assert_eq!(highlights_stage(0.0, amount), 0.0, "highlights={amount}");
+            assert_eq!(highlights_stage(1.0, amount), 1.0, "highlights={amount}");
         }
     }
 }

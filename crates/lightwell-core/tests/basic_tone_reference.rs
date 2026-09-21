@@ -217,6 +217,117 @@ fn combined_extremes_stay_finite_and_monotone_on_an_extended_ramp() {
     }
 }
 
+/// The TASK-011 revision's required dense monotonicity proof: forward
+/// differences of `tone_curve` on a 4001-point grid over `[-0.5, 2.0]`, for
+/// all 32 cube corners, all 80 edge midpoints and 200 fixed-seed random
+/// combinations (312 total, matching `all_cube_samples`).
+///
+/// The minimum slope actually observed over this exact grid is **not**
+/// bounded by 0.02: it is `~2.03e-7`, at the corner
+/// `(contrast=-100, highlights=-100, shadows=-100, whites=100, blacks=100)`,
+/// x close to the domain's right edge. This is not a property of the revised
+/// Highlights/Shadows family -- isolated, its own worst-case slope over this
+/// same extended domain is `~0.225`, far above 0.02 (see
+/// `highlights_shadows_stage_alone_has_a_strong_worst_case_slope` below). The
+/// bottleneck is the unchanged Contrast stage: at Whites = Blacks = +100 the
+/// endpoint remap's gap is only 0.5 (a 2x amplification), which combined with
+/// Contrast = -100 (alpha = -6) pushes the value Contrast receives far enough
+/// from the pivot (past x = 3 in the curve domain) that the logistic
+/// saturates to within float noise of its asymptote -- the same saturation
+/// documented in "Contrast" above, and present at the same order of magnitude
+/// (`2.055e-7`) in this design's first (bump-windowed) Highlights/Shadows
+/// family, before this revision. Restricted to the primary `[0, 1]` working
+/// domain (still all 312 combinations, still the same dense grid density),
+/// the minimum observed slope is `~0.0327`, clearing 0.02.
+///
+/// This is recorded here, in the design doc and in the revision's report
+/// rather than resolved silently: whether to also retune Contrast's
+/// `ALPHA_MAX` so the *extended*-domain bound holds too is a decision for
+/// whoever owns that trade-off, not this task (which was scoped to
+/// Highlights/Shadows and told to keep Contrast as it is).
+#[test]
+fn dense_forward_differences_prove_monotonicity_and_record_the_minimum_slope() {
+    let grid = neutral_ramp(4000, -0.5, 2.0);
+    assert_eq!(grid.len(), 4001);
+    let samples = all_cube_samples();
+    assert_eq!(samples.len(), 312);
+
+    let mut worst_full_domain = f64::INFINITY;
+    let mut worst_unit_domain = f64::INFINITY;
+    for combo in &samples {
+        let params = to_params(*combo);
+        let mut previous: Option<(f64, f64)> = None;
+        for &x in &grid {
+            let y = tone_curve(x, params);
+            if let Some((prev_x, prev_y)) = previous {
+                assert!(
+                    y >= prev_y - 1e-9,
+                    "{params:?}: forward difference decreased between x={prev_x} and x={x}"
+                );
+                let slope = (y - prev_y) / (x - prev_x);
+                worst_full_domain = worst_full_domain.min(slope);
+                if prev_x >= 0.0 && x <= 1.0 {
+                    worst_unit_domain = worst_unit_domain.min(slope);
+                }
+            }
+            previous = Some((x, y));
+        }
+    }
+
+    println!(
+        "minimum forward-difference slope over [-0.5, 2.0], 312 combinations: {worst_full_domain}"
+    );
+    println!("minimum forward-difference slope over [0, 1] alone: {worst_unit_domain}");
+
+    // The provable, honest guarantee over the full required domain: strictly
+    // positive everywhere (see the doc comment above for why 0.02 does not
+    // hold there, and why that is a pre-existing Contrast property).
+    assert!(
+        worst_full_domain > 1e-9,
+        "monotonicity must hold (strictly positive slope) everywhere on the extended domain, \
+         got minimum {worst_full_domain}"
+    );
+    // The requested 0.02 floor holds within the primary [0, 1] working domain.
+    assert!(
+        worst_unit_domain >= 0.02,
+        "minimum slope within [0, 1] must be at least 0.02, got {worst_unit_domain}"
+    );
+}
+
+/// Isolates the revised Highlights/Shadows family's own worst-case slope
+/// (Contrast and Whites/Blacks held neutral), over the same extended domain
+/// and the same dense grid, to show the family itself is not the bottleneck
+/// in the test above.
+#[test]
+fn highlights_shadows_stage_alone_has_a_strong_worst_case_slope() {
+    let grid = neutral_ramp(4000, -0.5, 2.0);
+    let mut worst = f64::INFINITY;
+    for highlights in [-100.0, -50.0, 50.0, 100.0] {
+        for shadows in [-100.0, -50.0, 50.0, 100.0] {
+            let params = ToneParams {
+                highlights,
+                shadows,
+                ..ToneParams::NEUTRAL
+            };
+            let mut previous: Option<(f64, f64)> = None;
+            for &x in &grid {
+                let y = tone_curve(x, params);
+                if let Some((prev_x, prev_y)) = previous {
+                    let slope = (y - prev_y) / (x - prev_x);
+                    worst = worst.min(slope);
+                }
+                previous = Some((x, y));
+            }
+        }
+    }
+    println!("Highlights/Shadows-alone minimum forward-difference slope: {worst}");
+    assert!(
+        worst > 0.02,
+        "the revised family's own worst-case slope should be far above the bump family's \
+         former ~0.0575 bound, got {worst}"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Smoothness
 // ---------------------------------------------------------------------------
@@ -284,9 +395,45 @@ fn bounded_second_differences_for_each_single_parameter_at_plus_minus_50_and_100
 // design actually places them (curve-domain 0.5, the same pivot Contrast
 // uses). Splitting by encoded value is what "above/below midtone" means here.
 
+/// Quantitative Highlights/Shadows targets (TASK-011 revision): shadows +100
+/// must lift encoded 0.10 by at least 0.12, and by the mirror symmetry,
+/// highlights -100 must lower encoded 0.90 by at least 0.12. Measured with the
+/// frozen K_HS = 1.5: shadows +100 lifts 0.10 to ~0.288 (delta ~0.188);
+/// highlights -100 lowers 0.90 to ~0.712 (delta ~-0.188). Both comfortably
+/// clear the 0.12 floor.
+#[test]
+fn shadows_and_highlights_meet_their_quantitative_lift_targets() {
+    let shadows_lift = tone_curve(
+        0.10,
+        ToneParams {
+            shadows: 100.0,
+            ..ToneParams::NEUTRAL
+        },
+    ) - 0.10;
+    assert!(
+        shadows_lift >= 0.12,
+        "shadows=100 must lift encoded 0.10 by at least 0.12, got {shadows_lift}"
+    );
+
+    let highlights_drop = tone_curve(
+        0.90,
+        ToneParams {
+            highlights: -100.0,
+            ..ToneParams::NEUTRAL
+        },
+    ) - 0.90;
+    assert!(
+        highlights_drop <= -0.12,
+        "highlights=-100 must lower encoded 0.90 by at least 0.12, got {highlights_drop}"
+    );
+}
+
 #[test]
 fn highlights_change_the_ramp_above_midtone_far_more_than_below() {
     let ramp = neutral_ramp(1024, 0.0, 1.0);
+    // The odds-bias family's own ratio, measured directly (not a target this
+    // test imposes): lifting (highlights = +100) gives ~1.31x, crushing
+    // (highlights = -100) gives ~2.68x. 1.2 is a safe floor below both.
     for amount in [-100.0, 100.0] {
         let params = ToneParams {
             highlights: amount,
@@ -303,7 +450,7 @@ fn highlights_change_the_ramp_above_midtone_far_more_than_below() {
             }
         }
         assert!(
-            above > below * 4.0,
+            above > below * 1.2,
             "highlights={amount}: expected the upper half to move far more; below={below} above={above}"
         );
     }
@@ -312,6 +459,8 @@ fn highlights_change_the_ramp_above_midtone_far_more_than_below() {
 #[test]
 fn shadows_change_the_ramp_below_midtone_far_more_than_above() {
     let ramp = neutral_ramp(1024, 0.0, 1.0);
+    // Mirror of the highlights ratio above: shadows = +100 (lift) gives
+    // ~2.68x, shadows = -100 (crush) gives ~1.31x; 1.2 is a safe floor.
     for amount in [-100.0, 100.0] {
         let params = ToneParams {
             shadows: amount,
@@ -328,14 +477,14 @@ fn shadows_change_the_ramp_below_midtone_far_more_than_above() {
             }
         }
         assert!(
-            below > above * 4.0,
+            below > above * 1.2,
             "shadows={amount}: expected the lower half to move far more; below={below} above={above}"
         );
     }
 }
 
 #[test]
-fn whites_moves_the_raw_value_at_white_while_highlights_leaves_it_exactly_unchanged() {
+fn whites_moves_the_raw_value_at_white_while_highlights_leaves_it_practically_unchanged() {
     let white = [1.0, 1.0, 1.0];
     for amount in [-100.0, -50.0, 50.0, 100.0] {
         let highlights_only = ToneParams {
@@ -343,10 +492,17 @@ fn whites_moves_the_raw_value_at_white_while_highlights_leaves_it_exactly_unchan
             ..ToneParams::NEUTRAL
         };
         let out = tone_pixel(white, highlights_only);
-        assert_eq!(
-            out, white,
-            "highlights={amount}: the highlight bump window ends at 0.95, strictly \
-             below the encoded white point 1.0, so white must be exactly unchanged, got {out:?}"
+        // `highlights_stage`/`shadows_stage` fix both endpoints exactly in
+        // the curve domain (see the internal_tests proof), but `encode(1.0)`
+        // itself is one ULP below 1.0 in f64 (a property of the sRGB OETF's
+        // floating-point evaluation, unrelated to Highlights/Shadows), so the
+        // mirrored `1.0 - x` at the extreme highlights=-100 amplifies that
+        // sub-ULP residual by up to exp(K_HS) before mirroring back. The
+        // result is exact to about 1e-15, not bit-for-bit; 1e-9 is a safe,
+        // generous margin over that.
+        assert!(
+            (out[0] - white[0]).abs() < 1e-9,
+            "highlights={amount}: white must stay unchanged to within float noise, got {out:?}"
         );
 
         let whites_only = ToneParams {
@@ -362,28 +518,36 @@ fn whites_moves_the_raw_value_at_white_while_highlights_leaves_it_exactly_unchan
 }
 
 #[test]
-fn blacks_moves_the_neighbourhood_of_code_zero_while_highlights_does_not_reach_it() {
+fn blacks_moves_the_neighbourhood_of_code_zero_far_more_than_highlights_does() {
+    // Unlike the earlier bump-windowed family (which was exactly zero outside
+    // a fixed window), the odds-bias family has no hard window: every stage
+    // has *some* effect everywhere except exactly at 0 and 1 (see
+    // `odds_bias`). So Highlights does move a near-black pixel a little; the
+    // claim this test proves is that Blacks moves it far more, not that
+    // Highlights leaves it untouched. Measured at encoded ~0.02 (near-black):
+    // Blacks' effect is 18x-107x Highlights' effect across -100/-50/50/100;
+    // 5x is a safe floor.
     let near_black = [0.02, 0.02, 0.02];
     for amount in [-100.0, -50.0, 50.0, 100.0] {
         let blacks_only = ToneParams {
             blacks: amount,
             ..ToneParams::NEUTRAL
         };
-        let out = tone_pixel(near_black, blacks_only);
+        let blacks_delta = (tone_pixel(near_black, blacks_only)[0] - near_black[0]).abs();
         assert!(
-            (out[0] - near_black[0]).abs() > 1e-4,
-            "blacks={amount}: expected a measurable change near code 0, got {out:?}"
+            blacks_delta > 1e-4,
+            "blacks={amount}: expected a measurable change near code 0, got delta {blacks_delta}"
         );
 
         let highlights_only = ToneParams {
             highlights: amount,
             ..ToneParams::NEUTRAL
         };
-        let out = tone_pixel(near_black, highlights_only);
-        assert_eq!(
-            out, near_black,
-            "highlights={amount}: the highlight window starts at 0.35, well above this \
-             near-black pixel's encoded value, so it must be exactly unchanged, got {out:?}"
+        let highlights_delta = (tone_pixel(near_black, highlights_only)[0] - near_black[0]).abs();
+        assert!(
+            blacks_delta > highlights_delta * 5.0,
+            "amount={amount}: expected blacks to dominate near code 0; \
+             blacks_delta={blacks_delta} highlights_delta={highlights_delta}"
         );
     }
 
@@ -401,6 +565,37 @@ fn blacks_moves_the_neighbourhood_of_code_zero_while_highlights_does_not_reach_i
         assert!(
             out[0].abs() > 1e-4,
             "blacks={amount}: expected code 0 to move via the near-black additive rule, got {out:?}"
+        );
+    }
+}
+
+#[test]
+fn whites_moves_the_neighbourhood_of_white_far_more_than_shadows_does() {
+    // The mirror of the test above: Shadows still moves a near-white pixel a
+    // little (no hard window), but Whites moves it far more. Measured at
+    // encoded ~0.9547 (near-white, linear 0.9): Whites' effect is 620x-5470x
+    // Shadows' effect across -100/-50/50/100; 50x is a safe floor.
+    let near_white = [0.9, 0.9, 0.9];
+    for amount in [-100.0, -50.0, 50.0, 100.0] {
+        let whites_only = ToneParams {
+            whites: amount,
+            ..ToneParams::NEUTRAL
+        };
+        let whites_delta = (tone_pixel(near_white, whites_only)[0] - near_white[0]).abs();
+        assert!(
+            whites_delta > 1e-4,
+            "whites={amount}: expected a measurable change near white, got delta {whites_delta}"
+        );
+
+        let shadows_only = ToneParams {
+            shadows: amount,
+            ..ToneParams::NEUTRAL
+        };
+        let shadows_delta = (tone_pixel(near_white, shadows_only)[0] - near_white[0]).abs();
+        assert!(
+            whites_delta > shadows_delta * 50.0,
+            "amount={amount}: expected whites to dominate near white; \
+             whites_delta={whites_delta} shadows_delta={shadows_delta}"
         );
     }
 }
