@@ -1555,7 +1555,10 @@ impl Editor {
                 if tools::drafts(&self.modules, &action, &parameter) {
                     return self.slider_moved(action, parameter, value);
                 }
-                self.fields.set(&action, &parameter, number_text(value));
+                let text = fields::declared(&self.modules, &action, &parameter)
+                    .map(|declared| fields::format_number(declared, value))
+                    .unwrap_or_else(|| number_text(value));
+                self.fields.set(&action, &parameter, text);
                 self.editing = None;
                 self.dragging = Some((action, parameter));
             }
@@ -5506,7 +5509,7 @@ mod tests {
             .all()
             .next()
             .expect("the crop section");
-        assert!(!section.enabled && section.reset.is_none());
+        assert!(!section.enabled && section.reset.is_some());
         let _ = std::hint::black_box(&entry_id);
         finish(editor, catalog);
     }

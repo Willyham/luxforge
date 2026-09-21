@@ -306,7 +306,8 @@ pub(crate) fn replace_channel(current: &str, index: usize, text: &str) -> String
     channels.join(",")
 }
 
-/// A control label carries the parameter's declared unit, e.g. `X (px)`.
+/// A control label carries the parameter's declared unit, e.g. `X (px)`, for the kinds whose
+/// value cannot: an enum's chips or a colour's channels. A slider shows the unit after its value.
 pub(crate) fn labelled(label: &str, parameter: &ParameterDescriptor) -> String {
     match &parameter.unit {
         Some(unit) => format!("{label} ({unit})"),

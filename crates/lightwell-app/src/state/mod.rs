@@ -1164,7 +1164,7 @@ mod tests {
     }
 
     #[test]
-    fn a_historical_preview_disables_every_control_and_withdraws_the_reset() {
+    fn a_historical_preview_disables_every_control_and_dims_the_reset() {
         let crop = crop_descriptor();
         let mut scene = Scene::new(vec![crop.clone()]).opened(Vec::new());
         assert!(section(&scene.derive(), &crop.id).reset.is_some());
@@ -1177,8 +1177,8 @@ mod tests {
             Some("Return to current to edit")
         );
         assert!(
-            section.reset.is_none(),
-            "a section that cannot edit offers no reset"
+            section.reset.is_some(),
+            "a section that cannot edit keeps its reset, dimmed, so the header keeps its height"
         );
         assert!(
             section.expanded,

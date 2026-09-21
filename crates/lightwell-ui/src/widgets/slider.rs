@@ -136,9 +136,13 @@ pub fn slider<'a, M: Clone + 'a>(
     body.into()
 }
 
-/// Appends the unit suffix to a formatted display value, if any.
+/// Appends the unit suffix to a formatted display value, if any. A symbol (`°`, `%`, `×`) sits
+/// against the number; a word (`EV`, `K`, `px`) is separated from it by a space.
 fn display_with_unit(display: &str, unit: &Option<String>) -> String {
     match unit {
+        Some(unit) if unit.starts_with(|c: char| c.is_ascii_alphanumeric()) => {
+            format!("{display} {unit}")
+        }
         Some(unit) => format!("{display}{unit}"),
         None => display.to_string(),
     }
@@ -189,5 +193,10 @@ mod tests {
     fn unit_is_appended_only_when_present() {
         assert_eq!(display_with_unit("140", &None), "140");
         assert_eq!(display_with_unit("2.4", &Some("°".to_string())), "2.4°");
+        assert_eq!(
+            display_with_unit("1.00", &Some("EV".to_string())),
+            "1.00 EV"
+        );
+        assert_eq!(display_with_unit("6500", &Some("K".to_string())), "6500 K");
     }
 }

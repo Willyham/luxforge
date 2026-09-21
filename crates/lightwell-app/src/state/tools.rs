@@ -385,11 +385,11 @@ fn section(
         expanded,
         active,
         unavailable,
-        // A reset is a mutation, so a section that cannot edit (a historical preview, a request in
-        // flight, a missing provider) offers none at all rather than a dimmed one.
-        reset: enabled
-            .then(|| ResetRef::of(module.reset.as_ref()))
-            .flatten(),
+        // The reset is declared, so it is always drawn: a section that cannot edit (a historical
+        // preview, a request in flight, a missing provider) dims it with the rest of its controls
+        // rather than dropping it, because a header that loses its icon changes height and every
+        // control under it moves on each commit round trip. The disabled header offers no press.
+        reset: ResetRef::of(module.reset.as_ref()),
         controls,
         version: previous.map(|previous| previous.version + 1).unwrap_or(1),
         enabled,
@@ -783,7 +783,8 @@ fn slider(
         action: action.to_owned(),
         parameter: parameter.to_owned(),
         id: field_id(action, parameter, None),
-        label: labelled(label, declared),
+        // The value carries the unit, so the label does not repeat it.
+        label: label.to_owned(),
         unit: declared.unit.clone(),
         min,
         max,
