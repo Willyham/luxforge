@@ -212,7 +212,7 @@
     {
       "id": "TASK-004",
       "description": "Run rendered scenarios concurrently in the verify command and serialize timing runs behind a load gate.",
-      "status": "pending",
+      "status": "completed",
       "dependencies": [
         "TASK-002"
       ],
@@ -275,7 +275,7 @@
     {
       "id": "TASK-005",
       "description": "Point CI and the working rules at the tiers, and decide from measured run times which rendered scenarios belong in the rendered tier versus full.",
-      "status": "pending",
+      "status": "ready",
       "dependencies": [
         "TASK-002",
         "TASK-003",
