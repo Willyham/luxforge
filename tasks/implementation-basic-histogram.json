@@ -659,7 +659,7 @@
     {
       "id": "TASK-010",
       "description": "Verify and demonstrate Slice A: histogram, clipping and exposure together.",
-      "status": "pending",
+      "status": "in_progress",
       "dependencies": [
         "TASK-007",
         "TASK-009"
