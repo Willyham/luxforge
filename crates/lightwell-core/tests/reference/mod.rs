@@ -14,6 +14,13 @@
 //! most one output code of difference at a quantization boundary.
 
 pub mod colour;
+pub mod white_balance;
+
+/// The sRGB decode branch on an encoded value in [0, 1], shared by the study modules.
+#[allow(dead_code)]
+pub fn srgb_decode(encoded: f64) -> f64 {
+    decode_encoded(encoded)
+}
 
 /// Aliases so every study module can share one set of helpers.
 #[allow(dead_code)]
