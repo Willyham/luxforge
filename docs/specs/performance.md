@@ -42,7 +42,7 @@ Native M4 Pro, release builds, warm filesystem cache, synthetic fixtures. Diagno
 
 ### Sample counts for a p50/p95 claim
 
-Every harness command's default run is a functional run: it proves the journey and gives one launch count you can quote, not a distribution. A p50/p95 figure requires an explicit sample count: 30 samples per recipe for `editor-performance`, 30 inputs for `editor-latency` (one launch), 30 trials per source for `raw-editor`, and at least 5 launches per workload for `measure` — 5 gives a median and a maximum, not a stable p95, so use 30 launches per workload for a p95 claim. The recorded figures below already state their own sample counts; those labels are unchanged.
+Every harness command's default run is a functional run: it proves the journey and gives one launch count you can quote, not a distribution. A p50/p95 figure requires an explicit sample count: 30 samples per recipe for `editor-performance`, 30 inputs for `editor-latency` (one launch), 30 trials per source for `raw-editor`, and at least 5 launches per workload for `measure` — 5 gives a median and a maximum, not a stable p95, so use 30 launches per workload for a p95 claim. Every recorded figure states the count it was taken with.
 
 | Measurement | Result |
 | --- | --- |
