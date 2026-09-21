@@ -122,6 +122,8 @@ fn control(transform: Transform, label: &str) -> Control {
         action: TRANSFORM_ACTION.into(),
         label: label.into(),
         preset,
+        style: crate::ActionStyle::Default,
+        icon: None,
     }
 }
 
@@ -169,6 +171,10 @@ parameters: vec![ParameterDescriptor {
                         unit: None,
                         step: None, precision: None,
 notes: "the exact transform to compose into the stack's orientation".into(),
+                        soft_min: None,
+                        soft_max: None,
+                        fine_step: None,
+                        zero: None,
                     }],
                 }],
                 queries: Vec::new(),
@@ -181,6 +187,7 @@ notes: "the exact transform to compose into the stack's orientation".into(),
                         control(Transform::MirrorHorizontal, "Mirror horizontal"),
                         control(Transform::FlipVertical, "Flip vertical"),
                     ],
+                    collapsed: false,
                 }],
                 reset: None,
                 canvas: None,

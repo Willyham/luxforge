@@ -17,8 +17,9 @@ pub use crop::geometry::{
     guide_angle, largest_with_ratio_inside,
 };
 pub use descriptor::{
-    ActionDescriptor, Availability, CanvasInteraction, Control, EffectDescriptor, EffectStage,
-    ModuleDescriptor, ParameterDescriptor, ParameterKind, ResetAction, action_label,
+    ActionDescriptor, ActionStyle, Availability, CanvasInteraction, ChoiceStyle, ColorStyle,
+    Control, CurveBackground, CurveChannel, EffectDescriptor, EffectStage, ModuleDescriptor,
+    NumberStyle, ParameterDescriptor, ParameterKind, RailDecoration, ResetAction, action_label,
     check_parameters, check_value, render_summary, valid_identity, valid_name,
 };
 pub use pixel::PixelModule;

@@ -12,6 +12,10 @@ fn validation(detail: impl Into<String>) -> Error {
     Error::new(ErrorKind::Validation, detail)
 }
 
+fn is_default<T: Default + PartialEq>(value: &T) -> bool {
+    value == &T::default()
+}
+
 fn valid_segments(value: &str, separator: char, alphabetic_segments: bool) -> bool {
     !value.is_empty()
         && value.split(separator).enumerate().all(|(index, segment)| {
@@ -78,6 +82,16 @@ pub enum ParameterKind {
     },
     /// Three 8-bit sRGB channels as a JSON array.
     Color,
+    Boolean,
+    /// Ordered [x, y] fractions. Interpolation belongs to the module.
+    Curve {
+        points_min: usize,
+        points_max: usize,
+        #[serde(default)]
+        monotone: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        fixed_x: Option<Vec<f64>>,
+    },
 }
 
 /// Serialized flat: `{"name": "x", "kind": "integer", "min": 0, "max": 16383, ...}`. Flattening
@@ -98,7 +112,79 @@ pub struct ParameterDescriptor {
     /// stored value keeps every digit it was sent with.
     #[serde(default)]
     pub precision: Option<u8>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub soft_min: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub soft_max: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fine_step: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub zero: Option<f64>,
     pub notes: String,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum NumberStyle {
+    #[default]
+    Slider,
+    Field,
+    Stepper,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ChoiceStyle {
+    #[default]
+    Automatic,
+    Segmented,
+    Chips,
+    Menu,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ColorStyle {
+    #[default]
+    Fields,
+    Picker,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ActionStyle {
+    #[default]
+    Default,
+    Primary,
+    Icon,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum RailDecoration {
+    #[default]
+    Plain,
+    Hue,
+    Temperature,
+    Tint,
+    Gradient {
+        stops: Vec<[u8; 3]>,
+    },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CurveChannel {
+    pub parameter: String,
+    pub label: String,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum CurveBackground {
+    #[default]
+    None,
+    Histogram,
 }
 
 /// A declared action with fixed parameter values: the header and group reset buttons. It is the
@@ -139,7 +225,7 @@ impl ActionDescriptor {
 
 /// Ordered semantic controls. A client renders them; it never invents an operation of its own.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "kebab-case")]
+#[serde(tag = "kind", rename_all = "kebab-case", deny_unknown_fields)]
 pub enum Control {
     Group {
         label: String,
@@ -147,22 +233,55 @@ pub enum Control {
         /// The action that returns this group to its neutral values, shown on the group header.
         #[serde(default)]
         reset: Option<ResetAction>,
+        #[serde(default, skip_serializing_if = "is_default")]
+        collapsed: bool,
     },
     Number {
         action: String,
         parameter: String,
         label: String,
+        #[serde(default, skip_serializing_if = "is_default")]
+        style: NumberStyle,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        rail: Option<RailDecoration>,
+    },
+    Toggle {
+        action: String,
+        parameter: String,
+        label: String,
+    },
+    Choice {
+        action: String,
+        parameter: String,
+        label: String,
+        #[serde(default, skip_serializing_if = "is_default")]
+        style: ChoiceStyle,
     },
     Color {
         action: String,
         parameter: String,
         label: String,
+        #[serde(default, skip_serializing_if = "is_default")]
+        style: ColorStyle,
+    },
+    Curve {
+        action: String,
+        channels: Vec<CurveChannel>,
+        label: String,
+        /// Query receiving the active channel's point list and returning sampled fractions.
+        sample_query: String,
+        #[serde(default, skip_serializing_if = "is_default")]
+        background: CurveBackground,
     },
     Action {
         action: String,
         label: String,
         #[serde(default)]
         preset: Map<String, Value>,
+        #[serde(default, skip_serializing_if = "is_default")]
+        style: ActionStyle,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        icon: Option<String>,
     },
 }
 
@@ -271,6 +390,11 @@ pub struct ModuleDescriptor {
 impl ModuleDescriptor {
     /// Read a descriptor from JSON, reporting a missing or malformed field as a validation error.
     pub fn parse(value: &Value) -> Result<Self, Error> {
+        if let Some(controls) = value.get("controls").and_then(Value::as_array) {
+            for control in controls {
+                check_raw_control_hints(control)?;
+            }
+        }
         let descriptor: Self = serde_json::from_value(value.clone())
             .map_err(|error| validation(format!("invalid module descriptor: {error}")))?;
         descriptor.validate()?;
@@ -486,6 +610,7 @@ impl ModuleDescriptor {
                 label,
                 controls,
                 reset,
+                ..
             } => {
                 if label.trim().is_empty() {
                     return Err(validation(format!(
@@ -499,7 +624,10 @@ impl ModuleDescriptor {
                 }
             }
             Control::Number {
-                action, parameter, ..
+                action,
+                parameter,
+                rail,
+                ..
             } => {
                 let declared = self.declared_action(action)?;
                 let declared = self.declared_parameter(declared, parameter)?;
@@ -509,6 +637,38 @@ impl ModuleDescriptor {
                 ) {
                     return Err(validation(format!(
                         "number control for {parameter} of action {action} is not an integer or a number"
+                    )));
+                }
+                if rail.is_some() && !matches!(declared.kind, ParameterKind::Number { .. }) {
+                    return Err(validation(format!(
+                        "number control for {parameter} of action {action} declares a rail hint on a non-number parameter"
+                    )));
+                }
+                if let Some(RailDecoration::Gradient { stops }) = rail
+                    && !(2..=8).contains(&stops.len())
+                {
+                    return Err(validation(format!(
+                        "number control for {parameter} of action {action} needs 2..=8 gradient stops"
+                    )));
+                }
+            }
+            Control::Toggle {
+                action, parameter, ..
+            } => {
+                let declared = self.declared_parameter(self.declared_action(action)?, parameter)?;
+                if !matches!(declared.kind, ParameterKind::Boolean) {
+                    return Err(validation(format!(
+                        "toggle control for {parameter} of action {action} is not a boolean"
+                    )));
+                }
+            }
+            Control::Choice {
+                action, parameter, ..
+            } => {
+                let declared = self.declared_parameter(self.declared_action(action)?, parameter)?;
+                if !matches!(declared.kind, ParameterKind::Enum { .. }) {
+                    return Err(validation(format!(
+                        "choice control for {parameter} of action {action} is not an enum"
                     )));
                 }
             }
@@ -523,15 +683,107 @@ impl ModuleDescriptor {
                     )));
                 }
             }
-            Control::Action { action, preset, .. } => {
+            Control::Curve {
+                action,
+                channels,
+                sample_query,
+                ..
+            } => {
+                self.declared_action(action)?;
+                let query = self.declared_query(sample_query)?;
+                if channels.is_empty() || channels.len() > 8 {
+                    return Err(validation(format!(
+                        "curve control of action {action} needs 1..=8 channels"
+                    )));
+                }
+                let mut seen = HashSet::with_capacity(channels.len());
+                for channel in channels {
+                    let parameter = &channel.parameter;
+                    let declared =
+                        self.declared_parameter(self.declared_action(action)?, parameter)?;
+                    if !matches!(declared.kind, ParameterKind::Curve { .. }) {
+                        return Err(validation(format!(
+                            "curve control for {parameter} of action {action} is not a curve"
+                        )));
+                    }
+                    let query_parameter = self.declared_parameter(query, parameter)?;
+                    if query_parameter.kind != declared.kind {
+                        return Err(validation(format!(
+                            "curve control for {parameter} of action {action} has a mismatched sample query {sample_query}"
+                        )));
+                    }
+                    if query_parameter.required || query_parameter.default.is_some() {
+                        return Err(validation(format!(
+                            "curve control for {parameter} of action {action} needs an optional sample query field without a default"
+                        )));
+                    }
+                    if channel.label.trim().is_empty() || !seen.insert(parameter) {
+                        return Err(validation(format!(
+                            "curve control for {parameter} of action {action} needs distinct labelled channels"
+                        )));
+                    }
+                }
+                if query
+                    .parameters
+                    .iter()
+                    .any(|parameter| parameter.required && !seen.contains(&parameter.name))
+                {
+                    return Err(validation(format!(
+                        "curve control of action {action} has sample query {sample_query} with unrelated required parameters"
+                    )));
+                }
+            }
+            Control::Action {
+                action,
+                preset,
+                icon,
+                ..
+            } => {
                 let declared = self.declared_action(action)?;
                 for (name, value) in preset {
                     check_value(self.declared_parameter(declared, name)?, value)?;
+                }
+                if let Some(icon) = icon
+                    && !valid_name(icon)
+                {
+                    return Err(validation(format!(
+                        "action control {action} has invalid icon name {icon}"
+                    )));
                 }
             }
         }
         Ok(())
     }
+}
+
+/// Preserve the action and parameter names when malformed JSON puts a rail on another kind.
+/// Typed descriptors cannot express that state, so this guard runs before deserialization.
+fn check_raw_control_hints(control: &Value) -> Result<(), Error> {
+    if let Some(children) = control.get("controls").and_then(Value::as_array) {
+        for child in children {
+            check_raw_control_hints(child)?;
+        }
+    }
+    if control.get("rail").is_some()
+        && control.get("kind").and_then(Value::as_str) != Some("number")
+    {
+        let kind = control
+            .get("kind")
+            .and_then(Value::as_str)
+            .unwrap_or("unknown");
+        let action = control
+            .get("action")
+            .and_then(Value::as_str)
+            .unwrap_or("unknown");
+        let parameter = control
+            .get("parameter")
+            .and_then(Value::as_str)
+            .unwrap_or("unknown");
+        return Err(validation(format!(
+            "{kind} control for {parameter} of action {action} declares a rail hint on a non-number control"
+        )));
+    }
+    Ok(())
 }
 
 /// One declared action or query: a valid, unique identity, a title, and parameters whose names,
@@ -589,6 +841,33 @@ fn check_declared<'a>(
                     parameter.name
                 )));
             }
+            ParameterKind::Curve {
+                points_min,
+                points_max,
+                fixed_x,
+                ..
+            } => {
+                if *points_min < 2 || *points_max > 32 || points_min > points_max {
+                    return Err(validation(format!(
+                        "parameter {} declares invalid curve point bounds",
+                        parameter.name
+                    )));
+                }
+                if let Some(xs) = fixed_x {
+                    if xs.len() < *points_min
+                        || xs.len() > *points_max
+                        || xs
+                            .iter()
+                            .any(|x| !x.is_finite() || !(0.0..=1.0).contains(x))
+                        || xs.windows(2).any(|pair| pair[0] >= pair[1])
+                    {
+                        return Err(validation(format!(
+                            "parameter {} declares invalid fixed_x curve points",
+                            parameter.name
+                        )));
+                    }
+                }
+            }
             _ => {}
         }
         check_hints(parameter)?;
@@ -603,15 +882,74 @@ fn check_declared<'a>(
 /// noise rather than information, so a descriptor declaring more is rejected at registration.
 const MAX_PRECISION: u8 = 6;
 
-/// A step and a display precision describe a decimal control, so only a `number` parameter may
-/// declare them, a step is finite and positive, and a precision is at most [`MAX_PRECISION`].
+/// Steps and precision describe numeric and curve controls. They remain client hints: requests
+/// are validated against the hard kind and are never rounded to a hint.
 fn check_hints(parameter: &ParameterDescriptor) -> Result<(), Error> {
     let name = &parameter.name;
-    if !matches!(parameter.kind, ParameterKind::Number { .. })
-        && (parameter.step.is_some() || parameter.precision.is_some())
+    if !matches!(
+        parameter.kind,
+        ParameterKind::Integer { .. } | ParameterKind::Number { .. } | ParameterKind::Curve { .. }
+    ) && (parameter.step.is_some() || parameter.precision.is_some())
     {
         return Err(validation(format!(
-            "parameter {name} declares a step or precision but is not a number"
+            "parameter {name} declares a step or precision but is not numeric or a curve"
+        )));
+    }
+    let bounds = match parameter.kind {
+        ParameterKind::Integer { min, max } => Some((min as f64, max as f64)),
+        ParameterKind::Number { min, max } => Some((min, max)),
+        _ => None,
+    };
+    if bounds.is_none()
+        && [parameter.soft_min, parameter.soft_max, parameter.zero]
+            .iter()
+            .any(Option::is_some)
+    {
+        return Err(validation(format!(
+            "parameter {name} declares numeric hints but is not a number"
+        )));
+    }
+    if bounds.is_none()
+        && !matches!(parameter.kind, ParameterKind::Curve { .. })
+        && parameter.fine_step.is_some()
+    {
+        return Err(validation(format!(
+            "parameter {name} declares a fine step but is not numeric or a curve"
+        )));
+    }
+    if let Some((min, max)) = bounds {
+        let soft_min = parameter.soft_min.unwrap_or(min);
+        let soft_max = parameter.soft_max.unwrap_or(max);
+        if !soft_min.is_finite()
+            || !soft_max.is_finite()
+            || soft_min < min
+            || soft_max > max
+            || (min < max && soft_min >= soft_max)
+        {
+            return Err(validation(format!(
+                "parameter {name} declares a soft range outside {min}..={max}"
+            )));
+        }
+        if let Some(fine_step) = parameter.fine_step
+            && (!fine_step.is_finite() || fine_step <= 0.0)
+        {
+            return Err(validation(format!(
+                "parameter {name} declares a fine step that is not finite and positive"
+            )));
+        }
+        if let Some(zero) = parameter.zero
+            && (!zero.is_finite() || zero < min || zero > max)
+        {
+            return Err(validation(format!(
+                "parameter {name} declares a zero outside {min}..={max}"
+            )));
+        }
+    }
+    if let Some(fine_step) = parameter.fine_step
+        && (!fine_step.is_finite() || fine_step <= 0.0)
+    {
+        return Err(validation(format!(
+            "parameter {name} declares a fine step that is not finite and positive"
         )));
     }
     if let Some(step) = parameter.step
@@ -786,6 +1124,56 @@ pub fn check_value(parameter: &ParameterDescriptor, value: &Value) -> Result<(),
                 )));
             }
         }
+        ParameterKind::Boolean => {
+            if !value.is_boolean() {
+                return Err(validation(format!("parameter {name} must be a boolean")));
+            }
+        }
+        ParameterKind::Curve {
+            points_min,
+            points_max,
+            monotone,
+            fixed_x,
+        } => {
+            let Some(points) = value.as_array() else {
+                return Err(validation(format!(
+                    "parameter {name} must be a curve point list"
+                )));
+            };
+            if points.len() < *points_min
+                || points.len() > *points_max
+                || fixed_x.as_ref().is_some_and(|xs| xs.len() != points.len())
+            {
+                return Err(validation(format!(
+                    "parameter {name} has an invalid curve point count"
+                )));
+            }
+            let mut previous = None;
+            for (index, point) in points.iter().enumerate() {
+                let Some(pair) = point.as_array().filter(|pair| pair.len() == 2) else {
+                    return Err(validation(format!(
+                        "parameter {name} has a malformed curve point {index}"
+                    )));
+                };
+                let (Some(x), Some(y)) = (pair[0].as_f64(), pair[1].as_f64()) else {
+                    return Err(validation(format!(
+                        "parameter {name} has a malformed curve point {index}"
+                    )));
+                };
+                if !x.is_finite()
+                    || !y.is_finite()
+                    || !(0.0..=1.0).contains(&x)
+                    || !(0.0..=1.0).contains(&y)
+                    || previous.is_some_and(|(px, py)| x <= px || (*monotone && y < py))
+                    || fixed_x.as_ref().is_some_and(|xs| x != xs[index])
+                {
+                    return Err(validation(format!(
+                        "parameter {name} has an invalid curve point {index}"
+                    )));
+                }
+                previous = Some((x, y));
+            }
+        }
     }
     Ok(())
 }
@@ -866,6 +1254,10 @@ mod tests {
             step: None,
             precision: None,
             notes: "test".into(),
+            soft_min: None,
+            soft_max: None,
+            fine_step: None,
+            zero: None,
         }
     }
 
@@ -879,6 +1271,10 @@ mod tests {
             step: None,
             precision: None,
             notes: "test".into(),
+            soft_min: None,
+            soft_max: None,
+            fine_step: None,
+            zero: None,
         }
     }
 
@@ -917,6 +1313,10 @@ mod tests {
             step: None,
             precision: None,
             notes: "test".into(),
+            soft_min: None,
+            soft_max: None,
+            fine_step: None,
+            zero: None,
         }
     }
 
@@ -967,6 +1367,8 @@ mod tests {
                 action: "set-frame".into(),
                 parameter: "angle".into(),
                 label: "Angle".into(),
+                style: crate::NumberStyle::Slider,
+                rail: None,
             }],
             // The shared descriptor's reset names an action this one does not declare.
             reset: None,
@@ -1040,6 +1442,10 @@ mod tests {
                     step: None,
                     precision: None,
                     notes: "test".into(),
+                    soft_min: None,
+                    soft_max: None,
+                    fine_step: None,
+                    zero: None,
                 },
                 ParameterDescriptor {
                     name: "mode".into(),
@@ -1052,6 +1458,10 @@ mod tests {
                     step: None,
                     precision: None,
                     notes: "test".into(),
+                    soft_min: None,
+                    soft_max: None,
+                    fine_step: None,
+                    zero: None,
                 },
             ],
         }
@@ -1080,13 +1490,18 @@ mod tests {
                         action: "set-thing".into(),
                         parameter: "x".into(),
                         label: "X".into(),
+                        style: crate::NumberStyle::Slider,
+                        rail: None,
                     },
                     Control::Action {
                         action: "set-thing".into(),
                         label: "Apply".into(),
                         preset: Map::new(),
+                        style: crate::ActionStyle::Default,
+                        icon: None,
                     },
                 ],
+                collapsed: false,
             }],
             reset: Some(ResetAction {
                 action: "set-thing".into(),
@@ -1244,6 +1659,10 @@ mod tests {
                             step: None,
                             precision: None,
                             notes: "test".into(),
+                            soft_min: None,
+                            soft_max: None,
+                            fine_step: None,
+                            zero: None,
                         }],
                         ..action()
                     }],
@@ -1272,6 +1691,8 @@ mod tests {
                         action: "missing".into(),
                         parameter: "x".into(),
                         label: "X".into(),
+                        style: crate::NumberStyle::Slider,
+                        rail: None,
                     }],
                     ..descriptor()
                 },
@@ -1283,6 +1704,8 @@ mod tests {
                         action: "set-thing".into(),
                         parameter: "missing".into(),
                         label: "X".into(),
+                        style: crate::NumberStyle::Slider,
+                        rail: None,
                     }],
                     ..descriptor()
                 },
@@ -1294,6 +1717,7 @@ mod tests {
                         action: "set-thing".into(),
                         parameter: "x".into(),
                         label: "X".into(),
+                        style: crate::ColorStyle::Fields,
                     }],
                     ..descriptor()
                 },
@@ -1305,6 +1729,8 @@ mod tests {
                         action: "set-thing".into(),
                         label: "Apply".into(),
                         preset: json!({"x": 99}).as_object().unwrap().clone(),
+                        style: crate::ActionStyle::Default,
+                        icon: None,
                     }],
                     ..descriptor()
                 },
@@ -1316,6 +1742,8 @@ mod tests {
                         action: "set-thing".into(),
                         label: "Apply".into(),
                         preset: json!({"missing": 1}).as_object().unwrap().clone(),
+                        style: crate::ActionStyle::Default,
+                        icon: None,
                     }],
                     ..descriptor()
                 },
@@ -1376,6 +1804,8 @@ mod tests {
                         action: "set-thing".into(),
                         parameter: "rgb".into(),
                         label: "RGB".into(),
+                        style: crate::NumberStyle::Slider,
+                        rail: None,
                     }],
                     ..descriptor()
                 },
@@ -1466,6 +1896,7 @@ mod tests {
                             action: "set-thing".into(),
                             preset: json!({"missing": 1}).as_object().unwrap().clone(),
                         }),
+                        collapsed: false,
                     }],
                     ..descriptor()
                 },
@@ -1480,6 +1911,7 @@ mod tests {
                             action: "set-thing".into(),
                             preset: json!({"mode": "sloppy"}).as_object().unwrap().clone(),
                         }),
+                        collapsed: false,
                     }],
                     ..descriptor()
                 },
@@ -1676,8 +2108,15 @@ mod tests {
                 with_hints(None, Some(7), number("angle", -45.0, 45.0)),
             ),
             (
-                "a step on an integer parameter",
-                with_hints(Some(1.0), None, integer("x")),
+                "a step on a boolean parameter",
+                with_hints(
+                    Some(1.0),
+                    None,
+                    ParameterDescriptor {
+                        kind: ParameterKind::Boolean,
+                        ..integer("x")
+                    },
+                ),
             ),
             (
                 "a precision on an enum parameter",
@@ -2132,6 +2571,286 @@ mod tests {
             let error = check_parameters(&action, &input).expect_err(case);
             assert_eq!(error.kind, ErrorKind::Validation, "{case}");
             assert!(error.detail.contains(fragment), "{case}: {error}");
+        }
+    }
+
+    fn controls_descriptor() -> ModuleDescriptor {
+        let mut descriptor = descriptor();
+        let bool_param = ParameterDescriptor {
+            name: "enabled".into(),
+            kind: ParameterKind::Boolean,
+            required: false,
+            default: Some(json!(false)),
+            ..number("enabled", 0.0, 1.0)
+        };
+        let curve_kind = ParameterKind::Curve {
+            points_min: 2,
+            points_max: 4,
+            monotone: true,
+            fixed_x: Some(vec![0.0, 0.5, 1.0]),
+        };
+        let curve_param = ParameterDescriptor {
+            name: "curve".into(),
+            kind: curve_kind,
+            required: false,
+            default: Some(json!([[0.0, 0.0], [0.5, 0.5], [1.0, 1.0]])),
+            ..number("curve", 0.0, 1.0)
+        };
+        let mut numeric = number("amount", -10.0, 10.0);
+        numeric.soft_min = Some(-5.0);
+        numeric.soft_max = Some(5.0);
+        numeric.fine_step = Some(0.01);
+        numeric.zero = Some(0.0);
+        let action = ActionDescriptor {
+            id: "set-controls".into(),
+            title: "Set controls".into(),
+            notes: "test".into(),
+            summary: None,
+            patch: true,
+            parameters: vec![
+                bool_param,
+                enumerated("mode"),
+                curve_param.clone(),
+                numeric,
+                ParameterDescriptor {
+                    kind: ParameterKind::Color,
+                    ..number("rgb", 0.0, 1.0)
+                },
+            ],
+        };
+        descriptor.actions = vec![action];
+        descriptor.queries = vec![ActionDescriptor {
+            id: "sample-curve".into(),
+            title: "Sample curve".into(),
+            notes: "test".into(),
+            summary: None,
+            patch: false,
+            parameters: vec![ParameterDescriptor {
+                required: false,
+                default: None,
+                ..curve_param
+            }],
+        }];
+        descriptor.controls = vec![
+            Control::Toggle {
+                action: "set-controls".into(),
+                parameter: "enabled".into(),
+                label: "Enabled".into(),
+            },
+            Control::Choice {
+                action: "set-controls".into(),
+                parameter: "mode".into(),
+                label: "Mode".into(),
+                style: ChoiceStyle::Menu,
+            },
+            Control::Number {
+                action: "set-controls".into(),
+                parameter: "amount".into(),
+                label: "Amount".into(),
+                style: NumberStyle::Stepper,
+                rail: Some(RailDecoration::Hue),
+            },
+            Control::Curve {
+                action: "set-controls".into(),
+                channels: vec![CurveChannel {
+                    parameter: "curve".into(),
+                    label: "Master".into(),
+                }],
+                label: "Curve".into(),
+                sample_query: "sample-curve".into(),
+                background: CurveBackground::Histogram,
+            },
+            Control::Action {
+                action: "set-controls".into(),
+                label: "Run".into(),
+                preset: Map::new(),
+                style: ActionStyle::Icon,
+                icon: Some("rotate-left".into()),
+            },
+            Control::Color {
+                action: "set-controls".into(),
+                parameter: "rgb".into(),
+                label: "Colour".into(),
+                style: ColorStyle::Picker,
+            },
+            Control::Group {
+                label: "More".into(),
+                controls: Vec::new(),
+                reset: None,
+                collapsed: true,
+            },
+        ];
+        descriptor.reset = None;
+        descriptor
+    }
+
+    #[test]
+    fn new_control_kinds_and_hints_round_trip_and_validate() {
+        let descriptor = controls_descriptor();
+        descriptor.validate().unwrap();
+        let mut stepped_integer = integer("count");
+        stepped_integer.step = Some(1.0);
+        stepped_integer.fine_step = Some(0.1);
+        stepped_integer.precision = Some(0);
+        assert!(with_hints(None, None, stepped_integer).validate().is_ok());
+        let mut stepped_curve = descriptor.actions[0].parameter("curve").unwrap().clone();
+        stepped_curve.step = Some(0.01);
+        stepped_curve.fine_step = Some(0.001);
+        assert!(with_hints(None, None, stepped_curve).validate().is_ok());
+        let serialized = serde_json::to_value(&descriptor).unwrap();
+        assert_eq!(serialized["controls"][0]["kind"], "toggle");
+        assert_eq!(serialized["controls"][1]["style"], "menu");
+        assert_eq!(serialized["controls"][2]["rail"], "hue");
+        assert_eq!(serialized["controls"][3]["sample_query"], "sample-curve");
+        assert_eq!(serialized["controls"][5]["style"], "picker");
+        assert_eq!(serialized["controls"][6]["collapsed"], true);
+        assert_eq!(serialized["actions"][0]["parameters"][3]["soft_min"], -5.0);
+        assert_eq!(ModuleDescriptor::parse(&serialized).unwrap(), descriptor);
+        let minimal: Control = serde_json::from_value(
+            json!({"kind":"number","action":"set-controls","parameter":"amount","label":"Amount"}),
+        )
+        .unwrap();
+        assert!(matches!(
+            minimal,
+            Control::Number {
+                style: NumberStyle::Slider,
+                rail: None,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn invalid_new_bindings_and_hints_name_the_control_or_parameter() {
+        let base = controls_descriptor();
+        let mut malformed = serde_json::to_value(&base).unwrap();
+        malformed["controls"][0]["rail"] = json!("hue");
+        let error = ModuleDescriptor::parse(&malformed).expect_err("rail on a toggle");
+        assert!(
+            error
+                .detail
+                .contains("toggle control for enabled of action set-controls")
+        );
+        for (case, edit, fragment) in [
+            (
+                "toggle",
+                Box::new(|d: &mut ModuleDescriptor| {
+                    if let Control::Toggle { parameter, .. } = &mut d.controls[0] {
+                        *parameter = "amount".into();
+                    }
+                }) as Box<dyn Fn(&mut ModuleDescriptor)>,
+                "toggle control for amount",
+            ),
+            (
+                "choice",
+                Box::new(|d: &mut ModuleDescriptor| {
+                    if let Control::Choice { parameter, .. } = &mut d.controls[1] {
+                        *parameter = "enabled".into();
+                    }
+                }),
+                "choice control for enabled",
+            ),
+            (
+                "rail",
+                Box::new(|d: &mut ModuleDescriptor| {
+                    if let Control::Number { parameter, .. } = &mut d.controls[2] {
+                        *parameter = "enabled".into();
+                    }
+                }),
+                "number control for enabled",
+            ),
+            (
+                "curve",
+                Box::new(|d: &mut ModuleDescriptor| {
+                    if let Control::Curve { channels, .. } = &mut d.controls[3] {
+                        channels[0].parameter = "enabled".into();
+                    }
+                }),
+                "curve control for enabled",
+            ),
+            (
+                "query",
+                Box::new(|d: &mut ModuleDescriptor| {
+                    if let Control::Curve { sample_query, .. } = &mut d.controls[3] {
+                        *sample_query = "missing".into();
+                    }
+                }),
+                "undeclared query missing",
+            ),
+            (
+                "icon",
+                Box::new(|d: &mut ModuleDescriptor| {
+                    if let Control::Action { icon, .. } = &mut d.controls[4] {
+                        *icon = Some("Bad_Icon".into());
+                    }
+                }),
+                "invalid icon name Bad_Icon",
+            ),
+            (
+                "soft",
+                Box::new(|d: &mut ModuleDescriptor| {
+                    d.actions[0].parameters[3].soft_min = Some(-11.0)
+                }),
+                "parameter amount declares a soft range",
+            ),
+            (
+                "fine",
+                Box::new(|d: &mut ModuleDescriptor| {
+                    d.actions[0].parameters[3].fine_step = Some(0.0)
+                }),
+                "parameter amount declares a fine step",
+            ),
+            (
+                "zero",
+                Box::new(|d: &mut ModuleDescriptor| d.actions[0].parameters[3].zero = Some(11.0)),
+                "parameter amount declares a zero",
+            ),
+        ] {
+            let mut d = base.clone();
+            edit(&mut d);
+            let error = d.validate().expect_err(case);
+            assert!(error.detail.contains(fragment), "{case}: {error}");
+        }
+    }
+
+    #[test]
+    fn boolean_and_curve_requests_keep_exact_values_and_reject_malformed_points() {
+        let d = controls_descriptor();
+        let action = &d.actions[0];
+        let valid = json!({"enabled": true, "curve": [[0.0, 0.0], [0.5, 0.49], [1.0, 1.0]]});
+        assert_eq!(
+            check_parameters(action, &valid).unwrap(),
+            valid.as_object().unwrap().clone()
+        );
+        for (case, value) in [
+            ("boolean", json!({"enabled": 1})),
+            ("curve shape", json!({"curve": [0.0, 1.0]})),
+            (
+                "curve order",
+                json!({"curve": [[0.0, 0.0], [0.0, 0.5], [1.0, 1.0]]}),
+            ),
+            (
+                "curve monotone",
+                json!({"curve": [[0.0, 0.0], [0.5, 0.8], [1.0, 0.7]]}),
+            ),
+            (
+                "curve fixed x",
+                json!({"curve": [[0.0, 0.0], [0.4, 0.5], [1.0, 1.0]]}),
+            ),
+            (
+                "curve range",
+                json!({"curve": [[0.0, 0.0], [0.5, 1.1], [1.0, 1.0]]}),
+            ),
+        ] {
+            let error = check_parameters(action, &value).expect_err(case);
+            assert!(
+                error.detail.contains(if case == "boolean" {
+                    "enabled"
+                } else {
+                    "curve"
+                }),
+                "{case}: {error}"
+            );
         }
     }
 }

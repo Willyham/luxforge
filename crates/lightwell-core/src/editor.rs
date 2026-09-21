@@ -3832,6 +3832,10 @@ mod tests {
                 step: None,
                 precision: None,
                 notes: "test".into(),
+                soft_min: None,
+                soft_max: None,
+                fine_step: None,
+                zero: None,
             };
             let action = |id: &str| ActionDescriptor {
                 id: id.into(),

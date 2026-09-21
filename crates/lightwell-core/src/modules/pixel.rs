@@ -32,6 +32,10 @@ fn coordinate(name: &str) -> ParameterDescriptor {
         notes: format!(
             "{name} in the content stage, the source after EXIF orientation, origin top left"
         ),
+        soft_min: None,
+        soft_max: None,
+        fine_step: None,
+        zero: None,
     }
 }
 
@@ -75,6 +79,10 @@ parameters: vec![
                             unit: None,
                             step: None, precision: None,
 notes: "three 8-bit sRGB channels".into(),
+                            soft_min: None,
+                            soft_max: None,
+                            fine_step: None,
+                            zero: None,
                         },
                     ],
                 }],
@@ -87,23 +95,31 @@ notes: "three 8-bit sRGB channels".into(),
                             action: SET_PIXEL.into(),
                             parameter: "x".into(),
                             label: "X".into(),
+                            style: crate::NumberStyle::Slider,
+                            rail: None,
                         },
                         Control::Number {
                             action: SET_PIXEL.into(),
                             parameter: "y".into(),
                             label: "Y".into(),
+                            style: crate::NumberStyle::Slider,
+                            rail: None,
                         },
                         Control::Color {
                             action: SET_PIXEL.into(),
                             parameter: "rgb".into(),
                             label: "RGB".into(),
+                            style: crate::ColorStyle::Fields,
                         },
                         Control::Action {
                             action: SET_PIXEL.into(),
                             label: "Apply pixel".into(),
                             preset: Map::new(),
+                            style: crate::ActionStyle::Default,
+                            icon: None,
                         },
                     ],
+                    collapsed: false,
                 }],
                 reset: None,
                 canvas: Some(CanvasInteraction::PointPick {
