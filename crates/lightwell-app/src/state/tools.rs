@@ -4,8 +4,8 @@
 use crate::{
     app::{
         fields::{
-            action_params, channel_text, field_id, labelled, number_text, parse_field,
-            undeclared_label, unsupported_label,
+            action_params, channel_text, decimals_for, field_id, format_number, labelled,
+            number_text, parse_field, undeclared_label, unsupported_label,
         },
         message::{MenuTarget, PaletteAction},
     },
@@ -90,6 +90,25 @@ pub(crate) struct SectionModel {
     digest: u64,
 }
 
+impl SectionModel {
+    /// Every picker this section holds, at any depth. A module declares at most one, so this is
+    /// nought or one entry; it walks the tree rather than assuming where the module put it.
+    pub(crate) fn pickers(&self) -> Vec<&PickerControl> {
+        fn walk<'a>(controls: &'a [ControlModel], found: &mut Vec<&'a PickerControl>) {
+            for control in controls {
+                match control {
+                    ControlModel::Picker(picker) => found.push(picker),
+                    ControlModel::Group(group) => walk(&group.controls, found),
+                    _ => {}
+                }
+            }
+        }
+        let mut found = Vec::new();
+        walk(&self.controls, &mut found);
+        found
+    }
+}
+
 /// What a value control shows while it is being typed: the text as typed, not the formatted value.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) enum ValueEdit {
@@ -118,6 +137,10 @@ pub(crate) struct SliderControl {
     pub(crate) unit: Option<String>,
     pub(crate) min: f64,
     pub(crate) max: f64,
+    /// The rail's increment: the parameter's declared step, else [`generic_step`] over the range.
+    pub(crate) step: f64,
+    /// How many decimals the value is shown with, and the precision a drag is quantized to.
+    pub(crate) decimals: usize,
     /// Where a bipolar fill starts.
     pub(crate) zero: f64,
     pub(crate) value: f64,
@@ -205,6 +228,29 @@ pub(crate) struct ActionControl {
     pub(crate) reason: Option<String>,
 }
 
+/// The declaring module's canvas pick, as a button in that module's own panel. It carries no
+/// action: clicking it enters the module's canvas mode through `workspace.set`, and clicking it
+/// again returns to the pointer, so a pick is never a mode the panel cannot leave.
+#[allow(dead_code)]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct PickerControl {
+    /// The module whose canvas mode this button selects.
+    pub(crate) module_id: String,
+    /// The control's own label, as the module declares it.
+    pub(crate) label: String,
+    /// The canvas mode's declared title, for the tooltip.
+    pub(crate) title: String,
+    /// The mode's declared letter, shown beside the title in the tooltip.
+    pub(crate) shortcut: Option<String>,
+    /// This module's canvas mode is the active one.
+    pub(crate) selected: bool,
+    /// The mode a click selects: this module's own, or the pointer when this one is already
+    /// active, so the mode is always leavable from the button that entered it. The rule is here
+    /// rather than in the view, which only publishes the message this names.
+    pub(crate) target: String,
+    pub(crate) enabled: bool,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) enum ControlModel {
     Slider(SliderControl),
@@ -212,6 +258,7 @@ pub(crate) enum ControlModel {
     Color(ColorControl),
     Group(GroupControl),
     Action(ActionControl),
+    Picker(PickerControl),
     /// A control this build cannot draw keeps its name on screen rather than disappearing.
     Unsupported(String),
     /// The host's crop-frame editor, at the top of the declaring module's section.
@@ -338,11 +385,11 @@ fn section(
         expanded,
         active,
         unavailable,
-        // A reset is a mutation, so a section that cannot edit (a historical preview, a request in
-        // flight, a missing provider) offers none at all rather than a dimmed one.
-        reset: enabled
-            .then(|| ResetRef::of(module.reset.as_ref()))
-            .flatten(),
+        // The reset is declared, so it is always drawn: a section that cannot edit (a historical
+        // preview, a request in flight, a missing provider) dims it with the rest of its controls
+        // rather than dropping it, because a header that loses its icon changes height and every
+        // control under it moves on each commit round trip. The disabled header offers no press.
+        reset: ResetRef::of(module.reset.as_ref()),
         controls,
         version: previous.map(|previous| previous.version + 1).unwrap_or(1),
         enabled,
@@ -469,6 +516,9 @@ fn digest(
             }
         }
     }
+    // This module's picker reads selected while its own canvas mode is active, so entering and
+    // leaving that mode re-derives this section and nothing else.
+    owns_mode(module, inputs).hash(&mut hasher);
     if owns_mode(module, inputs)
         || matches!(module.canvas, Some(CanvasInteraction::CropFrame { .. }))
     {
@@ -555,6 +605,30 @@ fn control_model(
                 },
             })
         }
+        // The picker reads its mode's name and letter from the same canvas declaration the keymap
+        // binds, so the panel and the keyboard always agree about what the mode is called.
+        Rendered::Picker { label } => ControlModel::Picker(PickerControl {
+            module_id: module.id.clone(),
+            label: label.to_owned(),
+            title: module
+                .canvas
+                .as_ref()
+                .map(CanvasInteraction::title)
+                .unwrap_or(label)
+                .to_owned(),
+            shortcut: module
+                .canvas
+                .as_ref()
+                .and_then(CanvasInteraction::shortcut)
+                .map(str::to_owned),
+            selected: owns_mode(module, inputs),
+            target: if owns_mode(module, inputs) {
+                lightwell_core::POINTER_MODE.to_owned()
+            } else {
+                module.id.clone()
+            },
+            enabled,
+        }),
         Rendered::Unsupported(kind) => ControlModel::Unsupported(unsupported_label(&kind)),
     }
 }
@@ -665,6 +739,18 @@ fn value_model(
     }
 }
 
+/// The generic increment for a number parameter that declares no step: a fraction of its range,
+/// rounded to a power of ten. It is the model's decision, not the view's, because the same number
+/// decides the rail's step, the decimals the field shows and the precision a drag is quantized to,
+/// and those three must agree.
+pub(crate) fn generic_step(min: f64, max: f64) -> f64 {
+    let span = (max - min).abs();
+    if !span.is_finite() || span <= 0.0 {
+        return 0.01;
+    }
+    10f64.powf((span / 200.0).log10().round())
+}
+
 #[allow(clippy::too_many_arguments)]
 fn slider(
     action: &str,
@@ -683,20 +769,33 @@ fn slider(
         .ok()
         .and_then(|value| value.as_f64())
         .unwrap_or(min);
+    // An integer parameter steps by one; every other one takes the step it declares, and falls
+    // back to the generic one over its range.
+    let step = if integer {
+        1.0
+    } else {
+        declared
+            .step
+            .filter(|step| step.is_finite() && *step > 0.0)
+            .unwrap_or_else(|| generic_step(min, max))
+    };
     SliderControl {
         action: action.to_owned(),
         parameter: parameter.to_owned(),
         id: field_id(action, parameter, None),
-        label: labelled(label, declared),
+        // The value carries the unit, so the label does not repeat it.
+        label: label.to_owned(),
         unit: declared.unit.clone(),
         min,
         max,
+        step,
+        decimals: decimals_for(declared),
         zero: 0.0_f64.clamp(min, max),
         value,
         display: if invalid.is_some() {
             text.to_owned()
         } else {
-            number_text(value)
+            format_number(declared, value)
         },
         edit: if typing {
             ValueEdit::Typing(text.to_owned())
@@ -818,6 +917,10 @@ pub(crate) enum Rendered<'a> {
         label: &'a str,
         preset: &'a Map<String, Value>,
     },
+    /// The declaring module's own canvas pick, offered in its panel.
+    Picker {
+        label: &'a str,
+    },
     Unsupported(String),
 }
 
@@ -859,6 +962,7 @@ pub(crate) fn classify(control: &Control) -> Rendered<'_> {
             label,
             preset,
         },
+        Control::Picker { label } => Rendered::Picker { label },
         // A kind added to the descriptor later is reported, never dropped.
         #[allow(unreachable_patterns)]
         other => Rendered::Unsupported(control_kind(other)),
@@ -892,6 +996,25 @@ pub(crate) fn declared_parameter<'a>(
 /// generated controls submits its own parameter alone and its gesture is a draft.
 pub(crate) fn is_patch(modules: &[ModuleDescriptor], action: &str) -> bool {
     declared_action(modules, action).is_some_and(|declared| declared.patch)
+}
+
+/// This parameter is the only one its action declares, so one field is already the whole request.
+///
+/// A control of such an action drafts for the same reason a patch action's control does: the one
+/// value the gesture moves is a complete, valid request on its own, which is what `draft.set`
+/// validates, `draft_recipe` plans and `draft.commit` applies. An action with a second parameter
+/// cannot: one field of it is not a request, so its slider keeps the older behaviour of changing
+/// the text and submitting the whole action once on release.
+pub(crate) fn drafts_alone(modules: &[ModuleDescriptor], action: &str, parameter: &str) -> bool {
+    declared_action(modules, action).is_some_and(|declared| {
+        declared.parameters.len() == 1 && declared.parameters[0].name == parameter
+    })
+}
+
+/// A slider of this control drafts: `draft.begin`, a gated `draft.set` with a live preview per
+/// tick, and one `draft.commit` on release.
+pub(crate) fn drafts(modules: &[ModuleDescriptor], action: &str, parameter: &str) -> bool {
+    is_patch(modules, action) || drafts_alone(modules, action, parameter)
 }
 
 /// The label a generated control carries for one field, as the panel and the status line name it.
@@ -1191,6 +1314,48 @@ mod tests {
         // A crop frame is a different adapter, and the pointer mode names no module at all.
         assert!(canvas_pick(&modules, "lightwell.crop").is_none());
         assert!(canvas_pick(&modules, lightwell_core::POINTER_MODE).is_none());
+    }
+
+    /// Which generated sliders draft. The rule is about the request, not the module: one field is a
+    /// whole request when the action merges it or declares nothing else, and only then.
+    #[test]
+    fn a_slider_drafts_for_a_patch_field_or_an_actions_only_parameter() {
+        let modules: Vec<_> = lightwell_core::ModuleRegistry::builtin()
+            .descriptors()
+            .into_iter()
+            .cloned()
+            .collect();
+        // RAW declares one action per field: each one is a complete request on its own.
+        for (action, parameter) in [
+            ("set-raw-exposure", "ev"),
+            ("set-raw-temperature", "kelvin"),
+            ("set-raw-tint", "tint"),
+        ] {
+            assert!(
+                drafts_alone(&modules, action, parameter),
+                "{action}.{parameter} declares no second parameter"
+            );
+            assert!(!is_patch(&modules, action), "{action} is not a field patch");
+            assert!(drafts(&modules, action, parameter));
+        }
+        // Basic's fields are a patch: the module merges whichever ones it is sent.
+        assert!(is_patch(&modules, "set-basic"));
+        assert!(drafts(&modules, "set-basic", "temperature"));
+        assert!(
+            !drafts_alone(&modules, "set-basic", "temperature"),
+            "a patch action declares more than one field; it drafts for the other reason"
+        );
+        // An action with a second parameter cannot send one field alone, so its slider does not
+        // draft: the crop rectangle, the pixel proof's coordinates and colour.
+        for (action, parameter) in [("crop", "angle"), ("set-pixel", "x"), ("set-pixel", "y")] {
+            assert!(
+                !drafts(&modules, action, parameter),
+                "{action}.{parameter} is one field of several"
+            );
+        }
+        // A parameter no action declares, and an action no module declares, draft nothing.
+        assert!(!drafts(&modules, "set-raw-exposure", "kelvin"));
+        assert!(!drafts(&modules, "no-such-action", "ev"));
     }
 
     #[test]

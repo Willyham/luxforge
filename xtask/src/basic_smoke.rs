@@ -203,7 +203,7 @@ pub fn verify(evidence: &Path, app: &Value, _events: &[Value]) -> Result {
         "The Basic module is not available",
     )?;
     ensure(
-        exposure_field(&frames[0])? == "0",
+        exposure_field(&frames[0])? == "0.00",
         format!(
             "Exposure does not start neutral: {}",
             exposure_field(&frames[0])?
@@ -250,7 +250,7 @@ pub fn verify(evidence: &Path, app: &Value, _events: &[Value]) -> Result {
         "A drag committed something",
     )?;
     ensure(
-        exposure_field(&frames[1])? == "1",
+        exposure_field(&frames[1])? == "1.00",
         format!(
             "The slider does not show the drafted value: {}",
             exposure_field(&frames[1])?
@@ -352,7 +352,7 @@ pub fn verify(evidence: &Path, app: &Value, _events: &[Value]) -> Result {
         "Undo did not return to the +1.00 EV entry",
     )?;
     ensure(
-        exposure_field(&frames[5])? == "1",
+        exposure_field(&frames[5])? == "1.00",
         format!(
             "The slider did not re-seed from the entry undo returned to: {}",
             exposure_field(&frames[5])?
@@ -381,7 +381,7 @@ pub fn verify(evidence: &Path, app: &Value, _events: &[Value]) -> Result {
         format!("The group reset is labelled {:?}", label(&frames[6])?),
     )?;
     ensure(
-        exposure_field(&frames[6])? == "0",
+        exposure_field(&frames[6])? == "0.00",
         format!(
             "The slider did not return to 0: {}",
             exposure_field(&frames[6])?
@@ -450,7 +450,7 @@ pub fn verify(evidence: &Path, app: &Value, _events: &[Value]) -> Result {
         "The external commit did not advance the revision by one",
     )?;
     ensure(
-        exposure_field(&frames[8])? == "2",
+        exposure_field(&frames[8])? == "2.00",
         format!(
             "The slider lost its drafted value: {}",
             exposure_field(&frames[8])?
@@ -505,7 +505,7 @@ pub fn verify(evidence: &Path, app: &Value, _events: &[Value]) -> Result {
         "Discarding the draft committed something",
     )?;
     ensure(
-        exposure_field(&frames[10])? == "0",
+        exposure_field(&frames[10])? == "0.00",
         format!(
             "The slider did not return to the authoritative value: {}",
             exposure_field(&frames[10])?
@@ -664,7 +664,7 @@ pub fn run_restart(root: &Path, out: &Path, bin: &Path, timeout: std::time::Dura
         )?;
         // The sliders re-seed from the stored layer, which is what a person sees on reopening.
         ensure(
-            basic_field(reopened, EXPOSURE)? == "1.5"
+            basic_field(reopened, EXPOSURE)? == "1.50"
                 && basic_field(reopened, TEMPERATURE)? == "25",
             format!(
                 "Launch 2's fields read exposure {:?}, temperature {:?}",
@@ -877,6 +877,23 @@ fn balance(channels: [f64; 3]) -> f64 {
     channels[0] - channels[2]
 }
 
+/// Zero as one Basic field shows it: the parameter's own declared precision, read from the
+/// registry rather than written down here, so a field that changes its precision changes this too.
+fn neutral_text(name: &str) -> Result<String> {
+    let registry = lightwell_core::ModuleRegistry::builtin();
+    let decimals = usize::from(
+        registry
+            .descriptors()
+            .into_iter()
+            .find(|module| module.id == BASIC_MODULE)
+            .and_then(|module| module.action(SET_BASIC))
+            .and_then(|action| action.parameter(name))
+            .and_then(|parameter| parameter.precision)
+            .ok_or_else(|| format!("{name} declares no display precision"))?,
+    );
+    Ok(format!("{:.decimals$}", 0.0))
+}
+
 /// What one generated Basic field showed when the frame was captured.
 fn basic_field<'a>(frame: &'a Value, name: &str) -> Result<&'a str> {
     frame["state"]["controls"][format!("{SET_BASIC}.{name}")]
@@ -955,8 +972,11 @@ pub fn verify_panel(evidence: &Path, app: &Value, _events: &[Value]) -> Result {
     for name in BASIC_FIELDS {
         listed.push(json!({ name: basic_field(&frames[0], name)? }));
         ensure(
-            basic_field(&frames[0], name)? == "0",
-            format!("{name} does not start at its declared default"),
+            basic_field(&frames[0], name)? == neutral_text(name)?,
+            format!(
+                "{name} does not start at its declared default: {:?}",
+                basic_field(&frames[0], name)?
+            ),
         )?;
     }
     ensure(
@@ -1148,10 +1168,34 @@ pub fn verify_panel(evidence: &Path, app: &Value, _events: &[Value]) -> Result {
         revision(&frames[6])? == revision(&frames[5])?,
         "Entering the picker mode committed something",
     )?;
+    // The picker lives in the White balance group, beside the two fields a pick sets, and reads
+    // selected exactly while its mode is active. The mode strip holds no entry for it at all.
+    let picker = |frame: &Value| frame["state"]["pickers"][BASIC_MODULE].clone();
+    ensure(
+        picker(&frames[0])["label"] == json!("Neutral picker")
+            && picker(&frames[0])["shortcut"] == json!("W"),
+        format!("The Basic panel declares no picker: {}", picker(&frames[0])),
+    )?;
+    ensure(
+        picker(&frames[0])["selected"] == json!(false),
+        "The picker reads selected before its mode was entered",
+    )?;
+    ensure(
+        picker(&frames[6])["selected"] == json!(true),
+        format!(
+            "The picker does not read selected in its own mode: {}",
+            picker(&frames[6])
+        ),
+    )?;
     record(
         &frames[6],
-        "the neutral picker mode, entered through workspace.set as W does",
-        json!({"mode": frames[6]["state"]["workspace"]["mode"], "status": status(&frames[6])?}),
+        "the neutral picker mode, entered through workspace.set as W and the panel's own picker \
+         button do; that button reads selected inside the White balance group",
+        json!({
+            "mode": frames[6]["state"]["workspace"]["mode"],
+            "status": status(&frames[6])?,
+            "picker": picker(&frames[6]),
+        }),
     );
 
     // Frame 7: a pick on a neutral grey patch. The picker answers the exact identity, 0 and 0,
