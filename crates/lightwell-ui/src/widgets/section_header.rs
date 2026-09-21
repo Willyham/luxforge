@@ -1,6 +1,6 @@
 //! A module section's header row: disclosure, title, active dot and an optional reset.
 
-use super::icon_button::{Icon, IconButtonModel, icon_button};
+use super::icon_button::{Icon, IconButtonModel, icon, icon_button};
 use super::text::{caption, error_caption, title};
 use crate::theme;
 use iced::widget::{Space, button, container, row};
@@ -30,14 +30,17 @@ pub fn section_header<'a, M: Clone + 'a>(
 ) -> Element<'a, M> {
     let can_expand = model.unavailable.is_none() && model.enabled;
     let chevron = if model.expanded {
-        "\u{25be}"
+        Icon::ChevronDown
     } else {
-        "\u{25b8}"
+        Icon::ChevronRight
     };
 
-    let mut leading = row![caption(chevron.to_string()), title(model.title.clone())]
-        .spacing(4.0)
-        .align_y(Alignment::Center);
+    let mut leading = row![
+        icon(chevron, 12.0, theme::TEXT_SECONDARY),
+        title(model.title.clone())
+    ]
+    .spacing(4.0)
+    .align_y(Alignment::Center);
 
     if model.active {
         leading = leading.push(accent_dot());

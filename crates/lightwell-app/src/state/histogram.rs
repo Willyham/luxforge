@@ -29,11 +29,6 @@ pub(crate) const SHADOW_RULE: &str =
     "Any channel at 0 \u{b7} blue; any at 255 \u{b7} red; both endpoints \u{b7} magenta";
 pub(crate) const HIGHLIGHT_RULE: &str = SHADOW_RULE;
 
-/// The glyph in each bottom corner: a lower-left triangle for shadows, a lower-right one for
-/// highlights, which is where each end of the plot is.
-pub(crate) const SHADOW_GLYPH: &str = "\u{25e3}";
-pub(crate) const HIGHLIGHT_GLYPH: &str = "\u{25e2}";
-
 /// One analysed frame as the desktop holds it: the report its own preview worker reduced, the
 /// identity the owner will look that report up under, and the preview generation it arrived with.
 #[derive(Clone, Debug, PartialEq)]

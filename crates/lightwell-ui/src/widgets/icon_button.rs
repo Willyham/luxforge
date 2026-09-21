@@ -29,6 +29,8 @@ pub enum Icon {
     Before,
     After,
     Clipping,
+    ShadowClipping,
+    HighlightClipping,
     StatePanel,
     ToolsPanel,
     ChevronDown,
@@ -57,6 +59,8 @@ impl Icon {
             "before" => Self::Before,
             "after" => Self::After,
             "clipping" => Self::Clipping,
+            "shadow-clipping" => Self::ShadowClipping,
+            "highlight-clipping" => Self::HighlightClipping,
             "state-panel" => Self::StatePanel,
             "tools-panel" => Self::ToolsPanel,
             "chevron-down" => Self::ChevronDown,
@@ -298,6 +302,19 @@ fn draw_path(frame: &mut canvas::Frame, icon: Icon, color: Color) {
             poly(frame, &[(2.0, 12.5), (8.0, 3.0), (14.0, 12.5), (2.0, 12.5)]);
             line(frame, (8.0, 6.0), (8.0, 9.5));
         }
+        Icon::ShadowClipping | Icon::HighlightClipping => {
+            let mut path = canvas::path::Builder::new();
+            let x = if icon == Icon::ShadowClipping {
+                3.0
+            } else {
+                13.0
+            };
+            path.move_to(p(x, 3.0));
+            path.line_to(p(x, 13.0));
+            path.line_to(p(16.0 - x, 13.0));
+            path.close();
+            frame.fill(&path.build(), color);
+        }
         Icon::StatePanel | Icon::ToolsPanel => {
             frame.stroke(
                 &canvas::Path::rectangle(p(2.0, 2.0), iced::Size::new(12.0 * s, 12.0 * s)),
@@ -336,6 +353,8 @@ mod tests {
             Icon::Before,
             Icon::After,
             Icon::Clipping,
+            Icon::ShadowClipping,
+            Icon::HighlightClipping,
             Icon::StatePanel,
             Icon::ToolsPanel,
             Icon::ChevronDown,

@@ -428,7 +428,7 @@ pub fn gallery() -> Vec<Element<'static, ()>> {
     for (tinted, active) in [(false, false), (true, false), (true, true)] {
         states.push(clip_triangle(
             &ClipTriangleModel {
-                glyph: "\u{25e3}".into(),
+                icon: Icon::ShadowClipping,
                 tooltip: "Any channel at 0 \u{b7} blue; both endpoints \u{b7} magenta".into(),
                 tint: theme::CLIPPING_SHADOW,
                 tinted,
@@ -440,7 +440,7 @@ pub fn gallery() -> Vec<Element<'static, ()>> {
     }
     states.push(clip_triangle(
         &ClipTriangleModel {
-            glyph: "\u{25e2}".into(),
+            icon: Icon::HighlightClipping,
             tooltip: "Any channel at 255 \u{b7} red; both endpoints \u{b7} magenta".into(),
             tint: theme::CLIPPING_HIGHLIGHT,
             tinted: true,

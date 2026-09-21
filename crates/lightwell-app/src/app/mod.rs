@@ -10,6 +10,8 @@ pub(crate) mod fields;
 pub(crate) mod keymap;
 pub(crate) mod message;
 pub(crate) mod overlay;
+#[cfg(test)]
+mod proof_controls_tests;
 pub(crate) mod slider;
 pub(crate) mod tasks;
 #[cfg(test)]
@@ -144,16 +146,20 @@ impl ToolModule for Disabled {
 }
 
 /// The providers this run serves, with any `--disable-module` built-in wrapped as unavailable.
-fn registry(disabled: &[String]) -> Result<ModuleRegistry, String> {
+fn registry(disabled: &[String], developer: bool) -> Result<ModuleRegistry, String> {
     let mut registry = ModuleRegistry::new();
     let mut unknown: Vec<&str> = disabled.iter().map(String::as_str).collect();
-    for module in [
+    let mut modules = vec![
         Arc::new(lightwell_core::PixelModule::new()) as Arc<dyn ToolModule>,
         Arc::new(lightwell_core::RawModule::new()),
         Arc::new(lightwell_core::BasicModule::new()),
         Arc::new(lightwell_core::TransformModule::new()),
         Arc::new(lightwell_core::CropModule::new()),
-    ] {
+    ];
+    if developer {
+        modules.push(Arc::new(lightwell_core::ControlsModule::new()));
+    }
+    for module in modules {
         let id = module.descriptor().id.clone();
         let module = if disabled.contains(&id) {
             unknown.retain(|named| *named != id);
@@ -181,7 +187,7 @@ pub(crate) fn run(config: Config, size: (f32, f32)) -> Result<(), String> {
             .config
             .join("catalog.sqlite"),
     };
-    let registry = Arc::new(registry(&config.disabled)?);
+    let registry = Arc::new(registry(&config.disabled, config.developer)?);
     let (owner, join) =
         OwnerHandle::start_with(&catalog, registry).map_err(|error| match error.kind {
             ErrorKind::Conflict => format!(
@@ -314,7 +320,7 @@ pub(crate) struct Editor {
     pub(crate) curve_sample_sequence: u64,
     pub(crate) curve_sample_requested: BTreeMap<(String, String), u64>,
     pub(crate) curve_sample_requested_source:
-        BTreeMap<(String, String), (lightwell_core::EntryId, Value)>,
+        BTreeMap<(String, String), (lightwell_core::AssetId, lightwell_core::EntryId, Value)>,
     pub(crate) curve_sample_in_flight: bool,
     pub(crate) curve_sample_pending: Option<controls::CurveSampleRequest>,
     /// The (action, parameter) whose value is being typed.
@@ -4581,7 +4587,7 @@ mod tests {
 
     #[test]
     fn desktop_registry_contains_every_core_builtin_including_raw() {
-        let desktop = registry(&[]).unwrap();
+        let desktop = registry(&[], false).unwrap();
         let core = ModuleRegistry::builtin();
         let ids = |registry: &ModuleRegistry| {
             registry
@@ -4591,7 +4597,20 @@ mod tests {
                 .collect::<Vec<_>>()
         };
         assert_eq!(ids(&desktop), ids(&core));
-        let disabled = registry(&["lightwell.raw".into()]).unwrap();
+        assert!(!ids(&desktop).contains(&"lightwell.controls".to_owned()));
+        let developer = registry(&[], true).unwrap();
+        assert!(ids(&developer).contains(&"lightwell.controls".to_owned()));
+        assert!(registry(&["lightwell.controls".into()], false).is_err());
+        assert!(
+            !registry(&["lightwell.controls".into()], true)
+                .unwrap()
+                .descriptors()
+                .iter()
+                .find(|module| module.id == "lightwell.controls")
+                .unwrap()
+                .is_available()
+        );
+        let disabled = registry(&["lightwell.raw".into()], false).unwrap();
         assert!(
             !disabled
                 .descriptors()
