@@ -2,6 +2,7 @@
 
 use crate::geometry;
 use crate::theme;
+use crate::widgets::double_click::double_click;
 use crate::widgets::text::{error_caption, value_text};
 use iced::alignment::Horizontal;
 use iced::widget::{button, column, mouse_area, row, slider as iced_slider, text, text_input};
@@ -31,9 +32,14 @@ pub struct SliderModel {
     pub min: f64,
     pub max: f64,
     pub value: f64,
+    /// The rail's increment: the parameter's declared step when it declares one, else the step the
+    /// host derives from the range.
     pub step: f64,
     /// The step used while Shift is held.
     pub shift_step: f64,
+    /// How many decimals the value carries. Every value a drag produces is rounded to it before
+    /// the message leaves this widget, so the host never receives a number it would not display.
+    pub decimals: usize,
     /// The tick the fill grows from; `None` fills from `min` (a unipolar slider).
     pub zero: Option<f64>,
     /// A short unit shown after the value, e.g. `"%"` or `"°"`.
@@ -51,6 +57,13 @@ pub struct SliderModel {
 }
 
 /// Renders one slider row: a label, a value field and the rail.
+///
+/// Double-clicking either the label or the rail publishes `on_reset`. The rail needs the
+/// [`crate::double_click`] wrapper for it: iced's slider captures the left press over its own
+/// bounds, so a `mouse_area` around it would never see one.
+///
+/// Every value `on_change` carries has been through [`geometry::quantize`], so the host receives
+/// the value the row displays rather than the float the pointer mapping produced.
 ///
 /// There is no `on_cancel` callback. Escape cancels a draft through the app's keymap, not through
 /// this row: iced's `text_input` consumes Escape internally (it drops its own focus) without
@@ -80,7 +93,7 @@ pub fn slider<'a, M: Clone + 'a>(
             .size(theme::SIZE_CONTROL)
             .color(label_color),
     )
-    .on_double_click(on_reset);
+    .on_double_click(on_reset.clone());
 
     let value_field: Element<'a, M> = match &model.edit {
         ValueEdit::Display => button(value_text(display_with_unit(&model.display, &model.unit)))
@@ -104,14 +117,17 @@ pub fn slider<'a, M: Clone + 'a>(
         .width(Length::Fill);
 
     let fill = geometry::fill_stops(model.min, model.max, model.zero, model.value);
-    let rail = iced_slider(model.min..=model.max, model.value, on_change)
-        .step(model.step)
-        .shift_step(model.shift_step)
-        .on_release(on_release)
-        .height(16.0)
-        .style(theme::slider_style(fill, model.dragging));
+    let (min, max, step, decimals) = (model.min, model.max, model.step, model.decimals);
+    let rail = iced_slider(min..=max, model.value, move |value| {
+        on_change(geometry::quantize(value, min, max, step, decimals))
+    })
+    .step(model.step)
+    .shift_step(model.shift_step)
+    .on_release(on_release)
+    .height(16.0)
+    .style(theme::slider_style(fill, model.dragging));
 
-    let mut body = column![header, rail].spacing(4.0);
+    let mut body = column![header, double_click(rail, on_reset)].spacing(4.0);
 
     if let Some(message) = invalid_message {
         body = body.push(error_caption(message));

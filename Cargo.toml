@@ -13,7 +13,7 @@ publish = false
 [workspace.dependencies]
 image = { version = "=0.25.9", default-features = false, features = ["jpeg", "png"] }
 moxcms = { version = "=0.7.11", default-features = false }
-iced = { version = "=0.14.0", default-features = false, features = ["wgpu", "canvas", "image-without-codecs", "sysinfo", "tokio", "x11", "wayland"] }
+iced = { version = "=0.14.0", default-features = false, features = ["advanced", "wgpu", "canvas", "image-without-codecs", "sysinfo", "tokio", "x11", "wayland"] }
 rfd = { version = "=0.15.4", default-features = false, features = ["xdg-portal", "async-std"] }
 rayon = "=1.12.0"
 rusqlite = { version = "=0.40.2", features = ["bundled"] }

@@ -115,6 +115,54 @@ pub fn value_from_fraction(min: f64, max: f64, step: f64, fraction: f64) -> f64 
     (min + steps * step).clamp(min, max)
 }
 
+/// The largest number of decimals [`quantize`] will round to. It matches the display precision a
+/// module descriptor may declare, so a caller cannot ask for a rounding finer than any control can
+/// show.
+pub const MAX_DECIMALS: usize = 6;
+
+/// Cleans up one value a pointer drag produced, so the message the host receives is already the
+/// value the row will display: snapped to `step` from `min`, clamped into `min..=max`, then rounded
+/// to `decimals`.
+///
+/// This is the widget crate's job by design — mapping a pointer position to a value belongs to the
+/// widget, not to the host — and it is what keeps `1.7000000000000002` off the screen and out of
+/// the recipe. Iced's own slider snapping is float arithmetic over `min + n * step`, which lands
+/// next to the step rather than on it; rounding to the declared decimals lands on it exactly.
+///
+/// A non-positive or non-finite `step` disables snapping, `decimals` above [`MAX_DECIMALS`] is
+/// treated as [`MAX_DECIMALS`], a degenerate range answers `min`, and a non-finite `value` answers
+/// `min` rather than propagating. The result is never `-0.0`.
+pub fn quantize(value: f64, min: f64, max: f64, step: f64, decimals: usize) -> f64 {
+    if !min.is_finite() || !max.is_finite() || max <= min {
+        return min;
+    }
+    if !value.is_finite() {
+        return min;
+    }
+    let snapped = if step.is_finite() && step > 0.0 {
+        min + ((value - min) / step).round() * step
+    } else {
+        value
+    };
+    // Round inside the range, then clamp again: rounding a value that sits next to an endpoint can
+    // step over it when the endpoint itself carries more decimals than the control shows.
+    round_to(snapped.clamp(min, max), decimals).clamp(min, max) + 0.0
+}
+
+/// `value` rounded to `decimals` decimal places, half away from zero. Returns the value unchanged
+/// when it is not finite, so a caller's guard is never the only thing between a NaN and a `.round()`.
+fn round_to(value: f64, decimals: usize) -> f64 {
+    if !value.is_finite() {
+        return value;
+    }
+    let factor = 10f64.powi(decimals.min(MAX_DECIMALS) as i32);
+    let scaled = value * factor;
+    if !scaled.is_finite() {
+        return value;
+    }
+    scaled.round() / factor
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -198,5 +246,64 @@ mod tests {
     fn value_from_fraction_clamps_out_of_range_fractions() {
         assert_eq!(value_from_fraction(0.0, 100.0, 1.0, -5.0), 0.0);
         assert_eq!(value_from_fraction(0.0, 100.0, 1.0, 5.0), 100.0);
+    }
+
+    /// The exact complaint this exists for: iced's own snapping to a 0.01 step lands next to the
+    /// step, and the value reaches the recipe and the field as `1.7000000000000002`.
+    #[test]
+    fn quantize_lands_exactly_on_the_declared_step() {
+        assert_eq!(quantize(1.7000000000000002, -5.0, 5.0, 0.01, 2), 1.7);
+        assert_eq!(quantize(1.7049, -5.0, 5.0, 0.01, 2), 1.7);
+        assert_eq!(quantize(1.706, -5.0, 5.0, 0.01, 2), 1.71);
+        assert_eq!(quantize(-3.499, -5.0, 5.0, 0.01, 2), -3.5);
+        // A whole-number step over a whole-number range answers whole numbers.
+        assert_eq!(quantize(39.6, -100.0, 100.0, 1.0, 0), 40.0);
+        assert_eq!(quantize(6501.2, 2000.0, 12000.0, 10.0, 0), 6500.0);
+    }
+
+    /// The snap is measured from `min`, not from zero, so a range whose minimum is not a multiple
+    /// of the step still produces values the declared step can reach.
+    #[test]
+    fn quantize_snaps_from_the_minimum() {
+        assert_eq!(quantize(0.5, 0.01, 32.0, 0.01, 2), 0.5);
+        assert_eq!(quantize(0.014, 0.01, 32.0, 0.01, 2), 0.01);
+        assert_eq!(quantize(0.016, 0.01, 32.0, 0.01, 2), 0.02);
+        // 0.3 is 4.0 steps of 0.07 above 0.02, so it snaps to itself, not to a multiple of 0.07.
+        assert!((quantize(0.3, 0.02, 1.0, 0.07, 2) - 0.3).abs() < 1e-12);
+    }
+
+    #[test]
+    fn quantize_clamps_to_the_declared_range() {
+        assert_eq!(quantize(12.0, -5.0, 5.0, 0.01, 2), 5.0);
+        assert_eq!(quantize(-12.0, -5.0, 5.0, 0.01, 2), -5.0);
+        // An endpoint with more decimals than the control shows is still reachable: the rounding
+        // happens inside the range and the clamp puts it back on the endpoint.
+        assert_eq!(quantize(2.4999, 0.0, 2.4999, 0.0001, 2), 2.4999);
+    }
+
+    /// Nothing the widget sends is ever `-0.0`: a field that showed `-0.00` for a value the person
+    /// dragged to the centre of a bipolar rail is exactly the noise this removes.
+    #[test]
+    fn quantize_never_answers_negative_zero() {
+        for value in [-0.0, -0.004, -0.0000001] {
+            let quantized = quantize(value, -5.0, 5.0, 0.01, 2);
+            assert_eq!(quantized, 0.0, "{value}");
+            assert!(
+                quantized.is_sign_positive(),
+                "{value} quantized to a negative zero"
+            );
+        }
+    }
+
+    #[test]
+    fn quantize_refuses_degenerate_inputs_rather_than_propagating_them() {
+        assert_eq!(quantize(3.0, 5.0, 5.0, 1.0, 0), 5.0);
+        assert_eq!(quantize(f64::NAN, -5.0, 5.0, 0.01, 2), -5.0);
+        assert_eq!(quantize(f64::INFINITY, -5.0, 5.0, 0.01, 2), -5.0);
+        // A step that is not a usable increment disables snapping but still rounds and clamps.
+        assert_eq!(quantize(1.234_5, -5.0, 5.0, 0.0, 2), 1.23);
+        assert_eq!(quantize(1.234_5, -5.0, 5.0, f64::NAN, 2), 1.23);
+        // A precision finer than any control can declare is capped rather than overflowing.
+        assert_eq!(quantize(1.5, -5.0, 5.0, 0.0, usize::MAX), 1.5);
     }
 }

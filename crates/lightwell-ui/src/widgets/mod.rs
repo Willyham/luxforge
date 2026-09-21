@@ -5,6 +5,7 @@
 //! values already validated and formatted.
 
 mod chip;
+mod double_click;
 mod floating_bar;
 mod histogram;
 mod icon_button;
@@ -19,6 +20,7 @@ mod sub_group_header;
 mod text;
 
 pub use chip::{ChipModel, chip};
+pub use double_click::double_click;
 pub use floating_bar::floating_bar;
 pub use histogram::{
     BINS, ClipTriangleModel, HistogramChannel, HistogramModel, bin_x, clip_triangle, histogram,
