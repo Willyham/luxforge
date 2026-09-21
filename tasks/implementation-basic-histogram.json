@@ -577,7 +577,7 @@
     {
       "id": "TASK-009",
       "description": "Deliver the generated Basic Exposure slider with live preview and gesture history.",
-      "status": "pending",
+      "status": "in_progress",
       "dependencies": [
         "TASK-008"
       ],
@@ -796,7 +796,7 @@
     {
       "id": "TASK-012",
       "description": "Implement Contrast, Highlights, Shadows, Whites and Blacks in Basic.",
-      "status": "pending",
+      "status": "in_progress",
       "dependencies": [
         "TASK-003",
         "TASK-004",
@@ -940,7 +940,7 @@
     {
       "id": "TASK-014",
       "description": "Implement Temperature, Tint and the neutral picker through module and API actions.",
-      "status": "pending",
+      "status": "in_progress",
       "dependencies": [
         "TASK-003",
         "TASK-004",
@@ -1084,7 +1084,7 @@
     {
       "id": "TASK-016",
       "description": "Implement Vibrance and Saturation in Basic with declarative controls.",
-      "status": "pending",
+      "status": "in_progress",
       "dependencies": [
         "TASK-003",
         "TASK-004",
