@@ -53,6 +53,7 @@ impl fmt::Display for RawError {
 impl std::error::Error for RawError {}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct RawRect {
     pub x: u32,
     pub y: u32,
@@ -70,6 +71,7 @@ pub enum RawMode {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct RawMetadata {
     pub make: String,
     pub model: String,
