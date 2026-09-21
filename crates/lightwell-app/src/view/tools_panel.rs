@@ -32,6 +32,11 @@ use lightwell_ui::{
 };
 use serde_json::{Map, Value};
 
+/// Stable identity for evidence scripts that scroll the actual generated tools panel.
+pub(crate) fn scroll_id() -> iced::widget::Id {
+    iced::widget::Id::new("tools-panel")
+}
+
 pub(crate) fn tools_panel<'a>(
     model: &'a ToolsModel,
     plot: &'a HistogramModel,
@@ -43,6 +48,7 @@ pub(crate) fn tools_panel<'a>(
             )
             .padding(theme::SPACING),
         )
+        .id(scroll_id())
         .height(Length::Fill)
         .into();
     }
@@ -70,7 +76,10 @@ pub(crate) fn tools_panel<'a>(
             panel = panel.push(section_view(section, menu, plot));
         }
     }
-    scrollable(panel).height(Length::Fill).into()
+    scrollable(panel)
+        .id(scroll_id())
+        .height(Length::Fill)
+        .into()
 }
 
 /// The histogram inspector: the plot, the two clipping triangles in its bottom corners, the domain
