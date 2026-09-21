@@ -1,0 +1,356 @@
+{
+  "schema_version": "1.0",
+  "plan_id": "verification-harness",
+  "title": "Verification harness: tiers, headless launches, fewer samples and concurrency",
+  "objective": "Cut the wall-clock and agent cost of rendered and timing evidence without weakening any oracle: one aggregate command with tiers and a summary, hidden-window launches with a focus check, defaults sized to what each statistic needs, and safe concurrency for rendered runs.",
+  "context_summary": "The evidence harness launches the editor per sample: raw-editor defaults to 30 samples with two launches each per source, measure to 30 per workload, and every smoke scenario is a separate launch and a separate agent tool call whose frames get read as images. Runs are serial, and the LSBackgroundOnly bundle stops activation but still shows a window. Timing figures were repeatedly noisy from concurrent load. The exactness oracles (small fixtures, hand-counted histograms, f64 references) are cheap and stay.",
+  "tasks": [
+    {
+      "id": "TASK-001",
+      "description": "Lower the launch multipliers: raw-editor defaults to 3 samples, measure to 5, and the docs state that p95 claims need the timing tier.",
+      "status": "ready",
+      "dependencies": [],
+      "extra_context": [
+        "raw-editor launches the editor twice per sample per source, so its 30-sample default is about 180 launches for a three-source manifest; one sample proves the journey.",
+        "editor-latency already takes its 30 samples inside one launch and keeps its default."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "xtask command table",
+          "target": "xtask/src/main.rs",
+          "relevance": "Where commands, defaults and argument parsing live."
+        },
+        {
+          "kind": "file",
+          "label": "RAW editor journey",
+          "target": "xtask/src/raw_editor.rs",
+          "relevance": "Two launches per sample per source; the largest launch multiplier today."
+        },
+        {
+          "kind": "file",
+          "label": "Measure and hardening",
+          "target": "xtask/src/diagnostics.rs",
+          "relevance": "Launch-to-frame and RSS sampling, 30 launches per workload by default."
+        },
+        {
+          "kind": "file",
+          "label": "Editor latency",
+          "target": "xtask/src/editor_latency.rs",
+          "relevance": "Thirty samples inside one launch; the pattern to copy."
+        },
+        {
+          "kind": "file",
+          "label": "Development and evidence commands",
+          "target": "docs/engineering/development.md",
+          "relevance": "Every harness command, its defaults and the background-launch rules."
+        },
+        {
+          "kind": "file",
+          "label": "Performance measurement plan",
+          "target": "docs/specs/performance.md",
+          "relevance": "Recorded baselines and the provisional targets the summary compares against."
+        }
+      ],
+      "acceptance_criteria": [
+        "raw-editor defaults to 3 samples and measure to 5, with the old counts still reachable through --samples.",
+        "docs/engineering/development.md and docs/specs/performance.md say which sample counts a p50/p95 claim requires and that the defaults are functional runs.",
+        "Existing recorded figures keep their stated sample counts; nothing is re-labelled."
+      ],
+      "test_strategy": {
+        "approach": "mixed",
+        "steps": [
+          "Run each command with the new default against a fixture and confirm the launch count from its result JSON.",
+          "Read the docs diff for every mention of the defaults."
+        ],
+        "commands": [
+          "cargo xtask check"
+        ],
+        "expected_results": [
+          "Default runs launch the editor 6 times per source for raw-editor and 5 per workload for measure; the docs match."
+        ]
+      }
+    },
+    {
+      "id": "TASK-002",
+      "description": "Add cargo xtask verify with quick, rendered, timing and full tiers that runs the selected commands and writes one summary.",
+      "status": "ready",
+      "dependencies": [],
+      "extra_context": [
+        "quick = check plus editor-acceptance; rendered adds every smoke scenario; timing adds editor-performance, editor-latency and measure; full adds raw-editor and raw-reference when a manifest is given.",
+        "The summary is one summary.json plus a short Markdown table: pass or fail per scenario, p50/p95 per timing row, each provisional target with its measured figure and verdict, and the artifact path of every run. Stdout prints only the table.",
+        "Frames are not opened by the command; an agent reads images only for a failed scenario or a design review."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "xtask command table",
+          "target": "xtask/src/main.rs",
+          "relevance": "Where commands, defaults and argument parsing live."
+        },
+        {
+          "kind": "file",
+          "label": "Smoke runner",
+          "target": "xtask/src/smoke.rs",
+          "relevance": "Scenario table, spawn, capture and result writing."
+        },
+        {
+          "kind": "file",
+          "label": "Development and evidence commands",
+          "target": "docs/engineering/development.md",
+          "relevance": "Every harness command, its defaults and the background-launch rules."
+        },
+        {
+          "kind": "file",
+          "label": "Performance measurement plan",
+          "target": "docs/specs/performance.md",
+          "relevance": "Recorded baselines and the provisional targets the summary compares against."
+        },
+        {
+          "kind": "file",
+          "label": "Working rules",
+          "target": "AGENTS.md",
+          "relevance": "Background launches only; evidence rules."
+        }
+      ],
+      "acceptance_criteria": [
+        "One command runs a tier end to end into a fresh output directory and exits non-zero if any component fails, naming it.",
+        "summary.json and summary.md hold every component's status, timing rows, target verdicts and artifact paths, and the console shows only the table.",
+        "A partial failure still writes the summary for the components that ran.",
+        "The docs describe the tiers and say the local default is quick, with rendered and timing run at integration points."
+      ],
+      "test_strategy": {
+        "approach": "mixed",
+        "steps": [
+          "Run quick and rendered tiers on the M4 and inspect the summaries.",
+          "Force a scenario failure and confirm the exit code and the summary entry."
+        ],
+        "commands": [
+          "cargo xtask check",
+          "cargo xtask verify --tier quick --output artifacts/verify-quick"
+        ],
+        "expected_results": [
+          "Each tier produces one summary an agent can read without opening artifacts."
+        ]
+      }
+    },
+    {
+      "id": "TASK-003",
+      "description": "Add a hidden-window evidence mode and make it the default for every automated launch, with a launcher check that no focus change occurred.",
+      "status": "ready",
+      "dependencies": [],
+      "extra_context": [
+        "The LSBackgroundOnly bundle prevents activation, but the evidence window is still created visible; nothing needs it on screen.",
+        "First verify on the M4 that renderer readbacks, the render_ready correlation and GPU upload timing still work with iced window visible = false; if they do not, report the finding and keep the window visible with a documented reason rather than faking captures.",
+        "The launcher records the frontmost application before and after each launch (for example through osascript) and fails the run when it changed."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Background launcher",
+          "target": "xtask/src/launch.rs",
+          "relevance": "The LSBackgroundOnly bundle every automated launch uses."
+        },
+        {
+          "kind": "file",
+          "label": "Desktop entry point",
+          "target": "crates/lightwell-app/src/main.rs",
+          "relevance": "Window settings and the evidence flags."
+        },
+        {
+          "kind": "file",
+          "label": "Smoke runner",
+          "target": "xtask/src/smoke.rs",
+          "relevance": "Scenario table, spawn, capture and result writing."
+        },
+        {
+          "kind": "file",
+          "label": "Measure and hardening",
+          "target": "xtask/src/diagnostics.rs",
+          "relevance": "Launch-to-frame and RSS sampling, 30 launches per workload by default."
+        },
+        {
+          "kind": "file",
+          "label": "Editor latency",
+          "target": "xtask/src/editor_latency.rs",
+          "relevance": "Thirty samples inside one launch; the pattern to copy."
+        },
+        {
+          "kind": "file",
+          "label": "Working rules",
+          "target": "AGENTS.md",
+          "relevance": "Background launches only; evidence rules."
+        },
+        {
+          "kind": "file",
+          "label": "Development and evidence commands",
+          "target": "docs/engineering/development.md",
+          "relevance": "Every harness command, its defaults and the background-launch rules."
+        }
+      ],
+      "acceptance_criteria": [
+        "An evidence flag creates the window hidden; smoke, measure, editor-latency and raw-editor pass it by default and develop does not.",
+        "Every smoke scenario, measure and editor-latency pass with the hidden window on the M4 and their frames are unchanged in content.",
+        "The launcher's focus check is recorded in each result JSON and fails the run on a change.",
+        "If hidden rendering cannot capture frames, the reason is recorded in the docs and the flag stays off for smoke only."
+      ],
+      "test_strategy": {
+        "approach": "mixed",
+        "steps": [
+          "Run every smoke scenario and the timing commands with the hidden window; compare frame checks with a visible run.",
+          "Watch the desktop during a run and read the recorded focus check."
+        ],
+        "commands": [
+          "cargo xtask check",
+          "cargo xtask smoke --scenario histogram --output artifacts/hidden-histogram"
+        ],
+        "expected_results": [
+          "No window appears during automated runs and every scenario still passes with identical checks."
+        ]
+      }
+    },
+    {
+      "id": "TASK-004",
+      "description": "Run rendered scenarios concurrently in the verify command and serialize timing runs behind a load gate.",
+      "status": "pending",
+      "dependencies": [
+        "TASK-002"
+      ],
+      "extra_context": [
+        "Scenarios use isolated catalogs and output directories; they share the GPU, so bound the pool (three or four at once) and measure whether wall-clock drops without failures.",
+        "Timing tiers stay serial, refuse to start while another xtask timing run is alive, and record the one-minute load average; figures above a stated load are marked unreliable in the summary rather than recorded as baselines."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Smoke runner",
+          "target": "xtask/src/smoke.rs",
+          "relevance": "Scenario table, spawn, capture and result writing."
+        },
+        {
+          "kind": "file",
+          "label": "Measure and hardening",
+          "target": "xtask/src/diagnostics.rs",
+          "relevance": "Launch-to-frame and RSS sampling, 30 launches per workload by default."
+        },
+        {
+          "kind": "file",
+          "label": "Editor latency",
+          "target": "xtask/src/editor_latency.rs",
+          "relevance": "Thirty samples inside one launch; the pattern to copy."
+        },
+        {
+          "kind": "file",
+          "label": "Performance rules",
+          "target": "docs/engineering/performance-rules.md",
+          "relevance": "Idle, timer and measurement rules the harness must respect."
+        },
+        {
+          "kind": "file",
+          "label": "Development and evidence commands",
+          "target": "docs/engineering/development.md",
+          "relevance": "Every harness command, its defaults and the background-launch rules."
+        }
+      ],
+      "acceptance_criteria": [
+        "The rendered tier runs scenarios in a bounded pool and its summary shows per-scenario and total wall-clock against the serial time.",
+        "Timing tiers are serial, the load gate and its threshold are recorded in every timing summary, and a busy host marks figures unreliable.",
+        "No scenario shares a catalog, evidence directory or port with another."
+      ],
+      "test_strategy": {
+        "approach": "mixed",
+        "steps": [
+          "Run the rendered tier serially and concurrently and compare results and wall-clock.",
+          "Start two timing runs and confirm the second refuses."
+        ],
+        "commands": [
+          "cargo xtask check",
+          "cargo xtask verify --tier rendered --output artifacts/verify-rendered"
+        ],
+        "expected_results": [
+          "Concurrent rendered runs pass with the same checks in less wall-clock; timing runs never overlap."
+        ]
+      }
+    },
+    {
+      "id": "TASK-005",
+      "description": "Point CI and the working rules at the tiers, and decide from measured run times which rendered scenarios belong in the rendered tier versus full.",
+      "status": "pending",
+      "dependencies": [
+        "TASK-002",
+        "TASK-003",
+        "TASK-004"
+      ],
+      "extra_context": [
+        "CI keeps its headless Xvfb scenarios; local guidance becomes: quick per change, rendered and timing at integration points, full before a milestone claim.",
+        "Retire no oracle: the small fixtures and hand-counted histograms are the exactness proofs and cost seconds."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "CI workflow",
+          "target": ".github/workflows/check.yml",
+          "relevance": "What hosted CI runs today."
+        },
+        {
+          "kind": "file",
+          "label": "Working rules",
+          "target": "AGENTS.md",
+          "relevance": "Background launches only; evidence rules."
+        },
+        {
+          "kind": "file",
+          "label": "Development and evidence commands",
+          "target": "docs/engineering/development.md",
+          "relevance": "Every harness command, its defaults and the background-launch rules."
+        },
+        {
+          "kind": "file",
+          "label": "Performance measurement plan",
+          "target": "docs/specs/performance.md",
+          "relevance": "Recorded baselines and the provisional targets the summary compares against."
+        }
+      ],
+      "acceptance_criteria": [
+        "AGENTS.md and docs/engineering/development.md name the tiers and when each runs; CI runs the quick tier plus its existing headless scenarios.",
+        "The rendered versus full split is recorded with the measured run time of each scenario.",
+        "No test or scenario is deleted."
+      ],
+      "test_strategy": {
+        "approach": "inspection",
+        "steps": [
+          "Read the workflow and the docs against the tiers.",
+          "Compare the recorded scenario times with the split."
+        ],
+        "commands": [
+          "cargo xtask check"
+        ],
+        "expected_results": [
+          "An agent can pick the right tier from the docs alone."
+        ]
+      }
+    }
+  ],
+  "execution_waves": [
+    {
+      "wave": 1,
+      "task_ids": [
+        "TASK-001",
+        "TASK-002",
+        "TASK-003"
+      ]
+    },
+    {
+      "wave": 2,
+      "task_ids": [
+        "TASK-004"
+      ]
+    },
+    {
+      "wave": 3,
+      "task_ids": [
+        "TASK-005"
+      ]
+    }
+  ]
+}
