@@ -70,15 +70,17 @@ fn full_basic() -> Value {
 /// the declared -5..5 EV range. Distinctness matters because a repeated value is not an input at
 /// all: `draft.set` is only sent for a value that differs from the one already accepted.
 fn gesture_values(samples: usize, control: Control) -> Vec<f64> {
+    let curve_denominator = samples.next_power_of_two() as f64;
     (0..samples)
         .map(|index| {
-            let value = ((index + 1) as f64 * 0.03 * 100.0).round() / 100.0;
             if control == Control::Curve {
-                // The widget publishes f32 fractions; correlate with the exact f64 that the host
-                // places in the one-field JSON patch after that conversion.
-                f64::from(value as f32)
+                // The widget publishes f32 fractions, and the host sends those fractions back
+                // through JSON. Binary-exact steps survive both conversions, allowing strict
+                // equality against the draft.set payload without a tolerance that could mask a
+                // different point or an out-of-order input.
+                (index + 1) as f64 / curve_denominator
             } else {
-                value
+                ((index + 1) as f64 * 0.03 * 100.0).round() / 100.0
             }
         })
         .collect()
@@ -808,6 +810,16 @@ mod tests {
         assert_eq!(steps[0]["curve"]["finish"], "open");
         assert_eq!(steps[30]["curve"]["finish"], "release");
         assert_eq!(steps[0]["curve"]["points"][0][0], 0.5);
+        assert_eq!(values[0], 1.0 / 32.0);
+        assert_eq!(values[30], 31.0 / 32.0);
+        assert_eq!(gesture_values(33, Control::Curve)[32], 33.0 / 64.0);
+        let wire: Vec<Value> =
+            serde_json::from_str(&serde_json::to_string(&steps).unwrap()).unwrap();
+        for (step, expected) in wire.iter().zip(&values) {
+            let fraction = step["curve"]["points"][0][1].as_f64().unwrap();
+            assert_eq!(fraction, *expected);
+            assert_eq!(f64::from(fraction as f32), *expected);
+        }
         let setup = curve_view_steps();
         assert_eq!(setup.len(), 6);
         assert_eq!(setup.last().unwrap(), &json!({"tools_scroll":1.0}));
