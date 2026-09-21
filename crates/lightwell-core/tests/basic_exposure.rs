@@ -566,19 +566,36 @@ fn history_stores_the_patch_as_sent_with_its_label_and_describes_the_layer() {
     assert!(row.available);
     assert_eq!(
         row.values,
-        json!({"exposure": 0.5, "vibrance": 0.0, "saturation": 0.0})
-            .as_object()
-            .cloned()
-            .unwrap()
+        json!({
+            "exposure": 0.5,
+            "contrast": 0.0,
+            "highlights": 0.0,
+            "shadows": 0.0,
+            "whites": 0.0,
+            "blacks": 0.0,
+            "vibrance": 0.0,
+            "saturation": 0.0,
+        })
+        .as_object()
+        .cloned()
+        .unwrap()
     );
 
-    // The group reset and the module reset each carry their own label.
+    // The group reset and the module reset each carry their own label. The Tone group reset names
+    // every one of its six fields at neutral, matching the descriptor's own group-reset preset.
     let tone = service
         .apply_action(
             &asset,
             mutation(1, "tone-reset"),
             "set-basic",
-            json!({"exposure": 0.0}),
+            json!({
+                "exposure": 0.0,
+                "contrast": 0.0,
+                "highlights": 0.0,
+                "shadows": 0.0,
+                "whites": 0.0,
+                "blacks": 0.0,
+            }),
         )
         .expect("the Tone group reset");
     assert_eq!(
@@ -619,10 +636,19 @@ fn history_stores_the_patch_as_sent_with_its_label_and_describes_the_layer() {
     assert_eq!(row.summary, "Neutral");
     assert_eq!(
         row.values,
-        json!({"exposure": 0.0, "vibrance": 0.0, "saturation": 0.0})
-            .as_object()
-            .cloned()
-            .unwrap()
+        json!({
+            "exposure": 0.0,
+            "contrast": 0.0,
+            "highlights": 0.0,
+            "shadows": 0.0,
+            "whites": 0.0,
+            "blacks": 0.0,
+            "vibrance": 0.0,
+            "saturation": 0.0,
+        })
+        .as_object()
+        .cloned()
+        .unwrap()
     );
 
     drop(service);
@@ -736,11 +762,11 @@ fn an_unsupported_format_or_unknown_field_is_refused_without_touching_the_stored
             &asset,
             mutation(1, "unknown"),
             "set-basic",
-            json!({"contrast": 10.0}),
+            json!({"gamma": 10.0}),
         )
         .expect_err("an unknown field");
     assert_eq!(unknown.kind, ErrorKind::Validation);
-    assert!(unknown.detail.contains("contrast"), "{}", unknown.detail);
+    assert!(unknown.detail.contains("gamma"), "{}", unknown.detail);
     // So is a value outside the declared range.
     for out_of_range in [json!({"exposure": 5.001}), json!({"exposure": -6.0})] {
         let error = service
@@ -1025,31 +1051,30 @@ fn an_independent_client_discovers_basic_and_drives_one_gesture_as_a_draft() {
             {
                 "kind": "group",
                 "label": "Tone",
-                "reset": {"action": "set-basic", "preset": {"exposure": 0.0}},
-                "controls": [{
-                    "kind": "number",
-                    "action": "set-basic",
-                    "parameter": "exposure",
-                    "label": "Exposure",
-                }],
+                "reset": {"action": "set-basic", "preset": {
+                    "exposure": 0.0,
+                    "contrast": 0.0,
+                    "highlights": 0.0,
+                    "shadows": 0.0,
+                    "whites": 0.0,
+                    "blacks": 0.0,
+                }},
+                "controls": [
+                    {"kind": "number", "action": "set-basic", "parameter": "exposure", "label": "Exposure"},
+                    {"kind": "number", "action": "set-basic", "parameter": "contrast", "label": "Contrast"},
+                    {"kind": "number", "action": "set-basic", "parameter": "highlights", "label": "Highlights"},
+                    {"kind": "number", "action": "set-basic", "parameter": "shadows", "label": "Shadows"},
+                    {"kind": "number", "action": "set-basic", "parameter": "whites", "label": "Whites"},
+                    {"kind": "number", "action": "set-basic", "parameter": "blacks", "label": "Blacks"},
+                ],
             },
             {
                 "kind": "group",
                 "label": "Colour",
                 "reset": {"action": "set-basic", "preset": {"vibrance": 0.0, "saturation": 0.0}},
                 "controls": [
-                    {
-                        "kind": "number",
-                        "action": "set-basic",
-                        "parameter": "vibrance",
-                        "label": "Vibrance",
-                    },
-                    {
-                        "kind": "number",
-                        "action": "set-basic",
-                        "parameter": "saturation",
-                        "label": "Saturation",
-                    },
+                    {"kind": "number", "action": "set-basic", "parameter": "vibrance", "label": "Vibrance"},
+                    {"kind": "number", "action": "set-basic", "parameter": "saturation", "label": "Saturation"},
                 ],
             },
         ])

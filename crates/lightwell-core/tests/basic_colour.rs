@@ -354,10 +354,19 @@ fn reopen_of_an_exposure_only_payload_is_unaffected_by_the_new_colour_fields() {
         .expect("the Basic row");
     assert_eq!(
         row.values,
-        json!({"exposure": 0.75, "vibrance": 0.0, "saturation": 0.0})
-            .as_object()
-            .cloned()
-            .unwrap(),
+        json!({
+            "exposure": 0.75,
+            "contrast": 0.0,
+            "highlights": 0.0,
+            "shadows": 0.0,
+            "whites": 0.0,
+            "blacks": 0.0,
+            "vibrance": 0.0,
+            "saturation": 0.0,
+        })
+        .as_object()
+        .cloned()
+        .unwrap(),
         "values includes the new fields at neutral for an exposure-only stored payload"
     );
     let _ = module;
@@ -444,10 +453,19 @@ fn labels_report_reset_colour_and_basic_n_fields_and_values_include_the_new_fiel
         .expect("the Basic row");
     assert_eq!(
         row.values,
-        json!({"exposure": 0.0, "vibrance": 50.0, "saturation": 20.0})
-            .as_object()
-            .cloned()
-            .unwrap()
+        json!({
+            "exposure": 0.0,
+            "contrast": 0.0,
+            "highlights": 0.0,
+            "shadows": 0.0,
+            "whites": 0.0,
+            "blacks": 0.0,
+            "vibrance": 50.0,
+            "saturation": 20.0,
+        })
+        .as_object()
+        .cloned()
+        .unwrap()
     );
 
     let colour_reset = service

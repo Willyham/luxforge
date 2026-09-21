@@ -321,9 +321,14 @@ mod tests {
                 .keys()
                 .collect::<Vec<_>>(),
             [
+                "set-basic.blacks",
+                "set-basic.contrast",
                 "set-basic.exposure",
+                "set-basic.highlights",
                 "set-basic.saturation",
+                "set-basic.shadows",
                 "set-basic.vibrance",
+                "set-basic.whites",
                 "set-pixel.rgb",
                 "set-pixel.x",
                 "set-pixel.y"

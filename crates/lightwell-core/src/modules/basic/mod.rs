@@ -1,17 +1,19 @@
 //! The Basic adjustment module: one colour-stage layer holding every Basic parameter, edited by
 //! one field-patch action.
 //!
-//! This slice implements Exposure, Vibrance and Saturation. A payload is a JSON object whose keys
-//! are the implemented parameter names; a missing key is neutral, so the canonical neutral payload
-//! is the empty object `{}` and `{"exposure": 0}` is the same state written differently. Every
-//! comparison here is between canonical values, never between JSON maps, so the two forms are
-//! never mistaken for a change.
+//! This slice implements Exposure, the five Tone controls (Contrast, Highlights, Shadows, Whites
+//! and Blacks), Vibrance and Saturation. A payload is a JSON object whose keys are the implemented
+//! parameter names; a missing key is neutral, so the canonical neutral payload is the empty object
+//! `{}` and `{"exposure": 0}` is the same state written differently. Every comparison here is
+//! between canonical values, never between JSON maps, so the two forms are never mistaken for a
+//! change.
 //!
 //! The host places the layer by its effect stage: a colour-stage commit joins the stack before the
 //! geometry tail, like a pixel replacement, and stays at that position for the rest of its life.
 //! Later sets update it in place at the same identity and index.
 mod colour;
 mod exposure;
+mod tone;
 
 use super::{
     ActionDescriptor, ActionInput, ActionPlan, Availability, ColorOperation, Control,
@@ -23,6 +25,7 @@ use colour::{Saturation, Vibrance};
 use exposure::Exposure;
 use serde_json::{Map, Number, Value};
 use std::sync::Arc;
+use tone::Tone;
 
 pub(super) const SET_BASIC: &str = "set-basic";
 pub(super) const RESET_BASIC: &str = "reset-basic";
@@ -34,6 +37,23 @@ const EXPOSURE_STEP: f64 = 0.01;
 const EXPOSURE_PRECISION: u8 = 2;
 const EXPOSURE_UNIT: &str = "EV";
 const EXPOSURE_LABEL: &str = "Exposure";
+
+/// The five Tone-curve fields, each in the agreed -100..100 UI range with step 1 and no display
+/// decimals, holding no unit.
+const CONTRAST: &str = "contrast";
+const HIGHLIGHTS: &str = "highlights";
+const SHADOWS: &str = "shadows";
+const WHITES: &str = "whites";
+const BLACKS: &str = "blacks";
+const TONE_MIN: f64 = -100.0;
+const TONE_MAX: f64 = 100.0;
+const TONE_STEP: f64 = 1.0;
+const TONE_PRECISION: u8 = 0;
+const CONTRAST_LABEL: &str = "Contrast";
+const HIGHLIGHTS_LABEL: &str = "Highlights";
+const SHADOWS_LABEL: &str = "Shadows";
+const WHITES_LABEL: &str = "Whites";
+const BLACKS_LABEL: &str = "Blacks";
 
 /// Vibrance and Saturation: `docs/design/basic-colour.md`'s frozen range, step and precision. No
 /// unit is declared; the design states the accepted range directly in slider units.
@@ -57,11 +77,12 @@ const COLOUR_GROUP: &str = "Colour";
 /// Every implemented Basic field, in the payload's declared order. A later slice adds further
 /// optional keys of the same format, and a neutral-defaulting key changes no existing
 /// interpretation.
-const FIELDS: [&str; 3] = [EXPOSURE, VIBRANCE, SATURATION];
+const FIELDS: [&str; 8] = [
+    EXPOSURE, CONTRAST, HIGHLIGHTS, SHADOWS, WHITES, BLACKS, VIBRANCE, SATURATION,
+];
 
-/// The fields of the Tone group. Exposure is its only implemented member, so a patch holding
-/// exactly these at neutral is the group reset.
-const TONE_FIELDS: [&str; 1] = [EXPOSURE];
+/// The fields of the Tone group: a patch holding exactly these at neutral is that group's reset.
+const TONE_FIELDS: [&str; 6] = [EXPOSURE, CONTRAST, HIGHLIGHTS, SHADOWS, WHITES, BLACKS];
 
 /// The fields of the Colour group: a patch holding exactly these at neutral is that group's reset.
 const COLOUR_FIELDS: [&str; 2] = [VIBRANCE, SATURATION];
@@ -82,6 +103,7 @@ fn incompatible(detail: impl Into<String>) -> Error {
 fn range(name: &str) -> (f64, f64) {
     match name {
         EXPOSURE => (EXPOSURE_MIN, EXPOSURE_MAX),
+        CONTRAST | HIGHLIGHTS | SHADOWS | WHITES | BLACKS => (TONE_MIN, TONE_MAX),
         VIBRANCE | SATURATION => (COLOUR_MIN, COLOUR_MAX),
         // Unreachable: `FIELDS` is the closed set and every caller matched a name against it.
         _ => (0.0, 0.0),
@@ -93,6 +115,11 @@ fn range(name: &str) -> (f64, f64) {
 fn display(name: &str) -> (&'static str, u8, &'static str) {
     match name {
         EXPOSURE => (EXPOSURE_LABEL, EXPOSURE_PRECISION, EXPOSURE_UNIT),
+        CONTRAST => (CONTRAST_LABEL, TONE_PRECISION, ""),
+        HIGHLIGHTS => (HIGHLIGHTS_LABEL, TONE_PRECISION, ""),
+        SHADOWS => (SHADOWS_LABEL, TONE_PRECISION, ""),
+        WHITES => (WHITES_LABEL, TONE_PRECISION, ""),
+        BLACKS => (BLACKS_LABEL, TONE_PRECISION, ""),
         VIBRANCE => (VIBRANCE_LABEL, COLOUR_PRECISION, ""),
         SATURATION => (SATURATION_LABEL, COLOUR_PRECISION, ""),
         _ => ("Basic", 2, ""),
@@ -210,6 +237,58 @@ fn exposure_parameter() -> ParameterDescriptor {
     }
 }
 
+/// One Tone-curve parameter descriptor: -100..100, step 1, no display decimals, no unit.
+fn tone_parameter(name: &str, notes: &str) -> ParameterDescriptor {
+    ParameterDescriptor {
+        name: name.into(),
+        kind: ParameterKind::Number {
+            min: TONE_MIN,
+            max: TONE_MAX,
+        },
+        required: false,
+        default: Some(number(NEUTRAL)),
+        unit: None,
+        step: Some(TONE_STEP),
+        precision: Some(TONE_PRECISION),
+        notes: notes.into(),
+    }
+}
+
+fn contrast_parameter() -> ParameterDescriptor {
+    tone_parameter(
+        CONTRAST,
+        "changes midtone separation with a fixed pivot at encoded mid-grey using a smooth, monotone S-curve",
+    )
+}
+
+fn highlights_parameter() -> ParameterDescriptor {
+    tone_parameter(
+        HIGHLIGHTS,
+        "smoothly lifts or crushes the image's bright tones while leaving pure white exactly unchanged",
+    )
+}
+
+fn shadows_parameter() -> ParameterDescriptor {
+    tone_parameter(
+        SHADOWS,
+        "smoothly lifts or crushes the image's dark tones while leaving pure black exactly unchanged",
+    )
+}
+
+fn whites_parameter() -> ParameterDescriptor {
+    tone_parameter(
+        WHITES,
+        "moves the white point, extending or protecting highlight clipping, separately from Highlights",
+    )
+}
+
+fn blacks_parameter() -> ParameterDescriptor {
+    tone_parameter(
+        BLACKS,
+        "moves the black point, crushing or lifting the darkest tones, separately from Shadows",
+    )
+}
+
 fn vibrance_parameter() -> ParameterDescriptor {
     ParameterDescriptor {
         name: VIBRANCE.into(),
@@ -274,6 +353,11 @@ impl BasicModule {
                         patch: true,
                         parameters: vec![
                             exposure_parameter(),
+                            contrast_parameter(),
+                            highlights_parameter(),
+                            shadows_parameter(),
+                            whites_parameter(),
+                            blacks_parameter(),
                             vibrance_parameter(),
                             saturation_parameter(),
                         ],
@@ -292,26 +376,52 @@ impl BasicModule {
                         label: TONE_GROUP.into(),
                         reset: Some(ResetAction {
                             action: SET_BASIC.into(),
-                            preset: [(EXPOSURE.to_owned(), number(NEUTRAL))]
-                                .into_iter()
+                            preset: TONE_FIELDS
+                                .iter()
+                                .map(|name| ((*name).to_owned(), number(NEUTRAL)))
                                 .collect(),
                         }),
-                        controls: vec![Control::Number {
-                            action: SET_BASIC.into(),
-                            parameter: EXPOSURE.into(),
-                            label: EXPOSURE_LABEL.into(),
-                        }],
+                        controls: vec![
+                            Control::Number {
+                                action: SET_BASIC.into(),
+                                parameter: EXPOSURE.into(),
+                                label: EXPOSURE_LABEL.into(),
+                            },
+                            Control::Number {
+                                action: SET_BASIC.into(),
+                                parameter: CONTRAST.into(),
+                                label: CONTRAST_LABEL.into(),
+                            },
+                            Control::Number {
+                                action: SET_BASIC.into(),
+                                parameter: HIGHLIGHTS.into(),
+                                label: HIGHLIGHTS_LABEL.into(),
+                            },
+                            Control::Number {
+                                action: SET_BASIC.into(),
+                                parameter: SHADOWS.into(),
+                                label: SHADOWS_LABEL.into(),
+                            },
+                            Control::Number {
+                                action: SET_BASIC.into(),
+                                parameter: WHITES.into(),
+                                label: WHITES_LABEL.into(),
+                            },
+                            Control::Number {
+                                action: SET_BASIC.into(),
+                                parameter: BLACKS.into(),
+                                label: BLACKS_LABEL.into(),
+                            },
+                        ],
                     },
                     Control::Group {
                         label: COLOUR_GROUP.into(),
                         reset: Some(ResetAction {
                             action: SET_BASIC.into(),
-                            preset: [
-                                (VIBRANCE.to_owned(), number(NEUTRAL)),
-                                (SATURATION.to_owned(), number(NEUTRAL)),
-                            ]
-                            .into_iter()
-                            .collect(),
+                            preset: COLOUR_FIELDS
+                                .iter()
+                                .map(|name| ((*name).to_owned(), number(NEUTRAL)))
+                                .collect(),
                         }),
                         controls: vec![
                             Control::Number {
@@ -472,6 +582,7 @@ impl ToolModule for BasicModule {
                     // the action's own title if it ever asks.
                     (false, false, []) => None,
                     (false, false, [(name, value)]) => Some(field_label(name, *value)),
+                    // Any other patch: several fields changed at once, not a declared group reset.
                     (false, false, sent) => Some(format!("Basic ({} fields)", sent.len())),
                 }
             }
@@ -510,9 +621,25 @@ impl ToolModule for BasicModule {
             return Ok(Processing::Color(ColorOperation::neutral()));
         }
         let mut units: Vec<Arc<dyn PointwiseColor>> = Vec::new();
-        let [exposure, vibrance, saturation] = values;
+        let [
+            exposure,
+            contrast,
+            highlights,
+            shadows,
+            whites,
+            blacks,
+            vibrance,
+            saturation,
+        ] = values;
+        // The frozen internal order: white balance, exposure, tone, vibrance, saturation. White
+        // balance is not implemented yet; its unit goes first, before exposure, when it lands.
         if exposure != NEUTRAL {
             units.push(Arc::new(Exposure::new(exposure)));
+        }
+        if [contrast, highlights, shadows, whites, blacks] != [NEUTRAL; 5] {
+            units.push(Arc::new(Tone::new(
+                contrast, highlights, shadows, whites, blacks,
+            )));
         }
         // Colour units run last, in the frozen internal order: vibrance, then saturation.
         if vibrance != NEUTRAL {
@@ -609,8 +736,8 @@ mod tests {
         assert!(set.summary.is_none());
         assert_eq!(
             set.parameters.len(),
-            3,
-            "exposure, vibrance and saturation are implemented"
+            8,
+            "exposure, the five Tone fields, vibrance and saturation are implemented"
         );
         let exposure = set.parameter(EXPOSURE).expect("the exposure parameter");
         assert_eq!(
@@ -631,9 +758,14 @@ mod tests {
             exposure.notes
         );
 
-        for (name, label, note_needle) in [
-            (VIBRANCE, "Vibrance", "colour heuristic"),
-            (SATURATION, "Saturation", "neutral grayscale"),
+        for (name, note_needle) in [
+            (CONTRAST, ""),
+            (HIGHLIGHTS, ""),
+            (SHADOWS, ""),
+            (WHITES, ""),
+            (BLACKS, ""),
+            (VIBRANCE, "colour heuristic"),
+            (SATURATION, "neutral grayscale"),
         ] {
             let parameter = set.parameter(name).unwrap_or_else(|| panic!("{name}"));
             assert_eq!(
@@ -645,16 +777,15 @@ mod tests {
                 "{name}"
             );
             assert!(!parameter.required, "{name}");
-            assert_eq!(parameter.default, Some(json!(0.0)), "{name}");
             assert_eq!(parameter.unit, None, "{name}: no unit is declared");
             assert_eq!(parameter.step, Some(1.0), "{name}");
             assert_eq!(parameter.precision, Some(0), "{name}");
+            assert!(!parameter.notes.is_empty(), "{name}");
             assert!(
                 parameter.notes.contains(note_needle),
                 "{name}: {}",
                 parameter.notes
             );
-            let _ = label;
         }
 
         let reset = descriptor.action(RESET_BASIC).expect("reset-basic");
@@ -668,13 +799,49 @@ mod tests {
                     label: "Tone".into(),
                     reset: Some(ResetAction {
                         action: SET_BASIC.into(),
-                        preset: [("exposure".to_owned(), json!(0.0))].into_iter().collect(),
+                        preset: [
+                            ("exposure".to_owned(), json!(0.0)),
+                            ("contrast".to_owned(), json!(0.0)),
+                            ("highlights".to_owned(), json!(0.0)),
+                            ("shadows".to_owned(), json!(0.0)),
+                            ("whites".to_owned(), json!(0.0)),
+                            ("blacks".to_owned(), json!(0.0)),
+                        ]
+                        .into_iter()
+                        .collect(),
                     }),
-                    controls: vec![Control::Number {
-                        action: SET_BASIC.into(),
-                        parameter: "exposure".into(),
-                        label: "Exposure".into(),
-                    }],
+                    controls: vec![
+                        Control::Number {
+                            action: SET_BASIC.into(),
+                            parameter: "exposure".into(),
+                            label: "Exposure".into(),
+                        },
+                        Control::Number {
+                            action: SET_BASIC.into(),
+                            parameter: "contrast".into(),
+                            label: "Contrast".into(),
+                        },
+                        Control::Number {
+                            action: SET_BASIC.into(),
+                            parameter: "highlights".into(),
+                            label: "Highlights".into(),
+                        },
+                        Control::Number {
+                            action: SET_BASIC.into(),
+                            parameter: "shadows".into(),
+                            label: "Shadows".into(),
+                        },
+                        Control::Number {
+                            action: SET_BASIC.into(),
+                            parameter: "whites".into(),
+                            label: "Whites".into(),
+                        },
+                        Control::Number {
+                            action: SET_BASIC.into(),
+                            parameter: "blacks".into(),
+                            label: "Blacks".into(),
+                        },
+                    ],
                 },
                 Control::Group {
                     label: "Colour".into(),
@@ -701,7 +868,8 @@ mod tests {
                     ],
                 },
             ],
-            "the Tone group, then the Colour group, each with its slider(s) and group reset"
+            "the Tone group's six sliders, then the Colour group's two, each with a group reset \
+             naming all of its fields"
         );
     }
 
@@ -743,8 +911,8 @@ mod tests {
             ("a number", json!(1.0), "must be a JSON object"),
             (
                 "an unknown key",
-                json!({"contrast": 10.0}),
-                "unknown basic field contrast",
+                json!({"gamma": 10.0}),
+                "unknown basic field gamma",
             ),
             (
                 "a string value",
@@ -879,7 +1047,7 @@ mod tests {
             Some(&json!(1.5))
         );
         assert!(
-            check_parameters(declared, &json!({"highlights": 1.0})).is_err(),
+            check_parameters(declared, &json!({"gamma": 1.0})).is_err(),
             "an unknown field is still rejected"
         );
         assert!(
@@ -952,9 +1120,60 @@ mod tests {
             Some("Exposure +5.00 EV")
         );
         assert_eq!(
+            label(SET_BASIC, json!({"contrast": 20.0})).as_deref(),
+            Some("Contrast +20")
+        );
+        assert_eq!(
+            label(SET_BASIC, json!({"highlights": -100.0})).as_deref(),
+            Some("Highlights -100")
+        );
+        assert_eq!(
+            label(SET_BASIC, json!({"shadows": 100.0})).as_deref(),
+            Some("Shadows +100")
+        );
+        assert_eq!(
+            label(SET_BASIC, json!({"whites": -50.0})).as_deref(),
+            Some("Whites -50")
+        );
+        assert_eq!(
+            label(SET_BASIC, json!({"blacks": 50.0})).as_deref(),
+            Some("Blacks +50")
+        );
+        // A single field set back to neutral is now just that field's own label: the Tone group
+        // has six fields, so one field alone is no longer indistinguishable from the group reset.
+        assert_eq!(
             label(SET_BASIC, json!({"exposure": 0.0})).as_deref(),
-            Some("Reset Tone"),
-            "the Tone group's only implemented field at neutral is that group's reset"
+            Some("Exposure +0.00 EV")
+        );
+        // The Tone group reset is a patch holding every one of its six fields at neutral, however
+        // it was sent, e.g. from the group's own preset.
+        assert_eq!(
+            label(
+                SET_BASIC,
+                json!({
+                    "exposure": 0.0,
+                    "contrast": 0.0,
+                    "highlights": 0.0,
+                    "shadows": 0.0,
+                    "whites": 0.0,
+                    "blacks": 0.0,
+                })
+            )
+            .as_deref(),
+            Some("Reset Tone")
+        );
+        // A patch changing several fields that is not a declared group reset names the count.
+        assert_eq!(
+            label(SET_BASIC, json!({"exposure": 0.5, "contrast": 20.0})).as_deref(),
+            Some("Basic (2 fields)")
+        );
+        assert_eq!(
+            label(
+                SET_BASIC,
+                json!({"contrast": 20.0, "highlights": -20.0, "shadows": 20.0})
+            )
+            .as_deref(),
+            Some("Basic (3 fields)")
         );
         assert_eq!(
             label(SET_BASIC, json!({"vibrance": 30.0})).as_deref(),
@@ -994,17 +1213,35 @@ mod tests {
             module
                 .values(BASIC_EFFECT, 1, &json!({"exposure": 0.5}))
                 .unwrap(),
-            json!({"exposure": 0.5, "vibrance": 0.0, "saturation": 0.0})
-                .as_object()
-                .cloned()
-                .unwrap()
+            json!({
+                "exposure": 0.5,
+                "contrast": 0.0,
+                "highlights": 0.0,
+                "shadows": 0.0,
+                "whites": 0.0,
+                "blacks": 0.0,
+                "vibrance": 0.0,
+                "saturation": 0.0,
+            })
+            .as_object()
+            .cloned()
+            .unwrap()
         );
         assert_eq!(
             module.values(BASIC_EFFECT, 1, &json!({})).unwrap(),
-            json!({"exposure": 0.0, "vibrance": 0.0, "saturation": 0.0})
-                .as_object()
-                .cloned()
-                .unwrap(),
+            json!({
+                "exposure": 0.0,
+                "contrast": 0.0,
+                "highlights": 0.0,
+                "shadows": 0.0,
+                "whites": 0.0,
+                "blacks": 0.0,
+                "vibrance": 0.0,
+                "saturation": 0.0,
+            })
+            .as_object()
+            .cloned()
+            .unwrap(),
             "a neutral layer reports the neutral value of every implemented field"
         );
         assert_eq!(
@@ -1015,17 +1252,32 @@ mod tests {
                     &json!({"vibrance": 50.0, "saturation": -20.0})
                 )
                 .unwrap(),
-            json!({"exposure": 0.0, "vibrance": 50.0, "saturation": -20.0})
-                .as_object()
-                .cloned()
-                .unwrap()
+            json!({
+                "exposure": 0.0,
+                "contrast": 0.0,
+                "highlights": 0.0,
+                "shadows": 0.0,
+                "whites": 0.0,
+                "blacks": 0.0,
+                "vibrance": 50.0,
+                "saturation": -20.0,
+            })
+            .as_object()
+            .cloned()
+            .unwrap()
+        );
+        assert_eq!(
+            module
+                .describe_layer(BASIC_EFFECT, 1, &json!({"contrast": 20.0, "blacks": -50.0}))
+                .unwrap(),
+            "Contrast +20, Blacks -50"
         );
         assert!(module.values(BASIC_EFFECT, 2, &json!({})).is_err());
         assert!(module.describe_layer(BASIC_EFFECT, 2, &json!({})).is_err());
     }
 
     #[test]
-    fn compilation_produces_one_exposure_unit_or_nothing_at_all() {
+    fn compilation_produces_an_exposure_unit_a_tone_unit_both_or_neither() {
         let module = BasicModule::new();
         let compiled = |payload: Value| module.compile(BASIC_EFFECT, 1, &payload, STAGE).unwrap();
         match compiled(json!({})) {
@@ -1038,11 +1290,32 @@ mod tests {
             }
             other => panic!("expected a colour operation, got {other:?}"),
         }
+        // Every Tone field at neutral, spelled out explicitly, still compiles to nothing: no Tone
+        // unit is ever constructed for an all-neutral parameter set.
+        match compiled(json!({
+            "contrast": 0.0, "highlights": 0.0, "shadows": 0.0, "whites": 0.0, "blacks": 0.0,
+        })) {
+            Processing::Color(operation) => assert!(operation.is_empty()),
+            other => panic!("expected a colour operation, got {other:?}"),
+        }
         match compiled(json!({"exposure": 0.5})) {
             Processing::Color(operation) => {
                 assert_eq!(operation.len(), 1);
                 assert!(operation.is_finite());
                 assert_eq!(operation.units()[0].describe(), "exposure(+0.50)");
+            }
+            other => panic!("expected a colour operation, got {other:?}"),
+        }
+        // A single non-neutral Tone field is enough to compile a Tone unit, holding every field
+        // (neutral ones included) at its stored value.
+        match compiled(json!({"contrast": 20.0})) {
+            Processing::Color(operation) => {
+                assert_eq!(operation.len(), 1);
+                assert!(operation.is_finite());
+                assert_eq!(
+                    operation.units()[0].describe(),
+                    "tone(contrast=+20.00, highlights=+0.00, shadows=+0.00, whites=+0.00, blacks=+0.00)"
+                );
             }
             other => panic!("expected a colour operation, got {other:?}"),
         }
@@ -1062,18 +1335,33 @@ mod tests {
             }
             other => panic!("expected a colour operation, got {other:?}"),
         }
-        // The frozen internal order: exposure, then vibrance, then saturation, whichever fields
-        // the payload set.
-        match compiled(json!({"exposure": 1.0, "vibrance": 20.0, "saturation": 10.0})) {
+        // Exposure and Tone together compile to two units, Exposure before Tone, matching the
+        // internal order white balance -> exposure -> tone -> vibrance -> saturation.
+        match compiled(json!({"exposure": 1.0, "shadows": 50.0})) {
             Processing::Color(operation) => {
-                assert_eq!(
-                    operation
-                        .units()
-                        .iter()
-                        .map(|unit| unit.describe())
-                        .collect::<Vec<_>>(),
-                    vec!["exposure(+1.00)", "vibrance(+20)", "saturation(+10)"]
-                );
+                assert_eq!(operation.len(), 2);
+                assert!(operation.is_finite());
+                assert_eq!(operation.units()[0].describe(), "exposure(+1.00)");
+                assert!(operation.units()[1].describe().starts_with("tone("));
+            }
+            other => panic!("expected a colour operation, got {other:?}"),
+        }
+        // The frozen internal order over every implemented field: exposure, tone, vibrance, then
+        // saturation, whichever fields the payload set.
+        match compiled(json!({
+            "exposure": 1.0, "contrast": 20.0, "vibrance": 20.0, "saturation": 10.0,
+        })) {
+            Processing::Color(operation) => {
+                let described = operation
+                    .units()
+                    .iter()
+                    .map(|unit| unit.describe())
+                    .collect::<Vec<_>>();
+                assert_eq!(described.len(), 4);
+                assert_eq!(described[0], "exposure(+1.00)");
+                assert!(described[1].starts_with("tone("));
+                assert_eq!(described[2], "vibrance(+20)");
+                assert_eq!(described[3], "saturation(+10)");
             }
             other => panic!("expected a colour operation, got {other:?}"),
         }
@@ -1086,6 +1374,12 @@ mod tests {
                 .compile(BASIC_EFFECT, 1, &json!({"exposure": 99.0}), STAGE)
                 .is_err(),
             "a stored value outside the declared range never compiles"
+        );
+        assert!(
+            module
+                .compile(BASIC_EFFECT, 1, &json!({"contrast": 999.0}), STAGE)
+                .is_err(),
+            "a stored Tone value outside the declared range never compiles"
         );
         assert!(
             module

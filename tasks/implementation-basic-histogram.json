@@ -796,7 +796,7 @@
     {
       "id": "TASK-012",
       "description": "Implement Contrast, Highlights, Shadows, Whites and Blacks in Basic.",
-      "status": "in_progress",
+      "status": "completed",
       "dependencies": [
         "TASK-003",
         "TASK-004",

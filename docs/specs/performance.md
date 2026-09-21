@@ -84,6 +84,29 @@ the [Basic design](../design/basic-and-histogram.md#resource-and-responsiveness-
 desktop measurement that this core-only diagnostic does not make. Recorded here with that scope; no
 threshold is claimed met or missed from these numbers alone.
 
+With the Basic module's five Tone fields (Contrast, Highlights, Shadows, Whites, Blacks) added,
+`editor-performance` on 24 and 60 MP, 30 samples each, release, warm cache, on the M4 Pro; core
+render only. The same 200-transform-and-10°-crop stack as the row above, with one Basic layer
+holding `exposure` and all five Tone fields non-neutral, compiled by the real `lightwell.basic`
+module into two real pointwise units (`Exposure`, then `Tone`) run as one streamed colour pass.
+
+| Measurement | 24 MP | 60 MP |
+| --- | --- | --- |
+| The 200-transform and 10° crop stack, no colour layer (p50 / p95) | 37.3 / 46.0 ms | 135.1 / 274.6 ms |
+| The same stack with one `+1 EV` Basic layer, exposure only (p50 / p95) | 53.1 / 60.8 ms | 129.2 / 148.5 ms |
+| The same stack with `+1 EV` exposure and all five Tone fields (p50 / p95) | 95.7 / 139.1 ms | 235.0 / 264.7 ms |
+
+The Tone unit's own added cost over the exposure-only row is about 43 ms at the 24 MP median and
+about 106 ms at the 60 MP median; both rows compile a second `PointwiseColor` unit into the same
+streamed colour operation, so this reflects the `Tone` unit's own per-pixel work (encode/decode
+through the extended sRGB transfer function plus the three composed curve stages), not a second
+render or a second frame allocation. As with the exposure-only row, this is a core-only diagnostic
+without desktop scheduling, GPU upload or presentation; no responsiveness threshold is claimed met
+or missed from these numbers alone. The baseline row's own run-to-run variance (24 MP p50 37.3 ms
+here versus 35.2 ms in the row above, both from independent `editor-performance` invocations on the
+same host) is a useful reminder that these are diagnostic samples, not a controlled A/B on identical
+process state.
+
 With Vibrance and Saturation added to the Basic module (TASK-016), the same diagnostic on 24 and
 60 MP, 30 samples each, release, warm cache, M4 Pro, re-measured against the same
 `colour_baseline_same_stack_without_colour` row on this run (32.7 / 35.1 ms at 24 MP,
