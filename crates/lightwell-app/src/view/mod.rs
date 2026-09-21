@@ -15,9 +15,7 @@ pub(crate) mod status_bar;
 pub(crate) mod title_bar;
 pub(crate) mod tools_panel;
 
-pub(crate) use gallery::{
-    GalleryPageInfo, gallery, page_count as gallery_page_count, page_info as gallery_page_info,
-};
+pub(crate) use gallery::{gallery, page_info as gallery_page_info};
 
 use crate::{app::message::Message, crop_draft::CropDraft, state::Workspace};
 use iced::{

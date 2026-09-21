@@ -1,12 +1,12 @@
-//! Desktop slider-to-presented-frame measurement: the real editor, the real gesture, the real GPU
-//! upload.
+//! Desktop control-to-uploaded-frame measurement: the real editor, gesture and GPU upload.
 //!
 //! [`editor_performance`](crate::editor_performance) measures `render` on the catalog owner's own
 //! thread. Nothing there schedules, uploads or presents, so it cannot answer the responsiveness
 //! question the [Basic design][design] asks: how long after a slider input the frame carrying that
 //! input is on screen. This module answers it by driving the shipped binary in a background
 //! evidence launch, with one `slider` script step per input, and reading the timestamps out of the
-//! run's own `events.jsonl`.
+//! run's own `events.jsonl`. The default measures Basic's exposure slider; `--control curve`
+//! measures the developer proof curve while its canvas is visible in the tools panel.
 //!
 //! What "presented" means here: the desktop's `Uploaded` message, recorded as `preview_displayed`.
 //! That is the moment the rendered pixels have been handed to the renderer as a texture and the
@@ -22,6 +22,31 @@ use std::time::{Duration, Instant};
 /// them.
 const SET_BASIC: &str = "set-basic";
 const EXPOSURE: &str = "exposure";
+const SET_CONTROLS: &str = "set-controls";
+const MASTER: &str = "master";
+const CONTROLS_MODULE: &str = "lightwell.controls";
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Control {
+    Slider,
+    Curve,
+}
+
+impl Control {
+    fn name(self) -> &'static str {
+        match self {
+            Self::Slider => "slider",
+            Self::Curve => "curve",
+        }
+    }
+
+    fn parameter(self) -> &'static str {
+        match self {
+            Self::Slider => EXPOSURE,
+            Self::Curve => MASTER,
+        }
+    }
+}
 
 /// Every Basic field non-neutral, for the "holds a full Basic layer" resource workload. Each value
 /// is inside the module's declared range and none of them is the neutral default, so the compiled
@@ -44,9 +69,18 @@ fn full_basic() -> Value {
 /// The exposure values one gesture visits: `samples` distinct steps, none of them zero, all inside
 /// the declared -5..5 EV range. Distinctness matters because a repeated value is not an input at
 /// all: `draft.set` is only sent for a value that differs from the one already accepted.
-fn gesture_values(samples: usize) -> Vec<f64> {
+fn gesture_values(samples: usize, control: Control) -> Vec<f64> {
     (0..samples)
-        .map(|index| ((index + 1) as f64 * 0.03 * 100.0).round() / 100.0)
+        .map(|index| {
+            let value = ((index + 1) as f64 * 0.03 * 100.0).round() / 100.0;
+            if control == Control::Curve {
+                // The widget publishes f32 fractions; correlate with the exact f64 that the host
+                // places in the one-field JSON patch after that conversion.
+                f64::from(value as f32)
+            } else {
+                value
+            }
+        })
         .collect()
 }
 
@@ -149,15 +183,21 @@ struct Input {
 /// `slider_draft_preview` that follows a `slider_draft_set` is that set's own answer, and it
 /// carries the preview generation, which `preview_displayed` repeats. The value is checked on both
 /// ends, so a mispairing fails the run instead of producing a number.
-fn inputs(events: &[Value]) -> Result<Vec<Input>> {
+fn event_value(value: &Value, control: Control) -> Option<f64> {
+    match control {
+        Control::Slider => value.as_f64(),
+        Control::Curve => value.get(1)?.get(1)?.as_f64(),
+    }
+}
+
+fn inputs(events: &[Value], control: Control) -> Result<Vec<Input>> {
     let mut inputs = Vec::new();
     let mut pending: Option<(f64, f64)> = None;
     for event in events {
         match event["event"].as_str() {
             Some("slider_draft_set") => {
-                let value = event["detail"]["fields"][EXPOSURE]
-                    .as_f64()
-                    .ok_or("A slider_draft_set carried no exposure field")?;
+                let value = event_value(&event["detail"]["fields"][control.parameter()], control)
+                    .ok_or("A draft.set carried no measured control value")?;
                 ensure(
                     pending.is_none(),
                     "Two slider_draft_set events without an answer between them",
@@ -170,8 +210,8 @@ fn inputs(events: &[Value]) -> Result<Vec<Input>> {
                     .ok_or("A slider_draft_preview answered no slider_draft_set")?;
                 let detail = &event["detail"];
                 ensure(
-                    detail["value"].as_f64() == Some(value),
-                    "A slider_draft_preview reports a value its slider_draft_set did not send",
+                    event_value(&detail["value"], control) == Some(value),
+                    "A draft preview reports a value its draft.set did not send",
                 )?;
                 inputs.push(Input {
                     value,
@@ -216,7 +256,23 @@ fn inputs(events: &[Value]) -> Result<Vec<Input>> {
 /// displayed, which is the queue cancellation this gesture actually performs. Its latency is
 /// therefore excluded from the per-input distribution and measured through to the settled exact
 /// histogram instead.
-fn gesture_steps(values: &[f64]) -> Vec<Value> {
+fn curve_step(points: Vec<f64>, finish: &str) -> Value {
+    json!({"curve":{"action":SET_CONTROLS,"parameter":MASTER,"event":"move",
+        "index":1,"points":points.into_iter().map(|y| [0.5,y]).collect::<Vec<_>>(),
+        "finish":finish}})
+}
+
+fn gesture_steps(values: &[f64], control: Control) -> Vec<Value> {
+    if control == Control::Curve {
+        let mut steps: Vec<Value> = values
+            .iter()
+            .map(|value| curve_step(vec![*value], "open"))
+            .collect();
+        if let Some(last) = steps.last_mut() {
+            last["curve"]["finish"] = json!("release");
+        }
+        return steps;
+    }
     let mut steps: Vec<Value> = values
         .iter()
         .map(|value| json!({"slider":{"action":SET_BASIC,"parameter":EXPOSURE,"values":[value]}}))
@@ -231,7 +287,18 @@ fn gesture_steps(values: &[f64]) -> Vec<Value> {
 /// keeps at most one round trip in flight and only the newest value waiting, so this step's
 /// `draft.set` count against its value count is the coalescing the design specifies. The values are
 /// negated so the gesture commits a real change rather than the value already current.
-fn burst_step(values: &[f64]) -> Value {
+fn burst_step(values: &[f64], control: Control) -> Value {
+    if control == Control::Curve {
+        // Reverse the middle point's vertical journey while remaining in the declared [0,1]
+        // range. The burst measures one replaceable pending draft value, not visible frames.
+        return curve_step(
+            values
+                .iter()
+                .map(|value| f64::from((1.0 - value) as f32))
+                .collect(),
+            "release",
+        );
+    }
     let negated: Vec<f64> = values.iter().map(|value| -value).collect();
     json!({"slider":{"action":SET_BASIC,"parameter":EXPOSURE,"values":negated,"release":true}})
 }
@@ -243,13 +310,37 @@ fn burst_step(values: &[f64]) -> Value {
 /// one value, commits it, and the commit's own refresh renders and reduces the committed frame; the
 /// drafted preview requested in between is superseded before it can be displayed, so this mode also
 /// counts one cancelled preview job per commit.
-fn commit_steps(values: &[f64]) -> Vec<Value> {
+fn commit_steps(values: &[f64], control: Control) -> Vec<Value> {
+    if control == Control::Curve {
+        return values
+            .iter()
+            .map(|value| curve_step(vec![*value], "release"))
+            .collect();
+    }
     values
         .iter()
         .map(
             |value| json!({"slider":{"action":SET_BASIC,"parameter":EXPOSURE,"values":[value],"release":true}}),
         )
         .collect()
+}
+
+/// Keep the proof curve, including its canvas, in the real tools-panel viewport during the
+/// measurement. A hidden curve would measure only controller/render work and miss tessellation.
+fn curve_view_steps() -> Vec<Value> {
+    // The latency source is JPEG; the RAW section is absent from its tools model entirely.
+    let mut steps: Vec<Value> = [
+        "lightwell.basic",
+        "lightwell.pixel",
+        "lightwell.transform",
+        "lightwell.crop",
+    ]
+    .into_iter()
+    .map(|module| json!({"section":{"module":module,"expanded":false}}))
+    .collect();
+    steps.push(json!({"section":{"module":CONTROLS_MODULE,"expanded":true}}));
+    steps.push(json!({"tools_scroll":1.0}));
+    steps
 }
 
 /// Which distribution a run gathers. Both drive the same messages; they differ in where the gesture
@@ -277,6 +368,7 @@ pub struct Options<'a> {
     pub source: &'a Path,
     pub samples: usize,
     pub mode: Mode,
+    pub control: Control,
     /// Commit a straightening crop before the gesture, so the measured stack carries the crop
     /// resample as well as the colour pass.
     pub crop: Option<f64>,
@@ -294,6 +386,10 @@ pub fn run(root: &Path, out: &Path, bin: &Path, options: Options) -> Result {
         (1..=60).contains(&options.samples),
         "Samples must be 1..60; the evidence script accepts at most 64 steps",
     )?;
+    ensure(
+        options.control != Control::Curve || options.samples <= 32,
+        "Curve samples must be 1..32 so every middle-point fraction stays in range",
+    )?;
     fs::create_dir_all(out)?;
     let source = options.source.canonicalize()?;
     let source_hash = hash(&source)?;
@@ -301,7 +397,7 @@ pub fn run(root: &Path, out: &Path, bin: &Path, options: Options) -> Result {
     // whose own drafted preview the commit supersedes, so it is measured to the settled histogram
     // instead. A commit run measures every value it sends.
     let drag = options.mode == Mode::Drag;
-    let values = gesture_values(options.samples + usize::from(drag));
+    let values = gesture_values(options.samples + usize::from(drag), options.control);
 
     let mut script = Vec::new();
     if let Some(angle) = options.crop {
@@ -309,17 +405,24 @@ pub fn run(root: &Path, out: &Path, bin: &Path, options: Options) -> Result {
             json!({"api":{"method":"edit.crop-fit","params":{"aspect":"16:9","angle":angle}}}),
         );
     }
-    if drag {
-        script.extend(gesture_steps(&values));
-        script.push(burst_step(&values));
-    } else {
-        script.extend(commit_steps(&values));
+    if options.control == Control::Curve {
+        script.extend(curve_view_steps());
     }
+    if drag {
+        script.extend(gesture_steps(&values, options.control));
+        script.push(burst_step(&values, options.control));
+    } else {
+        script.extend(commit_steps(&values, options.control));
+    }
+    ensure(
+        script.len() <= 64,
+        "The latency script exceeds the 64-step evidence bound",
+    )?;
     let script_file = out.join("gesture-script.json");
     write_json(&script_file, &json!(script))?;
 
     let evidence = out.join("app");
-    let args: Vec<OsString> = vec![
+    let mut args: Vec<OsString> = vec![
         "--evidence-dir".into(),
         evidence.clone().into_os_string(),
         "--evidence-script".into(),
@@ -327,6 +430,9 @@ pub fn run(root: &Path, out: &Path, bin: &Path, options: Options) -> Result {
         "--open".into(),
         source.clone().into_os_string(),
     ];
+    if options.control == Control::Curve {
+        args.push("--developer".into());
+    }
     let (rss, peak_rss) = evidence_run(
         root,
         bin,
@@ -352,8 +458,32 @@ pub fn run(root: &Path, out: &Path, bin: &Path, options: Options) -> Result {
     )?;
     let frames = app["frames"].as_array().ok_or("Missing frames")?;
     let last = frames.last().ok_or("No frame was captured")?;
+    if options.control == Control::Curve {
+        let setup_index = usize::from(options.crop.is_some()) + curve_view_steps().len();
+        let setup = frames
+            .get(setup_index)
+            .ok_or("No captured frame follows the curve viewport setup")?;
+        let ready = setup["state"]["control_ui"]["curves"]
+            .as_array()
+            .and_then(|curves| {
+                curves
+                    .iter()
+                    .find(|curve| curve["action"] == SET_CONTROLS && curve["parameter"] == MASTER)
+            })
+            .is_some_and(|curve| {
+                curve["sample_count"] == 257
+                    && curve["sample_source_entry"] == curve["display_entry"]
+            });
+        ensure(
+            ready
+                && setup["state"]["developer"] == true
+                && setup["state"]["expanded"][CONTROLS_MODULE] == true
+                && setup["state"]["tools_scroll"] == 1.0,
+            "The proof curve was not expanded, scrolled into view and sampled to 257 points before timing",
+        )?;
+    }
 
-    let measured = inputs(&events)?;
+    let measured = inputs(&events, options.control)?;
     ensure(
         measured.len() >= values.len(),
         format!(
@@ -399,6 +529,9 @@ pub fn run(root: &Path, out: &Path, bin: &Path, options: Options) -> Result {
         .map(|input| input.upload_ms)
         .filter(|value| value.is_finite())
         .collect();
+    let mut ranked_input_to_frame = input_to_frame.clone();
+    ranked_input_to_frame.sort_by(f64::total_cmp);
+    let input_p95 = percentile(&ranked_input_to_frame, 95);
 
     // The settled exact histogram. A drafted preview is never analysed — the design keeps the plot
     // labelled stale during a gesture — so the exact report is reduced from the frame the commit's
@@ -472,9 +605,25 @@ pub fn run(root: &Path, out: &Path, bin: &Path, options: Options) -> Result {
         "scale":last["scale"],
         "crop_angle_deg":options.crop,
         "mode":options.mode.name(),
+        "control":options.control.name(),
+        "control_action":if options.control == Control::Curve { SET_CONTROLS } else { SET_BASIC },
+        "control_parameter":options.control.parameter(),
+        "effect_scope":if options.control == Control::Curve {
+            "Developer proof curve: identity colour operation. Draft/preview scheduling and GPU upload are timed while the curve canvas is visible; the curve does not alter photo pixels."
+        } else {
+            "Basic exposure: the photograph's colour pass is measured with the generated slider."
+        },
+        "view_setup":if options.control == Control::Curve {
+            json!({"developer":true,"proof_section":CONTROLS_MODULE,
+                "collapsed":["lightwell.basic","lightwell.pixel","lightwell.transform","lightwell.crop"],
+                "raw_section":"absent for the JPEG latency source",
+                "tools_scroll":1.0})
+        } else { Value::Null },
         "samples":options.samples,
         "gesture_values":values,
-        "method":"Background evidence launch of the release binary, warm filesystem cache. In drag mode one scripted slider step per input is left open, so the step settles only when the gesture has drained: every interval is one input, one draft.set, one preview job and one upload. In commit mode each step is a whole gesture, moved and released at once, so each sample is one committed frame and its exact histogram. Presented means the desktop's Uploaded message (preview_displayed), when the rendered pixels have become a renderer texture; it is not display scanout.",
+        "method":"Background evidence launch of the release binary, warm filesystem cache. In drag mode one scripted control step per input is left open, so the step settles only when the gesture has drained: every interval is one input, one draft.set, one preview job and one upload. In commit mode each step is a whole gesture, moved and released at once, so each sample is one committed frame and its exact histogram. Presented means the desktop's Uploaded message (preview_displayed), when the rendered pixels have become a renderer texture; it is not display scanout.",
+        "provisional_input_to_frame_target":{"p95_below_ms":100.0,"measured_p95_ms":input_p95,
+            "met":input_p95.map(|ms| ms < 100.0)},
         "timings_ms":{
             "input_to_presented_frame":distribution(input_to_frame),
             "draft_set_round_trip":distribution(set_round_trip),
@@ -484,7 +633,12 @@ pub fn run(root: &Path, out: &Path, bin: &Path, options: Options) -> Result {
             "commit_to_settled_histogram":distribution(settled_from_commit),
         },
         "queue":{
-            "scripted_slider_values":if drag { values.len() + options.samples + 1 } else { values.len() },
+            "scripted_slider_values":if options.control == Control::Slider {
+                json!(if drag { values.len() + options.samples + 1 } else { values.len() })
+            } else { Value::Null },
+            "scripted_curve_values":if options.control == Control::Curve {
+                json!(if drag { values.len() + options.samples + 1 } else { values.len() })
+            } else { Value::Null },
             "draft_set_requests":counted("slider_draft_set"),
             "preview_jobs_requested":counted("slider_draft_preview"),
             "preview_jobs_superseded":superseded.len(),
@@ -640,4 +794,49 @@ fn hold_and_idle(root: &Path, out: &Path, bin: &Path, source: &Path) -> Result {
         }),
     )?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn curve_script_keeps_every_point_in_range_and_below_the_evidence_bound() {
+        let values = gesture_values(31, Control::Curve);
+        let steps = gesture_steps(&values, Control::Curve);
+        assert_eq!(steps.len(), 31);
+        assert_eq!(steps[0]["curve"]["finish"], "open");
+        assert_eq!(steps[30]["curve"]["finish"], "release");
+        assert_eq!(steps[0]["curve"]["points"][0][0], 0.5);
+        let setup = curve_view_steps();
+        assert_eq!(setup.len(), 6);
+        assert_eq!(setup.last().unwrap(), &json!({"tools_scroll":1.0}));
+        let burst = burst_step(&values, Control::Curve);
+        assert_eq!(burst["curve"]["points"].as_array().unwrap().len(), 31);
+        for point in burst["curve"]["points"].as_array().unwrap() {
+            assert!((0.0..=1.0).contains(&point[1].as_f64().unwrap()));
+        }
+        assert!(setup.len() + steps.len() + 2 <= 64); // optional crop, then burst
+    }
+
+    #[test]
+    fn curve_midpoint_pairs_one_draft_set_with_its_uploaded_generation() {
+        let points = json!([[0.0, 0.0], [0.5, 0.375], [1.0, 1.0]]);
+        let events = vec![
+            json!({"event":"slider_draft_set","elapsed_ms":10.0,
+                "detail":{"fields":{"master":points}}}),
+            json!({"event":"slider_draft_preview","elapsed_ms":20.0,
+                "detail":{"value":points,"generation":7,"draft_revision":2}}),
+            json!({"event":"preview_displayed","elapsed_ms":35.0,
+                "detail":{"generation":7,"draft_revision":2,"upload_ms":3.0}}),
+        ];
+        let paired = inputs(&events, Control::Curve).unwrap();
+        assert_eq!(paired.len(), 1);
+        assert_eq!(paired[0].value, 0.375);
+        assert_eq!(paired[0].displayed_ms - paired[0].sent_ms, 25.0);
+        assert_eq!(paired[0].upload_ms, 3.0);
+        let mut wrong = events;
+        wrong[2]["detail"]["draft_revision"] = json!(3);
+        assert!(inputs(&wrong, Control::Curve).is_err());
+    }
 }
