@@ -270,10 +270,16 @@ impl canvas::Program<Message> for Thirds {
     }
 }
 
+/// The canvas with nothing to draw: the invitation to open a photograph, or why the open one has no
+/// preview. Title-sized, so a long reason still reads as one line of chrome rather than a headline.
 fn empty(message: &str) -> Element<'_, Message> {
-    container(text(message.to_owned()).size(24))
-        .center(Length::Fill)
-        .into()
+    container(
+        text(message.to_owned())
+            .size(lightwell_ui::theme::SIZE_TITLE)
+            .color(lightwell_ui::theme::TEXT_SECONDARY),
+    )
+    .center(Length::Fill)
+    .into()
 }
 
 fn plain<'a>(

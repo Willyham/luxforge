@@ -1,10 +1,10 @@
 # Develop workspace
 
-Status: accepted for the shell, the widget library and the panels over the modules that exist today (pixel, transform, crop); implementation in progress under the [architecture](#architecture) below. This is the design for the single-image editing screen: what it shows, how the tools are arranged and how they behave. Library, catalog management and settings are out of scope. The tool list below marks what exists today against what is only planned. The owner's decisions are recorded in [decisions](#decisions) and in [product decisions](../decisions.md#develop-workspace).
+Status: implemented and verified on the M4 Mac for the shell, the widget library, the generated panels and the canvas modes over the modules that exist today (pixel, transform, crop), under the [architecture](#architecture) below. The histogram and the Basic, export, Locate, heal and mask tools the mockups also show are not built; their rows in the tool array say so. This is the design for the single-image editing screen: what it shows, how the tools are arranged and how they behave. Library, catalog management and settings are out of scope. The owner's decisions are recorded in [decisions](#decisions) and in [product decisions](../decisions.md#develop-workspace).
 
 ## Mockup
 
-Rendered at 1440 × 900 logical points, 2× scale, from the design artboards. The photograph is the owner's Sapa drone JPEG from the fixtures; the slider values, history and agent are illustrative.
+Rendered at 1440 × 900 logical points, 2× scale, from the design artboards. The photograph is the owner's Sapa drone JPEG from the fixtures; the slider values, history and agent are illustrative. The boards include the histogram and the Basic section, which are not built; the delivered screen has the same regions, strip, bars and notices without them. Rendered evidence of the built screen comes from `cargo xtask smoke --scenario workspace` and `--scenario unavailable` (see [verification](#verification)).
 
 | Board | Shows |
 | --- | --- |
@@ -29,13 +29,13 @@ At the reference size (1440 × 900 logical points on the M4 MacBook Pro) the scr
 
 | Region | Size | Contents |
 | --- | --- | --- |
-| Title bar | 44 pt | File name and dimensions; centred view control (Fit, 100%, typed percentage), Compare and Clipping toggles; Undo, Redo, Export, panel toggles |
+| Title bar | 44 pt | File name and dimensions, Open; centred view control (Fit, 100%, typed percentage) and Compare; Undo, Redo and the two panel toggles. Clipping and Export arrive with their own features |
 | State panel (left) | 240 pt | Versions as chips; History as one row per entry (sequence, marker, action label, actor); Recipe as the ordered layer stack |
 | Canvas | remainder | Photograph centred at Fit or scrolled at a percentage, on the darkest surface; a floating mode strip at the bottom; notices and a draft bar at the top |
-| Tools panel (right) | 300 pt | Histogram with clipping triangles and the pointer readout; then one collapsible section per registered module |
+| Tools panel (right) | 300 pt | One collapsible section per registered module, then a Developer section when `--developer` lists test modules. The histogram sits above the modules once the [Basic and histogram](basic-and-histogram.md) work lands |
 | Status bar | 26 pt | Status message with Copy; connected clients; render state and time; zoom and display scale |
 
-The mode strip holds the canvas modes (pointer, crop, neutral picker, later heal and mask) and view overlays (thirds). It floats over the canvas so it stays next to the photograph when the panels are hidden.
+The mode strip holds the pointer, one entry per registered module that declares a canvas interaction (crop today; the neutral picker, heal and mask when their modules exist) and the view overlays (thirds). It floats over the canvas so it stays next to the photograph when the panels are hidden.
 
 ## Tool array
 
@@ -56,48 +56,48 @@ Where each tool lives, what kind of thing it is and whether it exists. Kinds: **
 | Heal, Mask | Mode strip | mode | Later | Their own designs |
 | History, Undo, Redo, preview, Restore, Load older | State panel, title bar, shortcuts | core | Implemented (M1) | `history.list`, `history.inspect`, `history.undo`, `history.redo`, `history.restore`, `preview.select` |
 | Versions: save, select, delete | State panel | core | Implemented | `version.create`, `version.list`, `version.delete` |
-| Recipe (layer stack) | State panel | core | Implemented as text; proposed as rows | `asset.state` and `history.inspect` |
+| Recipe (layer stack) | State panel | core | Implemented as rows | `recipe.describe` |
 | Export | Title bar | core | Editor follow-up | The export design |
 | Locate | Notice on a missing original | core | Editor follow-up | [Source recovery](../specs/source-recovery.md) |
 | Command palette (`Cmd+K`) | Overlay | core | Implemented | Every listed module's `module.list` controls, resets and canvas modes, plus the host view, history and panel commands |
 | Copy as JSON request | Control context menu, the crop draft's Apply | core | Implemented | The control's generated action, or `edit.crop` for the open draft |
 | Show in schema | Control context menu | core | Later | Its own design |
-| Pixel proof | Developer section, off by default | module | Implemented (M1) | `edit.set-pixel` |
+| Pixel proof | Developer section, listed only with `--developer` | module | Implemented (M1) | `edit.set-pixel` |
 
-A build shows only the modules its registry contains. Sections for later modules exist in the mockup to settle their place in the panel, not as placeholders in code; the desktop never lists a module that is not registered. The pixel proof tool is a test module: propose a Developer section that is hidden unless enabled by a launch flag, so the default workspace stays a photo editor.
+A build shows only the modules its registry contains. Sections for later modules exist in the mockup to settle their place in the panel, not as placeholders in code; the desktop never lists a module that is not registered. The pixel proof tool is a test module: its descriptor is marked `developer` and the desktop lists it under a Developer section only when launched with `--developer`, so the default workspace stays a photo editor. `--disable-module ID` registers a built-in as unavailable, which is how the unavailable-provider state is demonstrated.
 
 ## Panels
 
 ### State panel
 
-- **Versions** are chips: name and entry number. The chip for the displayed entry is tinted. Selecting one previews that entry; a plus button saves the displayed state under a typed name. Delete is in the chip's context menu.
-- **History** lists newest first: sequence number, a marker, a short label and the actor. The label is the action title plus a one-value summary when the module supplies one ("Shadows +25", "Crop 4:5", "Rotate right"). Markers: filled accent for the current entry, an accent outline for a previewed entry, hollow for the rest. Undone entries stay in the list, dimmed and labelled branch. Load older appears when a page remains.
-- **Recipe** lists the layer stack in stored order with the module title and a compact payload summary. It is the durable order of processing, which is why it lives with history and not with the tools: the panel order on the right never changes it.
+- **Versions** are chips: name and entry number. The chip for the displayed entry is tinted. Selecting one previews that entry; the plus button reveals a name field and Save for the displayed state. Delete is in the chip's context menu, an inline menu under the chips.
+- **History** lists newest first: sequence number, a marker, the stored label and the actor. The label is the action's rendered `summary` template when the module declares one ("Crop 16:9", "Rotate right", "Pixel 12, 34") and the action title otherwise. Markers: filled accent for the current entry, an accent outline for a previewed entry, hollow for the rest. Undone entries stay in the list, dimmed and labelled branch. Load older appears when a page remains.
+- **Recipe** lists the layer stack in stored order with the module title and the module's own payload summary from `recipe.describe` ("Rotate right", "61% × 80% at 3.5°", "Whole image"); a layer whose provider is unavailable shows the reason instead. It is the durable order of processing, which is why it lives with history and not with the tools: the panel order on the right never changes it.
 - During a historical preview the panel shows Return to current and Restore under the list and the tools panel is disabled with its values still visible, matching the current behaviour.
 
 ### Tools panel
 
-- The **histogram** sits above the modules with no header. Its caption names the domain ("Output · sRGB · after crop") and the pointer readout shows the three output codes. The two triangles toggle the shadow and highlight overlays; a triangle is coloured when its endpoint has pixels and its tooltip carries the count and channels.
-- Each **module section** has a header row: disclosure, title, an accent dot when the module has a non-neutral layer in the current recipe, and a reset action. Collapsed headers show a short hint. Unavailable modules show their reason in place of the hint and cannot expand. Section order follows the registry.
-- **Sub-groups** inside a module (White balance, Tone, Color) come from the descriptor's `group` controls and carry their own reset.
-- A **slider** is a label, a right-aligned tabular value that becomes a text field when clicked, and a 2 px track with a fill growing from the zero tick for bipolar ranges. The thumb turns accent while a draft is open. Invalid text stays editable with the declared range shown under the field and commits nothing. Option-click or double-click a label resets one field.
-- **Transform** renders as one Crop and straighten button plus four icon buttons. Entering crop expands a Crop section at the top of the panel for the life of the draft and collapses it again on Apply or Cancel.
+- The **histogram** is not built. When the [Basic and histogram](basic-and-histogram.md) work lands it sits above the modules with no header, its caption names the domain ("Output · sRGB · after crop"), the pointer readout shows the three output codes and the two triangles toggle the shadow and highlight overlays.
+- Each **module section** has a header row: disclosure, title, an accent dot when the module has a non-neutral layer in the current recipe, and the module's declared reset action. Collapsed headers show the descriptor's hint. Unavailable modules show their reason in place of the hint and cannot expand. Section order follows the registry; a disabled section (historical preview, request in flight, no photograph) keeps its values visible and names the reason.
+- **Sub-groups** inside a module come from the descriptor's `group` controls and carry their own reset when the group declares one. The generated mapping is: `number` and `integer` to a slider, `enum` to a segmented control (up to four options) or chips, `color` to three fields, `group` to a sub-group, `action` to a button, a `canvas` declaration to a mode strip entry; any other kind renders an explicit unsupported message.
+- A **slider** is a label, a right-aligned value that becomes a text field when clicked, and a 2 px track with a fill growing from the zero tick for bipolar ranges. The thumb turns accent while it is dragged. A drag changes only the field and sends nothing; release, key-up or Enter runs the control's action once. Invalid text stays editable with the declared range shown under the field and commits nothing. Double-click a label resets one field to its default. Values are right-aligned in a fixed box because Iced cannot request tabular numerals.
+- **Transforms** renders its four declared actions as buttons. The **Crop and straighten** section shows one Crop and straighten button that enters the mode; while a draft is open the section is held expanded with the ratio chips, custom ratio, lock and swap, angle and nudges, straighten guide, Apply, Cancel and the draft's exact values, and it collapses again as the user left it on Apply or Cancel.
 
 ### Canvas
 
 - At Fit the photograph is centred with 20 pt of surface around it; at a percentage it scrolls on both axes and Space-drag pans. 100% keeps its physical-pixel meaning.
 - A **draft bar** appears at the top of the canvas while a mode has a draft: mode name, a one-line readout, Cancel (Escape) and Apply (Enter). The same values appear in the mode's section for keyboard editing.
 - The crop overlay is the current one: dimmed outside, thirds, border and eight handles, with the crop layer's input stage shown underneath.
-- **Notices** are cards at the top of the canvas: Changed elsewhere (Discard draft, Reapply), Original not found (Locate…), Preview is stale (the unavailable provider by name), and rendering limits. They never block the rest of the screen.
-- Compare holds the Original entry's preview while `\` is down and releases it without touching history or session state beyond the preview.
+- **Notices** are cards at the top of the canvas: Changed elsewhere (Discard, Reapply), Preview is stale (the unavailable module by title and its reason), Original not found and rendering limits (the reason, no action until Locate exists). A photograph that cannot render shows "Preview unavailable" and the reason in place of the pixels. Notices never block the rest of the screen.
+- Compare holds the Original entry's preview while `\` or the Compare button is down and releases it back to the previous selection without touching history or session state beyond the preview. It is refused while a crop draft is open, because a preview would pause the draft.
 
 ## Interaction rules
 
 - **Commit timing.** Adjustment sliders commit once on release, key-up or Enter; Escape cancels and focus loss cancels an unfinished gesture. Canvas modes commit only on Apply. Both follow the draft lifecycle from the [Basic and histogram design](basic-and-histogram.md) and the [crop contract](../specs/single-image.md).
-- **One draft per client and asset.** Switching modes or expanding another module with a draft open asks for Apply or Cancel; it never discards silently.
+- **One draft per client and asset.** Leaving the crop mode, or starting Compare, with a draft open is refused with the reason in the status bar; nothing discards a draft silently. Starting a draft by any route sets the session's canvas mode to the module and ending it returns to the pointer.
 - **Live agents.** An external commit updates history and the canvas immediately. If the client has a draft the draft is kept, the conflict notice appears and Apply is refused until Discard or Reapply, matching the accepted M4 behaviour. Every history row shows its actor, and the status bar counts connected clients.
-- **Copy as JSON request** on any generated control writes the exact `edit.<action>` request for the control's current values, with the current expected revision, so a person can hand an agent what they just did.
-- **Keyboard.** Existing: Cmd+O, Cmd+Z, Shift+Cmd+Z, Tab and Shift+Tab between fields, Enter and Escape in a draft, Space-drag. Proposed: `F` Fit, `1` 100%, `\` compare, `J` clipping, `O` thirds, `V` pointer, `R` crop, `W` neutral picker, arrows and Shift-arrows step a focused slider, Cmd+E export, Cmd+K command palette, Cmd+Option+[ and ] toggle the side panels. Letters act only when no text field has focus.
+- **Copy as JSON request** on any generated control (right-click, then the inline menu) writes the exact `edit.<action>` request for the control's current values, with the current expected revision, so a person can hand an agent what they just did. The crop draft's Apply offers its `edit.crop` request the same way.
+- **Keyboard.** Cmd+O, Cmd+Z, Shift+Cmd+Z, Tab and Shift+Tab between fields, Enter and Escape in a draft, Space-drag, `F` Fit, `1` 100%, `\` compare (held), `O` thirds, `V` pointer, each module's declared letter (`R` crop), Cmd+K command palette, Cmd+Option+[ and ] toggle the side panels, Up and Down and Enter in the palette. Letters act only when no text field has focus; the keymap is one table in `app/keymap.rs`. `J` clipping, `W` neutral picker and Cmd+E export arrive with their features. Arrow keys on a focused slider are Iced's own stepping and are not covered by rendered evidence.
 
 ## Visual language
 
@@ -112,7 +112,7 @@ A build shows only the modules its registry contains. Sections for later modules
 | Accent | `#e2b46a` | Current entry, active mode, non-neutral dot, dragging thumb, Apply |
 | Clipping | `#e5534b` / `#4c8be0` | Highlight and shadow indicators and overlays only |
 
-System UI face (SF Pro on macOS, the platform default elsewhere), 12 pt controls, 13 pt semibold titles, 11 pt captions, 10.5 pt capitalised section labels, tabular numerals everywhere a value can change width. 8 pt spacing grid, 6 pt radii, 1 px borders, no gradients or blur. Dark only for now; a light theme is a later decision, not a token swap in this proposal.
+System UI face (SF Pro on macOS, the platform default elsewhere), 12 pt controls, 13 pt semibold titles, 11 pt captions, 10.5 pt capitalised section labels. Tabular numerals are not available through Iced, so values are right-aligned in a fixed-width box instead. 8 pt spacing grid, 6 pt radii, 1 px borders, no gradients or blur; a 30% white guide colour for the thirds overlay. Invalid values and unavailable reasons use the clipping red, as the components board draws them. Dark only; a light theme is not planned. The tokens live in `crates/lightwell-ui/src/theme.rs` with a test per value.
 
 ## What the desktop needs from the core
 
@@ -120,13 +120,17 @@ The screen is renderable from today's descriptors with a small set of additions,
 
 Widgets keep no authoritative state. Panel collapse, mode and overlay toggles are per-client session state, reported with `session.state` like zoom today. The tools panel refreshes only the section whose values changed, and slider drags produce one preview request per frame at most, per the [performance rules](../engineering/performance-rules.md).
 
-## Acceptance
+## Verification
 
-- A native M4 rendered check at 1440 × 900 and at the panels-collapsed size shows the five regions, the mode strip and the histogram with correlated state, revision and render generation.
-- Every control in the tools panel is generated from `module.list` output; an independent JSON client can perform each control's action and see the same history entry, actor and label.
-- Draft, conflict, historical preview and unavailable-provider states render the notices described above, with the existing M4 conflict tests extended to the Basic draft.
-- Keyboard-only operation reaches every control; the status bar names the reason for every disabled action.
-- The workspace opens without initialising any module resource, and expanding a section allocates nothing until its first action, measured separately as the module design requires.
+What is demonstrated, and how, on the owner's M4 Mac (release build, Metal, background bundle launches):
+
+- `cargo xtask smoke --scenario workspace` opens a fixture at 1440 × 900 and captures eleven frames: the default screen, a transform, each panel collapsed, the thirds overlay, a historical preview and its return, a crop draft, a commit during that draft (the Changed elsewhere notice), the command palette and the cancelled draft. Each frame's `state` records the session workspace state, notices, revision, displayed generation and the draft, and the runner checks them together with the photograph's placement inside `surface_columns`.
+- `cargo xtask smoke --scenario unavailable` reuses a catalog holding a crop layer under `--disable-module lightwell.crop` and checks the Preview is stale notice, the unavailable section and the untouched source.
+- `crop` and `crop-draft` keep proving the overlay, handles, presets and committed stacks on the new layout; `load`, `empty`, `replacement`, `invalid`, `repeated`, `alternating` and `large24` keep proving opening and failure retention.
+- Every generated control is driven from `module.list`; the app tests prove each control's message builds the request an independent JSON client sends and that a slider drag sends nothing until release.
+- `cargo xtask measure` (10 samples per workload, release build, M4 Pro, Metal, background bundle launches, warm filesystem cache) before and after the work. Launch-to-first-frame medians: empty 573 to 561 ms, 24 MP 627 to 607 ms, 60 MP 740 to 723 ms; request-to-capture medians 151 to 134, 199 to 185 and 291 to 276 ms. Sampled peak RSS is a 50 ms sampling range over a process that lives under a second, not a steady idle figure: the empty window's samples span 100 to 142 MiB after against 100 to 122 before, and the 60 MP peak reads 1005 MiB in three of ten runs after against 965 MiB in every run before, with the other seven runs unchanged. That intermittent 40 MiB at 60 MP is not diagnosed and is an open item, not a claimed pass.
+
+Not demonstrated: the histogram (not built); keyboard-only reach of every control (Tab walks the generated fields, the palette runs every action, but no rendered check walks the whole screen by keyboard); the cost of expanding a section, which allocates nothing today because no module declares a lazy resource; native Windows and Linux rendering.
 
 ## Decisions
 
@@ -179,7 +183,7 @@ The additions below are the only core changes. Each is visible through `module.l
 | Mode strip | `CanvasInteraction` gains `title` and `shortcut` (one letter, unique across the registry, optional) on both variants |
 | Developer section | `ModuleDescriptor.developer: bool`; the pixel module sets it. The desktop lists developer modules only with `--developer` |
 | Workspace state | `ClientSession.workspace {state_panel, tools_panel, mode, thirds}` reported by `session.state` and set by `workspace.set` with optional fields; `mode` is `pointer` or an available module id that declares a canvas interaction |
-| Evidence for an unavailable provider | `OwnerHandle::start_with` accepts a registry; the desktop's `--disable-module ID` flag registers that built-in wrapped as unavailable, so rendering a stack that uses it fails with the unavailable-effect error and the notice appears. `LocalServer::connected` reports live client count for the status bar |
+| Evidence for an unavailable provider | `OwnerHandle::start_with` accepts a registry; the desktop's `--disable-module ID` flag registers that built-in wrapped as unavailable, so rendering a stack that uses it fails with the unavailable-effect error and the notice appears. `LocalServer::connected` reports the live client count for the status bar |
 
 Compare, the command palette and Copy as JSON request need no core change.
 
@@ -191,5 +195,5 @@ Compare, the command palette and Copy as JSON request need no core change.
 | `lightwell-ui` | Token values equal the visual language; the slider's fill geometry, value-field states and the mapping from a pointer position to a value are pure functions with tests; no test links `lightwell-core` |
 | `lightwell-app/src/state/` | History labels and markers, branch marking, disabled reasons, conflict state, which section is expanded, what a slider shows while its value is being typed or dragged, the mode strip entries, the notices, the palette entries, per-section re-derivation |
 | `lightwell-app/src/app/` | Every generated control's message produces the request an independent JSON client would send (parity), the keymap table, evidence steps, draft driving, compare restore |
-| `xtask` | Repository boundary check; smoke scenarios `workspace` (default, each panel collapsed, historical preview, conflict during a draft), `crop`, `crop-draft` and `unavailable`; `measure` before and after |
+| `xtask` | The layer-boundary check in `check-repository`; smoke scenarios `workspace` (default, each panel collapsed, thirds, historical preview, conflict during a draft, palette, cancel), `crop`, `crop-draft` and `unavailable`; `measure` before and after |
 

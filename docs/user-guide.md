@@ -1,6 +1,6 @@
 # Lightwell user guide
 
-What works today: opening a JPEG, pixel-proof edits, exact transforms and a Lightroom-style crop and straighten tool, all delivered as tool modules with generated controls, persistent history and the JSON API, verified on macOS. Export, Locate and MCP are planned; see [feature status](features.md).
+What works today: opening a JPEG, exact transforms and a Lightroom-style crop and straighten tool in the Develop workspace, all delivered as tool modules with generated controls, persistent history and the JSON API, verified on macOS. Export, Locate and MCP are planned; see [feature status](features.md).
 
 Basic exposure, tone, white balance and color controls, plus a histogram and clipping inspector, have a [proposed design](design/basic-and-histogram.md). They are not available yet.
 
@@ -14,17 +14,25 @@ cargo xtask develop --catalog /path/to/catalog.sqlite --open /path/to/photo.jpg
 
 Omit `--catalog` to use the platform configuration directory. `--data-root DIRECTORY` isolates config, cache and log paths. `cargo xtask develop --debug` is an unoptimized build for debugging and is unsuitable for timing.
 
+`--developer` lists the test modules (pixel proof) under a Developer section of the tools panel; without it the workspace shows only photo-editing modules, and the JSON API lists every module either way. `--disable-module lightwell.crop` (or another built-in id) registers that module as unavailable, which keeps its stored layers readable and reports them instead of rendering without them.
+
 For agent-driven API or rendered checks on macOS, add `--background` to keep the editor from taking desktop focus. Use a separate test catalog or `--evidence-dir NEW_DIR`; background evidence runs capture the editor and exit automatically. Smoke and diagnostic harnesses use background launches by default on macOS. Launch normally for keyboard, mouse and native-dialog interaction.
 
 Open references an existing supported sRGB or greyscale JPEG without copying or modifying it. Cmd+O on macOS and Ctrl+O elsewhere opens the picker. EXIF orientation is applied once before any edit. The catalog stores stable identities, the source fingerprint, ordered operations and history. It is not a backup of the original photo.
 
 Choose Copy beside the status text at the bottom of the window to copy the complete message, including any error, to the clipboard. The message stays visible after copying. The rest of the status bar reports how many clients the live API has, what the renderer is doing or how long the displayed frame took, and the current zoom with what it means on this display.
 
+## The workspace
+
+The window has five regions: a title bar with the file name, Open, the view control, Compare, Undo, Redo and two panel toggles; the state panel on the left (versions, history, recipe); the photograph in the middle with a floating mode strip under it; the tools panel on the right; and a status bar. Cmd+Option+[ and Cmd+Option+] hide and show the side panels, and the canvas takes whatever remains. Panel visibility, the canvas mode and the thirds overlay are session state, reported by `session.state` and settable through `workspace.set` like zoom.
+
+Cmd+K opens the command palette: type to filter every module action, reset and canvas mode plus Fit, 100%, Undo, Redo, Return to current, Restore, Pointer, Thirds and the panel toggles, then Enter or click runs the entry through the same path the control uses. Right-click any generated control and choose Copy as JSON request to put the exact `edit.<action>` request for its current values, with the current expected revision, on the clipboard; the crop draft's Apply offers its `edit.crop` request the same way.
+
 ## Edit and inspect
 
-The tool panel is generated from the registered tool modules: each module declares its fields and buttons, and the desktop only lays them out. A field shows its unit and, while its text is outside the declared range, the message naming that range; a button is enabled only when the current state is editable and every value it needs is valid. Tab and Shift+Tab move between fields, and Enter in a field runs its action. A control kind this build cannot draw is shown as an explicit unsupported-control message rather than hidden, and an unavailable module is listed with its reason.
+The tools panel is generated from the registered tool modules, one collapsible section per module in registry order. A header shows the module title, an accent dot when a layer of that module is in the current recipe, the module's hint while collapsed and its reset action when it declares one; an unavailable module shows its reason and cannot expand. Number fields are sliders: drag the thumb, or click the value to type; a drag changes nothing until release, key-up or Enter, which runs the control's action once. Invalid text stays editable with the message naming the declared range and commits nothing; double-click a label to reset one field. Enumerations are segmented controls or chips, colours are three fields, groups carry their own reset, and actions are buttons enabled only when the current state is editable and every value they need is valid. Tab and Shift+Tab move between fields. A control kind this build cannot draw is shown as an explicit unsupported-control message rather than hidden. During a historical preview every control stays visible and disabled, and the section names why.
 
-Pixel proof accepts integer x/y coordinates and RGB values from 0 to 255. Coordinates use the operation's input image with a top-left origin, x right and y down. Clicking the photo at Fit or any zoom fills X and Y with the pixel under the pointer without committing anything. Apply pixel creates one layer and one attributed history action when the resulting pixel changes. Invalid, out-of-bounds and same-value requests add nothing.
+Pixel proof lives under Developer with `--developer`. It accepts integer x/y coordinates and RGB values from 0 to 255. Coordinates use the operation's input image with a top-left origin, x right and y down. Clicking the photo at Fit or any zoom fills X and Y with the pixel under the pointer without committing anything. Apply pixel creates one layer and one attributed history action when the resulting pixel changes. Invalid, out-of-bounds and same-value requests add nothing.
 
 Exact transforms are Rotate left, Rotate right, Mirror horizontal and Flip vertical. Quarter-turns swap dimensions. Order is preserved: a pixel edit before a rotation moves with the image, and one made afterwards addresses the rotated dimensions.
 
@@ -61,13 +69,15 @@ Selecting a historical state pauses the draft rather than discarding it: the his
 
 ## History
 
-History lists Original and every committed action with sequence and actor. The filled marker is current; selecting another row previews that immutable snapshot without changing current state or revision. Return to current leaves the preview; Restore appends a new action containing the selected recipe. Editing is disabled during a historical preview.
+History lists Original and every committed action newest first, with its sequence, a label and the actor. The label comes from the action's declared summary ("Crop 16:9", "Rotate right") or its title, and is stored with the entry. The filled accent marker is current and an accent outline is the previewed entry; selecting another row previews that immutable snapshot without changing current state or revision, the status bar says which entry is shown, and Return to current and Restore appear under the list. Restore appends a new action containing the selected recipe. Editing is disabled during a historical preview.
 
-Versions name the displayed state so you can find it again among many entries. Type a name and choose Save; each version is listed with its entry number, selecting one previews it, and Restore this state brings it back as a new action. Deleting a version removes only the name. History rows marked branch were undone and replaced by later edits; they remain available for preview, restore and versions.
+The recipe block lists the displayed entry's layers in processing order with the module title and the module's own summary of each layer, from `recipe.describe`; a layer whose module is unavailable shows the reason instead.
+
+Versions are chips naming saved states. Choose + to reveal the name field and Save; each chip carries its entry number, selecting one previews it, and Restore brings it back as a new action. Right-click a chip to delete the name; the entry stays in history. History rows marked branch were undone and replaced by later edits; they remain available for preview, restore and versions.
 
 Undo and Redo navigate saved states without appending rows. Cmd+Z / Ctrl+Z and Shift+Cmd+Z / Shift+Ctrl+Z invoke the same service as the buttons. A new edit clears shortcut redo while every older entry remains available for preview or Restore. Layers, history, navigation state and stable IDs survive reopening the catalog.
 
-Missing or changed sources keep their catalog data and report why rendering is unavailable. Only the current catalog and operation formats are supported during pre-release development. Unsupported formats fail explicitly; Lightwell never silently resets or drops them. If a catalog format is rejected, start with a new path using `--catalog /path/to/new-catalog.sqlite` and import the originals again.
+Missing or changed sources keep their catalog data and report why rendering is unavailable. Only the current catalog format (3, which stores each entry's label) and operation formats are supported during pre-release development. Unsupported formats fail explicitly; Lightwell never silently resets or drops them. If a catalog format is rejected, start with a new path using `--catalog /path/to/new-catalog.sqlite` and import the originals again.
 
 ## JSON automation
 
@@ -80,7 +90,7 @@ printf '%s\n' \
   | target/release/lightwell-json --catalog /path/to/catalog.sqlite
 ```
 
-A request has `id`, `method` and `params`. A success carries the matching `id`, an event `sequence` and `result`; a failure carries a structured `error`. Start with `schema.list` for the authoritative method list and `catalog.list` for the referenced assets. Edit actions are generated from the registered tool modules: `module.list` returns every module with its effects, actions, parameter descriptors (kind, range, unit, default) and semantic controls, and each action `<id>` is callable as `edit.<id>` with its parameters as top-level fields beside `asset_id` and `mutation`. Today that is `edit.set-pixel` (`x`, `y`, `rgb`), `edit.transform` (`transform`) and the crop module's three actions. Parameters are checked against the descriptors before the module sees them, so every client gets the same structured validation error. `version.create`, `version.list`, `version.delete` and `history.lineage` cover named states and the undo-parent chain. Mutations require `asset_id` and a `mutation` object:
+A request has `id`, `method` and `params`. A success carries the matching `id`, an event `sequence` and `result`; a failure carries a structured `error`. Start with `schema.list` for the authoritative method list and `catalog.list` for the referenced assets. Edit actions are generated from the registered tool modules: `module.list` returns every module with its effects, actions, parameter descriptors (kind, range, unit, default), semantic controls, hint, reset action, canvas title and shortcut, summary templates and developer flag, and each action `<id>` is callable as `edit.<id>` with its parameters as top-level fields beside `asset_id` and `mutation`. `recipe.describe` lists an entry's layers with each module's summary; `workspace.set` and `session.state` carry the per-client panels, canvas mode and thirds overlay beside the view; every history entry carries its rendered `label`. Today that is `edit.set-pixel` (`x`, `y`, `rgb`), `edit.transform` (`transform`) and the crop module's three actions. Parameters are checked against the descriptors before the module sees them, so every client gets the same structured validation error. `version.create`, `version.list`, `version.delete` and `history.lineage` cover named states and the undo-parent chain. Mutations require `asset_id` and a `mutation` object:
 
 ```json
 {"id":"rotate","method":"edit.transform","params":{"asset_id":"asset-…","mutation":{"expected_revision":0,"request_id":"rotate-1","actor":"my-client"},"transform":"rotate-right"}}

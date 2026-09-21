@@ -11,8 +11,9 @@ Lightwell is built history-first: prove non-destructive state, history and the p
 | M2 — transforms | Exact rotate left/right, mirror horizontal and flip vertical through the same layers, history, UI and API | Implemented, verified on M4 |
 | M3 — tool modules | Declarative tool interface (actions, schemas, semantic controls, validation, processing); the pixel and transform tools use it through the shared command service | Implemented, verified on M4 |
 | M4 — crop module | Lightroom-style crop and straighten as a module: free handles, ratios, straightening, Apply/Cancel, UI/API parity | Implemented, verified on M4 |
+| Develop workspace | The single-image editing screen over the existing modules: widget crate, layered desktop, generated panels, canvas modes, notices, palette and per-client workspace state | Implemented, verified on M4 |
 
-Each milestone starts from the previous working result and ends with a native M4 demonstration plus proportionate automated correctness and recovery checks. Contracts: [milestone design](design/history-first-roadmap.md), [history](specs/edit-history.md), [modules](design/modules-and-api.md), [crop](specs/single-image.md).
+Each milestone starts from the previous working result and ends with a native M4 demonstration plus proportionate automated correctness and recovery checks. Contracts: [milestone design](design/history-first-roadmap.md), [history](specs/edit-history.md), [modules](design/modules-and-api.md), [crop](specs/single-image.md), [workspace](design/develop-workspace.md).
 
 ## Editor follow-ups
 

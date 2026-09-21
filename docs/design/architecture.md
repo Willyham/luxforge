@@ -7,6 +7,7 @@ One application service, used by the desktop UI and by external clients alike, o
 Rust 1.94 workspace: Iced 0.14 on wgpu, `image` for JPEG and PNG, `moxcms` for conservative sRGB profile recognition, `rfd` for native and portal dialogs, bundled SQLite through `rusqlite`, Rayon for the parallel raster pass. Exact versions are pinned in `Cargo.lock`.
 
 - `crates/lightwell-core`: images, recipes, rendering, SQLite catalog and history, preview scheduling, JSON API.
+- `crates/lightwell-ui`: the widget library and theme tokens of the Develop workspace; depends on Iced only, never on the core, so a widget cannot hold editing logic.
 - `crates/lightwell-app`: the desktop, split into `app/` (the Iced application, messages, update, owner tasks, evidence, keymap and the crop driver), `state/` (the pure view model, no framework types) and `view/` (rendering, no core types and no owner access), plus native adapters, diagnostics and the crop draft state machine and its canvas (`crop_draft.rs`, `crop_canvas.rs`); the desktop and headless `lightwell-json` binaries. The boundaries between those layers are enforced by `cargo xtask check-repository`.
 - `xtask`: development, check, evidence, acceptance and packaging commands.
 - `probes/s0`: the isolated Iced/egui comparison workspace used to select Iced; not the maintained application.

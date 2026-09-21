@@ -20,11 +20,17 @@
 | Cached source and compiled one-pass rendering | Implemented | Point queries never rasterize; [performance rules](engineering/performance-rules.md) |
 | Declarative tool-module interface | Implemented (M3) | Descriptor-validated registry, generated `edit.<action>` methods and `module.list`; [modules](design/modules-and-api.md) |
 | Pixel and transform tools as modules | Implemented (M3) | Registered effects and actions use the current payload shapes |
-| Generic module controls and canvas pick in the desktop | Implemented (M3) | Controls rendered from descriptors; pointer pick fills coordinates without committing |
+| Generic module controls and canvas pick in the desktop | Implemented (M3) | Controls rendered from descriptors; pointer pick fills coordinates without committing (pixel proof, `--developer`) |
 | Lightroom-style crop and straighten module | Implemented (M4) | Normalized rotated-box payload, exact at 0°, linear-light bilinear resample otherwise, in-place layer updates; `edit.crop`, `edit.crop-fit`, `edit.crop-reset`; [crop contract](specs/single-image.md) |
 | Draft conflicts with live agent commits | Implemented (M4) | Explicit Discard or Reapply; a stale draft keeps its composition and re-validates against the current stack |
 | Resample stage boundary in the host pipeline | Implemented (M4) | Exact layers before and after compose as one raster pass each; at most two full frames exist at once, each within the 512 MiB frame limit |
 | Number parameters and crop-frame canvas in descriptors | Implemented (M4) | `number` parameter kind and the `crop-frame` canvas interaction, generated into desktop controls and the JSON API alongside `point-pick` |
+| Develop workspace shell | Implemented | Title bar, collapsible state and tools panels, canvas with the floating mode strip, draft bar and notices, status bar; dark theme; verified on the M4 Mac by the `workspace` and `unavailable` smoke scenarios; [design](design/develop-workspace.md) |
+| Widget library and layered desktop | Implemented | `lightwell-ui` (Iced only, no core dependency); `app/`, `state/` and `view/` layers with the boundary enforced by `cargo xtask check-repository`; [architecture](design/develop-workspace.md#architecture) |
+| Generated tools panel: sliders, chips, colour fields, groups, resets | Implemented | Every control from `module.list`; slider release commits once and a drag sends nothing; unsupported kinds named; Developer section behind `--developer` |
+| History labels, recipe rows, module hints and resets | Implemented | `summary` templates rendered into stored entry labels (catalog format 3), `recipe.describe`, `hint`, module and group `reset`, canvas `title` and `shortcut`, `developer` flag; all in `module.list` |
+| Per-client workspace state | Implemented | Panels, canvas mode and thirds through `workspace.set`, reported by `session.state` |
+| Compare with the original, command palette, Copy as JSON request | Implemented | Hold `\` or Compare; Cmd+K runs every listed action and host command; a control's context menu copies its exact request |
 | JPEG export with color and metadata verification | Editor follow-up | Quality 90, no overwrite, Keep metadata option |
 | Manual Locate | Editor follow-up | [source recovery](specs/source-recovery.md) |
 | MCP adapter | Editor follow-up | Same operation registry; the JSON API is not MCP |

@@ -16,7 +16,7 @@ Every change is measured against these.
 
 ## Current state
 
-S0 (JPEG viewing) is accepted; the evidence harness now drives the editor itself. M1 (persistent history and live JSON API), M2 (exact rotate, flip and mirror) and M3 (tool modules with generated controls and API) are implemented and verified on the M4 Mac. M4 (Lightroom-style crop as a module with drafts, conflicts and API parity) is implemented and verified on the M4 Mac. Next: export, Locate, MCP and full-editor verification. Everything is v0: no public compatibility framework, release planning, cloud, accounts, marketplace or generalized node graph. See the [roadmap](docs/plan.md) and [feature status](docs/features.md).
+S0 (JPEG viewing) is accepted; the evidence harness now drives the editor itself. M1 (persistent history and live JSON API), M2 (exact rotate, flip and mirror) and M3 (tool modules with generated controls and API) are implemented and verified on the M4 Mac. M4 (Lightroom-style crop as a module with drafts, conflicts and API parity) is implemented and verified on the M4 Mac. The Develop workspace shell (widget crate, layered desktop, generated panels, canvas modes, palette) is implemented and verified on the M4 Mac over those modules. Next: export, Locate, MCP and full-editor verification. Everything is v0: no public compatibility framework, release planning, cloud, accounts, marketplace or generalized node graph. See the [roadmap](docs/plan.md) and [feature status](docs/features.md).
 
 ## How we work
 
@@ -45,7 +45,7 @@ S0 (JPEG viewing) is accepted; the evidence harness now drives the editor itself
 | Performance rules and review checklist | [docs/engineering/performance-rules.md](docs/engineering/performance-rules.md) |
 | Architecture and crate layout | [docs/design/architecture.md](docs/design/architecture.md) |
 | Milestone contracts M1 to M4 | [docs/design/history-first-roadmap.md](docs/design/history-first-roadmap.md) |
-| Develop screen layout, tool array and visual language (proposal) | [docs/design/develop-workspace.md](docs/design/develop-workspace.md) |
+| Develop screen layout, tool array, visual language and desktop architecture | [docs/design/develop-workspace.md](docs/design/develop-workspace.md) |
 | History graph, named versions, catalog format 2 | [docs/design/versions-and-lineage.md](docs/design/versions-and-lineage.md) |
 | Specs: history, crop and export, recovery, performance | [docs/specs](docs/specs) |
 | Task plans and conventions | [tasks/README.md](tasks/README.md) |
