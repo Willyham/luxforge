@@ -223,7 +223,7 @@
     {
       "id": "TASK-004",
       "description": "Add bounded ordered pointwise float processing and matching point sampling.",
-      "status": "in_progress",
+      "status": "completed",
       "dependencies": [
         "TASK-001",
         "TASK-002"
