@@ -1,0 +1,2598 @@
+{
+  "generated_by": "crates/lightwell-core/tests/basic_colour_reference.rs generate_colour_fixtures",
+  "note": "Independent f64 reference (tests/reference/colour.rs). expected_linear is linear sRGB after vibrance then saturation (the frozen order), full f64 precision, unclamped. Production is compared against this file within the tolerance frozen in docs/design/basic-colour.md.",
+  "cases": [
+    {
+      "name": "red_v0_s0",
+      "input": {
+        "kind": "srgb8",
+        "rgb": [
+          255,
+          0,
+          0
+        ]
+      },
+      "vibrance": 0.0,
+      "saturation": 0.0,
+      "expected_linear": [
+        1.0000000008076735,
+        -9.931641679200576e-9,
+        -6.093300231047039e-8
+      ]
+    },
+    {
+      "name": "red_v0_s-100",
+      "input": {
+        "kind": "srgb8",
+        "rgb": [
+          255,
+          0,
+          0
+        ]
+      },
+      "vibrance": 0.0,
+      "saturation": -100.0,
+      "expected_linear": [
+        0.24762033435176176,
+        0.24762033435176173,
+        0.24762033435176167
+      ]
+    },
+    {
+      "name": "red_v0_s100",
+      "input": {
+        "kind": "srgb8",
+        "rgb": [
+          255,
+          0,
+          0
+        ]
+      },
+      "vibrance": 0.0,
+      "saturation": 100.0,
+      "expected_linear": [
+        2.0071635292205756,
+        -0.34520417831408207,
+        -0.09820506401261404
+      ]
+    },
+    {
+      "name": "red_v100_s0",
+      "input": {
+        "kind": "srgb8",
+        "rgb": [
+          255,
+          0,
+          0
+        ]
+      },
+      "vibrance": 100.0,
+      "saturation": 0.0,
+      "expected_linear": [
+        1.0000000008076735,
+        -9.931641679200576e-9,
+        -6.093300231047039e-8
+      ]
+    },
+    {
+      "name": "red_v-100_s0",
+      "input": {
+        "kind": "srgb8",
+        "rgb": [
+          255,
+          0,
+          0
+        ]
+      },
+      "vibrance": -100.0,
+      "saturation": 0.0,
+      "expected_linear": [
+        1.0000000008076735,
+        -9.931641679200576e-9,
+        -6.093300231047039e-8
+      ]
+    },
+    {
+      "name": "red_v50_s50",
+      "input": {
+        "kind": "srgb8",
+        "rgb": [
+          255,
+          0,
+          0
+        ]
+      },
+      "vibrance": 50.0,
+      "saturation": 50.0,
+      "expected_linear": [
+        1.469818197031804,
+        -0.16040480459477421,
+        -0.06388351181540171
+      ]
+    },
+    {
+      "name": "red_v-100_s-100",
+      "input": {
+        "kind": "srgb8",
+        "rgb": [
+          255,
+          0,
+          0
+        ]
+      },
+      "vibrance": -100.0,
+      "saturation": -100.0,
+      "expected_linear": [
+        0.24762033435176176,
+        0.24762033435176173,
+        0.24762033435176167
+      ]
+    },
+    {
+      "name": "red_v100_s100",
+      "input": {
+        "kind": "srgb8",
+        "rgb": [
+          255,
+          0,
+          0
+        ]
+      },
+      "vibrance": 100.0,
+      "saturation": 100.0,
+      "expected_linear": [
+        2.0071635292205756,
+        -0.34520417831408207,
+        -0.09820506401261404
+      ]
+    },
+    {
+      "name": "green_v0_s0",
+      "input": {
+        "kind": "srgb8",
+        "rgb": [
+          0,
+          255,
+          0
+        ]
+      },
+      "vibrance": 0.0,
+      "saturation": 0.0,
+      "expected_linear": [
+        1.4544984378028758e-7,
+        0.9999999416563212,
+        -2.0010098322753578e-7
+      ]
+    },
+    {
+      "name": "green_v0_s-100",
+      "input": {
+        "kind": "srgb8",
+        "rgb": [
+          0,
+          255,
+          0
+        ]
+      },
+      "vibrance": 0.0,
+      "saturation": -100.0,
+      "expected_linear": [
+        0.6504514570596528,
+        0.6504514570596529,
+        0.6504514570596528
+      ]
+    },
+    {
+      "name": "green_v0_s100",
+      "input": {
+        "kind": "srgb8",
+        "rgb": [
+          0,
+          255,
+          0
+        ]
+      },
+      "vibrance": 0.0,
+      "saturation": 100.0,
+      "expected_linear": [
+        -0.5552318803074244,
+        1.2742450764357462,
+        -0.3524437158067255
+      ]
+    },
+    {
+      "name": "green_v100_s0",
+      "input": {
+        "kind": "srgb8",
+        "rgb": [
+          0,
+          255,
+          0
+        ]
+      },
+      "vibrance": 100.0,
+      "saturation": 0.0,
+      "expected_linear": [
+        1.4544984378028758e-7,
+        0.9999999416563212,
+        -2.0010098322753578e-7
+      ]
+    },
+    {
+      "name": "green_v-100_s0",
+      "input": {
+        "kind": "srgb8",
+        "rgb": [
+          0,
+          255,
+          0
+        ]
+      },
+      "vibrance": -100.0,
+      "saturation": 0.0,
+      "expected_linear": [
+        1.4544984378028758e-7,
+        0.9999999416563212,
+        -2.0010098322753578e-7
+      ]
+    },
+    {
+      "name": "green_v50_s50",
+      "input": {
+        "kind": "srgb8",
+        "rgb": [
+          0,
+          255,
+          0
+        ]
+      },
+      "vibrance": 50.0,
+      "saturation": 50.0,
+      "expected_linear": [
+        -0.28846280995867185,
+        1.1452579174342854,
+        -0.20746651714551434
+      ]
+    },
+    {
+      "name": "green_v-100_s-100",
+      "input": {
+        "kind": "srgb8",
+        "rgb": [
+          0,
+          255,
+          0
+        ]
+      },
+      "vibrance": -100.0,
+      "saturation": -100.0,
+      "expected_linear": [
+        0.6504514570596528,
+        0.6504514570596529,
+        0.6504514570596528
+      ]
+    },
+    {
+      "name": "green_v100_s100",
+      "input": {
+        "kind": "srgb8",
+        "rgb": [
+          0,
+          255,
+          0
+        ]
+      },
+      "vibrance": 100.0,
+      "saturation": 100.0,
+      "expected_linear": [
+        -0.5552318803074244,
+        1.2742450764357462,
+        -0.3524437158067255
+      ]
+    },
+    {
+      "name": "blue_v0_s0",
+      "input": {
+        "kind": "srgb8",
+        "rgb": [
+          0,
+          0,
+          255
+        ]
+      },
+      "vibrance": 0.0,
+      "saturation": 0.0,
+      "expected_linear": [
+        3.4194526099540212e-9,
+        1.4997596248234046e-8,
+        0.9999998409429348
+      ]
+    },
+    {
+      "name": "blue_v0_s-100",
+      "input": {
+        "kind": "srgb8",
+        "rgb": [
+          0,
+          0,
+          255
+        ]
+      },
+      "vibrance": 0.0,
+      "saturation": -100.0,
+      "expected_linear": [
+        0.09235381446343137,
+        0.09235381446343138,
+        0.09235381446343138
+      ]
+    },
+    {
+      "name": "blue_v0_s100",
+      "input": {
+        "kind": "srgb8",
+        "rgb": [
+          0,
+          0,
+          255
+        ]
+      },
+      "vibrance": 0.0,
+      "saturation": 100.0,
+      "expected_linear": [
+        0.1559656610719906,
+        -0.3947625602582631,
+        3.348846300601643
+      ]
+    },
+    {
+      "name": "blue_v100_s0",
+      "input": {
+        "kind": "srgb8",
+        "rgb": [
+          0,
+          0,
+          255
+        ]
+      },
+      "vibrance": 100.0,
+      "saturation": 0.0,
+      "expected_linear": [
+        3.4194526099540212e-9,
+        1.4997596248234046e-8,
+        0.9999998409429348
+      ]
+    },
+    {
+      "name": "blue_v-100_s0",
+      "input": {
+        "kind": "srgb8",
+        "rgb": [
+          0,
+          0,
+          255
+        ]
+      },
+      "vibrance": -100.0,
+      "saturation": 0.0,
+      "expected_linear": [
+        3.4194526099540212e-9,
+        1.4997596248234046e-8,
+        0.9999998409429348
+      ]
+    },
+    {
+      "name": "blue_v50_s50",
+      "input": {
+        "kind": "srgb8",
+        "rgb": [
+          0,
+          0,
+          255
+        ]
+      },
+      "vibrance": 50.0,
+      "saturation": 50.0,
+      "expected_linear": [
+        0.04198015975464153,
+        -0.15131923677281373,
+        1.9516614696631258
+      ]
+    },
+    {
+      "name": "blue_v-100_s-100",
+      "input": {
+        "kind": "srgb8",
+        "rgb": [
+          0,
+          0,
+          255
+        ]
+      },
+      "vibrance": -100.0,
+      "saturation": -100.0,
+      "expected_linear": [
+        0.09235381446343137,
+        0.09235381446343138,
+        0.09235381446343138
+      ]
+    },
+    {
+      "name": "blue_v100_s100",
+      "input": {
+        "kind": "srgb8",
+        "rgb": [
+          0,
+          0,
+          255
+        ]
+      },
+      "vibrance": 100.0,
+      "saturation": 100.0,
+      "expected_linear": [
+        0.1559656610719906,
+        -0.3947625602582631,
+        3.348846300601643
+      ]
+    },
+    {
+      "name": "cyan_v0_s0",
+      "input": {
+        "kind": "srgb8",
+        "rgb": [
+          0,
+          255,
+          255
+        ]
+      },
+      "vibrance": 0.0,
+      "saturation": 0.0,
+      "expected_linear": [
+        1.266364037799672e-7,
+        0.9999999746380401,
+        0.9999995477131304
+      ]
+    },
+    {
+      "name": "cyan_v0_s-100",
+      "input": {
+        "kind": "srgb8",
+        "rgb": [
+          0,
+          255,
+          255
+        ]
+      },
+      "vibrance": 0.0,
+      "saturation": -100.0,
+      "expected_linear": [
+        0.7421989834955356,
+        0.7421989834955361,
+        0.7421989834955359
+      ]
+    },
+    {
+      "name": "cyan_v0_s100",
+      "input": {
+        "kind": "srgb8",
+        "rgb": [
+          0,
+          255,
+          255
+        ]
+      },
+      "vibrance": 0.0,
+      "saturation": 100.0,
+      "expected_linear": [
+        -0.6487834293547539,
+        1.2251940578261626,
+        1.2974167802216463
+      ]
+    },
+    {
+      "name": "cyan_v100_s0",
+      "input": {
+        "kind": "srgb8",
+        "rgb": [
+          0,
+          255,
+          255
+        ]
+      },
+      "vibrance": 100.0,
+      "saturation": 0.0,
+      "expected_linear": [
+        -0.20268651774671112,
+        1.0704007141336702,
+        1.0843253050528103
+      ]
+    },
+    {
+      "name": "cyan_v-100_s0",
+      "input": {
+        "kind": "srgb8",
+        "rgb": [
+          0,
+          255,
+          255
+        ]
+      },
+      "vibrance": -100.0,
+      "saturation": 0.0,
+      "expected_linear": [
+        0.21097498844227913,
+        0.9267062058530791,
+        0.9191887599827043
+      ]
+    },
+    {
+      "name": "cyan_v50_s50",
+      "input": {
+        "kind": "srgb8",
+        "rgb": [
+          0,
+          255,
+          255
+        ]
+      },
+      "vibrance": 50.0,
+      "saturation": 50.0,
+      "expected_linear": [
+        -0.4782529351791198,
+        1.166057323533599,
+        1.2110324818813125
+      ]
+    },
+    {
+      "name": "cyan_v-100_s-100",
+      "input": {
+        "kind": "srgb8",
+        "rgb": [
+          0,
+          255,
+          255
+        ]
+      },
+      "vibrance": -100.0,
+      "saturation": -100.0,
+      "expected_linear": [
+        0.7421989828867839,
+        0.7421989828867838,
+        0.7421989828867839
+      ]
+    },
+    {
+      "name": "cyan_v100_s100",
+      "input": {
+        "kind": "srgb8",
+        "rgb": [
+          0,
+          255,
+          255
+        ]
+      },
+      "vibrance": 100.0,
+      "saturation": 100.0,
+      "expected_linear": [
+        -0.9939080372744942,
+        1.344639557012719,
+        1.4945389713441455
+      ]
+    },
+    {
+      "name": "magenta_v0_s0",
+      "input": {
+        "kind": "srgb8",
+        "rgb": [
+          255,
+          0,
+          255
+        ]
+      },
+      "vibrance": 0.0,
+      "saturation": 0.0,
+      "expected_linear": [
+        0.9999999895726799,
+        1.5597517943888306e-8,
+        0.9999997242566243
+      ]
+    },
+    {
+      "name": "magenta_v0_s-100",
+      "input": {
+        "kind": "srgb8",
+        "rgb": [
+          255,
+          0,
+          255
+        ]
+      },
+      "vibrance": 0.0,
+      "saturation": -100.0,
+      "expected_linear": [
+        0.3454664470567827,
+        0.3454664470567828,
+        0.34546644705678275
+      ]
+    },
+    {
+      "name": "magenta_v0_s100",
+      "input": {
+        "kind": "srgb8",
+        "rgb": [
+          255,
+          0,
+          255
+        ]
+      },
+      "vibrance": 0.0,
+      "saturation": 100.0,
+      "expected_linear": [
+        1.795716508029575,
+        -0.44168412164956744,
+        1.9984341338128622
+      ]
+    },
+    {
+      "name": "magenta_v100_s0",
+      "input": {
+        "kind": "srgb8",
+        "rgb": [
+          255,
+          0,
+          255
+        ]
+      },
+      "vibrance": 100.0,
+      "saturation": 0.0,
+      "expected_linear": [
+        0.9999999895726799,
+        1.5597517943888306e-8,
+        0.9999997242566243
+      ]
+    },
+    {
+      "name": "magenta_v-100_s0",
+      "input": {
+        "kind": "srgb8",
+        "rgb": [
+          255,
+          0,
+          255
+        ]
+      },
+      "vibrance": -100.0,
+      "saturation": 0.0,
+      "expected_linear": [
+        0.9999999895726799,
+        1.5597517943888306e-8,
+        0.9999997242566243
+      ]
+    },
+    {
+      "name": "magenta_v50_s50",
+      "input": {
+        "kind": "srgb8",
+        "rgb": [
+          255,
+          0,
+          255
+        ]
+      },
+      "vibrance": 50.0,
+      "saturation": 50.0,
+      "expected_linear": [
+        1.3789933931787464,
+        -0.207696067915278,
+        1.4515605302899985
+      ]
+    },
+    {
+      "name": "magenta_v-100_s-100",
+      "input": {
+        "kind": "srgb8",
+        "rgb": [
+          255,
+          0,
+          255
+        ]
+      },
+      "vibrance": -100.0,
+      "saturation": -100.0,
+      "expected_linear": [
+        0.3454664470567827,
+        0.3454664470567828,
+        0.34546644705678275
+      ]
+    },
+    {
+      "name": "magenta_v100_s100",
+      "input": {
+        "kind": "srgb8",
+        "rgb": [
+          255,
+          0,
+          255
+        ]
+      },
+      "vibrance": 100.0,
+      "saturation": 100.0,
+      "expected_linear": [
+        1.795716508029575,
+        -0.44168412164956744,
+        1.9984341338128622
+      ]
+    },
+    {
+      "name": "yellow_v0_s0",
+      "input": {
+        "kind": "srgb8",
+        "rgb": [
+          255,
+          255,
+          0
+        ]
+      },
+      "vibrance": 0.0,
+      "saturation": 0.0,
+      "expected_linear": [
+        1.000000163871958,
+        0.9999999248313246,
+        -2.606675678640258e-7
+      ]
+    },
+    {
+      "name": "yellow_v0_s-100",
+      "input": {
+        "kind": "srgb8",
+        "rgb": [
+          255,
+          255,
+          0
+        ]
+      },
+      "vibrance": 0.0,
+      "saturation": -100.0,
+      "expected_linear": [
+        0.9069906426842096,
+        0.9069906426842099,
+        0.9069906426842097
+      ]
+    },
+    {
+      "name": "yellow_v0_s100",
+      "input": {
+        "kind": "srgb8",
+        "rgb": [
+          255,
+          255,
+          0
+        ]
+      },
+      "vibrance": 0.0,
+      "saturation": 100.0,
+      "expected_linear": [
+        1.1598160731118146,
+        0.9998852242278109,
+        -0.4471465664030869
+      ]
+    },
+    {
+      "name": "yellow_v100_s0",
+      "input": {
+        "kind": "srgb8",
+        "rgb": [
+          255,
+          255,
+          0
+        ]
+      },
+      "vibrance": 100.0,
+      "saturation": 0.0,
+      "expected_linear": [
+        1.0017117573000587,
+        1.000531374714004,
+        -0.00849406848979617
+      ]
+    },
+    {
+      "name": "yellow_v-100_s0",
+      "input": {
+        "kind": "srgb8",
+        "rgb": [
+          255,
+          255,
+          0
+        ]
+      },
+      "vibrance": -100.0,
+      "saturation": 0.0,
+      "expected_linear": [
+        0.998300071514301,
+        0.9994524431656067,
+        0.008572711819322065
+      ]
+    },
+    {
+      "name": "yellow_v50_s50",
+      "input": {
+        "kind": "srgb8",
+        "rgb": [
+          255,
+          255,
+          0
+        ]
+      },
+      "vibrance": 50.0,
+      "saturation": 50.0,
+      "expected_linear": [
+        1.0744910440873767,
+        1.0095652528621017,
+        -0.2753569593654972
+      ]
+    },
+    {
+      "name": "yellow_v-100_s-100",
+      "input": {
+        "kind": "srgb8",
+        "rgb": [
+          255,
+          255,
+          0
+        ]
+      },
+      "vibrance": -100.0,
+      "saturation": -100.0,
+      "expected_linear": [
+        0.9069906426582107,
+        0.9069906426582107,
+        0.9069906426582107
+      ]
+    },
+    {
+      "name": "yellow_v100_s100",
+      "input": {
+        "kind": "srgb8",
+        "rgb": [
+          255,
+          255,
+          0
+        ]
+      },
+      "vibrance": 100.0,
+      "saturation": 100.0,
+      "expected_linear": [
+        1.1647130839175894,
+        0.998919292479912,
+        -0.4541455789105513
+      ]
+    },
+    {
+      "name": "pastel_pink_v0_s0",
+      "input": {
+        "kind": "srgb8",
+        "rgb": [
+          255,
+          200,
+          200
+        ]
+      },
+      "vibrance": 0.0,
+      "saturation": 0.0,
+      "expected_linear": [
+        1.0000000829554487,
+        0.5775804127173001,
+        0.577580109872871
+      ]
+    },
+    {
+      "name": "pastel_pink_v0_s-100",
+      "input": {
+        "kind": "srgb8",
+        "rgb": [
+          255,
+          200,
+          200
+        ]
+      },
+      "vibrance": 0.0,
+      "saturation": -100.0,
+      "expected_linear": [
+        0.6845656288900519,
+        0.6845656288900522,
+        0.6845656288900521
+      ]
+    },
+    {
+      "name": "pastel_pink_v0_s100",
+      "input": {
+        "kind": "srgb8",
+        "rgb": [
+          255,
+          200,
+          200
+        ]
+      },
+      "vibrance": 0.0,
+      "saturation": 100.0,
+      "expected_linear": [
+        1.3329121428708095,
+        0.4643116549515342,
+        0.4787281671613317
+      ]
+    },
+    {
+      "name": "pastel_pink_v100_s0",
+      "input": {
+        "kind": "srgb8",
+        "rgb": [
+          255,
+          200,
+          200
+        ]
+      },
+      "vibrance": 100.0,
+      "saturation": 0.0,
+      "expected_linear": [
+        1.3093100875946049,
+        0.47235155069864987,
+        0.48531073973861694
+      ]
+    },
+    {
+      "name": "pastel_pink_v-100_s0",
+      "input": {
+        "kind": "srgb8",
+        "rgb": [
+          255,
+          200,
+          200
+        ]
+      },
+      "vibrance": -100.0,
+      "saturation": 0.0,
+      "expected_linear": [
+        0.7058333046014024,
+        0.6773649907302548,
+        0.6768966882185823
+      ]
+    },
+    {
+      "name": "pastel_pink_v50_s50",
+      "input": {
+        "kind": "srgb8",
+        "rgb": [
+          255,
+          200,
+          200
+        ]
+      },
+      "vibrance": 50.0,
+      "saturation": 50.0,
+      "expected_linear": [
+        1.4009861940127943,
+        0.44111546957027126,
+        0.46008273953195394
+      ]
+    },
+    {
+      "name": "pastel_pink_v-100_s-100",
+      "input": {
+        "kind": "srgb8",
+        "rgb": [
+          255,
+          200,
+          200
+        ]
+      },
+      "vibrance": -100.0,
+      "saturation": -100.0,
+      "expected_linear": [
+        0.6845656295983263,
+        0.6845656295983265,
+        0.6845656295983265
+      ]
+    },
+    {
+      "name": "pastel_pink_v100_s100",
+      "input": {
+        "kind": "srgb8",
+        "rgb": [
+          255,
+          200,
+          200
+        ]
+      },
+      "vibrance": 100.0,
+      "saturation": 100.0,
+      "expected_linear": [
+        2.0009469885579754,
+        0.23632483913631597,
+        0.3153256751067216
+      ]
+    },
+    {
+      "name": "pastel_green_v0_s0",
+      "input": {
+        "kind": "srgb8",
+        "rgb": [
+          200,
+          255,
+          200
+        ]
+      },
+      "vibrance": 0.0,
+      "saturation": 0.0,
+      "expected_linear": [
+        0.5775805822449397,
+        0.9999999532736057,
+        0.5775800467797357
+      ]
+    },
+    {
+      "name": "pastel_green_v0_s-100",
+      "input": {
+        "kind": "srgb8",
+        "rgb": [
+          200,
+          255,
+          200
+        ]
+      },
+      "vibrance": 0.0,
+      "saturation": -100.0,
+      "expected_linear": [
+        0.8527686976199507,
+        0.8527686976199506,
+        0.8527686976199506
+      ]
+    },
+    {
+      "name": "pastel_green_v0_s100",
+      "input": {
+        "kind": "srgb8",
+        "rgb": [
+          200,
+          255,
+          200
+        ]
+      },
+      "vibrance": 0.0,
+      "saturation": 100.0,
+      "expected_linear": [
+        0.3143817572511414,
+        1.1382080916606743,
+        0.33703085392051557
+      ]
+    },
+    {
+      "name": "pastel_green_v100_s0",
+      "input": {
+        "kind": "srgb8",
+        "rgb": [
+          200,
+          255,
+          200
+        ]
+      },
+      "vibrance": 100.0,
+      "saturation": 0.0,
+      "expected_linear": [
+        0.3746062580336345,
+        1.1068124442437173,
+        0.39006243620113934
+      ]
+    },
+    {
+      "name": "pastel_green_v-100_s0",
+      "input": {
+        "kind": "srgb8",
+        "rgb": [
+          200,
+          255,
+          200
+        ]
+      },
+      "vibrance": -100.0,
+      "saturation": 0.0,
+      "expected_linear": [
+        0.7876119491005605,
+        0.8878763499119743,
+        0.7854868370861039
+      ]
+    },
+    {
+      "name": "pastel_green_v50_s50",
+      "input": {
+        "kind": "srgb8",
+        "rgb": [
+          200,
+          255,
+          200
+        ]
+      },
+      "vibrance": 50.0,
+      "saturation": 50.0,
+      "expected_linear": [
+        0.29500703374375814,
+        1.1482791907572836,
+        0.3202281655526469
+      ]
+    },
+    {
+      "name": "pastel_green_v-100_s-100",
+      "input": {
+        "kind": "srgb8",
+        "rgb": [
+          200,
+          255,
+          200
+        ]
+      },
+      "vibrance": -100.0,
+      "saturation": -100.0,
+      "expected_linear": [
+        0.8527686965390792,
+        0.8527686965390792,
+        0.8527686965390789
+      ]
+    },
+    {
+      "name": "pastel_green_v100_s100",
+      "input": {
+        "kind": "srgb8",
+        "rgb": [
+          200,
+          255,
+          200
+        ]
+      },
+      "vibrance": 100.0,
+      "saturation": 100.0,
+      "expected_linear": [
+        -0.06726682714164696,
+        1.3339538017216872,
+        0.029730652417535697
+      ]
+    },
+    {
+      "name": "pastel_blue_v0_s0",
+      "input": {
+        "kind": "srgb8",
+        "rgb": [
+          200,
+          200,
+          255
+        ]
+      },
+      "vibrance": 0.0,
+      "saturation": 0.0,
+      "expected_linear": [
+        0.5775805159476417,
+        0.5775804289372597,
+        0.9999996058550564
+      ]
+    },
+    {
+      "name": "pastel_blue_v0_s-100",
+      "input": {
+        "kind": "srgb8",
+        "rgb": [
+          200,
+          200,
+          255
+        ]
+      },
+      "vibrance": 0.0,
+      "saturation": -100.0,
+      "expected_linear": [
+        0.617117271553169,
+        0.6171172715531685,
+        0.6171172715531685
+      ]
+    },
+    {
+      "name": "pastel_blue_v0_s100",
+      "input": {
+        "kind": "srgb8",
+        "rgb": [
+          200,
+          200,
+          255
+        ]
+      },
+      "vibrance": 0.0,
+      "saturation": 100.0,
+      "expected_linear": [
+        0.5507906884950002,
+        0.5207679144533792,
+        1.467567975471278
+      ]
+    },
+    {
+      "name": "pastel_blue_v100_s0",
+      "input": {
+        "kind": "srgb8",
+        "rgb": [
+          200,
+          200,
+          255
+        ]
+      },
+      "vibrance": 100.0,
+      "saturation": 0.0,
+      "expected_linear": [
+        0.5536196037311374,
+        0.5294989676127217,
+        1.3992603534569275
+      ]
+    },
+    {
+      "name": "pastel_blue_v-100_s0",
+      "input": {
+        "kind": "srgb8",
+        "rgb": [
+          200,
+          200,
+          255
+        ]
+      },
+      "vibrance": -100.0,
+      "saturation": 0.0,
+      "expected_linear": [
+        0.6110817817110775,
+        0.6127320295440666,
+        0.6641215520429287
+      ]
+    },
+    {
+      "name": "pastel_blue_v50_s50",
+      "input": {
+        "kind": "srgb8",
+        "rgb": [
+          200,
+          200,
+          255
+        ]
+      },
+      "vibrance": 50.0,
+      "saturation": 50.0,
+      "expected_linear": [
+        0.5479615996222056,
+        0.5107322475657635,
+        1.5449172205635078
+      ]
+    },
+    {
+      "name": "pastel_blue_v-100_s-100",
+      "input": {
+        "kind": "srgb8",
+        "rgb": [
+          200,
+          200,
+          255
+        ]
+      },
+      "vibrance": -100.0,
+      "saturation": -100.0,
+      "expected_linear": [
+        0.6171172719647873,
+        0.6171172719647872,
+        0.6171172719647872
+      ]
+    },
+    {
+      "name": "pastel_blue_v100_s100",
+      "input": {
+        "kind": "srgb8",
+        "rgb": [
+          200,
+          200,
+          255
+        ]
+      },
+      "vibrance": 100.0,
+      "saturation": 100.0,
+      "expected_linear": [
+        0.5378355703811005,
+        0.37675306232441386,
+        2.5012384292206518
+      ]
+    },
+    {
+      "name": "skin_light_v0_s0",
+      "input": {
+        "kind": "srgb8",
+        "rgb": [
+          255,
+          219,
+          172
+        ]
+      },
+      "vibrance": 0.0,
+      "saturation": 0.0,
+      "expected_linear": [
+        1.0000001063033719,
+        0.7083757389843122,
+        0.41254229556457356
+      ]
+    },
+    {
+      "name": "skin_light_v0_s-100",
+      "input": {
+        "kind": "srgb8",
+        "rgb": [
+          255,
+          219,
+          172
+        ]
+      },
+      "vibrance": 0.0,
+      "saturation": -100.0,
+      "expected_linear": [
+        0.7546447338217631,
+        0.7546447338217632,
+        0.7546447338217631
+      ]
+    },
+    {
+      "name": "skin_light_v0_s100",
+      "input": {
+        "kind": "srgb8",
+        "rgb": [
+          255,
+          219,
+          172
+        ]
+      },
+      "vibrance": 0.0,
+      "saturation": 100.0,
+      "expected_linear": [
+        1.266331949563576,
+        0.6446999508113006,
+        0.1415649073116475
+      ]
+    },
+    {
+      "name": "skin_light_v100_s0",
+      "input": {
+        "kind": "srgb8",
+        "rgb": [
+          255,
+          219,
+          172
+        ]
+      },
+      "vibrance": 100.0,
+      "saturation": 0.0,
+      "expected_linear": [
+        1.1402546375978733,
+        0.6762997217998922,
+        0.25890599888143806
+      ]
+    },
+    {
+      "name": "skin_light_v-100_s0",
+      "input": {
+        "kind": "srgb8",
+        "rgb": [
+          255,
+          219,
+          172
+        ]
+      },
+      "vibrance": -100.0,
+      "saturation": 0.0,
+      "expected_linear": [
+        0.865777023073666,
+        0.735446712215742,
+        0.5866294572581404
+      ]
+    },
+    {
+      "name": "skin_light_v50_s50",
+      "input": {
+        "kind": "srgb8",
+        "rgb": [
+          255,
+          219,
+          172
+        ]
+      },
+      "vibrance": 50.0,
+      "saturation": 50.0,
+      "expected_linear": [
+        1.239371959306849,
+        0.6516555287984853,
+        0.16516163134327966
+      ]
+    },
+    {
+      "name": "skin_light_v-100_s-100",
+      "input": {
+        "kind": "srgb8",
+        "rgb": [
+          255,
+          219,
+          172
+        ]
+      },
+      "vibrance": -100.0,
+      "saturation": -100.0,
+      "expected_linear": [
+        0.7546447338482573,
+        0.754644733848257,
+        0.7546447338482571
+      ]
+    },
+    {
+      "name": "skin_light_v100_s100",
+      "input": {
+        "kind": "srgb8",
+        "rgb": [
+          255,
+          219,
+          172
+        ]
+      },
+      "vibrance": 100.0,
+      "saturation": 100.0,
+      "expected_linear": [
+        1.5743780737232778,
+        0.5587847040398056,
+        -0.07914866178495311
+      ]
+    },
+    {
+      "name": "skin_mid_v0_s0",
+      "input": {
+        "kind": "srgb8",
+        "rgb": [
+          224,
+          172,
+          140
+        ]
+      },
+      "vibrance": 0.0,
+      "saturation": 0.0,
+      "expected_linear": [
+        0.7454042720333541,
+        0.41254258844373104,
+        0.26225045629875454
+      ]
+    },
+    {
+      "name": "skin_mid_v0_s-100",
+      "input": {
+        "kind": "srgb8",
+        "rgb": [
+          224,
+          172,
+          140
+        ]
+      },
+      "vibrance": 0.0,
+      "saturation": -100.0,
+      "expected_linear": [
+        0.4826696463965354,
+        0.48266964639653537,
+        0.48266964639653526
+      ]
+    },
+    {
+      "name": "skin_mid_v0_s100",
+      "input": {
+        "kind": "srgb8",
+        "rgb": [
+          224,
+          172,
+          140
+        ]
+      },
+      "vibrance": 0.0,
+      "saturation": 100.0,
+      "expected_linear": [
+        1.0325373144553436,
+        0.327815048676699,
+        0.08944998835923074
+      ]
+    },
+    {
+      "name": "skin_mid_v100_s0",
+      "input": {
+        "kind": "srgb8",
+        "rgb": [
+          224,
+          172,
+          140
+        ]
+      },
+      "vibrance": 100.0,
+      "saturation": 0.0,
+      "expected_linear": [
+        0.8433064165332306,
+        0.3844514487477688,
+        0.19652397137318556
+      ]
+    },
+    {
+      "name": "skin_mid_v-100_s0",
+      "input": {
+        "kind": "srgb8",
+        "rgb": [
+          224,
+          172,
+          140
+        ]
+      },
+      "vibrance": -100.0,
+      "saturation": 0.0,
+      "expected_linear": [
+        0.6505017932751732,
+        0.43883867082412104,
+        0.3338314275205185
+      ]
+    },
+    {
+      "name": "skin_mid_v50_s50",
+      "input": {
+        "kind": "srgb8",
+        "rgb": [
+          224,
+          172,
+          140
+        ]
+      },
+      "vibrance": 50.0,
+      "saturation": 50.0,
+      "expected_linear": [
+        0.9622747152759393,
+        0.3491711556696378,
+        0.12639706482486557
+      ]
+    },
+    {
+      "name": "skin_mid_v-100_s-100",
+      "input": {
+        "kind": "srgb8",
+        "rgb": [
+          224,
+          172,
+          140
+        ]
+      },
+      "vibrance": -100.0,
+      "saturation": -100.0,
+      "expected_linear": [
+        0.482669646516281,
+        0.4826696465162813,
+        0.4826696465162813
+      ]
+    },
+    {
+      "name": "skin_mid_v100_s100",
+      "input": {
+        "kind": "srgb8",
+        "rgb": [
+          224,
+          172,
+          140
+        ]
+      },
+      "vibrance": 100.0,
+      "saturation": 100.0,
+      "expected_linear": [
+        1.2484411616931446,
+        0.26015869657432056,
+        -0.006306590604944706
+      ]
+    },
+    {
+      "name": "skin_dark_v0_s0",
+      "input": {
+        "kind": "srgb8",
+        "rgb": [
+          141,
+          85,
+          36
+        ]
+      },
+      "vibrance": 0.0,
+      "saturation": 0.0,
+      "expected_linear": [
+        0.2663556203592575,
+        0.09084170291899359,
+        0.01764191477726526
+      ]
+    },
+    {
+      "name": "skin_dark_v0_s-100",
+      "input": {
+        "kind": "srgb8",
+        "rgb": [
+          141,
+          85,
+          36
+        ]
+      },
+      "vibrance": 0.0,
+      "saturation": -100.0,
+      "expected_linear": [
+        0.12814032532818326,
+        0.12814032532818334,
+        0.1281403253281833
+      ]
+    },
+    {
+      "name": "skin_dark_v0_s100",
+      "input": {
+        "kind": "srgb8",
+        "rgb": [
+          141,
+          85,
+          36
+        ]
+      },
+      "vibrance": 0.0,
+      "saturation": 100.0,
+      "expected_linear": [
+        0.429524925211108,
+        0.03833777196641335,
+        -0.04257797627507036
+      ]
+    },
+    {
+      "name": "skin_dark_v100_s0",
+      "input": {
+        "kind": "srgb8",
+        "rgb": [
+          141,
+          85,
+          36
+        ]
+      },
+      "vibrance": 100.0,
+      "saturation": 0.0,
+      "expected_linear": [
+        0.31238460152483316,
+        0.07667869344338202,
+        -0.00490326410147765
+      ]
+    },
+    {
+      "name": "skin_dark_v-100_s0",
+      "input": {
+        "kind": "srgb8",
+        "rgb": [
+          141,
+          85,
+          36
+        ]
+      },
+      "vibrance": -100.0,
+      "saturation": 0.0,
+      "expected_linear": [
+        0.2225415614327471,
+        0.10365508668090083,
+        0.04464982309560492
+      ]
+    },
+    {
+      "name": "skin_dark_v50_s50",
+      "input": {
+        "kind": "srgb8",
+        "rgb": [
+          141,
+          85,
+          36
+        ]
+      },
+      "vibrance": 50.0,
+      "saturation": 50.0,
+      "expected_linear": [
+        0.38193670748231384,
+        0.05423820779787412,
+        -0.030122612472948722
+      ]
+    },
+    {
+      "name": "skin_dark_v-100_s-100",
+      "input": {
+        "kind": "srgb8",
+        "rgb": [
+          141,
+          85,
+          36
+        ]
+      },
+      "vibrance": -100.0,
+      "saturation": -100.0,
+      "expected_linear": [
+        0.12814032537005285,
+        0.12814032537005282,
+        0.12814032537005285
+      ]
+    },
+    {
+      "name": "skin_dark_v100_s100",
+      "input": {
+        "kind": "srgb8",
+        "rgb": [
+          141,
+          85,
+          36
+        ]
+      },
+      "vibrance": 100.0,
+      "saturation": 100.0,
+      "expected_linear": [
+        0.5383750555553684,
+        0.0008323204101535267,
+        -0.06050357906462147
+      ]
+    },
+    {
+      "name": "black_v0_s0",
+      "input": {
+        "kind": "srgb8",
+        "rgb": [
+          0,
+          0,
+          0
+        ]
+      },
+      "vibrance": 0.0,
+      "saturation": 0.0,
+      "expected_linear": [
+        0.0,
+        0.0,
+        0.0
+      ]
+    },
+    {
+      "name": "black_v0_s-100",
+      "input": {
+        "kind": "srgb8",
+        "rgb": [
+          0,
+          0,
+          0
+        ]
+      },
+      "vibrance": 0.0,
+      "saturation": -100.0,
+      "expected_linear": [
+        0.0,
+        0.0,
+        0.0
+      ]
+    },
+    {
+      "name": "black_v0_s100",
+      "input": {
+        "kind": "srgb8",
+        "rgb": [
+          0,
+          0,
+          0
+        ]
+      },
+      "vibrance": 0.0,
+      "saturation": 100.0,
+      "expected_linear": [
+        0.0,
+        0.0,
+        0.0
+      ]
+    },
+    {
+      "name": "black_v100_s0",
+      "input": {
+        "kind": "srgb8",
+        "rgb": [
+          0,
+          0,
+          0
+        ]
+      },
+      "vibrance": 100.0,
+      "saturation": 0.0,
+      "expected_linear": [
+        0.0,
+        0.0,
+        0.0
+      ]
+    },
+    {
+      "name": "black_v-100_s0",
+      "input": {
+        "kind": "srgb8",
+        "rgb": [
+          0,
+          0,
+          0
+        ]
+      },
+      "vibrance": -100.0,
+      "saturation": 0.0,
+      "expected_linear": [
+        0.0,
+        0.0,
+        0.0
+      ]
+    },
+    {
+      "name": "black_v50_s50",
+      "input": {
+        "kind": "srgb8",
+        "rgb": [
+          0,
+          0,
+          0
+        ]
+      },
+      "vibrance": 50.0,
+      "saturation": 50.0,
+      "expected_linear": [
+        0.0,
+        0.0,
+        0.0
+      ]
+    },
+    {
+      "name": "black_v-100_s-100",
+      "input": {
+        "kind": "srgb8",
+        "rgb": [
+          0,
+          0,
+          0
+        ]
+      },
+      "vibrance": -100.0,
+      "saturation": -100.0,
+      "expected_linear": [
+        0.0,
+        0.0,
+        0.0
+      ]
+    },
+    {
+      "name": "black_v100_s100",
+      "input": {
+        "kind": "srgb8",
+        "rgb": [
+          0,
+          0,
+          0
+        ]
+      },
+      "vibrance": 100.0,
+      "saturation": 100.0,
+      "expected_linear": [
+        0.0,
+        0.0,
+        0.0
+      ]
+    },
+    {
+      "name": "grey50_v0_s0",
+      "input": {
+        "kind": "srgb8",
+        "rgb": [
+          128,
+          128,
+          128
+        ]
+      },
+      "vibrance": 0.0,
+      "saturation": 0.0,
+      "expected_linear": [
+        0.2158605301328083,
+        0.21586049160351384,
+        0.21586038731185736
+      ]
+    },
+    {
+      "name": "grey50_v0_s-100",
+      "input": {
+        "kind": "srgb8",
+        "rgb": [
+          128,
+          128,
+          128
+        ]
+      },
+      "vibrance": 0.0,
+      "saturation": -100.0,
+      "expected_linear": [
+        0.21586049166107774,
+        0.21586049166107774,
+        0.21586049166107774
+      ]
+    },
+    {
+      "name": "grey50_v0_s100",
+      "input": {
+        "kind": "srgb8",
+        "rgb": [
+          128,
+          128,
+          128
+        ]
+      },
+      "vibrance": 0.0,
+      "saturation": 100.0,
+      "expected_linear": [
+        0.21586056860454353,
+        0.2158604915459454,
+        0.21586028296265772
+      ]
+    },
+    {
+      "name": "grey50_v100_s0",
+      "input": {
+        "kind": "srgb8",
+        "rgb": [
+          128,
+          128,
+          128
+        ]
+      },
+      "vibrance": 100.0,
+      "saturation": 0.0,
+      "expected_linear": [
+        0.21586054936867388,
+        0.21586049157473133,
+        0.2158603351372547
+      ]
+    },
+    {
+      "name": "grey50_v-100_s0",
+      "input": {
+        "kind": "srgb8",
+        "rgb": [
+          128,
+          128,
+          128
+        ]
+      },
+      "vibrance": -100.0,
+      "saturation": 0.0,
+      "expected_linear": [
+        0.21586051089694192,
+        0.21586049163229665,
+        0.2158604394864655
+      ]
+    },
+    {
+      "name": "grey50_v50_s50",
+      "input": {
+        "kind": "srgb8",
+        "rgb": [
+          128,
+          128,
+          128
+        ]
+      },
+      "vibrance": 50.0,
+      "saturation": 50.0,
+      "expected_linear": [
+        0.2158605637955757,
+        0.2158604915531419,
+        0.2158602960063065
+      ]
+    },
+    {
+      "name": "grey50_v-100_s-100",
+      "input": {
+        "kind": "srgb8",
+        "rgb": [
+          128,
+          128,
+          128
+        ]
+      },
+      "vibrance": -100.0,
+      "saturation": -100.0,
+      "expected_linear": [
+        0.21586049166107774,
+        0.21586049166107774,
+        0.21586049166107774
+      ]
+    },
+    {
+      "name": "grey50_v100_s100",
+      "input": {
+        "kind": "srgb8",
+        "rgb": [
+          128,
+          128,
+          128
+        ]
+      },
+      "vibrance": 100.0,
+      "saturation": 100.0,
+      "expected_linear": [
+        0.2158606070762808,
+        0.2158604914883736,
+        0.2158601786134777
+      ]
+    },
+    {
+      "name": "white_v0_s0",
+      "input": {
+        "kind": "srgb8",
+        "rgb": [
+          255,
+          255,
+          255
+        ]
+      },
+      "vibrance": 0.0,
+      "saturation": 0.0,
+      "expected_linear": [
+        1.000000139066243,
+        0.9999999605746068,
+        0.9999994774308324
+      ]
+    },
+    {
+      "name": "white_v0_s-100",
+      "input": {
+        "kind": "srgb8",
+        "rgb": [
+          255,
+          255,
+          255
+        ]
+      },
+      "vibrance": 0.0,
+      "saturation": -100.0,
+      "expected_linear": [
+        0.999999960841278,
+        0.9999999608412778,
+        0.9999999608412776
+      ]
+    },
+    {
+      "name": "white_v0_s100",
+      "input": {
+        "kind": "srgb8",
+        "rgb": [
+          255,
+          255,
+          255
+        ]
+      },
+      "vibrance": 0.0,
+      "saturation": 100.0,
+      "expected_linear": [
+        1.0000003172912288,
+        0.9999999603079155,
+        0.9999989940204819
+      ]
+    },
+    {
+      "name": "white_v100_s0",
+      "input": {
+        "kind": "srgb8",
+        "rgb": [
+          255,
+          255,
+          255
+        ]
+      },
+      "vibrance": 100.0,
+      "saturation": 0.0,
+      "expected_linear": [
+        1.0000002281787366,
+        0.9999999604412635,
+        0.9999992357256439
+      ]
+    },
+    {
+      "name": "white_v-100_s0",
+      "input": {
+        "kind": "srgb8",
+        "rgb": [
+          255,
+          255,
+          255
+        ]
+      },
+      "vibrance": -100.0,
+      "saturation": 0.0,
+      "expected_linear": [
+        1.0000000499537598,
+        0.9999999607079431,
+        0.9999997191360449
+      ]
+    },
+    {
+      "name": "white_v50_s50",
+      "input": {
+        "kind": "srgb8",
+        "rgb": [
+          255,
+          255,
+          255
+        ]
+      },
+      "vibrance": 50.0,
+      "saturation": 50.0,
+      "expected_linear": [
+        1.0000002950131055,
+        0.9999999603412524,
+        0.9999990544467702
+      ]
+    },
+    {
+      "name": "white_v-100_s-100",
+      "input": {
+        "kind": "srgb8",
+        "rgb": [
+          255,
+          255,
+          255
+        ]
+      },
+      "vibrance": -100.0,
+      "saturation": -100.0,
+      "expected_linear": [
+        0.9999999608412771,
+        0.9999999608412773,
+        0.9999999608412774
+      ]
+    },
+    {
+      "name": "white_v100_s100",
+      "input": {
+        "kind": "srgb8",
+        "rgb": [
+          255,
+          255,
+          255
+        ]
+      },
+      "vibrance": 100.0,
+      "saturation": 100.0,
+      "expected_linear": [
+        1.0000004955162372,
+        0.9999999600412021,
+        0.9999985106102235
+      ]
+    },
+    {
+      "name": "out_of_gamut_bright_v0_s0",
+      "input": {
+        "kind": "linear",
+        "rgb": [
+          1.5,
+          0.5,
+          0.2
+        ]
+      },
+      "vibrance": 0.0,
+      "saturation": 0.0,
+      "expected_linear": [
+        1.500000082064944,
+        0.49999995840952693,
+        0.19999974994607184
+      ]
+    },
+    {
+      "name": "out_of_gamut_bright_v0_s-100",
+      "input": {
+        "kind": "linear",
+        "rgb": [
+          1.5,
+          0.5,
+          0.2
+        ]
+      },
+      "vibrance": 0.0,
+      "saturation": -100.0,
+      "expected_linear": [
+        0.7234813440058865,
+        0.7234813440058866,
+        0.7234813440058866
+      ]
+    },
+    {
+      "name": "out_of_gamut_bright_v0_s100",
+      "input": {
+        "kind": "linear",
+        "rgb": [
+          1.5,
+          0.5,
+          0.2
+        ]
+      },
+      "vibrance": 0.0,
+      "saturation": 100.0,
+      "expected_linear": [
+        2.401793043793048,
+        0.20940156819600653,
+        -0.12846080610678323
+      ]
+    },
+    {
+      "name": "out_of_gamut_bright_v100_s0",
+      "input": {
+        "kind": "linear",
+        "rgb": [
+          1.5,
+          0.5,
+          0.2
+        ]
+      },
+      "vibrance": 100.0,
+      "saturation": 0.0,
+      "expected_linear": [
+        1.6006570828401196,
+        0.4688332856100903,
+        0.15155862544829046
+      ]
+    },
+    {
+      "name": "out_of_gamut_bright_v-100_s0",
+      "input": {
+        "kind": "linear",
+        "rgb": [
+          1.5,
+          0.5,
+          0.2
+        ]
+      },
+      "vibrance": -100.0,
+      "saturation": 0.0,
+      "expected_linear": [
+        1.401115011875663,
+        0.5302173005610591,
+        0.2511993322522685
+      ]
+    },
+    {
+      "name": "out_of_gamut_bright_v50_s50",
+      "input": {
+        "kind": "linear",
+        "rgb": [
+          1.5,
+          0.5,
+          0.2
+        ]
+      },
+      "vibrance": 50.0,
+      "saturation": 50.0,
+      "expected_linear": [
+        2.0160750303163812,
+        0.3365018541213319,
+        -0.014372827742069771
+      ]
+    },
+    {
+      "name": "out_of_gamut_bright_v-100_s-100",
+      "input": {
+        "kind": "linear",
+        "rgb": [
+          1.5,
+          0.5,
+          0.2
+        ]
+      },
+      "vibrance": -100.0,
+      "saturation": -100.0,
+      "expected_linear": [
+        0.7234813441361924,
+        0.7234813441361924,
+        0.7234813441361924
+      ]
+    },
+    {
+      "name": "out_of_gamut_bright_v100_s100",
+      "input": {
+        "kind": "linear",
+        "rgb": [
+          1.5,
+          0.5,
+          0.2
+        ]
+      },
+      "vibrance": 100.0,
+      "saturation": 100.0,
+      "expected_linear": [
+        2.634905532306537,
+        0.13108535358899787,
+        -0.18260127212316268
+      ]
+    },
+    {
+      "name": "out_of_gamut_dark_v0_s0",
+      "input": {
+        "kind": "linear",
+        "rgb": [
+          -0.1,
+          0.3,
+          0.8
+        ]
+      },
+      "vibrance": 0.0,
+      "saturation": 0.0,
+      "expected_linear": [
+        -0.09999996630313726,
+        0.30000000511592023,
+        0.7999997742108457
+      ]
+    },
+    {
+      "name": "out_of_gamut_dark_v0_s-100",
+      "input": {
+        "kind": "linear",
+        "rgb": [
+          -0.1,
+          0.3,
+          0.8
+        ]
+      },
+      "vibrance": 0.0,
+      "saturation": -100.0,
+      "expected_linear": [
+        0.24217771046513623,
+        0.24217771046513628,
+        0.24217771046513623
+      ]
+    },
+    {
+      "name": "out_of_gamut_dark_v0_s100",
+      "input": {
+        "kind": "linear",
+        "rgb": [
+          -0.1,
+          0.3,
+          0.8
+        ]
+      },
+      "vibrance": 0.0,
+      "saturation": 100.0,
+      "expected_linear": [
+        -0.3132180828564864,
+        0.26098656113576857,
+        1.734843851582611
+      ]
+    },
+    {
+      "name": "out_of_gamut_dark_v100_s0",
+      "input": {
+        "kind": "linear",
+        "rgb": [
+          -0.1,
+          0.3,
+          0.8
+        ]
+      },
+      "vibrance": 100.0,
+      "saturation": 0.0,
+      "expected_linear": [
+        -0.11831758634463468,
+        0.3005805592438139,
+        0.8497793594122223
+      ]
+    },
+    {
+      "name": "out_of_gamut_dark_v-100_s0",
+      "input": {
+        "kind": "linear",
+        "rgb": [
+          -0.1,
+          0.3,
+          0.8
+        ]
+      },
+      "vibrance": -100.0,
+      "saturation": 0.0,
+      "expected_linear": [
+        -0.0811036605367483,
+        0.2989849158265138,
+        0.7519120161246667
+      ]
+    },
+    {
+      "name": "out_of_gamut_dark_v50_s50",
+      "input": {
+        "kind": "linear",
+        "rgb": [
+          -0.1,
+          0.3,
+          0.8
+        ]
+      },
+      "vibrance": 50.0,
+      "saturation": 50.0,
+      "expected_linear": [
+        -0.23330513930055155,
+        0.2914810615256666,
+        1.2616308665881544
+      ]
+    },
+    {
+      "name": "out_of_gamut_dark_v-100_s-100",
+      "input": {
+        "kind": "linear",
+        "rgb": [
+          -0.1,
+          0.3,
+          0.8
+        ]
+      },
+      "vibrance": -100.0,
+      "saturation": -100.0,
+      "expected_linear": [
+        0.2421777104282006,
+        0.24217771042820074,
+        0.24217771042820072
+      ]
+    },
+    {
+      "name": "out_of_gamut_dark_v100_s100",
+      "input": {
+        "kind": "linear",
+        "rgb": [
+          -0.1,
+          0.3,
+          0.8
+        ]
+      },
+      "vibrance": 100.0,
+      "saturation": 100.0,
+      "expected_linear": [
+        -0.3319654089066288,
+        0.24758787940424914,
+        1.8938894408399625
+      ]
+    },
+    {
+      "name": "out_of_gamut_mixed_v0_s0",
+      "input": {
+        "kind": "linear",
+        "rgb": [
+          1.5,
+          -0.1,
+          0.7
+        ]
+      },
+      "vibrance": 0.0,
+      "saturation": 0.0,
+      "expected_linear": [
+        1.4999999669915465,
+        -0.09999998573178462,
+        0.6999997653710068
+      ]
+    },
+    {
+      "name": "out_of_gamut_mixed_v0_s-100",
+      "input": {
+        "kind": "linear",
+        "rgb": [
+          1.5,
+          -0.1,
+          0.7
+        ]
+      },
+      "vibrance": 0.0,
+      "saturation": -100.0,
+      "expected_linear": [
+        0.37304012209396675,
+        0.37304012209396675,
+        0.37304012209396675
+      ]
+    },
+    {
+      "name": "out_of_gamut_mixed_v0_s100",
+      "input": {
+        "kind": "linear",
+        "rgb": [
+          1.5,
+          -0.1,
+          0.7
+        ]
+      },
+      "vibrance": 0.0,
+      "saturation": 100.0,
+      "expected_linear": [
+        2.940176732010969,
+        -0.6761203773498581,
+        1.1025108961491223
+      ]
+    },
+    {
+      "name": "out_of_gamut_mixed_v100_s0",
+      "input": {
+        "kind": "linear",
+        "rgb": [
+          1.5,
+          -0.1,
+          0.7
+        ]
+      },
+      "vibrance": 100.0,
+      "saturation": 0.0,
+      "expected_linear": [
+        1.4999999669915465,
+        -0.09999998573178462,
+        0.6999997653710068
+      ]
+    },
+    {
+      "name": "out_of_gamut_mixed_v-100_s0",
+      "input": {
+        "kind": "linear",
+        "rgb": [
+          1.5,
+          -0.1,
+          0.7
+        ]
+      },
+      "vibrance": -100.0,
+      "saturation": 0.0,
+      "expected_linear": [
+        1.4999999669915465,
+        -0.09999998573178462,
+        0.6999997653710068
+      ]
+    },
+    {
+      "name": "out_of_gamut_mixed_v50_s50",
+      "input": {
+        "kind": "linear",
+        "rgb": [
+          1.5,
+          -0.1,
+          0.7
+        ]
+      },
+      "vibrance": 50.0,
+      "saturation": 50.0,
+      "expected_linear": [
+        2.177907201402997,
+        -0.374120109843738,
+        0.8912192450986604
+      ]
+    },
+    {
+      "name": "out_of_gamut_mixed_v-100_s-100",
+      "input": {
+        "kind": "linear",
+        "rgb": [
+          1.5,
+          -0.1,
+          0.7
+        ]
+      },
+      "vibrance": -100.0,
+      "saturation": -100.0,
+      "expected_linear": [
+        0.37304012209396675,
+        0.37304012209396675,
+        0.37304012209396675
+      ]
+    },
+    {
+      "name": "out_of_gamut_mixed_v100_s100",
+      "input": {
+        "kind": "linear",
+        "rgb": [
+          1.5,
+          -0.1,
+          0.7
+        ]
+      },
+      "vibrance": 100.0,
+      "saturation": 100.0,
+      "expected_linear": [
+        2.940176732010969,
+        -0.6761203773498581,
+        1.1025108961491223
+      ]
+    }
+  ]
+}

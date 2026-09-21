@@ -13,6 +13,19 @@
 //! must match this reference within `1e-6 + 1e-6 * abs(reference)` in linear float, and at
 //! most one output code of difference at a quantization boundary.
 
+pub mod colour;
+
+/// Aliases so every study module can share one set of helpers.
+#[allow(dead_code)]
+pub fn code_to_linear(code: u8) -> f64 {
+    srgb_to_linear(code)
+}
+
+#[allow(dead_code)]
+pub fn linear_to_code(linear: f64) -> u8 {
+    linear_to_srgb_code(linear)
+}
+
 /// Decode one sRGB-encoded value in `[0, 1]` to linear light, using the standard sRGB
 /// transfer function's inverse (decode) branch.
 fn decode_encoded(encoded: f64) -> f64 {

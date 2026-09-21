@@ -176,6 +176,8 @@ The neutral picker samples a bounded patch (default 5×5 at input-stage pixel ce
 
 Select a documented perceptual chroma space and fixed gamut policy in the numerical task; evaluate Oklab as the first candidate. Saturation scales chroma while preserving its achromatic axis; Vibrance varies gain with existing chroma, with smooth hue weighting if skin-like hue protection is selected. Skin-like weighting is a color heuristic, not face detection or a promise about every skin tone. Define negative-value behavior, order, neutral/black cases and gamut handling explicitly, and verify neutral preservation, saturation −100 grayscale, monotone response and varied portrait/saturated-color fixtures. No ML resource is needed.
 
+Frozen: [Saturation and Vibrance mathematics](basic-colour.md). Oklab passed every property test, so it is the accepted space; saturation and vibrance both scale Oklab `a`/`b` about the achromatic axis, vibrance's gain depends on existing chroma and a skin-like Oklab hue band (55° ± 35°, at most 60% gain reduction at the band centre), neither unit clamps internally, and production is checked against the independent f64 reference within `1e-5 + 1e-5 × |reference|`.
+
 ## Histogram and clipping contract
 
 The inspector describes the **rendered SDR sRGB output of the full current composition**, after crop and edits, before UI overlays, scaling for the viewport or monitor conversion. It is not the camera/RAW histogram. Panning, zoom and display scale do not change its population. Label this domain in the UI/API so users do not read output endpoint counts as evidence of sensor clipping or recoverable detail.
