@@ -241,6 +241,29 @@ fn stepper_button_is_one_complete_draft_gesture() {
 }
 
 #[test]
+fn field_arrow_nudge_stays_local_until_enter() {
+    let (mut editor, catalog, _) = editor();
+    let _ = editor.update(Message::ControlFieldNudge {
+        action: ACTION.into(),
+        parameter: "coordinate".into(),
+        direction: 1,
+        shift: false,
+        option: true,
+    });
+    assert!(!editor.busy);
+    assert!(editor.slider_draft.is_none());
+    assert_eq!(editor.editing, Some((ACTION.into(), "coordinate".into())));
+    assert!((field_request(&mut editor, "coordinate").as_f64().unwrap() - 5.1).abs() < 1e-9);
+    let _ = editor.update(Message::Submit {
+        action: ACTION.into(),
+        parameter: Some("coordinate".into()),
+    });
+    assert!(editor.busy);
+    assert!(editor.slider_draft.is_none());
+    finish(editor, catalog);
+}
+
+#[test]
 fn action_copy_uses_the_clicked_controls_preset() {
     let (mut editor, catalog, _) = editor();
     for preset in [json!({"amount": 1.0}), json!({"enabled": true})] {

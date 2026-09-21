@@ -60,14 +60,16 @@ pub(crate) fn controls_descriptor() -> ModuleDescriptor {
             "step":0.01,"default":[[0.0,0.0],[0.5,0.5],[1.0,1.0]]}),
         json!({"name":"red","kind":"curve","points_min":2,"points_max":8,"monotone":false,
             "step":0.01,"default":[[0.0,0.0],[0.5,0.5],[1.0,1.0]]}),
+        json!({"name":"coordinate","kind":"number","min":0.0,"max":100.0,"step":1.0,"fine_step":0.1,"default":5.0}),
     ];
     for parameter in &mut parameters {
         parameter["required"] = json!(false);
         parameter["notes"] =
             json!("Descriptor fixture; curve samples come from its declared query");
     }
-    let queries: Vec<Value> = parameters[5..]
+    let queries: Vec<Value> = parameters
         .iter()
+        .filter(|parameter| parameter["kind"] == "curve")
         .cloned()
         .map(|mut parameter| {
             parameter.as_object_mut().unwrap().remove("default");
@@ -83,6 +85,7 @@ pub(crate) fn controls_descriptor() -> ModuleDescriptor {
         "controls":[{"kind":"group","label":"Fixture group","collapsed":false,"controls":[
             {"kind":"number","action":"fixture-set","parameter":"amount","label":"Amount","rail":"temperature"},
             {"kind":"number","action":"fixture-set","parameter":"count","label":"Count","style":"stepper"},
+            {"kind":"number","action":"fixture-set","parameter":"coordinate","label":"Coordinate","style":"field"},
             {"kind":"toggle","action":"fixture-set","parameter":"enabled","label":"Enabled"},
             {"kind":"choice","action":"fixture-set","parameter":"mode","label":"Mode","style":"menu"},
             {"kind":"color","action":"fixture-set","parameter":"rgb","label":"Colour","style":"picker"},
