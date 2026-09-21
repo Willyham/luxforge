@@ -1,0 +1,45 @@
+{
+  "format": 1,
+  "samples": [
+    {
+      "id": "z6-14-lossless",
+      "path": "../private/raw/z6-14-lossless.NEF",
+      "sha256": "c079345fc93f53a4f0d322f8ddaae505f920c36015f25b58befccaa61db1af31",
+      "camera": "Nikon Z 6",
+      "mode": "14bit 14bit lossless compressed (3:2)",
+      "source_url": "https://raw.pixls.us/getfile.php/3582/nice/Nikon - Z 6 - 14bit 14bit lossless compressed (3:2).NEF",
+      "license": "CC0-1.0",
+      "notes": "14 bit \"lossless compressed\""
+    },
+    {
+      "id": "z6-12-lossless",
+      "path": "../private/raw/z6-12-lossless.NEF",
+      "sha256": "59615b65f8a7edc92a845b2a9c8ef313d6e7d7a5d842f94e6adf786da045a6db",
+      "camera": "Nikon Z 6",
+      "mode": "12bit 12bit lossless compressed (3:2)",
+      "source_url": "https://raw.pixls.us/getfile.php/3585/nice/Nikon - Z 6 - 12bit 12bit lossless compressed (3:2).NEF",
+      "license": "CC0-1.0",
+      "notes": "12 bit \"lossless compressed\""
+    },
+    {
+      "id": "x100vi-uncompressed",
+      "path": "../private/raw/x100vi-uncompressed.RAF",
+      "sha256": "8e5e4d8d2e0a865ca79b3d40734b6abc2f4b00281afea8b9bd3d8c29808f2fb3",
+      "camera": "Fujifilm X100VI",
+      "mode": "14bit 14bit uncompressed (3:2)",
+      "source_url": "https://raw.pixls.us/getfile.php/7300/nice/Fujifilm - X100VI - 14bit 14bit uncompressed (3:2).RAF",
+      "license": "CC0-1.0",
+      "notes": "uncompressed"
+    },
+    {
+      "id": "x100vi-lossless",
+      "path": "../private/raw/x100vi-lossless.RAF",
+      "sha256": "e9709b98f4ff96b993dbe4ad20eff0accfa709a58559eb4219f59d1e7181934a",
+      "camera": "Fujifilm X100VI",
+      "mode": "14bit 14bit lossless compressed (3:2)",
+      "source_url": "https://raw.pixls.us/getfile.php/7301/nice/Fujifilm - X100VI - 14bit 14bit lossless compressed (3:2).RAF",
+      "license": "CC0-1.0",
+      "notes": "lossless compressed"
+    }
+  ]
+}

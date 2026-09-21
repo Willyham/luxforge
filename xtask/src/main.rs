@@ -6,6 +6,8 @@ mod fixtures;
 mod launch;
 mod package;
 mod policy;
+mod raw;
+mod raw_editor;
 mod repository;
 mod smoke;
 mod workspace_smoke;
@@ -279,6 +281,34 @@ fn main_result() -> Result {
             a.done()?;
             fixtures::generate(&absolute(&root, &out))?;
         }
+        "raw-corpus" => {
+            let manifest = absolute(&root, &a.path("--manifest")?);
+            let out = absolute(&root, &a.path("--output")?);
+            a.done()?;
+            raw::corpus(&manifest, &out)?;
+        }
+        "raw-reference" => {
+            let out = absolute(&root, &a.path("--output")?);
+            a.done()?;
+            raw::reference(&out)?;
+        }
+        "raw-editor" => {
+            let manifest = absolute(&root, &a.path("--manifest")?);
+            let out = absolute(&root, &a.path("--output")?);
+            let samples = a
+                .value("--samples")?
+                .map(|s| s.to_string_lossy().parse::<usize>())
+                .transpose()?
+                .unwrap_or(30);
+            let selected_binary = a.value("--binary")?.map(PathBuf::from);
+            a.done()?;
+            let bin = selected_binary
+                .as_ref()
+                .map(|path| absolute(&root, path))
+                .map(Ok)
+                .unwrap_or_else(|| binary(&root))?;
+            raw_editor::run(&root, &manifest, &out, &bin, samples)?;
+        }
         "inventory" | "package" => {
             let out = absolute(&root, &a.path("--output")?);
             a.done()?;
@@ -399,7 +429,7 @@ fn main_result() -> Result {
         }
         "__hang" => std::thread::sleep(std::time::Duration::from_secs(60)),
         "help" => println!(
-            "cargo xtask doctor|check|check-repository|fmt|lint|test|build [--release]|develop [--debug] [--background] [app args]|fixtures|generate-fixtures [--output NEW]|audit|editor-acceptance --output NEW|editor-performance --source JPEG --output NEW [--samples N]|inventory --output NEW|package --output NEW|smoke --output NEW [--scenario NAME] [--binary PATH]|check-capture --image PNG [--orientation N] [--aspect R] [--columns LEFT,RIGHT]|hardening --binary PATH --output NEW|measure --binary PATH --output NEW [--samples N]|probe --candidate iced|egui --output NEW"
+            "cargo xtask doctor|check|check-repository|fmt|lint|test|build [--release]|develop [--debug] [--background] [app args]|fixtures|generate-fixtures [--output NEW]|audit|raw-corpus --manifest FILE --output NEW|raw-reference --output NEW|raw-editor --manifest FILE --output NEW [--samples N] [--binary PATH]|editor-acceptance --output NEW|editor-performance --source JPEG --output NEW [--samples N]|inventory --output NEW|package --output NEW|smoke --output NEW [--scenario NAME] [--binary PATH]|check-capture --image PNG [--orientation N] [--aspect R] [--columns LEFT,RIGHT]|hardening --binary PATH --output NEW|measure --binary PATH --output NEW [--samples N]|probe --candidate iced|egui --output NEW"
         ),
         _ => return Err("Unknown command; use cargo xtask help".into()),
     }

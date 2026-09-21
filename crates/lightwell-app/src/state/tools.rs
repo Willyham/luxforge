@@ -242,6 +242,13 @@ impl ToolsModel {
         let mut sections = Vec::new();
         let mut developer = Vec::new();
         for module in inputs.modules {
+            if module.id == "lightwell.raw"
+                && !inputs.state.is_some_and(|state| {
+                    matches!(state.asset.source, lightwell_core::SourceKind::Raw { .. })
+                })
+            {
+                continue;
+            }
             if module.developer && !inputs.developer {
                 continue;
             }
@@ -816,6 +823,26 @@ pub(crate) fn point_pick(modules: &[ModuleDescriptor]) -> Option<(&str, &str, &s
     })
 }
 
+/// Resolve a point interaction from the selected canvas tool. The pointer retains its existing
+/// first-pick behavior for the developer pixel proof; selecting RAW targets its sensor picker.
+pub(crate) fn point_pick_for_mode<'a>(
+    modules: &'a [ModuleDescriptor],
+    mode: &str,
+) -> Option<(&'a str, &'a str, &'a str)> {
+    if mode == lightwell_core::POINTER_MODE {
+        return point_pick(modules);
+    }
+    modules
+        .iter()
+        .find(|module| module.id == mode)
+        .and_then(|module| match &module.canvas {
+            Some(CanvasInteraction::PointPick { action, x, y, .. }) if module.is_available() => {
+                Some((action.as_str(), x.as_str(), y.as_str()))
+            }
+            _ => None,
+        })
+}
+
 /// One declared crop-frame interaction: the action Apply calls, the parameter names it fills, and
 /// the fit action whose `aspect` enum generates the ratio presets. The desktop reads every name from
 /// here, so it knows no tool by name.
@@ -968,6 +995,24 @@ mod tests {
     use crate::app::testing::{CROP_ASPECTS, CROP_EFFECT, crop_descriptor};
     use lightwell_core::Availability;
     use serde_json::json;
+
+    #[test]
+    fn selected_raw_canvas_mode_routes_to_its_neutral_picker() {
+        let modules: Vec<_> = lightwell_core::ModuleRegistry::builtin()
+            .descriptors()
+            .into_iter()
+            .cloned()
+            .collect();
+        assert_eq!(
+            point_pick_for_mode(&modules, "lightwell.raw"),
+            Some(("pick-raw-neutral", "x", "y"))
+        );
+        assert_eq!(
+            point_pick_for_mode(&modules, "lightwell.pixel"),
+            Some(("set-pixel", "x", "y"))
+        );
+        assert!(point_pick_for_mode(&modules, "lightwell.crop").is_none());
+    }
 
     #[test]
     fn the_crop_frame_and_its_presets_come_from_the_declared_descriptor() {

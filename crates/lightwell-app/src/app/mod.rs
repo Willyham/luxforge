@@ -32,7 +32,10 @@ use serde_json::{Map, Value, json};
 use std::{
     collections::{BTreeMap, HashSet},
     path::PathBuf,
-    sync::{Arc, Mutex},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicU64, Ordering},
+    },
     thread::JoinHandle,
     time::{Duration, Instant},
 };
@@ -131,6 +134,7 @@ fn registry(disabled: &[String]) -> Result<ModuleRegistry, String> {
     let mut unknown: Vec<&str> = disabled.iter().map(String::as_str).collect();
     for module in [
         Arc::new(lightwell_core::PixelModule::new()) as Arc<dyn ToolModule>,
+        Arc::new(lightwell_core::RawModule::new()),
         Arc::new(lightwell_core::TransformModule::new()),
         Arc::new(lightwell_core::CropModule::new()),
     ] {
@@ -212,6 +216,8 @@ pub(crate) struct Editor {
     /// Local copy of the owner's session, replaced only by a response with a newer revision.
     pub(crate) session: ClientSession,
     pub(crate) activity: Activity,
+    /// Cancels older source waits and rejects their late desktop results.
+    pub(crate) open_generation: Arc<AtomicU64>,
     pub(crate) evidence: Option<Evidence>,
     pub(crate) diagnostics: Option<Diagnostics>,
     pub(crate) run_id: String,
@@ -226,6 +232,8 @@ pub(crate) struct Editor {
     /// Oldest lineage sequence when the chain was truncated; entries at or below it are unknown.
     pub(crate) lineage_floor: Option<u64>,
     pub(crate) display_entry: Option<lightwell_core::EntryId>,
+    requested_render_entry: Option<lightwell_core::HistoryEntry>,
+    rendered_entry: Option<lightwell_core::HistoryEntry>,
     /// The Original entry, so Compare needs no search.
     pub(crate) original_entry: Option<lightwell_core::EntryId>,
     /// What the selection was before Compare took it.
@@ -332,6 +340,7 @@ impl Editor {
             live_server,
             client,
             session: ClientSession::default(),
+            open_generation: Arc::new(AtomicU64::new(0)),
             activity: Activity {
                 requested: 0,
                 displayed: 0,
@@ -359,6 +368,8 @@ impl Editor {
             lineage: HashSet::new(),
             lineage_floor: None,
             display_entry: None,
+            requested_render_entry: None,
+            rendered_entry: None,
             original_entry: None,
             compare_return: None,
             photo: None,
@@ -372,7 +383,7 @@ impl Editor {
             pan_in_flight: false,
             pending_pan: None,
             picker_open: false,
-            status: "Open a JPEG to begin".into(),
+            status: "Open a photo to begin".into(),
             api_sequence: 0,
             scale_factor: 1.0,
             modules: Vec::new(),
@@ -444,7 +455,7 @@ impl Editor {
 
     /// The state correlated with every event and captured frame; never includes source paths.
     pub(crate) fn snapshot(&self) -> Value {
-        json!({"run_id":self.run_id,"mode":if self.evidence.is_some() {"evidence"} else {"editor"},"orientation":self.activity.orientation,"phase":self.activity.phase,"requested_generation":self.activity.requested,"displayed_generation":self.activity.displayed,"source_dimensions":self.activity.source_dimensions,"preview_dimensions":self.activity.preview_dimensions,"backend":self.activity.backend,"status":self.status,"error_code":self.activity.error_code,"modules":module_summary(&self.modules),"controls":self.fields.summary(),"crop":self.crop_summary(),"stack":self.stack_summary(),"workspace":serde_json::to_value(&self.session.workspace).unwrap_or(Value::Null),"developer":self.developer,"expanded":self.workspace.expanded(),"notices":self.notice_titles(),"compare":self.compare_return.is_some(),"render_error":self.render_error_summary(),"palette":{"open":self.palette_open,"query":self.palette_query}})
+        json!({"run_id":self.run_id,"mode":if self.evidence.is_some() {"evidence"} else {"editor"},"selection":self.session.preview.selection,"orientation":self.activity.orientation,"phase":self.activity.phase,"requested_generation":self.activity.requested,"displayed_generation":self.activity.displayed,"source_dimensions":self.activity.source_dimensions,"preview_dimensions":self.activity.preview_dimensions,"backend":self.activity.backend,"status":self.status,"error_code":self.activity.error_code,"modules":module_summary(&self.modules),"controls":self.fields.summary(),"crop":self.crop_summary(),"stack":self.stack_summary(),"workspace":serde_json::to_value(&self.session.workspace).unwrap_or(Value::Null),"developer":self.developer,"expanded":self.workspace.expanded(),"notices":self.notice_titles(),"compare":self.compare_return.is_some(),"render_error":self.render_error_summary(),"palette":{"open":self.palette_open,"query":self.palette_query}})
     }
 
     /// The notices the captured frame drew, by title, so a frame's chrome is observable.
@@ -483,7 +494,13 @@ impl Editor {
                         json!({"id":layer.id.as_str(),"effect":layer.effect_id,"payload":layer.payload})
                     })
                     .collect();
-                json!({"revision":state.revision,"entry":state.current_entry.id.as_str(),"layers":layers})
+                let displayed = self.rendered_entry.as_ref().map(|entry| json!({
+                    "entry": entry.id.as_str(),
+                    "snapshot": entry.snapshot.id.as_str(),
+                    "dimensions": self.dimensions,
+                    "layers": entry.snapshot.recipe.layers.iter().map(|layer| json!({"id":layer.id.as_str(),"effect":layer.effect_id,"payload":layer.payload})).collect::<Vec<_>>(),
+                }));
+                json!({"revision":state.revision,"entry":state.current_entry.id.as_str(),"layers":layers,"displayed":displayed})
             }
             None => Value::Null,
         }
@@ -528,6 +545,11 @@ impl Editor {
     /// Import a file through the same API call the Open button uses, tracked as one open request.
     fn open(&mut self, path: PathBuf) -> Task<Message> {
         self.begin_request();
+        let generation = self.activity.requested;
+        self.open_generation.store(generation, Ordering::Release);
+        // Preserve the last displayed photo, but prevent an older in-flight render or upload
+        // from becoming the image for this newer open request.
+        self.preview_generation = self.preview_queue.cancel();
         self.busy = true;
         self.status = "Importing photograph…".into();
         let file = path
@@ -535,7 +557,13 @@ impl Editor {
             .map(|name| name.to_string_lossy().into_owned())
             .unwrap_or_default();
         self.event("open_requested", json!({"file":file}));
-        import_task(self.owner.clone(), self.client, path)
+        import_task(
+            self.owner.clone(),
+            self.client,
+            path,
+            generation,
+            self.open_generation.clone(),
+        )
     }
 
     fn open_failed(&mut self, error_code: &str, message: &str) {
@@ -656,7 +684,7 @@ impl Editor {
                 return Task::perform(
                     async {
                         rfd::AsyncFileDialog::new()
-                            .add_filter("JPEG", &["jpg", "jpeg"])
+                            .add_filter("Photos", &["jpg", "jpeg", "nef", "raf", "dng"])
                             .pick_file()
                             .await
                             .map(|file| file.path().to_path_buf())
@@ -670,14 +698,23 @@ impl Editor {
                     return self.open(path);
                 }
             }
+            Message::ImportRefreshed(generation, result) => {
+                if self.open_generation.load(Ordering::Acquire) != generation {
+                    return Task::none();
+                }
+                return self.dispatch(Message::Refreshed(result));
+            }
             Message::Refreshed(result) => {
+                if matches!(&result, Err(error) if error == "superseded preview") {
+                    return Task::none();
+                }
                 self.busy = false;
                 match result {
                     Ok(refresh) => {
                         if self.activity.pending {
                             self.activity.source_dimensions =
                                 Some((refresh.state.asset.width, refresh.state.asset.height));
-                            self.activity.orientation = Some(refresh.job.source.orientation);
+                            self.activity.orientation = Some(refresh.job.source.orientation());
                         }
                         self.accept(*refresh);
                     }
@@ -804,13 +841,24 @@ impl Editor {
                 };
             }
             Message::PreviewLoaded(result) => {
+                if matches!(&result, Err(error) if error == "superseded preview") {
+                    return Task::none();
+                }
                 self.busy = false;
                 match result {
                     Ok(payload) => {
                         let payload = *payload;
                         self.api_sequence = payload.sequence;
                         self.adopt(payload.session);
+                        // History selection changes the authoritative values shown by generated
+                        // controls. A field being edited in the previous entry must not pin its
+                        // text while the selected entry is read-only.
+                        self.editing = None;
+                        self.dragging = None;
+                        self.fields
+                            .bind_raw(&payload.job.entry.snapshot.recipe, None, None);
                         let entry = payload.job.entry.id.clone();
+                        self.requested_render_entry = Some(payload.job.entry.clone());
                         self.display_entry = Some(entry.clone());
                         self.preview_generation = self.preview_queue.request(payload.job);
                         self.status = "Rendering selected history state…".into();
@@ -980,10 +1028,27 @@ impl Editor {
                         self.photo = Some(allocation);
                         self.dimensions = Some((upload.width, upload.height));
                         self.display_entry = Some(upload.entry_id.clone());
+                        if self
+                            .requested_render_entry
+                            .as_ref()
+                            .is_some_and(|entry| entry.id == upload.entry_id)
+                        {
+                            self.rendered_entry = self.requested_render_entry.clone();
+                        }
                         // A frame on screen is the proof the last failure is over.
                         self.render_error = None;
                         self.activity.render_ms =
                             Some(self.activity.request_started.elapsed().as_secs_f64() * 1000.);
+                        self.event(
+                            "preview_displayed",
+                            json!({
+                                "entry_id":upload.entry_id,
+                                "snapshot_id":upload.snapshot_id,
+                                "generation":upload.generation,
+                                "dimensions":[upload.width,upload.height],
+                                "upload_ms":upload.started.elapsed().as_secs_f64()*1000.,
+                            }),
+                        );
                         // A scripted preview selection settles on these same pixels, whether or not
                         // this upload also belongs to the one open request evidence tracks below.
                         self.settle_step(Settle::Preview);
@@ -1039,6 +1104,15 @@ impl Editor {
                 match result {
                     Ok(modules) => {
                         self.fields = Fields::seeded(&modules);
+                        if let Some(state) = &self.state
+                            && matches!(state.asset.source, lightwell_core::SourceKind::Raw { .. })
+                        {
+                            self.fields.bind_raw(
+                                &state.current_entry.snapshot.recipe,
+                                self.editing.as_ref(),
+                                self.dragging.as_ref(),
+                            );
+                        }
                         self.event("modules_loaded", module_summary(&modules));
                         self.modules = modules;
                     }
@@ -1305,7 +1379,8 @@ impl Editor {
             Message::PointPicked { x, y } => {
                 // The widget hands over a pixel of the raster on screen. Which content pixel that
                 // is belongs to the core, so the pick leaves here as a read and fills nothing yet.
-                if tools::point_pick(&self.modules).is_none() {
+                if tools::point_pick_for_mode(&self.modules, &self.session.workspace.mode).is_none()
+                {
                     return Task::none();
                 }
                 let Some(state) = &self.state else {
@@ -1320,20 +1395,23 @@ impl Editor {
                     self.client,
                     state.asset.id.clone(),
                     entry,
+                    self.session.workspace.mode.clone(),
                     x,
                     y,
                 );
             }
             Message::PointLocated {
                 entry,
+                mode,
                 view: (view_x, view_y),
                 result,
             } => {
-                if self.displayed_entry() != Some(entry) {
+                if self.displayed_entry() != Some(entry) || mode != self.session.workspace.mode {
                     // The canvas has moved to another stack; this answer describes the old one.
                     return Task::none();
                 }
-                let Some((action, x_parameter, y_parameter)) = tools::point_pick(&self.modules)
+                let Some((action, x_parameter, y_parameter)) =
+                    tools::point_pick_for_mode(&self.modules, &self.session.workspace.mode)
                 else {
                     return Task::none();
                 };
@@ -1345,12 +1423,30 @@ impl Editor {
                 match result {
                     Ok(point) => {
                         let (x, y) = (point.content_x, point.content_y);
-                        self.fields.set(&action, &x_parameter, x.to_string());
-                        self.fields.set(&action, &y_parameter, y.to_string());
                         self.event(
                             "canvas_pick",
                             json!({"action":action,"view_x":view_x,"view_y":view_y,"x":x,"y":y}),
                         );
+                        if action == "pick-raw-neutral" {
+                            if !self.session.preview.can_edit() {
+                                self.status = "Return to current to edit white balance".into();
+                                return Task::none();
+                            }
+                            let Some(state) = &self.state else {
+                                return Task::none();
+                            };
+                            let mut request = json!({
+                                "asset_id": state.asset.id,
+                                "mutation": mutation(state.revision),
+                            });
+                            let object =
+                                request.as_object_mut().expect("the envelope is an object");
+                            object.insert(x_parameter, Value::from(x));
+                            object.insert(y_parameter, Value::from(y));
+                            return self.command(format!("edit.{action}"), request);
+                        }
+                        self.fields.set(&action, &x_parameter, x.to_string());
+                        self.fields.set(&action, &y_parameter, y.to_string());
                         self.status = format!(
                             "Picked ({x}, {y}) from view ({view_x}, {view_y}) into {action}"
                         );
@@ -1591,10 +1687,21 @@ impl Editor {
             self.original_entry = refresh.original;
         }
         self.recipe = Some(refresh.recipe);
+        if matches!(
+            refresh.state.asset.source,
+            lightwell_core::SourceKind::Raw { .. }
+        ) {
+            self.fields.bind_raw(
+                &refresh.job.entry.snapshot.recipe,
+                self.editing.as_ref(),
+                self.dragging.as_ref(),
+            );
+        }
         let revision = refresh.state.revision;
         let entry = refresh.state.current_entry.id.clone();
         self.state = Some(refresh.state);
         self.display_entry = Some(refresh.job.entry.id.clone());
+        self.requested_render_entry = Some(refresh.job.entry.clone());
         self.preview_generation = self.preview_queue.request(refresh.job);
         self.status = "Rendering selected history state…".into();
         self.settle_draft(revision, &entry);
@@ -1721,6 +1828,12 @@ impl Editor {
                 .modules
                 .iter()
                 .filter(|module| module.is_available())
+                .filter(|module| {
+                    module.id != "lightwell.raw"
+                        || self.state.as_ref().is_some_and(|state| {
+                            matches!(state.asset.source, lightwell_core::SourceKind::Raw { .. })
+                        })
+                })
                 .filter_map(|module| {
                     let letter = module.canvas.as_ref()?.shortcut()?.chars().next()?;
                     Some((letter, module.id.clone()))
@@ -1803,11 +1916,37 @@ fn module_summary(modules: &[ModuleDescriptor]) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use lightwell_core::{AssetId, ContentPoint, EntryId, POINTER_MODE, Zoom};
+    use lightwell_core::{
+        AssetId, ContentPoint, EntryId, LayerId, POINTER_MODE, PreviewJob, PreviewSource,
+        RawPayload, SourceImage, SourceKind, WhiteBalanceMode, Zoom,
+    };
     use testing::{
         attach_log, boot, crop_descriptor, descriptors, entry, finish, logged, opened, pick_events,
         pick_fields, picking, refresh_for,
     };
+
+    #[test]
+    fn desktop_registry_contains_every_core_builtin_including_raw() {
+        let desktop = registry(&[]).unwrap();
+        let core = ModuleRegistry::builtin();
+        let ids = |registry: &ModuleRegistry| {
+            registry
+                .descriptors()
+                .iter()
+                .map(|module| module.id.clone())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(ids(&desktop), ids(&core));
+        let disabled = registry(&["lightwell.raw".into()]).unwrap();
+        assert!(
+            !disabled
+                .descriptors()
+                .iter()
+                .find(|module| module.id == "lightwell.raw")
+                .unwrap()
+                .is_available()
+        );
+    }
 
     #[test]
     fn a_canvas_pick_fills_the_located_content_coordinate_without_committing() {
@@ -1822,6 +1961,7 @@ mod tests {
         assert_eq!(editor.fields.get(&action, &y), Some("0"));
         let _ = editor.update(Message::PointLocated {
             entry: entry_id,
+            mode: POINTER_MODE.into(),
             view: (7, 9),
             result: Ok(ContentPoint {
                 content_x: 100,
@@ -1873,6 +2013,7 @@ mod tests {
         // The canvas moved to another stack while the mapping was in flight.
         let _ = editor.update(Message::PointLocated {
             entry: EntryId::new(),
+            mode: POINTER_MODE.into(),
             view: (7, 9),
             result: Ok(ContentPoint {
                 content_x: 100,
@@ -1901,6 +2042,7 @@ mod tests {
         let refusal = "validation: point (7, 9) is outside the 4x3 rendered image";
         let _ = editor.update(Message::PointLocated {
             entry: entry_id,
+            mode: POINTER_MODE.into(),
             view: (7, 9),
             result: Err(refusal.into()),
         });
@@ -2378,6 +2520,80 @@ mod tests {
         finish(editor, catalog);
     }
 
+    #[test]
+    fn historical_raw_preview_rebinds_controls_and_return_restores_current_values() {
+        let (mut editor, catalog, asset, _) = opened(Vec::new(), 4);
+        let original = RawPayload::for_as_shot([2.0, 1.0, 1.5], [[0.0; 3]; 4]).unwrap();
+        let mut historical = entry(&asset, 0, None);
+        historical.snapshot = historical
+            .snapshot
+            .with_layer_inserted(0, original.layer(LayerId::new()))
+            .unwrap();
+        let mut current = entry(&asset, 4, Some(&historical.id));
+        let mut adjusted = original.clone();
+        adjusted.exposure_ev = 1.0;
+        adjusted.wb_mode = WhiteBalanceMode::Custom;
+        adjusted.gains = [1.2, 1.0, 0.9];
+        current.snapshot = current
+            .snapshot
+            .with_layer_inserted(0, adjusted.layer(LayerId::new()))
+            .unwrap();
+        editor.state.as_mut().unwrap().asset.source = SourceKind::Raw {
+            metadata: json!({}),
+        };
+        editor.state.as_mut().unwrap().current_entry = current.clone();
+        editor.fields.bind_raw(&current.snapshot.recipe, None, None);
+        assert_eq!(editor.fields.get("set-raw-exposure", "ev"), Some("1"));
+        assert_eq!(editor.fields.get("set-raw-red-gain", "gain"), Some("1.2"));
+
+        let job = |entry| PreviewJob {
+            source: PreviewSource::Jpeg(SourceImage {
+                width: 1,
+                height: 1,
+                rgba: vec![0, 0, 0, 255].into(),
+                fingerprint: "test".into(),
+                orientation: 1,
+            }),
+            registry: Arc::new(ModuleRegistry::builtin()),
+            entry,
+            layer_count: None,
+        };
+        editor.editing = Some(("set-raw-exposure".into(), "ev".into()));
+        let mut session = editor.session.clone();
+        session
+            .preview
+            .select(HistorySelection::Entry(historical.id.clone()));
+        session.revision += 1;
+        let _ = editor.update(Message::PreviewLoaded(Ok(Box::new(
+            tasks::PreviewPayload {
+                job: job(historical.clone()),
+                session,
+                sequence: 8,
+            },
+        ))));
+        assert_eq!(editor.display_entry, Some(historical.id));
+        assert!(editor.editing.is_none());
+        assert_eq!(editor.fields.get("set-raw-exposure", "ev"), Some("0"));
+        assert_eq!(editor.fields.get("set-raw-red-gain", "gain"), Some("2"));
+        assert_eq!(editor.fields.get("set-raw-blue-gain", "gain"), Some("1.5"));
+
+        let mut session = editor.session.clone();
+        session.preview.return_current();
+        session.revision += 1;
+        let _ = editor.update(Message::PreviewLoaded(Ok(Box::new(
+            tasks::PreviewPayload {
+                job: job(current.clone()),
+                session,
+                sequence: 9,
+            },
+        ))));
+        assert_eq!(editor.display_entry, Some(current.id));
+        assert_eq!(editor.fields.get("set-raw-exposure", "ev"), Some("1"));
+        assert_eq!(editor.fields.get("set-raw-red-gain", "gain"), Some("1.2"));
+        assert_eq!(editor.fields.get("set-raw-blue-gain", "gain"), Some("0.9"));
+        finish(editor, catalog);
+    }
+
     /// During a historical preview the status bar names the entry by its sequence, the panel keeps
     /// Return to current and Restore, and the tools panel stays visible with nothing runnable.
     #[test]
@@ -2489,6 +2705,31 @@ mod tests {
     fn short_ids_are_safe_for_status_display() {
         assert_eq!(short("abc"), "abc");
         assert_eq!(short("123456789012345"), "123456789012");
+    }
+
+    #[test]
+    fn a_late_open_result_cannot_replace_the_newer_selected_asset() {
+        let (mut editor, catalog, current_asset, _) = opened(Vec::new(), 2);
+        let displayed = editor.display_entry.clone();
+        let preview_generation = editor.preview_generation;
+        let session = editor.session.clone();
+        editor.activity.requested = 5;
+        editor.open_generation.store(5, Ordering::Release);
+        let old_asset = AssetId::new();
+        let old_entry = entry(&old_asset, 0, None);
+        let stale = refresh_for(
+            &old_asset,
+            &old_entry,
+            vec![old_entry.clone()],
+            &[&old_entry],
+            false,
+        );
+        let _ = editor.update(Message::ImportRefreshed(4, Ok(Box::new(stale))));
+        assert_eq!(editor.state.as_ref().unwrap().asset.id, current_asset);
+        assert_eq!(editor.display_entry, displayed);
+        assert_eq!(editor.preview_generation, preview_generation);
+        assert_eq!(editor.session, session);
+        finish(editor, catalog);
     }
 
     #[test]

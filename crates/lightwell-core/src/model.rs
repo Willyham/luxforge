@@ -5,6 +5,7 @@ use std::collections::HashSet;
 
 pub const RECIPE_FORMAT: u32 = 1;
 pub const PIXEL_EFFECT: &str = "lightwell.pixel.replace";
+pub const RAW_EFFECT: &str = "lightwell.raw";
 pub const ORIENTATION_EFFECT: &str = "lightwell.geometry.orientation";
 pub const CROP_EFFECT: &str = "lightwell.geometry.crop";
 pub const EFFECT_FORMAT: u32 = 1;

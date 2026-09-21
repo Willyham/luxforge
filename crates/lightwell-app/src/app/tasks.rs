@@ -11,7 +11,10 @@ use lightwell_core::{
 use serde_json::{Value, json};
 use std::{
     path::PathBuf,
-    sync::atomic::{AtomicU64, Ordering},
+    sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+    },
     time::Instant,
 };
 
@@ -99,6 +102,116 @@ fn parse<T: serde::de::DeserializeOwned>(value: Value) -> Result<T, String> {
     serde_json::from_value(value).map_err(|error| error.to_string())
 }
 
+/// Poll only while this client's bounded source job is active. Every poll is a short owner
+/// request; decoding and hashing remain on the source worker.
+fn wait_source_job(
+    owner: &OwnerHandle,
+    client: ClientId,
+    job_id: &str,
+    open_guard: Option<(&AtomicU64, u64)>,
+    preview_guard: Option<(&AssetId, &PreviewExpectation)>,
+) -> Result<EditorState, String> {
+    loop {
+        if open_guard.is_some_and(|(guard, generation)| guard.load(Ordering::Acquire) != generation)
+        {
+            let _ = call(owner, client, "job.cancel", json!({"job_id":job_id}));
+            return Err("superseded open".into());
+        }
+        if let Some((asset, expected)) = preview_guard
+            && !preview_still_current(owner, client, asset, expected)?
+        {
+            // Other requests from this client may share this source flight. Let the bounded
+            // worker finish once, but stop this obsolete caller from retrying or publishing it.
+            return Err("superseded preview".into());
+        }
+        let (status, _) = call(owner, client, "job.status", json!({"job_id":job_id}))?;
+        match status["state"].as_str() {
+            Some("ready") => return parse(status["asset"].clone()),
+            Some("failed") => {
+                return Err(format!(
+                    "{}: {}",
+                    status["error"]["code"].as_str().unwrap_or("internal"),
+                    status["error"]["message"]
+                        .as_str()
+                        .unwrap_or("source preparation failed")
+                ));
+            }
+            Some("queued" | "preparing") => {
+                std::thread::sleep(std::time::Duration::from_millis(50))
+            }
+            _ => return Err("unexpected source job state".into()),
+        }
+    }
+}
+
+struct PreviewExpectation {
+    session_generation: u64,
+    entry: EntryId,
+    current: bool,
+}
+
+fn preview_still_current(
+    owner: &OwnerHandle,
+    client: ClientId,
+    asset_id: &AssetId,
+    expected: &PreviewExpectation,
+) -> Result<bool, String> {
+    let (session, _) = call(owner, client, "session.state", json!({}))?;
+    let session: ClientSession = parse(session)?;
+    if session.preview.generation != expected.session_generation {
+        return Ok(false);
+    }
+    if expected.current {
+        let (state, _) = call(owner, client, "asset.state", json!({"asset_id":asset_id}))?;
+        let state: EditorState = parse(state)?;
+        Ok(state.current_entry.id == expected.entry)
+    } else {
+        Ok(
+            matches!(session.preview.selection, HistorySelection::Entry(ref id) if *id == expected.entry),
+        )
+    }
+}
+
+fn ready_preview_job(
+    owner: &OwnerHandle,
+    client: ClientId,
+    asset_id: AssetId,
+    entry_id: Option<EntryId>,
+    layer_count: Option<usize>,
+    expected: &PreviewExpectation,
+) -> Result<PreviewJob, String> {
+    loop {
+        if !preview_still_current(owner, client, &asset_id, expected)? {
+            return Err("superseded preview".into());
+        }
+        match owner.preview_job(client, asset_id.clone(), entry_id.clone(), layer_count) {
+            Ok(job) => {
+                if preview_still_current(owner, client, &asset_id, expected)? {
+                    return Ok(job);
+                }
+                return Err("superseded preview".into());
+            }
+            Err(error) if error.kind == lightwell_core::ErrorKind::PreparationRequired => {
+                let _ = wait_source_job(
+                    owner,
+                    client,
+                    &error.detail,
+                    None,
+                    Some((&asset_id, expected)),
+                )?;
+            }
+            Err(error)
+                if error.kind == lightwell_core::ErrorKind::ResourceLimit
+                    && (error.detail.starts_with("RAW mosaic queue is full")
+                        || error.detail.starts_with("source preparation queue is full")) =>
+            {
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
+            Err(error) => return Err(error.to_string()),
+        }
+    }
+}
+
 /// Read authoritative state back after a change or an external event.
 pub(crate) fn refresh(
     owner: &OwnerHandle,
@@ -142,9 +255,14 @@ pub(crate) fn refresh(
         "history.list",
         json!({"asset_id":asset_id,"before_sequence":1,"limit":1}),
     )?)?;
-    let job = owner
-        .preview_job(asset_id, selected, None)
-        .map_err(|error| error.to_string())?;
+    let expected = PreviewExpectation {
+        session_generation: session.preview.generation,
+        entry: selected
+            .clone()
+            .unwrap_or_else(|| state.current_entry.id.clone()),
+        current: selected.is_none(),
+    };
+    let job = ready_preview_job(owner, client, asset_id, selected, None, &expected)?;
     Ok(Refresh {
         state,
         history,
@@ -169,15 +287,45 @@ pub(crate) fn modules_task(owner: OwnerHandle, client: ClientId) -> Task<Message
     )
 }
 
-pub(crate) fn import_task(owner: OwnerHandle, client: ClientId, path: PathBuf) -> Task<Message> {
+pub(crate) fn import_task(
+    owner: OwnerHandle,
+    client: ClientId,
+    path: PathBuf,
+    generation: u64,
+    open_guard: Arc<AtomicU64>,
+) -> Task<Message> {
     Task::perform(
         async move {
             let (result, sequence) = call(&owner, client, "catalog.import", json!({"path":path}))?;
-            let state: EditorState = parse(result)?;
-            let _ = call(&owner, client, "preview.return-current", json!({}))?;
-            refresh(&owner, client, state.asset.id, true, sequence)
+            let job_id = result["job_id"]
+                .as_str()
+                .ok_or("catalog.import did not return a source job")?;
+            let state = wait_source_job(
+                &owner,
+                client,
+                job_id,
+                Some((&open_guard, generation)),
+                None,
+            )?;
+            if open_guard.load(Ordering::Acquire) != generation {
+                let _ = call(&owner, client, "job.cancel", json!({"job_id":job_id}));
+                return Err("superseded open".into());
+            }
+            let (_, adopted_sequence) =
+                call(&owner, client, "job.adopt", json!({"job_id":job_id}))?;
+            let refreshed = refresh(
+                &owner,
+                client,
+                state.asset.id,
+                true,
+                sequence.max(adopted_sequence),
+            )?;
+            if open_guard.load(Ordering::Acquire) != generation {
+                return Err("superseded open".into());
+            }
+            Ok(refreshed)
         },
-        |result| Message::Refreshed(result.map(Box::new)),
+        move |result| Message::ImportRefreshed(generation, result.map(Box::new)),
     )
 }
 
@@ -209,9 +357,21 @@ pub(crate) fn preview_task(
         async move {
             let (mut result, sequence) = call(&owner, client, method, params)?;
             let session: ClientSession = parse(result["session"].take())?;
-            let job = owner
-                .preview_job(asset_id, entry_id, None)
-                .map_err(|error| error.to_string())?;
+            let current = entry_id.is_none();
+            let entry = match entry_id.as_ref() {
+                Some(id) => id.clone(),
+                None => {
+                    let (value, _) =
+                        call(&owner, client, "asset.state", json!({"asset_id":asset_id}))?;
+                    parse::<EditorState>(value)?.current_entry.id
+                }
+            };
+            let expected = PreviewExpectation {
+                session_generation: session.preview.generation,
+                entry,
+                current,
+            };
+            let job = ready_preview_job(&owner, client, asset_id, entry_id, None, &expected)?;
             Ok(PreviewPayload {
                 job,
                 session,
@@ -248,14 +408,22 @@ pub(crate) fn recipe_task(
 /// is exactly that layer's input stage. Starting a draft and reapplying it are the only two requests.
 pub(crate) fn crop_preview_task(
     owner: OwnerHandle,
+    client: ClientId,
     asset_id: AssetId,
     layer_count: usize,
 ) -> Task<Message> {
     Task::perform(
         async move {
-            owner
-                .preview_job(asset_id, None, Some(layer_count))
-                .map_err(|error| error.to_string())
+            let (session, _) = call(&owner, client, "session.state", json!({}))?;
+            let session: ClientSession = parse(session)?;
+            let (state, _) = call(&owner, client, "asset.state", json!({"asset_id":asset_id}))?;
+            let state: EditorState = parse(state)?;
+            let expected = PreviewExpectation {
+                session_generation: session.preview.generation,
+                entry: state.current_entry.id,
+                current: true,
+            };
+            ready_preview_job(&owner, client, asset_id, None, Some(layer_count), &expected)
         },
         |result| {
             Message::Crop(crate::app::message::CropMessage::PreviewReady(
@@ -301,10 +469,12 @@ pub(crate) fn locate_task(
     client: ClientId,
     asset_id: AssetId,
     entry: EntryId,
+    mode: String,
     x: u32,
     y: u32,
 ) -> Task<Message> {
     let picked = entry.clone();
+    let picked_mode = mode.clone();
     Task::perform(
         async move {
             let (located, _) = call(
@@ -317,6 +487,7 @@ pub(crate) fn locate_task(
         },
         move |result| Message::PointLocated {
             entry: picked.clone(),
+            mode: picked_mode.clone(),
             view: (x, y),
             result,
         },
@@ -411,6 +582,40 @@ pub(crate) fn merge_current_entry(history: &mut HistoryPage, entry: HistoryEntry
 mod tests {
     use super::*;
     use crate::app::testing::entry;
+
+    #[test]
+    fn superseded_history_generation_stops_a_waiting_preview() {
+        let catalog = std::env::temp_dir().join(format!(
+            "lightwell-preview-guard-{}-{}.sqlite",
+            std::process::id(),
+            REQUEST_NUMBER.fetch_add(1, Ordering::Relaxed)
+        ));
+        let (owner, join) = OwnerHandle::start(&catalog).unwrap();
+        let client = owner.register();
+        let asset = AssetId::new();
+        let expected = PreviewExpectation {
+            session_generation: 0,
+            entry: EntryId::new(),
+            current: false,
+        };
+        let _ = call(&owner, client, "preview.return-current", json!({})).unwrap();
+        assert!(!preview_still_current(&owner, client, &asset, &expected).unwrap());
+        assert_eq!(
+            ready_preview_job(
+                &owner,
+                client,
+                asset,
+                Some(expected.entry.clone()),
+                None,
+                &expected
+            )
+            .unwrap_err(),
+            "superseded preview"
+        );
+        owner.stop();
+        join.join().unwrap();
+        std::fs::remove_file(catalog).unwrap();
+    }
 
     #[test]
     fn current_entry_merge_is_newest_first_and_bounded() {

@@ -1,6 +1,6 @@
 use crate::*;
 use lightwell_core::{
-    CROP_EFFECT, CropPayload, CropStage, EditorService, Mutation, Transform, render,
+    CROP_EFFECT, CropPayload, CropStage, EditorService, Mutation, PreviewSource, Transform, render,
 };
 use std::time::Instant;
 
@@ -64,12 +64,15 @@ pub fn run(root: &Path, source: &Path, out: &Path, samples: usize) -> Result {
     let original_job = service.preview_job(&asset, Some(&original), None)?;
     let cached_preview_job_ms = milliseconds(started);
     let started = Instant::now();
-    let original_raster = render(
-        service.registry(),
-        &original_job.source,
-        original_job.entry.snapshot.id,
-        &original_job.entry.snapshot.recipe,
-    )?;
+    let original_raster = match &original_job.source {
+        PreviewSource::Jpeg(image) => render(
+            service.registry(),
+            image,
+            original_job.entry.snapshot.id,
+            &original_job.entry.snapshot.recipe,
+        )?,
+        PreviewSource::Raw { .. } => return Err("JPEG performance input expected".into()),
+    };
     let original_render_ms = milliseconds(started);
     ensure(
         (original_raster.width, original_raster.height) == (state.asset.width, state.asset.height),
@@ -136,12 +139,15 @@ pub fn run(root: &Path, source: &Path, out: &Path, samples: usize) -> Result {
     let cold_job = service.preview_job(&asset, Some(&original), None)?;
     let cold_source_and_job_ms = milliseconds(started);
     let started = Instant::now();
-    let cold_raster = render(
-        service.registry(),
-        &cold_job.source,
-        cold_job.entry.snapshot.id,
-        &cold_job.entry.snapshot.recipe,
-    )?;
+    let cold_raster = match &cold_job.source {
+        PreviewSource::Jpeg(image) => render(
+            service.registry(),
+            image,
+            cold_job.entry.snapshot.id,
+            &cold_job.entry.snapshot.recipe,
+        )?,
+        PreviewSource::Raw { .. } => return Err("JPEG performance input expected".into()),
+    };
     let cold_original_render_ms = milliseconds(started);
     ensure(
         (cold_raster.width, cold_raster.height) == (state.asset.width, state.asset.height),

@@ -3,7 +3,8 @@
 //! was typed and commits nothing.
 use crate::state::tools::{Rendered, classify, declared_parameter};
 use lightwell_core::{
-    ActionDescriptor, Control, ModuleDescriptor, ParameterDescriptor, ParameterKind,
+    ActionDescriptor, Control, ModuleDescriptor, ParameterDescriptor, ParameterKind, RAW_EFFECT,
+    RawPayload, Recipe, WhiteBalanceMode,
 };
 use serde_json::{Map, Value};
 use std::collections::BTreeMap;
@@ -35,6 +36,52 @@ impl Fields {
     pub(crate) fn set(&mut self, action: &str, parameter: &str, text: String) {
         self.0
             .insert((action.to_owned(), parameter.to_owned()), text);
+    }
+
+    /// Reflect the displayed RAW history entry. While a person edits one field, keep their text;
+    /// all other controls follow authoritative recipe state across undo, redo and reopen.
+    pub(crate) fn bind_raw(
+        &mut self,
+        recipe: &Recipe,
+        editing: Option<&(String, String)>,
+        dragging: Option<&(String, String)>,
+    ) {
+        let Some(layer) = recipe
+            .layers
+            .first()
+            .filter(|layer| layer.effect_id == RAW_EFFECT)
+        else {
+            return;
+        };
+        let Ok(payload) = RawPayload::from_layer(layer) else {
+            return;
+        };
+        let gains = match payload.wb_mode {
+            WhiteBalanceMode::AsShot => payload.as_shot_gains,
+            WhiteBalanceMode::Custom => payload.gains,
+        };
+        for (action, parameter, text) in [
+            ("set-raw-exposure", "ev", number_text(payload.exposure_ev)),
+            (
+                "set-raw-temperature",
+                "kelvin",
+                number_text(payload.temperature_kelvin.unwrap_or(6504.0)),
+            ),
+            (
+                "set-raw-tint",
+                "tint",
+                number_text(payload.tint.unwrap_or(0.0)),
+            ),
+            ("set-raw-red-gain", "gain", gains[0].to_string()),
+            ("set-raw-blue-gain", "gain", gains[2].to_string()),
+        ] {
+            if editing.is_some_and(|field| field.0 == action && field.1 == parameter)
+                || dragging.is_some_and(|field| field.0 == action && field.1 == parameter)
+            {
+                continue;
+            }
+            self.set(action, parameter, text);
+        }
     }
 
     /// Correlated evidence: what every generated control held when a frame was captured.
@@ -309,9 +356,9 @@ mod tests {
             .find(|parameter| matches!(parameter.kind, ParameterKind::Color))
             .expect("the pixel action declares a color");
         assert_eq!(fields.get(action, &color.name), Some("0,0,0"));
-        // Only declared fields exist: an action driven by presets alone has none.
+        // The three pixel fields and the three visible RAW value controls are declared.
         assert!(
-            fields.summary().as_object().expect("an object").len() == 3,
+            fields.summary().as_object().expect("an object").len() == 6,
             "{}",
             fields.summary()
         );

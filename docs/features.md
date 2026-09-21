@@ -16,7 +16,7 @@
 | Fit, numeric zoom, 100% source detail and pan | Implemented (M1) | Physical-pixel 100%; per-client session state |
 | Live JSON API and single-owner IPC | Implemented (M1) | Same service and history while the GUI is open |
 | Rotate left/right, mirror horizontal, flip vertical | Implemented (M2) | Exact integer mappings composed into one orientation layer updated in place; four rotations leave one neutral layer ([design](design/orientation-layer.md)) |
-| Named versions and lineage view | Implemented | A version names a retained entry; lineage query and branch markers; catalog format 3 ([design](design/versions-and-lineage.md)) |
+| Named versions and lineage view | Implemented | A version names a retained entry; lineage query and branch markers; catalog format 4 ([design](design/versions-and-lineage.md)) |
 | Cached source and compiled one-pass rendering | Implemented | Point queries never rasterize; [performance rules](engineering/performance-rules.md) |
 | Content-space edits and `render.locate` | Implemented | Pixel-stage layers precede quarter-turns, reflections and crop; the canvas pick and the query map a rendered pixel to its content pixel ([design](design/content-space-edits.md)) |
 | Declarative tool-module interface | Implemented (M3) | Descriptor-validated registry, generated `edit.<action>` methods and `module.list`; [modules](design/modules-and-api.md) |
@@ -29,7 +29,7 @@
 | Develop workspace shell | Implemented | Title bar, collapsible state and tools panels, canvas with the floating mode strip, draft bar and notices, status bar; dark theme; verified on the M4 Mac by the `workspace` and `unavailable` smoke scenarios; [design](design/develop-workspace.md) |
 | Widget library and layered desktop | Implemented | `lightwell-ui` (Iced only, no core dependency); `app/`, `state/` and `view/` layers with the boundary enforced by `cargo xtask check-repository`; [architecture](design/develop-workspace.md#architecture) |
 | Generated tools panel: sliders, chips, colour fields, groups, resets | Implemented | Every control from `module.list`; slider release commits once and a drag sends nothing; unsupported kinds named; Developer section behind `--developer` |
-| History labels, recipe rows, module hints and resets | Implemented | `summary` templates rendered into stored entry labels (catalog format 3), `recipe.describe`, `hint`, module and group `reset`, canvas `title` and `shortcut`, `developer` flag; all in `module.list` |
+| History labels, recipe rows, module hints and resets | Implemented | `summary` templates rendered into stored entry labels (catalog format 4), `recipe.describe`, `hint`, module and group `reset`, canvas `title` and `shortcut`, `developer` flag; all in `module.list` |
 | Per-client workspace state | Implemented | Panels, canvas mode and thirds through `workspace.set`, reported by `session.state` |
 | Compare with the original, command palette, Copy as JSON request | Implemented | Hold `\` or Compare; Cmd+K runs every listed action and host command; a control's context menu copies its exact request |
 | JPEG export with color and metadata verification | Editor follow-up | Quality 90, no overwrite, Keep metadata option |
@@ -39,9 +39,10 @@
 | External module loading | Required later | Selected use case and measured activation costs first |
 | Multi-image library, filters, tagging, collections | Later | Owner workflow decisions first |
 | RGB histogram, output clipping indicators/overlays | Proposed plan | [Basic and histogram](design/basic-and-histogram.md); no implementation yet |
-| Exposure, white balance, tone, vibrance and saturation | Proposed plan | JPEG-first slices in [Basic and histogram](design/basic-and-histogram.md); product/numerical choices remain open |
+| JPEG exposure, white balance, tone, vibrance and saturation | Proposed plan | JPEG-first slices in [Basic and histogram](design/basic-and-histogram.md); product/numerical choices remain open |
 | PNG input | Later | Separate from the proposed JPEG Basic controls |
-| Nikon Z6 and Fujifilm X100VI RAW | Later | Real recording-mode fixtures; benchmark established decoders |
+| Nikon Z6 and Fujifilm X100VI RAW editing | Implemented; initial M4 verification | [Continuous RAW editing](design/initial-raw.md): retained sensor/float sources, source exposure, custom temperature/tint, neutral picker, history and shared API; full-size 12/14-bit lossless NEF and 14-bit uncompressed/lossless RAF, with explicit scene/resource/platform qualification gaps |
+| DJI Air 2S DNG | Tested unsupported | Required GainMap and WarpRectilinear opcodes are rejected explicitly; failed replacement preserves the previous photo |
 | Texture, clarity, dehaze, masks, clone/heal | Later | Full API required whenever introduced |
 | Bitmap layers, blend modes, layer reordering | Not selected | |
 | Sidecars, sync, managed-copy import, folder relinking | Later decisions | |

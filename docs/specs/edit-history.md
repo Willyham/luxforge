@@ -6,7 +6,7 @@ Status: implemented (M1 and M2) and verified on the M4 Mac. This is the foundati
 
 A referenced source is read-only and identified independently of its locator. An edit layer has a stable layer ID, effect type and format, and parameters at a position in an ordered recipe. Each immutable recipe snapshot holds the complete stack needed to reconstruct the image. A history entry records the action that produced a snapshot: stable asset, entry, snapshot and layer IDs; per-asset sequence; action and provider identity with validated parameters; actor, timestamp and request ID; base and result revision; the complete resulting stack; undo parent; restore target when applicable. Sequence orders entries; timestamps are display information.
 
-Import creates Original with an empty stack. Later adjustment of a layer creates a new snapshot that retains the layer's identity; older stacks never change. A transaction may change several parameters while producing one action entry.
+JPEG import creates Original with an empty stack. RAW import creates Original with its one required source-development layer and captured as-shot defaults; every later snapshot retains that layer at index zero. Later adjustment of a layer creates a new snapshot that retains the layer's identity; older stacks never change. A transaction may change several parameters while producing one action entry.
 
 No full bitmap per history entry, no private widget undo stack, no module-owned database writes. A snapshot is evaluated from original pixels and its ordered payloads, never by replaying an evolving command log.
 

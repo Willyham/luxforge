@@ -12,3 +12,6 @@
 .DS_Store
 Thumbs.db
 /.tools/
+
+# Owner RAW originals used only for local verification.
+/fixtures/raw/

@@ -1,12 +1,13 @@
 use crate::{
     AssetId, ContentPoint, EntryId, Error, ErrorKind, HistoryEntry, Layer, LayerId, ModuleRegistry,
-    Mutation, PreviewJob, Raster, Snapshot, SnapshotId, SourceImage, Transform, locate,
+    Mutation, PreviewJob, PreviewSource, Raster, Snapshot, SnapshotId, Transform,
     modules::{
         ActionInput, ActionPlan, EffectStage, Stage, StageContext, action_label, check_parameters,
     },
-    open_source, render,
-    render::Evaluation,
-    sample,
+    open_source_bytes, read_bounded_file, render,
+    render::{Evaluation, locate_dimensions},
+    render_linear, sample, sample_linear,
+    source::{PreparedSource, RawPrepared},
 };
 use rusqlite::{
     Connection, ErrorCode, OptionalExtension, Transaction, TransactionBehavior, params,
@@ -16,18 +17,18 @@ use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::{
     cell::RefCell,
-    fs::Metadata,
+    fs::{File, Metadata},
     path::{Path, PathBuf},
-    sync::Arc,
+    sync::{Arc, atomic::AtomicBool},
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
 /// Entries store their rendered label, so a catalog written before format 3 is refused by name.
-const CATALOG_FORMAT: i64 = 3;
+const CATALOG_FORMAT: i64 = 4;
 const MAX_HISTORY_PAGE: usize = 100;
 const MAX_VERSION_NAME: usize = 64;
 const ASSET_COLUMNS: &str =
-    "id,source_root,locator,fingerprint,file_identity,byte_len,width,height";
+    "id,source_root,locator,fingerprint,file_identity,byte_len,width,height,source_json";
 
 fn catalog_error(error: rusqlite::Error) -> Error {
     let kind = match &error {
@@ -65,6 +66,13 @@ fn now_ms() -> i64 {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "kebab-case", deny_unknown_fields)]
+pub enum SourceKind {
+    Jpeg,
+    Raw { metadata: Value },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct AssetRecord {
     pub id: AssetId,
@@ -75,6 +83,7 @@ pub struct AssetRecord {
     pub byte_len: u64,
     pub width: u32,
     pub height: u32,
+    pub source: SourceKind,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -185,8 +194,8 @@ pub struct VersionResult {
     pub version: Option<Version>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-struct SourceSignature {
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub(crate) struct SourceSignature {
     byte_len: u64,
     modified: Option<SystemTime>,
     file_identity: String,
@@ -194,16 +203,34 @@ struct SourceSignature {
 }
 
 #[derive(Clone, Debug)]
+pub(crate) struct PreparedFile {
+    pub(crate) canonical: PathBuf,
+    pub(crate) signature: SourceSignature,
+    pub(crate) source: PreparedSource,
+    pub(crate) fingerprint: String,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct RawDevelopment {
+    pub(crate) asset_id: AssetId,
+    pub(crate) signature: SourceSignature,
+    pub(crate) fingerprint: String,
+    pub(crate) sensor: Arc<lightwell_raw::RawSource>,
+    pub(crate) gains: [f32; 3],
+}
+
+#[derive(Debug)]
 struct CachedSource {
     asset_id: AssetId,
     signature: SourceSignature,
-    source: SourceImage,
+    source: PreparedSource,
 }
 
 #[derive(Debug)]
 pub struct EditorService {
     connection: Connection,
     source_cache: RefCell<Option<CachedSource>>,
+    allow_sync_source: bool,
     registry: Arc<ModuleRegistry>,
 }
 
@@ -254,6 +281,7 @@ impl EditorService {
         Ok(Self {
             connection,
             source_cache: RefCell::new(None),
+            allow_sync_source: true,
             registry,
         })
     }
@@ -287,7 +315,8 @@ impl EditorService {
                     fingerprint TEXT NOT NULL,
                     byte_len INTEGER NOT NULL,
                     width INTEGER NOT NULL,
-                    height INTEGER NOT NULL
+                    height INTEGER NOT NULL,
+                    source_json TEXT NOT NULL
                  );
                  CREATE TABLE entries (
                     id TEXT PRIMARY KEY,
@@ -328,17 +357,312 @@ impl EditorService {
             .map_err(catalog_error)
     }
 
-    pub fn import(&mut self, path: &Path) -> Result<EditorState, Error> {
+    /// The catalog owner disables synchronous source misses; workers prepare these separately.
+    pub(crate) fn disable_sync_source(&mut self) {
+        self.allow_sync_source = false;
+    }
+
+    pub(crate) fn request_signature(path: &Path) -> Result<(PathBuf, SourceSignature), Error> {
         let canonical = path.canonicalize().map_err(|e| {
             Error::new(
                 ErrorKind::FileAccess,
                 format!("cannot resolve source: {}", e.kind()),
             )
         })?;
-        let before = canonical
+        let metadata = canonical
             .metadata()
-            .map_err(|e| Error::new(ErrorKind::FileAccess, e.to_string()))?;
-        let identity = file_identity(&before, &canonical);
+            .map_err(|e| Error::new(ErrorKind::FileAccess, e.kind().to_string()))?;
+        if !metadata.is_file() {
+            return Err(Error::new(
+                ErrorKind::UnsupportedInput,
+                "expected a regular file",
+            ));
+        }
+        Ok((canonical.clone(), source_signature(&canonical, &metadata)))
+    }
+
+    /// Read, hash and decode from the same bounded, stable read-only file handle on a worker.
+    pub(crate) fn prepare_file(path: &Path) -> Result<PreparedFile, Error> {
+        Self::prepare_file_cancel(path, &AtomicBool::new(false))
+    }
+
+    pub(crate) fn prepare_file_cancel(
+        path: &Path,
+        cancel: &AtomicBool,
+    ) -> Result<PreparedFile, Error> {
+        let canonical = path.canonicalize().map_err(|e| {
+            Error::new(
+                ErrorKind::FileAccess,
+                format!("cannot resolve source: {}", e.kind()),
+            )
+        })?;
+        let mut file = File::open(&canonical)
+            .map_err(|e| Error::new(ErrorKind::FileAccess, e.kind().to_string()))?;
+        let handle_before = file
+            .metadata()
+            .map_err(|e| Error::new(ErrorKind::FileAccess, e.kind().to_string()))?;
+        let path_before = canonical
+            .metadata()
+            .map_err(|e| Error::new(ErrorKind::FileAccess, e.kind().to_string()))?;
+        let signature = source_signature(&canonical, &handle_before);
+        if signature != source_signature(&canonical, &path_before) {
+            return Err(Error::new(
+                ErrorKind::Conflict,
+                "source changed before preparation",
+            ));
+        }
+        let bytes = read_bounded_file(&mut file)?;
+        let (source, fingerprint) = if bytes.starts_with(&[0xff, 0xd8]) {
+            let image = open_source_bytes(bytes)?;
+            let fingerprint = image.fingerprint.clone();
+            (PreparedSource::Jpeg(image), fingerprint)
+        } else {
+            let fingerprint = format!("{:x}", Sha256::digest(&bytes));
+            let raw = RawPrepared::decode(bytes, fingerprint.clone(), cancel)?;
+            (PreparedSource::Raw(raw), fingerprint)
+        };
+        let handle_after = file
+            .metadata()
+            .map_err(|e| Error::new(ErrorKind::FileAccess, e.kind().to_string()))?;
+        let path_after = canonical
+            .metadata()
+            .map_err(|e| Error::new(ErrorKind::FileAccess, e.kind().to_string()))?;
+        if signature != source_signature(&canonical, &handle_after)
+            || signature != source_signature(&canonical, &path_after)
+        {
+            return Err(Error::new(
+                ErrorKind::Conflict,
+                "source changed during preparation",
+            ));
+        }
+        Ok(PreparedFile {
+            canonical,
+            signature,
+            source,
+            fingerprint,
+        })
+    }
+
+    pub(crate) fn known_fingerprint(&self, path: &Path) -> Result<Option<String>, Error> {
+        let (canonical, signature) = Self::request_signature(path)?;
+        self.connection.query_row(
+            "SELECT fingerprint FROM assets WHERE canonical_locator=?1 OR file_identity=?2 LIMIT 1",
+            params![canonical.to_string_lossy(), signature.file_identity],
+            |row| row.get(0),
+        ).optional().map_err(catalog_error)
+    }
+
+    /// A repeated import can reuse the one verified immutable decode without a new worker job.
+    pub(crate) fn cached_import(&self, path: &Path) -> Result<Option<EditorState>, Error> {
+        let canonical = path.canonicalize().map_err(|e| {
+            Error::new(
+                ErrorKind::FileAccess,
+                format!("cannot resolve source: {}", e.kind()),
+            )
+        })?;
+        let metadata = canonical
+            .metadata()
+            .map_err(|e| Error::new(ErrorKind::FileAccess, e.kind().to_string()))?;
+        let signature = source_signature(&canonical, &metadata);
+        let id = self
+            .connection
+            .query_row(
+                "SELECT id FROM assets WHERE canonical_locator=?1 OR file_identity=?2 LIMIT 1",
+                params![canonical.to_string_lossy(), signature.file_identity],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()
+            .map_err(catalog_error)?;
+        let Some(id) = id else { return Ok(None) };
+        let state = self.state(&AssetId::parse(id)?)?;
+        if state.asset.file_identity != signature.file_identity
+            || state.asset.byte_len != signature.byte_len
+        {
+            return Err(Error::new(
+                ErrorKind::SourceUnavailable,
+                "original source fingerprint changed",
+            ));
+        }
+        let cache = self.source_cache.borrow();
+        Ok(cache
+            .as_ref()
+            .filter(|cached| cached.asset_id == state.asset.id && cached.signature == signature)
+            .map(|_| state))
+    }
+
+    /// Persisted source interpretation and current in-memory readiness, with no decode or frame work.
+    pub fn inspect_source(
+        &self,
+        asset_id: &AssetId,
+        entry_id: Option<&EntryId>,
+    ) -> Result<Value, Error> {
+        let state = self.state(asset_id)?;
+        let entry = match entry_id {
+            Some(id) => self.entry(asset_id, id)?,
+            None => state.current_entry,
+        };
+        validate_source_recipe(&state.asset, &entry.snapshot.recipe)?;
+        let cached = self.cached_state(asset_id)?.is_some();
+        let needs_development =
+            cached && self.raw_development(asset_id, Some(&entry.id))?.is_some();
+        Ok(json!({
+            "asset_id": asset_id,
+            "entry_id": entry.id,
+            "fingerprint": state.asset.fingerprint,
+            "width": state.asset.width,
+            "height": state.asset.height,
+            "source": state.asset.source,
+            "readiness": if !cached { "preparation-required" } else if needs_development { "development-required" } else { "ready" },
+        }))
+    }
+
+    pub(crate) fn raw_development(
+        &self,
+        asset_id: &AssetId,
+        entry_id: Option<&EntryId>,
+    ) -> Result<Option<RawDevelopment>, Error> {
+        let state = self.state(asset_id)?;
+        let entry = match entry_id {
+            Some(id) => self.entry(asset_id, id)?,
+            None => state.current_entry,
+        };
+        validate_source_recipe(&state.asset, &entry.snapshot.recipe)?;
+        let cache = self.source_cache.borrow();
+        let Some(cached) = cache.as_ref().filter(|cached| cached.asset_id == *asset_id) else {
+            return Ok(None);
+        };
+        let PreparedSource::Raw(raw) = &cached.source else {
+            return Ok(None);
+        };
+        let payload = raw_payload(&entry.snapshot.recipe)?;
+        let gains = match payload.wb_mode {
+            crate::WhiteBalanceMode::AsShot => raw.sensor.metadata().as_shot_gains,
+            crate::WhiteBalanceMode::Custom => payload.gains,
+        };
+        if gains == raw.gains && raw.linear.is_some() {
+            return Ok(None);
+        }
+        Ok(Some(RawDevelopment {
+            asset_id: asset_id.clone(),
+            signature: cached.signature.clone(),
+            fingerprint: state.asset.fingerprint,
+            sensor: raw.sensor.clone(),
+            gains,
+        }))
+    }
+
+    /// Release the cache's float planes before the sole source worker allocates another development.
+    /// Preview jobs may still hold the old Arc; the worker's memory gate waits for those to finish.
+    pub(crate) fn evict_development(&self) {
+        if let Some(cached) = self.source_cache.borrow_mut().as_mut()
+            && let PreparedSource::Raw(raw) = &mut cached.source
+        {
+            raw.linear.take();
+        }
+    }
+
+    pub(crate) fn install_development(
+        &self,
+        request: &RawDevelopment,
+        developed: RawPrepared,
+    ) -> Result<EditorState, Error> {
+        let state = self.state(&request.asset_id)?;
+        if state.asset.fingerprint != request.fingerprint
+            || developed.gains != request.gains
+            || developed
+                .linear
+                .as_ref()
+                .is_none_or(|image| image.fingerprint() != request.fingerprint)
+        {
+            return Err(Error::new(
+                ErrorKind::Conflict,
+                "RAW development identity changed",
+            ));
+        }
+        let current = Self::request_signature(&state.asset.locator)?.1;
+        if current != request.signature {
+            return Err(Error::new(
+                ErrorKind::SourceUnavailable,
+                "original source changed during RAW development",
+            ));
+        }
+        let mut cache = self.source_cache.borrow_mut();
+        let Some(cached) = cache.as_mut().filter(|cached| {
+            cached.asset_id == request.asset_id && cached.signature == request.signature
+        }) else {
+            return Err(Error::new(
+                ErrorKind::Conflict,
+                "RAW source cache was replaced during development",
+            ));
+        };
+        let PreparedSource::Raw(previous) = &cached.source else {
+            return Err(Error::new(
+                ErrorKind::Incompatible,
+                "RAW development targeted a JPEG source",
+            ));
+        };
+        if !Arc::ptr_eq(&previous.sensor, &request.sensor) {
+            return Err(Error::new(
+                ErrorKind::Conflict,
+                "RAW mosaic changed during development",
+            ));
+        }
+        cached.source = PreparedSource::Raw(developed);
+        Ok(state)
+    }
+
+    pub(crate) fn cached_state(&self, asset_id: &AssetId) -> Result<Option<EditorState>, Error> {
+        let state = self.state(asset_id)?;
+        let metadata = state.asset.locator.metadata().map_err(|_| {
+            Error::new(
+                ErrorKind::SourceUnavailable,
+                "original source is unavailable",
+            )
+        })?;
+        let signature = source_signature(&state.asset.locator, &metadata);
+        if signature.file_identity != state.asset.file_identity
+            || signature.byte_len != state.asset.byte_len
+        {
+            return Err(Error::new(
+                ErrorKind::SourceUnavailable,
+                "original source fingerprint changed",
+            ));
+        }
+        let cache = self.source_cache.borrow();
+        Ok(cache
+            .as_ref()
+            .filter(|cached| cached.asset_id == state.asset.id && cached.signature == signature)
+            .map(|_| state))
+    }
+
+    /// Direct service clients may prepare synchronously; the API owner never calls this path.
+    pub fn import(&mut self, path: &Path) -> Result<EditorState, Error> {
+        self.import_prepared(Self::prepare_file(path)?)
+            .map(|(state, _)| state)
+    }
+
+    /// Complete an import only after a worker has verified and decoded its exact source bytes.
+    /// The bool says whether a new asset was inserted for event publication.
+    pub(crate) fn import_prepared(
+        &mut self,
+        prepared: PreparedFile,
+    ) -> Result<(EditorState, bool), Error> {
+        let PreparedFile {
+            canonical,
+            signature,
+            source,
+            fingerprint,
+        } = prepared;
+        let current = canonical
+            .metadata()
+            .map_err(|e| Error::new(ErrorKind::SourceUnavailable, e.kind().to_string()))?;
+        if source_signature(&canonical, &current) != signature {
+            return Err(Error::new(
+                ErrorKind::Conflict,
+                "source changed before import completion",
+            ));
+        }
+        let identity = signature.file_identity.clone();
         let canonical_text = canonical.to_string_lossy().into_owned();
         if let Some(existing) = self
             .connection
@@ -350,29 +674,63 @@ impl EditorService {
             .optional()
             .map_err(catalog_error)?
         {
-            return self.state(&AssetId::parse(existing)?);
+            let state = self.state(&AssetId::parse(existing)?)?;
+            if state.asset.fingerprint != fingerprint {
+                return Err(Error::new(
+                    ErrorKind::SourceUnavailable,
+                    "original source fingerprint changed",
+                ));
+            }
+            let interpretation = match source.metadata() {
+                None => SourceKind::Jpeg,
+                Some(metadata) => SourceKind::Raw {
+                    metadata: serde_json::to_value(metadata)
+                        .map_err(|e| json_error("RAW metadata", e))?,
+                },
+            };
+            if !source_kinds_equal(&state.asset.source, &interpretation)? {
+                return Err(Error::new(
+                    ErrorKind::Incompatible,
+                    "original source interpretation changed",
+                ));
+            }
+            self.source_cache.replace(Some(CachedSource {
+                asset_id: state.asset.id.clone(),
+                signature,
+                source,
+            }));
+            return Ok((state, false));
         }
-        let source = open_source(&canonical)?;
-        let after = canonical
-            .metadata()
-            .map_err(|e| Error::new(ErrorKind::FileAccess, e.to_string()))?;
-        if source_signature(&canonical, &before) != source_signature(&canonical, &after) {
-            return Err(Error::new(
-                ErrorKind::Conflict,
-                "source changed while it was being imported",
-            ));
-        }
+        let (width, height) = source.dimensions();
+        let source_kind = match source.metadata() {
+            None => SourceKind::Jpeg,
+            Some(metadata) => SourceKind::Raw {
+                metadata: serde_json::to_value(metadata)
+                    .map_err(|e| json_error("RAW metadata", e))?,
+            },
+        };
         let asset = AssetRecord {
             id: AssetId::new(),
             source_root: canonical.parent().unwrap_or(Path::new("")).to_path_buf(),
             locator: canonical.clone(),
-            fingerprint: source.fingerprint.clone(),
+            fingerprint: fingerprint.clone(),
             file_identity: identity,
-            byte_len: after.len(),
-            width: source.width,
-            height: source.height,
+            byte_len: signature.byte_len,
+            width,
+            height,
+            source: source_kind,
         };
-        let snapshot = Snapshot::original(asset.id.clone());
+        let mut snapshot = Snapshot::original(asset.id.clone());
+        if matches!(asset.source, SourceKind::Raw { .. }) {
+            snapshot = snapshot.with_layer_inserted(
+                0,
+                crate::RawPayload::for_as_shot(
+                    source.metadata().expect("RAW metadata").as_shot_gains,
+                    source.metadata().expect("RAW metadata").cam_xyz,
+                )?
+                .layer(LayerId::new()),
+            )?;
+        }
         let entry = HistoryEntry {
             id: EntryId::new(),
             asset_id: asset.id.clone(),
@@ -394,7 +752,7 @@ impl EditorService {
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(catalog_error)?;
         tx.execute(
-            "INSERT INTO assets VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9)",
+            "INSERT INTO assets VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)",
             params![
                 asset.id.as_str(),
                 asset.source_root.to_string_lossy(),
@@ -408,6 +766,7 @@ impl EditorService {
                 ))?,
                 i64::from(asset.width),
                 i64::from(asset.height),
+                encode(&asset.source)?,
             ],
         )
         .map_err(catalog_error)?;
@@ -420,15 +779,18 @@ impl EditorService {
         tx.commit().map_err(catalog_error)?;
         self.source_cache.replace(Some(CachedSource {
             asset_id: asset.id.clone(),
-            signature: source_signature(&canonical, &after),
+            signature,
             source,
         }));
-        Ok(EditorState {
-            asset,
-            revision: 0,
-            current_entry: entry,
-            redo: Vec::new(),
-        })
+        Ok((
+            EditorState {
+                asset,
+                revision: 0,
+                current_entry: entry,
+                redo: Vec::new(),
+            },
+            true,
+        ))
     }
 
     pub fn state(&self, asset_id: &AssetId) -> Result<EditorState, Error> {
@@ -576,8 +938,21 @@ impl EditorService {
                 format!("preview layer count {count} exceeds the {layers} layers of this entry"),
             ));
         }
+        let source = self.verified_prepared(&state.asset)?;
+        let preview_source = match source {
+            PreparedSource::Jpeg(image) => PreviewSource::Jpeg(image),
+            PreparedSource::Raw(raw) => {
+                let settings = raw_settings(&raw, &entry.snapshot.recipe)?;
+                PreviewSource::Raw {
+                    image: raw.linear.ok_or_else(|| {
+                        Error::new(ErrorKind::PreparationRequired, "RAW development required")
+                    })?,
+                    settings,
+                }
+            }
+        };
         Ok(PreviewJob {
-            source: self.verified_source(&state.asset)?,
+            source: preview_source,
             entry,
             registry: self.registry.clone(),
             layer_count,
@@ -587,13 +962,29 @@ impl EditorService {
     pub fn render_entry(&self, asset_id: &AssetId, entry_id: &EntryId) -> Result<Raster, Error> {
         let state = self.state(asset_id)?;
         let entry = self.entry(asset_id, entry_id)?;
-        let source = self.verified_source(&state.asset)?;
-        render(
-            &self.registry,
-            &source,
-            entry.snapshot.id.clone(),
-            &entry.snapshot.recipe,
-        )
+        match self.verified_prepared(&state.asset)? {
+            PreparedSource::Jpeg(source) => {
+                validate_source_recipe(&state.asset, &entry.snapshot.recipe)?;
+                render(
+                    &self.registry,
+                    &source,
+                    entry.snapshot.id.clone(),
+                    &entry.snapshot.recipe,
+                )
+            }
+            PreparedSource::Raw(raw) => {
+                let settings = raw_settings(&raw, &entry.snapshot.recipe)?;
+                render_linear(
+                    &self.registry,
+                    raw.linear.as_ref().ok_or_else(|| {
+                        Error::new(ErrorKind::PreparationRequired, "RAW development required")
+                    })?,
+                    entry.snapshot.id.clone(),
+                    &entry.snapshot.recipe,
+                    settings,
+                )
+            }
+        }
     }
 
     /// Evaluate one output pixel of a saved entry without rasterizing the image.
@@ -606,8 +997,26 @@ impl EditorService {
     ) -> Result<PixelSample, Error> {
         let state = self.state(asset_id)?;
         let entry = self.entry(asset_id, entry_id)?;
-        let source = self.verified_source(&state.asset)?;
-        let sampled = sample(&self.registry, &source, &entry.snapshot.recipe, x, y)?;
+        let prepared = self.verified_prepared(&state.asset)?;
+        let sampled = match &prepared {
+            PreparedSource::Jpeg(source) => {
+                validate_source_recipe(&state.asset, &entry.snapshot.recipe)?;
+                sample(&self.registry, source, &entry.snapshot.recipe, x, y)?
+            }
+            PreparedSource::Raw(raw) => {
+                let settings = raw_settings(raw, &entry.snapshot.recipe)?;
+                sample_linear(
+                    &self.registry,
+                    raw.linear.as_ref().ok_or_else(|| {
+                        Error::new(ErrorKind::PreparationRequired, "RAW development required")
+                    })?,
+                    &entry.snapshot.recipe,
+                    settings,
+                    x,
+                    y,
+                )?
+            }
+        };
         let rgba = sampled.rgba.ok_or_else(|| {
             Error::new(
                 ErrorKind::Validation,
@@ -620,7 +1029,7 @@ impl EditorService {
         Ok(PixelSample {
             entry_id: entry.id,
             snapshot_id: entry.snapshot.id,
-            source_fingerprint: source.fingerprint,
+            source_fingerprint: state.asset.fingerprint,
             width: sampled.width,
             height: sampled.height,
             x,
@@ -641,8 +1050,15 @@ impl EditorService {
     ) -> Result<ContentPoint, Error> {
         let state = self.state(asset_id)?;
         let entry = self.entry(asset_id, entry_id)?;
-        let source = self.verified_source(&state.asset)?;
-        locate(&self.registry, &source, &entry.snapshot.recipe, x, y)
+        validate_source_recipe(&state.asset, &entry.snapshot.recipe)?;
+        locate_dimensions(
+            &self.registry,
+            state.asset.width,
+            state.asset.height,
+            &entry.snapshot.recipe,
+            x,
+            y,
+        )
     }
 
     /// One action request for every caller: the desktop, the JSON API and headless clients all
@@ -670,35 +1086,150 @@ impl EditorService {
         }
         let state = self.state(asset_id)?;
         ensure_revision(&state, mutation.expected_revision)?;
-        let source = self.verified_source(&state.asset)?;
-        // The stack is compiled once; planning answers point queries and never rasterizes.
         let recipe = &state.current_entry.snapshot.recipe;
-        let evaluation = Evaluation::new(&registry, &source, recipe)?;
-        let sampler =
-            |x: u32, y: u32| -> Result<Option<[u8; 4]>, Error> { Ok(evaluation.pixel(x, y)) };
-        // The stage one layer receives: compile the prefix before it. Compiling folds declared
-        // output stages and allocates only the operation lists, so this copies no part of the stack
-        // and rasterizes nothing. The whole recipe compiled above, so its format is known good.
+        validate_source_recipe(&state.asset, recipe)?;
+        if module.descriptor().id == "lightwell.raw" {
+            let (width, height) = (state.asset.width, state.asset.height);
+            let stage = registry.compile(width, height, recipe)?.stage();
+            let unavailable = |_: u32, _: u32| -> Result<Option<[u8; 4]>, Error> {
+                Err(Error::new(
+                    ErrorKind::Incompatible,
+                    "RAW source action does not sample pixels",
+                ))
+            };
+            let stage_before = |index: usize| -> Result<Stage, Error> {
+                Ok(registry
+                    .compile_layers(width, height, prefix(&recipe.layers, index)?)?
+                    .stage())
+            };
+            let sample_before = |_: usize, _: u32, _: u32| -> Result<Option<[u8; 4]>, Error> {
+                Err(Error::new(
+                    ErrorKind::Incompatible,
+                    "RAW source action does not sample pixels",
+                ))
+            };
+            let insertion_index =
+                |effect_stage: EffectStage| registry.insertion_index(&recipe.layers, effect_stage);
+            let raw_source = if action_id == "pick-raw-neutral" {
+                Some(self.verified_prepared(&state.asset)?)
+            } else {
+                None
+            };
+            let neutral_sampler = raw_source.as_ref().map(|prepared| {
+                move |x: u32, y: u32| -> Result<[f32; 3], Error> {
+                    match prepared {
+                        PreparedSource::Raw(raw) => crate::source::neutral_at(raw, x, y),
+                        PreparedSource::Jpeg(_) => Err(Error::new(
+                            ErrorKind::Validation,
+                            "RAW neutral picker requires a RAW original",
+                        )),
+                    }
+                }
+            });
+            let context = StageContext {
+                stage,
+                layers: &recipe.layers,
+                sampler: &unavailable,
+                stage_before: &stage_before,
+                insertion_index: &insertion_index,
+                sample_before: &sample_before,
+                sensor_neutral: neutral_sampler
+                    .as_ref()
+                    .map(|sample| sample as &dyn Fn(u32, u32) -> Result<[f32; 3], Error>),
+            };
+            let snapshot = match module.plan(&input, &context)? {
+                ActionPlan::NoOp => {
+                    return self.persist_noop(asset_id, &mutation, &request, &state);
+                }
+                ActionPlan::Update(layer) => {
+                    state.current_entry.snapshot.with_layer_replaced(layer)?
+                }
+                ActionPlan::Commit(_) => {
+                    return Err(Error::new(
+                        ErrorKind::Validation,
+                        "RAW source action may only update its required layer",
+                    ));
+                }
+            };
+            return self.commit_snapshot(
+                asset_id,
+                mutation,
+                request,
+                snapshot,
+                &state.asset,
+                CommittedAction { input, label },
+            );
+        }
+        let source = self.verified_prepared(&state.asset)?;
+        let (width, height) = source.dimensions();
+        let jpeg_evaluation = match &source {
+            PreparedSource::Jpeg(image) => Some(Evaluation::new(&registry, image, recipe)?),
+            PreparedSource::Raw(_) => None,
+        };
+        let raw_settings = match &source {
+            PreparedSource::Jpeg(_) => None,
+            PreparedSource::Raw(raw) => Some(raw_settings(raw, recipe)?),
+        };
+        let stage = registry.compile(width, height, recipe)?.stage();
+        let sampler = |x: u32, y: u32| -> Result<Option<[u8; 4]>, Error> {
+            match &source {
+                PreparedSource::Jpeg(_) => Ok(jpeg_evaluation
+                    .as_ref()
+                    .expect("JPEG evaluation")
+                    .pixel(x, y)),
+                PreparedSource::Raw(raw) => Ok(sample_linear(
+                    &registry,
+                    raw.linear.as_ref().ok_or_else(|| {
+                        Error::new(ErrorKind::PreparationRequired, "RAW development required")
+                    })?,
+                    recipe,
+                    raw_settings.expect("RAW settings"),
+                    x,
+                    y,
+                )?
+                .rgba),
+            }
+        };
         let stage_before = |index: usize| -> Result<Stage, Error> {
             Ok(registry
-                .compile_layers(source.width, source.height, prefix(&recipe.layers, index)?)?
+                .compile_layers(width, height, prefix(&recipe.layers, index)?)?
                 .stage())
         };
-        // One pixel of the stage a prefix produces, for a module planning against the position its
-        // layer will take. Compiling the prefix costs O(layers) and the evaluation answers the
-        // point per segment, so nothing is rasterized here either.
         let sample_before = |index: usize, x: u32, y: u32| -> Result<Option<[u8; 4]>, Error> {
-            let prefix = prefix(&recipe.layers, index)?;
-            Ok(Evaluation::over_layers(&registry, &source, prefix)?.pixel(x, y))
+            let layers = prefix(&recipe.layers, index)?;
+            match &source {
+                PreparedSource::Jpeg(image) => {
+                    Ok(Evaluation::over_layers(&registry, image, layers)?.pixel(x, y))
+                }
+                PreparedSource::Raw(raw) => {
+                    let prefix_recipe = crate::Recipe {
+                        format: recipe.format,
+                        layers: layers.to_vec(),
+                    };
+                    Ok(sample_linear(
+                        &registry,
+                        raw.linear.as_ref().ok_or_else(|| {
+                            Error::new(ErrorKind::PreparationRequired, "RAW development required")
+                        })?,
+                        &prefix_recipe,
+                        raw_settings.expect("RAW settings"),
+                        x,
+                        y,
+                    )?
+                    .rgba)
+                }
+            }
         };
-        let insertion_index = |stage: EffectStage| registry.insertion_index(&recipe.layers, stage);
+        let insertion_index =
+            |effect_stage: EffectStage| registry.insertion_index(&recipe.layers, effect_stage);
         let context = StageContext {
-            stage: evaluation.stage(),
+            stage,
             layers: &recipe.layers,
             sampler: &sampler,
             stage_before: &stage_before,
             insertion_index: &insertion_index,
             sample_before: &sample_before,
+            sensor_neutral: None,
         };
         let snapshot = match module.plan(&input, &context)? {
             ActionPlan::NoOp => {
@@ -727,7 +1258,7 @@ impl EditorService {
             mutation,
             request,
             snapshot,
-            &source,
+            &state.asset,
             CommittedAction { input, label },
         )
     }
@@ -748,7 +1279,7 @@ impl EditorService {
         )
     }
 
-    fn verified_source(&self, asset: &AssetRecord) -> Result<SourceImage, Error> {
+    fn verified_prepared(&self, asset: &AssetRecord) -> Result<PreparedSource, Error> {
         let before = asset.locator.metadata().map_err(|_| {
             Error::new(
                 ErrorKind::SourceUnavailable,
@@ -771,32 +1302,42 @@ impl EditorService {
         {
             return Ok(cached.source.clone());
         }
-
-        let source = open_source(&asset.locator).map_err(|_| {
-            Error::new(
-                ErrorKind::SourceUnavailable,
-                "original source is unavailable or changed",
-            )
-        })?;
-        let after = asset.locator.metadata().map_err(|_| {
-            Error::new(
-                ErrorKind::SourceUnavailable,
-                "original source is unavailable",
-            )
-        })?;
-        let after_signature = source_signature(&asset.locator, &after);
-        if after_signature != signature || source.fingerprint != asset.fingerprint {
+        if !self.allow_sync_source {
+            return Err(Error::new(
+                ErrorKind::PreparationRequired,
+                "source preparation required",
+            ));
+        }
+        let prepared = Self::prepare_file(&asset.locator)?;
+        if prepared.signature != signature || prepared.fingerprint != asset.fingerprint {
             return Err(Error::new(
                 ErrorKind::SourceUnavailable,
                 "original source fingerprint changed",
             ));
         }
+        match (&asset.source, &prepared.source) {
+            (SourceKind::Jpeg, PreparedSource::Jpeg(_)) => {}
+            (SourceKind::Raw { .. }, PreparedSource::Raw(raw))
+                if source_kinds_equal(
+                    &asset.source,
+                    &SourceKind::Raw {
+                        metadata: serde_json::to_value(raw.sensor.metadata())
+                            .map_err(|e| json_error("RAW metadata", e))?,
+                    },
+                )? => {}
+            _ => {
+                return Err(Error::new(
+                    ErrorKind::Incompatible,
+                    "original source interpretation changed",
+                ));
+            }
+        }
         self.source_cache.replace(Some(CachedSource {
             asset_id: asset.id.clone(),
             signature,
-            source: source.clone(),
+            source: prepared.source.clone(),
         }));
-        Ok(source)
+        Ok(prepared.source)
     }
 
     pub fn apply_transform(
@@ -823,13 +1364,15 @@ impl EditorService {
         mutation: Mutation,
         request: Value,
         snapshot: Snapshot,
-        source: &SourceImage,
+        asset: &AssetRecord,
         action: CommittedAction,
     ) -> Result<MutationResult, Error> {
         let mut state = self.state(asset_id)?;
         ensure_revision(&state, mutation.expected_revision)?;
         self.registry.validate_recipe(&snapshot.recipe)?;
-        Evaluation::new(&self.registry, source, &snapshot.recipe)?;
+        validate_source_recipe(asset, &snapshot.recipe)?;
+        self.registry
+            .compile(asset.width, asset.height, &snapshot.recipe)?;
         let entry = HistoryEntry {
             id: EntryId::new(),
             asset_id: asset_id.clone(),
@@ -1359,6 +1902,95 @@ fn valid_version_name(name: &str) -> Result<String, Error> {
     Ok(name.to_string())
 }
 
+fn validate_source_recipe(asset: &AssetRecord, recipe: &crate::Recipe) -> Result<(), Error> {
+    match asset.source {
+        SourceKind::Jpeg => {
+            if recipe
+                .layers
+                .iter()
+                .any(|layer| layer.effect_id == crate::RAW_EFFECT)
+            {
+                return Err(Error::new(
+                    ErrorKind::Incompatible,
+                    "JPEG recipe contains a RAW source layer",
+                ));
+            }
+        }
+        SourceKind::Raw { ref metadata } => {
+            let payload = raw_payload(recipe)?;
+            let stored: lightwell_raw::RawMetadata = serde_json::from_value(metadata.clone())
+                .map_err(|e| json_error("RAW interpretation", e))?;
+            if payload.as_shot_gains != stored.as_shot_gains || payload.cam_xyz != stored.cam_xyz {
+                return Err(Error::new(
+                    ErrorKind::Incompatible,
+                    "RAW source layer calibration differs from original",
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Compare typed camera interpretation after JSON roundtrip. A stored f32 has a shortest decimal
+/// encoding while a fresh serde_json::Value can hold its exact f64 widening; comparing those
+/// Values directly can reject an unchanged original on reopen (seen on the Fuji corpus file).
+/// Parsing back to RawMetadata preserves strict field equality at the native f32 precision.
+fn source_kinds_equal(left: &SourceKind, right: &SourceKind) -> Result<bool, Error> {
+    match (left, right) {
+        (SourceKind::Jpeg, SourceKind::Jpeg) => Ok(true),
+        (SourceKind::Raw { metadata: a }, SourceKind::Raw { metadata: b }) => {
+            let a: lightwell_raw::RawMetadata = serde_json::from_value(a.clone())
+                .map_err(|e| json_error("stored RAW interpretation", e))?;
+            let b: lightwell_raw::RawMetadata = serde_json::from_value(b.clone())
+                .map_err(|e| json_error("RAW interpretation", e))?;
+            Ok(
+                serde_json::to_value(a).map_err(|e| json_error("stored RAW interpretation", e))?
+                    == serde_json::to_value(b).map_err(|e| json_error("RAW interpretation", e))?,
+            )
+        }
+        _ => Ok(false),
+    }
+}
+
+fn raw_settings(raw: &RawPrepared, recipe: &crate::Recipe) -> Result<crate::LinearSettings, Error> {
+    let payload = raw_payload(recipe)?;
+    let gains = match payload.wb_mode {
+        crate::WhiteBalanceMode::AsShot => raw.sensor.metadata().as_shot_gains,
+        crate::WhiteBalanceMode::Custom => payload.gains,
+    };
+    if gains != raw.gains || raw.linear.is_none() {
+        return Err(Error::new(
+            ErrorKind::PreparationRequired,
+            "RAW white balance development required",
+        ));
+    }
+    Ok(crate::LinearSettings {
+        exposure_ev: payload.exposure_ev,
+    })
+}
+
+fn raw_payload(recipe: &crate::Recipe) -> Result<crate::RawPayload, Error> {
+    let Some(layer) = recipe.layers.first() else {
+        return Err(Error::new(
+            ErrorKind::Incompatible,
+            "RAW recipe is missing its required source layer",
+        ));
+    };
+    if layer.effect_id != crate::RAW_EFFECT
+        || recipe
+            .layers
+            .iter()
+            .skip(1)
+            .any(|layer| layer.effect_id == crate::RAW_EFFECT)
+    {
+        return Err(Error::new(
+            ErrorKind::Incompatible,
+            "RAW recipe needs exactly one source layer at index zero",
+        ));
+    }
+    crate::RawPayload::from_layer(layer)
+}
+
 fn insert_entry(
     registry: &ModuleRegistry,
     tx: &Transaction<'_>,
@@ -1405,6 +2037,9 @@ fn asset_record(row: &rusqlite::Row<'_>) -> rusqlite::Result<AssetRecord> {
         byte_len: row.get::<_, i64>(5)? as u64,
         width: row.get::<_, i64>(6)? as u32,
         height: row.get::<_, i64>(7)? as u32,
+        source: serde_json::from_str(&row.get::<_, String>(8)?).map_err(|e| {
+            rusqlite::Error::FromSqlConversionFailure(8, rusqlite::types::Type::Text, Box::new(e))
+        })?,
     })
 }
 
@@ -1512,7 +2147,7 @@ mod tests {
         ActionDescriptor, Availability, CROP_EFFECT, CropPayload, CropStage, EFFECT_FORMAT,
         EffectDescriptor, EffectStage, ExactGeometry, Layer, LayerId, ModuleDescriptor,
         ORIENTATION_EFFECT, PIXEL_EFFECT, ParameterDescriptor, ParameterKind, PreviewQueue,
-        Processing, Stage, ToolModule,
+        Processing, Stage, ToolModule, open_source,
     };
     use serde_json::Map;
     use std::{
@@ -1537,6 +2172,214 @@ mod tests {
             request_id: request.into(),
             actor: "test".into(),
         }
+    }
+
+    #[test]
+    fn raw_interpretation_json_roundtrip_is_strict_at_native_precision() {
+        use lightwell_raw::{RawMetadata, RawMode, RawRect};
+        let rect = RawRect {
+            x: 0,
+            y: 0,
+            width: 32,
+            height: 32,
+        };
+        let metadata = RawMetadata {
+            make: "Test".into(),
+            model: "Camera".into(),
+            mode: RawMode::NikonZ6Lossless14,
+            sensor_width: 32,
+            sensor_height: 32,
+            active_area: rect,
+            default_crop: rect,
+            cfa_width: 2,
+            cfa_height: 2,
+            cfa: vec![0, 1, 1, 2],
+            black_base: 12.125,
+            black_channels: [0.1, 0.2, 0.3, 0.4],
+            black_repeat_width: 1,
+            black_repeat_height: 1,
+            black_repeat: vec![0.12345678],
+            sensor_white: 16383.0,
+            as_shot_gains: [1.2345678, 1.0, 1.8765432],
+            libraw_flip: 0,
+            rgb_cam: [[0.12345678; 4]; 3],
+            cam_xyz: [[0.12345678; 3]; 4],
+            backend: "pinned backend".into(),
+            exif_orientation: 1,
+            libraw_inset: rect,
+            format_identity: "test-format".into(),
+            warnings: vec![],
+        };
+        let fresh = SourceKind::Raw {
+            metadata: serde_json::to_value(&metadata).unwrap(),
+        };
+        let stored: SourceKind =
+            serde_json::from_str(&serde_json::to_string(&fresh).unwrap()).unwrap();
+        assert!(source_kinds_equal(&stored, &fresh).unwrap());
+        for field in ["backend", "default_crop", "cam_xyz"] {
+            let mut changed = fresh.clone();
+            if let SourceKind::Raw { metadata } = &mut changed {
+                match field {
+                    "backend" => metadata["backend"] = json!("other backend"),
+                    "default_crop" => metadata["default_crop"]["x"] = json!(1),
+                    "cam_xyz" => metadata["cam_xyz"][0][0] = json!(0.5),
+                    _ => unreachable!(),
+                }
+            }
+            assert!(!source_kinds_equal(&stored, &changed).unwrap(), "{field}");
+        }
+        let mut unknown = fresh;
+        if let SourceKind::Raw { metadata } = &mut unknown {
+            metadata["unexpected"] = json!(true);
+        }
+        assert!(source_kinds_equal(&stored, &unknown).is_err());
+        assert!(!source_kinds_equal(&stored, &SourceKind::Jpeg).unwrap());
+
+        let asset = AssetRecord {
+            id: AssetId::new(),
+            source_root: PathBuf::new(),
+            locator: PathBuf::from("test.nef"),
+            fingerprint: "test".into(),
+            file_identity: "test".into(),
+            byte_len: 1,
+            width: 32,
+            height: 32,
+            source: stored,
+        };
+        let payload =
+            crate::RawPayload::for_as_shot(metadata.as_shot_gains, metadata.cam_xyz).unwrap();
+        let layer_id = LayerId::new();
+        let snapshot = Snapshot::original(asset.id.clone())
+            .with_layer_inserted(0, payload.layer(layer_id.clone()))
+            .unwrap();
+        validate_source_recipe(&asset, &snapshot.recipe).unwrap();
+        for calibration in ["as_shot_gains", "cam_xyz"] {
+            let mut corrupted = payload.clone();
+            if calibration == "as_shot_gains" {
+                corrupted.as_shot_gains[0] += 0.1;
+            } else {
+                corrupted.cam_xyz[0][0] += 0.1;
+            }
+            let mut recipe = snapshot.recipe.clone();
+            recipe.layers[0] = corrupted.layer(layer_id.clone());
+            assert_eq!(
+                validate_source_recipe(&asset, &recipe).unwrap_err().kind,
+                ErrorKind::Incompatible,
+                "{calibration}"
+            );
+        }
+    }
+
+    /// Run with LIGHTWELL_RAW_FIXTURE pointing to a private qualified NEF or RAF.
+    #[test]
+    #[ignore = "requires a photo-sized RAW fixture; run explicitly on the owner's Mac"]
+    fn raw_import_wb_history_redevelopment_and_reopen_preserve_original() {
+        let path = PathBuf::from(std::env::var("LIGHTWELL_RAW_FIXTURE").expect("fixture path"));
+        let original_hash = format!("{:x}", Sha256::digest(std::fs::read(&path).unwrap()));
+        let catalog = temp("raw-history.sqlite");
+        let mut service = EditorService::open(&catalog).unwrap();
+        let initial = service.import(&path).unwrap();
+        assert_eq!(initial.asset.fingerprint, original_hash);
+        assert!(matches!(initial.asset.source, SourceKind::Raw { .. }));
+        assert_eq!(initial.current_entry.snapshot.recipe.layers.len(), 1);
+        let source_layer = initial.current_entry.snapshot.recipe.layers[0].id.clone();
+        let original = service.preview_job(&initial.asset.id, None, None).unwrap();
+        assert!(matches!(original.source, PreviewSource::Raw { .. }));
+        let as_shot = raw_payload(&initial.current_entry.snapshot.recipe).unwrap();
+        assert_eq!(as_shot.as_shot_gains, as_shot.gains);
+        let exposure = service
+            .apply_action(
+                &initial.asset.id,
+                mutation(0, "raw-exposure"),
+                "set-raw-exposure",
+                json!({"ev":1.5}),
+            )
+            .unwrap();
+        let exposed = service.state(&initial.asset.id).unwrap();
+        assert_eq!(
+            exposed.current_entry.snapshot.recipe.layers[0].id,
+            source_layer
+        );
+        assert_eq!(
+            raw_payload(&exposed.current_entry.snapshot.recipe)
+                .unwrap()
+                .exposure_ev,
+            1.5
+        );
+        let gain = (f64::from(as_shot.gains[0]) * 1.1).min(16.0);
+        let changed = service
+            .apply_action(
+                &initial.asset.id,
+                mutation(exposure.revision, "raw-red"),
+                "set-raw-red-gain",
+                json!({"gain":gain}),
+            )
+            .unwrap();
+        let state = service.state(&initial.asset.id).unwrap();
+        let payload = raw_payload(&state.current_entry.snapshot.recipe).unwrap();
+        assert_eq!(
+            state.current_entry.snapshot.recipe.layers[0].id,
+            source_layer
+        );
+        assert_eq!(payload.wb_mode, crate::WhiteBalanceMode::Custom);
+        assert_eq!(
+            payload.gains[2], as_shot.gains[2],
+            "partial custom edit retains camera blue gain"
+        );
+        assert_eq!(
+            service
+                .preview_job(&initial.asset.id, None, None)
+                .unwrap_err()
+                .kind,
+            ErrorKind::PreparationRequired
+        );
+        let request = service
+            .raw_development(&initial.asset.id, None)
+            .unwrap()
+            .unwrap();
+        let developed = RawPrepared::develop(
+            request.sensor.clone(),
+            request.fingerprint.clone(),
+            request.gains,
+            &AtomicBool::new(false),
+        )
+        .unwrap();
+        service.install_development(&request, developed).unwrap();
+        assert!(matches!(
+            service
+                .preview_job(&initial.asset.id, None, None)
+                .unwrap()
+                .source,
+            PreviewSource::Raw { .. }
+        ));
+        let undo = service
+            .undo(&initial.asset.id, mutation(changed.revision, "undo-red"))
+            .unwrap();
+        assert_eq!(undo.outcome, MutationOutcome::Navigated);
+        let state = service.state(&initial.asset.id).unwrap();
+        assert_eq!(
+            raw_payload(&state.current_entry.snapshot.recipe)
+                .unwrap()
+                .wb_mode,
+            crate::WhiteBalanceMode::AsShot
+        );
+        drop(service);
+        let reopened = EditorService::open(&catalog).unwrap();
+        let state = reopened.state(&initial.asset.id).unwrap();
+        assert_eq!(
+            state.current_entry.snapshot.recipe.layers[0].id,
+            source_layer
+        );
+        assert_eq!(
+            reopened.inspect_source(&initial.asset.id, None).unwrap()["readiness"],
+            "preparation-required"
+        );
+        assert_eq!(
+            format!("{:x}", Sha256::digest(std::fs::read(&path).unwrap())),
+            original_hash
+        );
+        drop(reopened);
+        std::fs::remove_file(catalog).unwrap();
     }
 
     #[test]
@@ -1681,18 +2524,23 @@ mod tests {
         let state = service.import(&fixture()).unwrap();
         let first = service.preview_job(&state.asset.id, None, None).unwrap();
         let second = service.preview_job(&state.asset.id, None, None).unwrap();
+        let (PreviewSource::Jpeg(first_source), PreviewSource::Jpeg(second_source)) =
+            (&first.source, &second.source)
+        else {
+            panic!("JPEG preview expected")
+        };
         assert!(std::sync::Arc::ptr_eq(
-            &first.source.rgba,
-            &second.source.rgba
+            &first_source.rgba,
+            &second_source.rgba
         ));
         let raster = render(
             service.registry(),
-            &first.source,
+            first_source,
             first.entry.snapshot.id.clone(),
             &first.entry.snapshot.recipe,
         )
         .unwrap();
-        assert!(std::sync::Arc::ptr_eq(&first.source.rgba, &raster.rgba));
+        assert!(std::sync::Arc::ptr_eq(&first_source.rgba, &raster.rgba));
         drop(service);
         std::fs::remove_file(catalog).unwrap();
     }
@@ -2149,7 +2997,7 @@ mod tests {
         assert_eq!(error.kind, ErrorKind::Incompatible);
         assert_eq!(
             error.detail,
-            "catalog format 2 is not supported; expected 3; choose a new catalog path"
+            "catalog format 2 is not supported; expected 4; choose a new catalog path"
         );
         assert_eq!(
             std::fs::read(&catalog).unwrap(),

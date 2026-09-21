@@ -27,11 +27,13 @@ Basic adjustments and histogram have a [design](design/basic-and-histogram.md) w
 
 Relative priority still needs owner input; see the [open questions](decisions.md#open-product-questions).
 
+Initial RAW implementation is requested, with a [design](design/initial-raw.md) and [task plan](../tasks/implementation-initial-raw.json) for the original Nikon Z6, Fujifilm X100VI and owner-supplied DJI Air 2S DNG. The owner requires continuous non-destructive RAW editing: retain high precision through the recipe, with display conversion at the end and JPEG only as explicit export. The implemented LibRaw/librtprocess pipeline retains sensor data and float development through source Exposure, White Balance, geometry and history. Owner NEF/RAF editing and reopen are verified through JSON and the background M4 renderer. Broad controlled-scene, resource and portability qualification remain explicit; the supplied DJI DNG is rejected until its mandatory corrections are implemented.
+
 | Phase | Scope |
 | --- | --- |
 | Useful small library | Multi-image import, virtualized browsing, filtering, tagging, collections, lazy shoot subsets, multi-selection and stacking, broader source recovery |
 | Tonal editing and PNG | Exposure, white balance, contrast and related controls with explicit numerical and color contracts |
-| Trustworthy RAW | Nikon Z6 and Fujifilm X100VI by actual recording mode; benchmark established decoders before custom work |
+| Trustworthy RAW | [Continuous RAW editing](design/initial-raw.md) for Nikon Z6, Fujifilm X100VI and DJI Air 2S by actual mode; measured decoder/development selection, high-precision recipe evaluation and neutral exposure/WB |
 | Richer tools | Texture, clarity, dehaze; separately scoped masks and clone/heal |
 | External modules | Measured activation costs and a separately authored module loaded through documented host APIs |
 

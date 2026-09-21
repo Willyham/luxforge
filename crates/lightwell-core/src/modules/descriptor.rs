@@ -41,6 +41,7 @@ pub fn valid_name(value: &str) -> bool {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum EffectStage {
+    Source,
     Geometry,
     Pixel,
 }

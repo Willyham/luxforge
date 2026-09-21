@@ -1,0 +1,192 @@
+{
+  "format": 1,
+  "scope": "Functional editor qualification on the recorded M4 host and listed files, distinct from controlled scene/color quality and broader recording-mode qualification",
+  "status_values": [
+    "verified_supported",
+    "tested_unsupported",
+    "untested",
+    "outside_scope"
+  ],
+  "owner_originals": "Ignored fixtures/raw/ in the owner checkout; local hashes/provenance in ignored private/raw/owner-manifest.json",
+  "metadata_reader": {
+    "name": "ExifTool",
+    "version": "13.59",
+    "source": "https://github.com/exiftool/exiftool/tree/13.59",
+    "archive_sha256": "87d3317882fdae9cb4dcfe57a96a378d0132ffc02c731315bf128b19ddcf7aac"
+  },
+  "required_initial_modes": [
+    {
+      "id": "z6-14-lossless",
+      "camera": "Nikon Z 6",
+      "mode": "full-size 14-bit lossless NEF",
+      "fixtures": [
+        "owner-z6",
+        "z6-14-lossless"
+      ],
+      "status": "verified_supported",
+      "observed": {
+        "sensor": [
+          6064,
+          4040
+        ],
+        "owner_firmware": "03.40.b0",
+        "owner_exif_orientation": 8
+      },
+      "notes": "Validated default crop [8,8,6048,4024] precedes EXIF8, giving 4024x6048 upright content. Conflicting ImageArea does not introduce a DX crop. Rawler default orientation is not authoritative.",
+      "adapter_evidence": "Release real-file tests: exact full-sensor mosaic SHA-256 against pinned LibRaw probe, finite unbounded float development, metadata and unchanged source hashes.",
+      "editor_evidence": "The public minimum-mode file passes the release background M4 Metal editor: import, exposure, direct gains, custom temperature/tint, neutral pick, rotate/crop, undo, historical Original/current controls and pixels, Fit/100%, second-process reopen and unchanged source hash. Owner Z6 and uncompressed X100VI also pass the independent JSON history/version/reopen workflow. Controlled scene and full mode-matrix qualification remain open."
+    },
+    {
+      "id": "z6-12-lossless",
+      "camera": "Nikon Z 6",
+      "mode": "full-size 12-bit lossless NEF",
+      "fixtures": [
+        "z6-12-lossless"
+      ],
+      "status": "verified_supported",
+      "observed": {
+        "sensor": [
+          6064,
+          4040
+        ]
+      },
+      "notes": "Public minimum-mode sample; owner did not supply this mode.",
+      "adapter_evidence": "Release real-file tests: exact full-sensor mosaic SHA-256 against pinned LibRaw probe, finite unbounded float development, metadata and unchanged source hashes.",
+      "editor_evidence": "The public minimum-mode file passes the release background M4 Metal editor: import, exposure, direct gains, custom temperature/tint, neutral pick, rotate/crop, undo, historical Original/current controls and pixels, Fit/100%, second-process reopen and unchanged source hash. Owner Z6 and uncompressed X100VI also pass the independent JSON history/version/reopen workflow. Controlled scene and full mode-matrix qualification remain open."
+    },
+    {
+      "id": "x100vi-uncompressed",
+      "camera": "Fujifilm X100VI",
+      "mode": "14-bit uncompressed RAF",
+      "fixtures": [
+        "owner-x100vi",
+        "x100vi-uncompressed"
+      ],
+      "status": "verified_supported",
+      "observed": {
+        "sensor": [
+          7872,
+          5196
+        ],
+        "default_crop": [
+          12,
+          21,
+          7728,
+          5152
+        ],
+        "owner_firmware": "1.32",
+        "owner_dynamic_range": 100
+      },
+      "notes": "14-bit encoded precision; u16 storage does not imply 16-bit sensor. RAF camera default crop [12,21,7728,5152] is retained; LibRaw inset differs by three top rows and is recorded as a warning.",
+      "adapter_evidence": "Release real-file tests: exact full-sensor mosaic SHA-256 against pinned LibRaw probe, finite unbounded float development, metadata and unchanged source hashes.",
+      "editor_evidence": "The public minimum-mode file passes the release background M4 Metal editor: import, exposure, direct gains, custom temperature/tint, neutral pick, rotate/crop, undo, historical Original/current controls and pixels, Fit/100%, second-process reopen and unchanged source hash. Owner Z6 and uncompressed X100VI also pass the independent JSON history/version/reopen workflow. Controlled scene and full mode-matrix qualification remain open."
+    },
+    {
+      "id": "x100vi-lossless",
+      "camera": "Fujifilm X100VI",
+      "mode": "14-bit lossless-compressed RAF",
+      "fixtures": [
+        "x100vi-lossless"
+      ],
+      "status": "verified_supported",
+      "observed": {
+        "sensor": [
+          7872,
+          5196
+        ]
+      },
+      "notes": "Public minimum-mode sample; owner did not supply this mode.",
+      "adapter_evidence": "Release real-file tests: exact full-sensor mosaic SHA-256 against pinned LibRaw probe, finite unbounded float development, metadata and unchanged source hashes.",
+      "editor_evidence": "The public minimum-mode file passes the release background M4 Metal editor: import, exposure, direct gains, custom temperature/tint, neutral pick, rotate/crop, undo, historical Original/current controls and pixels, Fit/100%, second-process reopen and unchanged source hash. Owner Z6 and uncompressed X100VI also pass the independent JSON history/version/reopen workflow. Controlled scene and full mode-matrix qualification remain open."
+    },
+    {
+      "id": "air2s-dng",
+      "camera": "DJI FC3411 (Air 2S)",
+      "mode": "DNG 1.4 uncompressed Bayer, 16-bit stored samples",
+      "fixtures": [
+        "owner-air2s"
+      ],
+      "status": "tested_unsupported",
+      "observed": {
+        "sensor": [
+          5568,
+          3648
+        ],
+        "active_area_tlbr": [
+          0,
+          96,
+          3648,
+          5568
+        ],
+        "default_crop_origin_active": [
+          4,
+          4
+        ],
+        "default_crop_size": [
+          5464,
+          3640
+        ],
+        "black": [
+          4096,
+          4096,
+          4096,
+          4096
+        ],
+        "white": 65535,
+        "opcode_list3": [
+          "GainMap",
+          "WarpRectilinear"
+        ]
+      },
+      "notes": "Sensor IFD model FC3411 takes precedence over conflicting XMP Test_Pro. Mandatory OpcodeList3 GainMap (9) and WarpRectilinear (1) are rejected before unpack. The real background editor preserves the previously displayed NEF and its catalog state after this rejection. Generic DNG support is not claimed."
+    }
+  ],
+  "additional_modes": [
+    {
+      "camera": "Nikon Z 6",
+      "modes": [
+        "12/14-bit uncompressed",
+        "12/14-bit lossy",
+        "medium/small NEF",
+        "DX/square/widescreen recording"
+      ],
+      "status": "untested"
+    },
+    {
+      "camera": "Fujifilm X100VI",
+      "modes": [
+        "lossy RAF",
+        "DR200/400/Auto",
+        "electronic shutter and burst precision changes",
+        "digital teleconverter and alternate aspect"
+      ],
+      "status": "untested"
+    },
+    {
+      "camera": "DJI Air 2S",
+      "modes": [
+        "other firmware",
+        "other capture modes",
+        "compressed or edited DNG"
+      ],
+      "status": "untested"
+    },
+    {
+      "camera": "other cameras / generic DNG",
+      "modes": [
+        "unqualified cameras",
+        "HDR/panorama/pixel-shift/merged RAW",
+        "RAW video"
+      ],
+      "status": "outside_scope"
+    }
+  ],
+  "quality_gaps": [
+    "Controlled neutral and color chart under daylight/tungsten",
+    "ISO/noise and fine-fabric/foliage matrix",
+    "Deliberately clipped/highlight and deep-shadow scenes",
+    "All orientations and thumbnail absence/corruption on real containers",
+    "Implementation and calibrated references for required DNG GainMap/WarpRectilinear corrections",
+    "Native Windows/Linux and full-editor cancellation/resource distributions"
+  ]
+}

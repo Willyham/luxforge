@@ -30,6 +30,8 @@ pub struct ApiRequest {
 pub struct ApiFailure {
     pub code: String,
     pub message: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub job_id: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -66,6 +68,8 @@ impl ApiResponse {
             result: None,
             error: Some(ApiFailure {
                 code: error.kind.code().into(),
+                job_id: (error.kind == ErrorKind::PreparationRequired)
+                    .then(|| error.detail.clone()),
                 message: error.detail,
             }),
         }

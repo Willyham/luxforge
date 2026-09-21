@@ -2,7 +2,7 @@
 //! and action identity. Registration touches no image or catalog resource.
 use super::{
     ActionDescriptor, CanvasInteraction, CropModule, EffectDescriptor, EffectStage,
-    ModuleDescriptor, PixelModule, Processing, Stage, ToolModule, TransformModule,
+    ModuleDescriptor, PixelModule, Processing, RawModule, Stage, ToolModule, TransformModule,
 };
 use crate::{
     Error, ErrorKind, Layer, RECIPE_FORMAT, Recipe,
@@ -64,6 +64,7 @@ impl ModuleRegistry {
         let mut registry = Self::new();
         for module in [
             Arc::new(PixelModule::new()) as Arc<dyn ToolModule>,
+            Arc::new(RawModule::new()),
             Arc::new(TransformModule::new()),
             Arc::new(CropModule::new()),
         ] {
@@ -158,13 +159,19 @@ impl ModuleRegistry {
     /// declares does not open the tail: such a stack cannot compile at all, and the host reports
     /// that rather than guessing a position. Cost is `O(layers)` and reads no pixels.
     pub fn insertion_index(&self, layers: &[Layer], stage: EffectStage) -> usize {
-        if stage == EffectStage::Geometry {
-            return layers.len();
+        match stage {
+            EffectStage::Source => 0,
+            EffectStage::Geometry => layers.len(),
+            EffectStage::Pixel => layers
+                .iter()
+                .position(|layer| {
+                    self.effect_stage(&layer.effect_id) == Some(EffectStage::Geometry)
+                })
+                .unwrap_or(layers.len())
+                .max(usize::from(layers.first().is_some_and(|layer| {
+                    self.effect_stage(&layer.effect_id) == Some(EffectStage::Source)
+                }))),
         }
-        layers
-            .iter()
-            .position(|layer| self.effect_stage(&layer.effect_id) == Some(EffectStage::Geometry))
-            .unwrap_or(layers.len())
     }
 
     /// The provider that can evaluate this effect, or `None` when none is registered or the
@@ -235,7 +242,10 @@ impl ModuleRegistry {
     ) -> Result<Compiled, Error> {
         let mut layer_ids = HashSet::with_capacity(layers.len());
         let mut segments = vec![Segment::new(None, source_width, source_height)];
-        for layer in layers {
+        for (index, layer) in layers.iter().enumerate() {
+            if self.effect_stage(&layer.effect_id) == Some(EffectStage::Source) && index != 0 {
+                return Err(validation("source-stage effect must be at index zero"));
+            }
             if !layer_ids.insert(&layer.id) {
                 return Err(validation("duplicate layer identity"));
             }
@@ -403,7 +413,7 @@ pub(crate) mod tests {
         assert!(registry.effect(ORIENTATION_EFFECT).is_some());
         assert!(registry.action("crop").is_some());
         assert!(registry.effect(CROP_EFFECT).is_some());
-        assert_eq!(registry.descriptors().len(), 3);
+        assert_eq!(registry.descriptors().len(), 4);
         assert!(registry.action("edit.set-pixel").is_none());
 
         for (case, module) in [
@@ -449,7 +459,7 @@ pub(crate) mod tests {
         }
         assert_eq!(
             registry.descriptors().len(),
-            3,
+            4,
             "nothing was half-registered"
         );
         assert!(
@@ -462,7 +472,7 @@ pub(crate) mod tests {
                 ))
                 .is_ok()
         );
-        assert_eq!(registry.descriptors().len(), 4);
+        assert_eq!(registry.descriptors().len(), 5);
     }
 
     /// A module whose canvas claims one mode-strip letter.

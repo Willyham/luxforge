@@ -49,6 +49,9 @@ impl Editor {
                     self.status = "Rendering the crop's input stage…".into();
                 }
                 Err(error) => {
+                    if error == "superseded preview" {
+                        return Task::none();
+                    }
                     self.crop_pending = None;
                     self.status = error;
                     self.settle_step(Settle::Draft);
@@ -174,7 +177,7 @@ impl Editor {
         if !reapply {
             self.mode_sync = Some(module_id);
         }
-        crop_preview_task(self.owner.clone(), asset, layer_count)
+        crop_preview_task(self.owner.clone(), self.client, asset, layer_count)
     }
 
     /// The truncated preview arrived, so the crop layer's input stage is known: open or rebase the

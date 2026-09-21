@@ -43,7 +43,25 @@ fn subprocess_client_edits_queries_and_exits_cleanly_on_eof() {
     output.read_line(&mut line).unwrap();
     let imported: Value = serde_json::from_str(&line).unwrap();
     assert!(imported.get("error").is_none());
-    let asset = imported["result"]["asset"]["id"].clone();
+    let job_id = imported["result"]["job_id"].as_str().unwrap();
+    let asset = loop {
+        writeln!(
+            input,
+            "{}",
+            json!({"id":"status","method":"job.status","params":{"job_id":job_id}})
+        )
+        .unwrap();
+        input.flush().unwrap();
+        line.clear();
+        output.read_line(&mut line).unwrap();
+        let status: Value = serde_json::from_str(&line).unwrap();
+        assert!(status.get("error").is_none(), "{status}");
+        match status["result"]["state"].as_str() {
+            Some("ready") => break status["result"]["asset"]["asset"]["id"].clone(),
+            Some("queued" | "preparing") => std::thread::sleep(std::time::Duration::from_millis(1)),
+            other => panic!("unexpected source job {other:?}: {status}"),
+        }
+    };
     writeln!(
         input,
         "{}",
