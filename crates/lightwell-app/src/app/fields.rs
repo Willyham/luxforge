@@ -4,7 +4,7 @@
 use crate::state::tools::{Rendered, classify, declared_parameter};
 use lightwell_core::{
     ActionDescriptor, Control, ModuleDescriptor, ParameterDescriptor, ParameterKind, RAW_EFFECT,
-    RawPayload, Recipe, WhiteBalanceMode,
+    RawPayload, Recipe, WhiteBalanceMode, check_value,
 };
 use serde_json::{Map, Value};
 use std::collections::BTreeMap;
@@ -36,6 +36,28 @@ impl Fields {
     pub(crate) fn set(&mut self, action: &str, parameter: &str, text: String) {
         self.0
             .insert((action.to_owned(), parameter.to_owned()), text);
+    }
+
+    pub(crate) fn get_value(
+        &self,
+        action: &str,
+        parameter: &ParameterDescriptor,
+    ) -> Result<Value, String> {
+        parse_field(
+            parameter,
+            self.get(action, &parameter.name).unwrap_or_default(),
+        )
+    }
+
+    pub(crate) fn set_value(
+        &mut self,
+        action: &str,
+        parameter: &ParameterDescriptor,
+        value: &Value,
+    ) -> Result<(), String> {
+        let text = value_text(parameter, value)?;
+        self.set(action, &parameter.name, text);
+        Ok(())
     }
 
     /// Reflect the displayed RAW history entry. While a person edits one field, keep their text;
@@ -106,9 +128,24 @@ fn seed_controls(module: &ModuleDescriptor, controls: &[Control], fields: &mut F
             }
             | Rendered::Color {
                 action, parameter, ..
+            }
+            | Rendered::Toggle {
+                action, parameter, ..
+            }
+            | Rendered::Choice {
+                action, parameter, ..
             } => {
                 if let Some(declared) = declared_parameter(module, action, parameter) {
                     fields.set(action, parameter, seed_text(declared));
+                }
+            }
+            Rendered::Curve {
+                action, channels, ..
+            } => {
+                for channel in channels {
+                    if let Some(declared) = declared_parameter(module, action, &channel.parameter) {
+                        fields.set(action, &channel.parameter, seed_text(declared));
+                    }
                 }
             }
             Rendered::Action { .. } | Rendered::Unsupported(_) => {}
@@ -153,6 +190,29 @@ pub(crate) fn seed_text(parameter: &ParameterDescriptor) -> String {
             .map(str::to_owned)
             .or_else(|| options.first().cloned())
             .unwrap_or_default(),
+        ParameterKind::Boolean => parameter
+            .default
+            .as_ref()
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+            .to_string(),
+        ParameterKind::Curve {
+            fixed_x,
+            points_min,
+            ..
+        } => parameter
+            .default
+            .as_ref()
+            .map(Value::to_string)
+            .unwrap_or_else(|| {
+                let xs = fixed_x.clone().unwrap_or_else(|| {
+                    (0..*points_min)
+                        .map(|index| index as f64 / (*points_min - 1) as f64)
+                        .collect()
+                });
+                Value::Array(xs.into_iter().map(|x| serde_json::json!([x, x])).collect())
+                    .to_string()
+            }),
     }
 }
 
@@ -199,7 +259,38 @@ pub(crate) fn parse_field(parameter: &ParameterDescriptor, text: &str) -> Result
             .find(|option| *option == text.trim())
             .map(|option| Value::from(option.clone()))
             .ok_or_else(|| format!("{name} must be one of {}", options.join(", "))),
+        ParameterKind::Boolean => text
+            .trim()
+            .parse::<bool>()
+            .map(Value::from)
+            .map_err(|_| format!("{name} must be a boolean")),
+        ParameterKind::Curve { .. } => serde_json::from_str::<Value>(text.trim())
+            .map_err(|_| format!("{name} must be a JSON curve point list"))
+            .and_then(|value| {
+                check_value(parameter, &value)
+                    .map_err(|error| error.detail)
+                    .map(|_| value)
+            }),
     }
+}
+
+/// One authoritative recipe or API value as this parameter's editable field text.
+pub(crate) fn value_text(parameter: &ParameterDescriptor, value: &Value) -> Result<String, String> {
+    check_value(parameter, value).map_err(|error| error.detail)?;
+    Ok(match &parameter.kind {
+        ParameterKind::Integer { .. } => value.as_i64().unwrap().to_string(),
+        ParameterKind::Number { .. } => number_text(value.as_f64().unwrap()),
+        ParameterKind::Enum { .. } => value.as_str().unwrap().to_owned(),
+        ParameterKind::Color => value
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(Value::to_string)
+            .collect::<Vec<_>>()
+            .join(","),
+        ParameterKind::Boolean => value.as_bool().unwrap().to_string(),
+        ParameterKind::Curve { .. } => value.to_string(),
+    })
 }
 
 fn parse_color(text: &str) -> Option<[u8; 3]> {
@@ -356,6 +447,41 @@ mod tests {
     use crate::state::tools::{control_kind, declared_action, point_pick};
     use serde_json::json;
 
+    #[test]
+    fn boolean_color_and_curve_fields_reflect_exact_authoritative_values() {
+        let descriptor = crate::app::testing::controls_descriptor();
+        let action = descriptor.action("fixture-set").unwrap();
+        let mut fields = Fields::seeded(&[descriptor.clone()]);
+        for (name, value, expected_text) in [
+            ("enabled", json!(true), "true"),
+            ("rgb", json!([12, 34, 56]), "12,34,56"),
+            (
+                "master",
+                json!([[0.0, 0.0], [0.25, 0.37], [1.0, 1.0]]),
+                "[[0.0,0.0],[0.25,0.37],[1.0,1.0]]",
+            ),
+        ] {
+            let parameter = action.parameter(name).unwrap();
+            fields.set_value(&action.id, parameter, &value).unwrap();
+            assert_eq!(fields.get(&action.id, name), Some(expected_text));
+            assert_eq!(fields.get_value(&action.id, parameter).unwrap(), value);
+        }
+        let curve = action.parameter("master").unwrap();
+        assert!(
+            fields
+                .set_value(
+                    &action.id,
+                    curve,
+                    &json!([[0.0, 0.0], [0.0, 0.5], [1.0, 1.0]])
+                )
+                .is_err()
+        );
+        assert_eq!(
+            fields.get_value(&action.id, curve).unwrap(),
+            json!([[0.0, 0.0], [0.25, 0.37], [1.0, 1.0]])
+        );
+    }
+
     /// The descriptors the desktop would fetch through `module.list`.
     fn descriptors() -> Vec<ModuleDescriptor> {
         lightwell_core::ModuleRegistry::builtin()
@@ -388,6 +514,10 @@ mod tests {
             unit: Some("deg".into()),
             step: None,
             precision: None,
+            soft_min: None,
+            soft_max: None,
+            fine_step: None,
+            zero: None,
             notes: "test".into(),
         }
     }
@@ -731,21 +861,27 @@ mod tests {
                 label: "Group".into(),
                 controls: Vec::new(),
                 reset: None,
+                collapsed: false,
             },
             Control::Number {
                 action: "act".into(),
                 parameter: "x".into(),
                 label: "X".into(),
+                style: lightwell_core::NumberStyle::Slider,
+                rail: None,
             },
             Control::Color {
                 action: "act".into(),
                 parameter: "rgb".into(),
                 label: "RGB".into(),
+                style: lightwell_core::ColorStyle::Fields,
             },
             Control::Action {
                 action: "act".into(),
                 label: "Apply".into(),
                 preset: Map::new(),
+                style: lightwell_core::ActionStyle::Default,
+                icon: None,
             },
         ];
         for (control, kind) in controls.iter().zip(["group", "number", "color", "action"]) {
