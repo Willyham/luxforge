@@ -37,12 +37,16 @@ pub fn valid_name(value: &str) -> bool {
 
 /// Where an effect acts, and so where the host puts a new layer: a geometry effect changes the
 /// stage and extends the tail at the end of the stack; a pixel effect addresses its input stage and
-/// joins the stack before that tail, so the geometry after it carries the edit.
+/// joins the stack before that tail, so the geometry after it carries the edit. A colour effect is
+/// placed by the same rule as a pixel effect, because it addresses the content stage too and
+/// changes no dimension.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum EffectStage {
     Geometry,
     Pixel,
+    /// Pointwise colour over the whole stage, compiled into [`crate::Processing::Color`].
+    Color,
 }
 
 /// A durable effect identity stored in every layer, with its internal payload format marker.
@@ -1461,6 +1465,39 @@ mod tests {
             ModuleDescriptor::parse(&serde_json::to_value(descriptor()).unwrap()).unwrap(),
             descriptor()
         );
+    }
+
+    /// Every declared stage keeps its wire name and is accepted by descriptor validation, so a
+    /// colour-stage module declares itself exactly as a pixel or geometry one does.
+    #[test]
+    fn effect_stages_keep_their_serialized_names_and_validate() {
+        for (stage, name) in [
+            (EffectStage::Geometry, "geometry"),
+            (EffectStage::Pixel, "pixel"),
+            (EffectStage::Color, "color"),
+        ] {
+            let effect = EffectDescriptor {
+                id: "test.module.effect".into(),
+                format: 1,
+                stage,
+            };
+            assert_eq!(serde_json::to_value(stage).unwrap(), json!(name));
+            assert_eq!(
+                serde_json::from_value::<EffectDescriptor>(serde_json::to_value(&effect).unwrap())
+                    .unwrap(),
+                effect
+            );
+            let descriptor = ModuleDescriptor {
+                effects: vec![effect],
+                ..descriptor()
+            };
+            assert!(descriptor.validate().is_ok(), "{name}");
+            assert_eq!(
+                ModuleDescriptor::parse(&serde_json::to_value(&descriptor).unwrap()).unwrap(),
+                descriptor,
+                "{name} round-trips through JSON"
+            );
+        }
     }
 
     #[test]

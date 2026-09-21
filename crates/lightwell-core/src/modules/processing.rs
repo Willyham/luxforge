@@ -1,5 +1,6 @@
 //! The closed host set of processing primitives a module may compile its payloads into.
 //! Composition, mapping and rasterizing stay in the host; a module only describes its step.
+use std::sync::Arc;
 
 /// One image stage: the dimensions a layer's payload addresses.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -40,9 +41,89 @@ pub struct Resample {
     pub output_height: u32,
 }
 
+/// The largest number of pointwise units one compiled colour operation may hold. A module compiles
+/// its whole payload into one operation, so this bounds the per-pixel work one layer can ask for.
+pub const MAX_COLOR_UNITS: usize = 8;
+
+/// One pointwise colour step, owned by the module that compiled it. The host decodes the frame into
+/// linear sRGB (D65) f32 rows, hands each row to every unit in declared order and only then clamps,
+/// encodes and quantizes, so a unit sees and may produce values outside `[0, 1]`: an inverse pair in
+/// one operation round-trips exactly. A unit reads and writes colour channels only; alpha is the
+/// host's and is never passed in.
+///
+/// A unit is pure and pointwise: `apply_row` must depend on nothing but the values it is given and
+/// the unit's own coefficients, because the host chooses the row chunking, applies the same unit on
+/// the shared Rayon pool and evaluates single pixels through the same call for a point sample.
+pub trait PointwiseColor: Send + Sync {
+    /// Transform one row of linear-sRGB pixels in place.
+    fn apply_row(&self, rgb: &mut [[f32; 3]]);
+    /// Whether this unit's own coefficients are finite. Compilation refuses a unit that says no,
+    /// so a non-finite parameter fails before a frame is touched.
+    fn is_finite(&self) -> bool;
+    /// A short, stable description of this unit and its coefficients. The host compares compiled
+    /// operations by it, so two units that describe themselves identically must process identically.
+    fn describe(&self) -> String;
+}
+
+/// What one colour-stage layer compiles into: an ordered, bounded list of pointwise units evaluated
+/// as one unbroken run, with no intermediate clamping or quantization between them.
+#[derive(Clone, Default)]
+pub struct ColorOperation {
+    units: Vec<Arc<dyn PointwiseColor>>,
+}
+
+impl ColorOperation {
+    /// An operation over these units in evaluation order. The host validates the count and the
+    /// units' finiteness when it compiles the recipe, so a module may build one freely.
+    pub fn new(units: Vec<Arc<dyn PointwiseColor>>) -> Self {
+        Self { units }
+    }
+
+    /// The operation a neutral payload compiles to: no units, which the host drops entirely, so a
+    /// neutral layer keeps the identity byte path and the shared source buffer.
+    pub fn neutral() -> Self {
+        Self::default()
+    }
+
+    pub fn units(&self) -> &[Arc<dyn PointwiseColor>] {
+        &self.units
+    }
+
+    pub fn len(&self) -> usize {
+        self.units.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.units.is_empty()
+    }
+
+    /// Whether every unit reports finite coefficients.
+    pub fn is_finite(&self) -> bool {
+        self.units.iter().all(|unit| unit.is_finite())
+    }
+}
+
+/// Two operations are the same when their units describe themselves the same way in the same order:
+/// a trait object carries no structural identity, so the description is the comparison.
+impl PartialEq for ColorOperation {
+    fn eq(&self, other: &Self) -> bool {
+        self.units.len() == other.units.len()
+            && std::iter::zip(&self.units, &other.units)
+                .all(|(left, right)| left.describe() == right.describe())
+    }
+}
+
+impl std::fmt::Debug for ColorOperation {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_list()
+            .entries(self.units.iter().map(|unit| unit.describe()))
+            .finish()
+    }
+}
+
 /// What the host does with one compiled layer. `Eq` is not derivable because a resample carries
-/// f64 coefficients.
-#[derive(Clone, Copy, Debug, PartialEq)]
+/// f64 coefficients, and `Copy` is not because a colour operation owns its units.
+#[derive(Clone, Debug, PartialEq)]
 pub enum Processing {
     ExactGeometry(ExactGeometry),
     /// One input-stage pixel, applied through the geometry that follows it.
@@ -51,5 +132,7 @@ pub enum Processing {
         y: u32,
         rgb: [u8; 3],
     },
+    /// Pointwise colour over the whole stage, evaluated in linear-sRGB float by the host.
+    Color(ColorOperation),
     Resample(Resample),
 }

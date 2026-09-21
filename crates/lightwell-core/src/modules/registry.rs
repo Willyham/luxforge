@@ -2,7 +2,7 @@
 //! and action identity. Registration touches no image or catalog resource.
 use super::{
     ActionDescriptor, CanvasInteraction, CropModule, EffectDescriptor, EffectStage,
-    ModuleDescriptor, PixelModule, Processing, Stage, ToolModule, TransformModule,
+    MAX_COLOR_UNITS, ModuleDescriptor, PixelModule, Processing, Stage, ToolModule, TransformModule,
 };
 use crate::{
     Error, ErrorKind, Layer, RECIPE_FORMAT, Recipe,
@@ -151,10 +151,10 @@ impl ModuleRegistry {
         self.effect(effect_id).map(|(_, effect)| effect.stage)
     }
 
-    /// Where a committed layer of this stage joins a stack. A pixel-stage layer is inserted
-    /// immediately before the first geometry-stage layer, so the quarter-turns, reflections and
-    /// crop that form the geometry tail carry it and no later geometry change moves or invalidates
-    /// it; a geometry-stage layer appends, extending that tail. A layer whose effect no provider
+    /// Where a committed layer of this stage joins a stack. A pixel-stage or colour-stage layer is
+    /// inserted immediately before the first geometry-stage layer, so the quarter-turns, reflections
+    /// and crop that form the geometry tail carry it and no later geometry change moves or
+    /// invalidates it; a geometry-stage layer appends, extending that tail. A layer whose effect no provider
     /// declares does not open the tail: such a stack cannot compile at all, and the host reports
     /// that rather than guessing a position. Cost is `O(layers)` and reads no pixels.
     pub fn insertion_index(&self, layers: &[Layer], stage: EffectStage) -> usize {
@@ -263,11 +263,32 @@ impl ModuleRegistry {
                     segment.geometry = segment.geometry.then(step);
                     segment.width = step.output_width;
                     segment.height = step.output_height;
-                    segment.operations.push(processing);
+                    segment.operations.push(Processing::ExactGeometry(step));
                 }
-                Processing::PointReplace { .. } => {
+                Processing::PointReplace { x, y, rgb } => {
                     segment.has_pixels = true;
-                    segment.operations.push(processing);
+                    segment
+                        .operations
+                        .push(Processing::PointReplace { x, y, rgb });
+                }
+                Processing::Color(operation) => {
+                    if operation.len() > MAX_COLOR_UNITS {
+                        return Err(validation(format!(
+                            "a colour operation declares {} units, more than the {MAX_COLOR_UNITS} the host evaluates",
+                            operation.len()
+                        )));
+                    }
+                    if !operation.is_finite() {
+                        return Err(validation(
+                            "a colour operation declares a unit whose coefficients are not finite",
+                        ));
+                    }
+                    // A neutral payload compiles to no units, and no units is no processing: the
+                    // segment keeps the identity byte path and the shared source buffer.
+                    if !operation.is_empty() {
+                        segment.has_color = true;
+                        segment.operations.push(Processing::Color(operation));
+                    }
                 }
                 Processing::Resample(resample) => {
                     if resample.output_width == 0 || resample.output_height == 0 {
@@ -753,6 +774,13 @@ pub(crate) mod tests {
                 registry.insertion_index(&layers, EffectStage::Pixel),
                 expected,
                 "{case}"
+            );
+            // A colour-stage layer joins the stack by the same rule, so a Basic layer lands before
+            // the quarter-turns, reflections and crop that carry it.
+            assert_eq!(
+                registry.insertion_index(&layers, EffectStage::Color),
+                expected,
+                "{case}: colour joins where a pixel edit does"
             );
             assert_eq!(
                 registry.insertion_index(&layers, EffectStage::Geometry),

@@ -17,7 +17,7 @@ use image::{ImageDecoder, ImageReader, Limits};
 pub use model::*;
 pub use modules::*;
 pub use preview::*;
-pub use render::{ContentPoint, Raster, Sample, locate, render, sample};
+pub use render::{ContentPoint, Raster, Sample, ScratchBudget, locate, render, sample};
 use sha2::{Digest, Sha256};
 use std::{
     fs::File,

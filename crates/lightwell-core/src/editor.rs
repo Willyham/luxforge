@@ -674,8 +674,7 @@ impl EditorService {
         // The stack is compiled once; planning answers point queries and never rasterizes.
         let recipe = &state.current_entry.snapshot.recipe;
         let evaluation = Evaluation::new(&registry, &source, recipe)?;
-        let sampler =
-            |x: u32, y: u32| -> Result<Option<[u8; 4]>, Error> { Ok(evaluation.pixel(x, y)) };
+        let sampler = |x: u32, y: u32| -> Result<Option<[u8; 4]>, Error> { evaluation.pixel(x, y) };
         // The stage one layer receives: compile the prefix before it. Compiling folds declared
         // output stages and allocates only the operation lists, so this copies no part of the stack
         // and rasterizes nothing. The whole recipe compiled above, so its format is known good.
@@ -689,7 +688,7 @@ impl EditorService {
         // point per segment, so nothing is rasterized here either.
         let sample_before = |index: usize, x: u32, y: u32| -> Result<Option<[u8; 4]>, Error> {
             let prefix = prefix(&recipe.layers, index)?;
-            Ok(Evaluation::over_layers(&registry, &source, prefix)?.pixel(x, y))
+            Evaluation::over_layers(&registry, &source, prefix)?.pixel(x, y)
         };
         let insertion_index = |stage: EffectStage| registry.insertion_index(&recipe.layers, stage);
         let context = StageContext {

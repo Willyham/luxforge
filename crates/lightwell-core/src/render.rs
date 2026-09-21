@@ -1,26 +1,53 @@
 use crate::{
     Error, ErrorKind, Layer, Recipe, SnapshotId, SourceImage,
-    modules::{ExactGeometry, ModuleRegistry, Processing, Resample, Stage},
+    modules::{
+        ColorOperation, ExactGeometry, ModuleRegistry, PointwiseColor, Processing, Resample, Stage,
+    },
 };
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
-use std::{collections::HashSet, sync::Arc, sync::LazyLock};
+use std::{
+    cell::Cell,
+    sync::{
+        Arc, LazyLock,
+        atomic::{AtomicU64, Ordering},
+    },
+};
 
 const PARALLEL_RENDER_PIXELS: u64 = 1_000_000;
 
-/// The sRGB transfer function over the 256 8-bit channel values: interpolation weights are applied
-/// in linear light, so every resampled channel is decoded through this table first.
+/// The sRGB transfer function applied backwards, in f64: one encoded channel in `[0, 1]` to linear
+/// light. Every table below is built from this one definition.
+fn srgb_decode(encoded: f64) -> f64 {
+    if encoded <= 0.040_45 {
+        encoded / 12.92
+    } else {
+        ((encoded + 0.055) / 1.055).powf(2.4)
+    }
+}
+
+/// The sRGB transfer function over the 256 8-bit channel values: interpolation weights and colour
+/// units are applied in linear light, so every channel is decoded through this table first. The
+/// entries are computed in f64 and stored as f32, which is the working precision of a colour unit.
 static SRGB_TO_LINEAR: LazyLock<[f32; 256]> = LazyLock::new(|| {
     let mut table = [0.0; 256];
     for (value, slot) in table.iter_mut().enumerate() {
-        let encoded = value as f64 / 255.0;
-        *slot = if encoded <= 0.040_45 {
-            encoded / 12.92
-        } else {
-            ((encoded + 0.055) / 1.055).powf(2.4)
-        } as f32;
+        *slot = srgb_decode(value as f64 / 255.0) as f32;
     }
     table
+});
+
+/// The 255 linear-light thresholds that separate the 256 output codes: `t_k = decode((k − 0.5)/255)`
+/// for `k` in `1..=255`, at index `k − 1`. `floor(255·encode(v) + 0.5) = k` exactly when
+/// `encode(v)` lies in `[(k − 0.5)/255, (k + 0.5)/255)`, so the code of a clamped value is the
+/// number of thresholds at or below it. Computed once in f64, it quantizes the output boundary
+/// without a power function per pixel.
+static SRGB_CODE_THRESHOLDS: LazyLock<[f64; 255]> = LazyLock::new(|| {
+    let mut thresholds = [0.0; 255];
+    for (index, slot) in thresholds.iter_mut().enumerate() {
+        *slot = srgb_decode((index as f64 + 0.5) / 255.0);
+    }
+    thresholds
 });
 
 /// The sRGB transfer function applied forwards, rounded to the nearest 8-bit value.
@@ -32,6 +59,247 @@ fn linear_to_srgb(linear: f64) -> u8 {
         1.055 * linear.powf(1.0 / 2.4) - 0.055
     };
     (encoded * 255.0).round() as u8
+}
+
+/// The default aggregate limit on transient float scratch: 64 MiB across every active render.
+const DEFAULT_SCRATCH_BYTES: u64 = 64 * 1024 * 1024;
+
+/// A process-wide bound on the transient float buffers a render streams through. Frames have their
+/// own 512 MiB limit; this bounds everything that is neither a frame nor the source, so a colour
+/// pass can never trade a bounded frame for unbounded scratch. Reservations are taken before the
+/// allocation they pay for and released when it is dropped.
+pub struct ScratchBudget {
+    limit: AtomicU64,
+    used: AtomicU64,
+}
+
+static SCRATCH_BUDGET: ScratchBudget = ScratchBudget {
+    limit: AtomicU64::new(DEFAULT_SCRATCH_BYTES),
+    used: AtomicU64::new(0),
+};
+
+impl ScratchBudget {
+    /// The one process-wide budget. It is shared state, not a new instance, so this is not the
+    /// `Default` trait.
+    #[allow(clippy::should_implement_trait)]
+    pub fn default() -> &'static Self {
+        &SCRATCH_BUDGET
+    }
+
+    pub fn limit(&self) -> u64 {
+        self.limit.load(Ordering::Relaxed)
+    }
+
+    /// Set the limit and return the previous one. Lowering it below what is already reserved does
+    /// not free anything; the next reservation is what fails.
+    pub fn set_limit(&self, bytes: u64) -> u64 {
+        self.limit.swap(bytes, Ordering::SeqCst)
+    }
+
+    pub fn in_use(&self) -> u64 {
+        self.used.load(Ordering::SeqCst)
+    }
+
+    /// Reserve `bytes` or fail with `ResourceLimit`. The reservation is released when the returned
+    /// guard is dropped, including on an early return from the work it covers.
+    fn reserve(&self, bytes: usize) -> Result<Reservation<'_>, Error> {
+        let bytes = bytes as u64;
+        let limit = self.limit();
+        self.used
+            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |used| {
+                used.checked_add(bytes).filter(|total| *total <= limit)
+            })
+            .map_err(|used| {
+                Error::new(
+                    ErrorKind::ResourceLimit,
+                    format!(
+                        "colour processing needs {bytes} bytes of scratch, and {used} of the {limit} byte budget is in use"
+                    ),
+                )
+            })?;
+        Ok(Reservation {
+            budget: self,
+            bytes,
+        })
+    }
+}
+
+struct Reservation<'a> {
+    budget: &'a ScratchBudget,
+    bytes: u64,
+}
+
+impl Drop for Reservation<'_> {
+    fn drop(&mut self) {
+        self.budget.used.fetch_sub(self.bytes, Ordering::SeqCst);
+    }
+}
+
+/// A frame row chunk holds at most this many bytes of float scratch, so the peak is the worker
+/// count times this and nothing scales with the image. Rayon runs at most one chunk per worker:
+/// 16 workers on the host's M4 Pro reach 16 MiB, comfortably inside the 64 MiB budget, and a
+/// 16384-pixel row — the widest side the host accepts — still leaves 5 rows per chunk.
+const COLOR_CHUNK_SCRATCH_BYTES: usize = 1024 * 1024;
+
+/// And never more rows than this, so a narrow image does not buffer an arbitrary slice of the
+/// frame: 16 rows of a 10000-pixel image is 16 × 10000 × 12 = 1.92 MB of `[f32; 3]`, which is why
+/// the byte cap above decides there and the row cap decides for narrow frames.
+const COLOR_CHUNK_ROWS: usize = 16;
+
+/// The rows of one streamed colour chunk at this frame width.
+fn color_chunk_rows(width: u32) -> usize {
+    let row = (width as usize).max(1) * std::mem::size_of::<[f32; 3]>();
+    (COLOR_CHUNK_SCRATCH_BYTES / row).clamp(1, COLOR_CHUNK_ROWS)
+}
+
+const NON_FINITE_COLOR: &str = "colour processing produced a non-finite value";
+
+/// One maximal run of colour operations in a segment's operation list: every operation between two
+/// point replacements, which is the span the host evaluates as one unbroken float pass. Exact
+/// geometry is already composed into the segment's single raster pass and commutes with pointwise
+/// colour, so it does not break a run; a point replacement does, because a replacement written
+/// before a run is processed by it and one written after it is not.
+struct ColorRun<'a> {
+    /// The index of this run's first colour operation in the segment's operation list.
+    start: usize,
+    operations: &'a [Processing],
+}
+
+impl<'a> ColorRun<'a> {
+    /// Every unit of every operation of this run, in evaluation order.
+    fn units(&self) -> impl Iterator<Item = &'a Arc<dyn PointwiseColor>> {
+        self.operations
+            .iter()
+            .filter_map(|operation| match operation {
+                Processing::Color(operation) => Some(operation),
+                _ => None,
+            })
+            .flat_map(ColorOperation::units)
+    }
+}
+
+struct ColorRuns<'a> {
+    operations: &'a [Processing],
+    position: usize,
+}
+
+impl<'a> Iterator for ColorRuns<'a> {
+    type Item = ColorRun<'a>;
+
+    fn next(&mut self) -> Option<ColorRun<'a>> {
+        while self.position < self.operations.len() {
+            if !matches!(self.operations[self.position], Processing::Color(_)) {
+                self.position += 1;
+                continue;
+            }
+            let start = self.position;
+            let mut last = start;
+            for (index, operation) in self.operations.iter().enumerate().skip(start) {
+                match operation {
+                    Processing::Color(_) => last = index,
+                    Processing::PointReplace { .. } => break,
+                    Processing::ExactGeometry(_) | Processing::Resample(_) => {}
+                }
+            }
+            self.position = last + 1;
+            return Some(ColorRun {
+                start,
+                operations: &self.operations[start..=last],
+            });
+        }
+        None
+    }
+}
+
+fn color_runs(operations: &[Processing]) -> ColorRuns<'_> {
+    ColorRuns {
+        operations,
+        position: 0,
+    }
+}
+
+/// One 8-bit pixel decoded into linear sRGB.
+#[inline]
+fn decode_pixel(rgb: [u8; 3]) -> [f32; 3] {
+    let table = &*SRGB_TO_LINEAR;
+    [
+        table[rgb[0] as usize],
+        table[rgb[1] as usize],
+        table[rgb[2] as usize],
+    ]
+}
+
+/// The output boundary: clamp to `[0, 1]`, then take the code whose exact threshold interval holds
+/// the value, which equals `floor(255 · encode(v) + 0.5)`.
+#[inline]
+fn quantize_pixel(rgb: [f32; 3]) -> [u8; 3] {
+    let thresholds = &*SRGB_CODE_THRESHOLDS;
+    rgb.map(|value| {
+        let value = f64::from(value.clamp(0.0, 1.0));
+        thresholds.partition_point(|threshold| *threshold <= value) as u8
+    })
+}
+
+/// Apply every unit of one run, in order, to already decoded linear pixels. Nothing is clamped or
+/// quantized between units, so an inverse pair returns its input exactly and a value outside
+/// `[0, 1]` survives to the next unit.
+///
+/// The finite check runs over the whole slice after each unit rather than per pixel inside it, so
+/// the hot loop stays branch-free; the run fails as soon as any unit has produced a non-finite
+/// value, whether the slice is a row chunk of a frame or the single pixel of a point sample.
+fn apply_units(run: &ColorRun<'_>, pixels: &mut [[f32; 3]]) -> Result<(), Error> {
+    for unit in run.units() {
+        unit.apply_row(pixels);
+        if !pixels.iter().flatten().all(|channel| channel.is_finite()) {
+            return Err(Error::new(ErrorKind::ResourceLimit, NON_FINITE_COLOR));
+        }
+    }
+    Ok(())
+}
+
+/// One pixel through one colour run: decode, every unit in order, clamp and quantize. The point
+/// sampler applies a run with this; the rasterizing pass applies the same three steps to a row
+/// chunk, calling `apply_row` once per chunk instead of once per pixel, which changes no
+/// arithmetic. Both paths share `decode_pixel`, `apply_units` and `quantize_pixel`, so a sample
+/// cannot disagree with the byte that was rendered.
+fn color_pixel(rgb: [u8; 3], run: &ColorRun<'_>) -> Result<[u8; 3], Error> {
+    let mut pixel = [decode_pixel(rgb)];
+    apply_units(run, &mut pixel)?;
+    Ok(quantize_pixel(pixel[0]))
+}
+
+/// One streamed colour pass over a frame, in place: bounded row chunks on the shared Rayon pool
+/// above the same one-megapixel threshold the other passes use, serial below it. No full-frame
+/// float buffer exists at any point; each chunk reserves its own scratch before allocating it.
+fn apply_color_run(
+    pixels: &mut [u8],
+    width: u32,
+    height: u32,
+    run: &ColorRun<'_>,
+) -> Result<(), Error> {
+    if pixels.is_empty() || width == 0 {
+        return Ok(());
+    }
+    let chunk_bytes = color_chunk_rows(width) * width as usize * 4;
+    let process = |chunk: &mut [u8]| -> Result<(), Error> {
+        let count = chunk.len() / 4;
+        let _reservation =
+            ScratchBudget::default().reserve(count * std::mem::size_of::<[f32; 3]>())?;
+        let mut linear: Vec<[f32; 3]> = chunk
+            .chunks_exact(4)
+            .map(|pixel| decode_pixel([pixel[0], pixel[1], pixel[2]]))
+            .collect();
+        apply_units(run, &mut linear)?;
+        for (pixel, value) in chunk.chunks_exact_mut(4).zip(&linear) {
+            pixel[..3].copy_from_slice(&quantize_pixel(*value));
+        }
+        Ok(())
+    };
+    if u64::from(width) * u64::from(height) >= PARALLEL_RENDER_PIXELS {
+        pixels.par_chunks_mut(chunk_bytes).try_for_each(process)
+    } else {
+        pixels.chunks_mut(chunk_bytes).try_for_each(process)
+    }
 }
 
 /// One bilinear sample of a frame in linear light, with indices clamped to the frame's edge.
@@ -335,6 +603,7 @@ pub(crate) struct Segment {
     pub(crate) width: u32,
     pub(crate) height: u32,
     pub(crate) has_pixels: bool,
+    pub(crate) has_color: bool,
 }
 
 impl Segment {
@@ -346,7 +615,14 @@ impl Segment {
             width,
             height,
             has_pixels: false,
+            has_color: false,
         }
+    }
+
+    /// Whether this pass writes anything into its frame. An identity pass that does not shares the
+    /// source allocation instead of copying it.
+    fn writes_pixels(&self) -> bool {
+        self.has_pixels || self.has_color
     }
 }
 
@@ -372,9 +648,11 @@ impl Compiled {
 }
 
 /// Where one segment-output pixel comes from: the input-frame pixel it reads and the replacement
-/// that wins there.
+/// that wins there, with that replacement's position in the operation list. The position decides
+/// which colour runs still reach the pixel: a replacement overwrites everything the runs before it
+/// produced, and only the runs after it process the replaced value.
 struct Resolved {
-    rgb: Option<[u8; 3]>,
+    replacement: Option<(usize, [u8; 3])>,
     input_x: u32,
     input_y: u32,
 }
@@ -386,7 +664,7 @@ impl Segment {
         }
         let (input_x, input_y) = self.geometry.unmap(x, y);
         let mut suffix = ExactGeometry::identity(self.width, self.height);
-        for operation in self.operations.iter().rev() {
+        for (index, operation) in self.operations.iter().enumerate().rev() {
             match operation {
                 Processing::ExactGeometry(step) => suffix = step.then(suffix),
                 Processing::PointReplace {
@@ -395,34 +673,34 @@ impl Segment {
                     rgb,
                 } if suffix.map(*pixel_x, *pixel_y) == Some((x, y)) => {
                     return Some(Resolved {
-                        rgb: Some(*rgb),
+                        replacement: Some((index, *rgb)),
                         input_x,
                         input_y,
                     });
                 }
                 // A point replacement mapping outside this stage was cropped away.
                 Processing::PointReplace { .. } => {}
-                // A resample is the next segment's entry, never one of its operations.
-                Processing::Resample(_) => {}
+                // Colour is applied to the resolved value, not to the coordinate walk, and a
+                // resample is the next segment's entry, never one of its operations.
+                Processing::Color(_) | Processing::Resample(_) => {}
             }
         }
         Some(Resolved {
-            rgb: None,
+            replacement: None,
             input_x,
             input_y,
         })
     }
 }
 
-/// Apply one segment's point replacements to its rasterized frame. Later replacements win, so the
-/// list is walked backwards and the first hit on a coordinate keeps it.
-fn replace_points(pixels: &mut [u8], segment: &Segment) {
-    if !segment.has_pixels {
-        return;
-    }
+/// Where each of one segment's point replacements lands in its output frame, in stack order, with
+/// its position in the operation list. One backward walk accumulates the suffix geometry that
+/// carries each replacement; a replacement a later crop discards is simply absent. The result is
+/// bounded by the layer count and reads no pixels.
+fn mapped_replacements(segment: &Segment) -> Vec<(usize, u32, u32, [u8; 3])> {
     let mut suffix = ExactGeometry::identity(segment.width, segment.height);
-    let mut replaced = HashSet::new();
-    for operation in segment.operations.iter().rev() {
+    let mut mapped = Vec::new();
+    for (index, operation) in segment.operations.iter().enumerate().rev() {
         match operation {
             Processing::ExactGeometry(step) => suffix = step.then(suffix),
             Processing::PointReplace {
@@ -430,17 +708,43 @@ fn replace_points(pixels: &mut [u8], segment: &Segment) {
                 y: pixel_y,
                 rgb,
             } => {
-                if let Some((x, y)) = suffix.map(*pixel_x, *pixel_y)
-                    && replaced.insert((x, y))
-                {
-                    let offset =
-                        ((u64::from(y) * u64::from(segment.width) + u64::from(x)) * 4) as usize;
-                    pixels[offset..offset + 3].copy_from_slice(rgb);
+                if let Some((x, y)) = suffix.map(*pixel_x, *pixel_y) {
+                    mapped.push((index, x, y, *rgb));
                 }
             }
-            Processing::Resample(_) => {}
+            Processing::Color(_) | Processing::Resample(_) => {}
         }
     }
+    mapped.reverse();
+    mapped
+}
+
+/// Apply one segment's operation list to its rasterized frame as ordered phases: the point
+/// replacements before a colour run, then that run streamed over the frame, then the replacements
+/// after it. Writing the replacements in stack order lets a later one win at the same coordinate,
+/// exactly as a later layer does.
+fn apply_operations(pixels: &mut [u8], segment: &Segment) -> Result<(), Error> {
+    if !segment.writes_pixels() {
+        return Ok(());
+    }
+    let replacements = mapped_replacements(segment);
+    let mut next = 0;
+    let write = |next: &mut usize, before: usize, pixels: &mut [u8]| {
+        while let Some((index, x, y, rgb)) = replacements.get(*next).copied() {
+            if index >= before {
+                break;
+            }
+            let offset = ((u64::from(y) * u64::from(segment.width) + u64::from(x)) * 4) as usize;
+            pixels[offset..offset + 3].copy_from_slice(&rgb);
+            *next += 1;
+        }
+    };
+    for run in color_runs(&segment.operations) {
+        write(&mut next, run.start, pixels);
+        apply_color_run(pixels, segment.width, segment.height, &run)?;
+    }
+    write(&mut next, usize::MAX, pixels);
+    Ok(())
 }
 
 fn check_source(source: &SourceImage) -> Result<(), Error> {
@@ -520,31 +824,57 @@ impl<'a> Evaluation<'a> {
     }
 
     /// `None` when the coordinate lies outside the output stage.
-    pub(crate) fn pixel(&self, x: u32, y: u32) -> Option<[u8; 4]> {
+    pub(crate) fn pixel(&self, x: u32, y: u32) -> Result<Option<[u8; 4]>, Error> {
         self.pixel_in(self.compiled.segments.len() - 1, x, y)
     }
 
     /// One pixel of one segment's output stage. A resample is evaluated recursively as the bilinear
     /// blend of four pixels of the previous segment, so a point query costs `O(layers · 4^resamples)`
     /// and never allocates a frame; a stack holds at most one crop layer.
-    fn pixel_in(&self, index: usize, x: u32, y: u32) -> Option<[u8; 4]> {
+    ///
+    /// The colour phases are the rasterizing pass's, applied to this one pixel: the replacement that
+    /// wins here ends the runs before it, and every run after it is decoded, evaluated and quantized
+    /// in turn, so the sampled byte is the byte the frame holds.
+    fn pixel_in(&self, index: usize, x: u32, y: u32) -> Result<Option<[u8; 4]>, Error> {
         let segment = &self.compiled.segments[index];
-        let resolved = segment.resolve(x, y)?;
+        let Some(resolved) = segment.resolve(x, y) else {
+            return Ok(None);
+        };
         let mut rgba = match segment.entry {
             None => source_pixel(self.source, resolved.input_x, resolved.input_y),
             Some(resample) => {
                 let previous = &self.compiled.segments[index - 1];
                 let (u, v) = resample.input_at(resolved.input_x, resolved.input_y);
-                bilinear(u, v, previous.width, previous.height, |x, y| {
-                    self.pixel_in(index - 1, x, y)
-                        .expect("clamped indices stay inside the previous stage")
-                })
+                // `bilinear` fetches four pixels and cannot itself fail, so a failure from the
+                // previous segment is carried out of the closure and reported here.
+                let failure: Cell<Option<Error>> = Cell::new(None);
+                let blended = bilinear(u, v, previous.width, previous.height, |x, y| {
+                    match self.pixel_in(index - 1, x, y) {
+                        Ok(pixel) => pixel.expect("clamped indices stay inside the previous stage"),
+                        Err(error) => {
+                            failure.set(Some(error));
+                            [0; 4]
+                        }
+                    }
+                });
+                if let Some(error) = failure.take() {
+                    return Err(error);
+                }
+                blended
             }
         };
-        if let Some(rgb) = resolved.rgb {
+        if let Some((_, rgb)) = resolved.replacement {
             rgba[..3].copy_from_slice(&rgb);
         }
-        Some(rgba)
+        if segment.has_color {
+            let after = resolved.replacement.map_or(0, |(index, _)| index + 1);
+            let mut rgb = [rgba[0], rgba[1], rgba[2]];
+            for run in color_runs(&segment.operations).filter(|run| run.start >= after) {
+                rgb = color_pixel(rgb, &run)?;
+            }
+            rgba[..3].copy_from_slice(&rgb);
+        }
+        Ok(Some(rgba))
     }
 
     /// The content-stage pixel one output-stage pixel shows. `None` when the coordinate lies outside
@@ -591,7 +921,7 @@ pub fn sample(
     Ok(Sample {
         width: stage.width,
         height: stage.height,
-        rgba: evaluation.pixel(x, y),
+        rgba: evaluation.pixel(x, y)?,
     })
 }
 
@@ -638,7 +968,7 @@ pub fn render(
     let mut height = first.height;
     // An identity pass with nothing to write shares the source allocation instead of copying it.
     let mut frame = if first.geometry.is_identity(source.width, source.height) {
-        first.has_pixels.then(|| source.rgba.as_ref().to_vec())
+        first.writes_pixels().then(|| source.rgba.as_ref().to_vec())
     } else {
         Some(copy_transformed(
             source.rgba.as_ref(),
@@ -647,7 +977,7 @@ pub fn render(
         )?)
     };
     if let Some(pixels) = frame.as_mut() {
-        replace_points(pixels, first);
+        apply_operations(pixels, first)?;
     }
 
     for segment in &compiled.segments[1..] {
@@ -667,7 +997,7 @@ pub fn render(
             width = segment.width;
             height = segment.height;
         }
-        replace_points(&mut next, segment);
+        apply_operations(&mut next, segment)?;
         frame = Some(next);
     }
 
@@ -684,8 +1014,8 @@ pub fn render(
 mod tests {
     use super::*;
     use crate::{
-        AssetId, EFFECT_FORMAT, Layer, LayerId, ORIENTATION_EFFECT, Orientation, PIXEL_EFFECT,
-        PixelReplace, Recipe, Snapshot, Transform,
+        AssetId, EFFECT_FORMAT, Layer, LayerId, MAX_COLOR_UNITS, ORIENTATION_EFFECT, Orientation,
+        PIXEL_EFFECT, PixelReplace, Recipe, Snapshot, Transform,
         modules::{
             ActionInput, ActionPlan, Availability, BoxRect, CropPayload, CropStage,
             EffectDescriptor, EffectStage, ModuleDescriptor, StageContext, ToolModule,
@@ -1881,5 +2211,674 @@ mod tests {
             ..source
         };
         assert!(render(&registry, &malformed, snapshot.id, &Recipe::default()).is_err());
+    }
+
+    // ---------------------------------------------------------------------------------------
+    // The pointwise colour stage.
+    // ---------------------------------------------------------------------------------------
+
+    /// The scratch budget is process-wide, so the test that shrinks it and every test that reserves
+    /// from it hold this lock instead of racing.
+    static SCRATCH_TESTS: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    fn scratch_guard() -> std::sync::MutexGuard<'static, ()> {
+        SCRATCH_TESTS
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// A test-only colour unit: multiply linear light by `2^EV`. The coefficient is computed in f64
+    /// and applied in f32, which is the working precision the contract declares.
+    #[derive(Debug)]
+    struct Exposure {
+        ev: f64,
+        gain: f32,
+    }
+
+    impl Exposure {
+        fn new(ev: f64) -> Self {
+            Self {
+                ev,
+                gain: ev.exp2() as f32,
+            }
+        }
+    }
+
+    impl PointwiseColor for Exposure {
+        fn apply_row(&self, rgb: &mut [[f32; 3]]) {
+            for pixel in rgb {
+                for channel in pixel {
+                    *channel *= self.gain;
+                }
+            }
+        }
+        fn is_finite(&self) -> bool {
+            self.ev.is_finite() && self.gain.is_finite()
+        }
+        fn describe(&self) -> String {
+            format!("exposure {:+.2} EV", self.ev)
+        }
+    }
+
+    /// A unit whose coefficients are finite but whose result is not: two of them in one operation
+    /// overflow f32 for any non-zero channel, which is the render-time failure the contract names.
+    #[derive(Debug)]
+    struct Overflow;
+
+    impl PointwiseColor for Overflow {
+        fn apply_row(&self, rgb: &mut [[f32; 3]]) {
+            for pixel in rgb {
+                for channel in pixel {
+                    *channel *= f32::MAX;
+                }
+            }
+        }
+        fn is_finite(&self) -> bool {
+            true
+        }
+        fn describe(&self) -> String {
+            "overflow".into()
+        }
+    }
+
+    const TEST_COLOR_EFFECT: &str = "test.colour";
+
+    /// A test-only module with one colour effect. The Basic module is a separate deliverable; this
+    /// one exists so the host's colour stage can be tested without it.
+    struct ColorTestModule(ModuleDescriptor);
+
+    impl ColorTestModule {
+        fn shared() -> Arc<dyn ToolModule> {
+            Arc::new(Self(ModuleDescriptor {
+                id: "test.colour".into(),
+                title: "Test colour".into(),
+                hint: None,
+                effects: vec![EffectDescriptor {
+                    id: TEST_COLOR_EFFECT.into(),
+                    format: EFFECT_FORMAT,
+                    stage: EffectStage::Color,
+                }],
+                actions: Vec::new(),
+                controls: Vec::new(),
+                reset: None,
+                canvas: None,
+                developer: false,
+                availability: Availability::Available,
+            }))
+        }
+    }
+
+    impl ToolModule for ColorTestModule {
+        fn descriptor(&self) -> &ModuleDescriptor {
+            &self.0
+        }
+        fn parse(&self, _: &str, _: &Map<String, Value>) -> Result<ActionInput, Error> {
+            Err(Error::new(ErrorKind::Internal, "no actions"))
+        }
+        fn plan(&self, _: &ActionInput, _: &StageContext<'_>) -> Result<ActionPlan, Error> {
+            Ok(ActionPlan::NoOp)
+        }
+        fn validate_payload(&self, _: &str, _: u32, _: &Value) -> Result<(), Error> {
+            Ok(())
+        }
+        fn describe_layer(&self, _: &str, _: u32, payload: &Value) -> Result<String, Error> {
+            Ok(format!("test colour {payload}"))
+        }
+        fn compile(&self, _: &str, _: u32, payload: &Value, _: Stage) -> Result<Processing, Error> {
+            let mut units: Vec<Arc<dyn PointwiseColor>> = Vec::new();
+            for ev in payload["exposure"]
+                .as_array()
+                .map_or(&[][..], Vec::as_slice)
+            {
+                units.push(Arc::new(Exposure::new(ev.as_f64().expect("an EV number"))));
+            }
+            if payload["infinite"] == json!(true) {
+                units.push(Arc::new(Exposure::new(f64::INFINITY)));
+            }
+            for _ in 0..payload["overflow"].as_u64().unwrap_or(0) {
+                units.push(Arc::new(Overflow));
+            }
+            Ok(Processing::Color(ColorOperation::new(units)))
+        }
+    }
+
+    fn colour_layer(payload: Value) -> Layer {
+        Layer {
+            id: LayerId::new(),
+            effect_id: TEST_COLOR_EFFECT.into(),
+            effect_format: EFFECT_FORMAT,
+            payload,
+        }
+    }
+
+    /// One colour layer of exposure units in order.
+    fn exposure_layer(evs: &[f64]) -> Layer {
+        colour_layer(json!({ "exposure": evs }))
+    }
+
+    fn colour_registry() -> ModuleRegistry {
+        let mut registry = geometry_registry();
+        registry.register(ColorTestModule::shared()).unwrap();
+        registry
+    }
+
+    fn colour_recipe(layers: Vec<Layer>) -> Recipe {
+        Recipe { format: 1, layers }
+    }
+
+    /// The sRGB transfer function forwards in f64, written from the contract and used only by the
+    /// references below; the renderer's own encoder rounds to a byte and is not consulted here.
+    fn encode_reference(linear: f64) -> f64 {
+        if linear <= 0.003_130_8 {
+            12.92 * linear
+        } else {
+            1.055 * linear.powf(1.0 / 2.4) - 0.055
+        }
+    }
+
+    fn decode_reference(encoded: f64) -> f64 {
+        if encoded <= 0.040_45 {
+            encoded / 12.92
+        } else {
+            ((encoded + 0.055) / 1.055).powf(2.4)
+        }
+    }
+
+    /// An independent stepwise f64 evaluation of the colour contract: decode the byte, multiply by
+    /// `2^EV` once per unit in order, clamp, encode and round with `floor(255·e + 0.5)`. It shares
+    /// no code with the renderer and returns the clamped linear value as well as the code, so a
+    /// disagreement can be tested against the threshold it sits on.
+    fn colour_reference(byte: u8, evs: &[f64]) -> (u8, f64) {
+        let mut linear = decode_reference(f64::from(byte) / 255.0);
+        for ev in evs {
+            linear *= 2.0_f64.powf(*ev);
+        }
+        let clamped = linear.clamp(0.0, 1.0);
+        let code = (255.0 * encode_reference(clamped) + 0.5).floor();
+        (code as u8, clamped)
+    }
+
+    /// The tolerance the design freezes for float colour: an exact code everywhere except within
+    /// `1e-6 + 1e-6·|value|` of the threshold between two codes, where one code of difference is
+    /// permitted because the production path decodes and multiplies in f32.
+    fn assert_code_within_tolerance(actual: u8, expected: u8, linear: f64, case: &str) {
+        if actual == expected {
+            return;
+        }
+        let difference = i32::from(actual) - i32::from(expected);
+        assert!(difference.abs() <= 1, "{case}: {actual} against {expected}");
+        let crossed = u32::from(actual.max(expected));
+        let threshold = decode_reference((f64::from(crossed) - 0.5) / 255.0);
+        let tolerance = 1e-6 + 1e-6 * threshold.abs();
+        assert!(
+            (linear - threshold).abs() <= tolerance,
+            "{case}: {actual} against {expected} is not within {tolerance} of the threshold {threshold} ({linear})"
+        );
+    }
+
+    /// Every grey, once per byte, so a wrong table entry cannot hide behind a neighbour.
+    fn greys() -> SourceImage {
+        let mut rgba = Vec::with_capacity(256 * 4);
+        for value in 0..=255_u8 {
+            rgba.extend([value, value, value, 255]);
+        }
+        SourceImage {
+            width: 256,
+            height: 1,
+            rgba: rgba.into(),
+            fingerprint: "sha256:greys".into(),
+            orientation: 1,
+        }
+    }
+
+    #[test]
+    fn the_output_boundary_quantizes_exactly_like_rounding_the_encoded_value() {
+        let reference = |value: f32| -> u8 {
+            let clamped = f64::from(value).clamp(0.0, 1.0);
+            (255.0 * encode_reference(clamped) + 0.5).floor() as u8
+        };
+        // A dense sweep of the whole range, plus values outside it that the boundary clamps.
+        for step in 0..=40_000 {
+            let value = (f64::from(step) / 40_000.0) as f32;
+            assert_eq!(quantize_pixel([value; 3])[0], reference(value), "{value}");
+        }
+        for value in [-1.0_f32, -0.0, 0.0, 1.0, 1.5, 1e20] {
+            assert_eq!(quantize_pixel([value; 3])[0], reference(value), "{value}");
+        }
+        // And on both sides of every one of the 255 thresholds, in the f32 neighbourhood of each.
+        for code in 1..=255_u32 {
+            let threshold = decode_reference((f64::from(code) - 0.5) / 255.0) as f32;
+            let bits = threshold.to_bits();
+            for value in [
+                f32::from_bits(bits - 1),
+                threshold,
+                f32::from_bits(bits + 1),
+            ] {
+                assert_eq!(
+                    quantize_pixel([value; 3])[0],
+                    reference(value),
+                    "code {code} at {value}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn zero_exposure_round_trips_every_grey_and_a_neutral_layer_shares_the_source() {
+        let _scratch = scratch_guard();
+        let registry = colour_registry();
+        let source = greys();
+        let raster = render(
+            &registry,
+            &source,
+            SnapshotId::new(),
+            &colour_recipe(vec![exposure_layer(&[0.0])]),
+        )
+        .unwrap();
+        assert_eq!(
+            raster.rgba.as_ref(),
+            source.rgba.as_ref(),
+            "0 EV decodes and quantizes every byte back to itself"
+        );
+        for value in 0..=255_u8 {
+            assert_eq!(colour_reference(value, &[0.0]).0, value);
+        }
+        // A colour layer with units materializes the frame; a neutral one compiles to nothing and
+        // keeps the identity byte path with the source allocation itself.
+        assert!(!Arc::ptr_eq(&raster.rgba, &source.rgba));
+        let neutral = render(
+            &registry,
+            &source,
+            SnapshotId::new(),
+            &colour_recipe(vec![exposure_layer(&[])]),
+        )
+        .unwrap();
+        assert!(Arc::ptr_eq(&neutral.rgba, &source.rgba));
+        let compiled = registry
+            .compile(
+                source.width,
+                source.height,
+                &colour_recipe(vec![exposure_layer(&[])]),
+            )
+            .unwrap();
+        assert!(compiled.segments[0].operations.is_empty());
+        assert!(!compiled.segments[0].has_color);
+    }
+
+    #[test]
+    fn exposure_matches_an_independent_f64_reference_within_one_code() {
+        let _scratch = scratch_guard();
+        let registry = colour_registry();
+        for ev in [1.0, -1.0, 2.0, -2.0, 0.5, -3.0, 5.0] {
+            for source in [greys(), gradient(37, 23)] {
+                let raster = render(
+                    &registry,
+                    &source,
+                    SnapshotId::new(),
+                    &colour_recipe(vec![exposure_layer(&[ev])]),
+                )
+                .unwrap();
+                for y in 0..source.height {
+                    for x in 0..source.width {
+                        let input = source_pixel(&source, x, y);
+                        let actual = raster.pixel(x, y).expect("inside the stage");
+                        for channel in 0..3 {
+                            let (expected, linear) = colour_reference(input[channel], &[ev]);
+                            assert_code_within_tolerance(
+                                actual[channel],
+                                expected,
+                                linear,
+                                &format!("{ev} EV at ({x}, {y}) channel {channel}"),
+                            );
+                        }
+                        assert_eq!(actual[3], input[3], "alpha is never touched");
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_colour_pass_over_a_megapixel_frame_matches_the_reference_on_the_parallel_path() {
+        let _scratch = scratch_guard();
+        let registry = colour_registry();
+        let source = gradient(1200, 900);
+        assert!(
+            u64::from(source.width) * u64::from(source.height) >= PARALLEL_RENDER_PIXELS,
+            "the case must reach the parallel row-chunk path"
+        );
+        let raster = render(
+            &registry,
+            &source,
+            SnapshotId::new(),
+            &colour_recipe(vec![exposure_layer(&[1.0])]),
+        )
+        .unwrap();
+        for y in 0..source.height {
+            for x in 0..source.width {
+                let input = source_pixel(&source, x, y);
+                let actual = raster.pixel(x, y).expect("inside the stage");
+                for channel in 0..3 {
+                    let (expected, linear) = colour_reference(input[channel], &[1.0]);
+                    assert_code_within_tolerance(
+                        actual[channel],
+                        expected,
+                        linear,
+                        &format!("({x}, {y}) channel {channel}"),
+                    );
+                }
+                assert_eq!(actual[3], input[3]);
+            }
+        }
+    }
+
+    #[test]
+    fn an_inverse_pair_in_one_operation_returns_the_exact_input_bytes() {
+        let _scratch = scratch_guard();
+        let registry = colour_registry();
+        for source in [greys(), gradient(29, 17)] {
+            let raster = render(
+                &registry,
+                &source,
+                SnapshotId::new(),
+                &colour_recipe(vec![exposure_layer(&[1.0, -1.0])]),
+            )
+            .unwrap();
+            assert_eq!(
+                raster.rgba.as_ref(),
+                source.rgba.as_ref(),
+                "nothing is clamped or quantized between the units of one operation"
+            );
+        }
+    }
+
+    #[test]
+    fn two_consecutive_colour_operations_keep_values_outside_the_range_between_them() {
+        let _scratch = scratch_guard();
+        let registry = colour_registry();
+        let source = gradient(29, 17);
+        let recipe = colour_recipe(vec![exposure_layer(&[3.0]), exposure_layer(&[-3.0])]);
+        let compiled = registry
+            .compile(source.width, source.height, &recipe)
+            .unwrap();
+        assert_eq!(
+            compiled.segments[0]
+                .operations
+                .iter()
+                .filter(|operation| matches!(operation, Processing::Color(_)))
+                .count(),
+            2,
+            "two layers are two operations"
+        );
+        let raster = render(&registry, &source, SnapshotId::new(), &recipe).unwrap();
+        assert_eq!(
+            raster.rgba.as_ref(),
+            source.rgba.as_ref(),
+            "consecutive operations fuse into one run, so +3 EV does not clip before −3 EV"
+        );
+        // Separating them with a point replacement does clip, because a replacement is a boundary.
+        let separated = colour_recipe(vec![
+            exposure_layer(&[3.0]),
+            Layer::pixel(0, 0, [1, 2, 3]),
+            exposure_layer(&[-3.0]),
+        ]);
+        let clipped = render(&registry, &source, SnapshotId::new(), &separated).unwrap();
+        assert_ne!(clipped.rgba.as_ref(), source.rgba.as_ref());
+    }
+
+    #[test]
+    fn a_replacement_before_a_colour_operation_is_exposed_and_one_after_it_is_not() {
+        let _scratch = scratch_guard();
+        let registry = colour_registry();
+        let source = gradient(8, 6);
+        let rgb = [10, 120, 200];
+        let recipe = colour_recipe(vec![
+            Layer::pixel(1, 1, rgb),
+            exposure_layer(&[1.0]),
+            Layer::pixel(2, 1, rgb),
+        ]);
+        let raster = render(&registry, &source, SnapshotId::new(), &recipe).unwrap();
+        let mut exposed = [0; 3];
+        for (channel, slot) in exposed.iter_mut().enumerate() {
+            *slot = colour_reference(rgb[channel], &[1.0]).0;
+        }
+        assert_eq!(
+            raster.pixel(1, 1).map(|p| [p[0], p[1], p[2]]),
+            Some(exposed),
+            "the replacement before the colour operation is processed by it"
+        );
+        assert_eq!(
+            raster.pixel(2, 1).map(|p| [p[0], p[1], p[2]]),
+            Some(rgb),
+            "the replacement after it keeps its exact bytes"
+        );
+        for y in 0..raster.height {
+            for x in 0..raster.width {
+                assert_eq!(
+                    sample(&registry, &source, &recipe, x, y).unwrap().rgba,
+                    raster.pixel(x, y),
+                    "({x}, {y})"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn exact_geometry_commutes_with_pointwise_colour() {
+        let _scratch = scratch_guard();
+        let registry = colour_registry();
+        let source = gradient(13, 9);
+        for transform in [
+            Transform::MirrorHorizontal,
+            Transform::RotateRight,
+            Transform::FlipVertical,
+        ] {
+            let before = render(
+                &registry,
+                &source,
+                SnapshotId::new(),
+                &colour_recipe(vec![turn(transform), exposure_layer(&[1.5])]),
+            )
+            .unwrap();
+            let after = render(
+                &registry,
+                &source,
+                SnapshotId::new(),
+                &colour_recipe(vec![exposure_layer(&[1.5]), turn(transform)]),
+            )
+            .unwrap();
+            assert_eq!((before.width, before.height), (after.width, after.height));
+            assert_eq!(before.rgba, after.rgba, "{transform:?}");
+        }
+    }
+
+    #[test]
+    fn a_colour_operation_before_a_rotated_crop_quantizes_then_resamples() {
+        let _scratch = scratch_guard();
+        let registry = colour_registry();
+        let (width, height) = (40_u32, 24_u32);
+        let source = gradient(width, height);
+        let crop = fitted_crop(width, height, 10.0, [0.15, 0.15, 0.7, 0.7]);
+        let exposed_bytes = render(
+            &registry,
+            &source,
+            SnapshotId::new(),
+            &colour_recipe(vec![exposure_layer(&[1.0])]),
+        )
+        .unwrap()
+        .rgba;
+        let exposed = SourceImage {
+            rgba: exposed_bytes,
+            fingerprint: "sha256:exposed".into(),
+            ..source.clone()
+        };
+        let recipe = colour_recipe(vec![exposure_layer(&[1.0]), crop_layer(crop)]);
+        let raster = render(&registry, &source, SnapshotId::new(), &recipe).unwrap();
+        // The colour run ends at the resample, so the crop interpolates the quantized frame: the
+        // same bytes as cropping an already exposed source.
+        let separately = render(
+            &registry,
+            &exposed,
+            SnapshotId::new(),
+            &colour_recipe(vec![crop_layer(crop)]),
+        )
+        .unwrap();
+        assert_eq!(raster.rgba, separately.rgba);
+        // And that frame is what the independent f64 crop reference samples, within its one code.
+        let reference = CropReference::new(&exposed, crop);
+        assert_eq!(
+            (raster.width, raster.height),
+            (reference.width, reference.height)
+        );
+        for j in 0..raster.height {
+            for i in 0..raster.width {
+                let expected = reference.pixel(&exposed, i, j);
+                let actual = raster.pixel(i, j).expect("inside the output stage");
+                for channel in 0..4 {
+                    assert!(
+                        (i32::from(actual[channel]) - i32::from(expected[channel])).abs() <= 1,
+                        "({i}, {j}) channel {channel}: {actual:?} against {expected:?}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn samples_match_rendered_pixels_for_a_mixed_colour_stack() {
+        let _scratch = scratch_guard();
+        let registry = colour_registry();
+        let source = gradient(32, 20);
+        let recipe = colour_recipe(vec![
+            Layer::pixel(3, 4, [250, 1, 2]),
+            exposure_layer(&[0.75]),
+            turn(Transform::MirrorHorizontal),
+            Layer::pixel(1, 2, [3, 251, 4]),
+            crop_layer(fitted_crop(32, 20, 12.0, [0.2, 0.2, 0.6, 0.6])),
+        ]);
+        let raster = render(&registry, &source, SnapshotId::new(), &recipe).unwrap();
+        assert!(raster.width > 1 && raster.height > 1);
+        for y in 0..raster.height {
+            for x in 0..raster.width {
+                let sampled = sample(&registry, &source, &recipe, x, y).unwrap();
+                assert_eq!(
+                    (sampled.width, sampled.height),
+                    (raster.width, raster.height)
+                );
+                assert_eq!(sampled.rgba, raster.pixel(x, y), "({x}, {y})");
+            }
+        }
+        // A colour operation after the resample is sampled through the same phases.
+        let after = colour_recipe(vec![
+            crop_layer(fitted_crop(32, 20, 12.0, [0.2, 0.2, 0.6, 0.6])),
+            exposure_layer(&[-1.0]),
+            Layer::pixel(0, 0, [9, 8, 7]),
+        ]);
+        let raster = render(&registry, &source, SnapshotId::new(), &after).unwrap();
+        for y in 0..raster.height {
+            for x in 0..raster.width {
+                assert_eq!(
+                    sample(&registry, &source, &after, x, y).unwrap().rgba,
+                    raster.pixel(x, y),
+                    "({x}, {y}) after the resample"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn an_over_long_or_non_finite_colour_operation_is_refused_by_compilation() {
+        let _scratch = scratch_guard();
+        let registry = colour_registry();
+        let source = gradient(8, 6);
+        assert!(
+            render(
+                &registry,
+                &source,
+                SnapshotId::new(),
+                &colour_recipe(vec![exposure_layer(&[0.5; MAX_COLOR_UNITS])]),
+            )
+            .is_ok(),
+            "eight units are the bound, not one too many"
+        );
+        for (case, layer, detail) in [
+            (
+                "nine units",
+                exposure_layer(&[0.5; MAX_COLOR_UNITS + 1]),
+                "more than the 8",
+            ),
+            (
+                "a non-finite unit",
+                colour_layer(json!({"exposure": [1.0], "infinite": true})),
+                "not finite",
+            ),
+        ] {
+            let recipe = colour_recipe(vec![layer]);
+            for error in [
+                render(&registry, &source, SnapshotId::new(), &recipe).unwrap_err(),
+                sample(&registry, &source, &recipe, 0, 0).unwrap_err(),
+            ] {
+                assert_eq!(error.kind, ErrorKind::Validation, "{case}");
+                assert!(error.detail.contains(detail), "{case}: {error}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_colour_unit_that_overflows_fails_the_render_and_the_sample() {
+        let _scratch = scratch_guard();
+        let registry = colour_registry();
+        let source = gradient(8, 6);
+        let recipe = colour_recipe(vec![colour_layer(json!({"overflow": 2}))]);
+        for error in [
+            render(&registry, &source, SnapshotId::new(), &recipe).unwrap_err(),
+            sample(&registry, &source, &recipe, 4, 3).unwrap_err(),
+        ] {
+            assert_eq!(error.kind, ErrorKind::ResourceLimit);
+            assert_eq!(error.detail, NON_FINITE_COLOR);
+        }
+    }
+
+    #[test]
+    fn a_colour_pass_reserves_its_row_chunks_from_the_scratch_budget() {
+        let _scratch = scratch_guard();
+        let registry = colour_registry();
+        let source = gradient(64, 48);
+        let recipe = colour_recipe(vec![exposure_layer(&[1.0])]);
+        let budget = ScratchBudget::default();
+        assert_eq!(budget.limit(), 64 * 1024 * 1024, "the declared default");
+        assert_eq!(budget.in_use(), 0, "nothing is held between renders");
+        let previous = budget.set_limit(16);
+        let error = render(&registry, &source, SnapshotId::new(), &recipe)
+            .expect_err("one row chunk is larger than 16 bytes");
+        budget.set_limit(previous);
+        assert_eq!(error.kind, ErrorKind::ResourceLimit);
+        assert!(error.detail.contains("scratch"), "{error}");
+        assert_eq!(budget.in_use(), 0, "a failed reservation releases the rest");
+        // The same stack renders again once the budget is back.
+        assert!(render(&registry, &source, SnapshotId::new(), &recipe).is_ok());
+        // A point sample streams nothing, so it answers whatever the budget is.
+        let previous = budget.set_limit(0);
+        let sampled = sample(&registry, &source, &recipe, 1, 1).unwrap();
+        budget.set_limit(previous);
+        assert!(sampled.rgba.is_some());
+    }
+
+    #[test]
+    fn a_row_chunk_stays_inside_the_scratch_budget_at_every_supported_width() {
+        // 16 workers, one chunk each: the byte cap decides for wide frames and the row cap for
+        // narrow ones, and neither reaches the 64 MiB budget.
+        for width in [1_u32, 64, 6000, 10_000, 16_384] {
+            let rows = color_chunk_rows(width);
+            let bytes = rows * width as usize * std::mem::size_of::<[f32; 3]>();
+            assert!((1..=COLOR_CHUNK_ROWS).contains(&rows), "{width}");
+            assert!(bytes <= COLOR_CHUNK_SCRATCH_BYTES, "{width}: {bytes} bytes");
+            assert!(
+                (16 * bytes as u64) < DEFAULT_SCRATCH_BYTES,
+                "{width}: {bytes} bytes per worker"
+            );
+        }
+        assert_eq!(color_chunk_rows(10_000), 8);
+        assert_eq!(color_chunk_rows(64), COLOR_CHUNK_ROWS);
     }
 }

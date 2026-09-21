@@ -19,7 +19,9 @@ pub use descriptor::{
     check_parameters, render_summary, valid_identity, valid_name,
 };
 pub use pixel::PixelModule;
-pub use processing::{ExactGeometry, Processing, Resample, Stage};
+pub use processing::{
+    ColorOperation, ExactGeometry, MAX_COLOR_UNITS, PointwiseColor, Processing, Resample, Stage,
+};
 pub use registry::ModuleRegistry;
 pub use transform::TransformModule;
 
@@ -39,8 +41,9 @@ pub struct ActionInput {
 pub enum ActionPlan {
     NoOp,
     /// Add a new layer to the stack. The host, not the module, chooses its position from the
-    /// effect's declared stage: a pixel-stage layer joins the stack before the geometry tail, a
-    /// geometry-stage layer extends that tail. [`StageContext::insertion_index`] answers where.
+    /// effect's declared stage: a pixel-stage or colour-stage layer joins the stack before the
+    /// geometry tail, a geometry-stage layer extends that tail.
+    /// [`StageContext::insertion_index`] answers where.
     Commit(Layer),
     /// Replace the layer with the same identity in place, keeping its position and every other
     /// layer. The host rejects an identity that is not in the stack.
@@ -65,8 +68,9 @@ pub struct StageContext<'a> {
     #[allow(clippy::type_complexity)]
     pub stage_before: &'a dyn Fn(usize) -> Result<Stage, Error>,
     /// Where the host would put a [`ActionPlan::Commit`] of a layer with this effect stage: the
-    /// index of the first geometry-stage layer for a pixel-stage effect, `layers.len()` for a
-    /// geometry-stage one. A module plans against that position instead of choosing one, so
+    /// index of the first geometry-stage layer for a pixel-stage or colour-stage effect,
+    /// `layers.len()` for a geometry-stage one. A module plans against that position instead of
+    /// choosing one, so
     /// `stage_before` of this index is the stage its coordinates address.
     #[allow(clippy::type_complexity)]
     pub insertion_index: &'a dyn Fn(EffectStage) -> usize,
