@@ -1,6 +1,7 @@
 use crate::*;
 use lightwell_core::{
-    CROP_EFFECT, CropPayload, CropStage, EditorService, Mutation, Transform, render,
+    CROP_EFFECT, CropPayload, CropStage, EditorService, Mutation, Raster, Transform, analysis,
+    render,
 };
 use std::time::Instant;
 
@@ -44,6 +45,24 @@ fn render_samples(
     Ok(timings)
 }
 
+/// Reduction cost alone: `analysis::reduce_raster` over an already-rendered raster, with no
+/// decode or render work inside the timed section, so this measures the histogram reducer
+/// separately from `render_samples` above.
+fn reduce_samples(raster: &Raster, samples: usize) -> Result<Vec<f64>> {
+    let mut timings = Vec::with_capacity(samples);
+    let expected_pixels = u64::from(raster.width) * u64::from(raster.height);
+    for _ in 0..samples {
+        let started = Instant::now();
+        let report = analysis::reduce_raster(raster)?;
+        ensure(
+            report.pixel_count() == expected_pixels,
+            "Performance reduction pixel count mismatch",
+        )?;
+        timings.push(milliseconds(started));
+    }
+    Ok(timings)
+}
+
 pub fn run(root: &Path, source: &Path, out: &Path, samples: usize) -> Result {
     ensure(!out.exists(), "Editor performance output must be new")?;
     ensure(samples > 0, "Editor performance samples must be positive")?;
@@ -75,6 +94,9 @@ pub fn run(root: &Path, source: &Path, out: &Path, samples: usize) -> Result {
         (original_raster.width, original_raster.height) == (state.asset.width, state.asset.height),
         "Original performance render has wrong dimensions",
     )?;
+    // Reduction alone, over the identity raster just rendered above: no decode or render work is
+    // inside this timed section, so this isolates `analysis::reduce` from rasterizing cost.
+    let histogram_reduce = distribution(reduce_samples(&original_raster, samples)?);
 
     service.apply_transform(
         &asset,
@@ -167,6 +189,7 @@ pub fn run(root: &Path, source: &Path, out: &Path, samples: usize) -> Result {
             "import":import_ms,
             "cached_preview_job":cached_preview_job_ms,
             "original_render":original_render_ms,
+            "histogram_reduce":histogram_reduce,
             "one_transform":one_transform,
             "two_hundred_transform_actions_in_one_orientation_layer":two_hundred_transform_actions,
             "crop_fit_commit":crop_fit_commit_ms,
@@ -178,6 +201,7 @@ pub fn run(root: &Path, source: &Path, out: &Path, samples: usize) -> Result {
         "checks":[
             "Decoded source is cached after import",
             "Original render dimensions are exact",
+            "analysis::reduce_raster's pixel_count matches the rendered raster on every sample",
             "One and 200 exact transform actions, composed into one orientation layer, render from the same immutable source",
             "A 10 degree crop-fit adds one resample stage boundary and renders its declared stage",
             "Catalog reopen reconstructs the original historical state",
