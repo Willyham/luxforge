@@ -256,16 +256,21 @@ Item 5 is demonstrated natively on the owner's M4 by the rendered scenarios `bas
 render generation and state. Calibrated colour and screen-reader behaviour are not claimed: every
 pixel measurement is renderer readback of displayed brightness or channel balance.
 
-One gap is open against item 3 of the histogram and clipping contract. During an active slider
-gesture the desktop displays the drafted render but does not analyse it: the drafted preview job is
-built without `analyse` (`crates/lightwell-app/src/app/tasks.rs`, `draft_set_task`) and a drafted
-result's report and raster are not adopted (`crates/lightwell-app/src/app/mod.rs`, the `!for_draft`
-guard), so the inspector reports an explicit non-ready state with no counts rather than the drafted
-population or the previous one marked updating. Nothing wrong is ever shown, and the core path is
-complete and proved — `analysis.request {target: draft}` matches an independent reduction of the
-drafted render exactly — so this is a desktop adoption step, not a contract or arithmetic problem.
-The `histogram` scenario pins the current behaviour so a fix tightens the check rather than
-silently changing it.
+Item 3 of the histogram and clipping contract — counts and overlays matching the image currently
+presented, drafts included — holds during an active gesture as well. The drafted preview job asks
+for the reduction, so the worker that rendered those pixels reduces them, and the report, the
+raster and the texture are adopted together under the drafted frame's own generation: the plot is
+the drafted population, its identity carries the draft revision the pixels were planned from, and
+the clipping overlay is re-derived from the drafted raster. Between the gesture's tick and the
+drafted pixels reaching the screen the previous report stays plotted and is marked updating, as it
+is for a committed render; it never goes to zero counters. The bound is unchanged: one `draft.set`
+and one preview job per 16 ms tick, with the analysis riding that job and no second render.
+The `histogram` scenario's open-gesture frame proves it on the M4 — status ready,
+`identity.draft_revision` present, and the eleven counters equal to an independent core render and
+reduction of the drafted stack rebuilt from the committed layers the frame displays and the drafted
+payload it records — and the desktop's own tests cover the adoption, the updating window, an older
+generation being dropped and the overlay following the drafted raster. The drafted composition's
+arithmetic is separately exact through `analysis.request {target: draft}` in the acceptance chapter.
 
 ## Later module candidates
 

@@ -480,6 +480,12 @@ pub(crate) fn draft_begin_task(
 /// One `draft.set` and the one preview job for the settings it accepted, as a single round trip.
 /// The gesture's bound is one of these per tick, so pairing them here is what keeps a preview from
 /// being requested for settings the core never accepted.
+///
+/// The job asks for the reduction too. The contract requires the counts and the overlays to
+/// describe the image currently presented, drafts included, and a drafted preview renders the whole
+/// stack — so the worker that produced those pixels reduces them, exactly as it does for a
+/// committed frame. A gesture therefore still costs one `draft.set` and one preview job per tick:
+/// the analysis rides the job it already asked for and no second render happens.
 pub(crate) fn draft_set_task(
     owner: OwnerHandle,
     client: ClientId,
@@ -497,7 +503,11 @@ pub(crate) fn draft_set_task(
             )?;
             let draft = parse::<Draft>(draft)?;
             let job = owner
-                .preview_job(PreviewRequest::new(client, asset_id).draft(draft_id))
+                .preview_job(
+                    PreviewRequest::new(client, asset_id)
+                        .draft(draft_id)
+                        .analyse(),
+                )
                 .map_err(|error| error.to_string())?;
             Ok((draft, job))
         },
@@ -564,7 +574,8 @@ pub(crate) fn draft_reapply_task(
 
 /// The displayed entry's own preview again, without a draft: what the canvas must show once a
 /// gesture ended without committing. One preview job and one session read, no state or history
-/// request and no history refresh.
+/// request and no history refresh. It is a displayed target, so its own worker reduces it and the
+/// inspector follows the committed pixels back rather than emptying itself.
 pub(crate) fn current_preview_task(
     owner: OwnerHandle,
     client: ClientId,
@@ -574,7 +585,11 @@ pub(crate) fn current_preview_task(
     Task::perform(
         async move {
             let job = owner
-                .preview_job(PreviewRequest::new(client, asset_id).entry(entry_id))
+                .preview_job(
+                    PreviewRequest::new(client, asset_id)
+                        .entry(entry_id)
+                        .analyse(),
+                )
                 .map_err(|error| error.to_string())?;
             let (session, sequence) = call(&owner, client, "session.state", json!({}))?;
             Ok(PreviewPayload {

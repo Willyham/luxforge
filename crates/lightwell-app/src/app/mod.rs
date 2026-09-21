@@ -256,10 +256,16 @@ pub(crate) struct Editor {
     pub(crate) dimensions: Option<(u32, u32)>,
     pub(crate) preview_queue: PreviewQueue,
     pub(crate) preview_generation: u64,
-    /// The displayed frame's own raster, retained beside the uploaded texture so a clipping overlay
-    /// can be re-derived from it on a zoom, a pan or a toggle without a second render. It shares
-    /// the render's `Arc<[u8]>`: retaining it copies no pixels.
-    pub(crate) raster: Option<Arc<lightwell_core::Raster>>,
+    /// The displayed frame's own raster, with the preview generation it arrived under, retained
+    /// beside the uploaded texture so a clipping overlay can be re-derived from it on a zoom, a pan
+    /// or a toggle without a second render. It shares the render's `Arc<[u8]>`: retaining it copies
+    /// no pixels.
+    ///
+    /// The generation travels with it because the overlay is keyed on **this** image rather than on
+    /// the newest preview asked for: a frame that has arrived re-derives the overlay, and a frame
+    /// still rendering does not, so the mask always describes the photograph on screen — a drafted
+    /// one during a gesture exactly as much as a committed one.
+    pub(crate) raster: Option<(u64, Arc<lightwell_core::Raster>)>,
     /// The displayed frame's histogram report, adopted with the pixels under the same generation.
     pub(crate) analysis: Option<Analysis>,
     /// The report and raster of a frame whose pixels have not reached the GPU yet. The histogram
@@ -746,13 +752,18 @@ impl Editor {
         if wanted == self.overlay_request {
             return;
         }
-        let Some((request, raster)) = wanted.clone().zip(self.raster.clone()) else {
+        let previous = self.overlay_request.take();
+        let Some((request, (_, raster))) = wanted.clone().zip(self.raster.clone()) else {
             // Both overlays are off, or there is nothing to derive one from.
             self.overlay_queue.cancel();
             self.overlay_photo = None;
-            self.overlay_request = None;
             return;
         };
+        // A mask derived from another image never stands in for this one while its replacement is
+        // derived; the same image at another cell grid keeps its overlay until the new one lands.
+        if previous.map(|request| request.generation) != Some(request.generation) {
+            self.overlay_photo = None;
+        }
         self.overlay_request = wanted;
         self.overlay_queue.request(raster, request);
     }
@@ -768,10 +779,10 @@ impl Editor {
             // A report from a frame that is not the one just uploaded describes another image.
             return;
         }
-        self.raster = Some(raster);
+        self.raster = Some((generation, raster));
         self.event(
             "analysis_adopted",
-            json!({"generation":generation,"entry_id":analysis.identity.entry_id.as_str(),"width":analysis.identity.width,"height":analysis.identity.height,"any_shadow":analysis.report.any_shadow,"any_highlight":analysis.report.any_highlight,"both":analysis.report.both}),
+            json!({"generation":generation,"entry_id":analysis.identity.entry_id.as_str(),"draft_revision":analysis.identity.draft.as_ref().map(|draft| draft.draft_revision),"width":analysis.identity.width,"height":analysis.identity.height,"any_shadow":analysis.report.any_shadow,"any_highlight":analysis.report.any_highlight,"both":analysis.report.both}),
         );
         self.owner
             .submit_analysis(analysis.identity.clone(), analysis.report.clone());
@@ -816,7 +827,7 @@ impl Editor {
         if !(shadows || highlights) {
             return None;
         }
-        let raster = self.raster.as_ref()?;
+        let (generation, raster) = self.raster.as_ref()?;
         let source = (raster.width, raster.height);
         let surface = state::histogram::photo_surface(
             self.window,
@@ -835,7 +846,7 @@ impl Editor {
         )?;
         let (cells_w, cells_h) = state::histogram::overlay_cells(source, displayed)?;
         Some(OverlayRequest {
-            generation: self.preview_generation,
+            generation: *generation,
             cells_w,
             cells_h,
             shadows,
@@ -848,7 +859,7 @@ impl Editor {
     /// drawn over another image.
     pub(crate) fn overlay_surface(&self) -> Option<&image_memory::Allocation> {
         let request = self.overlay_request.as_ref()?;
-        (request.generation == self.preview_generation)
+        (Some(request.generation) == self.raster.as_ref().map(|(generation, _)| *generation))
             .then_some(self.overlay_photo.as_ref())
             .flatten()
     }
@@ -1268,8 +1279,11 @@ impl Editor {
                 if !self.uploading
                     && let Some(mut result) = self.preview_queue.poll()
                 {
-                    // The draft's truncated preview shares the queue; its generation says which
-                    // texture the pixels belong to.
+                    // The crop draft's truncated preview shares the queue; its generation says
+                    // which texture the pixels belong to. It is never analysed, because its
+                    // identity describes the whole stack rather than the layer prefix it renders.
+                    // A slider gesture's drafted preview is not this: it renders the whole drafted
+                    // stack into the ordinary photograph, and is adopted like any other frame.
                     let for_draft = Some(result.generation) == self.draft_generation;
                     if !for_draft && result.generation != self.preview_generation {
                         return Task::none();
@@ -1309,7 +1323,7 @@ impl Editor {
                                     None => {
                                         self.incoming = None;
                                         self.analysis = None;
-                                        self.raster = Some(retained);
+                                        self.raster = Some((result.generation, retained));
                                     }
                                 }
                             }
@@ -3966,8 +3980,12 @@ mod tests {
         assert_eq!(identity.generation, 7);
         assert_eq!((identity.width, identity.height), (2, 2));
         assert_eq!(identity.draft_revision, None);
-        // The raster is retained for the overlay, sharing the render's own buffer.
-        assert!(editor.raster.is_some());
+        // The raster is retained for the overlay, sharing the render's own buffer, under the
+        // generation it arrived with.
+        assert_eq!(
+            editor.raster.as_ref().map(|(generation, _)| *generation),
+            Some(7)
+        );
         // The correlated state carries the whole inspector, so a captured frame is checkable.
         let snapshot = editor.snapshot();
         assert_eq!(snapshot["histogram"]["status"], json!("ready"));
@@ -4038,6 +4056,191 @@ mod tests {
         assert!(model.stale);
         assert!(model.bins.is_some(), "the previous plot is still shown");
         assert_eq!(model.notice().as_deref(), Some("Updating\u{2026}"));
+        finish(editor, catalog);
+    }
+
+    /// The same frame as `analysed`, stamped with the draft it was planned from: exactly the
+    /// identity the core computes for a drafted preview job and for `analysis.request
+    /// {target: draft}`, so a report adopted here is a cache hit for that request.
+    fn drafted(
+        editor: &Editor,
+        generation: u64,
+        draft_id: &lightwell_core::DraftId,
+        draft_revision: u64,
+        pixels: &[[u8; 4]],
+        width: u32,
+        height: u32,
+    ) -> (Analysis, Arc<lightwell_core::Raster>) {
+        let (mut analysis, raster) = analysed(editor, generation, pixels, width, height);
+        analysis.identity.draft = Some(lightwell_core::DraftStamp {
+            draft_id: draft_id.clone(),
+            draft_revision,
+        });
+        (analysis, raster)
+    }
+
+    /// The photograph an open gesture shows is the drafted render, and the contract ties the counts
+    /// to the image presented. So a drafted result is adopted exactly like a committed one: its
+    /// report arrives with its own pixels under its own generation, the identity carries the draft
+    /// revision those pixels were planned from, and the counters are the drafted population.
+    #[test]
+    fn a_drafted_report_is_adopted_with_the_pixels_it_was_reduced_from() {
+        let (mut editor, catalog, _, entry_id) = opened(Vec::new(), 4);
+        let log = attach_log(&mut editor);
+        let draft_id = lightwell_core::DraftId::new();
+        // A drafted exposure has driven two of the four pixels to the highlight endpoint.
+        let pixels = [
+            [255, 255, 255, 255],
+            [255, 255, 255, 255],
+            [10, 20, 30, 255],
+            [0, 0, 0, 255],
+        ];
+        let (analysis, raster) = drafted(&editor, 9, &draft_id, 3, &pixels, 2, 2);
+        editor.preview_generation = 9;
+        editor.incoming = Some((analysis, raster));
+        editor.adopt_analysis(9);
+        editor.rederive();
+        let model = &editor.workspace.histogram;
+        assert_eq!(model.status, HistogramStatus::Ready);
+        assert!(!model.stale, "the drafted frame on screen is not behind");
+        assert_eq!(model.counters.any_highlight, 2);
+        assert_eq!(model.counters.any_shadow, 1);
+        assert_eq!(model.counters.all_highlight, 2);
+        assert!(
+            model.plotted_max > 0 && model.bins.is_some(),
+            "the drafted population is plotted rather than left empty"
+        );
+        assert!(model.highlight.tinted, "the endpoint triangle is coloured");
+        let identity = model.identity.as_ref().expect("a drafted render identity");
+        assert_eq!(identity.draft_revision, Some(3));
+        assert_eq!(identity.generation, 9);
+        assert_eq!(identity.entry, entry_id.as_str());
+        let snapshot = editor.snapshot();
+        assert_eq!(snapshot["histogram"]["status"], json!("ready"));
+        assert_eq!(
+            snapshot["histogram"]["identity"]["draft_revision"],
+            json!(3),
+            "a captured frame correlates the plot with the drafted revision"
+        );
+        assert_eq!(
+            snapshot["histogram"]["counters"]["any_highlight"],
+            json!(2),
+            "a drafted frame reports the counts it can justify"
+        );
+        // The report goes to the owner store under the drafted identity, so an
+        // `analysis.request {target: draft}` for it is a cache hit, not a second render.
+        let records = logged(&mut editor, &log);
+        assert!(
+            records
+                .iter()
+                .any(|record| record["event"] == "analysis_adopted"
+                    && record["detail"]["generation"] == json!(9)
+                    && record["detail"]["draft_revision"] == json!(3)),
+            "the drafted report was not adopted: {records:?}"
+        );
+        finish(editor, catalog);
+    }
+
+    /// Between the gesture's tick and the drafted pixels reaching the screen the previous report
+    /// stays plotted and is marked updating, exactly as it is for a committed render: the plot
+    /// never blanks and never reports zeroes for an image it has not reduced. A drafted report
+    /// from a generation the screen has already moved past describes another image and is dropped.
+    #[test]
+    fn a_drafted_render_marks_the_previous_counts_updating_and_ignores_an_older_one() {
+        let (mut editor, catalog, _, _) = opened(Vec::new(), 4);
+        let (committed, raster) = analysed(&editor, 4, &[[9, 9, 9, 255]], 1, 1);
+        editor.preview_generation = 4;
+        editor.incoming = Some((committed, raster));
+        editor.adopt_analysis(4);
+        editor.rederive();
+        assert_eq!(editor.workspace.histogram.status, HistogramStatus::Ready);
+        let before = editor.workspace.histogram.counters.clone();
+
+        // The gesture's tick took a generation for the drafted preview; its pixels are not here.
+        editor.preview_generation = 5;
+        editor.rederive();
+        let model = &editor.workspace.histogram;
+        assert_eq!(model.status, HistogramStatus::Updating);
+        assert!(model.stale);
+        assert_eq!(model.counters, before, "the previous counts are kept");
+        assert!(model.bins.is_some(), "the previous plot is still shown");
+        assert_eq!(
+            editor.snapshot()["histogram"]["identity"]["generation"],
+            json!(4),
+            "the plot still names the frame it describes"
+        );
+
+        // A drafted report for a generation that has been superseded is not plotted.
+        let draft_id = lightwell_core::DraftId::new();
+        let (older, older_raster) = drafted(&editor, 5, &draft_id, 1, &[[0, 0, 0, 255]], 1, 1);
+        editor.preview_generation = 6;
+        editor.incoming = Some((older, older_raster));
+        editor.adopt_analysis(6);
+        editor.rederive();
+        assert_eq!(
+            editor.workspace.histogram.counters, before,
+            "an older drafted report replaced the counts on screen"
+        );
+        assert_eq!(editor.workspace.histogram.status, HistogramStatus::Updating);
+        assert_eq!(
+            editor
+                .workspace
+                .histogram
+                .identity
+                .as_ref()
+                .map(|i| i.generation),
+            Some(4)
+        );
+        finish(editor, catalog);
+    }
+
+    /// The overlay is keyed on the image it describes, not on the newest preview asked for: a
+    /// frame still rendering re-derives nothing, and the drafted frame that reaches the screen
+    /// re-derives the mask from its own raster, so the overlay never describes the frame the
+    /// gesture replaced.
+    #[test]
+    fn the_clipping_overlay_follows_the_drafted_raster() {
+        let (mut editor, catalog, _, _) = opened(Vec::new(), 4);
+        editor.session.workspace.clip_highlights = true;
+        editor.session.preview.view.zoom = Zoom::Fit;
+        let (committed, raster) = analysed(&editor, 4, &[[9, 9, 9, 255]; 4], 2, 2);
+        editor.preview_generation = 4;
+        editor.incoming = Some((committed, raster));
+        editor.adopt_analysis(4);
+        let _ = editor.update(Message::Resized(1440.0, 900.0));
+        let derived = editor.overlay_request.clone().expect("an overlay");
+        assert_eq!(derived.generation, 4);
+        assert!(derived.highlights && !derived.shadows);
+
+        // The gesture's tick asks for a drafted preview. Nothing new can be derived from an image
+        // that has not arrived, so the mask of the frame on screen is left alone.
+        editor.preview_generation = 5;
+        editor.refresh_overlay();
+        assert_eq!(
+            editor.overlay_request.as_ref(),
+            Some(&derived),
+            "an in-flight render re-derived the overlay from the frame it replaces"
+        );
+
+        // The drafted pixels arrive: the retained raster is theirs, and the overlay follows it.
+        let draft_id = lightwell_core::DraftId::new();
+        let (analysis, drafted_raster) =
+            drafted(&editor, 5, &draft_id, 2, &[[255, 255, 255, 255]; 4], 2, 2);
+        editor.incoming = Some((analysis, drafted_raster));
+        editor.adopt_analysis(5);
+        editor.refresh_overlay();
+        let (generation, retained) = editor.raster.as_ref().expect("the drafted raster");
+        assert_eq!(*generation, 5);
+        assert_eq!(retained.rgba[0], 255, "the drafted pixels are retained");
+        let drafted_overlay = editor.overlay_request.as_ref().expect("a drafted overlay");
+        assert_eq!(
+            drafted_overlay.generation, 5,
+            "the overlay still describes the frame the gesture replaced"
+        );
+        assert!(
+            editor.overlay_surface().is_none(),
+            "the previous frame's mask was drawn over the drafted photograph"
+        );
         finish(editor, catalog);
     }
 

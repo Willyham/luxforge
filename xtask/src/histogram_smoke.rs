@@ -15,7 +15,8 @@ use crate::{
     *,
 };
 use lightwell_core::{
-    Layer, ModuleRegistry, RECIPE_FORMAT, Recipe, SnapshotId, analysis, render as core_render,
+    BASIC_EFFECT, EFFECT_FORMAT, EffectStage, Layer, LayerId, ModuleRegistry, RECIPE_FORMAT,
+    Recipe, SnapshotId, analysis, render as core_render,
 };
 
 /// The fixture: 480x320, orientation 1, the quadrant pattern with the white centre line and the
@@ -142,6 +143,44 @@ fn displayed_recipe(frame: &Value) -> Result<Recipe> {
             })
             .collect::<Result<Vec<_>>>()?,
     })
+}
+
+/// The stack an open gesture's frame is actually showing: the committed layers it displays, with
+/// the drafted Basic payload the frame records placed by the host's own rule for a colour-stage
+/// layer. This is what `draft.commit` would persist, rebuilt here so the drafted render is reduced
+/// independently rather than trusted.
+fn drafted_recipe(frame: &Value) -> Result<Recipe> {
+    let mut recipe = displayed_recipe(frame)?;
+    let draft = &frame["state"]["draft"];
+    ensure(
+        draft["action"] == json!("set-basic"),
+        format!("The frame's draft is not a Basic gesture: {draft}"),
+    )?;
+    let fields = draft["fields"].clone();
+    ensure(
+        fields.as_object().is_some_and(|fields| !fields.is_empty()),
+        format!("The frame's draft carries no fields: {draft}"),
+    )?;
+    // Merging a drafted patch over an existing Basic payload is the module's own arithmetic; this
+    // scenario drafts against a stack that holds no Basic layer, so the patch is the whole payload.
+    ensure(
+        !recipe
+            .layers
+            .iter()
+            .any(|layer| layer.effect_id == BASIC_EFFECT),
+        "The displayed stack already holds a Basic layer, so the drafted payload is a merge",
+    )?;
+    let index = ModuleRegistry::builtin().insertion_index(&recipe.layers, EffectStage::Color);
+    recipe.layers.insert(
+        index,
+        Layer {
+            id: LayerId::new(),
+            effect_id: BASIC_EFFECT.into(),
+            effect_format: EFFECT_FORMAT,
+            payload: fields,
+        },
+    );
+    Ok(recipe)
 }
 
 /// The eleven counters as the frame's correlated state records them.
@@ -741,12 +780,11 @@ pub fn verify(root: &Path, evidence: &Path, app: &Value, _events: &[Value]) -> R
         counters(&frames[9]).clone(),
     );
 
-    // Frame 10: an Exposure drag left open. The photograph on screen is the drafted render — the
-    // frame says which draft revision it displays — and the inspector does not present a number
-    // for it: the counts a gesture is shown are an explicit non-ready state, never the previous
-    // frame's counts relabelled. The drafted composition's own exactness is proved through the
-    // API in `cargo xtask editor-acceptance`, whose Basic chapter compares
-    // `analysis.request {target: draft}` with an independent reduction of the drafted render.
+    // Frame 10: an Exposure drag left open. The photograph on screen is the drafted render, and
+    // the contract ties the counts to the image presented, drafts included — so the inspector
+    // describes that render: its identity carries the draft revision the pixels were planned from
+    // and its counters equal an independent render and reduction of the drafted stack, computed
+    // here from the layers the frame says it displays and the drafted payload it records.
     let drafted = &frames[10]["state"]["draft"];
     ensure(
         drafted["action"] == json!("set-basic") && drafted["fields"] == json!({"exposure": 1.0}),
@@ -760,22 +798,21 @@ pub fn verify(root: &Path, evidence: &Path, app: &Value, _events: &[Value]) -> R
             frames[10]["state"]["displayed_draft_revision"], drafted["draft_revision"]
         ),
     )?;
-    let drafted_histogram = &frames[10]["state"]["histogram"];
+    let drafted_report = reduction(root, &drafted_recipe(&frames[10])?)?;
+    let drafted_detail = expect_counts(&frames[10], &drafted_report, "frame 10, the open gesture")?;
     ensure(
-        drafted_histogram["status"] != json!("ready"),
+        frames[10]["state"]["histogram"]["identity"]["draft_revision"] == drafted["draft_revision"],
         format!(
-            "The inspector reports {} for a drafted frame it did not analyse",
-            drafted_histogram["status"]
+            "The plot names draft revision {} while the frame displays {}",
+            frames[10]["state"]["histogram"]["identity"]["draft_revision"],
+            drafted["draft_revision"]
         ),
     )?;
+    // The drafted exposure is +1 EV, so it clips highlights the committed stack does not: the
+    // counts are demonstrably the drafted population rather than the previous frame's relabelled.
     ensure(
-        drafted_histogram["counters"]
-            .as_object()
-            .is_some_and(|counters| counters.values().all(|count| count == &json!(0))),
-        format!(
-            "A drafted frame carries counts it cannot justify: {}",
-            drafted_histogram["counters"]
-        ),
+        counters(&frames[10]) != counters(&frames[9]),
+        "The drafted exposure left the counts identical to the committed frame's",
     )?;
     ensure(
         frames[10]["state"]["stack"]["revision"] == frames[9]["state"]["stack"]["revision"],
@@ -783,9 +820,8 @@ pub fn verify(root: &Path, evidence: &Path, app: &Value, _events: &[Value]) -> R
     )?;
     record(
         &frames[10],
-        "an Exposure drag left open: the photograph is the drafted render and the inspector reports an explicit non-ready state rather than a number it cannot justify",
-        json!({"draft": drafted, "histogram_status": drafted_histogram["status"], "displayed_draft_revision": frames[10]["state"]["displayed_draft_revision"],
-               "note": "the desktop does not analyse a drafted preview; the drafted composition is proved exact through analysis.request {target: draft} in editor-acceptance"}),
+        "an Exposure drag left open: the photograph is the drafted render and the plot is that render, its identity carrying the draft revision and its counts equal to an independent reduction of the drafted stack",
+        json!({"draft": drafted, "histogram": drafted_detail}),
     );
 
     // Frame 11: the gesture released. One commit, and the plot follows the composed stack: an
