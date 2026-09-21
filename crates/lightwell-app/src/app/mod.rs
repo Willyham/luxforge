@@ -398,6 +398,8 @@ impl Editor {
                 capture_pending: false,
                 saving: false,
                 had_errors: false,
+                gallery_page: None,
+                tools_scroll: None,
             }
         });
         let initial = config.files.pop_front();
@@ -540,7 +542,91 @@ impl Editor {
 
     /// The state correlated with every event and captured frame; never includes source paths.
     pub(crate) fn snapshot(&self) -> Value {
-        json!({"run_id":self.run_id,"mode":if self.evidence.is_some() {"evidence"} else {"editor"},"selection":self.session.preview.selection,"orientation":self.activity.orientation,"phase":self.activity.phase,"requested_generation":self.activity.requested,"displayed_generation":self.activity.displayed,"displayed_draft_revision":self.displayed_draft_revision,"source_dimensions":self.activity.source_dimensions,"preview_dimensions":self.activity.preview_dimensions,"backend":self.activity.backend,"status":self.status,"error_code":self.activity.error_code,"modules":module_summary(&self.modules),"controls":self.fields.summary(),"crop":self.crop_summary(),"draft":self.draft_summary(),"stack":self.stack_summary(),"workspace":serde_json::to_value(&self.session.workspace).unwrap_or(Value::Null),"developer":self.developer,"expanded":self.workspace.expanded(),"notices":self.notice_titles(),"compare":self.compare_return.is_some(),"render_error":self.render_error_summary(),"palette":{"open":self.palette_open,"query":self.palette_query},"histogram":self.histogram_summary(),"readout":self.readout_summary(),"scratch":Self::scratch_summary()})
+        fn summarize_controls(
+            controls: &[tools::ControlModel],
+            curves: &mut Vec<Value>,
+            pickers: &mut Vec<Value>,
+            samples: &std::collections::BTreeMap<(String, String), tools::CurveSamples>,
+            entry: Option<&lightwell_core::EntryId>,
+        ) {
+            for control in controls {
+                match control {
+                    tools::ControlModel::Group(group) => {
+                        summarize_controls(&group.controls, curves, pickers, samples, entry);
+                    }
+                    tools::ControlModel::Curve(curve) => {
+                        let parameter = &curve.channels[curve.selected_channel].parameter;
+                        let sampled = samples.get(&(curve.action.clone(), parameter.clone()));
+                        curves.push(json!({"action":curve.action,"parameter":parameter,
+                            "channel":curve.selected_channel,"selected_point":curve.selected_point,
+                            "point_count":curve.points.len(),"sample_count":curve.sampled.len(),
+                            "sample_version":sampled.map(|sample| sample.version),
+                            "sample_source":sampled.map(|sample| &sample.source),
+                            "sample_source_entry":sampled.map(|sample| &sample.entry),
+                            "sample_asset":sampled.map(|sample| &sample.asset),
+                            "display_entry":entry,"dragging":curve.dragging}));
+                    }
+                    tools::ControlModel::Color(color) => {
+                        pickers.push(json!({"action":color.action,"parameter":color.parameter,
+                            "open":color.picker_open,"dragging":color.dragging,"rgb":color.rgb}));
+                    }
+                    _ => {}
+                }
+            }
+        }
+        let gallery = self
+            .evidence
+            .as_ref()
+            .and_then(|evidence| evidence.gallery_page)
+            .and_then(view::gallery_page_info)
+            .map(|info| {
+                json!({"page":info.page,"count":info.count,
+                "title":info.title,"state_count":info.state_count})
+            });
+        let tools_scroll = self
+            .evidence
+            .as_ref()
+            .and_then(|evidence| evidence.tools_scroll);
+        let curve_channels: Vec<Value> = self
+            .controls_ui
+            .curve_channels
+            .iter()
+            .map(|((action, parameter), channel)| {
+                json!({"action":action,
+                "parameter":parameter,"channel":channel})
+            })
+            .collect();
+        let curve_points: Vec<Value> = self
+            .controls_ui
+            .curve_points
+            .iter()
+            .map(|((action, parameter), point)| {
+                json!({"action":action,
+                "parameter":parameter,"point":point})
+            })
+            .collect();
+        let picker_open: Vec<Value> = self
+            .controls_ui
+            .color_open
+            .iter()
+            .map(|((action, parameter), open)| {
+                json!({"action":action,
+                "parameter":parameter,"open":open})
+            })
+            .collect();
+        let entry = self.displayed_entry();
+        let mut curves = Vec::new();
+        let mut pickers = Vec::new();
+        for section in self.workspace.tools.all() {
+            summarize_controls(
+                &section.controls,
+                &mut curves,
+                &mut pickers,
+                &self.controls_ui.curve_samples,
+                entry.as_ref(),
+            );
+        }
+        json!({"run_id":self.run_id,"mode":if self.evidence.is_some() {"evidence"} else {"editor"},"selection":self.session.preview.selection,"orientation":self.activity.orientation,"phase":self.activity.phase,"requested_generation":self.activity.requested,"displayed_generation":self.activity.displayed,"displayed_draft_revision":self.displayed_draft_revision,"source_dimensions":self.activity.source_dimensions,"preview_dimensions":self.activity.preview_dimensions,"backend":self.activity.backend,"status":self.status,"error_code":self.activity.error_code,"modules":module_summary(&self.modules),"controls":self.fields.summary(),"control_ui":{"group_expanded":self.controls_ui.group_expanded,"curve_channels":curve_channels,"curve_points":curve_points,"picker_open":picker_open,"curves":curves,"pickers":pickers},"gallery":gallery,"tools_scroll":tools_scroll,"crop":self.crop_summary(),"draft":self.draft_summary(),"stack":self.stack_summary(),"workspace":serde_json::to_value(&self.session.workspace).unwrap_or(Value::Null),"developer":self.developer,"expanded":self.workspace.expanded(),"notices":self.notice_titles(),"compare":self.compare_return.is_some(),"render_error":self.render_error_summary(),"palette":{"open":self.palette_open,"query":self.palette_query},"histogram":self.histogram_summary(),"readout":self.readout_summary(),"scratch":Self::scratch_summary()})
     }
 
     /// The process-wide colour scratch budget as it stands when the frame is captured, with the
@@ -1098,6 +1184,8 @@ impl Editor {
                     || evidence.saving
                     || self.activity.backend.is_none()
                     || !self.modules_ready
+                    || self.curve_sample_in_flight
+                    || self.curve_sample_pending.is_some()
                 {
                     return Task::none();
                 }
@@ -2670,6 +2758,13 @@ impl Editor {
     }
 
     fn view(&self) -> Element<'_, Message> {
+        if let Some(page) = self
+            .evidence
+            .as_ref()
+            .and_then(|evidence| evidence.gallery_page)
+        {
+            return view::gallery(page);
+        }
         view::workspace(
             &self.workspace,
             view::Surfaces {
