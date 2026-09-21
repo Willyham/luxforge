@@ -74,7 +74,7 @@
     {
       "id": "TASK-002",
       "description": "Prepare exact histogram fixtures and an independent color-reference corpus.",
-      "status": "in_progress",
+      "status": "completed",
       "dependencies": [],
       "extra_context": [
         "Only freeze neutral/exposure/sRGB and histogram oracles now. Later algorithm tasks must supply their own final constants and expected outputs."
@@ -135,7 +135,7 @@
     {
       "id": "TASK-003",
       "description": "Add the core draft lifecycle, step and display precision, and the Basic field-patch action.",
-      "status": "ready",
+      "status": "in_progress",
       "dependencies": [
         "TASK-001"
       ],
@@ -223,7 +223,7 @@
     {
       "id": "TASK-004",
       "description": "Add bounded ordered pointwise float processing and matching point sampling.",
-      "status": "pending",
+      "status": "in_progress",
       "dependencies": [
         "TASK-001",
         "TASK-002"
@@ -300,7 +300,7 @@
     {
       "id": "TASK-005",
       "description": "Implement the standalone exact RGB histogram reducer and output clipping predicates.",
-      "status": "pending",
+      "status": "in_progress",
       "dependencies": [
         "TASK-002"
       ],
@@ -730,7 +730,7 @@
     {
       "id": "TASK-011",
       "description": "Select and freeze a useful global Tone algorithm and independent numerical references.",
-      "status": "pending",
+      "status": "in_progress",
       "dependencies": [
         "TASK-001",
         "TASK-002"
@@ -868,7 +868,7 @@
     {
       "id": "TASK-013",
       "description": "Select relative JPEG white-balance mathematics and a reproducible neutral-picker solver.",
-      "status": "pending",
+      "status": "in_progress",
       "dependencies": [
         "TASK-001",
         "TASK-002"
@@ -1018,7 +1018,7 @@
     {
       "id": "TASK-015",
       "description": "Select Saturation and Vibrance mathematics, gamut behavior and portrait acceptance.",
-      "status": "pending",
+      "status": "in_progress",
       "dependencies": [
         "TASK-001",
         "TASK-002"
