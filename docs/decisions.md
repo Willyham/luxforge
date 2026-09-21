@@ -43,7 +43,7 @@ Accepted on 2026-09-20 for the [Develop workspace](design/develop-workspace.md) 
 
 ## Basic adjustments and histogram
 
-Accepted on 2026-09-21 for the [Basic and histogram design](design/basic-and-histogram.md). These settle the product questions; starting the implementation is a separate authorization.
+Accepted on 2026-09-21 for the [Basic and histogram design](design/basic-and-histogram.md). These settle the product questions; implementation was authorized on 2026-09-21.
 
 - JPEG first: the Basic controls and the histogram work on the supported SDR sRGB and greyscale JPEG subset. RAW is separate later work with its own input and colour contracts, not a prerequisite.
 - One Basic layer per recipe with a fixed internal group order (White balance, Exposure, tone curve, Vibrance, Saturation), placed by its colour stage before the geometry tail and updated in place at the same identity.
@@ -88,4 +88,4 @@ Tracked in [product decisions](../tasks/product-decisions.json).
 - What is the first external module the owner would use, and what enablement and recovery behavior does it need?
 - Which measured workloads and responsiveness budgets become acceptance requirements?
 
-The Basic and histogram product choices were decided on 2026-09-21; see [Basic adjustments and histogram](#basic-adjustments-and-histogram). Implementation is not yet authorized.
+The Basic and histogram product choices were decided on 2026-09-21 and implementation was authorized the same day; see [Basic adjustments and histogram](#basic-adjustments-and-histogram).

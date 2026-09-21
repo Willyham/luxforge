@@ -5,14 +5,14 @@ Each JSON file is an independent plan. IDs start at `TASK-001` inside every file
 | Plan | Purpose |
 | --- | --- |
 | [S0 follow-ups](implementation-s0.json) | Hosted CI refresh, Windows/Linux packaging and desktop checks, Linux VM route, license audit and expiring advisory exceptions |
-| [Basic adjustments and histogram](implementation-basic-histogram.json) | Decided JPEG exposure/histogram slice, then core tone, white balance and color controls, over the delivered core and workspace; implementation not yet authorized |
+| [Basic adjustments and histogram](implementation-basic-histogram.json) | Decided JPEG exposure/histogram slice, then core tone, white balance and color controls, over the delivered core and workspace; implementation in progress against the design's integration contract |
 | [Editor follow-ups](implementation-editor-followups.json) | Export, color and metadata, Locate, MCP and full-editor verification |
 | [Later extensions](implementation-extensions.json) | External-loader measurements and proof planning after a selected use case |
 | [Product decisions](product-decisions.json) | Open product questions |
 
 Editor follow-ups and later work wait until the owner asks for them.
 
-The Basic/histogram plan has its product choices decided and recorded defaults for every later choice, so it runs to completion on agent judgement with the owner refining afterwards; its [design](../docs/design/basic-and-histogram.md) records them with the integration dependencies. Implementation starts when the owner says so.
+The Basic/histogram plan has its product choices decided and recorded defaults for every later choice, so it runs to completion on agent judgement with the owner refining afterwards; its [design](../docs/design/basic-and-histogram.md) records them with the integration dependencies. Implementation was authorized on 2026-09-21.
 
 ## Conventions
 

@@ -1,17 +1,16 @@
 {
   "schema_version": "1.0",
   "plan_id": "basic-histogram",
-  "title": "Basic adjustments and histogram \u2014 proposed JPEG tool slices",
+  "title": "Basic adjustments and histogram — proposed JPEG tool slices",
   "objective": "Deliver a useful exact-output histogram and Exposure slice, followed by core Tone, White Balance and Color controls with shared UI/API history and bounded processing.",
-  "context_summary": "Product choices are decided (JPEG first, one fixed-order Basic layer, release commits, global tone first, Lightroom research as the numerical starting point, Slice A before Slice B); implementation is not yet authorized. The delivered baseline is M3 modules, M4 crop drafts and conflicts with number parameters and in-place layer updates, content-space edits, the orientation layer and the Develop workspace whose generated tools panel already renders sliders that commit once on release. Still missing in the core: the revision-bound draft lifecycle, bounded pointwise float colour processing with point sampling, the histogram analysis job and the field-patch action. No export, RAW, PNG, HDR, Auto, external loader or local-presence implementation is added. Every crates handoff answers the performance checklist and measures photo-sized inputs.",
+  "context_summary": "Product choices are decided (JPEG first, one fixed-order Basic layer, release commits, global tone first, Lightroom research as the numerical starting point, Slice A before Slice B); implementation was authorized on 2026-09-21 and runs against the design's integration contract. The delivered baseline is M3 modules, M4 crop drafts and conflicts with number parameters and in-place layer updates, content-space edits, the orientation layer and the Develop workspace whose generated tools panel already renders sliders that commit once on release. Still missing in the core: the revision-bound draft lifecycle, bounded pointwise float colour processing with point sampling, the histogram analysis job and the field-patch action. No export, RAW, PNG, HDR, Auto, external loader or local-presence implementation is added. Every crates handoff answers the performance checklist and measures photo-sized inputs.",
   "tasks": [
     {
       "id": "TASK-001",
       "description": "Record the Basic integration contract against the delivered core and workspace.",
-      "status": "ready",
+      "status": "completed",
       "dependencies": [],
       "extra_context": [
-        "Preparation only: implementation is authorized separately.",
         "The product choices are decided and recorded; this task turns them into the integration contract: field-patch semantics, the core draft lifecycle and reapply rules, the Basic layer's stage placement and internal order, analysis target identity and job bounds, and the method names chosen against the delivered API table."
       ],
       "context_links": [
@@ -75,10 +74,9 @@
     {
       "id": "TASK-002",
       "description": "Prepare exact histogram fixtures and an independent color-reference corpus.",
-      "status": "ready",
+      "status": "in_progress",
       "dependencies": [],
       "extra_context": [
-        "Preparation needs no shared host changes and can start before implementation is authorized.",
         "Only freeze neutral/exposure/sRGB and histogram oracles now. Later algorithm tasks must supply their own final constants and expected outputs."
       ],
       "context_links": [
@@ -137,7 +135,7 @@
     {
       "id": "TASK-003",
       "description": "Add the core draft lifecycle, step and display precision, and the Basic field-patch action.",
-      "status": "pending",
+      "status": "ready",
       "dependencies": [
         "TASK-001"
       ],
@@ -560,19 +558,19 @@
         "First non-neutral use appends Basic and later sets update the same layer; resets preserve other effects and stable identity.",
         "Module descriptors expose inspection, field update and reset semantics through the shared host without direct catalog writes.",
         "Payload format and unavailable-provider errors protect every retained snapshot; reload and restore evaluate identically.",
-        "\u00b1EV references, unchanged originals, source sampling and UI-independent history/deduplication tests pass within the declared numerical contract."
+        "±EV references, unchanged originals, source sampling and UI-independent history/deduplication tests pass within the declared numerical contract."
       ],
       "test_strategy": {
         "approach": "mixed",
         "steps": [
-          "Run exact neutral and reference \u00b1EV buffers, mixed geometry/replacement order and out-of-range input cases.",
+          "Run exact neutral and reference ±EV buffers, mixed geometry/replacement order and out-of-range input cases.",
           "Exercise set/reset/undo/redo/restore/reopen, retries, write failure and disabled provider; answer the performance checklist."
         ],
         "commands": [
           "cargo xtask check"
         ],
         "expected_results": [
-          "\u00b1EV references, unchanged originals, source sampling and UI-independent history/deduplication tests pass within the declared numerical contract."
+          "±EV references, unchanged originals, source sampling and UI-independent history/deduplication tests pass within the declared numerical contract."
         ]
       }
     },
@@ -1065,7 +1063,7 @@
       "acceptance_criteria": [
         "Specify the working-space conversions, parameter-to-chroma mapping, vibrance weights, negative behavior and internal order.",
         "Define out-of-gamut, near-black, achromatic, negative and above-white behavior before final SDR output quantization.",
-        "Freeze independent reference values and tolerances for neutral preservation, saturation \u2212100 grayscale, monotone intensity response and smooth hue/chroma boundaries.",
+        "Freeze independent reference values and tolerances for neutral preservation, saturation −100 grayscale, monotone intensity response and smooth hue/chroma boundaries.",
         "Review varied portraits and saturated primaries for exaggerated skin, hue shifts and clipping, with limitations recorded.",
         "The selected equations and gamut policy are implementable without a model/resource dependency and have an independent oracle."
       ],
@@ -1136,7 +1134,7 @@
       ],
       "acceptance_criteria": [
         "Descriptor/action/readback/reset behavior matches the agreed ranges and compiles the selected color transform.",
-        "Independent buffers prove grayscale at saturation \u2212100, neutral preservation and the documented vibrance weighting/gamut limits.",
+        "Independent buffers prove grayscale at saturation −100, neutral preservation and the documented vibrance weighting/gamut limits.",
         "Point samples and production raster agree within fixed tolerances, with identity paths and ordered effects preserved.",
         "Earlier saved Basic histories and every retained snapshot stay readable and reproducible; unavailable providers are explicit.",
         "UI-independent history/API tests and measured photo-sized processing satisfy the correctness/resource contract."

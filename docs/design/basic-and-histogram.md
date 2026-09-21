@@ -1,6 +1,6 @@
 # Basic adjustments and histogram
 
-Status: design with the product choices decided by the owner on 2026-09-21 ([decisions](../decisions.md#basic-adjustments-and-histogram)); implementation is not yet authorized and nothing in this document is implemented. It builds on the delivered M3 modules, M4 crop drafts and conflicts, content-space edits, the orientation layer and the [Develop workspace](develop-workspace.md), whose generated tools panel already renders a `number` control as a slider that commits once on release.
+Status: design with the product choices decided by the owner on 2026-09-21 ([decisions](../decisions.md#basic-adjustments-and-histogram)); implementation was authorized the same day and runs against the [integration contract](#integration-contract) below. Sections describing behaviour that is not yet demonstrated say so. It builds on the delivered M3 modules, M4 crop drafts and conflicts, content-space edits, the orientation layer and the [Develop workspace](develop-workspace.md), whose generated tools panel already renders a `number` control as a slider that commits once on release.
 
 ## Outcome and delivery order
 
@@ -46,6 +46,81 @@ The checkout now delivers what this design first listed as prerequisites, so the
 | Generated tools panel: sliders that commit once on release, drag sends nothing, group and module resets, section hints, history labels from `summary` templates, recipe summaries, the Developer section | [Develop workspace](develop-workspace.md) | A Basic descriptor with sliders and grouped resets renders without desktop changes; the histogram sits above the modules in the tools panel and the clipping toggle and neutral picker join the title bar and mode strip as the design reserves for them |
 
 What is still missing from the core: the revision-bound draft lifecycle for slider gestures (begin, set, read, cancel, commit, reapply through the API, at most one preview request per frame while dragging), the bounded pointwise float colour operation and its point sampler, the analysis job for the histogram, and the field-patch action. Shared files likely to need coordinated integration are `modules/descriptor.rs`, `modules/processing.rs`, `modules/mod.rs`, `render.rs`, `preview.rs`, `editor.rs`, `api/methods.rs` and the desktop's `app/`, `state/` and `view/` layers under `crates/`. Keep algorithm and reducer implementations in dedicated files. One integrator reconciles the shared host changes; independent algorithm and reducer tasks run alongside.
+
+## Integration contract
+
+Frozen on 2026-09-21 against the delivered core and workspace before any core code was written. Every Basic and histogram task builds against this section; a change to it is a design edit, not an implementation detail. Names are chosen against the delivered method table and are the names the code uses.
+
+### Module, effect and payload
+
+- Module `lightwell.basic`, title `Basic`, hint `Exposure, tone, white balance and colour`, not a developer module. It registers in `ModuleRegistry::builtin()` after the pixel module and before transform, so its section is the first photo-editing section of the tools panel.
+- One effect `lightwell.basic.adjust`, format `1`, stage `color`. `EffectStage` gains the `color` variant; the host places a colour-stage layer exactly like a pixel-stage one (`insertion_index` returns the index of the first geometry layer), so the Basic layer joins the stack before quarter-turns, reflections and the crop and never moves afterwards.
+- Payload: a JSON object whose keys are the implemented parameter names with their values as stored numbers. A missing key means neutral (`0`), an unknown key is refused by `validate_payload`, and a value outside the parameter's declared range is refused. Slice A persists only `exposure`; Slice B adds `contrast`, `highlights`, `shadows`, `whites`, `blacks`, `temperature`, `tint`, `vibrance` and `saturation` as further optional keys of the same format, because adding a neutral-defaulting key changes no existing interpretation. Changing the meaning or range of an existing key bumps the format and older payloads are refused, never rewritten.
+- A neutral payload (every key neutral or absent) is a legal layer that compiles to no processing. Resetting keeps the layer with its identity, as crop reset does.
+- Internal evaluation order inside the one layer: white balance → exposure → tone (contrast, highlights, shadows, whites, blacks as one frozen curve) → vibrance → saturation. The module compiles a neutral unit to nothing.
+- At most one Basic layer per recipe is created. Planning against a stack holding more than one `lightwell.basic.adjust` layer fails with `validation: ambiguous Basic layers`, and so does rendering it; nothing is rewritten.
+
+### Actions and labels
+
+| Action | Parameters | Plan |
+| --- | --- | --- |
+| `set-basic` | Every implemented Basic parameter, all optional (`required: false`, `default: 0`), `number` kind with finite range, `unit`, `step` and `precision` | Merge the given fields over the existing Basic layer's payload, or over neutral when none exists. Equal merged payload: `NoOp`. No layer and neutral result: `NoOp`. No layer: `Commit` a new layer at the colour insertion index. Otherwise `Update` the existing layer in place |
+| `reset-basic` | none | `Update` the existing layer with the neutral payload; `NoOp` without one or when already neutral |
+
+`set-basic` is the only mutation path for every slider, numeric field, keyboard step, double-click reset, group reset, module reset, picker result, draft commit and API patch. Group resets are `set-basic` presets holding the group's fields at neutral; the module reset is `reset-basic`. There is no per-field action and no second transaction path.
+
+Field-patch semantics: `ActionDescriptor` gains `patch: bool` (default `false`). For a patch action the generic parameter check validates the fields that were sent and fills no declared defaults, so the module receives exactly the fields the caller named; omitted fields are preserved by the module's merge, unknown fields are rejected by the generic check, the stored history parameters are the patch as sent (not the merged payload), request deduplication covers the patch as sent, and a patch that changes nothing creates no entry. A retry of the same request id returns the original result. Defaults stay declared on patch parameters because clients seed and reset fields from them.
+
+History labels: `ToolModule::label(&self, input: &ActionInput) -> Option<String>` is a new trait method with a default of `None`, consulted by the host before the `summary` template and the title. Basic labels one changed field as `Exposure +0.50 EV` (sign always shown, `precision` decimals, unit when declared), a patch that returns one group's fields to neutral as `Reset Tone`, `Reset White balance` or `Reset Colour`, `reset-basic` as `Reset Basic`, and any other patch as `Basic (n fields)`.
+
+Descriptor additions: `ParameterDescriptor` gains `step: Option<f64>` (the keyboard and slider increment) and `precision: Option<u8>` (display decimals). Both are hints for clients; the host validates finiteness and range only and stores what it was given. Registry validation rejects a non-positive or non-finite step and a precision above 6.
+
+Generic panel rule (the one desktop change the field patch needs, applied to every module): a generated control of a patch action submits its own parameter only, and a reset or action control of a patch action submits its declared preset only. Controls of non-patch actions keep sending every parameter as today, so crop and pixel requests are unchanged; a Basic slider sends exactly one field.
+
+Effective values: `ToolModule::values(&self, effect_id, format, payload) -> Result<Map<String, Value>, Error>` (default: empty) returns the parameter values a stored layer represents. `recipe.describe` adds a `values` object to each `LayerDescription`. The desktop seeds each generated field from the displayed entry's values for the one layer of that module when a field is not being edited or dragged, so sliders show authoritative current or historical values; a module without a layer shows its defaults.
+
+### Draft lifecycle
+
+The core owns one draft per client session, held in `ClientSession.draft` and reported by `session.state`. A draft is bound to one asset and one action and never outlives the session.
+
+| Method | Params | Result |
+| --- | --- | --- |
+| `draft.begin` | `asset_id`, `action` | `{draft_id, action, asset_id, base_revision, draft_revision: 0, fields: {}, conflicted: false}`. Refused with `conflict` when the client already holds a draft, with `validation` when the session previews a historical entry or the action is unknown |
+| `draft.set` | `draft_id`, `fields` | Validates every field against the action's parameter descriptors (unknown field, non-finite or out-of-range value: `validation`, nothing changes), merges them into the draft, increments `draft_revision`, returns the draft |
+| `draft.read` | `draft_id` | The draft with `conflicted` recomputed |
+| `draft.cancel` | `draft_id` | Ends the draft; commits nothing; returns `{cancelled: true}` |
+| `draft.commit` | `draft_id`, `mutation` | Refused with `conflict` when conflicted or when `mutation.expected_revision` differs from `base_revision`; otherwise runs the action with the draft's fields through `apply_action` and ends the draft. Returns the `MutationResult`, so a return-to-start gesture is a `no-op` outcome with no entry |
+| `draft.reapply` | `draft_id` | Sets `base_revision` to the asset's current revision, keeps only the fields the client set, revalidates them against the action's descriptors, clears `conflicted`, returns the draft |
+
+`conflicted` is `base_revision != current revision` of the asset, evaluated whenever the draft is read, set, committed or reported, so a commit by any client, including this client's own undo, redo or restore, marks the draft without a notification path. Draft state is session state: it emits no event and appears in no history. Two drafts of different clients never interact. A draft's effective recipe is the current snapshot with the action's plan applied to the draft's fields, computed on demand and never persisted; a `NoOp` plan means the current recipe.
+
+Preview during a gesture: `OwnerHandle::preview_job` accepts a `draft: Option<DraftId>` beside `layer_count`; the job renders the draft's effective recipe and carries `draft_revision` for correlation. `render.sample` accepts an optional `draft_id` and samples the same effective recipe. The desktop bound is one 16 ms tick, gated on an open draft exactly as the preview poll is gated on an in-flight preview: pointer moves update the field and a pending value; the tick sends at most one `draft.set` and one preview job for the newest pending value, and nothing while a previous `draft.set` is in flight. Release, key-up or Enter sends `draft.commit`, Escape and focus loss send `draft.cancel`, and an external revision shows the existing Changed elsewhere notice with Discard (`draft.cancel`) and Reapply (`draft.reapply`) while the slider keeps the drafted value. Leaving the mode or starting Compare with a draft open is refused as it is for crop. The crop draft stays desktop-local; only its conflict semantics are shared.
+
+### Pointwise colour processing
+
+- `Processing` gains `Color(ColorOperation)`. A `ColorOperation` is a bounded ordered list (at most 8) of `Arc<dyn PointwiseColor>` units, each with `fn apply_row(&self, rgb: &mut [[f32; 3]])` over linear-sRGB rows and `fn is_finite(&self) -> bool` over its coefficients. The host owns the pipeline; a module owns its units' equations. `Processing` loses `Copy` and compares operations by their unit descriptions.
+- Domain: input codes decode through the sRGB transfer function into f32 linear sRGB (D65) using a 256-entry table computed in f64. Units run in declared order in f32 with coefficients computed in f64. Values outside `[0, 1]` and negative values are preserved between units of one operation and between consecutive colour operations in the same segment. Alpha is never touched.
+- Output boundary: at the end of a run of consecutive colour operations the host clamps each channel to `[0, 1]` and quantizes to the code `k` whose exact linear threshold interval contains the value, using 255 thresholds `t_k = decode((k − 0.5) / 255)` precomputed in f64; this equals `floor(255 · encode(v) + 0.5)` for every representable value and costs no per-pixel power function. A point replacement, a resample and the end of the recipe are the quantization boundaries and are explicit in the compiled segment. A non-finite value after any unit fails the render or sample with `resource-limit: colour processing produced a non-finite value`, never a NaN in a frame.
+- Segment placement: colour operations join the segment's operation list in stack order. Exact geometry commutes with pointwise colour and composes as today; a point replacement earlier in the list is processed by later colour operations and one later in the list is not; a resample quantizes before it interpolates. The rasterizing pass keeps one u8 frame per segment: geometry pass, then the operation list in order as phases of replacements and colour runs, each colour run streamed over the frame in place in bounded row chunks on the shared Rayon pool above the existing one-megapixel threshold. `Evaluation::pixel_in` applies the same phases to one pixel, so samples and rasters agree byte for byte.
+- Buffers: an identity segment with a colour operation materializes its frame with the existing `has_pixels` copy, bounded by the 512 MiB frame limit; peak memory stays two frames. Row-chunk scratch is reserved from a process-wide `ScratchBudget` (default 64 MiB, `ResourceLimit` when exceeded) before allocation and released after each chunk. Nothing else scales with image size.
+- A recipe with only neutral Basic layers compiles to no colour operation, keeps the identity byte path and shares the source buffer.
+
+### Analysis jobs and identity
+
+- `analysis::reduce(raster) -> Report` is a pure function in `lightwell-core`: three `[u64; 256]` arrays and the endpoint counters `r0 g0 b0 r255 g255 b255 any_shadow any_highlight all_shadow all_highlight both`, reduced serially below one megapixel and on the Rayon pool above it with worker-local bins merged by addition. `analysis::clip_class(rgba) -> Option<Clip>` (`Shadow`, `Highlight`, `Both`) is the one predicate the counters, the overlays and the API share: any channel at code 0 is shadow, any at 255 is highlight.
+- Identity: `{asset_id, source_fingerprint, entry_id, snapshot_id, recipe_hash, draft: Option<{draft_id, draft_revision}>, width, height, domain: "srgb-8bit-output"}`. `recipe_hash` is the SHA-256 of the effective recipe's canonical JSON. A report is bounded to 16 KiB before encoding.
+- Methods: `analysis.request {asset_id, target}` with `target` one of `{"kind": "current"}`, `{"kind": "entry", "entry_id"}` or `{"kind": "draft", "draft_id"}` returns `{job_id, status, identity}` promptly; `analysis.read {job_id}` returns `{status, identity, report?, error?}` with `status` one of `pending`, `ready`, `failed`, `superseded`, `cancelled`; `analysis.cancel {job_id}` drops this client's interest and cancels the job only when no other client holds it. A pending, failed or superseded result carries no counts.
+- Scheduling: the owner loop hands jobs to one analysis worker with one active and one replaceable pending slot; replacing the pending job marks its requesters `superseded`. The worker renders the effective recipe from the cached verified source, reduces, retains no raster and posts the report back to the owner. Identical identities share one job; completed reports are kept in an eight-entry store evicted oldest first; a client's disconnect releases its interests.
+- The desktop reuses its preview evaluation: `PreviewJob.analyse` makes the preview worker reduce the raster it just rendered and return the report with the raster, and the desktop submits that report to the owner store through `OwnerHandle::submit_analysis` so an API request for the same identity is a cache hit. No second render happens for a displayed target.
+- Overlay settings are per-client workspace state: `workspace.set` accepts `clip_shadows` and `clip_highlights` booleans and `session.state` reports them. The display overlay is derived on the desktop's preview worker from the same raster with `analysis::overlay(raster, cells)`, which ORs `clip_class` over the source pixels of each display cell so an isolated clipped pixel survives Fit reduction, and at 100% maps cells one to one. Its buffer is bounded by the viewport.
+
+### Ownership of the shared files
+
+`modules/descriptor.rs`, `modules/processing.rs`, `modules/mod.rs`, `modules/registry.rs`, `render.rs`, `preview.rs`, `editor.rs`, `api/methods.rs`, `api/owner.rs` and `api/mod.rs` are changed by the integrator tasks (draft lifecycle and field patch; pointwise colour stage; analysis jobs) in that order. Algorithm units live in `modules/basic/`, the reducer and predicates in `analysis.rs`, the f64 references and hand-counted fixtures under `crates/lightwell-core/tests/reference/` and `fixtures/basic/`. The desktop's `app/`, `state/` and `view/` layers change only in the slider gesture driver, the histogram model and view, and the generic submit rule above.
+
+### What this contract does not decide
+
+Tone, white balance and colour equations, ranges and tolerances are frozen by their numerical tasks against independent references before their controls ship. The provisional performance thresholds, the overlay colours, the picker patch and the order of later modules keep their recorded defaults.
 
 ## Basic controls and interaction
 
@@ -118,7 +193,7 @@ Do not allocate a full-resolution mask: derive overlay values from the same fina
 
 ## Shared API and jobs
 
-The following are required capabilities, **not existing command names**. Final method names and schemas are chosen at integration against the delivered method table (`module.list`, `recipe.describe`, `workspace.set`, `render.locate`, `render.sample`), avoiding duplicate APIs.
+The following are the required capabilities; the [integration contract](#integration-contract) names the methods that provide them against the delivered method table (`module.list`, `recipe.describe`, `workspace.set`, `render.locate`, `render.sample`).
 
 | Capability | Required semantics |
 | --- | --- |
@@ -177,7 +252,7 @@ Decided by the owner on 2026-09-21 and recorded in [product decisions](../decisi
 | Numerical limits and visual quality | Start from the Lightroom research and the ranges above; select and freeze against references in the numerical tasks | No formula or tolerance is accepted merely because a candidate was documented |
 | Relative priority | Slice A, then Slice B | Export, Locate and MCP keep their own follow-up priority |
 
-The remaining choices (performance thresholds, the tone fallback, the overlay rule, the picker patch, one Basic layer, the float tolerance and the order of later modules) have recorded defaults in [product decisions](../decisions.md#basic-adjustments-and-histogram), so the plan runs to completion on agent judgement and the owner refines afterwards. Implementation starts when the owner authorizes it; the task plan's first wave is preparation.
+The remaining choices (performance thresholds, the tone fallback, the overlay rule, the picker patch, one Basic layer, the float tolerance and the order of later modules) have recorded defaults in [product decisions](../decisions.md#basic-adjustments-and-histogram), so the plan runs to completion on agent judgement and the owner refines afterwards.
 
 ## References
 
