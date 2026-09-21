@@ -8,7 +8,7 @@
     {
       "id": "TASK-001",
       "description": "Lower the launch multipliers: raw-editor defaults to 3 samples, measure to 5, and the docs state that p95 claims need the timing tier.",
-      "status": "ready",
+      "status": "completed",
       "dependencies": [],
       "extra_context": [
         "raw-editor launches the editor twice per sample per source, so its 30-sample default is about 180 launches for a three-source manifest; one sample proves the journey.",
