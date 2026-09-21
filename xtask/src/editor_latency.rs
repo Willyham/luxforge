@@ -89,7 +89,8 @@ fn usage(root: &Path, pid: u32) -> Result<(f64, f64)> {
     ))
 }
 
-/// Run one evidence script to completion, sampling RSS about every 50 ms while it runs.
+/// Run one evidence script to completion, sampling RSS about every 50 ms while it runs. The focus
+/// record travels back with the samples so the caller can keep it beside its own numbers.
 fn evidence_run(
     root: &Path,
     bin: &Path,
@@ -97,8 +98,8 @@ fn evidence_run(
     name: &str,
     args: &[OsString],
     deadline: Duration,
-) -> Result<(Vec<Value>, f64)> {
-    let mut child = smoke::spawn(root, bin, args, &out.join(format!("{name}.log")))?;
+) -> Result<(Vec<Value>, f64, Value)> {
+    let mut child = smoke::spawn_editor(root, bin, args, &out.join(format!("{name}.log")))?;
     let start = Instant::now();
     let mut rss = Vec::new();
     let status = loop {
@@ -114,6 +115,7 @@ fn evidence_run(
         }
         std::thread::sleep(Duration::from_millis(50));
     };
+    let focus = child.focus_check();
     ensure(
         status.success(),
         format!(
@@ -125,7 +127,7 @@ fn evidence_run(
         .iter()
         .filter_map(|row| row[1].as_f64())
         .fold(0.0, f64::max);
-    Ok((rss, peak))
+    Ok((rss, peak, focus))
 }
 
 /// One input's journey, from the `draft.set` that carried it to the frame that showed it.
@@ -327,7 +329,7 @@ pub fn run(root: &Path, out: &Path, bin: &Path, options: Options) -> Result {
         "--open".into(),
         source.clone().into_os_string(),
     ];
-    let (rss, peak_rss) = evidence_run(
+    let (rss, peak_rss, gesture_focus) = evidence_run(
         root,
         bin,
         out,
@@ -459,6 +461,7 @@ pub fn run(root: &Path, out: &Path, bin: &Path, options: Options) -> Result {
     let result = json!({
         "status":"passed",
         "launch_mode":launch::MODE,
+        "focus_checks":[gesture_focus],
         "platform":host(root)?,
         "profile":"release",
         "binary_sha256":hash(bin)?,
@@ -513,6 +516,7 @@ pub fn run(root: &Path, out: &Path, bin: &Path, options: Options) -> Result {
         ],
     });
     write_json(&out.join("latency.json"), &result)?;
+    launch::focus_verdict(&result)?;
     ensure(hash(&source)? == source_hash, "The source changed")?;
 
     if options.idle {
@@ -537,7 +541,7 @@ fn hold_and_idle(root: &Path, out: &Path, bin: &Path, source: &Path) -> Result {
         &script,
         &json!([{"api":{"method":"edit.set-basic","params":full_basic()}}]),
     )?;
-    let (_, hold_peak) = evidence_run(
+    let (_, hold_peak, hold_focus) = evidence_run(
         root,
         bin,
         out,
@@ -564,7 +568,7 @@ fn hold_and_idle(root: &Path, out: &Path, bin: &Path, source: &Path) -> Result {
     // The second process: the same catalog, no script, left idle after its first frame.
     let data = out.join("idle-data");
     let log = out.join("idle.log");
-    let mut child = smoke::spawn(
+    let mut child = smoke::spawn_editor(
         root,
         bin,
         &[
@@ -610,14 +614,18 @@ fn hold_and_idle(root: &Path, out: &Path, bin: &Path, source: &Path) -> Result {
     }
     let after = usage(root, child.child.id())?;
     let seconds = window.elapsed().as_secs_f64();
+    // The idle process is still running, so this reads the desktop after its whole idle window.
+    let idle_focus = child.focus_check();
     // The scratch budget travels in the state snapshot written beside a captured frame, and an
     // ordinary launch captures none, so the idle process cannot report it. The gesture process
     // above does, and it runs the same colour stack.
     let idle_events = smoke::events(&events)?;
+    let focus_checks = json!([hold_focus, idle_focus]);
     write_json(
         &out.join("resources.json"),
         &json!({
             "status":"passed",
+            "focus_checks":focus_checks,
             "workload":"One 24 MP image holding a Basic layer with all ten fields non-neutral, histogram on",
             "basic_payload":full_basic(),
             "gesture_process":{
@@ -639,5 +647,6 @@ fn hold_and_idle(root: &Path, out: &Path, bin: &Path, source: &Path) -> Result {
             "method":"The first process commits the layer into a catalog that outlives it and is sampled by ps about every 50 ms while it edits, with its frame captures included in that RSS. The second opens the same file from that catalog, renders and reduces the committed stack, then is left alone; CPU is the ps CPU-time delta over 30 seconds after one second of settling. The child is then killed, so this is not clean-close evidence. RSS includes GPU resources and allocator retention and is not separated.",
         }),
     )?;
+    launch::focus_all_unchanged(focus_checks.as_array().expect("two focus records"))?;
     Ok(())
 }

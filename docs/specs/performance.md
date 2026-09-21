@@ -127,7 +127,8 @@ each. This is the desktop measurement the core rows cannot make. **Presented mea
 `Uploaded` message**, recorded as the `preview_displayed` event: the rendered pixels have become a
 renderer texture and the canvas draws them from the next frame on. It is **not** display scanout,
 which the harness cannot observe, so every figure is an upper bound on the editor's own work and a
-lower bound on what an eye sees.
+lower bound on what an eye sees. The window these runs measure is invisible, so nothing is
+composited or scanned out in them at all.
 
 Each measured input is one scripted `slider` step left open, so the step settles only when the
 gesture has drained: one input, one `draft.set`, one preview job, one upload, with nothing from the
@@ -300,7 +301,7 @@ Core figures exclude desktop scheduling, GPU upload and presentation. Reproduce 
 `artifacts/before-measure` retain every sample, the correlated state and the source and binary
 hashes; they are local evidence and are not repository assets.
 
-Current macOS `measure` and `editor-latency` runs use background-only bundles to preserve desktop focus. Launch-to-frame timings include copying the executable and creating its temporary bundle; they are background renderer measurements, not foreground activation measurements. Reports identify the launch mode. Earlier launch baselines above predate this wrapper and are not directly comparable.
+Current macOS `measure` and `editor-latency` runs use background-only bundles to preserve desktop focus, and the editor they launch creates its window invisible. Launch-to-frame timings include copying the executable and creating its temporary bundle; they are background renderer measurements, not foreground activation measurements, and they exclude the cost of placing and compositing a visible window. Nothing in these runs is scanned out, so the presentation figures cover the editor's path to a renderer texture and not what reaching a display would add. Rendering, readback and the state each frame is correlated against are unchanged: the window owns the same Metal surface either way. Reports identify the launch mode and carry the frontmost application before and after every launch. Earlier launch baselines above predate this wrapper and are not directly comparable.
 
 ## Current RAW and JPEG measurements
 

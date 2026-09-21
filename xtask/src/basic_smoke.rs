@@ -556,7 +556,7 @@ pub fn run_restart(root: &Path, out: &Path, bin: &Path, timeout: std::time::Dura
     let fixture = root.join(RESTART_FIXTURE);
     let launch1 = out.join("launch1");
     let launch2 = out.join("launch2");
-    let mut result = json!({"scenario":"basic-restart","status":"failed","launch_mode":launch::MODE,"platform":format!("{}-{}",std::env::consts::OS,std::env::consts::ARCH)});
+    let mut result = json!({"scenario":"basic-restart","status":"failed","launch_mode":launch::MODE,"focus_checks":[],"platform":format!("{}-{}",std::env::consts::OS,std::env::consts::ARCH)});
     let check = (|| -> Result {
         result["fixture_hash"] = json!(hash(&fixture)?);
         result["binary_sha256"] = json!(hash(bin)?);
@@ -579,9 +579,10 @@ pub fn run_restart(root: &Path, out: &Path, bin: &Path, timeout: std::time::Dura
             workspace_smoke::WINDOW[0].into(),
             workspace_smoke::WINDOW[1].into(),
         ];
-        let mut child1 = smoke::spawn(root, bin, &args1, &out.join("launch1.log"))?;
+        let mut child1 = smoke::spawn_editor(root, bin, &args1, &out.join("launch1.log"))?;
         let status1 = smoke::wait(&mut child1, timeout)?;
         result["launch1_exit_code"] = json!(status1.code());
+        smoke::note_focus(&mut result, &child1)?;
         ensure(status1.success(), format!("Launch 1 exit {status1}"))?;
         let (app1, _) = smoke::preamble(&launch1, 2)?;
         let frames1 = app1["frames"]
@@ -632,9 +633,10 @@ pub fn run_restart(root: &Path, out: &Path, bin: &Path, timeout: std::time::Dura
             workspace_smoke::WINDOW[0].into(),
             workspace_smoke::WINDOW[1].into(),
         ];
-        let mut child2 = smoke::spawn(root, bin, &args2, &out.join("launch2.log"))?;
+        let mut child2 = smoke::spawn_editor(root, bin, &args2, &out.join("launch2.log"))?;
         let status2 = smoke::wait(&mut child2, timeout)?;
         result["launch2_exit_code"] = json!(status2.code());
+        smoke::note_focus(&mut result, &child2)?;
         ensure(status2.success(), format!("Launch 2 exit {status2}"))?;
         let (app2, _) = smoke::preamble(&launch2, 1)?;
         let reopened = &app2["frames"]
@@ -714,7 +716,7 @@ pub fn run_restart(root: &Path, out: &Path, bin: &Path, timeout: std::time::Dura
                 "scope": "Mean Rec. 709 luminance of a centred window of the photo surface, read back from the renderer; not a colorimetric claim",
             }),
         )?;
-        Ok(())
+        launch::focus_verdict(&result)
     })();
     match &check {
         Ok(()) => result["status"] = json!("passed"),

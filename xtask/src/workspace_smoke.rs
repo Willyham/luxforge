@@ -6,7 +6,7 @@
 //! sharing one catalog, the second with the crop module disabled, so it is orchestrated directly
 //! rather than through `smoke::run`.
 use crate::{
-    smoke::{Expect, columns, frame_identity, pixels, spawn, wait},
+    smoke::{Expect, columns, frame_identity, pixels, spawn_editor, wait},
     *,
 };
 use std::time::Duration;
@@ -344,7 +344,7 @@ pub fn run_unavailable(root: &Path, out: &Path, bin: &Path, timeout: Duration) -
     let launch1 = out.join("launch1");
     let launch2 = out.join("launch2");
 
-    let mut result = json!({"scenario":"unavailable","status":"failed","launch_mode":launch::MODE,"platform":format!("{}-{}",std::env::consts::OS,std::env::consts::ARCH)});
+    let mut result = json!({"scenario":"unavailable","status":"failed","launch_mode":launch::MODE,"focus_checks":[],"platform":format!("{}-{}",std::env::consts::OS,std::env::consts::ARCH)});
     let check = (|| -> Result {
         result["fixture_hash"] = json!(hash(&fixture)?);
         result["binary_sha256"] = json!(hash(bin)?);
@@ -367,9 +367,10 @@ pub fn run_unavailable(root: &Path, out: &Path, bin: &Path, timeout: Duration) -
             WINDOW[0].into(),
             WINDOW[1].into(),
         ];
-        let mut child1 = spawn(root, bin, &args1, &out.join("launch1.log"))?;
+        let mut child1 = spawn_editor(root, bin, &args1, &out.join("launch1.log"))?;
         let status1 = wait(&mut child1, timeout)?;
         result["launch1_exit_code"] = json!(status1.code());
+        smoke::note_focus(&mut result, &child1)?;
         ensure(status1.success(), format!("Launch 1 exit {status1}"))?;
         let app1 = read_json(&launch1.join("result.json"))?;
         ensure(
@@ -404,9 +405,10 @@ pub fn run_unavailable(root: &Path, out: &Path, bin: &Path, timeout: Duration) -
             WINDOW[0].into(),
             WINDOW[1].into(),
         ];
-        let mut child2 = spawn(root, bin, &args2, &out.join("launch2.log"))?;
+        let mut child2 = spawn_editor(root, bin, &args2, &out.join("launch2.log"))?;
         let status2 = wait(&mut child2, timeout)?;
         result["launch2_exit_code"] = json!(status2.code());
+        smoke::note_focus(&mut result, &child2)?;
         ensure(status2.success(), format!("Launch 2 exit {status2}"))?;
         let app2 = read_json(&launch2.join("result.json"))?;
         ensure(
@@ -477,7 +479,7 @@ pub fn run_unavailable(root: &Path, out: &Path, bin: &Path, timeout: Duration) -
                 "launch2_photo_drawn": has_fixture_colour,
             }),
         )?;
-        Ok(())
+        launch::focus_verdict(&result)
     })();
     match &check {
         Ok(()) => result["status"] = json!("passed"),

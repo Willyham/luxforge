@@ -193,6 +193,7 @@ pub(crate) fn run(config: Config, size: (f32, f32)) -> Result<(), String> {
         let _ = std::fs::remove_file(&session_file);
     }
     let live_server = LocalServer::start(owner.clone(), &session_file).ok();
+    let hidden = config.hidden;
     let boot = Mutex::new(Some(Boot {
         owner,
         join,
@@ -213,8 +214,14 @@ pub(crate) fn run(config: Config, size: (f32, f32)) -> Result<(), String> {
         Editor::view,
     )
     .title("Lightwell")
-    .window_size(size)
-    .exit_on_close_request(false)
+    // An invisible window still owns a real surface and renders through it, so a hidden launch
+    // captures the same renderer readbacks; it is simply never placed on the desktop.
+    .window(iced::window::Settings {
+        size: size.into(),
+        visible: !hidden,
+        exit_on_close_request: false,
+        ..iced::window::Settings::default()
+    })
     .theme(lightwell_ui::theme::theme())
     .subscription(Editor::subscription)
     .run()
