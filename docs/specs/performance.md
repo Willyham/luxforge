@@ -13,7 +13,7 @@ Status: provisional budgets, not accepted requirements. The owner's M4 MacBook P
 | 100,000 metadata rows; 1,000,000-row stress catalog | Index selection, pagination and startup independent of image bytes (later library) |
 | At least 1,000 real images, then a larger owner dataset | Thumbnail decode and cache behavior synthetic rows cannot show |
 | Local SSD, later removable SSD and NAS | CPU/GPU throughput versus storage latency |
-| Nikon Z6 NEF and Fujifilm X100VI RAF in the owner's real modes | RAW decode/development, WB redevelopment, history, presentation and peak memory; see the [RAW integration contract](../design/raw-integration.md) |
+| Nikon Z6 NEF, Fujifilm X100VI RAF and DJI Air 2S DNG in the owner's real modes | RAW decode/development, WB redevelopment, history, presentation and peak memory; see the [RAW integration contract](../design/raw-integration.md) |
 
 Datasets need provenance, dimensions, profile and orientation, and redistribution permission. Synthetic fixtures live in the repository; private originals stay in a local manifest and are never committed.
 
@@ -161,6 +161,67 @@ through xtask, using the manifest formats in [development](../engineering/develo
 Local reports retain every trial, percentile input, source/binary hash and failure;
 private photographs and captures are not repository assets. These observations
 qualify the recorded files and host, not other camera modes or platforms.
+
+## Air 2S DNG measurements
+
+The supplied FC3411 uncompressed DNG passes 30 complete background editor trials,
+each with the same 13-step editing/history/view journey and second-process reopen.
+Original hashes, correction provenance, geometry, displayed state and sampled
+photo pixels agree. These are native M4 Pro measurements under the configuration
+above, with a warm filesystem on a shared host; host isolation is not claimed.
+The release application SHA-256 is `aa24dfa57592c5b3363c34ac2c49b9d28827aa2aa0f77fbf34fce6a2db863e55`; Cargo.lock SHA-256 is `e1f96098ab03786e8976afd4e0ed78b0ed3d4c58cd071c032390552c97b4a600`.
+
+| Measurement (ms) | p50 | p95 | Maximum |
+| --- | ---: | ---: | ---: |
+| Initial open → full-resolution CPU raster | 1692.6 | 1811.9 | 1812.3 |
+| Exposure → upload readiness | 100.2 | 118.5 | 133.2 |
+| Red WB gain → upload readiness | 1462.3 | 1536.0 | 1570.6 |
+| Custom temperature → upload readiness | 1467.0 | 1530.7 | 1549.9 |
+| Custom tint → upload readiness | 1459.7 | 1567.1 | 1597.0 |
+| Neutral pick → upload readiness | 1460.0 | 1570.8 | 1659.8 |
+| Rotate → upload readiness | 125.7 | 159.3 | 162.0 |
+| Crop → upload readiness | 75.7 | 92.3 | 105.2 |
+| Undo → upload readiness | 126.1 | 159.4 | 164.6 |
+| Historical Original → captured frame | 1484.2 | 1567.7 | 1601.0 |
+| Return current → captured frame | 1522.9 | 1583.1 | 1628.1 |
+| 100% view → captured frame | 25.6 | 49.9 | 58.2 |
+| Edited catalog reopen → CPU raster | 3092.7 | 3412.0 | 3418.2 |
+
+Sampled first-process peak RSS is 1245.3 / 1250.5 MiB p50 / p95,
+with a 1258.8 MiB maximum; reopened processes measure
+718.6 / 731.3 MiB with a 731.4 MiB maximum. Sampling is
+roughly every 50 ms. The optical pass adds one reusable 76.15 MiB active-plane
+scratch after native demosaic scratch is released; the allocation ledger is in the
+[Air 2S design](../design/air2s-dng.md#allocation-and-performance-review).
+The captures, GPU resources and allocator retention are included in observed
+process memory, not separated. These values do not establish a process-wide bound,
+GPU-memory budget or native Windows/Linux result. The existing Fuji resource
+qualification above remains open.
+
+The same JPEG core diagnostic was measured before this change at `3c5def1` and
+on this DNG implementation, 30 samples per size/recipe. Values are p50 / p95 ms;
+these exclude desktop scheduling, GPU upload and presentation. Both 24 MP current
+runs are retained because the first showed higher timings. The repeat's medians
+fell below baseline, while crop tails remained higher; 60 MP medians and p95 fell.
+The mixed observations do not establish a systematic regression or zero regression
+on this shared host. No JPEG raster loop, allocation or desktop message changed.
+
+| JPEG core render | 24 MP before | 24 MP current | 24 MP repeat | 60 MP before | 60 MP current |
+| --- | --- | --- | --- | --- | --- |
+| One exact transform | 12.30 / 17.37 | 14.88 / 18.02 | 10.83 / 12.76 | 26.11 / 39.25 | 22.11 / 28.61 |
+| 200 actions in one orientation layer | 12.09 / 13.71 | 13.88 / 19.21 | 10.51 / 11.49 | 26.48 / 32.65 | 22.01 / 23.56 |
+| Same stack plus 10° crop | 37.59 / 43.42 | 44.80 / 51.38 | 32.25 / 52.32 | 84.71 / 91.98 | 74.96 / 88.99 |
+
+The 60 MP current crop has a retained 129.46 ms maximum. Reproduce with
+`raw-editor --samples 30` and `editor-performance --samples 30` as above. Local
+reports under `artifacts/air2s-editor-30-01/` and `artifacts/air2s-jpeg-*/`
+retain every sample, source hash and correlated state; private originals and
+captures are excluded from source control. Single-trial Nikon/Fujifilm editor
+regressions also pass, separately from the timing distributions.
+The host package passes one complete DNG journey with binary SHA-256
+`a13a54b0ce2d9c2bf8d7043897988898894931955dfe0a960620623967a2489c`;
+its bundled native notices are present and runtime linkage uses no system RAW library.
+This is an unsigned macOS development package, not a license audit or platform qualification.
 
 ## Method
 

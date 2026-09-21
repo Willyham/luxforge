@@ -18,6 +18,7 @@ const SET_TINT: &str = "set-raw-tint";
 const PICK_NEUTRAL: &str = "pick-raw-neutral";
 const AS_SHOT: &str = "use-as-shot-wb";
 const RESET: &str = "reset-raw";
+pub const MAX_RAW_GAIN: f64 = 32.0;
 
 fn validation(message: impl Into<String>) -> Error {
     Error::new(ErrorKind::Validation, message)
@@ -85,10 +86,10 @@ impl RawPayload {
                 .gains
                 .iter()
                 .chain(self.as_shot_gains.iter())
-                .any(|g| !g.is_finite() || *g <= 0.0 || *g > 16.0)
+                .any(|g| !g.is_finite() || *g <= 0.0 || f64::from(*g) > MAX_RAW_GAIN)
         {
             return Err(validation(
-                "RAW gains must be finite, positive, <=16, and green-normalized",
+                "RAW gains must be finite, positive, <=32, and green-normalized",
             ));
         }
         if self
@@ -220,12 +221,12 @@ impl RawModule {
                     action(
                         SET_RED,
                         "Red gain",
-                        vec![number("gain", 0.01, 16.0, 1.0, "×")],
+                        vec![number("gain", 0.01, MAX_RAW_GAIN, 1.0, "×")],
                     ),
                     action(
                         SET_BLUE,
                         "Blue gain",
-                        vec![number("gain", 0.01, 16.0, 1.0, "×")],
+                        vec![number("gain", 0.01, MAX_RAW_GAIN, 1.0, "×")],
                     ),
                     action(
                         PICK_NEUTRAL,
@@ -514,5 +515,43 @@ mod tests {
         assert_eq!(shot.as_shot_gains, original.as_shot_gains);
         let reset = planned(&shot.layer(layer.id), RESET, json!({})).unwrap();
         assert_eq!(reset, original);
+    }
+
+    #[test]
+    fn direct_gain_controls_and_payload_use_the_same_finite_32_limit() {
+        let matrix = [
+            [1.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [0.0, 0.0, 1.0],
+            [0.0, 0.0, 0.0],
+        ];
+        let original = RawPayload::for_as_shot([1.0; 3], matrix).unwrap();
+        let layer = original.layer(LayerId::new());
+        let maximum = planned(&layer, SET_BLUE, json!({"gain":32.0})).unwrap();
+        assert_eq!(maximum.gains, [1.0, 1.0, 32.0]);
+        assert!(planned(&layer, SET_BLUE, json!({"gain":32.0001})).is_err());
+        assert!(planned(&layer, SET_RED, json!({"gain":f64::INFINITY})).is_err());
+        let mut invalid = maximum;
+        invalid.gains[2] = 32.0001;
+        assert!(invalid.validate().is_err());
+        for action in [SET_RED, SET_BLUE] {
+            let descriptor = RawModule::new().descriptor;
+            let gain = descriptor
+                .actions
+                .iter()
+                .find(|entry| entry.id == action)
+                .unwrap()
+                .parameters
+                .iter()
+                .find(|parameter| parameter.name == "gain")
+                .unwrap();
+            assert!(matches!(
+                gain.kind,
+                ParameterKind::Number {
+                    min: 0.01,
+                    max: 32.0
+                }
+            ));
+        }
     }
 }

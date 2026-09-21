@@ -1,6 +1,6 @@
 # Initial RAW support: Nikon Z6 and Fujifilm X100VI
 
-Status: continuous RAW editing is implemented on `codex/initial-raw-plan`; supplied-file M4 verification passes, with broader qualification tracked separately. The owner NEF and RAF pass native development, actual JSON editing/history/reopen and background Metal rendering. The supplied DJI Air 2S DNG is tested unsupported because its mandatory GainMap and WarpRectilinear corrections are not implemented. The [task plan](../../tasks/implementation-initial-raw.json), [integration contract](raw-integration.md) and [coverage manifest](../../fixtures/raw-coverage.json) distinguish delivered behavior from remaining controlled-scene, resource and platform qualification.
+Status: continuous RAW editing is implemented; supplied-file M4 verification passes, with broader qualification tracked separately. The owner NEF, RAF and DNG pass native development, actual JSON editing/history/reopen and background Metal rendering. The supplied DJI Air 2S DNG uses required GainMap and WarpRectilinear corrections under the [Air 2S contract](air2s-dng.md). The [task plan](../../tasks/implementation-initial-raw.json), [integration contract](raw-integration.md) and [coverage manifest](../../fixtures/raw-coverage.json) distinguish delivered behavior from remaining controlled-scene, resource and platform qualification.
 
 ## Outcome and delivery boundaries
 
@@ -18,7 +18,7 @@ The implementation has two editing checkpoints and one separate output integrati
 
 Both A and B are implemented. Their full qualification still includes the outstanding quality and resource checks below. RAW export remains unavailable until the output gate passes. JPEG Basic, export, Locate, MCP and library remain separate scopes; this implementation does not assume they are delivered.
 
-Outside this implementation: camera-JPEG/Picture Control/film-simulation matching; custom camera-profile creation; automatic lens corrections; advanced highlight reconstruction; denoise/sharpening controls; HDR, panorama, pixel-shift or burst merging; RAW video; DNG conversion/writing; TIFF/HEIF input or export; batch/library work; sidecar writing; OS-dependent RAW decoding; external module loading. Existing demosaicer artifact handling is part of quality acceptance, not a new Detail tool. If a deferred correction makes either camera unusable, return that concrete tradeoff to the owner rather than declaring the default acceptable.
+Outside this implementation: camera-JPEG/Picture Control/film-simulation matching; custom camera-profile creation; additional lens-profile corrections beyond the required Air 2S DNG operations; advanced highlight reconstruction; denoise/sharpening controls; HDR, panorama, pixel-shift or burst merging; RAW video; DNG conversion/writing; TIFF/HEIF input or export; batch/library work; sidecar writing; OS-dependent RAW decoding; external module loading. Existing demosaicer artifact handling is part of quality acceptance, not a new Detail tool. If a deferred correction makes either camera unusable, return that concrete tradeoff to the owner rather than declaring the default acceptable.
 
 ## Camera and recording-mode contract
 
@@ -36,7 +36,7 @@ Fujifilm documents uncompressed, lossless-compressed and lossy-compressed RAF, a
 
 The owner supplied 14-bit lossless NEF (firmware 03.40.b0, ISO 100, EXIF8) and 14-bit uncompressed RAF (firmware 1.32, ISO 125, DR100). Four public CC0 samples cover both NEF bit depths and both RAF encodings. Each mode needs actual editor evidence as well as native decode evidence. Additional capture settings are not implicitly qualified by sharing an encoding; the coverage manifest retains those gaps.
 
-The additional owner-supplied DJI Air 2S file identifies its sensor container as **DJI FC3411**, DNG 1.4. Its uncompressed mosaic, calibration, active/default crop and opcode lists need independent qualification; DNG extension support does not mean support for every DNG, drone or computational mode. DJI documents JPEG/DNG still capture for the [Air 2S](https://www.dji.com/air-2s). The supplied file is the initial DJI target. Its mandatory OpcodeList3 GainMap (9) and WarpRectilinear (1) require calibrated correction implementations before support can be enabled; the adapter rejects them before unpack and the editor preserves the previous photo. Generic DNG ingestion and DNG writing remain outside scope.
+The additional owner-supplied DJI Air 2S file identifies its sensor container as **DJI FC3411**, DNG 1.4. Its uncompressed mosaic, calibration, active/default crop and opcode lists are verified against independent references; DNG extension support does not mean support for every DNG, drone or computational mode. DJI documents JPEG/DNG still capture for the [Air 2S](https://www.dji.com/air-2s). The supplied file is the initial DJI target. Its mandatory OpcodeList3 GainMap (9) and WarpRectilinear (1) are applied in order before the camera matrix, with recorded interpolation/calibration and headroom-preserving float semantics. Unknown mandatory operations fail explicitly and the editor preserves the previous photo. Generic DNG ingestion and DNG writing remain outside scope.
 
 Keep a machine-readable coverage manifest with four distinct outcomes: verified supported, tested unsupported with reason, untested, and outside scope. A supported model with an unqualified mode receives an explicit mode error, not silent fallback. Do not advertise all cameras accepted by the selected dependency.
 
@@ -87,6 +87,7 @@ The processing order is:
 verified sensor samples + metadata
   → active-area and black/white normalization
   → as-shot/custom sensor white balance and chosen Bayer/X-Trans demosaic
+  → required camera-space optical corrections for qualified DNGs
   → camera calibration into a declared linear RGB working domain
   → scene exposure and ordered content-space editing operations
   → high-precision geometry composition / resampling
@@ -181,7 +182,7 @@ Current discoverable operations use the same command service as the desktop:
 | `edit.pick-raw-neutral`, `edit.use-as-shot-wb`, `edit.reset-raw` | Bounded pre-WB sensor patch solver, exact captured WB restore and source-development reset |
 | Existing render/sample/history/version operations | The same RAW recipe/source identity, with display conversion only at the terminal boundary |
 
-The [user guide](../user-guide.md) documents parameters and asynchronous client usage. Unsupported model/mode, mandatory DNG correction, corrupt input, missing calibration/provider, incompatible interpretation, changed/missing source, resource limits and cancelled/stale work produce explicit failures. MCP will inherit this registry when its separately planned adapter exists.
+The [user guide](../user-guide.md) documents parameters and asynchronous client usage. Unsupported model/mode or required DNG correction, corrupt input, missing calibration/provider, incompatible interpretation, changed/missing source, resource limits and cancelled/stale work produce explicit failures. MCP will inherit this registry when its separately planned adapter exists.
 
 ## Export, recovery and portability
 
@@ -219,7 +220,7 @@ The task DAG separates code delivery from broad visual quality, recovery, resour
 | Outstanding item | Current boundary |
 | --- | --- |
 | Controlled quality | Neutral/color charts, high ISO, fabric/foliage, clipped highlights, pushed shadows, Fuji DR/shutter variants and real-container orientation/preview combinations remain unqualified |
-| DJI corrections | Implement and verify both required GainMap and WarpRectilinear operations before enabling the supplied DNG |
+| DJI qualification | Required GainMap/WarpRectilinear and the supplied-file editor path are implemented; additional firmware/encodings and controlled optical/color scenes remain unqualified |
 | Resource budget | The 1.5 GiB target is an investigation hypothesis. Screenshot-free Fuji series peak at 1583–1647 MiB; captured 30-trial p95 is 1992 MiB, with an unexplained 2436 MiB maximum. Attribute remaining costs without claiming an accepted budget |
 | Native portability | M4 Metal evidence is distinct from automated Windows/Linux builds and native desktop checks; manual audits remain deferred |
 | Output/Basic | No duplicate exporter or JPEG Basic controls; integrate with those capabilities when delivered |

@@ -21,7 +21,7 @@ pub use descriptor::{
 };
 pub use pixel::PixelModule;
 pub use processing::{ExactGeometry, Processing, Resample, Stage};
-pub use raw::neutral::{SensorMosaic, sensor_neutral_gains};
+pub use raw::neutral::{SensorMosaic, sensor_neutral_gains, sensor_neutral_gains_mapped};
 pub use raw::white_balance::gains_from_temperature_tint;
 pub use raw::{RawModule, RawPayload, WhiteBalanceMode};
 pub use registry::ModuleRegistry;

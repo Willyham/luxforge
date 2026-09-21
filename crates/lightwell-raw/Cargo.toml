@@ -8,12 +8,14 @@ publish.workspace = true
 
 [dependencies]
 serde.workspace = true
+sha2.workspace = true
 
 [build-dependencies]
 cc = "=1.4.7"
 
 [dev-dependencies]
 sha2.workspace = true
+serde_json.workspace = true
 
 # This crate alone contains locally documented and tested FFI. The rest of the
 # workspace retains its forbid(unsafe_code) policy.

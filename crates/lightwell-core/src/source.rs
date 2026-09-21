@@ -106,8 +106,9 @@ impl RawPrepared {
     }
 }
 
-/// Map an upright content point into the default crop's sensor coordinates, then read one
-/// fixed pre-WB CFA patch. Neither float development nor full-frame work runs on the owner.
+/// Map an upright content point through the default crop and orientation. Corrected DNGs then
+/// map each CFA site through the channel's optical warp before reading one fixed pre-WB patch.
+/// Neither float development nor full-frame work runs on the owner.
 pub(crate) fn neutral_at(raw: &RawPrepared, x: u32, y: u32) -> Result<[f32; 3], Error> {
     let metadata = raw.sensor.metadata();
     let crop = metadata.default_crop;
@@ -152,5 +153,33 @@ pub(crate) fn neutral_at(raw: &RawPrepared, x: u32, y: u32) -> Result<[f32; 3], 
         black_repeat: &metadata.black_repeat,
         sensor_white: metadata.sensor_white,
     };
-    crate::sensor_neutral_gains(&source, crop.x + sx, crop.y + sy)
+    let corrected_x = crop.x + sx;
+    let corrected_y = crop.y + sy;
+    if metadata.dng_corrections.is_some() {
+        crate::modules::sensor_neutral_gains_mapped(
+            &source,
+            corrected_x,
+            corrected_y,
+            &|x, y, channel| {
+                raw.sensor
+                    .corrected_sensor_sample_location(x, y, channel)
+                    .map_err(|error| {
+                        Error::new(
+                            ErrorKind::Validation,
+                            format!("neutral picker warp point: {error}"),
+                        )
+                    })
+            },
+            &|x, y, channel| {
+                raw.sensor.gain_at_sensor(x, y, channel).map_err(|error| {
+                    Error::new(
+                        ErrorKind::Validation,
+                        format!("neutral picker gain point: {error}"),
+                    )
+                })
+            },
+        )
+    } else {
+        crate::sensor_neutral_gains(&source, corrected_x, corrected_y)
+    }
 }

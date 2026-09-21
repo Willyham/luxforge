@@ -1,10 +1,10 @@
 # Lightwell user guide
 
-The Develop workspace opens supported JPEG, Nikon Z6 NEF and Fujifilm X100VI RAF originals, with exact transforms, crop/straighten, persistent history and the JSON API. RAW adds editable source exposure and white balance. Export, Locate and MCP are planned; see [feature status](features.md).
+The Develop workspace opens supported JPEG, Nikon Z6 NEF, Fujifilm X100VI RAF and DJI Air 2S DNG originals, with exact transforms, crop/straighten, persistent history and the JSON API. RAW adds editable source exposure and white balance. Export, Locate and MCP are planned; see [feature status](features.md).
 
 JPEG Basic adjustments, tone/color controls, a histogram and clipping inspector have a [separate design](design/basic-and-histogram.md). They are not available yet.
 
-Initial RAW support covers full-size Z6 12/14-bit lossless NEF and X100VI 14-bit uncompressed/lossless RAF. Broader recording modes and controlled color/detail qualification remain in the [coverage manifest](../fixtures/raw-coverage.json). The supplied DJI Air 2S DNG is currently rejected because its mandatory GainMap and WarpRectilinear corrections are not implemented; a failed Open keeps the previous photo.
+Initial RAW support covers full-size Z6 12/14-bit lossless NEF, X100VI 14-bit uncompressed/lossless RAF and the supplied Air 2S FC3411 uncompressed DNG mode with 16-bit stored samples. Air 2S development includes its required embedded gain-map and chromatic-warp corrections. Broader recording modes and controlled color/detail qualification remain in the [coverage manifest](../fixtures/raw-coverage.json); generic DNG support is not implied. A failed Open keeps the previous photo.
 
 ## Start the editor
 
@@ -48,13 +48,13 @@ Cards appear over the top of the canvas when something needs saying: a draft tha
 
 ### RAW development
 
-The NEF or RAF remains the original throughout editing. Exposure, white balance and composition are saved as recipe settings. History and versions retain those settings; reopening rebuilds the needed high-precision image from the original. Display previews are disposable.
+The NEF, RAF or DNG remains the original throughout editing. Exposure, white balance and composition are saved as recipe settings. History and versions retain those settings; reopening rebuilds the needed high-precision image from the original. Display previews are disposable.
 
 The RAW panel appears before composition tools for a RAW asset. Exposure spans −5 to +5 EV. As shot uses the captured camera-channel gains. Custom temperature spans 2000–12000 K; Custom tint spans −100 to +100 Lightwell units, with positive values making the result more magenta. Their initial 6504 K/0 values are a new custom target, not a measurement of As shot. Changing either control stores resolved sensor gains. These units do not promise numeric equivalence with another editor.
 
 Choose Neutral WB in the canvas strip, or press W, then click a neutral surface. The picker maps the point back to the original sensor and averages a bounded patch before WB/exposure. A dark, clipped or unusable patch reports an error and commits nothing. As shot restores captured WB while keeping exposure; Reset RAW restores both source adjustments. Every successful change remains undoable. A WB change redevelops the retained mosaic; exposure and geometry reuse the prepared float image. The previous rendition stays visible during preparation.
 
-The neutral rendition uses camera calibration without film simulations, Picture Controls, an automatic brightness adjustment or lens correction. Sensor headroom remains available to exposure changes even when the current display is clipped. Camera crop metadata and EXIF orientation determine the initial frame.
+The neutral rendition uses camera calibration without film simulations, Picture Controls or automatic brightness. Air 2S applies its required embedded optical corrections and uses fixed daylight calibration for custom Temperature/Tint; additional lens profiles and dual-illuminant color-profile interpolation are not implemented. Sensor headroom remains available to exposure changes even when the current display is clipped. Camera crop metadata and EXIF orientation determine the initial frame.
 
 ### Keyboard
 
@@ -128,7 +128,7 @@ RAW actions use the same mutation envelope:
 | `edit.use-as-shot-wb` | none |
 | `edit.reset-raw` | none |
 
-`render.locate` maps an edited-image point to the content coordinates needed by the picker. Explicit `edit.set-raw-red-gain` and `edit.set-raw-blue-gain` actions remain available to programs; each preserves the other effective camera gain. RAW actions reject JPEG assets.
+`render.locate` maps an edited-image point to the content coordinates needed by the picker. Explicit `edit.set-raw-red-gain` and `edit.set-raw-blue-gain` actions remain available to programs; each preserves the other effective camera gain and accepts 0.01–32×. RAW actions reject JPEG assets.
 
 `edit.crop-fit` (`aspect`, optional `aspect-width`/`aspect-height` with `aspect: "custom"`, `angle`, optional `center-x`/`center-y`) fits the largest rectangle of a ratio about a center without computing the box geometry by hand:
 

@@ -1918,8 +1918,7 @@ fn validate_source_recipe(asset: &AssetRecord, recipe: &crate::Recipe) -> Result
         }
         SourceKind::Raw { ref metadata } => {
             let payload = raw_payload(recipe)?;
-            let stored: lightwell_raw::RawMetadata = serde_json::from_value(metadata.clone())
-                .map_err(|e| json_error("RAW interpretation", e))?;
+            let stored = parse_raw_interpretation(metadata, "RAW interpretation")?;
             if payload.as_shot_gains != stored.as_shot_gains || payload.cam_xyz != stored.cam_xyz {
                 return Err(Error::new(
                     ErrorKind::Incompatible,
@@ -1931,6 +1930,28 @@ fn validate_source_recipe(asset: &AssetRecord, recipe: &crate::Recipe) -> Result
     Ok(())
 }
 
+fn parse_raw_interpretation(
+    metadata: &Value,
+    context: &str,
+) -> Result<lightwell_raw::RawMetadata, Error> {
+    let parsed: lightwell_raw::RawMetadata =
+        serde_json::from_value(metadata.clone()).map_err(|e| json_error(context, e))?;
+    let is_dng = matches!(parsed.mode, lightwell_raw::RawMode::DjiAir2sDng16);
+    if (is_dng
+        && (!metadata
+            .as_object()
+            .is_some_and(|fields| fields.contains_key("dng_corrections"))
+            || parsed.dng_corrections.is_none()))
+        || (!is_dng && parsed.dng_corrections.is_some())
+    {
+        return Err(Error::new(
+            ErrorKind::Incompatible,
+            format!("{context}: RAW correction record differs from mode"),
+        ));
+    }
+    Ok(parsed)
+}
+
 /// Compare typed camera interpretation after JSON roundtrip. A stored f32 has a shortest decimal
 /// encoding while a fresh serde_json::Value can hold its exact f64 widening; comparing those
 /// Values directly can reject an unchanged original on reopen (seen on the Fuji corpus file).
@@ -1939,10 +1960,8 @@ fn source_kinds_equal(left: &SourceKind, right: &SourceKind) -> Result<bool, Err
     match (left, right) {
         (SourceKind::Jpeg, SourceKind::Jpeg) => Ok(true),
         (SourceKind::Raw { metadata: a }, SourceKind::Raw { metadata: b }) => {
-            let a: lightwell_raw::RawMetadata = serde_json::from_value(a.clone())
-                .map_err(|e| json_error("stored RAW interpretation", e))?;
-            let b: lightwell_raw::RawMetadata = serde_json::from_value(b.clone())
-                .map_err(|e| json_error("RAW interpretation", e))?;
+            let a = parse_raw_interpretation(a, "stored RAW interpretation")?;
+            let b = parse_raw_interpretation(b, "RAW interpretation")?;
             Ok(
                 serde_json::to_value(a).map_err(|e| json_error("stored RAW interpretation", e))?
                     == serde_json::to_value(b).map_err(|e| json_error("RAW interpretation", e))?,
@@ -2053,6 +2072,9 @@ fn state_from(connection: &Connection, asset_id: &AssetId) -> Result<EditorState
         .optional()
         .map_err(catalog_error)?
         .ok_or_else(|| Error::new(ErrorKind::Validation, "unknown asset"))?;
+    if let SourceKind::Raw { metadata } = &asset.source {
+        parse_raw_interpretation(metadata, "stored RAW interpretation")?;
+    }
     let (current, revision, redo): (String, i64, String) = connection
         .query_row(
             "SELECT current_entry_id,revision,redo_json FROM asset_state WHERE asset_id=?1",
@@ -2209,6 +2231,7 @@ mod tests {
             libraw_inset: rect,
             format_identity: "test-format".into(),
             warnings: vec![],
+            dng_corrections: None,
         };
         let fresh = SourceKind::Raw {
             metadata: serde_json::to_value(&metadata).unwrap(),
@@ -2233,6 +2256,61 @@ mod tests {
             metadata["unexpected"] = json!(true);
         }
         assert!(source_kinds_equal(&stored, &unknown).is_err());
+        if let SourceKind::Raw { metadata } = &stored {
+            assert!(metadata.get("dng_corrections").is_none());
+        }
+        let mut dng = metadata.clone();
+        dng.mode = RawMode::DjiAir2sDng16;
+        dng.dng_corrections = Some(lightwell_raw::DngCorrectionMetadata {
+            interpretation: "test-stage3-v1".into(),
+            applied: [9_u32, 1]
+                .map(|id| lightwell_raw::DngOpcodeProvenance {
+                    list: 51022,
+                    id,
+                    version: 0x0103_0000,
+                    flags: 0,
+                    payload_sha256: format!("{id:064x}"),
+                })
+                .to_vec(),
+            skipped_optional: vec![],
+            calibration: lightwell_raw::DngCalibrationMetadata {
+                illuminants: [17, 21],
+                color_matrix1_sha256: "1".repeat(64),
+                color_matrix2_sha256: "2".repeat(64),
+                selected: "ColorMatrix2-D65-fixed-XYZ-to-camera".into(),
+            },
+        });
+        let dng = SourceKind::Raw {
+            metadata: serde_json::to_value(dng).unwrap(),
+        };
+        let dng_stored: SourceKind =
+            serde_json::from_str(&serde_json::to_string(&dng).unwrap()).unwrap();
+        assert!(source_kinds_equal(&dng_stored, &dng).unwrap());
+        let mut changed_correction = dng.clone();
+        if let SourceKind::Raw { metadata } = &mut changed_correction {
+            metadata["dng_corrections"]["applied"][0]["payload_sha256"] = json!("changed");
+        }
+        assert!(!source_kinds_equal(&dng_stored, &changed_correction).unwrap());
+        let mut missing_correction = dng.clone();
+        if let SourceKind::Raw { metadata } = &mut missing_correction {
+            metadata["dng_corrections"] = Value::Null;
+        }
+        assert_eq!(
+            source_kinds_equal(&missing_correction, &dng)
+                .unwrap_err()
+                .kind,
+            ErrorKind::Incompatible
+        );
+        let mut absent_correction = dng.clone();
+        if let SourceKind::Raw { metadata } = &mut absent_correction {
+            metadata.as_object_mut().unwrap().remove("dng_corrections");
+        }
+        assert_eq!(
+            source_kinds_equal(&absent_correction, &dng)
+                .unwrap_err()
+                .kind,
+            ErrorKind::Incompatible
+        );
         assert!(!source_kinds_equal(&stored, &SourceKind::Jpeg).unwrap());
 
         let asset = AssetRecord {
@@ -2253,6 +2331,22 @@ mod tests {
             .with_layer_inserted(0, payload.layer(layer_id.clone()))
             .unwrap();
         validate_source_recipe(&asset, &snapshot.recipe).unwrap();
+        let mut incompatible_asset = asset.clone();
+        if let (
+            SourceKind::Raw { metadata },
+            SourceKind::Raw {
+                metadata: dng_metadata,
+            },
+        ) = (&mut incompatible_asset.source, &dng)
+        {
+            metadata["dng_corrections"] = dng_metadata["dng_corrections"].clone();
+        }
+        assert_eq!(
+            validate_source_recipe(&incompatible_asset, &snapshot.recipe)
+                .unwrap_err()
+                .kind,
+            ErrorKind::Incompatible
+        );
         for calibration in ["as_shot_gains", "cam_xyz"] {
             let mut corrupted = payload.clone();
             if calibration == "as_shot_gains" {

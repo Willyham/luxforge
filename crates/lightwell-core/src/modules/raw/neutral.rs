@@ -148,13 +148,33 @@ fn black_at(source: &SensorMosaic<'_>, x: u32, y: u32, channel: usize) -> f64 {
 }
 
 /// Read the fixed 13x13 pre-WB patch around a mapped sensor point and resolve green-normalized
-/// gains. The result is `[green/red, 1, green/blue]`, bounded to finite positive values <= 16.
+/// gains. The result is `[green/red, 1, green/blue]`, bounded to finite positive values <= 32.
 /// Every site must be finite, above [`DARK_THRESHOLD`], and below [`CLIPPED_THRESHOLD`] after
 /// its own black subtraction and white normalization. No intermediate frame is allocated.
 pub fn sensor_neutral_gains(
     source: &SensorMosaic<'_>,
     center_x: u32,
     center_y: u32,
+) -> Result<[f32; 3], Error> {
+    sensor_neutral_gains_mapped(
+        source,
+        center_x,
+        center_y,
+        &|x, y, _| Ok((f64::from(x), f64::from(y))),
+        &|_, _, _| Ok(1.0),
+    )
+}
+
+/// Sample one 13x13 patch in corrected coordinates. Each site is mapped for its own color
+/// channel, then read from the nearest sensor site with that CFA color. This avoids treating a
+/// chromatic warp as a single center translation. The mapper and gain lookup each run at most
+/// 169 times; no demosaic or frame allocation occurs on the catalog owner.
+pub fn sensor_neutral_gains_mapped(
+    source: &SensorMosaic<'_>,
+    center_x: u32,
+    center_y: u32,
+    map_at: &dyn Fn(u32, u32, usize) -> Result<(f64, f64), Error>,
+    gain_at: &dyn Fn(f64, f64, usize) -> Result<f64, Error>,
 ) -> Result<[f32; 3], Error> {
     checked_source_len(source)?;
     validate_cfa(source)?;
@@ -184,9 +204,12 @@ pub fn sensor_neutral_gains(
         for x in start_x..=end_x {
             let cfa_index = ((y % cfa_height) * cfa_width + (x % cfa_width)) as usize;
             let channel = usize::from(source.cfa[cfa_index]);
-            let black = black_at(source, x, y, channel);
-            let sample =
-                f64::from(source.samples[(y as usize) * (source.width as usize) + x as usize]);
+            let (mapped_x, mapped_y) = map_at(x, y, channel)?;
+            let (sample_x, sample_y) = nearest_site(source, mapped_x, mapped_y, channel)?;
+            let black = black_at(source, sample_x, sample_y, channel);
+            let sample = f64::from(
+                source.samples[(sample_y as usize) * (source.width as usize) + sample_x as usize],
+            );
             let denominator = f64::from(source.sensor_white) - black;
             let normalized = (sample - black) / denominator;
             if !black.is_finite()
@@ -200,7 +223,15 @@ pub fn sensor_neutral_gains(
                     "neutral picker patch is dark, clipped or non-finite",
                 ));
             }
-            sums[channel] += normalized;
+            let gain = gain_at(mapped_x, mapped_y, channel)?;
+            if !gain.is_finite() || gain <= 0.0 {
+                return Err(validation("neutral picker site gain is invalid"));
+            }
+            let corrected = normalized * gain;
+            if !corrected.is_finite() || corrected <= 0.0 {
+                return Err(validation("neutral picker corrected sample is invalid"));
+            }
+            sums[channel] += corrected;
             counts[channel] += 1;
         }
     }
@@ -212,22 +243,72 @@ pub fn sensor_neutral_gains(
     let gains = [means[1] / means[0], 1.0, means[1] / means[2]];
     if !gains
         .iter()
-        .all(|value| value.is_finite() && *value > 0.0 && *value <= 16.0)
+        .all(|value| value.is_finite() && *value > 0.0 && *value <= super::MAX_RAW_GAIN)
     {
         return Err(validation(
-            "neutral picker gains are outside the finite positive <=16 range",
+            "neutral picker gains are outside the finite positive <=32 range",
         ));
     }
     let gains = gains.map(|value| value as f32);
     if !gains
         .iter()
-        .all(|value| value.is_finite() && *value > 0.0 && *value <= 16.0)
+        .all(|value| value.is_finite() && *value > 0.0 && f64::from(*value) <= super::MAX_RAW_GAIN)
     {
         return Err(validation(
             "neutral picker gains are not representable as f32",
         ));
     }
     Ok(gains)
+}
+
+fn nearest_site(
+    source: &SensorMosaic<'_>,
+    x: f64,
+    y: f64,
+    channel: usize,
+) -> Result<(u32, u32), Error> {
+    if !x.is_finite()
+        || !y.is_finite()
+        || x < 0.0
+        || y < 0.0
+        || x >= f64::from(source.width)
+        || y >= f64::from(source.height)
+    {
+        return Err(validation(
+            "neutral picker mapped point is outside the sensor",
+        ));
+    }
+    if x.fract() == 0.0 && y.fract() == 0.0 {
+        let (site_x, site_y) = (x as u32, y as u32);
+        let site = ((site_y % u32::from(source.cfa_height)) * u32::from(source.cfa_width)
+            + site_x % u32::from(source.cfa_width)) as usize;
+        if usize::from(source.cfa[site]) == channel {
+            return Ok((site_x, site_y));
+        }
+    }
+    let center_x = x.round() as i64;
+    let center_y = y.round() as i64;
+    let radius = i64::from(source.cfa_width.max(source.cfa_height));
+    let mut nearest: Option<(f64, u32, u32)> = None;
+    for sy in center_y - radius..=center_y + radius {
+        for sx in center_x - radius..=center_x + radius {
+            if sx < 0 || sy < 0 || sx >= i64::from(source.width) || sy >= i64::from(source.height) {
+                continue;
+            }
+            let site = ((sy as u32 % u32::from(source.cfa_height)) * u32::from(source.cfa_width)
+                + sx as u32 % u32::from(source.cfa_width)) as usize;
+            if usize::from(source.cfa[site]) != channel {
+                continue;
+            }
+            let distance = (sx as f64 - x).powi(2) + (sy as f64 - y).powi(2);
+            if nearest.is_none_or(|(best, _, _)| distance < best) {
+                nearest = Some((distance, sx as u32, sy as u32));
+            }
+        }
+    }
+    nearest
+        .map(|(_, x, y)| (x, y))
+        .ok_or_else(|| validation("neutral picker mapped point has no matching CFA site"))
 }
 
 #[cfg(test)]
@@ -320,6 +401,114 @@ mod tests {
     }
 
     #[test]
+    fn spatial_site_gain_changes_neutral_ratios_in_bounded_patch() {
+        let black_repeat = [1.0, 2.0, 3.0, 4.0];
+        let pixels = fixture(
+            24,
+            22,
+            2,
+            2,
+            &BAYER,
+            [0.25, 0.5, 0.125],
+            &black_repeat,
+            65_535.0,
+        );
+        let view = source(&pixels, 24, 22, 2, 2, &BAYER, &black_repeat, 65_535.0);
+        let calls = std::cell::Cell::new(0);
+        let gains = sensor_neutral_gains_mapped(
+            &view,
+            9,
+            10,
+            &|x, y, _| Ok((f64::from(x), f64::from(y))),
+            &|_, _, channel| {
+                calls.set(calls.get() + 1);
+                Ok([2.0, 1.0, 0.5][channel])
+            },
+        )
+        .unwrap();
+        assert_eq!(calls.get(), PATCH_SIDE * PATCH_SIDE);
+        close(gains[0], 1.0);
+        close(gains[1], 1.0);
+        close(gains[2], 8.0);
+        let highlight = sensor_neutral_gains_mapped(
+            &view,
+            9,
+            10,
+            &|x, y, _| Ok((f64::from(x), f64::from(y))),
+            &|_, _, channel| Ok([8.0, 1.0, 1.0][channel]),
+        )
+        .unwrap();
+        close(highlight[0], 0.25);
+        assert!(
+            sensor_neutral_gains_mapped(
+                &view,
+                9,
+                10,
+                &|x, y, _| Ok((f64::from(x), f64::from(y))),
+                &|_, _, _| Ok(f64::NAN),
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn chromatic_warp_maps_each_corrected_site_to_its_own_sensor_color() {
+        let mut pixels = vec![0_u16; 64 * 48];
+        for y in 0..48_u32 {
+            for x in 0..64_u32 {
+                let channel = usize::from(BAYER[((y % 2) * 2 + x % 2) as usize]);
+                let normalized: f64 = match channel {
+                    0 if x >= 40 => 0.5,
+                    0 => 0.25,
+                    1 => 0.5,
+                    2 if x <= 24 => 0.25,
+                    _ => 0.125,
+                };
+                pixels[(y * 64 + x) as usize] = (normalized * 65_535.0).round() as u16;
+            }
+        }
+        let view = SensorMosaic {
+            samples: &pixels,
+            width: 64,
+            height: 48,
+            cfa_width: 2,
+            cfa_height: 2,
+            cfa: &BAYER,
+            black_base: 0.0,
+            black_channels: [0.0; 4],
+            black_repeat_width: 0,
+            black_repeat_height: 0,
+            black_repeat: &[],
+            sensor_white: 65_535.0,
+        };
+        let calls = std::cell::Cell::new(0);
+        let gains = sensor_neutral_gains_mapped(
+            &view,
+            32,
+            24,
+            &|x, y, channel| {
+                calls.set(calls.get() + 1);
+                Ok((f64::from(x) + [15.0, 0.0, -15.0][channel], f64::from(y)))
+            },
+            &|_, _, _| Ok(1.0),
+        )
+        .unwrap();
+        assert_eq!(calls.get(), PATCH_SIDE * PATCH_SIDE);
+        close(gains[0], 1.0);
+        close(gains[2], 2.0);
+        assert!(
+            sensor_neutral_gains_mapped(
+                &view,
+                32,
+                24,
+                &|_, _, _| Ok((f64::NAN, 0.0)),
+                &|_, _, _| Ok(1.0),
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
     fn xtrans_phase_uses_the_full_six_by_six_pattern() {
         let black_repeat = [1.0, 2.0, 3.0, 4.0];
         let pixels = fixture(
@@ -356,7 +545,7 @@ mod tests {
         assert!(sensor_neutral_gains(&view, 0, 0).is_err());
         assert!(sensor_neutral_gains(&view, u32::MAX, u32::MAX).is_err());
 
-        for values in [[0.005, 0.5, 0.125], [0.25, 0.5, 0.999], [0.02, 0.5, 0.02]] {
+        for values in [[0.005, 0.5, 0.125], [0.25, 0.5, 0.999], [0.015, 0.5, 0.015]] {
             let pixels = fixture(20, 20, 2, 2, &BAYER, values, &black_repeat, 65_535.0);
             let view = source(&pixels, 20, 20, 2, 2, &BAYER, &black_repeat, 65_535.0);
             assert!(sensor_neutral_gains(&view, 9, 9).is_err());

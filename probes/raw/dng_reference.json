@@ -1,0 +1,1396 @@
+{
+  "active_area": [
+    0,
+    96,
+    3648,
+    5568
+  ],
+  "active_area_size": [
+    3648,
+    5472
+  ],
+  "best_quality_final_size": [
+    5464.0,
+    3640.0
+  ],
+  "color_stage": {
+    "analog_balance": [
+      [
+        1000000,
+        1000000
+      ],
+      [
+        1000000,
+        1000000
+      ],
+      [
+        1000000,
+        1000000
+      ]
+    ],
+    "as_shot_green_normalized_sensor_gains": [
+      2.34375,
+      1.0,
+      1.9218749999999998
+    ],
+    "as_shot_neutral": [
+      [
+        256,
+        600
+      ],
+      [
+        256,
+        256
+      ],
+      [
+        256,
+        492
+      ]
+    ],
+    "as_shot_neutral_values": [
+      0.4266666666666667,
+      1.0,
+      0.5203252032520326
+    ],
+    "calibration_illuminants": [
+      17,
+      21
+    ],
+    "color_matrix1": [
+      [
+        14387,
+        10000
+      ],
+      [
+        -8322,
+        10000
+      ],
+      [
+        -1922,
+        10000
+      ],
+      [
+        -3058,
+        10000
+      ],
+      [
+        12714,
+        10000
+      ],
+      [
+        1732,
+        10000
+      ],
+      [
+        141,
+        10000
+      ],
+      [
+        17,
+        10000
+      ],
+      [
+        7174,
+        10000
+      ]
+    ],
+    "color_matrix2": [
+      [
+        8531,
+        10000
+      ],
+      [
+        -3148,
+        10000
+      ],
+      [
+        -888,
+        10000
+      ],
+      [
+        -4071,
+        10000
+      ],
+      [
+        12492,
+        10000
+      ],
+      [
+        1265,
+        10000
+      ],
+      [
+        -209,
+        10000
+      ],
+      [
+        486,
+        10000
+      ],
+      [
+        5114,
+        10000
+      ]
+    ],
+    "ordering": "opcode list 3 -> camera-space WB (AsShotNeutral) -> inverse XYZ-to-camera matrix to XYZ",
+    "unique_camera_model": "DJI FC3411"
+  },
+  "coordinate_space": {
+    "active_area_raw_tlbr": [
+      0,
+      96,
+      3648,
+      5568
+    ],
+    "active_local_bounds_tlbr": [
+      0,
+      0,
+      3648,
+      5472
+    ],
+    "opcode_area_is_active_local": true,
+    "raw_to_active_local": "(row - active_top, col - active_left)"
+  },
+  "default_final_size": [
+    5464.0,
+    3640.0
+  ],
+  "file_bytes": 41012926,
+  "opcode_count": 2,
+  "opcode_list3_bytes": 12564,
+  "opcode_list3_offset": 37518,
+  "opcodes": [
+    {
+      "area": [
+        0,
+        0,
+        3648,
+        5472,
+        0,
+        3,
+        1,
+        1
+      ],
+      "byte_count": 12364,
+      "flags": 0,
+      "id": 9,
+      "index": 0,
+      "origin": [
+        0.0,
+        0.0
+      ],
+      "planes": 3,
+      "points": [
+        32,
+        32
+      ],
+      "spacing": [
+        0.03225806451612903,
+        0.03225806451612903
+      ],
+      "version": 16973824
+    },
+    {
+      "byte_count": 164,
+      "center": [
+        0.5,
+        0.5
+      ],
+      "coefficients": [
+        [
+          1.000351575,
+          0.0004390242285,
+          -0.0006185793252,
+          0.0002351222943,
+          0.0,
+          0.0
+        ],
+        [
+          1.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0
+        ],
+        [
+          1.000333963,
+          -0.001101449422,
+          0.001013301557,
+          -0.0002004202847,
+          0.0,
+          0.0
+        ]
+      ],
+      "flags": 0,
+      "id": 1,
+      "index": 1,
+      "planes": 3,
+      "version": 16973824
+    }
+  ],
+  "raw_fields": {
+    "256": [
+      5568
+    ],
+    "257": [
+      3648
+    ],
+    "50718": [
+      [
+        1,
+        1
+      ],
+      [
+        1,
+        1
+      ]
+    ],
+    "50719": [
+      [
+        4,
+        1
+      ],
+      [
+        4,
+        1
+      ]
+    ],
+    "50720": [
+      [
+        5464,
+        1
+      ],
+      [
+        3640,
+        1
+      ]
+    ],
+    "50780": [
+      [
+        1,
+        1
+      ]
+    ],
+    "50829": [
+      0,
+      96,
+      3648,
+      5568
+    ]
+  },
+  "raw_ifd": 728,
+  "reference_samples": {
+    "clipping_contract": {
+      "float_headroom_product": 1.4065471172332764,
+      "gain": 4.688490390777588,
+      "gain_input": 0.3,
+      "opcode_list_2_3_logical_range": [
+        0.0,
+        1.0
+      ],
+      "proposed_float_headroom_is_equal_only_when_product_is_in_range": true,
+      "strict_dng_clipped_product": 1.0
+    },
+    "gain": [
+      {
+        "col": 0,
+        "plane": 0,
+        "row": 0,
+        "value": 4.68775211536329
+      },
+      {
+        "col": 2736,
+        "plane": 1,
+        "row": 1824,
+        "value": 1.0021104429711747
+      },
+      {
+        "col": 5471,
+        "plane": 2,
+        "row": 3647,
+        "value": 4.045252827334654
+      },
+      {
+        "col": 5000,
+        "plane": 3,
+        "row": 100,
+        "value": 3.1047384751945932
+      }
+    ],
+    "gain_edge_replication": [
+      {
+        "col": -1,
+        "plane": 0,
+        "row": -1,
+        "value": 4.688490390777588
+      },
+      {
+        "col": 5472,
+        "plane": 2,
+        "row": 3648,
+        "value": 4.0459160804748535
+      }
+    ],
+    "gain_grid": [
+      {
+        "map_col": 0,
+        "map_row": 0,
+        "value": [
+          4.688490390777588,
+          4.203447341918945,
+          4.08151388168335
+        ]
+      },
+      {
+        "map_col": 31,
+        "map_row": 0,
+        "value": [
+          4.698281288146973,
+          4.203447341918945,
+          4.063714981079102
+        ]
+      },
+      {
+        "map_col": 16,
+        "map_row": 16,
+        "value": [
+          1.0008671283721924,
+          1.0008671283721924,
+          1.0008671283721924
+        ]
+      },
+      {
+        "map_col": 0,
+        "map_row": 31,
+        "value": [
+          4.688490390777588,
+          4.221246242523193,
+          4.063714981079102
+        ]
+      },
+      {
+        "map_col": 31,
+        "map_row": 31,
+        "value": [
+          4.698281288146973,
+          4.203447341918945,
+          4.0459160804748535
+        ]
+      }
+    ],
+    "synthetic_bicubic_headroom": {
+      "negative_scalar_strict_dng_clipped": 0.0,
+      "negative_scalar_unclipped": -0.25,
+      "phase_128_yx": [
+        64,
+        64
+      ],
+      "source_4x4": [
+        [
+          -0.25,
+          0.0,
+          0.0,
+          0.0
+        ],
+        [
+          0.0,
+          0.2,
+          0.8,
+          0.0
+        ],
+        [
+          0.0,
+          0.8,
+          1.2,
+          0.0
+        ],
+        [
+          0.0,
+          0.0,
+          0.0,
+          1.5
+        ]
+      ],
+      "strict_dng_clipped_value": 0.9958984375000001,
+      "unclipped_bicubic_value": 1.068603515625
+    },
+    "synthetic_gain_square_nonzero_origin": {
+      "bounds_tlbr": [
+        10,
+        20,
+        14,
+        24
+      ],
+      "origin_vh": [
+        0.0,
+        0.0
+      ],
+      "points_vh": [
+        2,
+        2
+      ],
+      "samples": [
+        {
+          "col": 20,
+          "row": 10,
+          "value": 1.75
+        },
+        {
+          "col": 21,
+          "row": 11,
+          "value": 3.25
+        },
+        {
+          "col": 23,
+          "row": 13,
+          "value": 4.0
+        }
+      ],
+      "spacing_vh": [
+        0.5,
+        0.5
+      ],
+      "values": [
+        [
+          [
+            1.0
+          ],
+          [
+            2.0
+          ]
+        ],
+        [
+          [
+            3.0
+          ],
+          [
+            4.0
+          ]
+        ]
+      ]
+    },
+    "warp_identity_exactness": {
+      "policy": "identity coefficient planes return destination coordinates exactly and skip resampling",
+      "samples": [
+        {
+          "col": 4,
+          "plane": 1,
+          "row": 4,
+          "value": [
+            4,
+            4
+          ]
+        },
+        {
+          "col": 1000,
+          "plane": 1,
+          "row": 1000,
+          "value": [
+            1000,
+            1000
+          ]
+        },
+        {
+          "col": 5467,
+          "plane": 1,
+          "row": 3643,
+          "value": [
+            3643,
+            5467
+          ]
+        }
+      ]
+    },
+    "warp_noncentral_center": {
+      "center_xy": [
+        0.25,
+        0.75
+      ],
+      "col": 1000,
+      "pixel_scale_v": 1.0,
+      "plane": 0,
+      "row": 1000,
+      "value": [
+        999.3081197337185,
+        999.8533341371017
+      ]
+    },
+    "warp_nonunit_pixel_scale": {
+      "col": 1000,
+      "pixel_scale_v": 1.25,
+      "plane": 0,
+      "row": 1000,
+      "value": [
+        999.6402689763177,
+        999.2421200763199
+      ]
+    },
+    "warp_source": [
+      {
+        "col": 0,
+        "plane": 0,
+        "row": 0,
+        "value": [
+          -0.7426273684222906,
+          -1.113941052633436
+        ]
+      },
+      {
+        "col": 1000,
+        "plane": 0,
+        "row": 1000,
+        "value": [
+          999.638488886621,
+          999.2383697902594
+        ]
+      },
+      {
+        "col": 1000,
+        "plane": 1,
+        "row": 1000,
+        "value": [
+          1000.0,
+          1000.0
+        ]
+      },
+      {
+        "col": 1000,
+        "plane": 2,
+        "row": 1000,
+        "value": [
+          999.943965459154,
+          999.8819466469556
+        ]
+      },
+      {
+        "col": 2736,
+        "plane": 1,
+        "row": 1824,
+        "value": [
+          1824.0,
+          2736.0
+        ]
+      },
+      {
+        "col": 5471,
+        "plane": 2,
+        "row": 3647,
+        "value": [
+          3647.082257432193,
+          5471.123408709296
+        ]
+      }
+    ],
+    "warp_spec_literal_endpoints": {
+      "convention": "x1/y1 are bottom-right pixel coordinates (DNG 1.7.1 prose)",
+      "samples": [
+        {
+          "col": 4,
+          "plane": 0,
+          "row": 4,
+          "value": [
+            3.2586339085496547,
+            2.8870340869493702
+          ]
+        },
+        {
+          "col": 1304,
+          "plane": 0,
+          "row": 850,
+          "value": [
+            849.580653778757,
+            1303.3833650583365
+          ]
+        },
+        {
+          "col": 4574,
+          "plane": 2,
+          "row": 2900,
+          "value": [
+            2900.0379654499375,
+            4574.064839275161
+          ]
+        },
+        {
+          "col": 5467,
+          "plane": 2,
+          "row": 3643,
+          "value": [
+            3643.0806175392245,
+            5467.121026000765
+          ]
+        }
+      ]
+    }
+  },
+  "source_file": "mavic_air_2s.DNG",
+  "sparse_reference": {
+    "count": 18,
+    "max_abs_error_to_csv_value": 7.114469527391698e-09,
+    "max_abs_error_to_mapped_csv_pixels": 0.0,
+    "provenance": "independent f32 GainMap + Adobe SDK bicubic phase-128 evaluation of an ignored 8x8 sparse adapter dump",
+    "samples": [
+      {
+        "abs_error_to_csv_value": 2.659530637383334e-09,
+        "mapped_csv_source_raw_xy": [
+          98.88683053285877,
+          3.2584302964139624
+        ],
+        "max_abs_error_to_mapped_csv_pixels": 0.0,
+        "out_raw_xy": [
+          100,
+          4
+        ],
+        "phase_128_yx": [
+          33,
+          113
+        ],
+        "plane": 0,
+        "production_sparse_csv_value": 0.03729597,
+        "reference_float_headroom": 0.03729596734046936,
+        "reference_strict_dng_clipped": 0.03729596734046936,
+        "source_active_local_yx": [
+          3.2584302964139624,
+          2.8868305328587667
+        ],
+        "source_raw_xy": [
+          98.88683053285877,
+          3.2584302964139624
+        ],
+        "source_raw_yx": [
+          3.2584302964139624,
+          98.88683053285877
+        ]
+      },
+      {
+        "abs_error_to_csv_value": 1.0303306818837399e-10,
+        "mapped_csv_source_raw_xy": [
+          100.0,
+          4.0
+        ],
+        "max_abs_error_to_mapped_csv_pixels": 0.0,
+        "out_raw_xy": [
+          100,
+          4
+        ],
+        "phase_128_yx": [
+          0,
+          0
+        ],
+        "plane": 1,
+        "production_sparse_csv_value": 0.046466563,
+        "reference_float_headroom": 0.046466562896966934,
+        "reference_strict_dng_clipped": 0.046466562896966934,
+        "source_active_local_yx": [
+          4,
+          4
+        ],
+        "source_raw_xy": [
+          100,
+          4
+        ],
+        "source_raw_yx": [
+          4,
+          100
+        ]
+      },
+      {
+        "abs_error_to_csv_value": 3.975568770020477e-09,
+        "mapped_csv_source_raw_xy": [
+          99.87895124731585,
+          3.919359908533579
+        ],
+        "max_abs_error_to_mapped_csv_pixels": 0.0,
+        "out_raw_xy": [
+          100,
+          4
+        ],
+        "phase_128_yx": [
+          117,
+          112
+        ],
+        "plane": 2,
+        "production_sparse_csv_value": 0.062307514,
+        "reference_float_headroom": 0.06230751797556877,
+        "reference_strict_dng_clipped": 0.06230751797556877,
+        "source_active_local_yx": [
+          3.919359908533579,
+          3.878951247315854
+        ],
+        "source_raw_xy": [
+          99.87895124731585,
+          3.919359908533579
+        ],
+        "source_raw_yx": [
+          3.919359908533579,
+          99.87895124731585
+        ]
+      },
+      {
+        "abs_error_to_csv_value": 3.874313356244663e-09,
+        "mapped_csv_source_raw_xy": [
+          318.9305869746354,
+          239.32565675470642
+        ],
+        "max_abs_error_to_mapped_csv_pixels": 0.0,
+        "out_raw_xy": [
+          320,
+          240
+        ],
+        "phase_128_yx": [
+          41,
+          119
+        ],
+        "plane": 0,
+        "production_sparse_csv_value": 0.038824763,
+        "reference_float_headroom": 0.038824766874313354,
+        "reference_strict_dng_clipped": 0.038824766874313354,
+        "source_active_local_yx": [
+          239.32565675470642,
+          222.9305869746354
+        ],
+        "source_raw_xy": [
+          318.9305869746354,
+          239.32565675470642
+        ],
+        "source_raw_yx": [
+          239.32565675470642,
+          318.9305869746354
+        ]
+      },
+      {
+        "abs_error_to_csv_value": 7.037925728314853e-10,
+        "mapped_csv_source_raw_xy": [
+          320.0,
+          240.0
+        ],
+        "max_abs_error_to_mapped_csv_pixels": 0.0,
+        "out_raw_xy": [
+          320,
+          240
+        ],
+        "phase_128_yx": [
+          0,
+          0
+        ],
+        "plane": 1,
+        "production_sparse_csv_value": 0.05102823,
+        "reference_float_headroom": 0.05102822929620743,
+        "reference_strict_dng_clipped": 0.05102822929620743,
+        "source_active_local_yx": [
+          240,
+          224
+        ],
+        "source_raw_xy": [
+          320,
+          240
+        ],
+        "source_raw_yx": [
+          240,
+          320
+        ]
+      },
+      {
+        "abs_error_to_csv_value": 5.659484825226713e-10,
+        "mapped_csv_source_raw_xy": [
+          319.99763407493674,
+          239.99850811094757
+        ],
+        "max_abs_error_to_mapped_csv_pixels": 0.0,
+        "out_raw_xy": [
+          320,
+          240
+        ],
+        "phase_128_yx": [
+          127,
+          127
+        ],
+        "plane": 2,
+        "production_sparse_csv_value": 0.06365794,
+        "reference_float_headroom": 0.06365793943405151,
+        "reference_strict_dng_clipped": 0.06365793943405151,
+        "source_active_local_yx": [
+          239.99850811094757,
+          223.99763407493674
+        ],
+        "source_raw_xy": [
+          319.99763407493674,
+          239.99850811094757
+        ],
+        "source_raw_yx": [
+          239.99850811094757,
+          319.99763407493674
+        ]
+      },
+      {
+        "abs_error_to_csv_value": 7.114469527391698e-09,
+        "mapped_csv_source_raw_xy": [
+          1399.3831269806658,
+          849.5804229603133
+        ],
+        "max_abs_error_to_mapped_csv_pixels": 0.0,
+        "out_raw_xy": [
+          1400,
+          850
+        ],
+        "phase_128_yx": [
+          74,
+          49
+        ],
+        "plane": 0,
+        "production_sparse_csv_value": 0.032847162,
+        "reference_float_headroom": 0.03284715488553047,
+        "reference_strict_dng_clipped": 0.03284715488553047,
+        "source_active_local_yx": [
+          849.5804229603133,
+          1303.3831269806658
+        ],
+        "source_raw_xy": [
+          1399.3831269806658,
+          849.5804229603133
+        ],
+        "source_raw_yx": [
+          849.5804229603133,
+          1399.3831269806658
+        ]
+      },
+      {
+        "abs_error_to_csv_value": 2.9518509164772055e-10,
+        "mapped_csv_source_raw_xy": [
+          1400.0,
+          850.0
+        ],
+        "max_abs_error_to_mapped_csv_pixels": 0.0,
+        "out_raw_xy": [
+          1400,
+          850
+        ],
+        "phase_128_yx": [
+          0,
+          0
+        ],
+        "plane": 1,
+        "production_sparse_csv_value": 0.031615026,
+        "reference_float_headroom": 0.03161502629518509,
+        "reference_strict_dng_clipped": 0.03161502629518509,
+        "source_active_local_yx": [
+          850,
+          1304
+        ],
+        "source_raw_xy": [
+          1400,
+          850
+        ],
+        "source_raw_yx": [
+          850,
+          1400
+        ]
+      },
+      {
+        "abs_error_to_csv_value": 1.5014133443458366e-09,
+        "mapped_csv_source_raw_xy": [
+          1399.8537578908047,
+          849.9005308558965
+        ],
+        "max_abs_error_to_mapped_csv_pixels": 0.0,
+        "out_raw_xy": [
+          1400,
+          850
+        ],
+        "phase_128_yx": [
+          115,
+          109
+        ],
+        "plane": 2,
+        "production_sparse_csv_value": 0.027641771,
+        "reference_float_headroom": 0.027641769498586655,
+        "reference_strict_dng_clipped": 0.027641769498586655,
+        "source_active_local_yx": [
+          849.9005308558965,
+          1303.8537578908047
+        ],
+        "source_raw_xy": [
+          1399.8537578908047,
+          849.9005308558965
+        ],
+        "source_raw_yx": [
+          849.9005308558965,
+          1399.8537578908047
+        ]
+      },
+      {
+        "abs_error_to_csv_value": 2.9431915238298245e-09,
+        "mapped_csv_source_raw_xy": [
+          2840.0028126207885,
+          1824.0
+        ],
+        "max_abs_error_to_mapped_csv_pixels": 0.0,
+        "out_raw_xy": [
+          2840,
+          1824
+        ],
+        "phase_128_yx": [
+          0,
+          0
+        ],
+        "plane": 0,
+        "production_sparse_csv_value": 0.16776416,
+        "reference_float_headroom": 0.16776415705680847,
+        "reference_strict_dng_clipped": 0.16776415705680847,
+        "source_active_local_yx": [
+          1824.0,
+          2744.0028126207885
+        ],
+        "source_raw_xy": [
+          2840.0028126207885,
+          1824.0
+        ],
+        "source_raw_yx": [
+          1824.0,
+          2840.0028126207885
+        ]
+      },
+      {
+        "abs_error_to_csv_value": 2.188072195652424e-09,
+        "mapped_csv_source_raw_xy": [
+          2840.0,
+          1824.0
+        ],
+        "max_abs_error_to_mapped_csv_pixels": 0.0,
+        "out_raw_xy": [
+          2840,
+          1824
+        ],
+        "phase_128_yx": [
+          0,
+          0
+        ],
+        "plane": 1,
+        "production_sparse_csv_value": 0.17256139,
+        "reference_float_headroom": 0.1725613921880722,
+        "reference_strict_dng_clipped": 0.1725613921880722,
+        "source_active_local_yx": [
+          1824,
+          2744
+        ],
+        "source_raw_xy": [
+          2840,
+          1824
+        ],
+        "source_raw_yx": [
+          1824,
+          2840
+        ]
+      },
+      {
+        "abs_error_to_csv_value": 3.5366057304919707e-10,
+        "mapped_csv_source_raw_xy": [
+          2840.0026716518446,
+          1824.0
+        ],
+        "max_abs_error_to_mapped_csv_pixels": 0.0,
+        "out_raw_xy": [
+          2840,
+          1824
+        ],
+        "phase_128_yx": [
+          0,
+          0
+        ],
+        "plane": 2,
+        "production_sparse_csv_value": 0.17839466,
+        "reference_float_headroom": 0.17839466035366058,
+        "reference_strict_dng_clipped": 0.17839466035366058,
+        "source_active_local_yx": [
+          1824.0,
+          2744.0026716518446
+        ],
+        "source_raw_xy": [
+          2840.0026716518446,
+          1824.0
+        ],
+        "source_raw_yx": [
+          1824.0,
+          2840.0026716518446
+        ]
+      },
+      {
+        "abs_error_to_csv_value": 4.369258913006213e-10,
+        "mapped_csv_source_raw_xy": [
+          4670.816524048659,
+          2900.4780086378432
+        ],
+        "max_abs_error_to_mapped_csv_pixels": 0.0,
+        "out_raw_xy": [
+          4670,
+          2900
+        ],
+        "phase_128_yx": [
+          61,
+          104
+        ],
+        "plane": 0,
+        "production_sparse_csv_value": 0.056537475,
+        "reference_float_headroom": 0.05653747543692589,
+        "reference_strict_dng_clipped": 0.05653747543692589,
+        "source_active_local_yx": [
+          2900.4780086378432,
+          4574.816524048659
+        ],
+        "source_raw_xy": [
+          4670.816524048659,
+          2900.4780086378432
+        ],
+        "source_raw_yx": [
+          2900.4780086378432,
+          4670.816524048659
+        ]
+      },
+      {
+        "abs_error_to_csv_value": 1.1569976920977609e-10,
+        "mapped_csv_source_raw_xy": [
+          4670.0,
+          2900.0
+        ],
+        "max_abs_error_to_mapped_csv_pixels": 0.0,
+        "out_raw_xy": [
+          4670,
+          2900
+        ],
+        "phase_128_yx": [
+          0,
+          0
+        ],
+        "plane": 1,
+        "production_sparse_csv_value": 0.05430232,
+        "reference_float_headroom": 0.05430231988430023,
+        "reference_strict_dng_clipped": 0.05430231988430023,
+        "source_active_local_yx": [
+          2900,
+          4574
+        ],
+        "source_raw_xy": [
+          4670,
+          2900
+        ],
+        "source_raw_yx": [
+          2900,
+          4670
+        ]
+      },
+      {
+        "abs_error_to_csv_value": 1.8773842203057e-10,
+        "mapped_csv_source_raw_xy": [
+          4670.065114497071,
+          2900.0381192594377
+        ],
+        "max_abs_error_to_mapped_csv_pixels": 0.0,
+        "out_raw_xy": [
+          4670,
+          2900
+        ],
+        "phase_128_yx": [
+          4,
+          8
+        ],
+        "plane": 2,
+        "production_sparse_csv_value": 0.053252008,
+        "reference_float_headroom": 0.05325200781226158,
+        "reference_strict_dng_clipped": 0.05325200781226158,
+        "source_active_local_yx": [
+          2900.0381192594377,
+          4574.065114497071
+        ],
+        "source_raw_xy": [
+          4670.065114497071,
+          2900.0381192594377
+        ],
+        "source_raw_yx": [
+          2900.0381192594377,
+          4670.065114497071
+        ]
+      },
+      {
+        "abs_error_to_csv_value": 2.3000526483407668e-10,
+        "mapped_csv_source_raw_xy": [
+          5564.112976766857,
+          3643.741305287043
+        ],
+        "max_abs_error_to_mapped_csv_pixels": 0.0,
+        "out_raw_xy": [
+          5563,
+          3643
+        ],
+        "phase_128_yx": [
+          94,
+          14
+        ],
+        "plane": 0,
+        "production_sparse_csv_value": 0.018924203,
+        "reference_float_headroom": 0.018924202769994736,
+        "reference_strict_dng_clipped": 0.018924202769994736,
+        "source_active_local_yx": [
+          3643.741305287043,
+          5468.112976766857
+        ],
+        "source_raw_xy": [
+          5564.112976766857,
+          3643.741305287043
+        ],
+        "source_raw_yx": [
+          3643.741305287043,
+          5564.112976766857
+        ]
+      },
+      {
+        "abs_error_to_csv_value": 4.484834656426351e-10,
+        "mapped_csv_source_raw_xy": [
+          5563.0,
+          3643.0
+        ],
+        "max_abs_error_to_mapped_csv_pixels": 0.0,
+        "out_raw_xy": [
+          5563,
+          3643
+        ],
+        "phase_128_yx": [
+          0,
+          0
+        ],
+        "plane": 1,
+        "production_sparse_csv_value": 0.023233281,
+        "reference_float_headroom": 0.023233281448483467,
+        "reference_strict_dng_clipped": 0.023233281448483467,
+        "source_active_local_yx": [
+          3643,
+          5467
+        ],
+        "source_raw_xy": [
+          5563,
+          3643
+        ],
+        "source_raw_yx": [
+          3643,
+          5563
+        ]
+      },
+      {
+        "abs_error_to_csv_value": 9.068775175258281e-10,
+        "mapped_csv_source_raw_xy": [
+          5563.120267041852,
+          3643.0801046316833
+        ],
+        "max_abs_error_to_mapped_csv_pixels": 0.0,
+        "out_raw_xy": [
+          5563,
+          3643
+        ],
+        "phase_128_yx": [
+          10,
+          15
+        ],
+        "plane": 2,
+        "production_sparse_csv_value": 0.02668007,
+        "reference_float_headroom": 0.026680070906877518,
+        "reference_strict_dng_clipped": 0.026680070906877518,
+        "source_active_local_yx": [
+          3643.0801046316833,
+          5467.120267041852
+        ],
+        "source_raw_xy": [
+          5563.120267041852,
+          3643.0801046316833
+        ],
+        "source_raw_yx": [
+          3643.0801046316833,
+          5563.120267041852
+        ]
+      }
+    ]
+  },
+  "warp_endpoint_comparison": {
+    "sdk_uses_exclusive_dng_rect_right_bottom": true,
+    "sparse_max_abs_coordinate_delta_pixels": 0.0007589589131384855,
+    "spec_literal_uses_bottom_right_pixel_coordinates": true
+  },
+  "wb_reference_2000k_tint100_fixed_cm2": {
+    "camera_white_response": [
+      0.7398665533698325,
+      0.7465083056890431,
+      0.026369717950067133
+    ],
+    "green_normalized_sensor_gains": [
+      1.0089769598165503,
+      1.0,
+      28.309301870524656
+    ],
+    "production_reference": true,
+    "selection": "fixed ColorMatrix2 D65 XYZ-to-camera",
+    "temperature_kelvin": 2000.0,
+    "tint_lightwell_units": 100.0,
+    "valid_for_lightwell_gain_contract": true,
+    "validation_reason": "within positive finite 0..32 gain range",
+    "whitepoint_xy": [
+      0.551229462758742,
+      0.4456133504890677
+    ],
+    "whitepoint_xyz_y1": [
+      1.237012899532204,
+      1.0,
+      0.007085036273543604
+    ],
+    "xyz_to_camera_matrix": [
+      [
+        0.8531,
+        -0.3148,
+        -0.0888
+      ],
+      [
+        -0.4071,
+        1.2492,
+        0.1265
+      ],
+      [
+        -0.0209,
+        0.0486,
+        0.5114
+      ]
+    ]
+  },
+  "wb_reference_5500k_tint10": {
+    "camera_white_response": [
+      0.41583427233814607,
+      0.9770204504444235,
+      0.49364874588132057
+    ],
+    "green_normalized_sensor_gains": [
+      2.3495428718533686,
+      1.0,
+      1.9791814698123666
+    ],
+    "production_reference": true,
+    "selection": "fixed ColorMatrix2 D65 XYZ-to-camera",
+    "temperature_kelvin": 5500.0,
+    "tint_lightwell_units": 10.0,
+    "valid_for_lightwell_gain_contract": true,
+    "validation_reason": "within positive finite 0..32 gain range",
+    "whitepoint_xy": [
+      0.33252117947966875,
+      0.3496256099482258
+    ],
+    "whitepoint_xyz_y1": [
+      0.9510778673476181,
+      1.0,
+      0.9091245078390415
+    ],
+    "xyz_to_camera_matrix": [
+      [
+        0.8531,
+        -0.3148,
+        -0.0888
+      ],
+      [
+        -0.4071,
+        1.2492,
+        0.1265
+      ],
+      [
+        -0.0209,
+        0.0486,
+        0.5114
+      ]
+    ]
+  },
+  "wb_reference_5500k_tint10_dual_calibration_comparator": {
+    "calibration_illuminants_cct_kelvin": [
+      2856.0,
+      6504.0
+    ],
+    "camera_white_response": [
+      0.40805228668393645,
+      1.0000296276440752,
+      0.5184682233606026
+    ],
+    "green_normalized_sensor_gains": [
+      2.4507389378230946,
+      1.0,
+      1.9288156584835465
+    ],
+    "matrix2_inverse_cct_weight": 0.857086124401914,
+    "production_reference": false,
+    "selection": "inverse-CCT dual-calibration interpolation comparator",
+    "temperature_kelvin": 5500.0,
+    "tint_lightwell_units": 10.0,
+    "whitepoint_xy": [
+      0.33252117947966875,
+      0.3496256099482258
+    ],
+    "whitepoint_xyz_y1": [
+      0.9510778673476181,
+      1.0,
+      0.9091245078390415
+    ],
+    "xyz_to_camera_matrix": [
+      [
+        0.9367903655502391,
+        -0.38874363923444966,
+        -0.1035772947368421
+      ],
+      [
+        -0.3926228244019139,
+        1.2523726880382775,
+        0.13317407799043063
+      ],
+      [
+        -0.015898014354066986,
+        0.041897339234449764,
+        0.5408402583732057
+      ]
+    ]
+  },
+  "wb_reference_5500k_tint10_fixed_cm2": {
+    "camera_white_response": [
+      0.41583427233814607,
+      0.9770204504444235,
+      0.49364874588132057
+    ],
+    "green_normalized_sensor_gains": [
+      2.3495428718533686,
+      1.0,
+      1.9791814698123666
+    ],
+    "production_reference": true,
+    "selection": "fixed ColorMatrix2 D65 XYZ-to-camera",
+    "temperature_kelvin": 5500.0,
+    "tint_lightwell_units": 10.0,
+    "valid_for_lightwell_gain_contract": true,
+    "validation_reason": "within positive finite 0..32 gain range",
+    "whitepoint_xy": [
+      0.33252117947966875,
+      0.3496256099482258
+    ],
+    "whitepoint_xyz_y1": [
+      0.9510778673476181,
+      1.0,
+      0.9091245078390415
+    ],
+    "xyz_to_camera_matrix": [
+      [
+        0.8531,
+        -0.3148,
+        -0.0888
+      ],
+      [
+        -0.4071,
+        1.2492,
+        0.1265
+      ],
+      [
+        -0.0209,
+        0.0486,
+        0.5114
+      ]
+    ]
+  }
+}

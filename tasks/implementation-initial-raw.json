@@ -2,8 +2,8 @@
   "schema_version": "1.0",
   "plan_id": "initial-raw",
   "title": "Initial continuous RAW editing — Nikon Z6, Fujifilm X100VI and DJI Air 2S",
-  "objective": "Deliver continuously editable, non-destructive RAW recipes for the original Nikon Z6 and Fujifilm X100VI, with verified source preservation, retained precision, neutral development, exposure/white balance, composition/history and shared UI/API behavior. Qualify the supplied DJI Air 2S DNG where feasible; required corrections remain explicit work before support. Integrate explicit JPEG output through the separately delivered exporter.",
-  "context_summary": "Implementation is authorized on codex/initial-raw-plan. LibRaw0.22.2 and pinned librtprocess RCD/Markesteijn1 provide one static production path. NEF/RAF editing uses retained sensor data and float32 linear sRGB through the recipe, never an intermediate JPEG. Owner originals and four public CC0 mode samples remain ignored; tracked manifests record provenance. Real native, JSON and background M4 editor evidence exist. Code delivery and controlled scene/platform/resource qualification are separate outputs: missing charts, native memory tooling, hosted targets and accepted performance budgets cannot be inferred from passing supplied-file workflows. The owner DJI DNG is tested unsupported until mandatory GainMap and WarpRectilinear are implemented; TASK-026 onward tracks that work. JPEG Basic/export/Locate/MCP remain separate. TASK-021 requires the absent shared exporter and does not block editing. Dependencies reflect required outputs, rather than forcing implementation to wait for unrelated broad corpus qualification.",
+  "objective": "Deliver continuously editable, non-destructive RAW recipes for Nikon Z6, Fujifilm X100VI and the qualified DJI Air 2S DNG mode, with preserved originals, retained precision, neutral exposure/WB, composition/history and shared UI/API behavior. Broader scene/resource/platform qualification remains explicit. Integrate JPEG output through the separately delivered exporter.",
+  "context_summary": "Continuous RAW implementation is authorized. LibRaw0.22.2 and pinned librtprocess RCD/Markesteijn1 provide one static production path. Qualified NEF/RAF/DNG editing retains sensor data and float32 linear sRGB through the recipe, with terminal display conversion. The Air 2S work is on codex/mavic-air2s-dng under docs/design/air2s-dng.md: required gain/warp corrections, fixed D65 calibration, independent references and continuous editor integration are implemented. It inherits the existing unclipped scene-headroom contract; strict Adobe per-opcode clipping is not claimed. Owner originals and four public mode samples remain ignored. Code delivery and controlled scene/platform/resource qualification are separate: missing charts, hosted native targets and accepted performance budgets cannot be inferred from supplied-file tests. JPEG Basic/export/Locate/MCP remain separate; TASK-021 requires the absent shared exporter and does not block editing.",
   "tasks": [
     {
       "id": "TASK-001",
@@ -683,7 +683,7 @@
         "TASK-008"
       ],
       "extra_context": [
-        "Validated Z6 full-size12/14-bit lossless and X100VI14-bit uncompressed/lossless metadata/CFA/crop/levels/orientation. DJI sensor identity and required opcode structure are inspected and explicitly rejected before unpack; this task does not implement those corrections."
+        "Validated Z6 full-size12/14-bit lossless and X100VI14-bit uncompressed/lossless metadata/CFA/crop/levels/orientation. DJI sensor identity and required opcode structure are inspected; correction implementation and integration are tracked in TASK-026 through TASK-028."
       ],
       "context_links": [
         {
@@ -1627,19 +1627,26 @@
     {
       "id": "TASK-026",
       "description": "Implement and independently verify required DNG GainMap correction.",
-      "status": "ready",
+      "status": "completed",
       "dependencies": [
         "TASK-003",
         "TASK-007",
         "TASK-011"
       ],
       "extra_context": [
-        "The user requested DJI support ideally. Current explicit rejection is intentional because the supplied file requires both corrections. No generic DNG support or camera-look matching is implied."
+        "Qualified FC3411 uncompressed16 Bayer DNG with mandatory List3 GainMap9 then WarpRectilinear1. Independent synthetic and 18 authentic sparse samples pass; coordinate/interpolation/clip/calibration provenance is immutable. The existing RAW contract requires preserving headroom until display, so this is not strict per-opcode-clipped Adobe output.",
+        "Native and actual JSON checks pass, including source preservation, correction failures, history/versions/Restore/reopen, WB after geometry and the 2000 K/+100 tint endpoint. All 30 native background M4 editor/reopen trials pass, as do Nikon/Fujifilm regressions and one packaged DNG journey. Full repository checks pass; current performance docs retain scoped latency/RSS distributions and all JPEG comparison runs. Generic DNG, controlled scene qualification and native Windows/Linux acceptance remain outside this delivered scope."
       ],
       "context_links": [
         {
           "kind": "file",
-          "label": "RAW interpretation and unsupported DJI boundary",
+          "label": "Air 2S DNG integration contract",
+          "target": "docs/design/air2s-dng.md",
+          "relevance": "Authorized mode, required correction semantics, source/picker integration, bounds and acceptance."
+        },
+        {
+          "kind": "file",
+          "label": "RAW interpretation and qualified DJI boundary",
           "target": "docs/design/raw-integration.md",
           "relevance": "Immutable sensor metadata, source stage, high precision and explicit mandatory-opcode rejection."
         },
@@ -1647,7 +1654,13 @@
           "kind": "file",
           "label": "Authentic coverage",
           "target": "fixtures/raw-coverage.json",
-          "relevance": "Supplied FC3411 DNG capture metadata and outstanding correction references."
+          "relevance": "Demonstrated FC3411 recording mode and remaining scene/platform coverage gaps."
+        },
+        {
+          "kind": "file",
+          "label": "Air 2S performance and retained tails",
+          "target": "docs/specs/performance.md#air-2s-dng-measurements",
+          "relevance": "Thirty native editor trials, sampled RSS, JPEG before/after distributions and packaged-app scope."
         }
       ],
       "acceptance_criteria": [
@@ -1672,19 +1685,26 @@
     {
       "id": "TASK-027",
       "description": "Implement and independently verify required DNG WarpRectilinear correction.",
-      "status": "ready",
+      "status": "completed",
       "dependencies": [
         "TASK-003",
         "TASK-007",
         "TASK-011"
       ],
       "extra_context": [
-        "The user requested DJI support ideally. Current explicit rejection is intentional because the supplied file requires both corrections. No generic DNG support or camera-look matching is implied."
+        "Qualified FC3411 uncompressed16 Bayer DNG with mandatory List3 GainMap9 then WarpRectilinear1. Independent synthetic and 18 authentic sparse samples pass; coordinate/interpolation/clip/calibration provenance is immutable. The existing RAW contract requires preserving headroom until display, so this is not strict per-opcode-clipped Adobe output.",
+        "Native and actual JSON checks pass, including source preservation, correction failures, history/versions/Restore/reopen, WB after geometry and the 2000 K/+100 tint endpoint. All 30 native background M4 editor/reopen trials pass, as do Nikon/Fujifilm regressions and one packaged DNG journey. Full repository checks pass; current performance docs retain scoped latency/RSS distributions and all JPEG comparison runs. Generic DNG, controlled scene qualification and native Windows/Linux acceptance remain outside this delivered scope."
       ],
       "context_links": [
         {
           "kind": "file",
-          "label": "RAW interpretation and unsupported DJI boundary",
+          "label": "Air 2S DNG integration contract",
+          "target": "docs/design/air2s-dng.md",
+          "relevance": "Authorized mode, required correction semantics, source/picker integration, bounds and acceptance."
+        },
+        {
+          "kind": "file",
+          "label": "RAW interpretation and qualified DJI boundary",
           "target": "docs/design/raw-integration.md",
           "relevance": "Immutable sensor metadata, source stage, high precision and explicit mandatory-opcode rejection."
         },
@@ -1692,7 +1712,13 @@
           "kind": "file",
           "label": "Authentic coverage",
           "target": "fixtures/raw-coverage.json",
-          "relevance": "Supplied FC3411 DNG capture metadata and outstanding correction references."
+          "relevance": "Demonstrated FC3411 recording mode and remaining scene/platform coverage gaps."
+        },
+        {
+          "kind": "file",
+          "label": "Air 2S performance and retained tails",
+          "target": "docs/specs/performance.md#air-2s-dng-measurements",
+          "relevance": "Thirty native editor trials, sampled RSS, JPEG before/after distributions and packaged-app scope."
         }
       ],
       "acceptance_criteria": [
@@ -1717,18 +1743,25 @@
     {
       "id": "TASK-028",
       "description": "Enable and qualify the supplied DJI Air 2S DNG through the continuous editor.",
-      "status": "pending",
+      "status": "completed",
       "dependencies": [
         "TASK-026",
         "TASK-027"
       ],
       "extra_context": [
-        "The user requested DJI support ideally. Current explicit rejection is intentional because the supplied file requires both corrections. No generic DNG support or camera-look matching is implied."
+        "Qualified FC3411 uncompressed16 Bayer DNG with mandatory List3 GainMap9 then WarpRectilinear1. Independent synthetic and 18 authentic sparse samples pass; coordinate/interpolation/clip/calibration provenance is immutable. The existing RAW contract requires preserving headroom until display, so this is not strict per-opcode-clipped Adobe output.",
+        "Native and actual JSON checks pass, including source preservation, correction failures, history/versions/Restore/reopen, WB after geometry and the 2000 K/+100 tint endpoint. All 30 native background M4 editor/reopen trials pass, as do Nikon/Fujifilm regressions and one packaged DNG journey. Full repository checks pass; current performance docs retain scoped latency/RSS distributions and all JPEG comparison runs. Generic DNG, controlled scene qualification and native Windows/Linux acceptance remain outside this delivered scope."
       ],
       "context_links": [
         {
           "kind": "file",
-          "label": "RAW interpretation and unsupported DJI boundary",
+          "label": "Air 2S DNG integration contract",
+          "target": "docs/design/air2s-dng.md",
+          "relevance": "Authorized mode, required correction semantics, source/picker integration, bounds and acceptance."
+        },
+        {
+          "kind": "file",
+          "label": "RAW interpretation and qualified DJI boundary",
           "target": "docs/design/raw-integration.md",
           "relevance": "Immutable sensor metadata, source stage, high precision and explicit mandatory-opcode rejection."
         },
@@ -1736,7 +1769,13 @@
           "kind": "file",
           "label": "Authentic coverage",
           "target": "fixtures/raw-coverage.json",
-          "relevance": "Supplied FC3411 DNG capture metadata and outstanding correction references."
+          "relevance": "Demonstrated FC3411 recording mode and remaining scene/platform coverage gaps."
+        },
+        {
+          "kind": "file",
+          "label": "Air 2S performance and retained tails",
+          "target": "docs/specs/performance.md#air-2s-dng-measurements",
+          "relevance": "Thirty native editor trials, sampled RSS, JPEG before/after distributions and packaged-app scope."
         }
       ],
       "acceptance_criteria": [
@@ -1747,8 +1786,10 @@
       "test_strategy": {
         "approach": "mixed",
         "steps": [
-          "Use primary DNG semantics and independent small numerical references before comparing the authentic owner file.",
-          "Run real source-preservation and current recipe/history checks; retain errors and report exact supported scope."
+          "Compare mandatory correction math with independent synthetic and 18 authentic sparse references; retain the unmodified original hash.",
+          "Run native and actual JSON import, source adjustment, geometry, history/versions/Restore and reopen checks, plus invalid required-opcode, changed provenance and disabled-provider recovery.",
+          "Run 30 complete background editor/reopen trials and release JPEG before/after diagnostics; retain tails, source/binary hashes and RSS scope. Verify one full journey against the unsigned host package, bundled native notices and runtime linkage.",
+          "Run cargo xtask check and validate the final task plan, support manifest and current documentation."
         ],
         "commands": [
           "cargo xtask check"

@@ -1,6 +1,6 @@
 //! Opt-in end-to-end RAW JSON owner coverage.
 //!
-//! This test deliberately stays ignored in normal CI. It needs the owner's qualified NEF/RAF
+//! These tests deliberately stay ignored in normal CI. They need the owner's qualified RAW
 //! files and a release-built native RAW adapter. Run it with
 //! `LIGHTWELL_RAW_OWNER_DIR=/path/to/private/raw cargo test --release -p lightwell-app
 //! --test raw_json_cli -- --ignored --nocapture`.
@@ -300,7 +300,7 @@ fn apply_action(
     state(client, &asset)
 }
 
-fn run_fixture(path: &Path, label: &str) {
+fn run_fixture(path: &Path, label: &str, wb_after_geometry: bool) {
     let metadata_before = std::fs::metadata(path).expect("fixture metadata");
     let catalog = catalog_path(label);
     let mut client = JsonClient::start(&catalog);
@@ -314,6 +314,12 @@ fn run_fixture(path: &Path, label: &str) {
     let asset = asset_id(&initial);
     let fingerprint = initial["asset"]["fingerprint"].as_str().unwrap().to_owned();
     assert_eq!(initial["asset"]["source"]["kind"], "raw");
+    let corrections = initial["asset"]["source"]["metadata"]["dng_corrections"].clone();
+    if wb_after_geometry {
+        assert!(corrections["interpretation"].is_string());
+        assert_eq!(corrections["applied"][0]["id"], 9);
+        assert_eq!(corrections["applied"][1]["id"], 1);
+    }
     let initial_entry = current_entry_id(&initial);
     let (sample_x, sample_y) = sample_point(&initial);
     let initial_sample =
@@ -459,11 +465,42 @@ fn run_fixture(path: &Path, label: &str) {
         json!({"transform":"rotate-right"}),
     );
     let rotated_entry = current_entry_id(&rotated);
-    let _rotated_sample = sample_after_preparation(&mut client, &asset, &rotated_entry, 0, 0);
+    let rotated_sample = if wb_after_geometry {
+        sample_after_preparation(&mut client, &asset, &rotated_entry, sample_x, sample_y)
+    } else {
+        sample_after_preparation(&mut client, &asset, &rotated_entry, 0, 0)
+    };
+    let after_geometry = if wb_after_geometry {
+        let edited = apply_action(
+            &mut client,
+            &tint_action,
+            &rotated,
+            "raw-tint-after-geometry",
+            json!({"tint":20.0}),
+        );
+        assert_eq!(revision(&edited), revision(&rotated) + 1);
+        let edited_entry = current_entry_id(&edited);
+        let edited_layers = edited["current_entry"]["snapshot"]["recipe"]["layers"]
+            .as_array()
+            .expect("edited layers");
+        let rotated_layers = rotated["current_entry"]["snapshot"]["recipe"]["layers"]
+            .as_array()
+            .expect("rotated layers");
+        assert_eq!(edited_layers.len(), rotated_layers.len());
+        assert_eq!(edited_layers[0]["id"], rotated_layers[0]["id"]);
+        assert_ne!(edited_layers[0]["payload"], rotated_layers[0]["payload"]);
+        assert_eq!(edited_layers[1..], rotated_layers[1..]);
+        let edited_sample =
+            sample_after_preparation(&mut client, &asset, &edited_entry, sample_x, sample_y);
+        assert_ne!(edited_sample["rgba"], rotated_sample["rgba"]);
+        edited
+    } else {
+        rotated
+    };
 
     let restore_result = client.call(
         "history.restore",
-        json!({"asset_id":asset,"entry_id":baseline_entry,"mutation":mutation(&rotated,"restore-raw-wb")}),
+        json!({"asset_id":asset,"entry_id":baseline_entry,"mutation":mutation(&after_geometry,"restore-raw-wb")}),
     );
     assert_eq!(restore_result["outcome"], "applied");
     let restored = state(&mut client, &asset);
@@ -497,6 +534,12 @@ fn run_fixture(path: &Path, label: &str) {
         json!({"asset_id":asset,"entry_id":restored_entry}),
     );
     assert_eq!(inspect["fingerprint"], fingerprint);
+    if wb_after_geometry {
+        assert_eq!(
+            inspect["source"]["metadata"]["dng_corrections"],
+            corrections
+        );
+    }
     let first_sample = reopened.call_raw(
         "render.sample",
         json!({"asset_id":asset,"x":sample_x,"y":sample_y}),
@@ -515,6 +558,37 @@ fn run_fixture(path: &Path, label: &str) {
     assert_eq!(reopened_recipe["layers"], wb_recipe["layers"]);
     let reopened_versions = reopened.call("version.list", json!({"asset_id":asset}));
     assert_eq!(reopened_versions["versions"][0]["entry_id"], baseline_entry);
+    if wb_after_geometry {
+        let endpoint_temperature = apply_action(
+            &mut reopened,
+            &temperature_action,
+            &reopened_state,
+            "raw-dng-endpoint-temperature",
+            json!({"kelvin":2000.0}),
+        );
+        let endpoint_tint = apply_action(
+            &mut reopened,
+            &tint_action,
+            &endpoint_temperature,
+            "raw-dng-endpoint-tint",
+            json!({"tint":100.0}),
+        );
+        let endpoint_gains =
+            &endpoint_tint["current_entry"]["snapshot"]["recipe"]["layers"][0]["payload"]["gains"];
+        assert!((endpoint_gains[0].as_f64().unwrap() - 1.00897694).abs() < 0.0001);
+        assert_eq!(endpoint_gains[1], 1.0);
+        assert!((endpoint_gains[2].as_f64().unwrap() - 28.3093023).abs() < 0.001);
+        let endpoint_entry = current_entry_id(&endpoint_tint);
+        let endpoint_sample =
+            sample_after_preparation(&mut reopened, &asset, &endpoint_entry, sample_x, sample_y);
+        assert!(
+            endpoint_sample["rgba"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|channel| { channel.as_f64().is_some_and(f64::is_finite) })
+        );
+    }
     reopened.finish();
 
     let metadata_after = std::fs::metadata(path).expect("fixture metadata after workflow");
@@ -554,6 +628,16 @@ fn raw_json_cli_owner_fixtures_preserve_pipeline_and_history() {
             "Fujifilm-X100VI-uncompressed.RAF",
         ],
     );
-    run_fixture(&z6, "z6");
-    run_fixture(&fuji, "fuji");
+    run_fixture(&z6, "z6", false);
+    run_fixture(&fuji, "fuji", false);
+}
+
+#[test]
+#[ignore = "requires owner-supplied Air 2S DNG and native RAW support"]
+fn raw_json_cli_air2s_dng_preserves_pipeline_and_history() {
+    let owner_dir = PathBuf::from(std::env::var_os("LIGHTWELL_RAW_OWNER_DIR").unwrap_or_else(
+        || panic!("LIGHTWELL_RAW_OWNER_DIR is required when running this ignored test"),
+    ));
+    let dng = fixture(&owner_dir, &["mavic_air_2s.DNG"]);
+    run_fixture(&dng, "air2s", true);
 }

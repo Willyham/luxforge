@@ -42,7 +42,7 @@
 | JPEG exposure, white balance, tone, vibrance and saturation | Proposed plan | JPEG-first slices in [Basic and histogram](design/basic-and-histogram.md); product/numerical choices remain open |
 | PNG input | Later | Separate from the proposed JPEG Basic controls |
 | Nikon Z6 and Fujifilm X100VI RAW editing | Implemented; initial M4 verification | [Continuous RAW editing](design/initial-raw.md): retained sensor/float sources, source exposure, custom temperature/tint, neutral picker, history and shared API; full-size 12/14-bit lossless NEF and 14-bit uncompressed/lossless RAF, with explicit scene/resource/platform qualification gaps |
-| DJI Air 2S DNG | Tested unsupported | Required GainMap and WarpRectilinear opcodes are rejected explicitly; failed replacement preserves the previous photo |
+| DJI Air 2S DNG | Implemented; initial M4 verification | Supplied FC3411 uncompressed 16-bit-stored mode, required GainMap/chromatic WarpRectilinear, fixed D65 calibration and continuous RAW history; [scope and numerical contract](design/air2s-dng.md). Unknown required corrections fail while preserving the previous photo |
 | Texture, clarity, dehaze, masks, clone/heal | Later | Full API required whenever introduced |
 | Bitmap layers, blend modes, layer reordering | Not selected | |
 | Sidecars, sync, managed-copy import, folder relinking | Later decisions | |

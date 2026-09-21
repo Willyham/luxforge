@@ -15,7 +15,7 @@ Editor follow-ups and later work wait until the owner asks for them.
 
 The Basic/histogram plan has its product choices decided and recorded defaults for every later choice, so it runs to completion on agent judgement with the owner refining afterwards; its [design](../docs/design/basic-and-histogram.md) records them with the integration dependencies. Implementation starts when the owner says so.
 
-RAW editing is implemented with initial native M4 verification. Its [design](../docs/design/initial-raw.md) records the owner's continuous RAW editing requirement, the pinned processing path, and outstanding controlled quality, resource and platform qualification. The supplied DJI DNG remains tested unsupported until its required corrections are implemented. RAW JPEG-export integration requires the separately delivered shared exporter and does not block the RAW editing checkpoint.
+RAW editing is implemented with initial native M4 verification. Its [design](../docs/design/initial-raw.md) records the owner's continuous RAW editing requirement, the pinned processing path, and outstanding controlled quality, resource and platform qualification. The supplied FC3411 DNG has required gain/warp corrections and continuous editor support; its [contract](../docs/design/air2s-dng.md) records the qualified encoding, numerical interpretation and limits. RAW JPEG-export integration requires the separately delivered shared exporter and does not block the RAW editing checkpoint.
 
 ## Conventions
 

@@ -12,7 +12,9 @@ use std::{
         atomic::{AtomicBool, Ordering},
     },
 };
+mod dng;
 mod format;
+pub use dng::{DngCalibrationMetadata, DngCorrectionMetadata, DngOpcodeProvenance};
 pub use format::required_dng_opcodes;
 use format::{classify_mode, raf_default_crop};
 
@@ -98,6 +100,8 @@ pub struct RawMetadata {
     pub libraw_inset: RawRect,
     pub format_identity: String,
     pub warnings: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub dng_corrections: Option<DngCorrectionMetadata>,
 }
 
 #[derive(Debug, Clone)]
@@ -105,6 +109,7 @@ pub struct RawSource {
     metadata: RawMetadata,
     mosaic: Arc<Vec<u16>>,
     native: Box<NativeMetadata>,
+    dng_correction: Option<dng::DngCorrection>,
 }
 
 #[derive(Debug)]
@@ -229,6 +234,25 @@ fn native_error(code: c_int, buffer: &[c_char]) -> RawError {
     }
 }
 
+fn reject_unhandled_required_opcodes(
+    mode: RawMode,
+    opcodes: &[format::DngOpcode],
+) -> Result<(), RawError> {
+    if mode != RawMode::DjiAir2sDng16 {
+        let mut ids = opcodes
+            .iter()
+            .filter(|op| op.flags & 1 == 0)
+            .map(|op| op.id)
+            .collect::<Vec<_>>();
+        ids.sort_unstable();
+        ids.dedup();
+        if !ids.is_empty() {
+            return Err(RawError::UnsupportedRequiredOpcodes(ids));
+        }
+    }
+    Ok(())
+}
+
 fn checked_rect(rect: RawRect, width: u32, height: u32) -> Result<RawRect, RawError> {
     if rect.width == 0
         || rect.height == 0
@@ -270,12 +294,22 @@ impl RawSource {
         if cancel.load(Ordering::Relaxed) {
             return Err(RawError::Cancelled);
         }
-        if bytes.starts_with(b"II*\0") || bytes.starts_with(b"MM\0*") {
-            let required = required_dng_opcodes(&bytes)?;
-            if !required.is_empty() {
-                return Err(RawError::UnsupportedRequiredOpcodes(required));
+        let opcodes = if bytes.starts_with(b"II*\0") || bytes.starts_with(b"MM\0*") {
+            let found = format::dng_opcodes(&bytes)?;
+            let mut unknown: Vec<_> = found
+                .iter()
+                .filter(|op| op.flags & 1 == 0 && !(op.list == 51022 && matches!(op.id, 1 | 9)))
+                .map(|op| op.id)
+                .collect();
+            unknown.sort_unstable();
+            unknown.dedup();
+            if !unknown.is_empty() {
+                return Err(RawError::UnsupportedRequiredOpcodes(unknown));
             }
-        }
+            found
+        } else {
+            Vec::new()
+        };
         let mut native = Box::new(Self::blank_native());
         let mut handle = std::ptr::null_mut();
         let mut error = [0 as c_char; 256];
@@ -298,7 +332,7 @@ impl RawSource {
         }
         let guard = NativeHandle(handle);
         let n = Self::checked_len(&native)?;
-        let metadata = Self::interpret(&native, &bytes)?;
+        let (metadata, dng_correction) = Self::interpret(&native, &bytes, &opcodes)?;
         let mut samples = Vec::new();
         samples
             .try_reserve_exact(n)
@@ -327,6 +361,7 @@ impl RawSource {
             metadata,
             mosaic: Arc::new(samples),
             native,
+            dng_correction,
         })
     }
 
@@ -334,16 +369,28 @@ impl RawSource {
     /// applied to black-subtracted, sensor-white-normalized samples *before*
     /// the pinned demosaicer; changing WB reruns this stage from the mosaic.
     pub fn develop(&self, gains: [f32; 3], cancel: &AtomicBool) -> Result<PlanarRgb, RawError> {
+        let mut image = self.develop_uncorrected(gains, cancel)?;
+        if let Some(correction) = &self.dng_correction {
+            correction.apply(&mut image, cancel)?;
+        }
+        Ok(image)
+    }
+
+    fn develop_uncorrected(
+        &self,
+        gains: [f32; 3],
+        cancel: &AtomicBool,
+    ) -> Result<PlanarRgb, RawError> {
         if cancel.load(Ordering::Relaxed) {
             return Err(RawError::Cancelled);
         }
         if !gains
             .iter()
-            .all(|v| v.is_finite() && *v > 0.0 && *v <= 16.0)
+            .all(|v| v.is_finite() && *v > 0.0 && *v <= 32.0)
             || (gains[1] - 1.0).abs() > 1e-6
         {
             return Err(RawError::InvalidInput(
-                "WB gains must be finite, positive, green-normalized, <=16",
+                "WB gains must be finite, positive, green-normalized, <=32",
             ));
         }
         let n = self.mosaic.len();
@@ -389,6 +436,43 @@ impl RawSource {
         })
     }
 
+    /// Map an absolute corrected-plane pixel to the uncorrected sensor
+    /// coordinate used by the selected camera-color channel. Bounded point
+    /// math only; this never develops or renders an image.
+    pub fn corrected_sensor_sample_location(
+        &self,
+        x: u32,
+        y: u32,
+        channel: usize,
+    ) -> Result<(f64, f64), RawError> {
+        if channel >= 3 || x >= self.metadata.sensor_width || y >= self.metadata.sensor_height {
+            return Err(RawError::InvalidInput("RAW corrected point outside sensor"));
+        }
+        match &self.dng_correction {
+            Some(correction) => correction.source_location(x, y, channel),
+            None => Ok((x as f64, y as f64)),
+        }
+    }
+
+    /// GainMap multiplier at an absolute uncorrected sensor coordinate. The
+    /// caller can use this when sampling the immutable pre-WB CFA mosaic.
+    pub fn gain_at_sensor(&self, x: f64, y: f64, channel: usize) -> Result<f64, RawError> {
+        if channel >= 3
+            || !x.is_finite()
+            || !y.is_finite()
+            || x < 0.0
+            || y < 0.0
+            || x >= self.metadata.sensor_width as f64
+            || y >= self.metadata.sensor_height as f64
+        {
+            return Err(RawError::InvalidInput("RAW gain point outside sensor"));
+        }
+        match &self.dng_correction {
+            Some(correction) => correction.gain_at(x, y, channel),
+            None => Ok(1.0),
+        }
+    }
+
     fn blank_native() -> NativeMetadata {
         // SAFETY: this repr(C) POD contains only integers, floats, and arrays;
         // all-zero is a valid initialized value for every field.
@@ -412,11 +496,16 @@ impl RawSource {
         Ok(n)
     }
 
-    fn interpret(native: &NativeMetadata, bytes: &[u8]) -> Result<RawMetadata, RawError> {
+    fn interpret(
+        native: &NativeMetadata,
+        bytes: &[u8],
+        opcodes: &[format::DngOpcode],
+    ) -> Result<(RawMetadata, Option<dng::DngCorrection>), RawError> {
         let make = c_text(&native.make);
         let model = c_text(&native.model);
         let decoder = c_text(&native.decoder);
         let mode = classify_mode(native, &make, &model, &decoder, bytes)?;
+        reject_unhandled_required_opcodes(mode, opcodes)?;
         let rect = |x, y, width, height| RawRect {
             x,
             y,
@@ -542,6 +631,11 @@ impl RawSource {
         }
         let cam_xyz = std::array::from_fn(|y| std::array::from_fn(|x| native.cam_xyz[y * 3 + x]));
         let mut warnings = Vec::new();
+        let dji_container = if mode == RawMode::DjiAir2sDng16 {
+            Some(format::dji_container(bytes, native)?)
+        } else {
+            None
+        };
         let default_crop = if matches!(
             mode,
             RawMode::FujifilmX100ViUncompressed14 | RawMode::FujifilmX100ViLossless14
@@ -555,42 +649,112 @@ impl RawSource {
                 warnings.push("LibRaw inset differs from RAF camera crop".to_string());
             }
             parsed
+        } else if let Some(container) = dji_container {
+            if container.default_crop != inset {
+                warnings.push("LibRaw inset differs from DNG DefaultCrop tags".to_string());
+            }
+            container.default_crop
         } else {
             inset
         };
-        Ok(RawMetadata {
-            make,
-            model,
-            mode,
-            sensor_width: native.width,
-            sensor_height: native.height,
-            active_area: active,
-            default_crop,
-            cfa_width: cfa_w as u8,
-            cfa_height: cfa_h as u8,
-            cfa,
-            black_base: native.black_base,
-            black_channels: native.black_channels,
-            black_repeat_width: native.black_repeat_width as u8,
-            black_repeat_height: native.black_repeat_height as u8,
-            black_repeat,
-            sensor_white: native.white,
-            as_shot_gains: as_shot,
-            libraw_flip: native.flip as u8,
-            exif_orientation: exif_orientation(native.flip)?,
-            rgb_cam,
-            cam_xyz,
-            backend: PROVIDER.to_string(),
-            libraw_inset: inset,
-            format_identity: decoder,
-            warnings,
-        })
+        let (cam_xyz, dng_correction) = if mode == RawMode::DjiAir2sDng16 {
+            let (matrix, calibration) = format::dji_color_calibration(bytes, native)?;
+            let correction = dng::DngCorrection::parse(
+                opcodes,
+                active,
+                dji_container.expect("DJI container parsed").raw_ifd,
+                calibration,
+            )?;
+            (matrix, Some(correction))
+        } else {
+            (cam_xyz, None)
+        };
+        let dng_corrections = dng_correction.as_ref().map(|v| v.metadata.clone());
+        Ok((
+            RawMetadata {
+                make,
+                model,
+                mode,
+                sensor_width: native.width,
+                sensor_height: native.height,
+                active_area: active,
+                default_crop,
+                cfa_width: cfa_w as u8,
+                cfa_height: cfa_h as u8,
+                cfa,
+                black_base: native.black_base,
+                black_channels: native.black_channels,
+                black_repeat_width: native.black_repeat_width as u8,
+                black_repeat_height: native.black_repeat_height as u8,
+                black_repeat,
+                sensor_white: native.white,
+                as_shot_gains: as_shot,
+                libraw_flip: native.flip as u8,
+                exif_orientation: exif_orientation(native.flip)?,
+                rgb_cam,
+                cam_xyz,
+                backend: PROVIDER.to_string(),
+                libraw_inset: inset,
+                format_identity: decoder,
+                warnings,
+                dng_corrections,
+            },
+            dng_correction,
+        ))
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    #[ignore = "requires local DJI original and an explicit temporary output path"]
+    fn dump_dji_sparse_uncorrected_reference() {
+        use std::fmt::Write;
+        let source = std::env::var("LIGHTWELL_DNG_SOURCE").expect("DNG source path");
+        let output = std::env::var("LIGHTWELL_DNG_REFERENCE_DUMP").expect("temporary output path");
+        let bytes = Arc::from(std::fs::read(source).expect("read original"));
+        let cancel = AtomicBool::new(false);
+        let raw = RawSource::decode(bytes, &cancel).expect("decode DNG");
+        let before = raw
+            .develop_uncorrected(raw.metadata.as_shot_gains, &cancel)
+            .expect("develop uncorrected camera planes");
+        let after = raw
+            .develop(raw.metadata.as_shot_gains, &cancel)
+            .expect("develop corrected camera planes");
+        let n = before.plane_len();
+        let width = before.width as usize;
+        let active = raw.metadata.active_area;
+        let mut csv = String::from("kind,out_x,out_y,channel,sensor_x,sensor_y,value\n");
+        for (x, y) in [
+            (100, 4),
+            (320, 240),
+            (1400, 850),
+            (2840, 1824),
+            (4670, 2900),
+            (5563, 3643),
+        ] {
+            for channel in 0..3 {
+                let idx = channel * n + y as usize * width + x as usize;
+                writeln!(csv, "result,{x},{y},{channel},,,{}", after.data[idx]).unwrap();
+                let (sx, sy) = raw.corrected_sensor_sample_location(x, y, channel).unwrap();
+                writeln!(csv, "mapped,{x},{y},{channel},{sx},{sy},").unwrap();
+                for yy in -3..=4 {
+                    for xx in -3..=4 {
+                        let px = ((sx.floor() as i64 + xx)
+                            .clamp(active.x as i64, (active.x + active.width - 1) as i64))
+                            as usize;
+                        let py = ((sy.floor() as i64 + yy)
+                            .clamp(active.y as i64, (active.y + active.height - 1) as i64))
+                            as usize;
+                        let v = before.data[channel * n + py * width + px];
+                        writeln!(csv, "input,{x},{y},{channel},{px},{py},{v}").unwrap();
+                    }
+                }
+            }
+        }
+        std::fs::write(output, csv).expect("write temporary sparse reference");
+    }
     #[test]
     fn early_cancellation_and_empty_source() {
         let cancelled = AtomicBool::new(true);
@@ -603,6 +767,22 @@ mod tests {
             RawSource::decode(Arc::from(&b""[..]), &active),
             Err(RawError::InvalidInput(_))
         ));
+    }
+    #[test]
+    fn dng_opcode_allowance_is_limited_to_qualified_dji_mode() {
+        let required = format::DngOpcode {
+            ifd: 0,
+            list: 51022,
+            id: 9,
+            version: 0x0103_0000,
+            flags: 0,
+            data: vec![],
+        };
+        assert!(matches!(
+            reject_unhandled_required_opcodes(RawMode::NikonZ6Lossless14, std::slice::from_ref(&required)),
+            Err(RawError::UnsupportedRequiredOpcodes(ids)) if ids == vec![9]
+        ));
+        assert!(reject_unhandled_required_opcodes(RawMode::DjiAir2sDng16, &[required]).is_ok());
     }
     #[test]
     fn geometry_and_orientation_are_bounded() {

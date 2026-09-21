@@ -223,16 +223,16 @@ pub fn gains_from_temperature_tint(
     let gains = [response[1] / response[0], 1.0, response[1] / response[2]];
     if !gains
         .iter()
-        .all(|value| value.is_finite() && *value > 0.0 && *value <= 16.0)
+        .all(|value| value.is_finite() && *value > 0.0 && *value <= super::MAX_RAW_GAIN)
     {
         return Err(validation(
-            "temperature/tint gains exceed the finite 0..16 sensor range",
+            "temperature/tint gains exceed the finite 0..32 sensor range",
         ));
     }
     let gains = gains.map(|value| value as f32);
     if !gains
         .iter()
-        .all(|value| value.is_finite() && *value > 0.0 && *value <= 16.0)
+        .all(|value| value.is_finite() && *value > 0.0 && f64::from(*value) <= super::MAX_RAW_GAIN)
     {
         return Err(validation(
             "temperature/tint gains cannot be represented as f32",
@@ -243,6 +243,7 @@ pub fn gains_from_temperature_tint(
 
 #[cfg(test)]
 mod tests {
+    use super::super::MAX_RAW_GAIN;
     use super::*;
 
     const IDENTITY: [[f32; 3]; 4] = [
@@ -346,7 +347,23 @@ mod tests {
             [-0.14963932, 1.5497811, -0.40014178],
             [0.004586819, -0.36177072, 1.3571839],
         ];
-        for (cam_xyz, rgb_cam) in [(z6_cam_xyz, z6_rgb_cam), (fuji_cam_xyz, fuji_rgb_cam)] {
+        // Supplied FC3411 DNG ColorMatrix2 is the fixed D65 XYZ-to-camera calibration.
+        let dji_cam_xyz = [
+            [0.8531, -0.3148, -0.0888],
+            [-0.4071, 1.2492, 0.1265],
+            [-0.0209, 0.0486, 0.5114],
+            [0.0; 3],
+        ];
+        let dji_rgb_cam = [
+            [1.457_020_3, -0.30071009, -0.15631016],
+            [-0.19137614, 1.394_505_5, -0.20312932],
+            [-0.00003927, -0.24614702, 1.246_186_3],
+        ];
+        for (cam_xyz, rgb_cam) in [
+            (z6_cam_xyz, z6_rgb_cam),
+            (fuji_cam_xyz, fuji_rgb_cam),
+            (dji_cam_xyz, dji_rgb_cam),
+        ] {
             let neutral = calibrated_ratios(cam_xyz, rgb_cam, 0.0);
             let positive = calibrated_ratios(cam_xyz, rgb_cam, 100.0);
             let negative = calibrated_ratios(cam_xyz, rgb_cam, -100.0);
@@ -373,24 +390,76 @@ mod tests {
             [-0.0514, 0.1097, 0.5848],
             [0.0; 3],
         ];
+        let dji_cam_xyz = [
+            [0.8531, -0.3148, -0.0888],
+            [-0.4071, 1.2492, 0.1265],
+            [-0.0209, 0.0486, 0.5114],
+            [0.0; 3],
+        ];
         let temperatures = [
             2_000.0, 2_000.001, 2_221.999, 2_222.0, 2_222.001, 3_799.999, 3_800.0, 3_800.001,
             3_999.999, 4_000.0, 4_000.001, 4_499.999, 4_500.0, 4_500.001, 6_504.0, 6_999.999,
             7_000.0, 7_000.001, 11_999.999, 12_000.0,
         ];
 
-        for (camera_name, cam_xyz) in [("Nikon Z6", z6_cam_xyz), ("Fujifilm X100VI", fuji_cam_xyz)]
-        {
+        for (camera_name, cam_xyz) in [
+            ("Nikon Z6", z6_cam_xyz),
+            ("Fujifilm X100VI", fuji_cam_xyz),
+            ("DJI FC3411", dji_cam_xyz),
+        ] {
+            if camera_name == "DJI FC3411" {
+                let matrix = camera_matrix(cam_xyz).unwrap();
+                let mut maximum = [0.0_f64; 3];
+                let mut at = [(0_u32, 0_i32); 3];
+                for kelvin in (2_000..=12_000).step_by(10) {
+                    for tint in -100..=100 {
+                        let [x, y] = tinted_whitepoint_xy(kelvin as f64, tint as f64).unwrap();
+                        let xyz = [x / y, 1.0, (1.0 - x - y) / y];
+                        let response =
+                            matrix.map(|row| row[0] * xyz[0] + row[1] * xyz[1] + row[2] * xyz[2]);
+                        let gains = [response[1] / response[0], 1.0, response[1] / response[2]];
+                        for channel in 0..3 {
+                            if gains[channel] > maximum[channel] {
+                                maximum[channel] = gains[channel];
+                                at[channel] = (kelvin, tint);
+                            }
+                        }
+                    }
+                }
+                assert!(
+                    maximum
+                        .iter()
+                        .all(|gain| gain.is_finite() && *gain > 0.0 && *gain <= MAX_RAW_GAIN),
+                    "FC3411 full-grid gain maxima {maximum:?} at {at:?} exceed the RAW limit"
+                );
+            }
             for &temperature in &temperatures {
-                let neutral = gains_from_temperature_tint(temperature, 0.0, cam_xyz).unwrap();
-                let warm = gains_from_temperature_tint(temperature, -100.0, cam_xyz).unwrap();
-                let magenta = gains_from_temperature_tint(temperature, 100.0, cam_xyz).unwrap();
+                let neutral = gains_from_temperature_tint(temperature, 0.0, cam_xyz)
+                    .unwrap_or_else(|error| {
+                        panic!("{camera_name} {temperature} K tint 0: {error}")
+                    });
+                let warm = gains_from_temperature_tint(temperature, -100.0, cam_xyz)
+                    .unwrap_or_else(|error| {
+                        panic!("{camera_name} {temperature} K tint -100: {error}")
+                    });
+                let magenta = gains_from_temperature_tint(temperature, 100.0, cam_xyz)
+                    .unwrap_or_else(|error| {
+                        let matrix = camera_matrix(cam_xyz).unwrap();
+                        let [x, y] = tinted_whitepoint_xy(temperature, 100.0).unwrap();
+                        let xyz = [x / y, 1.0, (1.0 - x - y) / y];
+                        let response =
+                            matrix.map(|row| row[0] * xyz[0] + row[1] * xyz[1] + row[2] * xyz[2]);
+                        panic!(
+                            "{camera_name} {temperature} K tint +100: {error}; gains {:?}",
+                            [response[1] / response[0], 1.0, response[1] / response[2]]
+                        )
+                    });
 
                 for (tint, gains) in [(-100.0, warm), (0.0, neutral), (100.0, magenta)] {
                     assert!(
-                        gains
-                            .iter()
-                            .all(|gain| gain.is_finite() && *gain > 0.0 && *gain <= 16.0),
+                        gains.iter().all(|gain| gain.is_finite()
+                            && *gain > 0.0
+                            && f64::from(*gain) <= MAX_RAW_GAIN),
                         "{camera_name} {temperature} K tint {tint} returned invalid gains {gains:?}"
                     );
                     assert_eq!(gains[1], 1.0, "green must be the normalized channel");

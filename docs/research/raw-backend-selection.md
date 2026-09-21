@@ -31,7 +31,7 @@ RCD and Markesteijn ignore the Boolean return from the progress callback. Cancel
 
 ## Outstanding qualification
 
-- Complete editing/resource qualification over the adapter's validated mode/crop/orientation metadata. The supplied DJI DNG is explicitly rejected for mandatory GainMap and WarpRectilinear opcodes; the real editor preserves the previous photo on failure. Implementing and qualifying those corrections remains separate outstanding work; generic DNG support is not implied.
+- Complete editing/resource qualification over the adapter's validated mode/crop/orientation metadata. The supplied DJI DNG now has independently checked GainMap/WarpRectilinear corrections and actual editor evidence under the [Air 2S contract](../design/air2s-dng.md). Further controlled-scene/mode qualification remains separate; generic DNG support is not implied. Unsupported mandatory corrections preserve the previous photo.
 - Extend the supplied-file editor evidence with controlled chart, deliberate highlight/shadow, fabric/foliage and broader ISO/lighting/DR/shutter scene coverage. Signed/headroom numerical references do not replace those scenes.
 - Expand the passing WB/exposure/history/reopen and source-preservation workflows with systematic native fault injection, malformed containers, repeated replacement and cancellation stress.
 - Measure full-editor stage timings, p50/p95 and CPU/GPU memory after integration; verify the existing 24/60 MP JPEG path.

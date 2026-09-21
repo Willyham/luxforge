@@ -19,7 +19,7 @@ Accepted owner decisions and the questions still open. Proposals stay proposals 
 
 - Originals are read-only. Import references existing files with a stable asset ID, a verified content fingerprint and a changeable locator. SQLite is the local catalog. Folder relinking, sidecars, portability, backups and sync need their own workflow decisions.
 - A "layer" is an ordered edit operation in a recipe. Each committed action stores a complete immutable recipe snapshot and one attributed history entry. Bitmap compositing, blend modes and arbitrary layer reordering are not selected.
-- History is a graph: entries keep their undo parent and nothing is truncated. A named **version** (the owner's name for the Lightroom-style saved state) is a reference to one retained entry, not a branch. The catalog uses internal format 3; unsupported formats are refused. See [versions and lineage](design/versions-and-lineage.md).
+- History is a graph: entries keep their undo parent and nothing is truncated. A named **version** (the owner's name for the Lightroom-style saved state) is a reference to one retained entry, not a branch. The catalog uses internal format 4; unsupported formats are refused. See [versions and lineage](design/versions-and-lineage.md).
 - Undo and redo navigate saved entries without appending rows. Preview is read-only. Restore appends an action and keeps all later entries. A new edit clears shortcut redo, but every entry stays available. Committed state survives restart; drafts do not.
 - One workspace: centered photo, collapsible controls, visible history, Fit, numeric zoom and true 100%. No library grid during the editor milestones. Cmd/Ctrl+O imports; Cmd/Ctrl+Z and Shift+Cmd/Ctrl+Z navigate history.
 - Geometry: the visible composition travels with mirror and quarter-turns, and a locked ratio swaps orientation on a quarter-turn. Fine angle is limited to ±45°. Space-drag pans.
@@ -85,7 +85,7 @@ The owner edits local files and syncs them to an external drive, so moved-origin
 Tracked in [product decisions](../tasks/product-decisions.json).
 
 - How should catalog backup, portability, sidecars, folder relinking and external-drive sync work?
-- Beyond the supplied files, which RAW recording modes/firmware and controlled quality scenes should be prioritized? The implemented decoder/developer and neutral defaults are explicit; broad visual acceptance, the measured resource target and DJI mandatory corrections remain in [RAW qualification](design/initial-raw.md#remaining-qualification-and-decisions).
+- Beyond the supplied files, which RAW recording modes/firmware and controlled quality scenes should be prioritized? The implemented decoder/developer and neutral defaults are explicit; broad visual acceptance, the measured resource target and additional DJI modes/scenes remain in [RAW qualification](design/initial-raw.md#remaining-qualification-and-decisions).
 - What is the first external module the owner would use, and what enablement and recovery behavior does it need?
 - Which measured workloads and responsiveness budgets become acceptance requirements?
 

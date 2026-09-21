@@ -23,6 +23,12 @@ struct Source {
     mode: String,
     make: String,
     model: String,
+    /// Full unpacked sensor dimensions, before default crop and orientation.
+    sensor_dimensions: Option<[u32; 2]>,
+    /// Absolute sensor-space rectangle [x, y, width, height].
+    active_area: Option<[u32; 4]>,
+    /// Absolute sensor-space rectangle [x, y, width, height].
+    default_crop: Option<[u32; 4]>,
     source_dimensions: [u32; 2],
     orientation: u8,
     /// A fixture-verified unclipped, non-dark upright content point for the sensor picker.
@@ -59,6 +65,7 @@ fn allowed_mode(mode: &str) -> bool {
             | "NikonZ6Lossless14"
             | "FujifilmX100ViUncompressed14"
             | "FujifilmX100ViLossless14"
+            | "DjiAir2sDng16"
     )
 }
 
@@ -101,6 +108,42 @@ fn validate_manifest(manifest_path: &Path, manifest: &Manifest) -> Result<Vec<Pa
                     }),
             format!("Invalid geometry for {}", source.id),
         )?;
+        if source.mode == "DjiAir2sDng16" {
+            let (Some(sensor), Some(active), Some(crop)) = (
+                source.sensor_dimensions,
+                source.active_area,
+                source.default_crop,
+            ) else {
+                return Err(format!(
+                    "DJI source {} needs sensor, active and crop geometry",
+                    source.id
+                )
+                .into());
+            };
+            ensure(
+                sensor.iter().all(|side| *side > 0)
+                    && [active, crop].into_iter().all(|rect| {
+                        rect[2] > 0
+                            && rect[3] > 0
+                            && rect[0]
+                                .checked_add(rect[2])
+                                .is_some_and(|end| end <= sensor[0])
+                            && rect[1]
+                                .checked_add(rect[3])
+                                .is_some_and(|end| end <= sensor[1])
+                    })
+                    && crop[0] >= active[0]
+                    && crop[1] >= active[1]
+                    && crop[0] + crop[2] <= active[0] + active[2]
+                    && crop[1] + crop[3] <= active[1] + active[3]
+                    && (if source.orientation >= 5 {
+                        [crop[3], crop[2]]
+                    } else {
+                        [crop[2], crop[3]]
+                    }) == source.source_dimensions,
+                format!("DJI source {} geometry is inconsistent", source.id),
+            )?;
+        }
         let path = if source.path.is_absolute() {
             source.path.clone()
         } else {
@@ -398,6 +441,69 @@ fn verify_catalog(catalog: &Path, source: &Source, path: &Path) -> Result<(Strin
                 .is_some_and(|s| s.contains("LibRaw")),
         format!("RAW source metadata differs from manifest: {metadata}"),
     )?;
+    if source.mode == "DjiAir2sDng16" {
+        let rect =
+            |name: &str| ["x", "y", "width", "height"].map(|field| metadata[name][field].as_u64());
+        ensure(
+            [
+                metadata["sensor_width"].as_u64(),
+                metadata["sensor_height"].as_u64(),
+            ] == source
+                .sensor_dimensions
+                .unwrap()
+                .map(|side| Some(u64::from(side)))
+                && rect("active_area")
+                    == source
+                        .active_area
+                        .unwrap()
+                        .map(|side| Some(u64::from(side)))
+                && rect("default_crop")
+                    == source
+                        .default_crop
+                        .unwrap()
+                        .map(|side| Some(u64::from(side))),
+            "DJI sensor, active area or default crop differs from manifest",
+        )?;
+        let correction = &metadata["dng_corrections"];
+        let applied = correction["applied"]
+            .as_array()
+            .ok_or("DJI correction provenance missing")?;
+        ensure(
+            correction["interpretation"]
+                .as_str()
+                .is_some_and(|identity| identity.starts_with("fc3411-stage3-active-"))
+                && applied.len() == 2
+                && applied.iter().enumerate().all(|(index, opcode)| {
+                    opcode["id"] == [9, 1][index]
+                        && opcode["list"] == 51022
+                        && opcode["version"] == 0x0103_0000_u32
+                        && opcode["flags"] == 0
+                        && opcode["payload_sha256"].as_str().is_some_and(|hash| {
+                            hash.len() == 64 && hash.bytes().all(|byte| byte.is_ascii_hexdigit())
+                        })
+                })
+                && correction["skipped_optional"].is_array(),
+            "DJI required correction order or provenance differs",
+        )?;
+        let calibration = &correction["calibration"];
+        ensure(
+            calibration["illuminants"] == json!([17, 21])
+                && calibration["selected"] == "ColorMatrix2-D65-fixed-XYZ-to-camera"
+                && ["color_matrix1_sha256", "color_matrix2_sha256"]
+                    .into_iter()
+                    .all(|field| {
+                        calibration[field].as_str().is_some_and(|hash| {
+                            hash.len() == 64 && hash.bytes().all(|byte| byte.is_ascii_hexdigit())
+                        })
+                    }),
+            "DJI camera calibration provenance differs",
+        )?;
+    } else {
+        ensure(
+            metadata["dng_corrections"].is_null(),
+            "Non-DNG RAW unexpectedly has correction metadata",
+        )?;
+    }
     let state = service.state(&asset.id)?;
     let history = service.history(&asset.id, None, 32)?;
     let original = history
@@ -706,10 +812,11 @@ pub fn run(root: &Path, manifest_path: &Path, out: &Path, binary: &Path, samples
 mod tests {
     use super::*;
     #[test]
-    fn mode_allowlist_excludes_uncorrected_dng() {
+    fn mode_allowlist_is_limited_to_qualified_camera_modes() {
         assert!(allowed_mode("NikonZ6Lossless14"));
         assert!(allowed_mode("FujifilmX100ViLossless14"));
-        assert!(!allowed_mode("DjiAir2sDng16"));
+        assert!(allowed_mode("DjiAir2sDng16"));
+        assert!(!allowed_mode("GenericDng16"));
     }
     #[test]
     fn statistics_use_nearest_rank() {

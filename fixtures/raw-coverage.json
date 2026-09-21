@@ -106,7 +106,7 @@
       "fixtures": [
         "owner-air2s"
       ],
-      "status": "tested_unsupported",
+      "status": "verified_supported",
       "observed": {
         "sensor": [
           5568,
@@ -138,7 +138,9 @@
           "WarpRectilinear"
         ]
       },
-      "notes": "Sensor IFD model FC3411 takes precedence over conflicting XMP Test_Pro. Mandatory OpcodeList3 GainMap (9) and WarpRectilinear (1) are rejected before unpack. The real background editor preserves the previously displayed NEF and its catalog state after this rejection. Generic DNG support is not claimed."
+      "notes": "Sensor IFD model FC3411 takes precedence over conflicting XMP Test_Pro. Qualified uncompressed16 Bayer mode, unity scales, mandatory List3 GainMap(9) then per-channel WarpRectilinear(1), fixed D65 ColorMatrix2 WB. Headroom-preserving float evaluation follows the Lightwell RAW contract and differs from strict DNG per-opcode clipping. Generic DNG, other firmware/encodings and dual-illuminant profile rendering are not qualified.",
+      "adapter_evidence": "Exact full-sensor hash against direct uncompressed TIFF samples; independently recomputed gain/warp/calibration references, 18 corrected samples within 1e-7, exact identity channel, finite 2000K/+100 tint development, malformed/unknown required operations rejected, unchanged original SHA-256.",
+      "editor_evidence": "Actual JSON and background M4 Metal workflows: import, continuous exposure/WB, verified neutral picker, geometry, undo/history, versions/Restore, process reopen and unchanged source. Unknown mandatory opcode replacement preserves displayed pixels and catalog; changed interpretation and disabled provider fail explicitly without rewriting records. Resource scope is documented separately."
     }
   ],
   "additional_modes": [
@@ -186,7 +188,7 @@
     "ISO/noise and fine-fabric/foliage matrix",
     "Deliberately clipped/highlight and deep-shadow scenes",
     "All orientations and thumbnail absence/corruption on real containers",
-    "Implementation and calibrated references for required DNG GainMap/WarpRectilinear corrections",
+    "Controlled optical/color scenes and additional DJI modes/firmware",
     "Native Windows/Linux and full-editor cancellation/resource distributions"
   ]
 }
