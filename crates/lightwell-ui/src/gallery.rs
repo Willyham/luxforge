@@ -7,9 +7,9 @@ use crate::{
     BINS, ChipModel, ClipTriangleModel, HistogramChannel, HistogramModel, IconButtonModel,
     ListRowModel, Marker, ModeEntry, NoticeCardModel, SectionHeaderModel, SegmentedModel,
     SliderModel, SubGroupHeaderModel, ToggleEntry, Tone, ValueEdit, caption, chip, clip_triangle,
-    error_caption, floating_bar, histogram, icon_button, inline_menu, label, list_row, mode_strip,
-    notice_card, section_header, section_label, segmented, slider, sub_group_header, theme, title,
-    value_text,
+    double_click, error_caption, floating_bar, histogram, icon_button, inline_menu, label,
+    list_row, mode_strip, notice_card, section_header, section_label, segmented, slider,
+    sub_group_header, theme, title, value_text,
 };
 use iced::Element;
 
@@ -30,6 +30,7 @@ pub fn gallery() -> Vec<Element<'static, ()>> {
             value: -40.0,
             step: 1.0,
             shift_step: 10.0,
+            decimals: 0,
             zero: Some(0.0),
             unit: None,
             display: "-40".into(),
@@ -52,6 +53,7 @@ pub fn gallery() -> Vec<Element<'static, ()>> {
             value: 0.62,
             step: 0.01,
             shift_step: 0.1,
+            decimals: 2,
             zero: Some(0.0),
             unit: None,
             display: "+0.62".into(),
@@ -74,6 +76,7 @@ pub fn gallery() -> Vec<Element<'static, ()>> {
             value: 18.0,
             step: 1.0,
             shift_step: 10.0,
+            decimals: 0,
             zero: Some(0.0),
             unit: None,
             display: "18".into(),
@@ -99,6 +102,7 @@ pub fn gallery() -> Vec<Element<'static, ()>> {
             value: 6.0,
             step: 1.0,
             shift_step: 10.0,
+            decimals: 0,
             zero: Some(0.0),
             unit: None,
             display: "140".into(),
@@ -124,6 +128,7 @@ pub fn gallery() -> Vec<Element<'static, ()>> {
             value: 0.0,
             step: 1.0,
             shift_step: 10.0,
+            decimals: 0,
             zero: None,
             unit: None,
             display: "0".into(),
@@ -336,6 +341,10 @@ pub fn gallery() -> Vec<Element<'static, ()>> {
 
     // -- A floating bar holding an arbitrary child.
     states.push(floating_bar(vec![label::<()>("Crop")]));
+
+    // -- The double-click wrapper. It has no appearance of its own — it delegates size, layout and
+    // -- drawing to its content — so the board shows what wrapping costs visually: nothing.
+    states.push(double_click(label::<()>("Double-click to reset"), ()));
 
     // -- The mode strip: canvas modes plus a separated toggle group.
     states.push(mode_strip(

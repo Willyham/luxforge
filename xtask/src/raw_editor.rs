@@ -268,6 +268,21 @@ fn displayed_entry(frame: &Value) -> Result<&str> {
         .ok_or_else(|| "Captured frame lacks displayed entry identity".into())
 }
 
+/// How far a displayed RAW control may sit from the payload it mirrors: half of the last digit the
+/// parameter declares it shows. The control text is the payload rounded to that precision, so the
+/// only honest tolerance is the rounding itself, read from the descriptor rather than written here.
+fn displayed_tolerance(action: &str, parameter: &str) -> Result<f64> {
+    let registry = lightwell_core::ModuleRegistry::builtin();
+    let precision = registry
+        .descriptors()
+        .into_iter()
+        .find_map(|module| module.action(action))
+        .and_then(|action| action.parameter(parameter))
+        .and_then(|parameter| parameter.precision)
+        .ok_or_else(|| format!("{action}.{parameter} declares no display precision"))?;
+    Ok(0.5 * 10f64.powi(-i32::from(precision)) + 1e-9)
+}
+
 fn verify_displayed_raw_controls(frame: &Value) -> Result {
     let state = &frame["state"];
     let displayed = &state["stack"]["displayed"];
@@ -285,12 +300,13 @@ fn verify_displayed_raw_controls(frame: &Value) -> Result {
     } else {
         &payload["gains"]
     };
-    for (key, value) in [
-        ("set-raw-exposure.ev", &payload["exposure_ev"]),
-        ("set-raw-red-gain.gain", &effective_gains[0]),
-        ("set-raw-blue-gain.gain", &effective_gains[2]),
+    for (action, parameter, value) in [
+        ("set-raw-exposure", "ev", &payload["exposure_ev"]),
+        ("set-raw-red-gain", "gain", &effective_gains[0]),
+        ("set-raw-blue-gain", "gain", &effective_gains[2]),
     ] {
-        let shown: f64 = controls[key]
+        let key = format!("{action}.{parameter}");
+        let shown: f64 = controls[&key]
             .as_str()
             .ok_or("Displayed RAW control value missing")?
             .parse()?;
@@ -298,23 +314,29 @@ fn verify_displayed_raw_controls(frame: &Value) -> Result {
             .as_f64()
             .ok_or("Displayed RAW payload value missing")?;
         ensure(
-            (shown - expected).abs() <= 1e-5,
+            (shown - expected).abs() <= displayed_tolerance(action, parameter)?,
             format!("Displayed {key} control differs from displayed RAW layer"),
         )?;
     }
-    for (key, expected) in [
+    for (action, parameter, expected) in [
         (
-            "set-raw-temperature.kelvin",
+            "set-raw-temperature",
+            "kelvin",
             payload["temperature_kelvin"].as_f64().unwrap_or(6504.0),
         ),
-        ("set-raw-tint.tint", payload["tint"].as_f64().unwrap_or(0.0)),
+        (
+            "set-raw-tint",
+            "tint",
+            payload["tint"].as_f64().unwrap_or(0.0),
+        ),
     ] {
-        let shown: f64 = controls[key]
+        let key = format!("{action}.{parameter}");
+        let shown: f64 = controls[&key]
             .as_str()
             .ok_or("Displayed RAW control value missing")?
             .parse()?;
         ensure(
-            (shown - expected).abs() <= 1e-5,
+            (shown - expected).abs() <= displayed_tolerance(action, parameter)?,
             format!("Displayed {key} control differs from displayed RAW layer"),
         )?;
     }

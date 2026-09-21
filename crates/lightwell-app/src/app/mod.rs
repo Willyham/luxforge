@@ -1161,8 +1161,12 @@ impl Editor {
                         // text while the selected entry is read-only.
                         self.editing = None;
                         self.dragging = None;
-                        self.fields
-                            .bind_raw(&payload.job.entry.snapshot.recipe, None, None);
+                        self.fields.bind_raw(
+                            &self.modules,
+                            &payload.job.entry.snapshot.recipe,
+                            None,
+                            None,
+                        );
                         let entry = payload.job.entry.id.clone();
                         self.requested_render_entry = Some(payload.job.entry.clone());
                         self.show_entry(entry.clone());
@@ -1514,6 +1518,7 @@ impl Editor {
                             && matches!(state.asset.source, lightwell_core::SourceKind::Raw { .. })
                         {
                             self.fields.bind_raw(
+                                &modules,
                                 &state.current_entry.snapshot.recipe,
                                 self.editing.as_ref(),
                                 self.dragging.as_ref(),
@@ -2344,6 +2349,7 @@ impl Editor {
             lightwell_core::SourceKind::Raw { .. }
         ) {
             self.fields.bind_raw(
+                &self.modules,
                 &refresh.job.entry.snapshot.recipe,
                 self.editing.as_ref(),
                 self.dragging.as_ref(),
@@ -2401,10 +2407,12 @@ impl Editor {
                     let reported = values
                         .and_then(|values| values.get(&parameter.name))
                         .and_then(|value| match value {
+                            // A reported number is written with the decimals its own parameter
+                            // declares, so a seeded field reads exactly like a dragged one.
                             Value::Number(_) => value
                                 .as_f64()
                                 .filter(|value| value.is_finite())
-                                .map(number_text),
+                                .map(|value| fields::format_number(parameter, value)),
                             Value::String(text) => Some(text.clone()),
                             _ => None,
                         });
@@ -2839,7 +2847,9 @@ mod tests {
             .clone();
 
         // Every move inside one tick is one pending value: the tick that follows sends the last.
-        for value in [0.25, 0.5, 0.75] {
+        // The values are ones the widget would send: it quantizes each drag to the parameter's
+        // declared step and precision before the message is published.
+        for value in [25.0, 50.0, 75.0] {
             let _ = editor.update(Message::SliderMoved {
                 action: action.clone(),
                 parameter: parameter.clone(),
@@ -2850,7 +2860,7 @@ mod tests {
         }
         assert_eq!(
             editor.fields.get(&action, &parameter),
-            Some("0.75"),
+            Some("75"),
             "the field follows the pointer"
         );
         assert_eq!(editor.dragging, Some((action.clone(), parameter.clone())));
@@ -2879,7 +2889,7 @@ mod tests {
         );
         assert_eq!(
             sets[0]["fields"],
-            json!({ parameter.clone(): 0.75 }),
+            json!({ parameter.clone(): 75.0 }),
             "and it carries the newest value, as one field patch"
         );
 
@@ -3227,7 +3237,7 @@ mod tests {
         let _ = editor.update(Message::SliderMoved {
             action: action.clone(),
             parameter: parameter.clone(),
-            value: 1.5,
+            value: 15.0,
         });
         begun(&mut editor, &asset, &action, 4);
         let _ = editor.update(Message::SliderDraftTick);
@@ -3241,7 +3251,7 @@ mod tests {
         assert!(draft.conflicted);
         assert_eq!(
             editor.fields.get(&action, &parameter),
-            Some("1.5"),
+            Some("15"),
             "the drafted value stays on the slider"
         );
         assert_eq!(
@@ -3287,7 +3297,7 @@ mod tests {
             1,
             "a reapply re-sends the drafted value and re-requests its preview"
         );
-        assert_eq!(sets[0]["fields"], json!({ parameter.clone(): 1.5 }));
+        assert_eq!(sets[0]["fields"], json!({ parameter.clone(): 15.0 }));
         assert!(editor.workspace.canvas.notices.is_empty());
         finish(editor, catalog);
     }
@@ -3400,10 +3410,10 @@ mod tests {
             let _ = editor.update(Message::Refreshed(Ok(Box::new(refresh))));
         };
 
-        seeded(&mut editor, Some(json!({ parameter.clone(): -1.25 })));
+        seeded(&mut editor, Some(json!({ parameter.clone(): -25.0 })));
         assert_eq!(
             editor.fields.get(&action, &parameter),
-            Some("-1.25"),
+            Some("-25"),
             "the slider shows the authoritative value of the module's one layer"
         );
         assert_eq!(
@@ -3415,14 +3425,14 @@ mod tests {
         // A field being dragged is not overwritten by the refresh that arrives under it.
         editor.dragging = Some((action.clone(), parameter.clone()));
         editor.fields.set(&action, &parameter, "3".into());
-        seeded(&mut editor, Some(json!({ parameter.clone(): -1.25 })));
+        seeded(&mut editor, Some(json!({ parameter.clone(): -25.0 })));
         assert_eq!(editor.fields.get(&action, &parameter), Some("3"));
         editor.dragging = None;
 
         // The same for a field being typed.
         editor.editing = Some((action.clone(), parameter.clone()));
         editor.fields.set(&action, &parameter, "2.5".into());
-        seeded(&mut editor, Some(json!({ parameter.clone(): -1.25 })));
+        seeded(&mut editor, Some(json!({ parameter.clone(): -25.0 })));
         assert_eq!(editor.fields.get(&action, &parameter), Some("2.5"));
         editor.editing = None;
 
@@ -3500,10 +3510,13 @@ mod tests {
                 json!({ parameter.clone(): value }),
                 "{parameter} drafts its own field alone"
             );
+            let shown = fields::declared(&editor.modules, &action, parameter)
+                .map(|declared| fields::format_number(declared, *value))
+                .expect("the declared parameter");
             assert_eq!(
                 editor.fields.get(&action, parameter),
-                Some(fields::number_text(*value).as_str()),
-                "{parameter} shows the drafted value"
+                Some(shown.as_str()),
+                "{parameter} shows the drafted value, with its declared decimals"
             );
 
             // The release: one commit, then the no-op outcome that ends the gesture.
@@ -4591,9 +4604,11 @@ mod tests {
         assert_eq!(readout.rgba, [128, 64, 255, 255]);
         assert!(!editor.sample_in_flight);
         editor.rederive();
+        // No frame has been analysed in this test, so the caption row carries the pending notice
+        // as well as the readout: both share that one row rather than taking one each.
         assert_eq!(
             editor.workspace.histogram.caption_line(),
-            "Output \u{b7} sRGB \u{b7} after crop \u{b7} R 128 \u{b7} G 64 \u{b7} B 255 \u{b7} 7, 8"
+            "Output \u{b7} sRGB \u{b7} after crop \u{b7} R 128 \u{b7} G 64 \u{b7} B 255 \u{b7} 7, 8 \u{b7} No analysis yet"
         );
         assert_eq!(
             editor.snapshot()["readout"]["rgba"],
@@ -5344,6 +5359,9 @@ mod tests {
     #[test]
     fn historical_raw_preview_rebinds_controls_and_return_restores_current_values() {
         let (mut editor, catalog, asset, _) = opened(Vec::new(), 4);
+        // The real descriptors, because the RAW parameters' declared precision is what decides how
+        // a bound field reads: 1.2 sensor gain shows as `1.20`, the same as one the person set.
+        let _ = editor.update(Message::ModulesLoaded(Ok(descriptors())));
         let original = RawPayload::for_as_shot([2.0, 1.0, 1.5], [[0.0; 3]; 4]).unwrap();
         let mut historical = entry(&asset, 0, None);
         historical.snapshot = historical
@@ -5363,9 +5381,11 @@ mod tests {
             metadata: json!({}),
         };
         editor.state.as_mut().unwrap().current_entry = current.clone();
-        editor.fields.bind_raw(&current.snapshot.recipe, None, None);
-        assert_eq!(editor.fields.get("set-raw-exposure", "ev"), Some("1"));
-        assert_eq!(editor.fields.get("set-raw-red-gain", "gain"), Some("1.2"));
+        editor
+            .fields
+            .bind_raw(&editor.modules, &current.snapshot.recipe, None, None);
+        assert_eq!(editor.fields.get("set-raw-exposure", "ev"), Some("1.00"));
+        assert_eq!(editor.fields.get("set-raw-red-gain", "gain"), Some("1.20"));
 
         let job = |entry: lightwell_core::HistoryEntry| PreviewJob {
             source: PreviewSource::Jpeg(SourceImage {
@@ -5406,9 +5426,9 @@ mod tests {
         ))));
         assert_eq!(editor.display_entry, Some(historical.id));
         assert!(editor.editing.is_none());
-        assert_eq!(editor.fields.get("set-raw-exposure", "ev"), Some("0"));
-        assert_eq!(editor.fields.get("set-raw-red-gain", "gain"), Some("2"));
-        assert_eq!(editor.fields.get("set-raw-blue-gain", "gain"), Some("1.5"));
+        assert_eq!(editor.fields.get("set-raw-exposure", "ev"), Some("0.00"));
+        assert_eq!(editor.fields.get("set-raw-red-gain", "gain"), Some("2.00"));
+        assert_eq!(editor.fields.get("set-raw-blue-gain", "gain"), Some("1.50"));
 
         let mut session = editor.session.clone();
         session.preview.return_current();
@@ -5421,9 +5441,9 @@ mod tests {
             },
         ))));
         assert_eq!(editor.display_entry, Some(current.id));
-        assert_eq!(editor.fields.get("set-raw-exposure", "ev"), Some("1"));
-        assert_eq!(editor.fields.get("set-raw-red-gain", "gain"), Some("1.2"));
-        assert_eq!(editor.fields.get("set-raw-blue-gain", "gain"), Some("0.9"));
+        assert_eq!(editor.fields.get("set-raw-exposure", "ev"), Some("1.00"));
+        assert_eq!(editor.fields.get("set-raw-red-gain", "gain"), Some("1.20"));
+        assert_eq!(editor.fields.get("set-raw-blue-gain", "gain"), Some("0.90"));
         finish(editor, catalog);
     }
 

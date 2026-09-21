@@ -106,6 +106,17 @@ impl Editor {
         None
     }
 
+    /// What the field shows for one value a drag produced. The widget has already quantized the
+    /// value to the parameter's declared step and precision, so this only has to write it with the
+    /// decimals that parameter declares; a value with no declared parameter behind it falls back to
+    /// its plain text, which is the same rule every other field follows.
+    fn dragged_text(&self, action: &str, parameter: &str, value: f64) -> String {
+        match crate::app::fields::declared(&self.modules, action, parameter) {
+            Some(declared) => crate::app::fields::format_number(declared, value),
+            None => number_text(value),
+        }
+    }
+
     /// A slider of a patch action moved. The first move of a gesture opens the draft; later moves
     /// only record the newest value, which the tick sends.
     pub(crate) fn slider_moved(
@@ -114,15 +125,18 @@ impl Editor {
         parameter: String,
         value: f64,
     ) -> Task<Message> {
-        if let Some(draft) = &mut self.slider_draft {
+        if let Some(draft) = &self.slider_draft {
             if draft.action != action || draft.parameter != parameter {
                 self.status = "Finish the open slider gesture before starting another".into();
                 return Task::none();
             }
-            self.fields.set(&action, &parameter, number_text(value));
+            let text = self.dragged_text(&action, &parameter, value);
+            self.fields.set(&action, &parameter, text);
             self.editing = None;
             self.dragging = Some((action, parameter));
-            draft.pending = Some(value);
+            if let Some(draft) = &mut self.slider_draft {
+                draft.pending = Some(value);
+            }
             return Task::none();
         }
         if let Some(reason) = self.slider_draft_refusal() {
@@ -136,7 +150,8 @@ impl Editor {
         let base_revision = state.revision;
         let label = tools::control_label(&self.modules, &action, &parameter)
             .unwrap_or_else(|| parameter.clone());
-        self.fields.set(&action, &parameter, number_text(value));
+        let text = self.dragged_text(&action, &parameter, value);
+        self.fields.set(&action, &parameter, text);
         self.editing = None;
         self.dragging = Some((action.clone(), parameter.clone()));
         self.slider_draft = Some(SliderDraft {

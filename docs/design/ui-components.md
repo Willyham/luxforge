@@ -22,7 +22,7 @@ Both references are read as [research](../research), not as targets.
 | --- | --- | --- | --- |
 | Range | One hard range per slider; a typed value is clamped | Soft range on the rail, hard range for typed values, adjustable per slider | Declared soft and hard ranges: the rail spans the soft range, typing reaches the hard range, and a value outside the soft range is shown on the rail as an over-range mark, never hidden |
 | Fine control | Option-drag and arrow keys | Right-click opens a fine slider; scroll wheel changes values | Arrow keys step, Shift steps ×10, Option steps ÷10, all declared by the parameter. No scroll-wheel editing: a trackpad scroll over a panel of sliders must never edit a photograph ([decision 1](#decisions)) |
-| Reset | Double-click a label or a slider | Double-click a slider | Double-click the label, a group reset and a module reset, each an ordinary declared action |
+| Reset | Double-click a label or a slider | Double-click a slider | Double-click the label or the slider, a group reset and a module reset, each an ordinary declared action |
 | Value entry | Click the value to type | Right-click to type | Click the value to type; invalid text stays editable with the range shown and commits nothing |
 | What a control is | GUI only; the SDK exposes a subset | Parameter blobs and Lua | Every control is one declared parameter of one API action; its JSON request is one gesture away and its parameter name is visible in the control menu |
 | Disabled | Greyed, unexplained | Greyed or hidden | Disabled with the core's reason on the header or in the status bar; never hidden because of state |
@@ -94,6 +94,7 @@ Every widget is a function from a plain-data model and messages to an `Element`,
 | `pad` (new, second slice) | Two fractions, style, `dragging` | Position as fractions, release |
 | `text_field` (new, second slice) | Label, text, placeholder, invalid message, enabled | Text, submit |
 | `icon` (new) | An `Icon` and a size | Nothing; a drawing |
+| `double_click` (delivered) | Any content and one message | That message on the second click of a run over the content, which it does not forward. The slider already wraps its rail in it, which is what makes a double-click on the rail reset the field: iced's slider captures the press itself, so a `mouse_area` around it never sees one |
 
 Fractions everywhere: a widget maps pointer positions to `0..=1` on its own axes and the view model maps fractions to values with the parameter's range, step and precision. The pure mapping functions (`geometry::value_from_fraction` today, the picker's HSV and hex conversions, the curve editor's hit test and the pad's polar mapping) are tested without a renderer. Canvas-drawn widgets (the curve editor, the picker plane, the pad, icons) cache their tessellated geometry the way the histogram plot does, keyed on the model's version, so an unchanged model costs no re-tessellation per frame.
 

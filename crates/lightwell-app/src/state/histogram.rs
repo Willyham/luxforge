@@ -6,6 +6,13 @@
 //! counter wording, the stale rule and the overlay's cell grid are all decided here so they can be
 //! proved without a window, and the widgets are handed numbers they cannot reinterpret.
 //!
+//! The inspector occupies the same rows whatever it has to say: the plot, the triangles, one
+//! caption row and exactly three count rows. The domain, the pointer readout and the status notice
+//! share the caption row, and a count row with no report behind it shows a dash rather than
+//! disappearing, so nothing in the tools panel moves while a slider is dragged or a frame is
+//! re-analysed. [`HistogramModel::caption_line`] and the three `*_text` methods are where that is
+//! decided; the view only prints them.
+//!
 //! The described domain is fixed by the [histogram and clipping
 //! contract](../../../../docs/design/basic-and-histogram.md#histogram-and-clipping-contract): the
 //! rendered SDR sRGB **output** of the whole composition, after crop and edits, before any UI
@@ -100,6 +107,10 @@ pub(crate) struct Triangle {
     pub(crate) active: bool,
     pub(crate) enabled: bool,
 }
+
+/// What a count row shows while there is no report to count: the row keeps its shape and its place
+/// so the panel's height never depends on whether an analysis has arrived.
+const NO_COUNT: &str = "\u{2014}";
 
 /// The ten endpoint counters, both as numbers (for the correlated evidence state) and as the
 /// compact lines the panel shows for accessibility.
@@ -201,17 +212,30 @@ impl Default for HistogramModel {
 }
 
 impl HistogramModel {
-    /// The one line under the plot: the domain, and the pointer readout when there is one. The
-    /// readout joins the caption row rather than taking a row of its own, so the panel does not
-    /// change height as the pointer enters and leaves the photograph.
+    /// The one line under the plot: the domain, then the pointer readout when there is one, then
+    /// the status notice when there is one. Everything transient joins this row rather than taking
+    /// a row of its own, so the panel does not change height as the pointer enters and leaves the
+    /// photograph, or as an edit turns the shown counts stale and back.
+    ///
+    /// This is the whole reason the inspector's rows are fixed: while a slider is dragged the
+    /// status is `Updating`, and a notice that took a row of its own — or worse, replaced the three
+    /// count rows — would move every control under the histogram up and down for the length of the
+    /// gesture.
     pub(crate) fn caption_line(&self) -> String {
-        match &self.readout {
-            Some(readout) => format!("{} \u{b7} {readout}", self.caption),
-            None => self.caption.to_owned(),
+        let mut line = self.caption.to_owned();
+        if let Some(readout) = &self.readout {
+            line.push_str(" \u{b7} ");
+            line.push_str(readout);
         }
+        if let Some(notice) = self.notice() {
+            line.push_str(" \u{b7} ");
+            line.push_str(&notice);
+        }
+        line
     }
 
-    /// What the plot says in place of bins: an explicit state, never a silently empty plot.
+    /// What the plot says in place of bins: an explicit state, never a silently empty plot. It is
+    /// shown on the caption row, after the domain and any readout.
     pub(crate) fn notice(&self) -> Option<String> {
         match self.status {
             HistogramStatus::Ready => None,
@@ -221,6 +245,45 @@ impl HistogramModel {
                 Some(reason) => format!("Unavailable: {reason}"),
                 None => "Unavailable".into(),
             }),
+        }
+    }
+
+    /// Whether the counters describe a real reduction. `Updating` still counts: the previous
+    /// generation's report is on screen and is honestly labelled stale. `Pending` and `Unavailable`
+    /// have no report at all, and their zeroed [`Counters`] would otherwise read as "nothing is
+    /// clipped", which is a claim about a frame nobody has reduced.
+    fn counted(&self) -> bool {
+        matches!(
+            self.status,
+            HistogramStatus::Ready | HistogramStatus::Updating
+        )
+    }
+
+    /// The shadow count row. Always present, and always the same shape: with no report the three
+    /// channels, `any` and `all` are replaced by one em dash rather than by zeros.
+    pub(crate) fn shadow_text(&self) -> String {
+        if self.counted() {
+            self.counters.shadow_text()
+        } else {
+            format!("0 \u{b7} {NO_COUNT}")
+        }
+    }
+
+    /// The highlight count row, the same shape at code 255.
+    pub(crate) fn highlight_text(&self) -> String {
+        if self.counted() {
+            self.counters.highlight_text()
+        } else {
+            format!("255 \u{b7} {NO_COUNT}")
+        }
+    }
+
+    /// The both-endpoints count row.
+    pub(crate) fn both_text(&self) -> String {
+        if self.counted() {
+            self.counters.both_text()
+        } else {
+            format!("both {NO_COUNT}")
         }
     }
 }
@@ -585,12 +648,16 @@ mod tests {
         assert_eq!(model.status, HistogramStatus::Pending);
         assert_eq!(model.notice().as_deref(), Some("No analysis yet"));
         assert!(model.bins.is_none());
-        assert_eq!(model.caption_line(), DOMAIN_CAPTION);
+        assert_eq!(
+            model.caption_line(),
+            "Output \u{b7} sRGB \u{b7} after crop \u{b7} No analysis yet"
+        );
     }
 
     #[test]
     fn a_readout_joins_the_domain_caption_rather_than_replacing_it() {
         let model = HistogramModel {
+            status: HistogramStatus::Ready,
             readout: Some("R 1 \u{b7} G 2 \u{b7} B 3 \u{b7} 4, 5".into()),
             ..HistogramModel::default()
         };
@@ -598,6 +665,93 @@ mod tests {
             model.caption_line(),
             "Output \u{b7} sRGB \u{b7} after crop \u{b7} R 1 \u{b7} G 2 \u{b7} B 3 \u{b7} 4, 5"
         );
+    }
+
+    /// The panel's height is what this is about: the notice is one more piece of the caption row,
+    /// never a row of its own and never a replacement for the counts.
+    #[test]
+    fn the_status_notice_joins_the_caption_row_after_the_domain_and_the_readout() {
+        let ready = HistogramModel {
+            status: HistogramStatus::Ready,
+            ..HistogramModel::default()
+        };
+        assert_eq!(ready.caption_line(), DOMAIN_CAPTION);
+        assert_eq!(ready.notice(), None);
+
+        let updating = HistogramModel {
+            status: HistogramStatus::Updating,
+            stale: true,
+            readout: Some("R 1 \u{b7} G 2 \u{b7} B 3 \u{b7} 4, 5".into()),
+            ..HistogramModel::default()
+        };
+        assert_eq!(
+            updating.caption_line(),
+            "Output \u{b7} sRGB \u{b7} after crop \u{b7} R 1 \u{b7} G 2 \u{b7} B 3 \u{b7} 4, 5 \u{b7} Updating\u{2026}"
+        );
+
+        let unavailable = HistogramModel {
+            status: HistogramStatus::Unavailable,
+            reason: Some("the frame could not be rendered".into()),
+            ..HistogramModel::default()
+        };
+        assert_eq!(
+            unavailable.caption_line(),
+            "Output \u{b7} sRGB \u{b7} after crop \u{b7} Unavailable: the frame could not be rendered"
+        );
+        // A failure with no detail still names itself rather than going silent.
+        assert_eq!(
+            HistogramModel {
+                status: HistogramStatus::Unavailable,
+                ..HistogramModel::default()
+            }
+            .notice()
+            .as_deref(),
+            Some("Unavailable")
+        );
+    }
+
+    /// Three count rows, always, in every status. A status with a report prints its counts; one
+    /// without prints a dash, which is honest — a zeroed counter would claim nothing is clipped in
+    /// a frame nobody has reduced — and keeps the row count identical either way.
+    #[test]
+    fn the_three_count_rows_are_always_present_and_never_invent_zeros() {
+        let report = report(
+            &[
+                [0, 0, 0, 255],
+                [255, 255, 255, 255],
+                [0, 128, 255, 255],
+                [12, 34, 56, 255],
+            ],
+            2,
+            2,
+        );
+        let counters = Counters::of(&report);
+        for status in [HistogramStatus::Ready, HistogramStatus::Updating] {
+            let model = HistogramModel {
+                status,
+                counters: counters.clone(),
+                stale: status == HistogramStatus::Updating,
+                ..HistogramModel::default()
+            };
+            assert_eq!(model.shadow_text(), counters.shadow_text(), "{status:?}");
+            assert_eq!(
+                model.highlight_text(),
+                counters.highlight_text(),
+                "{status:?}"
+            );
+            assert_eq!(model.both_text(), counters.both_text(), "{status:?}");
+        }
+        for status in [HistogramStatus::Pending, HistogramStatus::Unavailable] {
+            // Even holding a stale `Counters`, a status with no report shows no numbers.
+            let model = HistogramModel {
+                status,
+                counters: counters.clone(),
+                ..HistogramModel::default()
+            };
+            assert_eq!(model.shadow_text(), "0 \u{b7} \u{2014}", "{status:?}");
+            assert_eq!(model.highlight_text(), "255 \u{b7} \u{2014}", "{status:?}");
+            assert_eq!(model.both_text(), "both \u{2014}", "{status:?}");
+        }
     }
 
     #[test]

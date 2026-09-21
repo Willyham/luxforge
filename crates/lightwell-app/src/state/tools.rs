@@ -4,8 +4,8 @@
 use crate::{
     app::{
         fields::{
-            action_params, channel_text, field_id, labelled, number_text, parse_field,
-            undeclared_label, unsupported_label,
+            action_params, channel_text, decimals_for, field_id, format_number, labelled,
+            number_text, parse_field, undeclared_label, unsupported_label,
         },
         message::{MenuTarget, PaletteAction},
     },
@@ -137,6 +137,10 @@ pub(crate) struct SliderControl {
     pub(crate) unit: Option<String>,
     pub(crate) min: f64,
     pub(crate) max: f64,
+    /// The rail's increment: the parameter's declared step, else [`generic_step`] over the range.
+    pub(crate) step: f64,
+    /// How many decimals the value is shown with, and the precision a drag is quantized to.
+    pub(crate) decimals: usize,
     /// Where a bipolar fill starts.
     pub(crate) zero: f64,
     pub(crate) value: f64,
@@ -735,6 +739,18 @@ fn value_model(
     }
 }
 
+/// The generic increment for a number parameter that declares no step: a fraction of its range,
+/// rounded to a power of ten. It is the model's decision, not the view's, because the same number
+/// decides the rail's step, the decimals the field shows and the precision a drag is quantized to,
+/// and those three must agree.
+pub(crate) fn generic_step(min: f64, max: f64) -> f64 {
+    let span = (max - min).abs();
+    if !span.is_finite() || span <= 0.0 {
+        return 0.01;
+    }
+    10f64.powf((span / 200.0).log10().round())
+}
+
 #[allow(clippy::too_many_arguments)]
 fn slider(
     action: &str,
@@ -753,6 +769,16 @@ fn slider(
         .ok()
         .and_then(|value| value.as_f64())
         .unwrap_or(min);
+    // An integer parameter steps by one; every other one takes the step it declares, and falls
+    // back to the generic one over its range.
+    let step = if integer {
+        1.0
+    } else {
+        declared
+            .step
+            .filter(|step| step.is_finite() && *step > 0.0)
+            .unwrap_or_else(|| generic_step(min, max))
+    };
     SliderControl {
         action: action.to_owned(),
         parameter: parameter.to_owned(),
@@ -761,12 +787,14 @@ fn slider(
         unit: declared.unit.clone(),
         min,
         max,
+        step,
+        decimals: decimals_for(declared),
         zero: 0.0_f64.clamp(min, max),
         value,
         display: if invalid.is_some() {
             text.to_owned()
         } else {
-            number_text(value)
+            format_number(declared, value)
         },
         edit: if typing {
             ValueEdit::Typing(text.to_owned())
