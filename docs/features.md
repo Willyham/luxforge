@@ -41,7 +41,7 @@
 | RGB histogram, output clipping indicators/overlays | Proposed plan | [Basic and histogram](design/basic-and-histogram.md); no implementation yet |
 | Exposure, white balance, tone, vibrance and saturation | Proposed plan | JPEG-first slices in [Basic and histogram](design/basic-and-histogram.md); product/numerical choices remain open |
 | PNG input | Later | Separate from the proposed JPEG Basic controls |
-| Nikon Z6 and Fujifilm X100VI RAW | Later | Real recording-mode fixtures; benchmark established decoders |
+| Nikon Z6 and Fujifilm X100VI RAW | Proposed plan | [Continuous RAW editing](design/initial-raw.md): actual-mode qualification, decoder/development measurements, high-precision recipes and neutral exposure/WB; no RAW implementation or camera qualification yet |
 | Texture, clarity, dehaze, masks, clone/heal | Later | Full API required whenever introduced |
 | Bitmap layers, blend modes, layer reordering | Not selected | |
 | Sidecars, sync, managed-copy import, folder relinking | Later decisions | |

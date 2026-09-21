@@ -7,12 +7,15 @@ Each JSON file is an independent plan. IDs start at `TASK-001` inside every file
 | [S0 follow-ups](implementation-s0.json) | Hosted CI refresh, Windows/Linux packaging and desktop checks, Linux VM route, license audit and expiring advisory exceptions |
 | [Basic adjustments and histogram](implementation-basic-histogram.json) | Decided JPEG exposure/histogram slice, then core tone, white balance and color controls, over the delivered core and workspace; implementation not yet authorized |
 | [Editor follow-ups](implementation-editor-followups.json) | Export, color and metadata, Locate, MCP and full-editor verification |
+| [Initial RAW editing](implementation-initial-raw.json) | Continuous high-precision RAW recipes for the original Nikon Z6 and Fujifilm X100VI: mode qualification, decoder/development evidence, bounded preparation, neutral rendering, exposure/WB, history and UI/API parity |
 | [Later extensions](implementation-extensions.json) | External-loader measurements and proof planning after a selected use case |
 | [Product decisions](product-decisions.json) | Open product questions |
 
 Editor follow-ups and later work wait until the owner asks for them.
 
 The Basic/histogram plan has its product choices decided and its [design](../docs/design/basic-and-histogram.md) records them with the integration dependencies; implementation is not yet authorized. Ready tasks identify runnable preparation, not approval to begin all work.
+
+The RAW plan is also planning only. Its [design](../docs/design/initial-raw.md) records the owner's continuous RAW editing requirement and the remaining decoder, mode, numerical and resource decisions. Preparation starts with fixture coverage, integration contracts and independent numerical references. RAW JPEG-export integration requires the separately delivered shared exporter and does not block the RAW editing checkpoint.
 
 ## Conventions
 

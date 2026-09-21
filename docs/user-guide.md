@@ -4,6 +4,8 @@ What works today: opening a JPEG, exact transforms and a Lightroom-style crop an
 
 Basic exposure, tone, white balance and color controls, plus a histogram and clipping inspector, have a [proposed design](design/basic-and-histogram.md). They are not available yet.
 
+Nikon Z6 NEF and Fujifilm X100VI RAF support has a [proposed design](design/initial-raw.md). It targets continuous non-destructive RAW editing, with adjustments kept in the recipe and JPEG only as explicit export. RAW opening and controls are not available yet; exact recording-mode support remains to be verified.
+
 ## Start the editor
 
 After [developer setup](engineering/development.md), start an optimized build with a catalog and an optional JPEG:

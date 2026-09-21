@@ -11,6 +11,7 @@ Accepted owner decisions and the questions still open. Proposals stay proposals 
 - Project code is GPL-3.0-or-later. Dependencies and extensions should be open source and license-compatible; no proprietary hosted service is a development prerequisite. The manual license, native and asset review is deferred and is not a passing result.
 - Everything is v0 and breaking changes are expected. Only current catalog, recipe, API and module shapes are supported; no migrations, compatibility shims, old-version fixtures or historical parity requirements. Unsupported data is refused without rewriting it. No release-version planning, cloud or accounts, marketplace or generalized processing graph.
 - Initial RAW targets are the original Nikon Z6 and the Fujifilm X100VI. Benchmark established decoders before proposing a custom one.
+- RAW editing stays continuous and non-destructive, in the same workflow sense as Lightroom: the original remains the source, adjustments remain recipe data and later edits do not operate on a JPEG baked from earlier WB/exposure settings. Keep high precision through editing and convert for display or explicit export. Neutral development is the initial direction; this does not select Adobe or camera-look matching. See the [initial RAW proposal](design/initial-raw.md).
 - Lightroom Library and Develop are familiarity references. Map, Book, Slideshow, Print, Web and Publish Services are out of scope.
 - All development tooling is Rust (`cargo xtask`); no second toolchain.
 
@@ -74,7 +75,7 @@ The owner edits local files and syncs them to an external drive, so moved-origin
 Tracked in [product decisions](../tasks/product-decisions.json).
 
 - How should catalog backup, portability, sidecars, folder relinking and external-drive sync work?
-- Should RAW precede a small library or tonal tools? Which camera modes and camera-JPEG or film-simulation matching matter most?
+- After the selected Basic slices, where should RAW sit relative to a small library and the remaining editor follow-ups? Which exact camera recording modes/firmware are required? Which decoder/development path, neutral defaults, framing and measured budgets should the [RAW proposal](design/initial-raw.md#open-decisions) adopt?
 - What is the first external module the owner would use, and what enablement and recovery behavior does it need?
 - Which measured workloads and responsiveness budgets become acceptance requirements?
 

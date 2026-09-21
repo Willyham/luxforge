@@ -27,11 +27,13 @@ Basic adjustments and histogram have a [design](design/basic-and-histogram.md) w
 
 Relative priority still needs owner input; see the [open questions](decisions.md#open-product-questions).
 
+Initial RAW support has a [proposed design](design/initial-raw.md) and [task plan](../tasks/implementation-initial-raw.json) for the original Nikon Z6 and Fujifilm X100VI. The owner requires continuous non-destructive RAW editing: retain high precision through the recipe, with display conversion at the end and JPEG only as explicit export. The plan qualifies actual modes and benchmarks established decoding/development paths before implementing a neutral foundation and exposure/white balance. Decoder, defaults, budgets and scheduling priority remain open; planning does not authorize implementation.
+
 | Phase | Scope |
 | --- | --- |
 | Useful small library | Multi-image import, virtualized browsing, filtering, tagging, collections, lazy shoot subsets, multi-selection and stacking, broader source recovery |
 | Tonal editing and PNG | Exposure, white balance, contrast and related controls with explicit numerical and color contracts |
-| Trustworthy RAW | Nikon Z6 and Fujifilm X100VI by actual recording mode; benchmark established decoders before custom work |
+| Trustworthy RAW | [Planned continuous RAW editing](design/initial-raw.md) for Nikon Z6 and Fujifilm X100VI by actual mode; measured decoder/development selection, high-precision recipe evaluation and neutral exposure/WB |
 | Richer tools | Texture, clarity, dehaze; separately scoped masks and clone/heal |
 | External modules | Measured activation costs and a separately authored module loaded through documented host APIs |
 
