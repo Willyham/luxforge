@@ -853,19 +853,18 @@ fn check_declared<'a>(
                         parameter.name
                     )));
                 }
-                if let Some(xs) = fixed_x {
-                    if xs.len() < *points_min
+                if let Some(xs) = fixed_x
+                    && (xs.len() < *points_min
                         || xs.len() > *points_max
                         || xs
                             .iter()
                             .any(|x| !x.is_finite() || !(0.0..=1.0).contains(x))
-                        || xs.windows(2).any(|pair| pair[0] >= pair[1])
-                    {
-                        return Err(validation(format!(
-                            "parameter {} declares invalid fixed_x curve points",
-                            parameter.name
-                        )));
-                    }
+                        || xs.windows(2).any(|pair| pair[0] >= pair[1]))
+                {
+                    return Err(validation(format!(
+                        "parameter {} declares invalid fixed_x curve points",
+                        parameter.name
+                    )));
                 }
             }
             _ => {}

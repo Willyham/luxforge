@@ -2,6 +2,7 @@
 //! and the compilation of its persisted payloads into host processing primitives. Modules never
 //! write the catalog, never keep an undo stack and never render.
 mod basic;
+mod controls;
 mod crop;
 mod descriptor;
 mod pixel;
@@ -11,6 +12,9 @@ mod registry;
 mod transform;
 
 pub use basic::BasicModule;
+pub use controls::{
+    CONTROLS_EFFECT, ControlsModule, RESET_CONTROLS, SAMPLE_CONTROLS_CURVE, SET_CONTROLS,
+};
 pub use crop::CropModule;
 pub use crop::geometry::{
     BoxRect, COVERAGE_TOLERANCE, CropPayload, CropStage, Edge, MAX_ANGLE, MIN_ANGLE, OutputRect,
