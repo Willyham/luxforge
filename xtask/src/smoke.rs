@@ -254,7 +254,7 @@ pub fn verify(evidence: &Path, scenario: &str, count: usize) -> Result<Value> {
     }
     if let Some(frames) = basic::frames(scenario) {
         let (app, events) = preamble(evidence, frames)?;
-        basic::verify(evidence, &app, &events)?;
+        basic::verify_scenario(evidence, scenario, &app, &events)?;
         return Ok(app);
     }
     if let Some(frames) = histogram::frames(scenario) {
@@ -375,6 +375,11 @@ pub fn run(root: &Path, out: &Path, scenario: &str, bin: &Path, timeout: Duratio
         // the generated Exposure slider's whole gesture. Both need the window size the design's
         // layout constants are written against.
         "workspace" | "basic" => vec![root.join("fixtures/s0/orientation-1.jpg")],
+        // `basic-panel` drives the rest of the Basic section and the neutral picker. It opens the
+        // greyscale fixture because the picker needs both a genuinely neutral patch to sample and
+        // a clipped one to be refused on, and that fixture has each: uniform grey quadrants and a
+        // white cross at code 255.
+        "basic-panel" => vec![root.join("fixtures/s0/greyscale.jpg")],
         // `histogram` drives the inspector, the clipping overlays and the pointer readout over its
         // own fixture, whose clipped pixels are known from the generator.
         scenario if histogram::source(scenario).is_some() => {
@@ -399,7 +404,10 @@ pub fn run(root: &Path, out: &Path, scenario: &str, bin: &Path, timeout: Duratio
             "1280".into(),
             "800".into(),
         ]);
-    } else if let Some(script) = workspace::script(scenario).or_else(|| basic::script(scenario)) {
+    } else if let Some(script) = workspace::script(scenario)
+        .or_else(|| basic::script(scenario))
+        .or_else(|| basic::panel_script(scenario))
+    {
         let file = out.join("script.json");
         write_json(&file, &script)?;
         args.extend([

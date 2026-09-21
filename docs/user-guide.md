@@ -2,7 +2,7 @@
 
 The Develop workspace opens supported JPEG, Nikon Z6 NEF, Fujifilm X100VI RAF and DJI Air 2S DNG originals, with exact transforms, crop/straighten, persistent history and the JSON API. RAW adds editable source exposure and white balance. Export, Locate and MCP are planned; see [feature status](features.md).
 
-JPEG Basic adjustments, tone/color controls, a histogram and clipping inspector have a [separate design](design/basic-and-histogram.md). They are not available yet.
+JPEG Basic exposure, tone, white balance and colour controls are built, with the neutral picker, and so are the histogram and clipping inspector that share their [design](design/basic-and-histogram.md).
 
 Initial RAW support covers full-size Z6 12/14-bit lossless NEF, X100VI 14-bit uncompressed/lossless RAF and the supplied Air 2S FC3411 uncompressed DNG mode with 16-bit stored samples. Air 2S development includes its required embedded gain-map and chromatic-warp corrections. Broader recording modes and controlled color/detail qualification remain in the [coverage manifest](../fixtures/raw-coverage.json); generic DNG support is not implied. A failed Open keeps the previous photo.
 
@@ -36,13 +36,36 @@ The tools panel is generated from the registered tool modules, one collapsible s
 
 ### Basic
 
-Basic is the first section of the tools panel. Of it, Tone / Exposure is built: a slider from −5.00 to +5.00 EV in hundredths, which multiplies the photograph's linear-light channels by `2^EV`. The rest of the Basic controls the design describes do not exist yet.
+Basic is the first section of the tools panel, in three groups.
+
+**White balance** is Temperature and Tint, each −100 to +100 in whole steps. Positive temperature warms the photograph and negative cools it; positive tint is magenta and negative is green. They correct the rendering the JPEG already has — they are not the camera's Kelvin value, which a JPEG does not carry and nothing here recovers. The group header reads **Original** while both are zero and **Custom** once either is not, and every group reads its own state the same way.
+
+**Tone** is Exposure, Contrast, Highlights, Shadows, Whites and Blacks. Exposure runs from −5.00 to +5.00 EV in hundredths and multiplies the photograph's linear-light channels by `2^EV`. The other five run −100 to +100 in whole steps and compose one global luminance curve: Whites and Blacks move the endpoints, Highlights and Shadows reshape the bright and dark ranges, and Contrast separates the midtones about a fixed pivot. Being a global curve, lifting deep shadows loses some local contrast; an edge-aware stage is a later proposal, not a missing setting.
+
+**Colour** is Vibrance and Saturation, each −100 to +100 in whole steps. Saturation scales colour intensity uniformly and −100 is exact neutral grayscale; Vibrance raises near-neutral colour more than colour that is already strong, with less gain in a skin-like hue band — a colour heuristic, not face or skin detection.
+
+Whatever order you touch them in, they are evaluated in a fixed one: white balance, then exposure, then Tone, then Vibrance, then Saturation. All of it is one layer in the recipe, placed before the quarter-turns and the crop the first time a value leaves zero, and updated in place ever after.
 
 Dragging Exposure previews live. The drag opens a draft, the canvas keeps up with it while you move, and the status bar says which control you are drafting; nothing is written until you let go. Release commits the whole gesture as one history entry, labelled with the value you landed on — "Exposure +1.00 EV". A drag that ends where it started commits nothing at all. Press Escape to discard a drag and put the slider and the photograph back to where they were. Holding an arrow key over the slider's rail steps it and commits once when you let the key go; the arrow keys reach the slider only while the pointer is over that rail. Clicking the value and typing a number commits that one value when you press Enter, with no draft at all.
 
 If somebody else — another client, or your own undo — commits while you are dragging, the Changed elsewhere card appears over the canvas and your drag is kept, not thrown away. Discard drops it; Reapply rebases it on the new state, keeping the value you had chosen and putting your preview back over it. Until you choose, the drag will not commit.
 
-The Tone group's reset returns its fields to zero as one entry, "Reset Tone"; the section header's reset returns the whole module, "Reset Basic". Either keeps the Basic layer with its identity and a neutral payload, so a reset is an edit you can undo, not a deletion. A reset of something already neutral does nothing at all. A Basic drag and a crop draft cannot be open at once: starting one while the other is open is refused, and the status bar says so.
+Each group header has its own reset, which returns that group's fields to zero as one entry — "Reset White balance", "Reset Tone", "Reset Colour" — and leaves the other groups exactly as they were. The section header's reset returns the whole module, "Reset Basic". Double-clicking one control's label resets that one field. All of them keep the Basic layer with its identity and a neutral payload, so a reset is an edit you can undo, not a deletion, and a reset of something already neutral does nothing at all. A Basic drag and a crop draft cannot be open at once: starting one while the other is open is refused, and the status bar says so.
+
+#### The neutral picker
+
+Press `W`, or choose Neutral picker in the strip under the photograph, and click something in the photograph that should be neutral grey. Lightwell reads a 5 × 5 patch of pixels around where you clicked, works out the Temperature and Tint that make that patch neutral, and applies them as one edit. It reads the patch as the image is *before* Basic's own white balance, so clicking the same spot twice answers the same way however strong a correction is already set, and the picker stays selected so you can try another spot; `V`, Escape or another mode leaves it, and leaving commits nothing.
+
+Some patches cannot answer, and the status bar says which:
+
+| Reason | What it means |
+| --- | --- |
+| `clipped:` | A sampled pixel is at 0 or 255, so the patch has no usable colour left |
+| `near-black:` | The patch is too dark for its colour to be trusted |
+| `out-of-range:` | The correction this patch needs is outside what Temperature and Tint can express; it is reported rather than quietly clamped |
+| `outside the stage:` | The point is not inside the image |
+
+A refusal commits nothing and changes nothing on screen. The picker is refused, with the reason, while a slider drag or a crop draft is open: finish or discard that first.
 
 Pixel proof lives under Developer with `--developer`. It accepts integer x/y coordinates and RGB values from 0 to 255. Coordinates are content coordinates: the photograph after EXIF orientation, with a top-left origin, x right and y down, regardless of any crop or rotation applied afterwards. Clicking the photo at Fit or any zoom fills X and Y with the content pixel shown under the pointer without committing anything, so a click in the corner of a cropped view names the pixel of the photograph that is drawn there. Changing the crop later never moves an edit; it only changes what is visible. Apply pixel creates one layer and one attributed history action when the resulting pixel changes. Invalid, out-of-bounds and same-value requests add nothing.
 
@@ -78,7 +101,7 @@ The neutral rendition uses camera calibration without film simulations, Picture 
 
 ### Keyboard
 
-Letters act only when no text field has focus. `F` fits, `1` is 100%, `O` toggles the thirds overlay, `J` toggles both clipping overlays, `V` returns to the pointer, and each module's declared letter (`R` for crop and straighten) enters its canvas mode. `\` holds Compare. Cmd+Option+[ and Cmd+Option+] show and hide the two side panels. Cmd+O / Ctrl+O opens a file, Cmd+Z / Ctrl+Z and Shift+Cmd+Z / Shift+Ctrl+Z undo and redo, and Tab and Shift+Tab move between fields.
+Letters act only when no text field has focus. `F` fits, `1` is 100%, `O` toggles the thirds overlay, `J` toggles both clipping overlays, `V` returns to the pointer, and each module's declared letter (`R` for crop and straighten, `W` for the Basic neutral picker, `N` for the RAW sensor picker) enters its canvas mode. Escape leaves a canvas mode that has no draft of its own. `\` holds Compare. Cmd+Option+[ and Cmd+Option+] show and hide the two side panels. Cmd+O / Ctrl+O opens a file, Cmd+Z / Ctrl+Z and Shift+Cmd+Z / Shift+Ctrl+Z undo and redo, and Tab and Shift+Tab move between fields.
 
 ### Crop and straighten
 

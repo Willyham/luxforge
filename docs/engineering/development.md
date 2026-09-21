@@ -34,6 +34,7 @@ Doctor reports missing tools and the graphics environment without installing any
 | Rendered crop workflow and overlay | `cargo xtask smoke --scenario crop --output NEW_DIR`, `--scenario crop-draft` |
 | Rendered workspace panels, mode, preview, conflict and palette; unavailable-provider notice | `cargo xtask smoke --scenario workspace --output NEW_DIR`, `--scenario unavailable` |
 | Rendered Basic slider gesture: draft, commit, typed value, undo, reset and conflict | `cargo xtask smoke --scenario basic --output NEW_DIR` |
+| Rendered Basic panel: all three groups, historical values, a group reset and the neutral picker | `cargo xtask smoke --scenario basic-panel --output NEW_DIR` |
 | Rendered histogram, clipping overlays and pointer readout | `cargo xtask smoke --scenario histogram --output NEW_DIR` |
 | Inspect a capture | `cargo xtask check-capture --image PNG [--orientation N]` |
 | Process failure checks; macOS measurement | `cargo xtask hardening --binary PATH --output NEW_DIR`, `cargo xtask measure --binary PATH --output NEW_DIR [--samples N]` |
@@ -59,7 +60,7 @@ On macOS, `develop --background` builds the selected profile and runs a temporar
 
 ## Rendered evidence
 
-Smoke runs the built or packaged editor through a deterministic evidence sequence (repeated `--open`, evidence directory, fixed window size, bounded deadlines); there is no separate viewer, so the captured frame is the editor window with its sidebar. Scenarios: `empty`, `load`, `replacement`, `invalid`, `repeated`, `alternating`, `large24`, `large60`, `crop`, `crop-draft`, `workspace`, `basic`, `histogram`, `unavailable`; generate the large fixtures first. Each run writes `result.json`, `app/events.jsonl`, `app/state.json`, `app/frame-*.png` (window-renderer readbacks, not OS screenshots), `subprocess.log` and `reproduce.md`. Each frame records `surface_columns`, the physical x range of the photo surface derived from the editor's layout constants, and the runner verifies fixture colors, Fit geometry and centering within that range, generation and state, backend, exit status and unchanged source hashes before writing `passed`; blank, stale or missing frames fail. The `render_ready` event marks the upload of the open request's preview raster, which is when a frame becomes capturable. A 25-second application deadline and a 35-second process deadline bound hangs.
+Smoke runs the built or packaged editor through a deterministic evidence sequence (repeated `--open`, evidence directory, fixed window size, bounded deadlines); there is no separate viewer, so the captured frame is the editor window with its sidebar. Scenarios: `empty`, `load`, `replacement`, `invalid`, `repeated`, `alternating`, `large24`, `large60`, `crop`, `crop-draft`, `workspace`, `basic`, `basic-panel`, `histogram`, `unavailable`; generate the large fixtures first. Each run writes `result.json`, `app/events.jsonl`, `app/state.json`, `app/frame-*.png` (window-renderer readbacks, not OS screenshots), `subprocess.log` and `reproduce.md`. Each frame records `surface_columns`, the physical x range of the photo surface derived from the editor's layout constants, and the runner verifies fixture colors, Fit geometry and centering within that range, generation and state, backend, exit status and unchanged source hashes before writing `passed`; blank, stale or missing frames fail. The `render_ready` event marks the upload of the open request's preview raster, which is when a frame becomes capturable. A 25-second application deadline and a 35-second process deadline bound hangs.
 
 ### Authentic RAW evidence
 
@@ -120,6 +121,10 @@ Each step is an object with exactly one key.
   "1.5"}`, with `"submit": true` for Enter, which commits that one field without a draft.
 - `reset` runs a declared reset: `{"module": "lightwell.basic"}` is the module's own header reset and
   `{"module": "lightwell.basic", "group": "Tone"}` is that control group's, found by its label.
+- `pick` clicks the photograph at a pixel of the raster on screen: `{"x": 120, "y": 80}`. What the
+  click does is the active canvas mode's own declared pick, so a `workspace` step selects the mode
+  first; a mode that declares none fails the step. A pick that commits is captured on the render it
+  produces, and one that is refused on the status it leaves.
 - `view` sets the zoom through `view.set`: `{"zoom": "fit"}` or a percentage from 10 to 1600.
 - `workspace` sets any of `state_panel`, `tools_panel`, `mode`, `thirds`, `clip_shadows` and
   `clip_highlights` through `workspace.set`, naming only the fields that actually differ from the
@@ -148,6 +153,21 @@ the displayed image has the ratio the committed payload declares, and, on draft 
 rectangle drawn at full opacity matches the captured draft rectangle, that all eight handles are
 present and that the stage outside the rectangle is dimmed toward the window background. Each run
 also writes `app/crop-checks.json` with the measured values and their tolerances.
+
+`basic-panel` opens `fixtures/s0/greyscale.jpg` at 1440 × 900 and drives a Temperature drag, a typed
+Vibrance, a preview of the Temperature entry and its return, the Colour group's reset, the neutral
+picker's mode, a pick on a neutral grey patch and a pick on a clipped one. That fixture is used
+because the picker needs both a genuinely neutral patch and a clipped one, and it has each: uniform
+grey quadrants and a white cross at code 255. The runner checks, per frame, the revision, the history
+label, the stored Basic payload, the one Basic layer's identity across every edit and what each of
+the ten generated fields showed; that the previewed frame reports "Previewing entry 1" and shows that
+entry's own values rather than the current ones; that the picker frame reports the Basic module as
+the workspace mode; that the neutral pick committed temperature and tint of 0 once and kept the mode;
+and that the clipped pick's status leads with `clipped:` and committed nothing. Alongside the state
+it reads the photograph's mean red-minus-blue balance over a centred window — the measure a white
+balance moves on a neutral fixture, where luminance barely changes — and its placement and 3:2 aspect
+from the bright pixels of the photo surface, since a greyscale fixture has no quadrant colours to
+match. Each run also writes `app/basic-panel-checks.json` with the measured values and tolerances.
 
 `workspace` opens `fixtures/s0/orientation-1.jpg` at 1440 × 900 and drives a rotate, three panel and
 thirds changes, a historical preview and its return, a crop draft, a commit during that draft (the

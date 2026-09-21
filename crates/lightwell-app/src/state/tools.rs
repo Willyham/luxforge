@@ -158,6 +158,28 @@ pub(crate) struct ColorControl {
     pub(crate) invalid: Option<String>,
 }
 
+/// Whether every field of one sub-group is still at its declared default.
+///
+/// It is derived, not declared: no module names these words and none can. A group is `Original`
+/// while every one of its value controls shows its parameter's declared default and `Custom` as
+/// soon as one does not, which for a field-patch action is exactly "the displayed entry's layer
+/// holds nothing for this group", because a patch action's fields mirror that one layer.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum GroupState {
+    Original,
+    Custom,
+}
+
+impl GroupState {
+    /// The caption the sub-group header shows.
+    pub(crate) fn caption(self) -> &'static str {
+        match self {
+            Self::Original => "Original",
+            Self::Custom => "Custom",
+        }
+    }
+}
+
 #[allow(dead_code)]
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct GroupControl {
@@ -166,6 +188,10 @@ pub(crate) struct GroupControl {
     /// The group's position inside its module's controls, so a reset names it without a search.
     pub(crate) path: Vec<usize>,
     pub(crate) controls: Vec<ControlModel>,
+    /// Original or Custom, for a group whose value controls all belong to field-patch actions.
+    /// Every other action's fields are request inputs rather than a mirror of a stored layer, so
+    /// "original" would mean nothing there and no caption is shown.
+    pub(crate) state: Option<GroupState>,
 }
 
 #[allow(dead_code)]
@@ -482,11 +508,8 @@ fn control_model(
             label,
             controls,
             reset,
-        } => ControlModel::Group(GroupControl {
-            label: label.to_owned(),
-            reset: ResetRef::of(reset),
-            path: path.to_vec(),
-            controls: controls
+        } => {
+            let controls: Vec<ControlModel> = controls
                 .iter()
                 .enumerate()
                 .map(|(index, child)| {
@@ -494,8 +517,15 @@ fn control_model(
                     child_path.push(index);
                     control_model(module, child, inputs, enabled, &child_path)
                 })
-                .collect(),
-        }),
+                .collect();
+            ControlModel::Group(GroupControl {
+                label: label.to_owned(),
+                reset: ResetRef::of(reset),
+                path: path.to_vec(),
+                state: group_state(&controls, inputs),
+                controls,
+            })
+        }
         Rendered::Number {
             action,
             parameter,
@@ -527,6 +557,55 @@ fn control_model(
         }
         Rendered::Unsupported(kind) => ControlModel::Unsupported(unsupported_label(&kind)),
     }
+}
+
+/// Whether one sub-group is still at its declared defaults, when that question has an answer.
+///
+/// Only a group whose value controls all belong to field-patch actions gets one: those fields
+/// mirror the module's one stored layer, seeded from the displayed entry's reported values, so
+/// "all defaults" is the same statement as "that layer holds nothing for this group". A group of
+/// request inputs, a group with no value control at all and a mixed group get no caption.
+fn group_state(controls: &[ControlModel], inputs: &Inputs<'_>) -> Option<GroupState> {
+    let mut sliders = 0usize;
+    let mut custom = false;
+    fn walk(
+        controls: &[ControlModel],
+        inputs: &Inputs<'_>,
+        sliders: &mut usize,
+        custom: &mut bool,
+    ) -> bool {
+        for control in controls {
+            match control {
+                ControlModel::Slider(slider) => {
+                    let patch = declared_action(inputs.modules, &slider.action)
+                        .is_some_and(|declared| declared.patch);
+                    if !patch {
+                        return false;
+                    }
+                    *sliders += 1;
+                    // An unreadable field shows its own text rather than the formatted value, so it
+                    // differs from the default and the group reads Custom, which is what is true.
+                    *custom |= slider.display != slider.default;
+                }
+                ControlModel::Color(_) => return false,
+                ControlModel::Group(group) => {
+                    if !walk(&group.controls, inputs, sliders, custom) {
+                        return false;
+                    }
+                }
+                _ => {}
+            }
+        }
+        true
+    }
+    if !walk(controls, inputs, &mut sliders, &mut custom) || sliders == 0 {
+        return None;
+    }
+    Some(if custom {
+        GroupState::Custom
+    } else {
+        GroupState::Original
+    })
 }
 
 /// A value control is modelled by the kind its parameter declares, so a descriptor that grows a
@@ -852,10 +931,11 @@ pub(crate) fn module_of<'a>(
     modules.iter().find(|module| module.id == id)
 }
 
-/// The first available module that declares a canvas pick: its action and coordinate parameters.
-/// A crop frame is a different adapter and is ignored here rather than treated as a pick, and so is
-/// a sample-apply pick, whose answer comes from a module query rather than from the coordinates
-/// alone. Both still appear in the mode strip, which is derived from the declaration itself.
+/// The first available module that declares a plain canvas point pick: its action and coordinate
+/// parameters. Dispatch goes through [`canvas_pick`], which answers for the mode that is actually
+/// on screen; this is the tests' way of naming the one module that declares a point pick without
+/// hard-coding it.
+#[cfg(test)]
 pub(crate) fn point_pick(modules: &[ModuleDescriptor]) -> Option<(&str, &str, &str)> {
     modules.iter().find_map(|module| match &module.canvas {
         Some(CanvasInteraction::PointPick { action, x, y, .. }) if module.is_available() => {
@@ -868,24 +948,56 @@ pub(crate) fn point_pick(modules: &[ModuleDescriptor]) -> Option<(&str, &str, &s
     })
 }
 
-/// Resolve a point interaction from the selected canvas tool. The pointer retains its existing
-/// first-pick behavior for the developer pixel proof; selecting RAW targets its sensor picker.
-pub(crate) fn point_pick_for_mode<'a>(
+/// What a click on the photograph does in one canvas mode, as that mode's module declares it.
+///
+/// A pick belongs to the mode the session is in, never to "whichever module declares one first":
+/// several modules declare a canvas pick, and only the one whose canvas is on screen may answer
+/// for a click. A crop frame is a different adapter and is not a pick.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum CanvasPick<'a> {
+    /// Fill these coordinate parameters of an action with the located content pixel. It commits
+    /// nothing: the person submits the action themselves.
+    Point {
+        action: &'a str,
+        x: &'a str,
+        y: &'a str,
+    },
+    /// Run this query at the located content pixel and submit the fields it answers with to the
+    /// action once. A refused query commits nothing and its reason is shown.
+    Sample {
+        query: &'a str,
+        x: &'a str,
+        y: &'a str,
+        action: &'a str,
+    },
+}
+
+/// The pick the active canvas mode declares, if that mode declares one at all.
+pub(crate) fn canvas_pick<'a>(
     modules: &'a [ModuleDescriptor],
     mode: &str,
-) -> Option<(&'a str, &'a str, &'a str)> {
-    if mode == lightwell_core::POINTER_MODE {
-        return point_pick(modules);
+) -> Option<CanvasPick<'a>> {
+    let module = module_of(modules, mode).filter(|module| module.is_available())?;
+    match module.canvas.as_ref()? {
+        CanvasInteraction::PointPick { action, x, y, .. } => Some(CanvasPick::Point {
+            action: action.as_str(),
+            x: x.as_str(),
+            y: y.as_str(),
+        }),
+        CanvasInteraction::SampleApply {
+            query,
+            x,
+            y,
+            action,
+            ..
+        } => Some(CanvasPick::Sample {
+            query: query.as_str(),
+            x: x.as_str(),
+            y: y.as_str(),
+            action: action.as_str(),
+        }),
+        CanvasInteraction::CropFrame { .. } => None,
     }
-    modules
-        .iter()
-        .find(|module| module.id == mode)
-        .and_then(|module| match &module.canvas {
-            Some(CanvasInteraction::PointPick { action, x, y, .. }) if module.is_available() => {
-                Some((action.as_str(), x.as_str(), y.as_str()))
-            }
-            _ => None,
-        })
 }
 
 /// One declared crop-frame interaction: the action Apply calls, the parameter names it fills, and
@@ -1042,21 +1154,43 @@ mod tests {
     use serde_json::json;
 
     #[test]
-    fn selected_raw_canvas_mode_routes_to_its_neutral_picker() {
+    fn a_canvas_mode_routes_only_to_its_own_declared_pick() {
         let modules: Vec<_> = lightwell_core::ModuleRegistry::builtin()
             .descriptors()
             .into_iter()
             .cloned()
             .collect();
+        // The RAW sensor picker and the pixel proof both declare a plain point pick, and each
+        // answers only for its own mode.
         assert_eq!(
-            point_pick_for_mode(&modules, "lightwell.raw"),
-            Some(("pick-raw-neutral", "x", "y"))
+            canvas_pick(&modules, "lightwell.raw"),
+            Some(CanvasPick::Point {
+                action: "pick-raw-neutral",
+                x: "x",
+                y: "y"
+            })
         );
         assert_eq!(
-            point_pick_for_mode(&modules, "lightwell.pixel"),
-            Some(("set-pixel", "x", "y"))
+            canvas_pick(&modules, "lightwell.pixel"),
+            Some(CanvasPick::Point {
+                action: "set-pixel",
+                x: "x",
+                y: "y"
+            })
         );
-        assert!(point_pick_for_mode(&modules, "lightwell.crop").is_none());
+        // Basic's neutral picker is a sample-apply pick: a query first, then one command.
+        assert_eq!(
+            canvas_pick(&modules, "lightwell.basic"),
+            Some(CanvasPick::Sample {
+                query: "neutral-sample",
+                x: "x",
+                y: "y",
+                action: "set-basic"
+            })
+        );
+        // A crop frame is a different adapter, and the pointer mode names no module at all.
+        assert!(canvas_pick(&modules, "lightwell.crop").is_none());
+        assert!(canvas_pick(&modules, lightwell_core::POINTER_MODE).is_none());
     }
 
     #[test]

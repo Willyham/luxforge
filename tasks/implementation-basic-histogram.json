@@ -1156,7 +1156,7 @@
     {
       "id": "TASK-017",
       "description": "Complete the Basic panel and integrate group reset, picker and historical values.",
-      "status": "in_progress",
+      "status": "completed",
       "dependencies": [
         "TASK-009",
         "TASK-012",

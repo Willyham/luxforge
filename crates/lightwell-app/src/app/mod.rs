@@ -31,7 +31,8 @@ use iced_runtime::image as image_memory;
 use lightwell_core::{
     ActionInput, ActionPlan, Availability, ClientId, ClientSession, CropStage, EditorState, Error,
     ErrorKind, HistoryPage, HistorySelection, LocalServer, ModuleDescriptor, ModuleRegistry,
-    OwnerHandle, PreviewQueue, Processing, RecipeDescription, StageContext, ToolModule, Version,
+    OwnerHandle, POINTER_MODE, PreviewQueue, Processing, RecipeDescription, StageContext,
+    ToolModule, Version,
 };
 use message::{ClipEndpoint, CropMessage, MenuTarget, Message, PaletteAction, Panel};
 use overlay::{OverlayQueue, OverlayRequest};
@@ -49,8 +50,8 @@ use std::{
 };
 use tasks::{
     ACTOR, Refresh, SyncResult, Upload, import_task, locate_task, merge_current_entry,
-    modules_task, mutation, older_task, pan_task, preview_task, recipe_task, sample_task,
-    session_task, state_task, sync_task, versions_task, workspace_task,
+    modules_task, mutation, older_task, pan_task, preview_task, query_task, recipe_task,
+    sample_task, session_task, state_task, sync_task, versions_task, workspace_task,
 };
 
 /// What the editor was last asked to show, correlated with logged events and captured frames.
@@ -1177,6 +1178,12 @@ impl Editor {
                     Ok((session, sequence)) => {
                         self.adopt(session);
                         self.api_sequence = sequence;
+                        // A canvas mode that picks from the photograph says so while it waits,
+                        // whichever route entered it: the strip, its letter, the palette or a
+                        // script all arrive here through the same `workspace.set`.
+                        if let Some(hint) = self.canvas_mode_hint() {
+                            self.status = hint;
+                        }
                     }
                     Err(error) => self.status = error,
                 }
@@ -1843,8 +1850,19 @@ impl Editor {
             Message::PointPicked { x, y } => {
                 // The widget hands over a pixel of the raster on screen. Which content pixel that
                 // is belongs to the core, so the pick leaves here as a read and fills nothing yet.
-                if tools::point_pick_for_mode(&self.modules, &self.session.workspace.mode).is_none()
-                {
+                // A click answers to the canvas mode that is on screen, not to whichever module
+                // declares a pick first, so two modules can each declare one without colliding.
+                let mode = self.session.workspace.mode.clone();
+                if tools::canvas_pick(&self.modules, &mode).is_none() {
+                    return Task::none();
+                }
+                if let Some(reason) = self.pick_refusal() {
+                    self.event(
+                        "canvas_pick",
+                        json!({"mode":mode,"view_x":x,"view_y":y,"error":reason}),
+                    );
+                    self.status = reason;
+                    self.settle_step(Settle::Pick);
                     return Task::none();
                 }
                 let Some(state) = &self.state else {
@@ -1870,23 +1888,36 @@ impl Editor {
                 view: (view_x, view_y),
                 result,
             } => {
-                if self.displayed_entry() != Some(entry) || mode != self.session.workspace.mode {
-                    // The canvas has moved to another stack; this answer describes the old one.
+                if self.displayed_entry() != Some(entry.clone())
+                    || mode != self.session.workspace.mode
+                {
+                    // The canvas has moved to another stack or another mode; this answer
+                    // describes the one it left.
                     return Task::none();
                 }
-                let Some((action, x_parameter, y_parameter)) =
-                    tools::point_pick_for_mode(&self.modules, &self.session.workspace.mode)
-                else {
+                let Some(target) = PickTarget::of(&self.modules, &mode) else {
                     return Task::none();
                 };
-                let (action, x_parameter, y_parameter) = (
-                    action.to_owned(),
-                    x_parameter.to_owned(),
-                    y_parameter.to_owned(),
-                );
-                match result {
-                    Ok(point) => {
-                        let (x, y) = (point.content_x, point.content_y);
+                let point = match result {
+                    Ok(point) => point,
+                    Err(error) => {
+                        // Outside the content stage: say so and commit and fill nothing.
+                        self.event(
+                            "canvas_pick",
+                            json!({"mode":mode,"view_x":view_x,"view_y":view_y,"error":error}),
+                        );
+                        self.status = error;
+                        self.settle_step(Settle::Pick);
+                        return Task::none();
+                    }
+                };
+                let (x, y) = (point.content_x, point.content_y);
+                match target {
+                    PickTarget::Point {
+                        action,
+                        x: x_parameter,
+                        y: y_parameter,
+                    } => {
                         self.event(
                             "canvas_pick",
                             json!({"action":action,"view_x":view_x,"view_y":view_y,"x":x,"y":y}),
@@ -1914,16 +1945,116 @@ impl Editor {
                         self.status = format!(
                             "Picked ({x}, {y}) from view ({view_x}, {view_y}) into {action}"
                         );
+                        // A point pick commits nothing, so the filled fields are its outcome.
+                        self.settle_step(Settle::Pick);
                     }
-                    Err(error) => {
-                        // Outside the content stage: say so and leave the fields as they were.
+                    // A sample-apply mode asks its module's own read-only query about that pixel
+                    // before anything is committed. The answer, not the coordinate, is what the
+                    // action receives.
+                    PickTarget::Sample {
+                        query,
+                        x: x_parameter,
+                        y: y_parameter,
+                        action,
+                    } => {
+                        let Some(state) = &self.state else {
+                            return Task::none();
+                        };
+                        let asset = state.asset.id.clone();
                         self.event(
                             "canvas_pick",
-                            json!({"action":action,"view_x":view_x,"view_y":view_y,"error":error}),
+                            json!({"query":query,"action":action,"view_x":view_x,"view_y":view_y,"x":x,"y":y}),
                         );
-                        self.status = error;
+                        self.status = format!("Sampling ({x}, {y})…");
+                        return query_task(
+                            self.owner.clone(),
+                            self.client,
+                            asset,
+                            entry,
+                            query,
+                            action,
+                            (x_parameter, y_parameter),
+                            (x, y),
+                        );
                     }
                 }
+            }
+            Message::SampleQueried {
+                entry,
+                action,
+                point: (x, y),
+                result,
+            } => {
+                if self.displayed_entry() != Some(entry) {
+                    return Task::none();
+                }
+                let answer = match result {
+                    Ok(answer) => answer,
+                    Err(error) => {
+                        // The core's own refusal, whose prefix names the reason: clipped,
+                        // near-black, non-finite, out-of-range or outside the stage. Nothing is
+                        // committed, nothing is clamped and nothing is guessed.
+                        self.event(
+                            "canvas_sample",
+                            json!({"action":action,"x":x,"y":y,"error":error}),
+                        );
+                        self.status = error
+                            .split_once(": ")
+                            .map_or(error.clone(), |(_, reason)| reason.to_owned());
+                        self.settle_step(Settle::Pick);
+                        return Task::none();
+                    }
+                };
+                // Every top-level number the query answered that the action declares as a
+                // parameter, and nothing else: the answer may carry metadata the action knows
+                // nothing about, and an unknown field would be refused by the generic check.
+                let fields = tools::declared_action(&self.modules, &action)
+                    .zip(answer.as_object())
+                    .map(|(declared, answer)| {
+                        answer
+                            .iter()
+                            .filter(|(name, value)| {
+                                value.is_number() && declared.parameter(name).is_some()
+                            })
+                            .map(|(name, value)| (name.clone(), value.clone()))
+                            .collect::<Map<String, Value>>()
+                    })
+                    .unwrap_or_default();
+                if fields.is_empty() {
+                    self.status =
+                        format!("The sample answered no field {action} takes; nothing was applied");
+                    self.event(
+                        "canvas_sample",
+                        json!({"action":action,"x":x,"y":y,"fields":Value::Null}),
+                    );
+                    self.settle_step(Settle::Pick);
+                    return Task::none();
+                }
+                let Some(state) = &self.state else {
+                    return Task::none();
+                };
+                if self.busy {
+                    // Something else took the one request in flight while the query was out. The
+                    // answer is not committed behind it; the pick is simply refused and said so.
+                    self.status = "Waiting for the last request".into();
+                    self.settle_step(Settle::Pick);
+                    return Task::none();
+                }
+                let mut request =
+                    json!({"asset_id":state.asset.id,"mutation":mutation(state.revision)});
+                request
+                    .as_object_mut()
+                    .expect("the envelope is an object")
+                    .extend(fields.clone());
+                self.event(
+                    "canvas_sample",
+                    json!({"action":action,"x":x,"y":y,"fields":fields}),
+                );
+                // This pick commits, so its evidence is the render that follows rather than the
+                // status it leaves.
+                self.await_step(Settle::Preview);
+                // One command for the whole pick: one history entry, labelled by the module.
+                return self.command(format!("edit.{action}"), request);
             }
             Message::FocusNext => return operation::focus_next(),
             Message::FocusPrevious => return operation::focus_previous(),
@@ -2321,6 +2452,44 @@ impl Editor {
         versions_task(self.owner.clone(), self.client, asset, method, params)
     }
 
+    /// Why a click on the photograph cannot be picked right now, in the words the status bar uses.
+    ///
+    /// A sample-apply pick commits, so it obeys the same one-draft rule every other commit does: a
+    /// draft is finished deliberately, never displaced by a click. A point pick commits nothing,
+    /// but it answers to the same rule so that one sentence describes every canvas pick.
+    fn pick_refusal(&self) -> Option<String> {
+        if self.crop.is_some() || self.crop_pending.is_some() {
+            return Some(
+                "Apply or Cancel the crop draft before picking from the photograph".into(),
+            );
+        }
+        if self.slider_draft.is_some() {
+            return Some(
+                "Finish or discard the slider draft before picking from the photograph".into(),
+            );
+        }
+        if !self.session.preview.can_edit() {
+            return Some("Return to the current state before picking from the photograph".into());
+        }
+        if self.state.is_none() {
+            return Some("No photograph is open".into());
+        }
+        self.busy.then(|| "Waiting for the last request".to_owned())
+    }
+
+    /// What the status bar says on entering a canvas mode that samples the photograph: the mode's
+    /// own declared title and the one thing it is waiting for. The title comes from the
+    /// descriptor, so no module is named here.
+    fn canvas_mode_hint(&self) -> Option<String> {
+        let mode = &self.session.workspace.mode;
+        tools::canvas_pick(&self.modules, mode)?;
+        let title = tools::module_of(&self.modules, mode)?
+            .canvas
+            .as_ref()?
+            .title();
+        Some(format!("{title} · click the photograph to pick from it"))
+    }
+
     /// An edit is possible when an asset is open, the session shows the current state and no
     /// request is in flight.
     pub(crate) fn editable(&self) -> bool {
@@ -2361,6 +2530,7 @@ impl Editor {
             drafting: self.crop.is_some(),
             slider_drafting: self.slider_draft.is_some(),
             palette_open: self.palette_open,
+            mode_active: self.session.workspace.mode != POINTER_MODE,
             modes: self
                 .modules
                 .iter()
@@ -2455,6 +2625,47 @@ pub(crate) fn clip_params(
 }
 
 /// The reset a group declares, found by its position in the module's controls.
+/// The active canvas mode's declared pick, with its names owned so the update function can act on
+/// them while it mutates the editor. It is [`tools::CanvasPick`] with the borrows resolved and
+/// nothing else: no module is named here and no coordinate name is assumed.
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum PickTarget {
+    Point {
+        action: String,
+        x: String,
+        y: String,
+    },
+    Sample {
+        query: String,
+        x: String,
+        y: String,
+        action: String,
+    },
+}
+
+impl PickTarget {
+    fn of(modules: &[ModuleDescriptor], mode: &str) -> Option<Self> {
+        match tools::canvas_pick(modules, mode)? {
+            tools::CanvasPick::Point { action, x, y } => Some(Self::Point {
+                action: action.to_owned(),
+                x: x.to_owned(),
+                y: y.to_owned(),
+            }),
+            tools::CanvasPick::Sample {
+                query,
+                x,
+                y,
+                action,
+            } => Some(Self::Sample {
+                query: query.to_owned(),
+                x: x.to_owned(),
+                y: y.to_owned(),
+                action: action.to_owned(),
+            }),
+        }
+    }
+}
+
 fn group_reset(
     controls: &[lightwell_core::Control],
     path: &[usize],
@@ -2500,7 +2711,7 @@ mod tests {
     };
     use testing::{
         attach_log, boot, crop_descriptor, descriptors, entry, finish, logged, opened, pick_events,
-        pick_fields, picking, refresh_for,
+        pick_fields, pick_mode, picking, refresh_for, sample_mode,
     };
 
     /// The first patch action any registered module declares, and its first field: the tests below
@@ -2986,6 +3197,591 @@ mod tests {
             Some(default.as_str())
         );
         assert_eq!(editor.fields.get(&pick, &x), Some("42"));
+        finish(editor, catalog);
+    }
+
+    /// Every declared field of a patch action goes through one gesture path: it drafts on the
+    /// first move, sends exactly one `draft.set` naming that field, commits once on release,
+    /// cancels without committing, and survives an external commit until Reapply clears it. The
+    /// loop is over the descriptor's own parameters, so no field is named here and a new one is
+    /// covered the day it is declared.
+    #[test]
+    fn every_patch_field_drafts_commits_cancels_and_reapplies_through_one_path() {
+        let (mut editor, catalog) = opened_with_modules(descriptors(), 4);
+        let asset = editor.state.as_ref().expect("open").asset.id.clone();
+        let current = editor.state.as_ref().expect("open").current_entry.clone();
+        let (action, _) = patch_control(&editor);
+        let declared = tools::declared_action(&editor.modules, &action)
+            .expect("the declared patch action")
+            .clone();
+        let fields: Vec<(String, f64)> = declared
+            .parameters
+            .iter()
+            .filter_map(|parameter| match parameter.kind {
+                lightwell_core::ParameterKind::Number { min, max } => {
+                    // Any value inside the declared range that is not the neutral default: half
+                    // the positive end, or half the negative one for a range without a positive.
+                    let value = if max / 2.0 != 0.0 {
+                        max / 2.0
+                    } else {
+                        min / 2.0
+                    };
+                    Some((parameter.name.clone(), value))
+                }
+                _ => None,
+            })
+            .collect();
+        assert!(
+            fields.len() >= 2,
+            "the patch action declares its fields: {fields:?}"
+        );
+
+        for (parameter, value) in &fields {
+            let log = attach_log(&mut editor);
+            // The drag: one draft, one set for this field alone.
+            editor.busy = false;
+            let _ = editor.update(Message::SliderMoved {
+                action: action.clone(),
+                parameter: parameter.clone(),
+                value: *value,
+            });
+            assert!(
+                editor.slider_draft.is_some(),
+                "{parameter} did not open a draft: {}",
+                editor.status
+            );
+            begun(&mut editor, &asset, &action, 4);
+            let _ = editor.update(Message::SliderDraftTick);
+            let records = logged(&mut editor, &log);
+            let sets = draft_events(&records, "slider_draft_set");
+            assert_eq!(sets.len(), 1, "{parameter}: {sets:?}");
+            assert_eq!(
+                sets[0]["fields"],
+                json!({ parameter.clone(): value }),
+                "{parameter} drafts its own field alone"
+            );
+            assert_eq!(
+                editor.fields.get(&action, parameter),
+                Some(fields::number_text(*value).as_str()),
+                "{parameter} shows the drafted value"
+            );
+
+            // The release: one commit, then the no-op outcome that ends the gesture.
+            let log = attach_log(&mut editor);
+            was_set(&mut editor, &asset, &current);
+            let _ = editor.update(Message::SliderReleased {
+                action: action.clone(),
+                parameter: parameter.clone(),
+            });
+            let records = logged(&mut editor, &log);
+            assert_eq!(
+                draft_events(&records, "slider_draft_commit").len(),
+                1,
+                "{parameter} committed once"
+            );
+            let _ = editor.update(Message::SliderDraftCommitted(Ok(None)));
+            assert!(
+                editor.slider_draft.is_none(),
+                "{parameter} left a gesture open"
+            );
+
+            // Escape: the gesture ends and commits nothing.
+            editor.busy = false;
+            let log = attach_log(&mut editor);
+            let _ = editor.update(Message::SliderMoved {
+                action: action.clone(),
+                parameter: parameter.clone(),
+                value: *value,
+            });
+            begun(&mut editor, &asset, &action, 4);
+            // The `draft.set` the open gesture sent has to answer before Escape can end it:
+            // nothing is sent while a round trip is in flight, which is the gesture's own bound.
+            was_set(&mut editor, &asset, &current);
+            let _ = editor.update(Message::SliderDraftCancel);
+            let records = logged(&mut editor, &log);
+            assert!(
+                draft_events(&records, "slider_draft_commit").is_empty(),
+                "{parameter} committed on Escape"
+            );
+            assert!(
+                !draft_events(&records, "slider_draft_cancelled").is_empty(),
+                "{parameter} did not cancel"
+            );
+            assert!(editor.slider_draft.is_none(), "{parameter} kept its draft");
+
+            // An external commit under the gesture, then Reapply.
+            editor.busy = false;
+            let _ = editor.update(Message::SliderMoved {
+                action: action.clone(),
+                parameter: parameter.clone(),
+                value: *value,
+            });
+            begun(&mut editor, &asset, &action, 4);
+            let _ = editor.update(Message::SliderDraftTick);
+            was_set(&mut editor, &asset, &current);
+            editor.settle_slider_draft(5);
+            assert!(
+                editor
+                    .slider_draft
+                    .as_ref()
+                    .is_some_and(|draft| draft.conflicted),
+                "{parameter} was not marked conflicted"
+            );
+            let _ = editor.update(Message::SliderDraftReapply);
+            let _ = editor.update(Message::SliderDraftReapplied(Ok(Box::new(
+                lightwell_core::Draft::new(&action, asset.clone(), 5),
+            ))));
+            let rebased = editor.slider_draft.as_ref().expect("the rebased draft");
+            assert!(!rebased.conflicted, "{parameter} stayed conflicted");
+            assert_eq!(
+                rebased.base_revision, 5,
+                "{parameter} was not rebased on the new revision"
+            );
+            assert_eq!(
+                rebased.sent,
+                Some(*value),
+                "{parameter} did not re-send the value this client set"
+            );
+            was_set(&mut editor, &asset, &current);
+            let _ = editor.update(Message::SliderDraftCancel);
+            let _ = editor.update(Message::SliderDraftEnded(Ok(())));
+            assert!(editor.slider_draft.is_none());
+        }
+        finish(editor, catalog);
+    }
+
+    /// Invalid text in a generated field shows the declared range and commits nothing, for every
+    /// field of the patch action.
+    #[test]
+    fn invalid_text_shows_the_declared_range_and_commits_nothing() {
+        let (mut editor, catalog) = opened_with_modules(descriptors(), 4);
+        let (action, _) = patch_control(&editor);
+        let declared = tools::declared_action(&editor.modules, &action)
+            .expect("the declared patch action")
+            .clone();
+        for parameter in &declared.parameters {
+            let lightwell_core::ParameterKind::Number { min, max } = parameter.kind else {
+                continue;
+            };
+            let outside = fields::number_text(max + 150.0);
+            editor.busy = false;
+            let _ = editor.update(Message::EditValue {
+                action: action.clone(),
+                parameter: parameter.name.clone(),
+            });
+            let _ = editor.update(Message::Field {
+                action: action.clone(),
+                parameter: parameter.name.clone(),
+                text: outside.clone(),
+            });
+            let _ = editor.update(Message::Submit {
+                action: action.clone(),
+                parameter: Some(parameter.name.clone()),
+            });
+            assert!(
+                !editor.busy,
+                "{} committed an out-of-range value",
+                parameter.name
+            );
+            assert!(
+                editor.status.contains(&fields::number_text(min))
+                    && editor.status.contains(&fields::number_text(max)),
+                "{} does not report its declared range: {}",
+                parameter.name,
+                editor.status
+            );
+            assert_eq!(
+                editor.fields.get(&action, &parameter.name),
+                Some(outside.as_str()),
+                "{} did not stay editable",
+                parameter.name
+            );
+            // The panel shows the same range under the field rather than a silent correction.
+            editor.rederive();
+            let slider = editor
+                .workspace
+                .tools
+                .all()
+                .flat_map(|section| section.controls.iter())
+                .flat_map(flatten)
+                .find(|slider| slider.action == action && slider.parameter == parameter.name)
+                .expect("the generated slider");
+            assert!(
+                slider.invalid.is_some(),
+                "{} is not shown as invalid",
+                parameter.name
+            );
+            let _ = editor.update(Message::ResetField {
+                action: action.clone(),
+                parameter: parameter.name.clone(),
+            });
+        }
+        finish(editor, catalog);
+    }
+
+    /// Every sliders in one control tree, however deeply a module nests its groups.
+    fn flatten(
+        control: &crate::state::tools::ControlModel,
+    ) -> Vec<&crate::state::tools::SliderControl> {
+        match control {
+            crate::state::tools::ControlModel::Slider(slider) => vec![slider],
+            crate::state::tools::ControlModel::Group(group) => {
+                group.controls.iter().flat_map(flatten).collect()
+            }
+            _ => Vec::new(),
+        }
+    }
+
+    /// A group's reset button submits exactly that group's own fields at their declared defaults,
+    /// as one patch through the declared action; the module's header reset runs the module's own
+    /// declared reset action; and a double-click on one label submits that field alone.
+    #[test]
+    fn group_module_and_field_resets_each_run_one_declared_action() {
+        let (mut editor, catalog) = opened_with_modules(descriptors(), 4);
+        let modules = editor.modules.clone();
+        let mut groups = 0usize;
+        for module in &modules {
+            for (index, control) in module.controls.iter().enumerate() {
+                let lightwell_core::Control::Group {
+                    label,
+                    controls,
+                    reset: Some(reset),
+                } = control
+                else {
+                    continue;
+                };
+                let declared = tools::declared_action(&editor.modules, &reset.action)
+                    .expect("a declared reset action")
+                    .clone();
+                if !declared.patch {
+                    continue;
+                }
+                groups += 1;
+                let mut named: Vec<&str> = reset.preset.keys().map(String::as_str).collect();
+                named.sort_unstable();
+                let mut own: Vec<&str> = controls
+                    .iter()
+                    .filter_map(|control| match control {
+                        lightwell_core::Control::Number { parameter, .. } => {
+                            Some(parameter.as_str())
+                        }
+                        _ => None,
+                    })
+                    .collect();
+                own.sort_unstable();
+                assert_eq!(named, own, "{label} resets exactly its own fields");
+                for (name, value) in &reset.preset {
+                    assert_eq!(
+                        Some(value),
+                        declared
+                            .parameter(name)
+                            .and_then(|parameter| parameter.default.as_ref()),
+                        "{label}: {name} is not reset to its declared default"
+                    );
+                }
+                // A patch action's reset control submits its preset and nothing else, so the
+                // request carries this group's fields and leaves every other field alone.
+                assert_eq!(
+                    fields::action_params(&declared, &reset.preset, &editor.fields)
+                        .expect("a request"),
+                    reset.preset,
+                    "{label} sends more than its own preset"
+                );
+                editor.busy = false;
+                let _ = editor.update(Message::ResetGroup {
+                    module_id: module.id.clone(),
+                    path: vec![index],
+                });
+                assert!(editor.busy, "{label}: {}", editor.status);
+                assert!(
+                    editor
+                        .status
+                        .starts_with(&format!("Running edit.{}", reset.action)),
+                    "{label}: {}",
+                    editor.status
+                );
+            }
+            let Some(reset) = &module.reset else {
+                continue;
+            };
+            editor.busy = false;
+            let _ = editor.update(Message::ResetModule(module.id.clone()));
+            assert!(editor.busy, "{}: {}", module.id, editor.status);
+            assert!(
+                editor
+                    .status
+                    .starts_with(&format!("Running edit.{}", reset.action)),
+                "{}: {}",
+                module.id,
+                editor.status
+            );
+        }
+        assert!(groups >= 3, "the built-ins declare grouped resets");
+
+        // A double-click on one label is that one field, at its declared default, as one patch.
+        let (action, parameter) = patch_control(&editor);
+        editor.busy = false;
+        editor.fields.set(&action, &parameter, "1.5".into());
+        let _ = editor.update(Message::ResetField {
+            action: action.clone(),
+            parameter: parameter.clone(),
+        });
+        let default = tools::declared_action(&editor.modules, &action)
+            .and_then(|declared| declared.parameter(&parameter))
+            .map(fields::seed_text)
+            .expect("a declared default");
+        assert_eq!(
+            editor.fields.get(&action, &parameter),
+            Some(default.as_str())
+        );
+        assert!(
+            editor.status.starts_with(&format!("Running edit.{action}")),
+            "{}",
+            editor.status
+        );
+        finish(editor, catalog);
+    }
+
+    /// A `sample-apply` mode's pick is the chain the declaration describes: locate the content
+    /// pixel, ask that module's own query about it, and submit the fields it answers with — the
+    /// ones the action declares, and only those — as one command.
+    #[test]
+    fn a_sample_apply_pick_queries_the_located_pixel_and_submits_the_answer_once() {
+        let (mut editor, catalog) = opened_with_modules(descriptors(), 4);
+        let (mode, query, action) = sample_mode(&editor);
+        editor.session.workspace.mode = mode.clone();
+        let entry_id = editor.displayed_entry().expect("a displayed entry");
+        let log = attach_log(&mut editor);
+
+        let _ = editor.update(Message::PointLocated {
+            entry: entry_id.clone(),
+            mode: mode.clone(),
+            view: (7, 9),
+            result: Ok(ContentPoint {
+                content_x: 100,
+                content_y: 42,
+                width: 480,
+                height: 320,
+            }),
+        });
+        assert_eq!(editor.status, "Sampling (100, 42)…");
+        assert!(!editor.busy, "the query committed before it answered");
+        assert_eq!(
+            pick_events(&logged(&mut editor, &log)),
+            vec![&json!({"query":query,"action":action,"view_x":7,"view_y":9,"x":100,"y":42})]
+        );
+
+        // The query's answer: two fields the action declares and one it does not.
+        let log = attach_log(&mut editor);
+        let declared = tools::declared_action(&editor.modules, &action)
+            .expect("the declared action")
+            .clone();
+        let named: Vec<&str> = declared
+            .parameters
+            .iter()
+            .take(2)
+            .map(|parameter| parameter.name.as_str())
+            .collect();
+        let mut answer = Map::new();
+        answer.insert(named[0].into(), json!(-12.0));
+        answer.insert(named[1].into(), json!(5.0));
+        answer.insert("patch".into(), json!({"x": 98, "y": 40}));
+        let _ = editor.update(Message::SampleQueried {
+            entry: entry_id,
+            action: action.clone(),
+            point: (100, 42),
+            result: Ok(Value::Object(answer)),
+        });
+        assert!(
+            editor.busy,
+            "the answer was not submitted: {}",
+            editor.status
+        );
+        assert!(
+            editor.status.starts_with(&format!("Running edit.{action}")),
+            "{}",
+            editor.status
+        );
+        let records = logged(&mut editor, &log);
+        let sampled: Vec<&Value> = records
+            .iter()
+            .filter(|record| record["event"] == json!("canvas_sample"))
+            .map(|record| &record["detail"])
+            .collect();
+        assert_eq!(sampled.len(), 1, "{sampled:?}");
+        assert_eq!(
+            sampled[0]["fields"],
+            json!({ named[0]: -12.0, named[1]: 5.0 }),
+            "the metadata the action does not declare was submitted"
+        );
+        finish(editor, catalog);
+    }
+
+    /// A refused query commits nothing and shows the core's own reason, whose prefix names why.
+    #[test]
+    fn a_refused_sample_shows_its_reason_and_commits_nothing() {
+        let (mut editor, catalog) = opened_with_modules(descriptors(), 4);
+        let (mode, _, action) = sample_mode(&editor);
+        editor.session.workspace.mode = mode;
+        let entry_id = editor.displayed_entry().expect("a displayed entry");
+        let revision = editor.state.as_ref().expect("open").revision;
+        let log = attach_log(&mut editor);
+        let _ = editor.update(Message::SampleQueried {
+            entry: entry_id,
+            action,
+            point: (100, 42),
+            result: Err(
+                "validation: clipped: a sampled pixel is at code 0 or 255, so this patch carries no usable colour"
+                    .into(),
+            ),
+        });
+        assert!(
+            editor.status.starts_with("clipped:"),
+            "the reason's own prefix is not what the status leads with: {}",
+            editor.status
+        );
+        assert!(!editor.busy, "a refused sample committed something");
+        assert_eq!(editor.state.as_ref().expect("open").revision, revision);
+        let records = logged(&mut editor, &log);
+        assert!(
+            records
+                .iter()
+                .any(|record| record["event"] == json!("canvas_sample")
+                    && record["detail"]["error"].is_string()),
+            "the refusal is not in the evidence"
+        );
+        finish(editor, catalog);
+    }
+
+    /// A pick answers to the canvas mode that is on screen and to nothing else, and it is refused
+    /// while a draft is open rather than displacing it.
+    #[test]
+    fn a_pick_answers_only_to_the_mode_on_screen_and_is_refused_during_a_draft() {
+        let (mut editor, catalog) = opened_with_modules(descriptors(), 4);
+        let (sample_module, _, _) = sample_mode(&editor);
+        let (pick_action, x, y) = pick_fields(&editor);
+        let entry_id = editor.displayed_entry().expect("a displayed entry");
+
+        // The pointer mode: a click reaches no module's pick at all.
+        let before = editor.status.clone();
+        let _ = editor.update(Message::PointPicked { x: 7, y: 9 });
+        assert_eq!(editor.status, before, "a pick ran in the pointer mode");
+
+        // The sample-apply mode: the located point is not written into the point-pick module's
+        // coordinate fields, because that module's canvas is not the one on screen.
+        editor.session.workspace.mode = sample_module.clone();
+        let _ = editor.update(Message::PointLocated {
+            entry: entry_id,
+            mode: sample_module.clone(),
+            view: (7, 9),
+            result: Ok(ContentPoint {
+                content_x: 100,
+                content_y: 42,
+                width: 480,
+                height: 320,
+            }),
+        });
+        assert_eq!(editor.fields.get(&pick_action, &x), Some("0"));
+        assert_eq!(editor.fields.get(&pick_action, &y), Some("0"));
+
+        // A pick while a slider gesture is open is refused, and the gesture is untouched.
+        let (action, parameter) = patch_control(&editor);
+        let asset = editor.state.as_ref().expect("open").asset.id.clone();
+        let _ = editor.update(Message::SliderMoved {
+            action: action.clone(),
+            parameter,
+            value: 1.0,
+        });
+        begun(&mut editor, &asset, &action, 4);
+        assert!(editor.slider_draft.is_some());
+        let _ = editor.update(Message::PointPicked { x: 7, y: 9 });
+        assert!(editor.status.contains("slider draft"), "{}", editor.status);
+        assert!(editor.slider_draft.is_some(), "the pick discarded a draft");
+        finish(editor, catalog);
+    }
+
+    /// Selecting a history entry shows that entry's own saved values in the disabled fields, and
+    /// returning to current puts the current ones back. The values come from the displayed entry's
+    /// own `recipe.describe` rows: nothing is recomputed on the desktop.
+    #[test]
+    fn historical_values_fill_the_disabled_fields_and_return_to_current_restores_them() {
+        let (mut editor, catalog) = opened_with_modules(descriptors(), 4);
+        let (action, parameter) = patch_control(&editor);
+        let asset = editor.state.as_ref().expect("open").asset.id.clone();
+        let module = editor
+            .modules
+            .iter()
+            .find(|module| module.action(&action).is_some())
+            .expect("the declaring module")
+            .id
+            .clone();
+        let described = |editor: &mut Editor, value: f64| {
+            let current = editor.state.as_ref().expect("open").current_entry.clone();
+            let mut refresh =
+                refresh_for(&asset, &current, vec![current.clone()], &[&current], false);
+            refresh.recipe.layers = vec![lightwell_core::LayerDescription {
+                id: lightwell_core::LayerId::new(),
+                effect: "test.effect".into(),
+                module: Some(module.clone()),
+                title: Some("Test".into()),
+                summary: "Test".into(),
+                values: json!({ parameter.clone(): value })
+                    .as_object()
+                    .cloned()
+                    .unwrap_or_default(),
+                available: true,
+            }];
+            Box::new(refresh)
+        };
+
+        // The current state.
+        let current = described(&mut editor, 2.0);
+        let _ = editor.update(Message::Refreshed(Ok(current)));
+        assert_eq!(editor.fields.get(&action, &parameter), Some("2"));
+
+        // A historical entry is selected: its own rows seed the same fields, and the section is
+        // disabled with its values still visible.
+        let older = entry(&asset, 2, None);
+        editor.session.preview.selection = HistorySelection::Entry(older.id.clone());
+        editor.display_entry = Some(older.id.clone());
+        let historical = described(&mut editor, -1.0);
+        let _ = editor.update(Message::RecipeDescribed(Ok(Box::new(historical.recipe))));
+        assert_eq!(
+            editor.fields.get(&action, &parameter),
+            Some("-1"),
+            "the fields do not follow the previewed entry"
+        );
+        editor.rederive();
+        let section = editor
+            .workspace
+            .tools
+            .all()
+            .find(|section| section.module_id == module)
+            .expect("the module's section");
+        assert!(!section.enabled, "the panel is editable during a preview");
+        assert_eq!(
+            section.disabled_reason.as_deref(),
+            Some("Return to current to edit")
+        );
+        assert!(
+            section
+                .controls
+                .iter()
+                .flat_map(flatten)
+                .any(|slider| slider.display == "-1"),
+            "the previewed values are not visible"
+        );
+
+        // Return to current: the current entry's values come back.
+        editor.session.preview.selection = HistorySelection::Current;
+        let current = described(&mut editor, 2.0);
+        editor.display_entry = Some(current.state.current_entry.id.clone());
+        let _ = editor.update(Message::RecipeDescribed(Ok(Box::new(current.recipe))));
+        assert_eq!(
+            editor.fields.get(&action, &parameter),
+            Some("2"),
+            "returning to current did not restore the current values"
+        );
         finish(editor, catalog);
     }
 
@@ -3478,7 +4274,7 @@ mod tests {
         assert_eq!(editor.fields.get(&action, &y), Some("0"));
         let _ = editor.update(Message::PointLocated {
             entry: entry_id,
-            mode: POINTER_MODE.into(),
+            mode: pick_mode(&editor),
             view: (7, 9),
             result: Ok(ContentPoint {
                 content_x: 100,
@@ -3517,7 +4313,8 @@ mod tests {
             Some(editor.modules.len())
         );
         assert_eq!(snapshot["developer"], json!(false));
-        assert_eq!(snapshot["workspace"]["mode"], json!(POINTER_MODE));
+        // The pick answered to the mode it was made in, which the frame records.
+        assert_eq!(snapshot["workspace"]["mode"], json!(pick_mode(&editor)));
         finish(editor, catalog);
     }
 
@@ -3530,7 +4327,7 @@ mod tests {
         // The canvas moved to another stack while the mapping was in flight.
         let _ = editor.update(Message::PointLocated {
             entry: EntryId::new(),
-            mode: POINTER_MODE.into(),
+            mode: pick_mode(&editor),
             view: (7, 9),
             result: Ok(ContentPoint {
                 content_x: 100,
@@ -3559,7 +4356,7 @@ mod tests {
         let refusal = "validation: point (7, 9) is outside the 4x3 rendered image";
         let _ = editor.update(Message::PointLocated {
             entry: entry_id,
-            mode: POINTER_MODE.into(),
+            mode: pick_mode(&editor),
             view: (7, 9),
             result: Err(refusal.into()),
         });
@@ -3572,7 +4369,7 @@ mod tests {
         assert_eq!(editor.status, refusal);
         assert_eq!(
             pick_events(&logged(&mut editor, &log)),
-            vec![&json!({"action":action,"view_x":7,"view_y":9,"error":refusal})]
+            vec![&json!({"mode":pick_mode(&editor),"view_x":7,"view_y":9,"error":refusal})]
         );
         finish(editor, catalog);
     }

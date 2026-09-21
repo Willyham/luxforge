@@ -184,6 +184,7 @@ pub fn gallery() -> Vec<Element<'static, ()>> {
     states.push(sub_group_header(
         &SubGroupHeaderModel {
             label: "Tone".into(),
+            state: Some("Custom".into()),
             reset: true,
             enabled: true,
         },

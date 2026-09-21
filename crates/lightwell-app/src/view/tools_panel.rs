@@ -406,6 +406,7 @@ fn group_view<'a>(
     let header = sub_group_header(
         &SubGroupHeaderModel {
             label: group.label.clone(),
+            state: group.state.map(|state| state.caption().to_owned()),
             reset: group.reset.is_some(),
             enabled,
         },

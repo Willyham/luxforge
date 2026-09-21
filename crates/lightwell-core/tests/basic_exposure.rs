@@ -461,6 +461,137 @@ fn the_first_set_places_one_layer_before_the_geometry_tail_and_later_sets_update
     fs::remove_file(path).expect("the catalog is removed");
 }
 
+/// Every group reset the Basic descriptor declares is one legal `set-basic` patch: sent against a
+/// layer that holds those fields it commits exactly one entry and keeps the layer's identity and
+/// position, and sent again against the group it has already cleared it is a no-op with no entry.
+/// The presets come from the descriptor, so a group that gains a field is covered the day it does.
+#[test]
+fn every_declared_group_reset_commits_once_and_then_reports_a_no_op() {
+    let path = catalog("group-resets");
+    let mut service = EditorService::open(&path).expect("a catalog");
+    let asset = service.import(&jpeg()).expect("an import").asset.id;
+    let basic = ModuleRegistry::builtin()
+        .descriptors()
+        .into_iter()
+        .find(|module| module.id == "lightwell.basic")
+        .expect("the Basic module is registered")
+        .clone();
+    let groups: Vec<(String, Map<String, Value>)> = basic
+        .controls
+        .iter()
+        .filter_map(|control| match control {
+            lightwell_core::Control::Group {
+                label,
+                reset: Some(reset),
+                ..
+            } => Some((label.clone(), reset.preset.clone())),
+            _ => None,
+        })
+        .collect();
+    assert!(groups.len() >= 3, "the Basic module declares its groups");
+
+    let mut revision = 0u64;
+    let mut identity: Option<LayerId> = None;
+    for (label, preset) in &groups {
+        // Put every field of this group somewhere other than its default, one patch per group.
+        let mut set = Map::new();
+        for name in preset.keys() {
+            let declared = basic
+                .action("set-basic")
+                .and_then(|action| action.parameter(name))
+                .expect("a declared parameter");
+            let lightwell_core::ParameterKind::Number { max, .. } = declared.kind else {
+                panic!("{name} is not a number");
+            };
+            set.insert(name.clone(), json!(max / 2.0));
+        }
+        let applied = service
+            .apply_action(
+                &asset,
+                mutation(revision, &format!("{label}-set")),
+                "set-basic",
+                Value::Object(set),
+            )
+            .unwrap_or_else(|error| panic!("{label} could not be set: {error}"));
+        assert_eq!(applied.outcome, MutationOutcome::Applied, "{label}");
+        revision = applied.revision;
+        let stack = layers(&service, &asset);
+        let layer = stack
+            .iter()
+            .find(|layer| layer.effect_id == BASIC_EFFECT)
+            .expect("the Basic layer");
+        match &identity {
+            Some(id) => assert_eq!(&layer.id, id, "{label} replaced the Basic layer"),
+            None => identity = Some(layer.id.clone()),
+        }
+
+        // The group's own reset: one entry, labelled by the module, layer kept in place.
+        let before = service
+            .history(&asset, None, 50)
+            .expect("history")
+            .entries
+            .len();
+        let reset = service
+            .apply_action(
+                &asset,
+                mutation(revision, &format!("{label}-reset")),
+                "set-basic",
+                Value::Object(preset.clone()),
+            )
+            .unwrap_or_else(|error| panic!("{label} could not be reset: {error}"));
+        assert_eq!(reset.outcome, MutationOutcome::Applied, "{label}");
+        revision = reset.revision;
+        assert_eq!(
+            service
+                .history(&asset, None, 50)
+                .expect("history")
+                .entries
+                .len(),
+            before + 1,
+            "{label}'s reset wrote more than one entry"
+        );
+        assert_eq!(
+            service
+                .entry(&asset, &reset.created_entry_id.clone().expect("an entry"))
+                .expect("the entry")
+                .label,
+            format!("Reset {label}"),
+            "{label}'s reset is not labelled by the module"
+        );
+        let stack = layers(&service, &asset);
+        let layer = stack
+            .iter()
+            .find(|layer| layer.effect_id == BASIC_EFFECT)
+            .expect("the Basic layer survives its own reset");
+        assert_eq!(
+            Some(&layer.id),
+            identity.as_ref(),
+            "{label}'s reset replaced the layer instead of updating it"
+        );
+        for name in preset.keys() {
+            assert!(
+                layer.payload.get(name).is_none(),
+                "{label} left {name} in the payload"
+            );
+        }
+
+        // The same reset again changes nothing at all.
+        let again = service
+            .apply_action(
+                &asset,
+                mutation(revision, &format!("{label}-reset-again")),
+                "set-basic",
+                Value::Object(preset.clone()),
+            )
+            .unwrap_or_else(|error| panic!("{label} could not be reset twice: {error}"));
+        assert_eq!(again.outcome, MutationOutcome::NoOp, "{label}");
+        assert_eq!(again.created_entry_id, None, "{label} wrote a no-op entry");
+    }
+
+    drop(service);
+    fs::remove_file(path).expect("the catalog is removed");
+}
+
 fn layers(service: &EditorService, asset: &lightwell_core::AssetId) -> Vec<Layer> {
     service
         .state(asset)

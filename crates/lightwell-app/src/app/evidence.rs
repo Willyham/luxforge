@@ -60,6 +60,9 @@ pub(crate) enum Step {
     Field(FieldStep),
     /// A module or group reset, through the control that declares it.
     Reset(ResetStep),
+    /// One click on the photograph at a pixel of the raster on screen, answered by the canvas mode
+    /// that is active.
+    Pick(PickStep),
     /// The decision an open slider draft's Changed elsewhere notice offers.
     SliderDraft(SliderDraftStep),
     View(ViewStep),
@@ -101,6 +104,14 @@ pub(crate) struct FieldStep {
     pub(crate) text: String,
     /// Enter in the field, which commits that one field without a draft.
     pub(crate) submit: bool,
+}
+
+/// One canvas pick, in pixels of the raster on screen: the same coordinates the canvas publishes
+/// when a pointer is pressed over the photograph.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct PickStep {
+    pub(crate) x: u32,
+    pub(crate) y: u32,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -187,6 +198,7 @@ impl Step {
                 "text": field.text,
                 "submit": field.submit,
             }}),
+            Self::Pick(pick) => json!({"pick":{"x":pick.x,"y":pick.y}}),
             Self::Reset(reset) => match &reset.group {
                 Some(group) => json!({"reset":{"module":reset.module,"group":group}}),
                 None => json!({"reset":{"module":reset.module}}),
@@ -270,6 +282,10 @@ pub(crate) enum Settle {
     Overlay,
     /// The pointer readout must come back from `render.sample`.
     Readout,
+    /// A canvas pick has reached an outcome that commits nothing: filled coordinates, or a refusal
+    /// with its reason in the status bar. A pick that does commit re-arms [`Settle::Preview`]
+    /// instead, so its frame is the committed render.
+    Pick,
 }
 
 impl Editor {
@@ -298,6 +314,7 @@ impl Editor {
             Step::Slider(slider) => self.slider_step(slider),
             Step::Field(field) => self.field_step(field),
             Step::Reset(reset) => self.reset_step(reset),
+            Step::Pick(pick) => self.pick_step(pick),
             Step::SliderDraft(decision) => self.slider_draft_step(decision),
             Step::View(view) => self.view_step(view),
             Step::Workspace(workspace) => self.workspace_step(workspace),
@@ -556,6 +573,28 @@ impl Editor {
         task
     }
 
+    /// One click on the photograph, at a pixel of the raster on screen, exactly as the canvas
+    /// publishes it. What the click means is the active canvas mode's own declared pick: a point
+    /// pick fills that mode's coordinate fields and commits nothing, and a sample-apply pick runs
+    /// its module's query and submits the answer once. Nothing here names either.
+    fn pick_step(&mut self, step: PickStep) -> Task<Message> {
+        if self.state.is_none() {
+            return self.fail_step("no photograph is open");
+        }
+        let mode = self.session.workspace.mode.clone();
+        if crate::state::tools::canvas_pick(&self.modules, &mode).is_none() {
+            return self.fail_step(format!("the {mode} canvas mode declares no pick"));
+        }
+        if let Some(reason) = self.pick_refusal() {
+            return self.fail_step(reason);
+        }
+        self.await_step(Settle::Pick);
+        self.update(Message::PointPicked {
+            x: step.x,
+            y: step.y,
+        })
+    }
+
     /// Answer an open slider draft's Changed elsewhere notice, through the same messages its two
     /// buttons raise.
     fn slider_draft_step(&mut self, step: SliderDraftStep) -> Task<Message> {
@@ -752,7 +791,7 @@ impl Editor {
     }
 
     /// The running step waits for this before its frame is captured.
-    fn await_step(&mut self, settle: Settle) {
+    pub(crate) fn await_step(&mut self, settle: Settle) {
         if let Some(evidence) = &mut self.evidence {
             evidence.awaiting = Some(settle);
         }
@@ -885,7 +924,7 @@ fn sole(object: &Map<String, Value>) -> Result<(&str, &Value), String> {
 
 fn parse_step(step: &Value) -> Result<Step, String> {
     let object = step.as_object().ok_or(
-        "a step is an object with one key: api, draft, slider, slider_draft, field, reset, view, workspace, preview, palette or hover",
+        "a step is an object with one key: api, draft, slider, slider_draft, field, reset, pick, view, workspace, preview, palette or hover",
     )?;
     let (kind, value) = sole(object)?;
     match kind {
@@ -895,13 +934,14 @@ fn parse_step(step: &Value) -> Result<Step, String> {
         "slider_draft" => Ok(Step::SliderDraft(parse_slider_draft(value)?)),
         "field" => Ok(Step::Field(parse_field_step(value)?)),
         "reset" => Ok(Step::Reset(parse_reset(value)?)),
+        "pick" => Ok(Step::Pick(parse_pick(value)?)),
         "view" => Ok(Step::View(parse_view(value)?)),
         "workspace" => Ok(Step::Workspace(parse_workspace(value)?)),
         "preview" => Ok(Step::Preview(parse_preview(value)?)),
         "palette" => Ok(Step::Palette(parse_palette(value)?)),
         "hover" => parse_hover(value),
         other => Err(format!(
-            "unknown step kind {other}; expected api, draft, slider, slider_draft, field, reset, view, workspace, preview, palette or hover"
+            "unknown step kind {other}; expected api, draft, slider, slider_draft, field, reset, pick, view, workspace, preview, palette or hover"
         )),
     }
 }
@@ -1013,6 +1053,26 @@ fn parse_reset(value: &Value) -> Result<ResetStep, String> {
             None | Some(Value::Null) => None,
             Some(_) => Some(required_text(object, "group", "reset")?),
         },
+    })
+}
+
+/// One canvas pick's coordinates: pixels of the raster on screen, which is what the canvas itself
+/// publishes. Mapping them to the content stage is the core's answer, never the script's.
+fn parse_pick(value: &Value) -> Result<PickStep, String> {
+    let object = value
+        .as_object()
+        .ok_or("pick takes an object with an x and a y")?;
+    known_fields(object, &["x", "y"], "pick")?;
+    let coordinate = |field: &str| -> Result<u32, String> {
+        object
+            .get(field)
+            .and_then(Value::as_u64)
+            .and_then(|value| u32::try_from(value).ok())
+            .ok_or_else(|| format!("pick needs a non-negative whole {field}"))
+    };
+    Ok(PickStep {
+        x: coordinate("x")?,
+        y: coordinate("y")?,
     })
 }
 
@@ -1491,6 +1551,43 @@ mod tests {
         assert_eq!(group_path(&basic.controls, "Tone"), Some(vec![1]));
         assert_eq!(group_path(&basic.controls, "White balance"), Some(vec![0]));
         assert_eq!(group_path(&basic.controls, "Nowhere"), None);
+    }
+
+    /// A pick step carries the two rendered coordinates a click publishes and nothing else: which
+    /// content pixel they name, and what picking it does, belong to the core and to the mode.
+    #[test]
+    fn a_pick_step_round_trips_its_rendered_coordinates() {
+        let steps = parse_script(r#"[{"pick":{"x":120,"y":80}}]"#).expect("a valid script");
+        assert_eq!(steps.len(), 1);
+        assert_eq!(steps[0], Step::Pick(PickStep { x: 120, y: 80 }));
+        assert_eq!(steps[0].record(), json!({"pick":{"x":120,"y":80}}));
+        for refused in [
+            r#"[{"pick":{"x":120}}]"#,
+            r#"[{"pick":{"x":120,"y":-2}}]"#,
+            r#"[{"pick":{"x":120,"y":80,"mode":"lightwell.basic"}}]"#,
+        ] {
+            assert!(parse_script(refused).is_err(), "{refused} was accepted");
+        }
+    }
+
+    /// A scripted pick runs in the mode that is on screen and is refused when none of them picks.
+    #[test]
+    fn a_scripted_pick_needs_a_canvas_mode_that_declares_one() {
+        let (mut editor, catalog, _, _) = scripted(r#"[{"pick":{"x":7,"y":9}}]"#);
+        let _ = editor.update(Message::ModulesLoaded(Ok(
+            crate::app::testing::descriptors(),
+        )));
+        // The pointer mode declares no pick, so the step is recorded as refused, not silently
+        // dropped, and its frame is still captured.
+        let _ = editor.next_step();
+        assert!(evidence(&editor).had_errors);
+        assert!(evidence(&editor).capture_pending);
+        assert!(
+            editor.status.contains("declares no pick"),
+            "{}",
+            editor.status
+        );
+        crate::app::testing::finish(editor, catalog);
     }
 
     #[test]

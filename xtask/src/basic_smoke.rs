@@ -28,7 +28,16 @@ const SAME: f64 = 2.0;
 pub fn frames(scenario: &str) -> Option<usize> {
     match scenario {
         "basic" => Some(11),
+        "basic-panel" => Some(9),
         _ => None,
+    }
+}
+
+/// Which of this file's two verifiers a scenario uses.
+pub fn verify_scenario(evidence: &Path, scenario: &str, app: &Value, events: &[Value]) -> Result {
+    match scenario {
+        "basic-panel" => verify_panel(evidence, app, events),
+        _ => verify(evidence, app, events),
     }
 }
 
@@ -521,6 +530,514 @@ pub fn verify(evidence: &Path, app: &Value, _events: &[Value]) -> Result {
             "brighter_margin": BRIGHTER,
             "same_tolerance": SAME,
             "scope": "Mean Rec. 709 luminance of a centred window of the photo surface, read back from the renderer; not a colorimetric claim",
+        }),
+    )?;
+    Ok(())
+}
+
+// -------------------------------------------------------------------------------------------
+// The `basic-panel` scenario: the whole Basic section, historical values and the neutral picker.
+// -------------------------------------------------------------------------------------------
+
+/// Every field the Basic descriptor implements, in the order the panel lists them. The scenario
+/// checks that each one is on screen with a value, which is what "no control is clipped" means in
+/// the recorded state; the frames themselves are inspected for layout.
+const BASIC_FIELDS: [&str; 10] = [
+    "temperature",
+    "tint",
+    "exposure",
+    "contrast",
+    "highlights",
+    "shadows",
+    "whites",
+    "blacks",
+    "vibrance",
+    "saturation",
+];
+
+const TEMPERATURE: &str = "temperature";
+const TINT: &str = "tint";
+const VIBRANCE: &str = "vibrance";
+/// The Colour group, as the Basic descriptor labels it.
+const COLOUR_GROUP: &str = "Colour";
+/// The White balance group's label, which the module also uses for the history entry a patch
+/// returning exactly that group to neutral earns.
+const WHITE_BALANCE_GROUP: &str = "White balance";
+
+/// The neutral grey patch the picker samples: `fixtures/s0/greyscale.jpg` is uniform 91/91/91 over
+/// the whole 5x5 patch here, so the picker's answer is the exact identity, 0 and 0.
+const NEUTRAL_PICK: [u32; 2] = [120, 80];
+/// The fixture's white cross, whose 5x5 patch holds code 255: the any-channel clipping rule
+/// refuses it, and nothing is committed.
+const CLIPPED_PICK: [u32; 2] = [240, 160];
+
+/// How far apart two mean red-minus-blue readings must be before this scenario calls one warmer
+/// than the other. A neutral grey fixture reads zero, and +40 temperature moves it tens of codes.
+const WARMER: f64 = 8.0;
+/// How close two mean red-minus-blue readings must be before this scenario calls them the same
+/// balance. Both are renderer readback of a neutral grey, so this is readback noise only.
+const NEUTRAL: f64 = 1.5;
+
+/// Where the photograph is drawn in a captured frame, for a fixture with no coloured quadrants to
+/// match on. Inside the photo surface, between the notices at the top of the canvas and the
+/// floating mode strip at its bottom, the only thing brighter than the canvas surface (`#19191b`)
+/// and the bars over it (`#232326`) is the photograph itself, so its bounding box is the bright
+/// pixels of that band. The scenario draws no notice, which `verify_panel` checks per frame.
+fn photo_bounds(path: &Path, frame: &Value) -> Result<Value> {
+    /// Well above the brightest chrome in the band and well below the fixture's darkest grey.
+    const BRIGHT: u32 = 60;
+    let image = image::open(path)?.to_rgb8();
+    let (width, height) = image.dimensions();
+    let [surface_left, surface_right] = columns(frame)?.unwrap_or([0, width]);
+    ensure(
+        surface_left < surface_right && surface_right <= width,
+        "Invalid surface columns",
+    )?;
+    let (band_top, band_bottom) = (height * 3 / 20, height * 22 / 25);
+    // The 1 px dividers at the surface's own edges are 6% white over the panel, which is as bright
+    // as this fixture's darkest grey, so the scan starts inside them.
+    const INSET: u32 = 4;
+    let (mut left, mut top, mut right, mut bottom) = (width, height, 0, 0);
+    let mut found = 0u32;
+    for y in band_top..band_bottom {
+        for x in (surface_left + INSET)..(surface_right - INSET) {
+            let pixel = image.get_pixel(x, y).0;
+            let mean = (u32::from(pixel[0]) + u32::from(pixel[1]) + u32::from(pixel[2])) / 3;
+            if mean >= BRIGHT {
+                found += 1;
+                left = left.min(x);
+                top = top.min(y);
+                right = right.max(x + 1);
+                bottom = bottom.max(y + 1);
+            }
+        }
+    }
+    ensure(
+        found > 0,
+        "No photograph in the frame: blank or wrong render",
+    )?;
+    let (drawn_width, drawn_height) = (right - left, bottom - top);
+    let measured = f64::from(drawn_width) / f64::from(drawn_height);
+    let expected = 3.0 / 2.0;
+    ensure(
+        (measured - expected).abs() < 0.015,
+        format!("Displayed aspect ratio {measured:.4}, expected {expected:.4}"),
+    )?;
+    ensure(
+        (f64::from(left + right) / 2.0 - f64::from(surface_left + surface_right) / 2.0).abs()
+            <= 5.0,
+        "The photograph is not centred in the photo surface",
+    )?;
+    ensure(
+        f64::from(drawn_width) > f64::from(surface_right - surface_left) * 0.5,
+        "The photograph does not fill the surface at Fit",
+    )?;
+    Ok(json!({
+        "status": "passed",
+        "physical_size": [width, height],
+        "surface_columns": [surface_left, surface_right],
+        "image_bounds": [left, top, right, bottom],
+        "measured_aspect": measured,
+        "expected_aspect": expected,
+        "bright_threshold": BRIGHT,
+        "scope": "Displayed placement of a greyscale fixture, read back from the renderer; not monitor calibration",
+    }))
+}
+
+/// The mean per-channel value of the same centred window [`photo_luminance`] reads.
+fn photo_channels(path: &Path, frame: &Value) -> Result<[f64; 3]> {
+    let image = image::open(path)?.to_rgb8();
+    let (width, height) = image.dimensions();
+    let [left, right] = columns(frame)?.unwrap_or([0, width]);
+    ensure(left < right && right <= width, "Invalid surface columns")?;
+    let surface = right - left;
+    let (cx, cy) = ((left + right) / 2, height / 2);
+    let (half_w, half_h) = (surface / 5, height * 3 / 20);
+    ensure(
+        half_w > 10 && half_h > 10 && cx > half_w && cy > half_h,
+        "Photo surface too small to sample",
+    )?;
+    let mut totals = [0.0; 3];
+    let mut count = 0u32;
+    for y in (cy - half_h)..(cy + half_h) {
+        for x in (cx - half_w)..(cx + half_w) {
+            let p = image.get_pixel(x, y).0;
+            for channel in 0..3 {
+                totals[channel] += f64::from(p[channel]);
+            }
+            count += 1;
+        }
+    }
+    ensure(count > 0, "Sampled no pixels")?;
+    Ok(totals.map(|total| total / f64::from(count)))
+}
+
+/// Mean red minus mean blue: the honest measure of a warm/cool shift on a neutral fixture, where
+/// luminance barely moves because the white-balance transform preserves it by construction.
+fn balance(channels: [f64; 3]) -> f64 {
+    channels[0] - channels[2]
+}
+
+/// What one generated Basic field showed when the frame was captured.
+fn basic_field<'a>(frame: &'a Value, name: &str) -> Result<&'a str> {
+    frame["state"]["controls"][format!("{SET_BASIC}.{name}")]
+        .as_str()
+        .ok_or_else(|| format!("Frame records no {name} field").into())
+}
+
+/// The one Basic layer's identity, so evidence can prove an edit updated it in place.
+fn basic_layer_id(frame: &Value) -> Option<&str> {
+    frame["state"]["stack"]["layers"]
+        .as_array()?
+        .iter()
+        .find(|layer| layer["effect"] == json!(lightwell_core::BASIC_EFFECT))
+        .and_then(|layer| layer["id"].as_str())
+}
+
+fn status(frame: &Value) -> Result<&str> {
+    frame["state"]["status"]
+        .as_str()
+        .ok_or_else(|| "Frame records no status".into())
+}
+
+/// The evidence script. Each step is one gesture, one request or one decision; `verify_panel`
+/// checks exactly what each one proves.
+pub fn panel_script(scenario: &str) -> Option<Value> {
+    match scenario {
+        "basic-panel" => Some(json!([
+            // The White balance group: a drag to +40 temperature, released.
+            {"slider":{"action":SET_BASIC,"parameter":TEMPERATURE,"values":[10.0,25.0,40.0],"release":true}},
+            // The Colour group: a typed value committed with Enter.
+            {"field":{"action":SET_BASIC,"parameter":VIBRANCE,"text":"25","submit":true}},
+            // The Temperature entry, previewed: its own saved values fill the disabled sliders.
+            {"preview":{"sequence":1}},
+            {"preview":"current"},
+            // The Colour group's own reset button.
+            {"reset":{"module":BASIC_MODULE,"group":COLOUR_GROUP}},
+            // The neutral picker's canvas mode, which `W` also selects.
+            {"workspace":{"mode":BASIC_MODULE}},
+            // A pick on a neutral grey patch: the picker answers 0 and 0 and commits that.
+            {"pick":{"x":NEUTRAL_PICK[0],"y":NEUTRAL_PICK[1]}},
+            // A pick on a clipped patch: refused with its reason, nothing committed.
+            {"pick":{"x":CLIPPED_PICK[0],"y":CLIPPED_PICK[1]}}
+        ])),
+        _ => None,
+    }
+}
+
+pub fn verify_panel(evidence: &Path, app: &Value, _events: &[Value]) -> Result {
+    let frames = app["frames"].as_array().ok_or("Missing frames")?.clone();
+    ensure(
+        app["had_input_errors"] == json!(false),
+        "The run recorded an input error",
+    )?;
+    let paths: Vec<PathBuf> = frames
+        .iter()
+        .map(|frame| frame_identity(evidence, app, frame))
+        .collect::<Result<Vec<_>>>()?;
+    let channels: Vec<[f64; 3]> = frames
+        .iter()
+        .zip(&paths)
+        .map(|(frame, path)| photo_channels(path, frame))
+        .collect::<Result<Vec<_>>>()?;
+    let luminance: Vec<f64> = frames
+        .iter()
+        .zip(&paths)
+        .map(|(frame, path)| photo_luminance(path, frame))
+        .collect::<Result<Vec<_>>>()?;
+    let mut checks = Vec::new();
+    let mut record = |frame: &Value, shows: &str, detail: Value| {
+        checks.push(json!({"frame":frame["file"],"shows":shows,"detail":detail}));
+    };
+
+    // Frame 0: the whole Basic section. Every implemented field is on screen with a value, the
+    // section is expanded, and nothing is committed yet.
+    let mut listed = Vec::new();
+    for name in BASIC_FIELDS {
+        listed.push(json!({ name: basic_field(&frames[0], name)? }));
+        ensure(
+            basic_field(&frames[0], name)? == "0",
+            format!("{name} does not start at its declared default"),
+        )?;
+    }
+    ensure(
+        frames[0]["state"]["expanded"][BASIC_MODULE] == json!(true),
+        "The Basic section is not expanded on the opened screen",
+    )?;
+    ensure(
+        basic_payload(&frames[0]).is_none(),
+        "The opened stack already holds a Basic layer",
+    )?;
+    ensure(
+        balance(channels[0]).abs() <= NEUTRAL,
+        format!(
+            "The greyscale fixture does not read neutral: {:.1}",
+            balance(channels[0])
+        ),
+    )?;
+    // No frame in this scenario draws a notice, which is what lets `photo_bounds` read the band
+    // between the notices and the mode strip as photograph and canvas surface only.
+    for (index, frame) in frames.iter().enumerate() {
+        ensure(
+            frame["state"]["notices"] == json!([]),
+            format!(
+                "Frame {index} shows a notice: {}",
+                frame["state"]["notices"]
+            ),
+        )?;
+    }
+    record(
+        &frames[0],
+        "the Basic section with White balance, Tone and Colour, every field at its default",
+        json!({
+            "placement": photo_bounds(&paths[0], &frames[0])?,
+            "fields": listed,
+            "red_minus_blue": balance(channels[0]),
+        }),
+    );
+
+    // Frame 1: a Temperature drag to +40, released. One entry, one revision, and the neutral
+    // fixture is visibly warmer.
+    expect_no_draft(&frames[1], "Frame 1")?;
+    ensure(
+        revision(&frames[1])? == revision(&frames[0])? + 1,
+        "The released drag did not advance the revision by one",
+    )?;
+    ensure(
+        label(&frames[1])? == "Temperature +40",
+        format!("The committed entry is labelled {:?}", label(&frames[1])?),
+    )?;
+    ensure(
+        basic_payload(&frames[1]) == Some(&json!({ TEMPERATURE: 40.0 })),
+        format!("The Basic layer holds {:?}", basic_payload(&frames[1])),
+    )?;
+    ensure(
+        basic_field(&frames[1], TEMPERATURE)? == "40",
+        format!(
+            "The Temperature slider shows {:?}",
+            basic_field(&frames[1], TEMPERATURE)?
+        ),
+    )?;
+    ensure(
+        balance(channels[1]) > balance(channels[0]) + WARMER,
+        format!(
+            "+40 temperature did not warm the photograph: red minus blue {:.1} against {:.1}",
+            balance(channels[1]),
+            balance(channels[0])
+        ),
+    )?;
+    let identity = basic_layer_id(&frames[1])
+        .ok_or("The committed stack holds no Basic layer")?
+        .to_owned();
+    record(
+        &frames[1],
+        "Temperature dragged to +40 and released: one entry, the photograph warmer",
+        json!({"label": label(&frames[1])?, "red_minus_blue": balance(channels[1]), "layer": identity}),
+    );
+
+    // Frame 2: Vibrance typed and committed with Enter. The patch merges into the same layer.
+    ensure(
+        revision(&frames[2])? == revision(&frames[1])? + 1,
+        "Enter in the value field did not commit exactly one revision",
+    )?;
+    ensure(
+        label(&frames[2])? == "Vibrance +25",
+        format!("The typed entry is labelled {:?}", label(&frames[2])?),
+    )?;
+    ensure(
+        basic_payload(&frames[2]) == Some(&json!({ TEMPERATURE: 40.0, VIBRANCE: 25.0 })),
+        format!(
+            "The merged Basic layer holds {:?}",
+            basic_payload(&frames[2])
+        ),
+    )?;
+    ensure(
+        basic_layer_id(&frames[2]) == Some(identity.as_str()),
+        "The typed value replaced the Basic layer instead of updating it",
+    )?;
+    record(
+        &frames[2],
+        "Vibrance typed as 25 and committed with Enter: the same layer, both fields",
+        json!({"label": label(&frames[2])?, "payload": basic_payload(&frames[2])}),
+    );
+
+    // Frame 3: the Temperature entry previewed. The sliders show that entry's own saved values,
+    // which are not the current ones, and nothing is committed.
+    ensure(
+        status(&frames[3])?.starts_with("Previewing entry 1"),
+        format!(
+            "Frame 3 is not previewing entry 1: {:?}",
+            status(&frames[3])?
+        ),
+    )?;
+    ensure(
+        basic_field(&frames[3], TEMPERATURE)? == "40" && basic_field(&frames[3], VIBRANCE)? == "0",
+        format!(
+            "The previewed entry's values are not shown: temperature {:?}, vibrance {:?}",
+            basic_field(&frames[3], TEMPERATURE)?,
+            basic_field(&frames[3], VIBRANCE)?
+        ),
+    )?;
+    ensure(
+        revision(&frames[3])? == revision(&frames[2])?,
+        "Selecting a history entry committed something",
+    )?;
+    record(
+        &frames[3],
+        "the Temperature entry previewed: its own saved values in the disabled sliders",
+        json!({"status": status(&frames[3])?, "temperature": basic_field(&frames[3], TEMPERATURE)?, "vibrance": basic_field(&frames[3], VIBRANCE)?}),
+    );
+
+    // Frame 4: Return to current. The current entry's values come back.
+    ensure(
+        basic_field(&frames[4], VIBRANCE)? == "25",
+        format!(
+            "Return to current did not restore the current values: vibrance {:?}",
+            basic_field(&frames[4], VIBRANCE)?
+        ),
+    )?;
+    ensure(
+        revision(&frames[4])? == revision(&frames[2])?,
+        "Return to current changed the revision",
+    )?;
+    record(
+        &frames[4],
+        "Return to current: the current entry's values are shown again",
+        json!({"vibrance": basic_field(&frames[4], VIBRANCE)?, "status": status(&frames[4])?}),
+    );
+
+    // Frame 5: the Colour group's reset. One entry labelled by the module, the group's own fields
+    // neutral, every other field untouched and the layer kept.
+    ensure(
+        label(&frames[5])? == format!("Reset {COLOUR_GROUP}"),
+        format!("The group reset is labelled {:?}", label(&frames[5])?),
+    )?;
+    ensure(
+        basic_payload(&frames[5]) == Some(&json!({ TEMPERATURE: 40.0 })),
+        format!(
+            "The Colour reset changed more than its group: {:?}",
+            basic_payload(&frames[5])
+        ),
+    )?;
+    ensure(
+        basic_layer_id(&frames[5]) == Some(identity.as_str()),
+        "The group reset replaced the Basic layer instead of updating it",
+    )?;
+    ensure(
+        basic_field(&frames[5], VIBRANCE)? == "0" && basic_field(&frames[5], TEMPERATURE)? == "40",
+        "The group reset did not leave the other group alone",
+    )?;
+    record(
+        &frames[5],
+        "the Colour group reset: one entry, that group neutral, White balance untouched",
+        json!({"label": label(&frames[5])?, "payload": basic_payload(&frames[5]), "layer": identity}),
+    );
+
+    // Frame 6: the neutral picker's canvas mode.
+    ensure(
+        frames[6]["state"]["workspace"]["mode"] == json!(BASIC_MODULE),
+        format!(
+            "The canvas mode is {}",
+            frames[6]["state"]["workspace"]["mode"]
+        ),
+    )?;
+    ensure(
+        status(&frames[6])?.starts_with("Neutral picker"),
+        format!("The picker mode says {:?}", status(&frames[6])?),
+    )?;
+    ensure(
+        revision(&frames[6])? == revision(&frames[5])?,
+        "Entering the picker mode committed something",
+    )?;
+    record(
+        &frames[6],
+        "the neutral picker mode, entered through workspace.set as W does",
+        json!({"mode": frames[6]["state"]["workspace"]["mode"], "status": status(&frames[6])?}),
+    );
+
+    // Frame 7: a pick on a neutral grey patch. The picker answers the exact identity, 0 and 0,
+    // and that patch is committed once through the ordinary action path, so the warm cast the
+    // drag left is gone and the photograph is the opened one again.
+    ensure(
+        revision(&frames[7])? == revision(&frames[6])? + 1,
+        "The pick did not commit exactly one revision",
+    )?;
+    ensure(
+        basic_field(&frames[7], TEMPERATURE)? == "0" && basic_field(&frames[7], TINT)? == "0",
+        format!(
+            "The picked settings are not neutral: temperature {:?}, tint {:?}",
+            basic_field(&frames[7], TEMPERATURE)?,
+            basic_field(&frames[7], TINT)?
+        ),
+    )?;
+    ensure(
+        basic_payload(&frames[7]) == Some(&json!({})),
+        format!(
+            "The picked layer holds {:?}, expected the neutral payload",
+            basic_payload(&frames[7])
+        ),
+    )?;
+    ensure(
+        basic_layer_id(&frames[7]) == Some(identity.as_str()),
+        "The pick replaced the Basic layer instead of updating it",
+    )?;
+    // The module labels a patch that returns exactly one group to neutral by that group's name,
+    // whatever route sent it, and a pick of a neutral patch is exactly such a patch.
+    ensure(
+        label(&frames[7])? == format!("Reset {WHITE_BALANCE_GROUP}"),
+        format!("The pick's entry is labelled {:?}", label(&frames[7])?),
+    )?;
+    ensure(
+        (balance(channels[7]) - balance(channels[0])).abs() <= NEUTRAL,
+        format!(
+            "The picked correction did not neutralise the photograph: red minus blue {:.1} against the opened {:.1}",
+            balance(channels[7]),
+            balance(channels[0])
+        ),
+    )?;
+    ensure(
+        frames[7]["state"]["workspace"]["mode"] == json!(BASIC_MODULE),
+        "The pick left the picker mode",
+    )?;
+    record(
+        &frames[7],
+        "a pick on a neutral grey patch: temperature and tint 0, committed once, the mode kept",
+        json!({"label": label(&frames[7])?, "payload": basic_payload(&frames[7]), "red_minus_blue": balance(channels[7]), "mean_luminance": luminance[7]}),
+    );
+
+    // Frame 8: a pick on a clipped patch. The core's own reason leads the status bar and nothing
+    // at all is committed.
+    ensure(
+        status(&frames[8])?.starts_with("clipped:"),
+        format!(
+            "The refused pick does not lead with its reason: {:?}",
+            status(&frames[8])?
+        ),
+    )?;
+    ensure(
+        revision(&frames[8])? == revision(&frames[7])? && entry(&frames[8])? == entry(&frames[7])?,
+        "A refused pick committed something",
+    )?;
+    same(
+        "the refused pick's render against the picked one",
+        luminance[8],
+        luminance[7],
+    )?;
+    record(
+        &frames[8],
+        "a pick on a clipped patch: refused with its reason, nothing committed",
+        json!({"status": status(&frames[8])?, "revision": revision(&frames[8])?}),
+    );
+
+    write_json(
+        &evidence.join("basic-panel-checks.json"),
+        &json!({
+            "checks": checks,
+            "red_minus_blue_per_frame": channels.iter().map(|channels| balance(*channels)).collect::<Vec<_>>(),
+            "mean_luminance_per_frame": luminance,
+            "warmer_margin": WARMER,
+            "neutral_tolerance": NEUTRAL,
+            "scope": "Mean per-channel readback of a centred window of the photo surface; a warm/cool direction, not a colorimetric claim",
         }),
     )?;
     Ok(())

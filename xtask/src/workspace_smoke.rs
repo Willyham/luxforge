@@ -64,12 +64,16 @@ fn expect_workspace(
     thirds: bool,
 ) -> Result {
     let workspace = workspace_state(frame);
-    // The whole per-client workspace state, compared exactly: a new field would fail here rather
-    // than be quietly ignored. This scenario never touches the clipping overlays, so both stay off
-    // throughout; the `histogram` scenario is the one that drives them.
+    // The four fields this scenario drives, each read by name, plus the two clipping overlays it
+    // never touches: the session's workspace also holds the per-client fields other features add,
+    // and a scenario that does not touch them has nothing to say about them.
     ensure(
-        workspace
-            == &json!({"state_panel":state_panel,"tools_panel":tools_panel,"mode":mode,"thirds":thirds,"clip_shadows":false,"clip_highlights":false}),
+        workspace["state_panel"] == json!(state_panel)
+            && workspace["tools_panel"] == json!(tools_panel)
+            && workspace["mode"] == json!(mode)
+            && workspace["thirds"] == json!(thirds)
+            && workspace["clip_shadows"] == json!(false)
+            && workspace["clip_highlights"] == json!(false),
         format!(
             "Workspace state is {workspace}, expected state_panel {state_panel}, tools_panel {tools_panel}, mode {mode}, thirds {thirds}, both clipping overlays off"
         ),

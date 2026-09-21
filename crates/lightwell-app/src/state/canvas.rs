@@ -1,7 +1,7 @@
 //! The canvas model: the photograph, the mode strip, the draft bar and the notices over it.
 use crate::{
     app::fields::number_text,
-    state::{Inputs, tools::point_pick_for_mode},
+    state::{Inputs, tools::canvas_pick},
 };
 use lightwell_core::{
     Availability, CanvasInteraction, ErrorKind, ModuleDescriptor, POINTER_MODE, Zoom,
@@ -158,8 +158,11 @@ pub(crate) fn derive(inputs: &Inputs<'_>) -> CanvasModel {
         thirds: inputs.session.workspace.thirds,
         draft_bar: draft_bar(inputs),
         notices: notices(inputs),
+        // A click on the photograph belongs to the canvas mode that is on screen, so the surface
+        // takes picks only while a mode declaring one is active. A sensor pick also needs a RAW
+        // source behind it, which is the one thing the descriptor cannot say.
         picking: editable
-            && point_pick_for_mode(inputs.modules, &inputs.session.workspace.mode).is_some()
+            && canvas_pick(inputs.modules, &inputs.session.workspace.mode).is_some()
             && (inputs.session.workspace.mode != "lightwell.raw"
                 || inputs.state.is_some_and(|state| {
                     matches!(state.asset.source, lightwell_core::SourceKind::Raw { .. })

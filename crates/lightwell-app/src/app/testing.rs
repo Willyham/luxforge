@@ -312,19 +312,48 @@ pub(crate) fn scripted(steps: &str) -> (Editor, PathBuf, AssetId, PathBuf) {
 }
 
 /// An editor with the registered modules discovered and one empty-stack asset open, which is what
-/// a canvas pick needs: a declared pick action, a stack to locate in and a displayed entry.
+/// a canvas pick needs: a declared pick action, a stack to locate in and a displayed entry. The
+/// session is put into the point-pick module's own canvas mode, because a pick answers to the mode
+/// that is on screen; the owner's copy is what a `workspace.set` round trip would have adopted.
 pub(crate) fn picking() -> (Editor, PathBuf, EntryId) {
     let (mut editor, catalog, _, entry_id) = opened(Vec::new(), 4);
     let _ = editor.update(Message::ModulesLoaded(Ok(descriptors())));
     assert!(editor.modules_ready);
     assert_eq!(editor.displayed_entry(), Some(entry_id.clone()));
+    editor.session.workspace.mode = pick_mode(&editor);
     (editor, catalog, entry_id)
+}
+
+/// The module whose canvas declares a plain point pick.
+pub(crate) fn pick_mode(editor: &Editor) -> String {
+    let (action, _, _) = crate::state::tools::point_pick(&editor.modules).expect("a canvas pick");
+    editor
+        .modules
+        .iter()
+        .find(|module| module.action(action).is_some())
+        .expect("the module declaring the pick action")
+        .id
+        .clone()
 }
 
 /// The names the pick action declares for its coordinate fields.
 pub(crate) fn pick_fields(editor: &Editor) -> (String, String, String) {
     let (action, x, y) = crate::state::tools::point_pick(&editor.modules).expect("a canvas pick");
     (action.to_owned(), x.to_owned(), y.to_owned())
+}
+
+/// The module whose canvas declares a sample-apply pick, with the query and action it names.
+pub(crate) fn sample_mode(editor: &Editor) -> (String, String, String) {
+    editor
+        .modules
+        .iter()
+        .find_map(|module| match module.canvas.as_ref()? {
+            lightwell_core::CanvasInteraction::SampleApply { query, action, .. } => {
+                Some((module.id.clone(), query.clone(), action.clone()))
+            }
+            _ => None,
+        })
+        .expect("a declared sample-apply canvas")
 }
 
 /// Attach a real diagnostics log so the evidence records a pick writes can be read back.

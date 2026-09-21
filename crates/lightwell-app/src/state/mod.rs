@@ -495,6 +495,107 @@ mod tests {
         );
     }
 
+    /// Every sub-group in the panel, with the state it reads and the fields it holds.
+    fn sub_groups(workspace: &Workspace) -> Vec<(String, Option<tools::GroupState>, Vec<String>)> {
+        fn walk(
+            controls: &[ControlModel],
+            found: &mut Vec<(String, Option<tools::GroupState>, Vec<String>)>,
+        ) {
+            for control in controls {
+                if let ControlModel::Group(group) = control {
+                    let fields = group
+                        .controls
+                        .iter()
+                        .filter_map(|child| match child {
+                            ControlModel::Slider(slider) => Some(slider.parameter.clone()),
+                            _ => None,
+                        })
+                        .collect();
+                    found.push((group.label.clone(), group.state, fields));
+                    walk(&group.controls, found);
+                }
+            }
+        }
+        let mut found = Vec::new();
+        for section in workspace.tools.all() {
+            walk(&section.controls, &mut found);
+        }
+        found
+    }
+
+    /// A sub-group of a field-patch action reads Original while every one of its fields is at its
+    /// declared default and Custom as soon as one is not. The words are derived from the values on
+    /// screen, which a patch action's fields take from the displayed entry's own layer, so no
+    /// module declares them and none can.
+    #[test]
+    fn a_sub_group_reads_original_until_one_of_its_fields_leaves_its_default() {
+        let modules = descriptors();
+        let patch = modules
+            .iter()
+            .flat_map(|module| module.actions.iter())
+            .find(|action| action.patch)
+            .expect("a built-in declares a field patch")
+            .clone();
+        let parameter = patch
+            .parameters
+            .first()
+            .expect("the patch declares a field")
+            .name
+            .clone();
+        let mut scene = Scene::new(modules).opened(Vec::new());
+        scene.developer = true;
+
+        let listed = sub_groups(&scene.derive());
+        assert!(listed.len() >= 3, "the built-ins declare sub-groups");
+        let stateful: Vec<&(String, Option<tools::GroupState>, Vec<String>)> = listed
+            .iter()
+            .filter(|(_, state, _)| state.is_some())
+            .collect();
+        assert!(
+            stateful.len() >= 3,
+            "no group of a patch action was modelled: {listed:?}"
+        );
+        for (label, state, _) in &stateful {
+            assert_eq!(
+                *state,
+                Some(tools::GroupState::Original),
+                "{label} does not start at its declared defaults"
+            );
+        }
+        assert_eq!(tools::GroupState::Original.caption(), "Original");
+        assert_eq!(tools::GroupState::Custom.caption(), "Custom");
+
+        // One field off its default turns exactly the group that holds it Custom.
+        scene.fields.set(&patch.id, &parameter, "1.5".into());
+        let changed = sub_groups(&scene.derive());
+        for (label, state, fields) in &changed {
+            let expected = if fields.contains(&parameter) {
+                Some(tools::GroupState::Custom)
+            } else if listed
+                .iter()
+                .any(|(other, other_state, _)| other == label && other_state.is_some())
+            {
+                Some(tools::GroupState::Original)
+            } else {
+                None
+            };
+            assert_eq!(*state, expected, "{label} reads the wrong state");
+        }
+
+        // An unreadable value is not its default either, so its group says so rather than
+        // pretending the field still holds what the layer stores.
+        scene
+            .fields
+            .set(&patch.id, &parameter, "not a number".into());
+        let invalid = sub_groups(&scene.derive());
+        assert!(
+            invalid
+                .iter()
+                .any(|(_, state, fields)| fields.contains(&parameter)
+                    && *state == Some(tools::GroupState::Custom))
+        );
+    }
+
     fn find_slider<'a>(
         workspace: &'a Workspace,
         action: &str,

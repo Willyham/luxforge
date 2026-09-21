@@ -648,6 +648,41 @@ pub(crate) fn locate_task(
     )
 }
 
+/// One declared module query at a located content pixel, which is what a `sample-apply` canvas
+/// mode asks before it commits anything. This is `query.<id>`, the same read-only method an
+/// independent client calls: it mutates nothing, writes no history entry and emits no event, and
+/// the core answers it from point samples over the compiled evaluation a commit would plan
+/// against, so a pick renders no frame. The coordinate parameter names come from the declaration,
+/// not from this file.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn query_task(
+    owner: OwnerHandle,
+    client: ClientId,
+    asset_id: AssetId,
+    entry: EntryId,
+    query: String,
+    action: String,
+    coordinates: (String, String),
+    point: (u32, u32),
+) -> Task<Message> {
+    let answered = entry.clone();
+    Task::perform(
+        async move {
+            let mut params = json!({"asset_id":asset_id,"entry_id":entry});
+            let object = params.as_object_mut().expect("the envelope is an object");
+            object.insert(coordinates.0, Value::from(point.0));
+            object.insert(coordinates.1, Value::from(point.1));
+            call(&owner, client, &format!("query.{query}"), params).map(|(value, _)| value)
+        },
+        move |result| Message::SampleQueried {
+            entry: answered.clone(),
+            action: action.clone(),
+            point,
+            result,
+        },
+    )
+}
+
 /// One pixel of the displayed stack for the pointer readout. It is a point query: `render.sample`
 /// evaluates the compiled recipe at one coordinate and rasterizes nothing, so hovering costs
 /// O(layers) on the owner thread and never a frame. The entry travels back with the answer, so a

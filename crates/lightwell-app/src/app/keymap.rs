@@ -20,6 +20,9 @@ pub(crate) struct KeyContext {
     pub(crate) slider_drafting: bool,
     /// The command palette is open, so Escape closes it rather than reaching a draft.
     pub(crate) palette_open: bool,
+    /// A module's canvas mode is active, so Escape leaves it. A mode that owns a draft answers
+    /// Escape with its own cancel first; a mode without one has nothing to discard.
+    pub(crate) mode_active: bool,
     /// The declared canvas-mode shortcut letters and the module each one selects.
     pub(crate) modes: Vec<(char, String)>,
 }
@@ -140,6 +143,12 @@ pub(crate) fn keymap(event: &Event, status: Status, context: &KeyContext) -> Opt
             _ => {}
         }
     }
+    // A canvas mode without a draft of its own — a pick mode — is left with Escape, which commits
+    // nothing. A mode that owns a draft answered Escape above by cancelling that draft, which is
+    // what returns it to the pointer.
+    if context.mode_active && !context.drafting && matches!(key, Key::Named(Named::Escape)) {
+        return Some(Message::SetMode(POINTER_MODE.into()));
+    }
     // Single-key shortcuts act only when no text field took the key, and only on the first press:
     // holding a letter down must not re-run its command once per repeat.
     if *repeat {
@@ -223,6 +232,7 @@ mod tests {
             drafting: false,
             slider_drafting: false,
             palette_open: false,
+            mode_active: false,
             modes: vec![('R', "lightwell.crop".into())],
         }
     }

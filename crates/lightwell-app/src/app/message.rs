@@ -322,6 +322,16 @@ pub(crate) enum Message {
         view: (u32, u32),
         result: Result<ContentPoint, String>,
     },
+    /// What a `sample-apply` mode's declared query answered for the content pixel a pick located.
+    /// A success submits the fields it names that are parameters of the mode's action, once; a
+    /// refusal commits nothing and shows the core's own reason. The entry it was asked about
+    /// travels with it, so an answer about a stack that has since been replaced is dropped.
+    SampleQueried {
+        entry: EntryId,
+        action: String,
+        point: (u32, u32),
+        result: Result<Value, String>,
+    },
     /// Move focus to the next generated field.
     FocusNext,
     /// Move focus to the previous generated field.
