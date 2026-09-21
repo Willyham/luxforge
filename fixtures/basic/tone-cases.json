@@ -1,0 +1,982 @@
+[
+  {
+    "label": "identity/grey-code-0",
+    "input_linear_rgb": [
+      0.0,
+      0.0,
+      0.0
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": 0.0,
+      "shadows": 0.0,
+      "whites": 0.0,
+      "blacks": 0.0
+    },
+    "expected_linear_rgb": [
+      0.0,
+      0.0,
+      0.0
+    ]
+  },
+  {
+    "label": "identity/grey-code-64",
+    "input_linear_rgb": [
+      0.05126945837404324,
+      0.05126945837404324,
+      0.05126945837404324
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": 0.0,
+      "shadows": 0.0,
+      "whites": 0.0,
+      "blacks": 0.0
+    },
+    "expected_linear_rgb": [
+      0.05126945837404324,
+      0.05126945837404324,
+      0.05126945837404324
+    ]
+  },
+  {
+    "label": "identity/grey-code-128",
+    "input_linear_rgb": [
+      0.21586050011389926,
+      0.21586050011389926,
+      0.21586050011389926
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": 0.0,
+      "shadows": 0.0,
+      "whites": 0.0,
+      "blacks": 0.0
+    },
+    "expected_linear_rgb": [
+      0.21586050011389926,
+      0.21586050011389926,
+      0.21586050011389926
+    ]
+  },
+  {
+    "label": "identity/grey-code-192",
+    "input_linear_rgb": [
+      0.5271151257058131,
+      0.5271151257058131,
+      0.5271151257058131
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": 0.0,
+      "shadows": 0.0,
+      "whites": 0.0,
+      "blacks": 0.0
+    },
+    "expected_linear_rgb": [
+      0.5271151257058131,
+      0.5271151257058131,
+      0.5271151257058131
+    ]
+  },
+  {
+    "label": "identity/grey-code-255",
+    "input_linear_rgb": [
+      1.0,
+      1.0,
+      1.0
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": 0.0,
+      "shadows": 0.0,
+      "whites": 0.0,
+      "blacks": 0.0
+    },
+    "expected_linear_rgb": [
+      1.0,
+      1.0,
+      1.0
+    ]
+  },
+  {
+    "label": "single/contrast/-100/mid-grey",
+    "input_linear_rgb": [
+      0.18,
+      0.18,
+      0.18
+    ],
+    "params": {
+      "contrast": -100.0,
+      "highlights": 0.0,
+      "shadows": 0.0,
+      "whites": 0.0,
+      "blacks": 0.0
+    },
+    "expected_linear_rgb": [
+      0.15970192861002616,
+      0.15970192861002616,
+      0.15970192861002616
+    ]
+  },
+  {
+    "label": "single/contrast/-50/mid-grey",
+    "input_linear_rgb": [
+      0.18,
+      0.18,
+      0.18
+    ],
+    "params": {
+      "contrast": -50.0,
+      "highlights": 0.0,
+      "shadows": 0.0,
+      "whites": 0.0,
+      "blacks": 0.0
+    },
+    "expected_linear_rgb": [
+      0.17425096857385866,
+      0.17425096857385866,
+      0.17425096857385866
+    ]
+  },
+  {
+    "label": "single/contrast/50/mid-grey",
+    "input_linear_rgb": [
+      0.18,
+      0.18,
+      0.18
+    ],
+    "params": {
+      "contrast": 50.0,
+      "highlights": 0.0,
+      "shadows": 0.0,
+      "whites": 0.0,
+      "blacks": 0.0
+    },
+    "expected_linear_rgb": [
+      0.17425096857385866,
+      0.17425096857385866,
+      0.17425096857385866
+    ]
+  },
+  {
+    "label": "single/contrast/100/mid-grey",
+    "input_linear_rgb": [
+      0.18,
+      0.18,
+      0.18
+    ],
+    "params": {
+      "contrast": 100.0,
+      "highlights": 0.0,
+      "shadows": 0.0,
+      "whites": 0.0,
+      "blacks": 0.0
+    },
+    "expected_linear_rgb": [
+      0.15970192861002602,
+      0.15970192861002602,
+      0.15970192861002602
+    ]
+  },
+  {
+    "label": "single/highlights/-100/mid-grey",
+    "input_linear_rgb": [
+      0.18,
+      0.18,
+      0.18
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": -100.0,
+      "shadows": 0.0,
+      "whites": 0.0,
+      "blacks": 0.0
+    },
+    "expected_linear_rgb": [
+      0.17968124686374187,
+      0.17968124686374187,
+      0.17968124686374187
+    ]
+  },
+  {
+    "label": "single/highlights/-50/mid-grey",
+    "input_linear_rgb": [
+      0.18,
+      0.18,
+      0.18
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": -50.0,
+      "shadows": 0.0,
+      "whites": 0.0,
+      "blacks": 0.0
+    },
+    "expected_linear_rgb": [
+      0.17984058223653698,
+      0.17984058223653698,
+      0.17984058223653698
+    ]
+  },
+  {
+    "label": "single/highlights/50/mid-grey",
+    "input_linear_rgb": [
+      0.18,
+      0.18,
+      0.18
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": 50.0,
+      "shadows": 0.0,
+      "whites": 0.0,
+      "blacks": 0.0
+    },
+    "expected_linear_rgb": [
+      0.1801595001662989,
+      0.1801595001662989,
+      0.1801595001662989
+    ]
+  },
+  {
+    "label": "single/highlights/100/mid-grey",
+    "input_linear_rgb": [
+      0.18,
+      0.18,
+      0.18
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": 100.0,
+      "shadows": 0.0,
+      "whites": 0.0,
+      "blacks": 0.0
+    },
+    "expected_linear_rgb": [
+      0.1803190827475988,
+      0.1803190827475988,
+      0.1803190827475988
+    ]
+  },
+  {
+    "label": "single/shadows/-100/mid-grey",
+    "input_linear_rgb": [
+      0.18,
+      0.18,
+      0.18
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": 0.0,
+      "shadows": -100.0,
+      "whites": 0.0,
+      "blacks": 0.0
+    },
+    "expected_linear_rgb": [
+      0.1629618192068802,
+      0.1629618192068802,
+      0.1629618192068802
+    ]
+  },
+  {
+    "label": "single/shadows/-50/mid-grey",
+    "input_linear_rgb": [
+      0.18,
+      0.18,
+      0.18
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": 0.0,
+      "shadows": -50.0,
+      "whites": 0.0,
+      "blacks": 0.0
+    },
+    "expected_linear_rgb": [
+      0.17135739113464152,
+      0.17135739113464152,
+      0.17135739113464152
+    ]
+  },
+  {
+    "label": "single/shadows/50/mid-grey",
+    "input_linear_rgb": [
+      0.18,
+      0.18,
+      0.18
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": 0.0,
+      "shadows": 50.0,
+      "whites": 0.0,
+      "blacks": 0.0
+    },
+    "expected_linear_rgb": [
+      0.18889168014687252,
+      0.18889168014687252,
+      0.18889168014687252
+    ]
+  },
+  {
+    "label": "single/shadows/100/mid-grey",
+    "input_linear_rgb": [
+      0.18,
+      0.18,
+      0.18
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": 0.0,
+      "shadows": 100.0,
+      "whites": 0.0,
+      "blacks": 0.0
+    },
+    "expected_linear_rgb": [
+      0.19803444129407732,
+      0.19803444129407732,
+      0.19803444129407732
+    ]
+  },
+  {
+    "label": "single/whites/-100/mid-grey",
+    "input_linear_rgb": [
+      0.18,
+      0.18,
+      0.18
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": 0.0,
+      "shadows": 0.0,
+      "whites": -100.0,
+      "blacks": 0.0
+    },
+    "expected_linear_rgb": [
+      0.11222273476040664,
+      0.11222273476040664,
+      0.11222273476040664
+    ]
+  },
+  {
+    "label": "single/whites/-50/mid-grey",
+    "input_linear_rgb": [
+      0.18,
+      0.18,
+      0.18
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": 0.0,
+      "shadows": 0.0,
+      "whites": -50.0,
+      "blacks": 0.0
+    },
+    "expected_linear_rgb": [
+      0.1400530662161633,
+      0.1400530662161633,
+      0.1400530662161633
+    ]
+  },
+  {
+    "label": "single/whites/50/mid-grey",
+    "input_linear_rgb": [
+      0.18,
+      0.18,
+      0.18
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": 0.0,
+      "shadows": 0.0,
+      "whites": 50.0,
+      "blacks": 0.0
+    },
+    "expected_linear_rgb": [
+      0.24014979304670706,
+      0.24014979304670706,
+      0.24014979304670706
+    ]
+  },
+  {
+    "label": "single/whites/100/mid-grey",
+    "input_linear_rgb": [
+      0.18,
+      0.18,
+      0.18
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": 0.0,
+      "shadows": 0.0,
+      "whites": 100.0,
+      "blacks": 0.0
+    },
+    "expected_linear_rgb": [
+      0.33650671764440265,
+      0.33650671764440265,
+      0.33650671764440265
+    ]
+  },
+  {
+    "label": "single/blacks/-100/mid-grey",
+    "input_linear_rgb": [
+      0.18,
+      0.18,
+      0.18
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": 0.0,
+      "shadows": 0.0,
+      "whites": 0.0,
+      "blacks": -100.0
+    },
+    "expected_linear_rgb": [
+      0.2836474753012828,
+      0.2836474753012828,
+      0.2836474753012828
+    ]
+  },
+  {
+    "label": "single/blacks/-50/mid-grey",
+    "input_linear_rgb": [
+      0.18,
+      0.18,
+      0.18
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": 0.0,
+      "shadows": 0.0,
+      "whites": 0.0,
+      "blacks": -50.0
+    },
+    "expected_linear_rgb": [
+      0.23419615584030995,
+      0.23419615584030995,
+      0.23419615584030995
+    ]
+  },
+  {
+    "label": "single/blacks/50/mid-grey",
+    "input_linear_rgb": [
+      0.18,
+      0.18,
+      0.18
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": 0.0,
+      "shadows": 0.0,
+      "whites": 0.0,
+      "blacks": 50.0
+    },
+    "expected_linear_rgb": [
+      0.12220102253536987,
+      0.12220102253536987,
+      0.12220102253536987
+    ]
+  },
+  {
+    "label": "single/blacks/100/mid-grey",
+    "input_linear_rgb": [
+      0.18,
+      0.18,
+      0.18
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": 0.0,
+      "shadows": 0.0,
+      "whites": 0.0,
+      "blacks": 100.0
+    },
+    "expected_linear_rgb": [
+      0.06455239911091588,
+      0.06455239911091588,
+      0.06455239911091588
+    ]
+  },
+  {
+    "label": "region/highlights/-100/upper-tone",
+    "input_linear_rgb": [
+      0.6,
+      0.6,
+      0.6
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": -100.0,
+      "shadows": 0.0,
+      "whites": 0.0,
+      "blacks": 0.0
+    },
+    "expected_linear_rgb": [
+      0.5188534333723426,
+      0.5188534333723426,
+      0.5188534333723426
+    ]
+  },
+  {
+    "label": "region/highlights/100/upper-tone",
+    "input_linear_rgb": [
+      0.6,
+      0.6,
+      0.6
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": 100.0,
+      "shadows": 0.0,
+      "whites": 0.0,
+      "blacks": 0.0
+    },
+    "expected_linear_rgb": [
+      0.6881041215580237,
+      0.6881041215580237,
+      0.6881041215580237
+    ]
+  },
+  {
+    "label": "region/highlights/-100/near-black",
+    "input_linear_rgb": [
+      0.02,
+      0.02,
+      0.02
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": -100.0,
+      "shadows": 0.0,
+      "whites": 0.0,
+      "blacks": 0.0
+    },
+    "expected_linear_rgb": [
+      0.02,
+      0.02,
+      0.02
+    ]
+  },
+  {
+    "label": "region/highlights/100/near-black",
+    "input_linear_rgb": [
+      0.02,
+      0.02,
+      0.02
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": 100.0,
+      "shadows": 0.0,
+      "whites": 0.0,
+      "blacks": 0.0
+    },
+    "expected_linear_rgb": [
+      0.02,
+      0.02,
+      0.02
+    ]
+  },
+  {
+    "label": "region/shadows/-100/near-white",
+    "input_linear_rgb": [
+      0.9,
+      0.9,
+      0.9
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": 0.0,
+      "shadows": -100.0,
+      "whites": 0.0,
+      "blacks": 0.0
+    },
+    "expected_linear_rgb": [
+      0.9,
+      0.9,
+      0.9
+    ]
+  },
+  {
+    "label": "region/shadows/100/near-white",
+    "input_linear_rgb": [
+      0.9,
+      0.9,
+      0.9
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": 0.0,
+      "shadows": 100.0,
+      "whites": 0.0,
+      "blacks": 0.0
+    },
+    "expected_linear_rgb": [
+      0.9,
+      0.9,
+      0.9
+    ]
+  },
+  {
+    "label": "region/shadows/-100/lower-tone",
+    "input_linear_rgb": [
+      0.02,
+      0.02,
+      0.02
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": 0.0,
+      "shadows": -100.0,
+      "whites": 0.0,
+      "blacks": 0.0
+    },
+    "expected_linear_rgb": [
+      0.014354791485602255,
+      0.014354791485602255,
+      0.014354791485602255
+    ]
+  },
+  {
+    "label": "region/shadows/100/lower-tone",
+    "input_linear_rgb": [
+      0.02,
+      0.02,
+      0.02
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": 0.0,
+      "shadows": 100.0,
+      "whites": 0.0,
+      "blacks": 0.0
+    },
+    "expected_linear_rgb": [
+      0.026764221096639753,
+      0.026764221096639753,
+      0.026764221096639753
+    ]
+  },
+  {
+    "label": "region/whites/-100/near-white",
+    "input_linear_rgb": [
+      0.9,
+      0.9,
+      0.9
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": 0.0,
+      "shadows": 0.0,
+      "whites": -100.0,
+      "blacks": 0.0
+    },
+    "expected_linear_rgb": [
+      0.5441979656138726,
+      0.5441979656138726,
+      0.5441979656138726
+    ]
+  },
+  {
+    "label": "region/whites/100/near-white",
+    "input_linear_rgb": [
+      0.9,
+      0.9,
+      0.9
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": 0.0,
+      "shadows": 0.0,
+      "whites": 100.0,
+      "blacks": 0.0
+    },
+    "expected_linear_rgb": [
+      1.7370156275512694,
+      1.7370156275512694,
+      1.7370156275512694
+    ]
+  },
+  {
+    "label": "region/blacks/-100/near-white",
+    "input_linear_rgb": [
+      0.9,
+      0.9,
+      0.9
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": 0.0,
+      "shadows": 0.0,
+      "whites": 0.0,
+      "blacks": -100.0
+    },
+    "expected_linear_rgb": [
+      0.919509288193205,
+      0.919509288193205,
+      0.919509288193205
+    ]
+  },
+  {
+    "label": "region/blacks/100/near-white",
+    "input_linear_rgb": [
+      0.9,
+      0.9,
+      0.9
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": 0.0,
+      "shadows": 0.0,
+      "whites": 0.0,
+      "blacks": 100.0
+    },
+    "expected_linear_rgb": [
+      0.8680254605645695,
+      0.8680254605645695,
+      0.8680254605645695
+    ]
+  },
+  {
+    "label": "region/whites/-100/near-black",
+    "input_linear_rgb": [
+      0.02,
+      0.02,
+      0.02
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": 0.0,
+      "shadows": 0.0,
+      "whites": -100.0,
+      "blacks": 0.0
+    },
+    "expected_linear_rgb": [
+      0.013663812642166148,
+      0.013663812642166148,
+      0.013663812642166148
+    ]
+  },
+  {
+    "label": "region/whites/100/near-black",
+    "input_linear_rgb": [
+      0.02,
+      0.02,
+      0.02
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": 0.0,
+      "shadows": 0.0,
+      "whites": 100.0,
+      "blacks": 0.0
+    },
+    "expected_linear_rgb": [
+      0.0338169655512837,
+      0.0338169655512837,
+      0.0338169655512837
+    ]
+  },
+  {
+    "label": "region/blacks/-100/near-black",
+    "input_linear_rgb": [
+      0.02,
+      0.02,
+      0.02
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": 0.0,
+      "shadows": 0.0,
+      "whites": 0.0,
+      "blacks": -100.0
+    },
+    "expected_linear_rgb": [
+      0.0842656627479923,
+      0.0842656627479923,
+      0.0842656627479923
+    ]
+  },
+  {
+    "label": "region/blacks/100/near-black",
+    "input_linear_rgb": [
+      0.02,
+      0.02,
+      0.02
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": 0.0,
+      "shadows": 0.0,
+      "whites": 0.0,
+      "blacks": 100.0
+    },
+    "expected_linear_rgb": [
+      -0.010144095013803712,
+      -0.010144095013803712,
+      -0.010144095013803712
+    ]
+  },
+  {
+    "label": "combined/all-plus-100/mid-grey",
+    "input_linear_rgb": [
+      0.18,
+      0.18,
+      0.18
+    ],
+    "params": {
+      "contrast": 100.0,
+      "highlights": 100.0,
+      "shadows": 100.0,
+      "whites": 100.0,
+      "blacks": 100.0
+    },
+    "expected_linear_rgb": [
+      0.15961781129847577,
+      0.15961781129847577,
+      0.15961781129847577
+    ]
+  },
+  {
+    "label": "combined/all-plus-100/saturated",
+    "input_linear_rgb": [
+      0.82,
+      0.11,
+      0.04
+    ],
+    "params": {
+      "contrast": 100.0,
+      "highlights": 100.0,
+      "shadows": 100.0,
+      "whites": 100.0,
+      "blacks": 100.0
+    },
+    "expected_linear_rgb": [
+      1.447918166069465,
+      0.19423292471663559,
+      0.07063015444241294
+    ]
+  },
+  {
+    "label": "combined/all-minus-100/mid-grey",
+    "input_linear_rgb": [
+      0.18,
+      0.18,
+      0.18
+    ],
+    "params": {
+      "contrast": -100.0,
+      "highlights": -100.0,
+      "shadows": -100.0,
+      "whites": -100.0,
+      "blacks": -100.0
+    },
+    "expected_linear_rgb": [
+      0.15391255771547396,
+      0.15391255771547396,
+      0.15391255771547396
+    ]
+  },
+  {
+    "label": "combined/all-minus-100/saturated",
+    "input_linear_rgb": [
+      0.82,
+      0.11,
+      0.04
+    ],
+    "params": {
+      "contrast": -100.0,
+      "highlights": -100.0,
+      "shadows": -100.0,
+      "whites": -100.0,
+      "blacks": -100.0
+    },
+    "expected_linear_rgb": [
+      0.7380387952059718,
+      0.09900520423494745,
+      0.0360018924490718
+    ]
+  },
+  {
+    "label": "combined/mixed-signs/mid-grey",
+    "input_linear_rgb": [
+      0.18,
+      0.18,
+      0.18
+    ],
+    "params": {
+      "contrast": -70.0,
+      "highlights": 40.0,
+      "shadows": -40.0,
+      "whites": 20.0,
+      "blacks": -20.0
+    },
+    "expected_linear_rgb": [
+      0.23167690594644277,
+      0.23167690594644277,
+      0.23167690594644277
+    ]
+  },
+  {
+    "label": "combined/mixed-signs/saturated",
+    "input_linear_rgb": [
+      0.82,
+      0.11,
+      0.04
+    ],
+    "params": {
+      "contrast": -70.0,
+      "highlights": 40.0,
+      "shadows": -40.0,
+      "whites": 20.0,
+      "blacks": -20.0
+    },
+    "expected_linear_rgb": [
+      1.2042783591809647,
+      0.1615495359876904,
+      0.0587452858137056
+    ]
+  },
+  {
+    "label": "near-black-additive-rule/blacks/-100",
+    "input_linear_rgb": [
+      0.0,
+      0.0,
+      0.0
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": 0.0,
+      "shadows": 0.0,
+      "whites": 0.0,
+      "blacks": -100.0
+    },
+    "expected_linear_rgb": [
+      0.033104766570885055,
+      0.033104766570885055,
+      0.033104766570885055
+    ]
+  },
+  {
+    "label": "near-black-additive-rule/blacks/100",
+    "input_linear_rgb": [
+      0.0,
+      0.0,
+      0.0
+    ],
+    "params": {
+      "contrast": 0.0,
+      "highlights": 0.0,
+      "shadows": 0.0,
+      "whites": 0.0,
+      "blacks": 100.0
+    },
+    "expected_linear_rgb": [
+      -0.025799793601651185,
+      -0.025799793601651185,
+      -0.025799793601651185
+    ]
+  }
+]
