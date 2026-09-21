@@ -13,6 +13,9 @@
 //! must match this reference within `1e-6 + 1e-6 * abs(reference)` in linear float, and at
 //! most one output code of difference at a quantization boundary.
 
+// Every integration test binary compiles this whole module and uses one study's part of it.
+#![allow(dead_code)]
+
 pub mod colour;
 pub mod white_balance;
 
