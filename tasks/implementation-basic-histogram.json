@@ -429,7 +429,7 @@
     {
       "id": "TASK-007",
       "description": "Build the Histogram inspector, clipping overlays and pixel readout.",
-      "status": "in_progress",
+      "status": "completed",
       "dependencies": [
         "TASK-006"
       ],

@@ -32,6 +32,7 @@ Doctor reports missing tools and the graphics environment without installing any
 | Rendered crop workflow and overlay | `cargo xtask smoke --scenario crop --output NEW_DIR`, `--scenario crop-draft` |
 | Rendered workspace panels, mode, preview, conflict and palette; unavailable-provider notice | `cargo xtask smoke --scenario workspace --output NEW_DIR`, `--scenario unavailable` |
 | Rendered Basic slider gesture: draft, commit, typed value, undo, reset and conflict | `cargo xtask smoke --scenario basic --output NEW_DIR` |
+| Rendered histogram, clipping overlays and pointer readout | `cargo xtask smoke --scenario histogram --output NEW_DIR` |
 | Inspect a capture | `cargo xtask check-capture --image PNG [--orientation N]` |
 | Process failure checks; macOS measurement | `cargo xtask hardening --binary PATH --output NEW_DIR`, `cargo xtask measure --binary PATH --output NEW_DIR [--samples N]` |
 | Package; dependency inventory | `cargo xtask package --output NEW_DIR`, `cargo xtask inventory --output NEW_DIR` |
@@ -56,7 +57,7 @@ On macOS, `develop --background` builds the selected profile and runs a temporar
 
 ## Rendered evidence
 
-Smoke runs the built or packaged editor through a deterministic evidence sequence (repeated `--open`, evidence directory, fixed window size, bounded deadlines); there is no separate viewer, so the captured frame is the editor window with its sidebar. Scenarios: `empty`, `load`, `replacement`, `invalid`, `repeated`, `alternating`, `large24`, `large60`, `crop`, `crop-draft`, `workspace`, `unavailable`; generate the large fixtures first. Each run writes `result.json`, `app/events.jsonl`, `app/state.json`, `app/frame-*.png` (window-renderer readbacks, not OS screenshots), `subprocess.log` and `reproduce.md`. Each frame records `surface_columns`, the physical x range of the photo surface derived from the editor's layout constants, and the runner verifies fixture colors, Fit geometry and centering within that range, generation and state, backend, exit status and unchanged source hashes before writing `passed`; blank, stale or missing frames fail. The `render_ready` event marks the upload of the open request's preview raster, which is when a frame becomes capturable. A 25-second application deadline and a 35-second process deadline bound hangs.
+Smoke runs the built or packaged editor through a deterministic evidence sequence (repeated `--open`, evidence directory, fixed window size, bounded deadlines); there is no separate viewer, so the captured frame is the editor window with its sidebar. Scenarios: `empty`, `load`, `replacement`, `invalid`, `repeated`, `alternating`, `large24`, `large60`, `crop`, `crop-draft`, `workspace`, `basic`, `histogram`, `unavailable`; generate the large fixtures first. Each run writes `result.json`, `app/events.jsonl`, `app/state.json`, `app/frame-*.png` (window-renderer readbacks, not OS screenshots), `subprocess.log` and `reproduce.md`. Each frame records `surface_columns`, the physical x range of the photo surface derived from the editor's layout constants, and the runner verifies fixture colors, Fit geometry and centering within that range, generation and state, backend, exit status and unchanged source hashes before writing `passed`; blank, stale or missing frames fail. The `render_ready` event marks the upload of the open request's preview raster, which is when a frame becomes capturable. A 25-second application deadline and a 35-second process deadline bound hangs.
 
 ### Evidence scripts
 
@@ -101,15 +102,20 @@ Each step is an object with exactly one key.
 - `reset` runs a declared reset: `{"module": "lightwell.basic"}` is the module's own header reset and
   `{"module": "lightwell.basic", "group": "Tone"}` is that control group's, found by its label.
 - `view` sets the zoom through `view.set`: `{"zoom": "fit"}` or a percentage from 10 to 1600.
-- `workspace` sets any of `state_panel`, `tools_panel`, `mode` and `thirds` through `workspace.set`,
-  naming only the fields that actually differ from the session's own; captured on that round trip,
-  or immediately when nothing differs.
+- `workspace` sets any of `state_panel`, `tools_panel`, `mode`, `thirds`, `clip_shadows` and
+  `clip_highlights` through `workspace.set`, naming only the fields that actually differ from the
+  session's own; captured on that round trip, or immediately when nothing differs. A step that
+  switches a clipping overlay **on** waits instead for that overlay's own bounded texture to reach
+  the GPU, so its frame shows the mask rather than the photograph a moment before it.
 - `preview` selects a loaded history entry by its sequence number (`{"sequence": N}`) or returns to
   the current state (`"current"`), exactly as a history row's click or "Return to current" does.
   Captured once its pixels reach the GPU.
 - `palette` opens the command palette and types a query: `{"query": "text"}` captures the next frame
   with the palette open; `{"run": "text"}` additionally runs the first matching entry, settled the
   way that entry's own message would be.
+- `hover` (`{"x": N, "y": N}`) puts the pointer on one pixel of the displayed raster, exactly as the
+  canvas publishes a move, and is captured once `render.sample` has answered with the three output
+  codes under it.
 
 A step that cannot be sent is recorded with `"status": "failed"` and its reason and still captures a
 frame, so a refused step is visible in the evidence instead of missing from it.
@@ -148,6 +154,27 @@ reads darker, the committed render matches the drafted one it replaced within 2 
 reset and discarded frames match the committed stack within the same tolerance. It writes
 `app/basic-checks.json` with every measured mean and both tolerances. The scope is displayed
 brightness read back from the renderer, not a colorimetric claim.
+
+`histogram` opens the same fixture at 1440 × 900 and drives the inspector, both clipping overlays and
+the pointer readout over nine frames: the default screen, one `edit.set-pixel` of `(0, 128, 255)` at
+content pixel 360, 240, a hover over that pixel, the shadow overlay alone, both overlays, 100%, Fit
+again, both overlays off, and a preview of the Original. The fixture's clipped pixels are known from
+its generator rather than guessed — the quadrant colours reach neither endpoint, the white centre
+line and arrow are at code 255 in every channel and the dash band across the middle is at code 0 in
+every channel — and the set pixel is the only one in the run with a channel at each endpoint, which
+is both the magenta case and the isolated-clipped-pixel case a Fit overlay must survive. The runner
+checks every frame's eleven counters and the plot's shared maximum against `analysis::reduce_raster`
+of an **independent** core render of the same fixture through the same recipe, exactly; that the
+readout reports the codes of the pixel just set and clears when the displayed entry changes; that the
+overlay's cell grid is one cell per source pixel at Fit and at 100%, where the photograph also
+measures 480 physical pixels wide; and, by differencing each overlay frame against the overlay-off
+frame of the same stack and zoom, that blue appears over the code-0 dashes, red over the code-255
+line, magenta on the one both-endpoint pixel, nothing over the unclipped quadrant interiors, and
+nothing at all once both flags are off. Differencing rather than classifying a colour is deliberate:
+the fixture's own red quadrant is as red as a highlight mask is, so only the change from the same
+frame without the mask identifies one. Each overlay frame's `state.stack` is compared with the frame
+before it, which is how the run proves a view flag commits nothing. It writes
+`app/histogram-checks.json`.
 
 `unavailable` is not one launch but two, since a module can only be disabled at startup. The first
 opens the fixture and commits a 16:9 `edit.crop-fit` with every built-in module registered. The

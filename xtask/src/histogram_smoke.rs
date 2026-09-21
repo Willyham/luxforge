@@ -1,0 +1,674 @@
+//! The `histogram` smoke scenario: the inspector, the clipping overlays and the pointer readout.
+//!
+//! The fixture is the ordinary `orientation-1` pattern, whose clipped pixels are known from the
+//! generator rather than guessed: four quadrant colours with no channel at an endpoint, a white
+//! centre line and arrow (every channel at 255), and a band of black dashes across the middle
+//! (every channel at 0). Nothing in it has one channel at 0 and another at 255, so the scenario
+//! commits one `edit.set-pixel` of `(0, 128, 255)` to make exactly one both-endpoint pixel — which
+//! is also the isolated-clipped-pixel case the contract asks the Fit overlay to survive.
+//!
+//! Every count a frame reports is checked against `analysis::reduce_raster` of an **independent**
+//! core render of the same fixture through the same recipe, so the plot is verified against the
+//! reducer rather than against itself.
+use crate::{
+    smoke::{Expect, columns, frame_identity, pixels},
+    *,
+};
+use lightwell_core::{
+    Layer, ModuleRegistry, RECIPE_FORMAT, Recipe, SnapshotId, analysis, render as core_render,
+};
+
+/// The fixture: 480x320, orientation 1, the quadrant pattern with the white centre line and the
+/// black dash band.
+const FIXTURE: &str = "fixtures/s0/orientation-1.jpg";
+pub const WINDOW: [&str; 2] = ["1440", "900"];
+const SOURCE: (u32, u32) = (480, 320);
+
+/// The content-stage pixel the scenario sets to a both-endpoint colour, in the middle of the gold
+/// quadrant and far from every other clipped pixel in the fixture, so its overlay cell is isolated.
+const BOTH_PIXEL: (u32, u32) = (360, 240);
+/// Its colour: one channel at 0 and one at 255, which is the both-endpoint class exactly.
+const BOTH_RGB: [u8; 3] = [0, 128, 255];
+
+/// Source points the checks sample, each named by what the fixture puts there.
+/// A black dash: every channel 0, so shadow and never highlight.
+const DASH: (u32, u32) = (60, 160);
+/// The white centre line: every channel 255, so highlight and never shadow.
+const LINE: (u32, u32) = (240, 200);
+/// Quadrant interiors with no channel at either endpoint, so no overlay may appear on them.
+const CLEAN: [(u32, u32); 4] = [(120, 60), (400, 60), (120, 270), (420, 285)];
+
+/// How many frames the scenario captures: one for the open, then one per script step.
+pub fn frames(scenario: &str) -> Option<usize> {
+    match scenario {
+        "histogram" => Some(9),
+        _ => None,
+    }
+}
+
+/// The scenario's own fixture, so `smoke::run` opens the one the checks below are written against.
+pub fn source(scenario: &str) -> Option<&'static str> {
+    (scenario == "histogram").then_some(FIXTURE)
+}
+
+pub fn script(scenario: &str) -> Option<Value> {
+    (scenario == "histogram").then(|| {
+        json!([
+            // 1: one both-endpoint pixel, committed through the ordinary edit path.
+            {"api":{"method":"edit.set-pixel","params":{"x":BOTH_PIXEL.0,"y":BOTH_PIXEL.1,"rgb":BOTH_RGB}}},
+            // 2: the pointer readout over exactly that pixel.
+            {"hover":{"x":BOTH_PIXEL.0,"y":BOTH_PIXEL.1}},
+            // 3: the shadow overlay alone.
+            {"workspace":{"clip_shadows":true}},
+            // 4: both overlays, which is where magenta appears.
+            {"workspace":{"clip_highlights":true}},
+            // 5: 100%, one overlay cell per source pixel.
+            {"view":{"zoom":100}},
+            // 6: back to Fit.
+            {"view":{"zoom":"fit"}},
+            // 7: both overlays off again; the photograph is untouched underneath.
+            {"workspace":{"clip_shadows":false,"clip_highlights":false}},
+            // 8: the Original entry, whose counts are the fixture's own again.
+            {"preview":{"sequence":0}}
+        ])
+    })
+}
+
+/// An independent reduction of the fixture through `recipe`: decode, render and reduce in this
+/// process, with no reference to anything the editor reported.
+fn reference(root: &Path, recipe: &Recipe) -> Result<analysis::Report> {
+    let source = lightwell_core::open_source(&root.join(FIXTURE))?;
+    let registry = ModuleRegistry::builtin();
+    let raster = core_render(&registry, &source, SnapshotId::new(), recipe)?;
+    ensure(
+        (raster.width, raster.height) == SOURCE,
+        format!("Reference render is {}x{}", raster.width, raster.height),
+    )?;
+    Ok(analysis::reduce_raster(&raster)?)
+}
+
+/// The eleven counters as the frame's correlated state records them.
+fn counters(frame: &Value) -> &Value {
+    &frame["state"]["histogram"]["counters"]
+}
+
+/// Check one frame's histogram against an independent reduction, counter by counter.
+fn expect_counts(frame: &Value, report: &analysis::Report, what: &str) -> Result<Value> {
+    let state = &frame["state"]["histogram"];
+    ensure(
+        state["status"] == json!("ready"),
+        format!("{what}: histogram status is {}", state["status"]),
+    )?;
+    ensure(
+        state["stale"] == json!(false),
+        format!("{what}: the shown counts are stale"),
+    )?;
+    ensure(
+        state["caption"] == json!("Output \u{b7} sRGB \u{b7} after crop"),
+        format!("{what}: the domain caption is {}", state["caption"]),
+    )?;
+    ensure(
+        state["identity"]["domain"] == json!("srgb-8bit-output"),
+        format!(
+            "{what}: the identity domain is {}",
+            state["identity"]["domain"]
+        ),
+    )?;
+    ensure(
+        state["identity"]["width"] == json!(SOURCE.0)
+            && state["identity"]["height"] == json!(SOURCE.1),
+        format!("{what}: the identity names {}", state["identity"]),
+    )?;
+    let expected = json!({
+        "r0": report.r0, "g0": report.g0, "b0": report.b0,
+        "r255": report.r255, "g255": report.g255, "b255": report.b255,
+        "any_shadow": report.any_shadow, "any_highlight": report.any_highlight,
+        "all_shadow": report.all_shadow, "all_highlight": report.all_highlight,
+        "both": report.both,
+    });
+    ensure(
+        counters(frame) == &expected,
+        format!(
+            "{what}: counters are {}, the independent reduction says {expected}",
+            counters(frame)
+        ),
+    )?;
+    // The plot's shared scale is the largest count in any channel, which is checkable too.
+    let max = report
+        .r
+        .iter()
+        .chain(report.g.iter())
+        .chain(report.b.iter())
+        .copied()
+        .max()
+        .unwrap_or(0);
+    ensure(
+        state["plotted_max"] == json!(max),
+        format!(
+            "{what}: one full-height bin stands for {}, the reduction's tallest bin is {max}",
+            state["plotted_max"]
+        ),
+    )?;
+    Ok(json!({"counters":expected,"plotted_max":max,"identity":state["identity"]}))
+}
+
+/// The photograph's exact rectangle in a capture: every pixel of the photo surface that carries one
+/// of the fixture's four quadrant colours. The scan is exhaustive rather than stepped, because the
+/// overlay checks below map single source pixels into it and a four-pixel error would miss them.
+fn photo_rect(path: &Path, frame: &Value) -> Result<([u32; 4], image::RgbImage)> {
+    let image = image::open(path)?.to_rgb8();
+    let (width, height) = image.dimensions();
+    let [left_edge, right_edge] = columns(frame)?.unwrap_or([0, width]);
+    let quadrant = |pixel: &[u8; 3]| {
+        fixtures::COLORS
+            .iter()
+            .any(|colour| pixel.iter().zip(colour).all(|(a, b)| a.abs_diff(*b) <= 8))
+    };
+    let (mut left, mut top, mut right, mut bottom) = (width, height, 0u32, 0u32);
+    for y in 0..height {
+        for x in left_edge..right_edge.min(width) {
+            if quadrant(&image.get_pixel(x, y).0) {
+                left = left.min(x);
+                top = top.min(y);
+                right = right.max(x + 1);
+                bottom = bottom.max(y + 1);
+            }
+        }
+    }
+    ensure(
+        right > left && bottom > top,
+        "No fixture colours in the photo surface",
+    )?;
+    Ok(([left, top, right, bottom], image))
+}
+
+/// Where one source pixel's centre lands in a capture whose photograph occupies `rect`.
+fn map(rect: [u32; 4], (x, y): (u32, u32)) -> (u32, u32) {
+    let [left, top, right, bottom] = rect;
+    let scale_x = f64::from(right - left) / f64::from(SOURCE.0);
+    let scale_y = f64::from(bottom - top) / f64::from(SOURCE.1);
+    (
+        (f64::from(left) + (f64::from(x) + 0.5) * scale_x).round() as u32,
+        (f64::from(top) + (f64::from(y) + 0.5) * scale_y).round() as u32,
+    )
+}
+
+/// How one captured pixel changed between two frames of the same photograph at the same zoom.
+///
+/// The overlay is a translucent mask, so its composited colour depends on what is underneath, and
+/// the fixture's own quadrants are themselves strongly coloured — the red quadrant read on its own
+/// is as red as a highlight mask is. Every check below therefore works on the **difference** from a
+/// frame of the same stack at the same zoom with the overlays off, which cancels the base out and
+/// leaves the mask's own contribution. Each class then has a signature that does not depend on the
+/// pixel underneath, because a mask at opacity `a` moves a pixel by `a * (mask - base)` and the
+/// differences between channels of that vector are the differences between channels of the mask:
+///
+/// - shadow (`#4c8be0`): blue rises far more than red;
+/// - highlight (`#e5534b`): red rises far more than blue and than green;
+/// - both (`#e553e0`, the two tokens combined): against the shadow mask it is the same pixel with
+///   red added, which is what the magenta check compares.
+#[derive(Clone, Copy, Debug)]
+struct Delta {
+    r: i32,
+    g: i32,
+    b: i32,
+}
+
+impl Delta {
+    fn between(after: [u8; 3], before: [u8; 3]) -> Self {
+        Self {
+            r: i32::from(after[0]) - i32::from(before[0]),
+            g: i32::from(after[1]) - i32::from(before[1]),
+            b: i32::from(after[2]) - i32::from(before[2]),
+        }
+    }
+
+    fn largest(self) -> i32 {
+        self.r.abs().max(self.g.abs()).max(self.b.abs())
+    }
+
+    fn is_shadow_mask(self) -> bool {
+        self.b - self.r >= 40 && self.b - self.g >= 15
+    }
+
+    fn is_highlight_mask(self) -> bool {
+        self.r - self.b >= 40 && self.r - self.g >= 40
+    }
+
+    /// The shadow mask turned into the both mask: only the red channel of the mask changed, so only
+    /// the red channel of the composite moves, and it moves up.
+    fn is_both_upgrade(self) -> bool {
+        self.r >= 60 && self.r - self.g >= 60 && self.r - self.b >= 40
+    }
+}
+
+/// How far a captured pixel may move between two frames and still count as untouched. Two captures
+/// of the same content through the same renderer are identical in practice; this leaves room for a
+/// single least-significant bit rather than for a faint mask.
+const UNCHANGED: i32 = 8;
+
+/// The deltas of every pixel in a window around one source point, so a check tolerates the mapped
+/// centre landing a pixel either side of the cell it describes.
+fn window(
+    after: &image::RgbImage,
+    before: &image::RgbImage,
+    rect: [u32; 4],
+    point: (u32, u32),
+    radius: i64,
+) -> Vec<Delta> {
+    let (cx, cy) = map(rect, point);
+    let (width, height) = after.dimensions();
+    let mut deltas = Vec::new();
+    for dy in -radius..=radius {
+        for dx in -radius..=radius {
+            let x = i64::from(cx) + dx;
+            let y = i64::from(cy) + dy;
+            if x < 0 || y < 0 || x >= i64::from(width) || y >= i64::from(height) {
+                continue;
+            }
+            let (x, y) = (x as u32, y as u32);
+            deltas.push(Delta::between(
+                after.get_pixel(x, y).0,
+                before.get_pixel(x, y).0,
+            ));
+        }
+    }
+    deltas
+}
+
+/// Nothing within the window around each of these source points moved at all between the two
+/// frames: an overlay that spread beyond the pixels it describes would show up here.
+fn untouched(
+    after: &image::RgbImage,
+    before: &image::RgbImage,
+    rect: [u32; 4],
+    points: &[(u32, u32)],
+    radius: i64,
+    what: &str,
+) -> Result {
+    for point in points {
+        let moved = window(after, before, rect, *point, radius)
+            .into_iter()
+            .map(Delta::largest)
+            .max()
+            .unwrap_or(0);
+        ensure(
+            moved <= UNCHANGED,
+            format!("{what}: the pixels around source {point:?} moved by {moved}"),
+        )?;
+    }
+    Ok(())
+}
+
+/// Two frames of the same photograph at the same zoom occupy the same rectangle, so their pixels
+/// can be compared where they stand.
+fn same_rect(a: [u32; 4], b: [u32; 4], what: &str) -> Result {
+    ensure(
+        a == b,
+        format!(
+            "{what}: the photograph moved between the frames being compared, {a:?} against {b:?}"
+        ),
+    )
+}
+
+/// The radius one source pixel's window needs, from the measured rectangle: a little over one
+/// source pixel's own width on screen, so a single clipped cell is found wherever rounding put it.
+fn radius(rect: [u32; 4]) -> i64 {
+    let [left, _, right, _] = rect;
+    let per_source = f64::from(right - left) / f64::from(SOURCE.0);
+    (per_source.ceil() as i64 + 3).max(4)
+}
+
+pub fn verify(root: &Path, evidence: &Path, app: &Value, _events: &[Value]) -> Result {
+    let frames = app["frames"].as_array().ok_or("Missing frames")?.clone();
+    ensure(
+        app["had_input_errors"] == json!(false),
+        "The run recorded an input error",
+    )?;
+    let paths: Vec<PathBuf> = frames
+        .iter()
+        .map(|frame| frame_identity(evidence, app, frame))
+        .collect::<Result<Vec<_>>>()?;
+    let mut checks = Vec::new();
+    let mut record = |frame: &Value, shows: &str, detail: Value| {
+        checks.push(json!({"frame":frame["file"],"shows":shows,"detail":detail}));
+    };
+
+    // The two recipes the run displays, rendered and reduced independently in this process.
+    let plain = reference(root, &Recipe::default())?;
+    let edited = reference(
+        root,
+        &Recipe {
+            format: RECIPE_FORMAT,
+            layers: vec![Layer::pixel(BOTH_PIXEL.0, BOTH_PIXEL.1, BOTH_RGB)],
+        },
+    )?;
+    ensure(
+        plain.both == 0 && plain.any_shadow > 0 && plain.any_highlight > 0,
+        format!(
+            "The fixture's own clipping is not what this scenario is written against: shadow {}, highlight {}, both {}",
+            plain.any_shadow, plain.any_highlight, plain.both
+        ),
+    )?;
+    ensure(
+        edited.both == plain.both + 1,
+        format!(
+            "Setting one both-endpoint pixel did not add exactly one: {} against {}",
+            edited.both, plain.both
+        ),
+    )?;
+
+    // Frame 0: the default screen. The histogram is ready and its counts are the fixture's own.
+    let opened = expect_counts(&frames[0], &plain, "frame 0, the opened fixture")?;
+    ensure(
+        frames[0]["state"]["histogram"]["overlay"] == Value::Null,
+        "An overlay was derived before either flag was set",
+    )?;
+    ensure(
+        frames[0]["state"]["workspace"]["clip_shadows"] == json!(false)
+            && frames[0]["state"]["workspace"]["clip_highlights"] == json!(false),
+        "The clipping flags do not start off",
+    )?;
+    record(
+        &frames[0],
+        "the default screen with the histogram ready, counts equal to an independent reduction",
+        json!({"histogram":opened,"pixels":pixels(&paths[0], &Expect { columns: columns(&frames[0])?, ..Expect::fit(1) })?}),
+    );
+
+    // Frame 1: one both-endpoint pixel committed. The counts follow the new stack exactly.
+    ensure(
+        frames[1]["state"]["stack"]["revision"] == json!(1),
+        "edit.set-pixel did not commit revision 1",
+    )?;
+    let after = expect_counts(&frames[1], &edited, "frame 1, after edit.set-pixel")?;
+    record(
+        &frames[1],
+        "one both-endpoint pixel committed; the plot follows the new stack",
+        after,
+    );
+
+    // Frame 2: the pointer readout of that very pixel, in output codes.
+    let readout = &frames[2]["state"]["readout"];
+    ensure(
+        readout["rgba"] == json!([BOTH_RGB[0], BOTH_RGB[1], BOTH_RGB[2], 255]),
+        format!(
+            "The readout reports {}, expected the pixel just set",
+            readout
+        ),
+    )?;
+    ensure(
+        readout["x"] == json!(BOTH_PIXEL.0) && readout["y"] == json!(BOTH_PIXEL.1),
+        format!("The readout names {}, {}", readout["x"], readout["y"]),
+    )?;
+    ensure(
+        readout["text"] == json!("R 0 \u{b7} G 128 \u{b7} B 255 \u{b7} 360, 240"),
+        format!("The readout line is {}", readout["text"]),
+    )?;
+    // The same pixel through the public method, from this process: the readout uses that path, so
+    // this is the same answer read a second way rather than a second implementation of it.
+    ensure(
+        counters(&frames[2]) == counters(&frames[1]),
+        "Hovering changed the histogram",
+    )?;
+    record(
+        &frames[2],
+        "the pointer readout over the pixel that was just set",
+        readout.clone(),
+    );
+
+    // The reference the overlay frames are compared against: the same stack, the same zoom, the
+    // same panels, both overlays off. Every mask check below is a difference from this, so the
+    // fixture's own strongly coloured quadrants cancel out instead of being mistaken for a mask.
+    let (bare_rect, bare) = photo_rect(&paths[2], &frames[2])?;
+    let bare_radius = radius(bare_rect);
+
+    // Frame 3: the shadow overlay alone. Blue over the black dashes, and nothing red anywhere.
+    ensure(
+        frames[3]["state"]["workspace"]["clip_shadows"] == json!(true)
+            && frames[3]["state"]["workspace"]["clip_highlights"] == json!(false),
+        format!("Frame 3's flags are {}", frames[3]["state"]["workspace"]),
+    )?;
+    let overlay = &frames[3]["state"]["histogram"]["overlay"];
+    ensure(
+        overlay["cells"] == json!([SOURCE.0, SOURCE.1]),
+        format!(
+            "The Fit overlay grid is {}, expected one cell per source pixel",
+            overlay["cells"]
+        ),
+    )?;
+    ensure(overlay["drawn"] == json!(true), "The overlay was not drawn")?;
+    let (rect3, image3) = photo_rect(&paths[3], &frames[3])?;
+    same_rect(rect3, bare_rect, "frame 3")?;
+    let shadow_on_dash = window(&image3, &bare, rect3, DASH, bare_radius);
+    ensure(
+        shadow_on_dash.iter().any(|delta| delta.is_shadow_mask()),
+        format!(
+            "No blue overlay over the black dash band at source {DASH:?}; the largest change there was {}",
+            shadow_on_dash
+                .iter()
+                .map(|d| d.largest())
+                .max()
+                .unwrap_or(0)
+        ),
+    )?;
+    // The white centre line is at code 255 in every channel, so with only the shadow flag on it
+    // must be exactly as it was.
+    untouched(
+        &image3,
+        &bare,
+        rect3,
+        &[LINE],
+        bare_radius,
+        "the shadow overlay alone touched the 255 line",
+    )?;
+    untouched(
+        &image3,
+        &bare,
+        rect3,
+        &CLEAN,
+        bare_radius,
+        "the shadow overlay reached an unclipped quadrant",
+    )?;
+    // The committed stack is untouched by a view flag: same revision, same layers.
+    ensure(
+        frames[3]["state"]["stack"] == frames[1]["state"]["stack"],
+        "Switching an overlay on changed the committed stack",
+    )?;
+    record(
+        &frames[3],
+        "the shadow overlay: blue over the pixels with a channel at 0, nothing over the 255 line",
+        json!({"overlay":overlay,"photo_rect":rect3,"window_radius":bare_radius}),
+    );
+
+    // Frame 4: both overlays. Blue over the dashes, red over the white line, magenta where both
+    // hold at once. The fixture has no pixel at both endpoints of its own, so the magenta comes
+    // from the one pixel the scenario set; that is the isolated-pixel case a Fit overlay must keep.
+    ensure(
+        frames[4]["state"]["workspace"]["clip_shadows"] == json!(true)
+            && frames[4]["state"]["workspace"]["clip_highlights"] == json!(true),
+        format!("Frame 4's flags are {}", frames[4]["state"]["workspace"]),
+    )?;
+    let (rect4, image4) = photo_rect(&paths[4], &frames[4])?;
+    same_rect(rect4, bare_rect, "frame 4")?;
+    ensure(
+        window(&image4, &bare, rect4, DASH, bare_radius)
+            .iter()
+            .any(|delta| delta.is_shadow_mask()),
+        format!("No blue overlay over the black dash band at source {DASH:?}"),
+    )?;
+    ensure(
+        window(&image4, &bare, rect4, LINE, bare_radius)
+            .iter()
+            .any(|delta| delta.is_highlight_mask()),
+        format!("No red overlay over the white centre line at source {LINE:?}"),
+    )?;
+    // Magenta is measured against the shadow-only frame rather than the bare one: turning the
+    // highlight flag on changes that one cell from the shadow mask to the both mask, which adds
+    // red and nothing else, whatever the photograph underneath is.
+    let both_upgrade = window(&image4, &image3, rect4, BOTH_PIXEL, bare_radius);
+    ensure(
+        both_upgrade.iter().any(|delta| delta.is_both_upgrade()),
+        format!(
+            "The isolated both-endpoint pixel at source {BOTH_PIXEL:?} did not turn magenta; the largest change from the shadow-only frame was {}",
+            both_upgrade.iter().map(|d| d.largest()).max().unwrap_or(0)
+        ),
+    )?;
+    untouched(
+        &image4,
+        &bare,
+        rect4,
+        &CLEAN,
+        bare_radius,
+        "an overlay reached an unclipped quadrant",
+    )?;
+    record(
+        &frames[4],
+        "both overlays: blue at code 0, red at code 255, magenta on the one pixel at both",
+        json!({
+            "overlay": frames[4]["state"]["histogram"]["overlay"],
+            "photo_rect": rect4,
+            "window_radius": bare_radius,
+            "note": "the fixture's own quadrant colours reach neither endpoint, so the only magenta is the isolated pixel this scenario set",
+        }),
+    );
+
+    // Frame 5: 100%. One overlay cell per source pixel, and the masks still land on their pixels.
+    // There is no overlay-off frame at 100% to difference against, so the two checks here are the
+    // ones whose base colour is unambiguous on its own: the dash band is black and the centre line
+    // is white, so a blue-dominant dash and a red-dominant line can only be the masks.
+    ensure(
+        frames[5]["state"]["histogram"]["overlay"]["cells"] == json!([SOURCE.0, SOURCE.1]),
+        format!(
+            "The 100% overlay grid is {}",
+            frames[5]["state"]["histogram"]["overlay"]["cells"]
+        ),
+    )?;
+    let (rect5, image5) = photo_rect(&paths[5], &frames[5])?;
+    let hundred_width = rect5[2] - rect5[0];
+    ensure(
+        hundred_width.abs_diff(SOURCE.0) <= 2,
+        format!(
+            "At 100% the photograph is {hundred_width} physical pixels wide, expected {}",
+            SOURCE.0
+        ),
+    )?;
+    let radius5 = radius(rect5);
+    let black = image::Rgb([0u8, 0, 0]);
+    let white = image::Rgb([255u8, 255, 255]);
+    let against = |base: image::Rgb<u8>, point: (u32, u32)| {
+        let (cx, cy) = map(rect5, point);
+        let mut deltas = Vec::new();
+        for dy in -radius5..=radius5 {
+            for dx in -radius5..=radius5 {
+                let x = i64::from(cx) + dx;
+                let y = i64::from(cy) + dy;
+                if x < 0
+                    || y < 0
+                    || x >= i64::from(image5.width())
+                    || y >= i64::from(image5.height())
+                {
+                    continue;
+                }
+                deltas.push(Delta::between(
+                    image5.get_pixel(x as u32, y as u32).0,
+                    base.0,
+                ));
+            }
+        }
+        deltas
+    };
+    ensure(
+        against(black, DASH)
+            .iter()
+            .any(|delta| delta.is_shadow_mask()),
+        "At 100% the shadow overlay no longer lines up with the black dash band",
+    )?;
+    ensure(
+        against(white, LINE)
+            .iter()
+            .any(|delta| delta.is_highlight_mask()),
+        "At 100% the highlight overlay no longer lines up with the white centre line",
+    )?;
+    ensure(
+        counters(&frames[5]) == counters(&frames[1]),
+        "Zooming changed the histogram",
+    )?;
+    record(
+        &frames[5],
+        "100% with both overlays on: one cell per physical pixel, still aligned",
+        json!({"photo_rect":rect5,"physical_width":hundred_width,"overlay":frames[5]["state"]["histogram"]["overlay"]}),
+    );
+
+    // Frame 6: back to Fit, still no re-analysis.
+    ensure(
+        counters(&frames[6]) == counters(&frames[1]),
+        "Returning to Fit changed the histogram",
+    )?;
+    record(
+        &frames[6],
+        "back at Fit with both overlays on",
+        counters(&frames[6]).clone(),
+    );
+
+    // Frame 7: both overlays off. The photograph underneath is byte for byte the frame from before
+    // either flag was set, at every point the masks had covered.
+    ensure(
+        frames[7]["state"]["workspace"]["clip_shadows"] == json!(false)
+            && frames[7]["state"]["workspace"]["clip_highlights"] == json!(false),
+        "The overlays did not switch off",
+    )?;
+    ensure(
+        frames[7]["state"]["histogram"]["overlay"] == Value::Null,
+        "An overlay is still derived with both flags off",
+    )?;
+    let (rect7, image7) = photo_rect(&paths[7], &frames[7])?;
+    same_rect(rect7, bare_rect, "frame 7")?;
+    let mut covered = vec![DASH, LINE, BOTH_PIXEL];
+    covered.extend(CLEAN);
+    untouched(
+        &image7,
+        &bare,
+        rect7,
+        &covered,
+        bare_radius,
+        "an overlay survived both flags being switched off",
+    )?;
+    ensure(
+        counters(&frames[7]) == counters(&frames[1]),
+        "Switching the overlays off changed the histogram",
+    )?;
+    record(
+        &frames[7],
+        "both overlays off: the photograph is the fixture again and the counts are unchanged",
+        json!({"photo_rect":rect7,"points_compared":covered}),
+    );
+
+    // Frame 8: the Original entry. The plot follows the displayed generation, not the newest stack.
+    let original = expect_counts(&frames[8], &plain, "frame 8, previewing the Original")?;
+    ensure(
+        counters(&frames[8]) != counters(&frames[1]),
+        "The Original's counts are indistinguishable from the edited stack's",
+    )?;
+    ensure(
+        frames[8]["state"]["histogram"]["identity"]["entry"]
+            != frames[1]["state"]["histogram"]["identity"]["entry"],
+        "The plot still names the entry the edited stack belongs to",
+    )?;
+    // The readout describes one pixel of one stack, so moving to another entry clears it rather
+    // than leaving the edited stack's codes on screen over the Original.
+    ensure(
+        frames[8]["state"]["readout"] == Value::Null,
+        format!(
+            "The readout survived the change of displayed entry: {}",
+            frames[8]["state"]["readout"]
+        ),
+    )?;
+    record(
+        &frames[8],
+        "previewing the Original: the plot follows the displayed entry, not the newest one",
+        original,
+    );
+
+    write_json(&evidence.join("histogram-checks.json"), &json!(checks))?;
+    Ok(())
+}

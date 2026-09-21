@@ -66,6 +66,12 @@ pub(crate) enum Step {
     Workspace(WorkspaceStep),
     Preview(PreviewStep),
     Palette(PaletteStep),
+    /// Move the pointer to one pixel of the displayed raster, exactly as the canvas reports a
+    /// hover, and wait for the readout `render.sample` answers with.
+    Hover {
+        x: u32,
+        y: u32,
+    },
 }
 
 /// One slider gesture. Every value becomes one `SliderMoved` with a tick between them, exactly as
@@ -118,6 +124,9 @@ pub(crate) struct WorkspaceStep {
     pub(crate) tools_panel: Option<bool>,
     pub(crate) mode: Option<String>,
     pub(crate) thirds: Option<bool>,
+    /// The two clipping overlays, per-client view state like every other field here.
+    pub(crate) clip_shadows: Option<bool>,
+    pub(crate) clip_highlights: Option<bool>,
 }
 
 /// Select a loaded history entry by its sequence number, or return to the current state.
@@ -193,6 +202,7 @@ impl Step {
             Self::Preview(PreviewStep::Current) => json!({"preview":"current"}),
             Self::Palette(PaletteStep::Query(query)) => json!({"palette":{"query":query}}),
             Self::Palette(PaletteStep::Run(query)) => json!({"palette":{"run":query}}),
+            Self::Hover { x, y } => json!({"hover":{"x":x,"y":y}}),
         }
     }
 }
@@ -211,6 +221,12 @@ impl WorkspaceStep {
         }
         if let Some(value) = self.thirds {
             object.insert("thirds".into(), Value::from(value));
+        }
+        if let Some(value) = self.clip_shadows {
+            object.insert("clip_shadows".into(), Value::from(value));
+        }
+        if let Some(value) = self.clip_highlights {
+            object.insert("clip_highlights".into(), Value::from(value));
         }
         Value::Object(object)
     }
@@ -249,6 +265,11 @@ pub(crate) enum Settle {
     /// its newest settings, with nothing in flight and nothing waiting. A refused or conflicted
     /// gesture settles here too, because its frame is the evidence of the refusal.
     SliderDraft,
+    /// A clipping overlay was switched on: its own bounded texture must reach the GPU before the
+    /// frame is captured, or the capture would show the photograph without the mask.
+    Overlay,
+    /// The pointer readout must come back from `render.sample`.
+    Readout,
 }
 
 impl Editor {
@@ -282,6 +303,7 @@ impl Editor {
             Step::Workspace(workspace) => self.workspace_step(workspace),
             Step::Preview(preview) => self.preview_step(preview),
             Step::Palette(palette) => self.palette_step(palette),
+            Step::Hover { x, y } => self.hover_step(x, y),
         }
     }
 
@@ -599,11 +621,34 @@ impl Editor {
         {
             diff.insert("mode".into(), Value::from(mode.clone()));
         }
+        // Switching a clipping overlay on means a bounded derivation and an upload after the
+        // session round trip, so the step waits for the mask's own pixels rather than for the
+        // session, which would capture the photograph before the overlay reached it.
+        let mut overlay = false;
+        for (field, wanted, current) in [
+            ("clip_shadows", step.clip_shadows, workspace.clip_shadows),
+            (
+                "clip_highlights",
+                step.clip_highlights,
+                workspace.clip_highlights,
+            ),
+        ] {
+            if let Some(value) = wanted
+                && value != current
+            {
+                diff.insert(field.into(), Value::from(value));
+                overlay |= value;
+            }
+        }
         if diff.is_empty() {
             self.capture_next_frame();
             return Task::none();
         }
-        self.await_step(Settle::Session);
+        self.await_step(if overlay {
+            Settle::Overlay
+        } else {
+            Settle::Session
+        });
         workspace_task(self.owner.clone(), self.client, Value::Object(diff))
     }
 
@@ -636,6 +681,25 @@ impl Editor {
                 self.update(Message::Preview(entry_id))
             }
         }
+    }
+
+    /// One pointer position over the photograph, published exactly as the canvas publishes a move,
+    /// and captured once `render.sample` has answered with the three output codes under it.
+    fn hover_step(&mut self, x: u32, y: u32) -> Task<Message> {
+        if self.state.is_none() {
+            return self.fail_step("no photograph is open");
+        }
+        if self.pointer == Some((x, y)) {
+            // The pointer is already there, so no sample would be asked for and nothing would
+            // settle the step; clearing it first makes the move a real one.
+            let _ = self.update(Message::PointerMoved(None));
+        }
+        self.await_step(Settle::Readout);
+        let task = self.update(Message::PointerMoved(Some((x, y))));
+        if !self.sample_in_flight {
+            return self.fail_step("the pointer readout could not be requested");
+        }
+        task
     }
 
     /// Open the palette, type the query, and either stop there or run the first match. The query
@@ -821,7 +885,7 @@ fn sole(object: &Map<String, Value>) -> Result<(&str, &Value), String> {
 
 fn parse_step(step: &Value) -> Result<Step, String> {
     let object = step.as_object().ok_or(
-        "a step is an object with one key: api, draft, slider, slider_draft, field, reset, view, workspace, preview or palette",
+        "a step is an object with one key: api, draft, slider, slider_draft, field, reset, view, workspace, preview, palette or hover",
     )?;
     let (kind, value) = sole(object)?;
     match kind {
@@ -835,8 +899,9 @@ fn parse_step(step: &Value) -> Result<Step, String> {
         "workspace" => Ok(Step::Workspace(parse_workspace(value)?)),
         "preview" => Ok(Step::Preview(parse_preview(value)?)),
         "palette" => Ok(Step::Palette(parse_palette(value)?)),
+        "hover" => parse_hover(value),
         other => Err(format!(
-            "unknown step kind {other}; expected api, draft, slider, slider_draft, field, reset, view, workspace, preview or palette"
+            "unknown step kind {other}; expected api, draft, slider, slider_draft, field, reset, view, workspace, preview, palette or hover"
         )),
     }
 }
@@ -1091,9 +1156,9 @@ fn parse_view(value: &Value) -> Result<ViewStep, String> {
 }
 
 fn parse_workspace(value: &Value) -> Result<WorkspaceStep, String> {
-    let object = value
-        .as_object()
-        .ok_or("workspace takes an object with any of state_panel, tools_panel, mode or thirds")?;
+    let object = value.as_object().ok_or(
+        "workspace takes an object with any of state_panel, tools_panel, mode, thirds, clip_shadows or clip_highlights",
+    )?;
     let mut step = WorkspaceStep::default();
     let flag = |value: &Value, field: &str| {
         value
@@ -1105,6 +1170,8 @@ fn parse_workspace(value: &Value) -> Result<WorkspaceStep, String> {
             "state_panel" => step.state_panel = Some(flag(value, "state_panel")?),
             "tools_panel" => step.tools_panel = Some(flag(value, "tools_panel")?),
             "thirds" => step.thirds = Some(flag(value, "thirds")?),
+            "clip_shadows" => step.clip_shadows = Some(flag(value, "clip_shadows")?),
+            "clip_highlights" => step.clip_highlights = Some(flag(value, "clip_highlights")?),
             "mode" => {
                 step.mode = Some(
                     value
@@ -1119,10 +1186,34 @@ fn parse_workspace(value: &Value) -> Result<WorkspaceStep, String> {
     }
     if step == WorkspaceStep::default() {
         return Err(
-            "workspace needs at least one of state_panel, tools_panel, mode or thirds".into(),
+            "workspace needs at least one of state_panel, tools_panel, mode, thirds, clip_shadows or clip_highlights"
+                .into(),
         );
     }
     Ok(step)
+}
+
+/// `{"hover": {"x": N, "y": N}}`: one pixel of the displayed raster, both coordinates required.
+fn parse_hover(value: &Value) -> Result<Step, String> {
+    let object = value
+        .as_object()
+        .ok_or("hover takes an object with an x and a y")?;
+    for key in object.keys() {
+        if !matches!(key.as_str(), "x" | "y") {
+            return Err(format!("unknown hover field {key}"));
+        }
+    }
+    let coordinate = |name: &str| -> Result<u32, String> {
+        object
+            .get(name)
+            .and_then(Value::as_u64)
+            .and_then(|value| u32::try_from(value).ok())
+            .ok_or_else(|| format!("hover {name} takes a non-negative integer"))
+    };
+    Ok(Step::Hover {
+        x: coordinate("x")?,
+        y: coordinate("y")?,
+    })
 }
 
 fn parse_preview(value: &Value) -> Result<PreviewStep, String> {
@@ -1185,10 +1276,12 @@ mod tests {
                 {"preview":{"sequence":0}},
                 {"preview":"current"},
                 {"palette":{"query":"rotate"}},
-                {"palette":{"run":"rotate"}}]"#,
+                {"palette":{"run":"rotate"}},
+                {"workspace":{"clip_shadows":true,"clip_highlights":false}},
+                {"hover":{"x":12,"y":34}}]"#,
         )
         .expect("a valid script");
-        assert_eq!(steps.len(), 17);
+        assert_eq!(steps.len(), 19);
         assert_eq!(
             steps[1],
             Step::Api {
@@ -1225,6 +1318,15 @@ mod tests {
             Step::Palette(PaletteStep::Query("rotate".into()))
         );
         assert_eq!(steps[16], Step::Palette(PaletteStep::Run("rotate".into())));
+        assert_eq!(
+            steps[17],
+            Step::Workspace(WorkspaceStep {
+                clip_shadows: Some(true),
+                clip_highlights: Some(false),
+                ..WorkspaceStep::default()
+            })
+        );
+        assert_eq!(steps[18], Step::Hover { x: 12, y: 34 });
         // Every record round-trips to the shape the script was written in.
         assert_eq!(steps[4].record(), json!({"draft":{"preset":"3:2"}}));
         assert_eq!(steps[0].record()["api"]["method"], json!("edit.crop-fit"));
@@ -1234,6 +1336,11 @@ mod tests {
         );
         assert_eq!(steps[14].record(), json!({"preview":"current"}));
         assert_eq!(steps[16].record(), json!({"palette":{"run":"rotate"}}));
+        assert_eq!(
+            steps[17].record(),
+            json!({"workspace":{"clip_shadows":true,"clip_highlights":false}})
+        );
+        assert_eq!(steps[18].record(), json!({"hover":{"x":12,"y":34}}));
 
         for (script, expected) in [
             ("{}", "array of steps"),
@@ -1261,6 +1368,11 @@ mod tests {
             (r#"[{"preview":true}]"#, "\"current\" or"),
             (r#"[{"palette":{"query":1}}]"#, "takes a string"),
             (r#"[{"palette":{"filter":"x"}}]"#, "unknown palette field"),
+            (r#"[{"workspace":{"clip_shadows":1}}]"#, "true or false"),
+            (r#"[{"hover":{"x":1}}]"#, "hover y takes"),
+            (r#"[{"hover":{"x":-1,"y":2}}]"#, "hover x takes"),
+            (r#"[{"hover":{"x":1,"y":2,"z":3}}]"#, "unknown hover field"),
+            (r#"[{"hover":5}]"#, "an x and a y"),
             (r#"[{"zoom":"fit"}]"#, "unknown step kind"),
             ("not json", "not JSON"),
             (

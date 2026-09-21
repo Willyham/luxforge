@@ -1,4 +1,7 @@
-use crate::{basic_smoke as basic, crop_smoke as crop, workspace_smoke as workspace, *};
+use crate::{
+    basic_smoke as basic, crop_smoke as crop, histogram_smoke as histogram,
+    workspace_smoke as workspace, *,
+};
 use std::{
     process::{Child, Stdio},
     time::{Duration, Instant},
@@ -254,6 +257,11 @@ pub fn verify(evidence: &Path, scenario: &str, count: usize) -> Result<Value> {
         basic::verify(evidence, &app, &events)?;
         return Ok(app);
     }
+    if let Some(frames) = histogram::frames(scenario) {
+        let (app, events) = preamble(evidence, frames)?;
+        histogram::verify(&root()?, evidence, &app, &events)?;
+        return Ok(app);
+    }
     let (app, events) = preamble(evidence, count.max(1))?;
     let frames = app["frames"].as_array().ok_or("Missing frames")?;
     for (index, frame) in frames.iter().enumerate() {
@@ -367,6 +375,11 @@ pub fn run(root: &Path, out: &Path, scenario: &str, bin: &Path, timeout: Duratio
         // the generated Exposure slider's whole gesture. Both need the window size the design's
         // layout constants are written against.
         "workspace" | "basic" => vec![root.join("fixtures/s0/orientation-1.jpg")],
+        // `histogram` drives the inspector, the clipping overlays and the pointer readout over its
+        // own fixture, whose clipped pixels are known from the generator.
+        scenario if histogram::source(scenario).is_some() => {
+            vec![root.join(histogram::source(scenario).expect("the scenario's fixture"))]
+        }
         _ => return Err("Unknown smoke scenario".into()),
     };
     fs::create_dir_all(out)?;
@@ -395,6 +408,16 @@ pub fn run(root: &Path, out: &Path, scenario: &str, bin: &Path, timeout: Duratio
             "--window-size".into(),
             workspace::WINDOW[0].into(),
             workspace::WINDOW[1].into(),
+        ]);
+    } else if let Some(script) = histogram::script(scenario) {
+        let file = out.join("script.json");
+        write_json(&file, &script)?;
+        args.extend([
+            "--evidence-script".into(),
+            file.into_os_string(),
+            "--window-size".into(),
+            histogram::WINDOW[0].into(),
+            histogram::WINDOW[1].into(),
         ]);
     }
     let command = std::iter::once(bin.as_os_str())

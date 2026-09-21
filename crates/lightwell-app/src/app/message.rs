@@ -4,6 +4,7 @@
 use crate::{
     app::tasks::{PreviewPayload, Refresh, SyncResult, Upload},
     crop_draft::Handle,
+    state::histogram::Readout,
 };
 use iced_runtime::image as image_memory;
 use lightwell_core::{
@@ -12,6 +13,23 @@ use lightwell_core::{
 };
 use serde_json::{Map, Value};
 use std::path::PathBuf;
+
+/// Which clipping overlay one toggle acts on.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ClipEndpoint {
+    Shadows,
+    Highlights,
+}
+
+impl ClipEndpoint {
+    /// The `workspace.set` field this endpoint's overlay is stored in.
+    pub(crate) fn field(self) -> &'static str {
+        match self {
+            Self::Shadows => "clip_shadows",
+            Self::Highlights => "clip_highlights",
+        }
+    }
+}
 
 /// One of the two collapsible side panels, toggled from the title bar.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -152,6 +170,25 @@ pub(crate) enum Message {
         Upload,
         Result<image_memory::Allocation, image_memory::Error>,
     ),
+    /// One derived clipping overlay reached the GPU. The generation says which photograph it
+    /// belongs to, so an overlay for a replaced frame is dropped instead of drawn over the new one.
+    OverlayUploaded(
+        u64,
+        (u32, u32),
+        Result<image_memory::Allocation, image_memory::Error>,
+    ),
+    /// Turn one clipping overlay on or off. `None` toggles both together, which is what the title
+    /// bar's Clipping button and `J` do; `Some` toggles the one triangle that was clicked.
+    ToggleClipping(Option<ClipEndpoint>),
+    /// One sampled pixel of the displayed stack, as `render.sample` answered it. The entry it was
+    /// asked for travels with it, so an answer for a stack the canvas has left is dropped.
+    Sampled {
+        entry: EntryId,
+        result: Result<Readout, String>,
+    },
+    /// The window's logical size, which decides how large a fitted photograph is drawn and so how
+    /// fine a clipping overlay's cell grid can be.
+    Resized(f32, f32),
     /// The truncated preview of a crop layer's input stage reached the GPU.
     DraftUploaded(
         Upload,

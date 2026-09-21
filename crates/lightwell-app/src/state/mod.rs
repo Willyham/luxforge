@@ -2,6 +2,7 @@
 //! texture or calls the owner, and no framework type appears in any model, so every rule the screen
 //! follows is testable without a window.
 pub(crate) mod canvas;
+pub(crate) mod histogram;
 pub(crate) mod palette;
 pub(crate) mod panel;
 pub(crate) mod status;
@@ -75,6 +76,13 @@ pub(crate) struct Inputs<'a> {
     /// The last preview failure, cleared by the next successful upload.
     pub(crate) render_error: Option<&'a (ErrorKind, String)>,
     pub(crate) pointer: Option<(u32, u32)>,
+    /// The report the desktop's own preview worker reduced for the displayed frame, with the
+    /// identity and generation it arrived under. `None` before the first one arrives.
+    pub(crate) analysis: Option<&'a histogram::Analysis>,
+    /// A newer generation is in flight, so the report above is one frame behind.
+    pub(crate) analysis_updating: bool,
+    /// The pixel `render.sample` last answered for the pointer's position.
+    pub(crate) readout: Option<&'a histogram::Readout>,
     pub(crate) menu: Option<&'a MenuTarget>,
     pub(crate) palette_open: bool,
     pub(crate) palette_query: &'a str,
@@ -89,6 +97,7 @@ pub(crate) struct Workspace {
     pub(crate) panel: panel::StatePanelModel,
     pub(crate) canvas: canvas::CanvasModel,
     pub(crate) tools: tools::ToolsModel,
+    pub(crate) histogram: histogram::HistogramModel,
     pub(crate) status: status::StatusBarModel,
     pub(crate) palette: palette::PaletteModel,
 }
@@ -99,6 +108,7 @@ impl Workspace {
         self.panel = panel::derive(inputs);
         self.canvas = canvas::derive(inputs);
         self.tools.refresh(inputs);
+        self.histogram = histogram::derive(inputs, &self.histogram);
         self.status = status::derive(inputs);
         self.palette = palette::derive(inputs);
     }
@@ -155,6 +165,9 @@ mod tests {
         developer: bool,
         crop_angle: String,
         render_error: Option<(lightwell_core::ErrorKind, String)>,
+        analysis: Option<histogram::Analysis>,
+        analysis_updating: bool,
+        readout: Option<histogram::Readout>,
     }
 
     impl Scene {
@@ -183,6 +196,9 @@ mod tests {
                 developer: false,
                 crop_angle: "0".into(),
                 render_error: None,
+                analysis: None,
+                analysis_updating: false,
+                readout: None,
             }
         }
 
@@ -260,6 +276,9 @@ mod tests {
                 render_ms: Some(41.0),
                 render_error: self.render_error.as_ref(),
                 pointer: None,
+                analysis: self.analysis.as_ref(),
+                analysis_updating: self.analysis_updating,
+                readout: self.readout.as_ref(),
                 menu: None,
                 palette_open: false,
                 palette_query: "",

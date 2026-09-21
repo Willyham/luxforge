@@ -4,11 +4,12 @@
 //! part of the public widget API; [`crate::gallery_states`] is the only path to it.
 
 use crate::{
-    ChipModel, IconButtonModel, ListRowModel, Marker, ModeEntry, NoticeCardModel,
-    SectionHeaderModel, SegmentedModel, SliderModel, SubGroupHeaderModel, ToggleEntry, Tone,
-    ValueEdit, caption, chip, error_caption, floating_bar, icon_button, inline_menu, label,
-    list_row, mode_strip, notice_card, section_header, section_label, segmented, slider,
-    sub_group_header, title, value_text,
+    BINS, ChipModel, ClipTriangleModel, HistogramChannel, HistogramModel, IconButtonModel,
+    ListRowModel, Marker, ModeEntry, NoticeCardModel, SectionHeaderModel, SegmentedModel,
+    SliderModel, SubGroupHeaderModel, ToggleEntry, Tone, ValueEdit, caption, chip, clip_triangle,
+    error_caption, floating_bar, histogram, icon_button, inline_menu, label, list_row, mode_strip,
+    notice_card, section_header, section_label, segmented, slider, sub_group_header, theme, title,
+    value_text,
 };
 use iced::Element;
 
@@ -365,6 +366,57 @@ pub fn gallery() -> Vec<Element<'static, ()>> {
         ("Copy as JSON request".to_string(), ()),
         ("Show in schema".to_string(), ()),
     ]));
+
+    // -- The histogram: a ready plot, and the same plot marked stale while a newer reduction runs.
+    let mut ready = HistogramModel::default();
+    for (index, channel) in ready.channels.iter_mut().enumerate() {
+        for code in 0..BINS {
+            // A different lobe per channel, so the overlap the contract asks for is visible.
+            let centre = 64.0 + 64.0 * index as f32;
+            let spread = 48.0;
+            let offset = (code as f32 - centre) / spread;
+            channel.bins[code] = (-offset * offset).exp();
+        }
+    }
+    states.push(histogram::<()>(&ready));
+    states.push(histogram::<()>(&HistogramModel {
+        stale: true,
+        ..ready
+    }));
+    // -- Empty: every bin zero, which is not the same thing as no result at all.
+    states.push(histogram::<()>(&HistogramModel {
+        channels: [HistogramChannel {
+            bins: [0.0; BINS],
+            color: theme::CHANNEL_RED,
+        }; 3],
+        stale: false,
+    }));
+
+    // -- The clipping triangles: untinted (no endpoint pixels), tinted, tinted and active.
+    for (tinted, active) in [(false, false), (true, false), (true, true)] {
+        states.push(clip_triangle(
+            &ClipTriangleModel {
+                glyph: "\u{25e3}".into(),
+                tooltip: "Any channel at 0 \u{b7} blue; both endpoints \u{b7} magenta".into(),
+                tint: theme::CLIPPING_SHADOW,
+                tinted,
+                active,
+                enabled: true,
+            },
+            Some(()),
+        ));
+    }
+    states.push(clip_triangle(
+        &ClipTriangleModel {
+            glyph: "\u{25e2}".into(),
+            tooltip: "Any channel at 255 \u{b7} red; both endpoints \u{b7} magenta".into(),
+            tint: theme::CLIPPING_HIGHLIGHT,
+            tinted: true,
+            active: true,
+            enabled: false,
+        },
+        None,
+    ));
 
     // -- Text helpers, standalone.
     states.push(title::<()>("Basic"));

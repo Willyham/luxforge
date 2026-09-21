@@ -56,13 +56,17 @@ fn photo_area<'a>(model: &'a CanvasModel, surfaces: Surfaces<'a>) -> Element<'a,
     let content = match (&model.photo, surfaces.draft, surfaces.draft_photo) {
         (PhotoView::Draft, Some(draft), Some(allocation)) => crop_surface(model, draft, allocation),
         (PhotoView::Plain, _, _) => match (surfaces.photo, model.dimensions) {
-            (Some(allocation), Some(dimensions)) => plain(model, allocation, dimensions),
+            (Some(allocation), Some(dimensions)) => {
+                plain(model, allocation, surfaces.overlay, dimensions)
+            }
             _ => empty("Open a photograph"),
         },
         (PhotoView::Empty(message), _, _) => empty(message),
         // A draft without its own pixels is not drawn as a draft.
         (PhotoView::Draft, _, _) => match (surfaces.photo, model.dimensions) {
-            (Some(allocation), Some(dimensions)) => plain(model, allocation, dimensions),
+            (Some(allocation), Some(dimensions)) => {
+                plain(model, allocation, surfaces.overlay, dimensions)
+            }
             _ => empty("Open a photograph"),
         },
     };
@@ -284,13 +288,22 @@ fn empty(message: &str) -> Element<'_, Message> {
     .into()
 }
 
+/// The photograph, with the clipping overlay stacked over it when there is one.
+///
+/// The overlay is a second image, never a change to the first: the photograph's own texture is
+/// exactly the raster the core rendered. Alignment comes from giving both images the same sizing
+/// rule — `Contain` inside the same box at Fit, the same fixed extent at a percentage — and from
+/// the overlay's cell grid keeping the source's aspect ratio, so the two land in the same
+/// rectangle at every zoom and, inside the scrollable, at every pan.
 fn plain<'a>(
     model: &'a CanvasModel,
     allocation: &'a image_memory::Allocation,
+    overlay: Option<&'a image_memory::Allocation>,
     (width, height): (u32, u32),
 ) -> Element<'a, Message> {
     let picking = model.picking;
     let pointer = model.pointer;
+    let overlay = overlay.map(|allocation| allocation.handle().clone());
     match model.zoom {
         ZoomView::Fit => {
             let handle = allocation.handle().clone();
@@ -300,13 +313,26 @@ fn plain<'a>(
                     .width(Length::Fill)
                     .height(Length::Fill)
                     .content_fit(ContentFit::Contain);
-                if !picking {
-                    return photo.into();
-                }
-                let mut area = mouse_area(photo).on_move(move |point| {
+                let layered: Element<'_, Message> = match &overlay {
+                    Some(mask) => stack![
+                        photo,
+                        image(mask.clone())
+                            .width(Length::Fill)
+                            .height(Length::Fill)
+                            .content_fit(ContentFit::Contain)
+                            .filter_method(image::FilterMethod::Nearest)
+                    ]
+                    .into(),
+                    None => photo.into(),
+                };
+                // The pointer readout needs every move over the photograph, not only the ones a
+                // module's pick would use; a move that maps to the same pixel is dropped in the
+                // update function rather than here.
+                let mut area = mouse_area(layered).on_move(move |point| {
                     Message::PointerMoved(fit_pick((width, height), available, point))
                 });
-                if let Some((x, y)) = pointer {
+                area = area.on_exit(Message::PointerMoved(None));
+                if picking && let Some((x, y)) = pointer {
                     area = area.on_press(Message::PointPicked { x, y });
                 }
                 area.into()
@@ -315,23 +341,35 @@ fn plain<'a>(
         }
         ZoomView::Percent(value) => {
             let scale = value / 100.0 / model.scale_factor;
+            let (box_width, box_height) = (
+                Length::Fixed(width as f32 * scale),
+                Length::Fixed(height as f32 * scale),
+            );
             let photo = image(allocation.handle().clone())
-                .width(Length::Fixed(width as f32 * scale))
-                .height(Length::Fixed(height as f32 * scale));
+                .width(box_width)
+                .height(box_height);
+            let layered: Element<'a, Message> = match &overlay {
+                Some(mask) => stack![
+                    photo,
+                    image(mask.clone())
+                        .width(box_width)
+                        .height(box_height)
+                        .content_fit(ContentFit::Fill)
+                        .filter_method(image::FilterMethod::Nearest)
+                ]
+                .into(),
+                None => photo.into(),
+            };
             // Inside the scrollable the reported point is already content-space: the scrollable
             // translates the cursor by its offset before its content sees it.
-            let photo: Element<'a, Message> = if picking {
-                let mut area = mouse_area(photo).on_move(move |point| {
-                    Message::PointerMoved(percent_pick((width, height), scale, point))
-                });
-                if let Some((x, y)) = pointer {
-                    area = area.on_press(Message::PointPicked { x, y });
-                }
-                area.into()
-            } else {
-                photo.into()
-            };
-            scrolled(photo)
+            let mut area = mouse_area(layered).on_move(move |point| {
+                Message::PointerMoved(percent_pick((width, height), scale, point))
+            });
+            area = area.on_exit(Message::PointerMoved(None));
+            if picking && let Some((x, y)) = pointer {
+                area = area.on_press(Message::PointPicked { x, y });
+            }
+            scrolled(area.into())
         }
     }
 }

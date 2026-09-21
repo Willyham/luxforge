@@ -6,6 +6,7 @@
 
 mod chip;
 mod floating_bar;
+mod histogram;
 mod icon_button;
 mod inline_menu;
 mod list_row;
@@ -19,6 +20,10 @@ mod text;
 
 pub use chip::{ChipModel, chip};
 pub use floating_bar::floating_bar;
+pub use histogram::{
+    BINS, ClipTriangleModel, HistogramChannel, HistogramModel, bin_x, clip_triangle, histogram,
+    polygon_points,
+};
 pub use icon_button::{IconButtonModel, icon_button};
 pub use inline_menu::inline_menu;
 pub use list_row::{ListRowModel, Marker, list_row};

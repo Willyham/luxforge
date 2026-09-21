@@ -109,9 +109,20 @@ fn compare(held: bool, can_view: bool) -> Element<'static, Message> {
         .into()
 }
 
-/// Undo, Redo and the two panel-visibility toggles, at the bar's trailing edge.
+/// Undo, Redo, the clipping toggle and the two panel-visibility toggles, at the bar's trailing
+/// edge. Clipping drives both overlays together, exactly as `J` does; the histogram's own two
+/// triangles drive them one at a time.
 pub(crate) fn actions(model: &TitleBarModel) -> Element<'_, Message> {
     row![
+        icon_button(
+            &IconButtonModel {
+                glyph: "\u{25f0}".into(),
+                tooltip: "Clipping overlays (J)".into(),
+                enabled: model.can_view,
+                selected: model.clipping_on,
+            },
+            model.can_view.then_some(Message::ToggleClipping(None)),
+        ),
         icon_button(
             &IconButtonModel {
                 glyph: "\u{21b6}".into(),

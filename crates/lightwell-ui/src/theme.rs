@@ -45,6 +45,26 @@ pub const ACCENT: Color = Color::from_rgb8(0xe2, 0xb4, 0x6a);
 pub const CLIPPING_HIGHLIGHT: Color = Color::from_rgb8(0xe5, 0x53, 0x4b);
 /// Shadow clipping indicator. Reserved for clipping.
 pub const CLIPPING_SHADOW: Color = Color::from_rgb8(0x4c, 0x8b, 0xe0);
+/// The overlay colour of a cell that holds both endpoints. It is not a third invented colour: it
+/// takes its red and green from [`CLIPPING_HIGHLIGHT`] and its blue from [`CLIPPING_SHADOW`], which
+/// is exactly what "red and blue at once" means and reads as magenta over a photograph. The
+/// composition is asserted in this module's tests rather than written out twice.
+pub const CLIPPING_BOTH: Color = Color {
+    r: CLIPPING_HIGHLIGHT.r,
+    g: CLIPPING_HIGHLIGHT.g,
+    b: CLIPPING_SHADOW.b,
+    a: 1.0,
+};
+
+/// The three histogram channel fills. They are the plain additive primaries rather than tinted
+/// versions of them, because the plot's whole job is to say which channel a count belongs to and
+/// what their overlap is; the alpha below is what makes the overlap readable.
+pub const CHANNEL_RED: Color = Color::from_rgb8(0xff, 0x4d, 0x4d);
+pub const CHANNEL_GREEN: Color = Color::from_rgb8(0x4d, 0xff, 0x7a);
+pub const CHANNEL_BLUE: Color = Color::from_rgb8(0x4d, 0x9a, 0xff);
+/// How opaque one channel fill is. Three overlapping fills at this alpha keep each channel
+/// readable on its own and turn a full overlap into the grey the contract describes.
+pub const CHANNEL_ALPHA: f32 = 0.55;
 
 /// The colour of a composition guide drawn over the photograph (the thirds overlay, the crop
 /// overlay's own thirds). It is [`BORDER`]'s white at the opacity a line needs to stay readable
@@ -79,6 +99,8 @@ pub const BORDER_WIDTH: f32 = 1.0;
 /// A fixed width for a right-aligned value field, wide enough for a signed value with a decimal
 /// and a short unit (see [`crate::value_text`]'s tabular-numeral note).
 pub const VALUE_WIDTH: f32 = 64.0;
+/// The histogram plot's height at the top of the tools panel, from the Develop workspace layout.
+pub const HISTOGRAM_HEIGHT: f32 = 96.0;
 
 /// Builds the dark, custom Lightwell theme from the tokens above. There is no light theme yet;
 /// see the [visual language](../../../docs/design/develop-workspace.md#visual-language) decision.
@@ -343,6 +365,32 @@ mod tests {
     fn the_guide_token_is_white_at_thirty_percent() {
         assert_eq!((GUIDE.r, GUIDE.g, GUIDE.b), (BORDER.r, BORDER.g, BORDER.b));
         assert!((GUIDE.a - 0.30).abs() < f32::EPSILON);
+    }
+
+    /// The both-endpoint overlay colour is composed from the two clipping tokens, never written as
+    /// its own literal: a change to either token carries into it.
+    #[test]
+    fn the_both_endpoint_colour_is_the_two_clipping_tokens_combined() {
+        assert_eq!(CLIPPING_BOTH.r, CLIPPING_HIGHLIGHT.r);
+        assert_eq!(CLIPPING_BOTH.g, CLIPPING_HIGHLIGHT.g);
+        assert_eq!(CLIPPING_BOTH.b, CLIPPING_SHADOW.b);
+        assert_eq!(CLIPPING_BOTH.a, 1.0);
+        // It is visibly neither of the two it is made from, which is the point of a third class.
+        assert_ne!(CLIPPING_BOTH, CLIPPING_HIGHLIGHT);
+        assert_ne!(CLIPPING_BOTH, CLIPPING_SHADOW);
+    }
+
+    #[test]
+    fn channel_fills_are_distinct_and_translucent() {
+        for (a, b) in [
+            (CHANNEL_RED, CHANNEL_GREEN),
+            (CHANNEL_GREEN, CHANNEL_BLUE),
+            (CHANNEL_RED, CHANNEL_BLUE),
+        ] {
+            assert_ne!(a, b);
+        }
+        assert!((0.0..1.0).contains(&CHANNEL_ALPHA), "the fills overlap");
+        assert_eq!(HISTOGRAM_HEIGHT, 96.0);
     }
 
     #[test]

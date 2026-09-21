@@ -6,6 +6,7 @@ pub(crate) mod evidence;
 pub(crate) mod fields;
 pub(crate) mod keymap;
 pub(crate) mod message;
+pub(crate) mod overlay;
 pub(crate) mod slider;
 pub(crate) mod tasks;
 #[cfg(test)]
@@ -15,7 +16,11 @@ use crate::{
     Config,
     diagnostics::Diagnostics,
     paths::Paths,
-    state::{self, Workspace, tools},
+    state::{
+        self, Workspace,
+        histogram::{Analysis, Readout},
+        tools,
+    },
     view,
 };
 use crop::PendingDraft;
@@ -28,7 +33,8 @@ use lightwell_core::{
     ErrorKind, HistoryPage, HistorySelection, LocalServer, ModuleDescriptor, ModuleRegistry,
     OwnerHandle, PreviewQueue, Processing, RecipeDescription, StageContext, ToolModule, Version,
 };
-use message::{CropMessage, MenuTarget, Message, PaletteAction, Panel};
+use message::{ClipEndpoint, CropMessage, MenuTarget, Message, PaletteAction, Panel};
+use overlay::{OverlayQueue, OverlayRequest};
 use serde_json::{Map, Value, json};
 use slider::SliderDraft;
 use std::{
@@ -40,8 +46,8 @@ use std::{
 };
 use tasks::{
     ACTOR, Refresh, SyncResult, Upload, import_task, locate_task, merge_current_entry,
-    modules_task, mutation, older_task, pan_task, preview_task, recipe_task, session_task,
-    state_task, sync_task, versions_task, workspace_task,
+    modules_task, mutation, older_task, pan_task, preview_task, recipe_task, sample_task,
+    session_task, state_task, sync_task, versions_task, workspace_task,
 };
 
 /// What the editor was last asked to show, correlated with logged events and captured frames.
@@ -68,6 +74,9 @@ pub(crate) struct Boot {
     pub(crate) join: JoinHandle<()>,
     pub(crate) live_server: Option<LocalServer>,
     pub(crate) config: Config,
+    /// The window's logical size at launch, before any resize event. The clipping overlay's cell
+    /// grid is sized against the photo surface, which this and the panel flags give.
+    pub(crate) window: (f32, f32),
 }
 
 /// A registered provider wrapped as unavailable. Its effect identities stay readable, so a stack
@@ -184,6 +193,7 @@ pub(crate) fn run(config: Config, size: (f32, f32)) -> Result<(), String> {
         join,
         live_server,
         config,
+        window: size,
     }));
     iced::application(
         move || {
@@ -237,6 +247,30 @@ pub(crate) struct Editor {
     pub(crate) dimensions: Option<(u32, u32)>,
     pub(crate) preview_queue: PreviewQueue,
     pub(crate) preview_generation: u64,
+    /// The displayed frame's own raster, retained beside the uploaded texture so a clipping overlay
+    /// can be re-derived from it on a zoom, a pan or a toggle without a second render. It shares
+    /// the render's `Arc<[u8]>`: retaining it copies no pixels.
+    pub(crate) raster: Option<Arc<lightwell_core::Raster>>,
+    /// The displayed frame's histogram report, adopted with the pixels under the same generation.
+    pub(crate) analysis: Option<Analysis>,
+    /// The report and raster of a frame whose pixels have not reached the GPU yet. The histogram
+    /// and the photograph are adopted together, so the plot never describes a frame that is not on
+    /// screen.
+    pub(crate) incoming: Option<(Analysis, Arc<lightwell_core::Raster>)>,
+    /// One active and one replaceable pending overlay derivation, off the UI thread.
+    pub(crate) overlay_queue: OverlayQueue,
+    /// The overlay currently on the GPU, with the request that produced it, so an unchanged view
+    /// re-derives nothing and a stale overlay is never drawn over a newer photograph.
+    pub(crate) overlay_photo: Option<image_memory::Allocation>,
+    pub(crate) overlay_request: Option<OverlayRequest>,
+    /// The pixel under the pointer, as `render.sample` last answered it.
+    pub(crate) readout: Option<Readout>,
+    /// One sample is in flight at a time; the newest position waits for it. This is a throttle, not
+    /// a timer: nothing wakes up to check it.
+    pub(crate) sample_in_flight: bool,
+    pub(crate) pending_sample: Option<(u32, u32)>,
+    /// The window's logical size, from the launch size and every resize event since.
+    pub(crate) window: (f32, f32),
     /// Why the last preview failed, cleared by the next successful upload. The canvas turns this
     /// into the notice that names the cause; nothing here decides what it means.
     pub(crate) render_error: Option<(ErrorKind, String)>,
@@ -313,6 +347,7 @@ impl Editor {
             join,
             live_server,
             mut config,
+            window,
         } = boot;
         let client = owner.register();
         let script = std::mem::take(&mut config.script);
@@ -373,6 +408,16 @@ impl Editor {
             dimensions: None,
             preview_queue: PreviewQueue::default(),
             preview_generation: 0,
+            raster: None,
+            analysis: None,
+            incoming: None,
+            overlay_queue: OverlayQueue::default(),
+            overlay_photo: None,
+            overlay_request: None,
+            readout: None,
+            sample_in_flight: false,
+            pending_sample: None,
+            window,
             render_error: None,
             uploading: false,
             busy: false,
@@ -454,7 +499,7 @@ impl Editor {
 
     /// The state correlated with every event and captured frame; never includes source paths.
     pub(crate) fn snapshot(&self) -> Value {
-        json!({"run_id":self.run_id,"mode":if self.evidence.is_some() {"evidence"} else {"editor"},"orientation":self.activity.orientation,"phase":self.activity.phase,"requested_generation":self.activity.requested,"displayed_generation":self.activity.displayed,"displayed_draft_revision":self.displayed_draft_revision,"source_dimensions":self.activity.source_dimensions,"preview_dimensions":self.activity.preview_dimensions,"backend":self.activity.backend,"status":self.status,"error_code":self.activity.error_code,"modules":module_summary(&self.modules),"controls":self.fields.summary(),"crop":self.crop_summary(),"draft":self.draft_summary(),"stack":self.stack_summary(),"workspace":serde_json::to_value(&self.session.workspace).unwrap_or(Value::Null),"developer":self.developer,"expanded":self.workspace.expanded(),"notices":self.notice_titles(),"compare":self.compare_return.is_some(),"render_error":self.render_error_summary(),"palette":{"open":self.palette_open,"query":self.palette_query}})
+        json!({"run_id":self.run_id,"mode":if self.evidence.is_some() {"evidence"} else {"editor"},"orientation":self.activity.orientation,"phase":self.activity.phase,"requested_generation":self.activity.requested,"displayed_generation":self.activity.displayed,"displayed_draft_revision":self.displayed_draft_revision,"source_dimensions":self.activity.source_dimensions,"preview_dimensions":self.activity.preview_dimensions,"backend":self.activity.backend,"status":self.status,"error_code":self.activity.error_code,"modules":module_summary(&self.modules),"controls":self.fields.summary(),"crop":self.crop_summary(),"draft":self.draft_summary(),"stack":self.stack_summary(),"workspace":serde_json::to_value(&self.session.workspace).unwrap_or(Value::Null),"developer":self.developer,"expanded":self.workspace.expanded(),"notices":self.notice_titles(),"compare":self.compare_return.is_some(),"render_error":self.render_error_summary(),"palette":{"open":self.palette_open,"query":self.palette_query},"histogram":self.histogram_summary(),"readout":self.readout_summary()})
     }
 
     /// The core draft this client holds, as `session.state` reports it. The desktop adopts every
@@ -474,6 +519,42 @@ impl Editor {
             }),
             (None, Some(gesture)) => gesture.summary(),
             (None, None) => Value::Null,
+        }
+    }
+
+    /// The histogram inspector as a captured frame reports it: its status, the render identity the
+    /// counts belong to, all ten endpoint counters and the count one full-height bin stands for, so
+    /// a frame's plot can be checked against an independent reduction of the same fixture.
+    fn histogram_summary(&self) -> Value {
+        let model = &self.workspace.histogram;
+        let counters = &model.counters;
+        let identity = match &model.identity {
+            Some(identity) => {
+                json!({"entry":identity.entry,"draft_revision":identity.draft_revision,"generation":identity.generation,"width":identity.width,"height":identity.height,"domain":lightwell_core::analysis::AnalysisDomain.as_str()})
+            }
+            None => Value::Null,
+        };
+        json!({"status":model.status.as_str(),"stale":model.stale,"caption":model.caption,"identity":identity,"plotted_max":model.plotted_max,"reason":model.reason,"counters":{"r0":counters.r0,"g0":counters.g0,"b0":counters.b0,"r255":counters.r255,"g255":counters.g255,"b255":counters.b255,"any_shadow":counters.any_shadow,"any_highlight":counters.any_highlight,"all_shadow":counters.all_shadow,"all_highlight":counters.all_highlight,"both":counters.both},"overlay":self.overlay_summary()})
+    }
+
+    /// The clipping overlay a captured frame was drawn with: its cell grid, which flags it covers
+    /// and whether its pixels are on the GPU for the displayed generation.
+    fn overlay_summary(&self) -> Value {
+        match &self.overlay_request {
+            Some(request) => {
+                json!({"cells":[request.cells_w,request.cells_h],"shadows":request.shadows,"highlights":request.highlights,"generation":request.generation,"drawn":self.overlay_surface().is_some()})
+            }
+            None => Value::Null,
+        }
+    }
+
+    /// The pointer readout, when one has been sampled: the three output codes and their pixel.
+    fn readout_summary(&self) -> Value {
+        match &self.readout {
+            Some(readout) => {
+                json!({"x":readout.x,"y":readout.y,"rgba":readout.rgba,"text":state::histogram::readout_text(readout)})
+            }
+            None => Value::Null,
         }
     }
 
@@ -597,8 +678,178 @@ impl Editor {
     pub(crate) fn update(&mut self, message: Message) -> Task<Message> {
         let task = self.dispatch(message);
         let task = self.sync_mode(task);
+        self.refresh_overlay();
         self.rederive();
         task
+    }
+
+    /// A newer frame has been requested than the one the histogram describes, so the plotted counts
+    /// are one generation behind and the plot says so rather than going blank.
+    ///
+    /// The comparison is against the generation of the newest **requested** preview, not against
+    /// whether a worker happens to be busy: a crop draft's own truncated job shares the queue and is
+    /// never analysed, so queue business alone would mark a perfectly current histogram stale.
+    pub(crate) fn analysis_updating(&self) -> bool {
+        match &self.analysis {
+            Some(analysis) => analysis.generation != self.preview_generation,
+            None => false,
+        }
+    }
+
+    /// Bring the clipping overlay into line with the current flags, zoom and photo surface.
+    ///
+    /// This is the whole "a view change re-renders nothing" rule for the overlay: it recomputes the
+    /// cell grid the current view calls for, and when that grid and the flags are the ones already
+    /// drawn it starts no work at all. A zoom, a pan or a panel collapse therefore either costs one
+    /// bounded reduction of the **retained** raster on a worker, or nothing — never a render, and
+    /// never a second histogram.
+    fn refresh_overlay(&mut self) {
+        let wanted = self.overlay_wanted();
+        if wanted == self.overlay_request {
+            return;
+        }
+        let Some((request, raster)) = wanted.clone().zip(self.raster.clone()) else {
+            // Both overlays are off, or there is nothing to derive one from.
+            self.overlay_queue.cancel();
+            self.overlay_photo = None;
+            self.overlay_request = None;
+            return;
+        };
+        self.overlay_request = wanted;
+        self.overlay_queue.request(raster, request);
+    }
+
+    /// Take up the report and the raster the preview worker produced for `generation`, now that its
+    /// pixels are on screen, and hand the report to the owner's store so an API client's
+    /// `analysis.request` for the same identity is a cache hit instead of a second render.
+    fn adopt_analysis(&mut self, generation: u64) {
+        let Some((analysis, raster)) = self.incoming.take() else {
+            return;
+        };
+        if analysis.generation != generation {
+            // A report from a frame that is not the one just uploaded describes another image.
+            return;
+        }
+        self.raster = Some(raster);
+        self.event(
+            "analysis_adopted",
+            json!({"generation":generation,"entry_id":analysis.identity.entry_id.as_str(),"width":analysis.identity.width,"height":analysis.identity.height,"any_shadow":analysis.report.any_shadow,"any_highlight":analysis.report.any_highlight,"both":analysis.report.both}),
+        );
+        self.owner
+            .submit_analysis(analysis.identity.clone(), analysis.report.clone());
+        self.analysis = Some(analysis);
+    }
+
+    /// One derived overlay: upload its bounded buffer, or report why there is none. A failed
+    /// derivation never leaves an empty overlay on screen, which would claim nothing is clipped.
+    fn overlay_ready(&mut self, done: overlay::OverlayResult) -> Task<Message> {
+        let generation = done.request.generation;
+        let (width, height) = (done.width, done.height);
+        match done.result {
+            Ok(rgba) => {
+                let handle = iced::widget::image::Handle::from_rgba(
+                    width,
+                    height,
+                    iced_runtime::core::Bytes::from_owner(rgba),
+                );
+                image_memory::allocate(handle).map(move |result| {
+                    Message::OverlayUploaded(generation, (width, height), result)
+                })
+            }
+            Err(error) => {
+                self.overlay_photo = None;
+                self.status = format!("Clipping overlay unavailable: {error}");
+                self.event(
+                    "clipping_overlay_failed",
+                    json!({"generation":generation,"error_code":error.kind.code()}),
+                );
+                // The step is released even so; a refused overlay is visible in the evidence
+                // rather than leaving the run waiting for a frame nothing will arm.
+                self.settle_step(Settle::Overlay);
+                Task::none()
+            }
+        }
+    }
+
+    /// The overlay the current session, zoom and surface ask for, or `None` when neither flag is on.
+    fn overlay_wanted(&self) -> Option<OverlayRequest> {
+        let workspace = &self.session.workspace;
+        let (shadows, highlights) = (workspace.clip_shadows, workspace.clip_highlights);
+        if !(shadows || highlights) {
+            return None;
+        }
+        let raster = self.raster.as_ref()?;
+        let source = (raster.width, raster.height);
+        let surface = state::histogram::photo_surface(
+            self.window,
+            workspace.state_panel,
+            workspace.tools_panel,
+        );
+        let displayed = state::histogram::displayed_size(
+            match self.session.preview.view.zoom {
+                lightwell_core::Zoom::Fit => state::canvas::ZoomView::Fit,
+                lightwell_core::Zoom::Percent { value } => state::canvas::ZoomView::Percent(value),
+            },
+            source,
+            surface,
+            self.scale_factor,
+            view::canvas::PHOTO_PADDING,
+        )?;
+        let (cells_w, cells_h) = state::histogram::overlay_cells(source, displayed)?;
+        Some(OverlayRequest {
+            generation: self.preview_generation,
+            cells_w,
+            cells_h,
+            shadows,
+            highlights,
+        })
+    }
+
+    /// The overlay to draw over the photograph: the one on the GPU, when it belongs to the frame
+    /// that is on screen. An overlay derived from a superseded raster is held back rather than
+    /// drawn over another image.
+    pub(crate) fn overlay_surface(&self) -> Option<&image_memory::Allocation> {
+        let request = self.overlay_request.as_ref()?;
+        (request.generation == self.preview_generation)
+            .then_some(self.overlay_photo.as_ref())
+            .flatten()
+    }
+
+    /// Point the canvas at another entry. A readout describes one pixel of one stack, so moving to
+    /// another entry drops it and anything waiting to be sampled rather than leaving codes on screen
+    /// that belong to an image no longer shown.
+    fn show_entry(&mut self, entry: lightwell_core::EntryId) {
+        if self.display_entry.as_ref() != Some(&entry) {
+            self.readout = None;
+            self.pending_sample = None;
+        }
+        self.display_entry = Some(entry);
+    }
+
+    /// Ask for the pixel under the pointer, throttled to one request in flight with only the newest
+    /// position waiting. `render.sample` is a point query: it evaluates one coordinate of the
+    /// compiled recipe and rasterizes nothing.
+    fn sample(&mut self, x: u32, y: u32) -> Task<Message> {
+        if self.sample_in_flight {
+            self.pending_sample = Some((x, y));
+            return Task::none();
+        }
+        let Some(state) = &self.state else {
+            return Task::none();
+        };
+        let Some(entry) = self.displayed_entry() else {
+            return Task::none();
+        };
+        self.sample_in_flight = true;
+        sample_task(
+            self.owner.clone(),
+            self.client,
+            state.asset.id.clone(),
+            entry,
+            None,
+            x,
+            y,
+        )
     }
 
     /// Fold in the one `workspace.set` a just-started or just-ended draft still needs, whatever
@@ -660,6 +911,9 @@ impl Editor {
             render_ms: self.activity.render_ms,
             render_error: self.render_error.as_ref(),
             pointer: self.pointer,
+            analysis: self.analysis.as_ref(),
+            analysis_updating: self.analysis_updating(),
+            readout: self.readout.as_ref(),
             menu: self.menu.as_ref(),
             palette_open: self.palette_open,
             palette_query: &self.palette_query,
@@ -842,7 +1096,7 @@ impl Editor {
                         self.api_sequence = payload.sequence;
                         self.adopt(payload.session);
                         let entry = payload.job.entry.id.clone();
-                        self.display_entry = Some(entry.clone());
+                        self.show_entry(entry.clone());
                         self.preview_generation = self.preview_queue.request(payload.job);
                         self.status = "Rendering selected history state…".into();
                         // The recipe rows follow the displayed entry: one payload read, no render.
@@ -942,8 +1196,13 @@ impl Editor {
                 }
             }
             Message::Poll => {
+                // The overlay worker shares the preview's own 16 ms poll rather than adding a
+                // timer of its own; the subscription below is gated on either queue being busy.
+                if let Some(done) = self.overlay_queue.poll() {
+                    return self.overlay_ready(done);
+                }
                 if !self.uploading
-                    && let Some(result) = self.preview_queue.poll()
+                    && let Some(mut result) = self.preview_queue.poll()
                 {
                     // The draft's truncated preview shares the queue; its generation says which
                     // texture the pixels belong to.
@@ -962,6 +1221,33 @@ impl Editor {
                                     "decoded",
                                     json!({"open_to_raster_ms":self.activity.request_started.elapsed().as_secs_f64()*1000.,"source_dimensions":self.activity.source_dimensions,"preview_dimensions":[raster.width,raster.height]}),
                                 );
+                            }
+                            if !for_draft {
+                                // The report the worker reduced from exactly these pixels, and the
+                                // pixels themselves, wait here until the texture is on screen, so
+                                // the plot, the overlays and the photograph are adopted together.
+                                // Retaining the raster copies nothing: it shares the render's own
+                                // `Arc<[u8]>` with the handle uploaded below.
+                                let retained = Arc::new(raster.clone());
+                                match result.report.take() {
+                                    Some(report) => {
+                                        self.incoming = Some((
+                                            Analysis {
+                                                generation: result.generation,
+                                                identity: result.identity.clone(),
+                                                report,
+                                            },
+                                            retained,
+                                        ));
+                                    }
+                                    // A frame with no reduction still replaces the retained raster
+                                    // now, so no overlay is ever derived from an older image.
+                                    None => {
+                                        self.incoming = None;
+                                        self.analysis = None;
+                                        self.raster = Some(retained);
+                                    }
+                                }
                             }
                             let upload = Upload {
                                 generation: result.generation,
@@ -1014,8 +1300,9 @@ impl Editor {
                     Ok(allocation) => {
                         self.photo = Some(allocation);
                         self.dimensions = Some((upload.width, upload.height));
-                        self.display_entry = Some(upload.entry_id.clone());
+                        self.show_entry(upload.entry_id.clone());
                         self.displayed_draft_revision = upload.draft_revision;
+                        self.adopt_analysis(upload.generation);
                         // A frame on screen is the proof the last failure is over.
                         self.render_error = None;
                         self.activity.render_ms =
@@ -1075,6 +1362,52 @@ impl Editor {
                     }
                 }
             }
+            Message::OverlayUploaded(generation, dimensions, result) => {
+                if self
+                    .overlay_request
+                    .as_ref()
+                    .map(|request| request.generation)
+                    != Some(generation)
+                {
+                    // The frame this overlay belongs to has been replaced; its pixels are dropped.
+                    return Task::none();
+                }
+                match result {
+                    Ok(allocation) => {
+                        self.overlay_photo = Some(allocation);
+                        self.event(
+                            "clipping_overlay",
+                            json!({"generation":generation,"cells":[dimensions.0,dimensions.1]}),
+                        );
+                    }
+                    Err(_) => {
+                        self.overlay_photo = None;
+                        self.status = "Could not upload the clipping overlay".into();
+                    }
+                }
+                // A scripted step that switched an overlay on waits for exactly this, so its frame
+                // shows the mask rather than the photograph a moment before it.
+                self.settle_step(Settle::Overlay);
+            }
+            Message::ToggleClipping(endpoint) => {
+                // Per-client view state through the same `workspace.set` an API client calls. It
+                // is not an edit: no mutation envelope, no expected revision, no history entry, and
+                // the catalog is untouched.
+                let params = clip_params(&self.session.workspace, endpoint);
+                return workspace_task(self.owner.clone(), self.client, params);
+            }
+            Message::Sampled { entry, result } => {
+                self.sample_in_flight = false;
+                // The answer is adopted only when it describes the stack still on screen.
+                self.readout = (self.displayed_entry() == Some(entry))
+                    .then_some(result)
+                    .and_then(Result::ok);
+                self.settle_step(Settle::Readout);
+                if let Some((x, y)) = self.pending_sample.take() {
+                    return self.sample(x, y);
+                }
+            }
+            Message::Resized(width, height) => self.window = (width, height),
             Message::Crop(message) => return self.crop_update(message),
             Message::ModulesLoaded(result) => {
                 self.modules_ready = true;
@@ -1417,7 +1750,22 @@ impl Editor {
                 object.extend(params);
                 return self.command(format!("edit.{action}"), request);
             }
-            Message::PointerMoved(point) => self.pointer = point,
+            Message::PointerMoved(point) => {
+                if self.pointer == point {
+                    return Task::none();
+                }
+                self.pointer = point;
+                return match point {
+                    Some((x, y)) => self.sample(x, y),
+                    None => {
+                        // The pointer left the photograph: the readout is cleared rather than left
+                        // naming a pixel nothing is over.
+                        self.readout = None;
+                        self.pending_sample = None;
+                        Task::none()
+                    }
+                };
+            }
             Message::PointPicked { x, y } => {
                 // The widget hands over a pixel of the raster on screen. Which content pixel that
                 // is belongs to the core, so the pick leaves here as a read and fills nothing yet.
@@ -1718,7 +2066,7 @@ impl Editor {
         let revision = refresh.state.revision;
         let entry = refresh.state.current_entry.id.clone();
         self.state = Some(refresh.state);
-        self.display_entry = Some(refresh.job.entry.id.clone());
+        self.show_entry(refresh.job.entry.id.clone());
         self.preview_generation = self.preview_queue.request(refresh.job);
         self.status = "Rendering selected history state…".into();
         // Generated fields follow the displayed entry, so a slider shows the authoritative current
@@ -1894,6 +2242,7 @@ impl Editor {
             view::Surfaces {
                 photo: self.photo.as_ref(),
                 draft_photo: self.draft_photo.as_ref(),
+                overlay: self.overlay_surface(),
                 draft: self.crop.as_ref(),
             },
         )
@@ -1919,7 +2268,9 @@ impl Editor {
 
     fn subscription(&self) -> Subscription<Message> {
         let mut subscriptions = vec![iced::event::listen_with(raw_event)];
-        if self.preview_queue.is_busy() {
+        // One 16 ms poll serves both workers, and only while one of them has something to
+        // deliver: the overlay adds no timer of its own and nothing wakes up when both are idle.
+        if self.preview_queue.is_busy() || self.overlay_queue.is_busy() {
             subscriptions.push(iced::time::every(Duration::from_millis(16)).map(|_| Message::Poll));
         }
         // The gesture's one bound, gated exactly as the preview poll above is: a desktop with no
@@ -1955,7 +2306,38 @@ fn raw_event(
         iced::Event::Keyboard(_) | iced::Event::Window(iced::window::Event::CloseRequested) => {
             Some(Message::Key(event, status))
         }
+        // A resize changes how large a fitted photograph is drawn, and so how fine a clipping
+        // overlay's cells may be. It rides the subscription that is already listening; nothing new
+        // polls for it, and a resize with no overlay on starts no work.
+        iced::Event::Window(iced::window::Event::Resized(size)) => {
+            Some(Message::Resized(size.width, size.height))
+        }
         _ => None,
+    }
+}
+
+/// The `workspace.set` body one clipping toggle sends: exactly the flag or flags it acts on, and
+/// nothing else. A single triangle flips its own flag and leaves the other alone; the title bar's
+/// Clipping button and `J` move the pair together, turning both on unless both are already on, so
+/// one key both shows and hides the overlays whatever state the two were left in.
+pub(crate) fn clip_params(
+    workspace: &lightwell_core::WorkspaceState,
+    endpoint: Option<ClipEndpoint>,
+) -> Value {
+    match endpoint {
+        Some(ClipEndpoint::Shadows) => {
+            json!({ ClipEndpoint::Shadows.field(): !workspace.clip_shadows })
+        }
+        Some(ClipEndpoint::Highlights) => {
+            json!({ ClipEndpoint::Highlights.field(): !workspace.clip_highlights })
+        }
+        None => {
+            let on = !(workspace.clip_shadows && workspace.clip_highlights);
+            json!({
+                ClipEndpoint::Shadows.field(): on,
+                ClipEndpoint::Highlights.field(): on,
+            })
+        }
     }
 }
 
@@ -1998,6 +2380,7 @@ fn module_summary(modules: &[ModuleDescriptor]) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::state::histogram::HistogramStatus;
     use lightwell_core::{AssetId, ContentPoint, EntryId, POINTER_MODE, Zoom};
     use testing::{
         attach_log, boot, crop_descriptor, descriptors, entry, finish, logged, opened, pick_events,
@@ -2582,6 +2965,364 @@ mod tests {
         let _ = editor.update(Message::CompareBegin);
         assert!(editor.compare_return.is_none());
         assert!(editor.status.contains("slider draft"), "{}", editor.status);
+        finish(editor, catalog);
+    }
+
+    // -- The histogram inspector, its clipping toggles and the pointer readout -------------------
+
+    /// One analysed frame as the preview worker would hand it over: a report reduced from exactly
+    /// these pixels, the identity the owner stores it under, and the raster kept beside it.
+    fn analysed(
+        editor: &Editor,
+        generation: u64,
+        pixels: &[[u8; 4]],
+        width: u32,
+        height: u32,
+    ) -> (Analysis, Arc<lightwell_core::Raster>) {
+        let rgba: Vec<u8> = pixels.iter().flatten().copied().collect();
+        let report = lightwell_core::analysis::reduce(&rgba, width, height).expect("a reduction");
+        let entry_id = editor.displayed_entry().expect("a displayed entry");
+        let state = editor.state.as_ref().expect("an open asset");
+        let identity = lightwell_core::analysis::AnalysisIdentity {
+            asset_id: state.asset.id.clone(),
+            source_fingerprint: state.asset.fingerprint.clone(),
+            entry_id,
+            snapshot_id: state.current_entry.snapshot.id.clone(),
+            recipe_hash: "hash".into(),
+            draft: None,
+            width,
+            height,
+            domain: lightwell_core::analysis::AnalysisDomain,
+        };
+        let raster = Arc::new(lightwell_core::Raster {
+            width,
+            height,
+            rgba: rgba.into(),
+            source_fingerprint: state.asset.fingerprint.clone(),
+            snapshot_id: state.current_entry.snapshot.id.clone(),
+        });
+        (
+            Analysis {
+                generation,
+                identity,
+                report,
+            },
+            raster,
+        )
+    }
+
+    /// A report is taken up with the pixels it was reduced from, under the same generation: the
+    /// plot, the counters and the identity all describe the frame that is on screen.
+    #[test]
+    fn a_report_is_adopted_with_the_pixels_of_its_own_generation() {
+        let (mut editor, catalog, _, entry_id) = opened(Vec::new(), 4);
+        let log = attach_log(&mut editor);
+        // Four pixels: one all-black, one all-white, one at both endpoints, one ordinary.
+        let pixels = [
+            [0, 0, 0, 255],
+            [255, 255, 255, 255],
+            [0, 200, 255, 255],
+            [12, 34, 56, 255],
+        ];
+        let (analysis, raster) = analysed(&editor, 7, &pixels, 2, 2);
+        editor.preview_generation = 7;
+        editor.incoming = Some((analysis, raster));
+        editor.adopt_analysis(7);
+        editor.rederive();
+        let model = &editor.workspace.histogram;
+        assert_eq!(model.status, HistogramStatus::Ready);
+        assert!(!model.stale);
+        assert_eq!(model.counters.any_shadow, 2);
+        assert_eq!(model.counters.any_highlight, 2);
+        assert_eq!(model.counters.both, 1);
+        assert_eq!(model.counters.all_shadow, 1);
+        // Both triangles are tinted because both endpoints have pixels; neither overlay is on yet.
+        assert!(model.shadow.tinted && model.highlight.tinted);
+        assert!(!model.shadow.active && !model.highlight.active);
+        let identity = model.identity.as_ref().expect("a render identity");
+        assert_eq!(identity.entry, entry_id.as_str());
+        assert_eq!(identity.generation, 7);
+        assert_eq!((identity.width, identity.height), (2, 2));
+        assert_eq!(identity.draft_revision, None);
+        // The raster is retained for the overlay, sharing the render's own buffer.
+        assert!(editor.raster.is_some());
+        // The correlated state carries the whole inspector, so a captured frame is checkable.
+        let snapshot = editor.snapshot();
+        assert_eq!(snapshot["histogram"]["status"], json!("ready"));
+        assert_eq!(snapshot["histogram"]["counters"]["both"], json!(1));
+        assert_eq!(
+            snapshot["histogram"]["plotted_max"],
+            json!(model.plotted_max)
+        );
+        assert_eq!(
+            snapshot["histogram"]["identity"]["domain"],
+            json!("srgb-8bit-output")
+        );
+        assert_eq!(snapshot["workspace"]["clip_shadows"], json!(false));
+        assert_eq!(snapshot["workspace"]["clip_highlights"], json!(false));
+        assert_eq!(snapshot["readout"], Value::Null);
+        // The desktop hands its report to the owner, so an API client's request for the same
+        // identity is a cache hit rather than a second render.
+        let records = logged(&mut editor, &log);
+        assert!(
+            records
+                .iter()
+                .any(|record| record["event"] == "analysis_adopted"
+                    && record["detail"]["generation"] == json!(7)),
+            "no adoption was recorded: {records:?}"
+        );
+        finish(editor, catalog);
+    }
+
+    /// A report whose generation is not the one whose pixels just reached the screen describes
+    /// another frame, so it is dropped rather than plotted against the wrong photograph.
+    #[test]
+    fn a_report_from_an_older_generation_is_ignored() {
+        let (mut editor, catalog, _, _) = opened(Vec::new(), 4);
+        let (analysis, raster) = analysed(&editor, 6, &[[0, 0, 0, 255]], 1, 1);
+        editor.preview_generation = 7;
+        editor.incoming = Some((analysis, raster));
+        editor.adopt_analysis(7);
+        editor.rederive();
+        assert!(editor.analysis.is_none());
+        assert!(editor.raster.is_none(), "no stale raster is retained");
+        assert_eq!(editor.workspace.histogram.status, HistogramStatus::Pending);
+        assert_eq!(
+            editor.snapshot()["histogram"]["status"],
+            json!("pending"),
+            "the plot says pending rather than showing another frame's counts"
+        );
+        finish(editor, catalog);
+    }
+
+    /// While a newer frame is rendering the previous counts stay on screen and are marked stale,
+    /// rather than the plot going blank for the length of a render.
+    #[test]
+    fn a_newer_render_marks_the_shown_counts_stale_without_discarding_them() {
+        let (mut editor, catalog, _, _) = opened(Vec::new(), 4);
+        let (analysis, raster) = analysed(&editor, 1, &[[9, 9, 9, 255]], 1, 1);
+        editor.preview_generation = 1;
+        editor.incoming = Some((analysis, raster));
+        editor.adopt_analysis(1);
+        editor.rederive();
+        assert_eq!(editor.workspace.histogram.status, HistogramStatus::Ready);
+        // A newer frame is in flight: the same counts are still plotted, now marked stale.
+        let (newer, newer_raster) = analysed(&editor, 2, &[[0, 0, 0, 255]], 1, 1);
+        editor.preview_generation = 2;
+        editor.incoming = Some((newer, newer_raster));
+        editor.rederive();
+        let model = &editor.workspace.histogram;
+        assert_eq!(model.status, HistogramStatus::Updating);
+        assert!(model.stale);
+        assert!(model.bins.is_some(), "the previous plot is still shown");
+        assert_eq!(model.notice().as_deref(), Some("Updating\u{2026}"));
+        finish(editor, catalog);
+    }
+
+    /// One triangle sends exactly its own flag; the pair moves together; neither is an edit.
+    #[test]
+    fn a_clipping_toggle_sets_one_view_flag_and_commits_nothing() {
+        let mut workspace = lightwell_core::WorkspaceState::default();
+        assert_eq!(
+            clip_params(&workspace, Some(ClipEndpoint::Shadows)),
+            json!({"clip_shadows": true}),
+            "the shadow triangle names its own flag and no other"
+        );
+        assert_eq!(
+            clip_params(&workspace, Some(ClipEndpoint::Highlights)),
+            json!({"clip_highlights": true})
+        );
+        assert_eq!(
+            clip_params(&workspace, None),
+            json!({"clip_shadows": true, "clip_highlights": true}),
+            "J moves both"
+        );
+        // One on, one off: the key turns the pair on rather than flipping each.
+        workspace.clip_shadows = true;
+        assert_eq!(
+            clip_params(&workspace, None),
+            json!({"clip_shadows": true, "clip_highlights": true})
+        );
+        assert_eq!(
+            clip_params(&workspace, Some(ClipEndpoint::Shadows)),
+            json!({"clip_shadows": false}),
+            "a lit triangle turns its own overlay off"
+        );
+        // Both on: the key turns the pair off, so one key both shows and hides them.
+        workspace.clip_highlights = true;
+        assert_eq!(
+            clip_params(&workspace, None),
+            json!({"clip_shadows": false, "clip_highlights": false})
+        );
+
+        // Driven through the editor, a toggle takes no mutation path at all: nothing is marked
+        // busy, no request is opened, and the committed stack and its revision are untouched.
+        let (mut editor, catalog, _, _) = opened(Vec::new(), 4);
+        let before = (
+            editor.activity.requested,
+            editor.state.as_ref().expect("an open asset").revision,
+            editor.history.entries.len(),
+        );
+        for message in [
+            Message::ToggleClipping(Some(ClipEndpoint::Shadows)),
+            Message::ToggleClipping(Some(ClipEndpoint::Highlights)),
+            Message::ToggleClipping(None),
+        ] {
+            let _ = editor.update(message);
+            assert!(!editor.busy, "a view toggle never takes the mutation path");
+        }
+        let state = editor.state.as_ref().expect("an open asset");
+        assert_eq!(editor.activity.requested, before.0, "no request was opened");
+        assert_eq!(state.revision, before.1, "no edit committed");
+        assert!(state.current_entry.snapshot.recipe.layers.is_empty());
+        assert_eq!(editor.history.entries.len(), before.2, "no history entry");
+        finish(editor, catalog);
+    }
+
+    /// `J` reaches the same message the title bar's Clipping button sends, and only when no field
+    /// has taken the key.
+    #[test]
+    fn the_j_key_toggles_both_overlays() {
+        let context = keymap::KeyContext::default();
+        let key = iced::keyboard::Key::Character("j".into());
+        let event = iced::Event::Keyboard(iced::keyboard::Event::KeyPressed {
+            key: key.clone(),
+            modified_key: key,
+            physical_key: iced::keyboard::key::Physical::Unidentified(
+                iced::keyboard::key::NativeCode::Unidentified,
+            ),
+            location: iced::keyboard::Location::Standard,
+            modifiers: iced::keyboard::Modifiers::empty(),
+            text: None,
+            repeat: false,
+        });
+        assert!(matches!(
+            keymap::keymap(&event, iced::event::Status::Ignored, &context),
+            Some(Message::ToggleClipping(None))
+        ));
+        // A field that took the key keeps it: letters never act while text has focus.
+        assert!(
+            keymap::keymap(&event, iced::event::Status::Captured, &context).is_none(),
+            "J typed into a field is not a shortcut"
+        );
+    }
+
+    /// Hover keeps one sample in flight with only the newest position waiting, and an answer for a
+    /// stack the canvas has left is dropped instead of shown.
+    #[test]
+    fn hover_keeps_one_sample_in_flight_and_drops_a_mismatched_identity() {
+        let (mut editor, catalog, _, entry_id) = opened(Vec::new(), 4);
+        let _ = editor.update(Message::PointerMoved(Some((3, 4))));
+        assert!(editor.sample_in_flight, "the first move asks");
+        assert_eq!(editor.pending_sample, None);
+        // Two further moves while the first is outstanding: only the newest is kept.
+        let _ = editor.update(Message::PointerMoved(Some((5, 6))));
+        let _ = editor.update(Message::PointerMoved(Some((7, 8))));
+        assert_eq!(editor.pending_sample, Some((7, 8)));
+        assert!(editor.sample_in_flight, "still exactly one in flight");
+        // The same position again is not a second request.
+        let _ = editor.update(Message::PointerMoved(Some((7, 8))));
+        assert_eq!(editor.pending_sample, Some((7, 8)));
+
+        // An answer for another stack describes an image the canvas has left.
+        let _ = editor.update(Message::Sampled {
+            entry: EntryId::new(),
+            result: Ok(Readout {
+                x: 3,
+                y: 4,
+                rgba: [1, 2, 3, 255],
+            }),
+        });
+        assert!(editor.readout.is_none(), "a mismatched identity is dropped");
+        // The newest position was released as the next request when the first answered.
+        assert!(editor.sample_in_flight);
+        assert_eq!(editor.pending_sample, None);
+
+        let _ = editor.update(Message::Sampled {
+            entry: entry_id,
+            result: Ok(Readout {
+                x: 7,
+                y: 8,
+                rgba: [128, 64, 255, 255],
+            }),
+        });
+        let readout = editor.readout.as_ref().expect("an adopted readout");
+        assert_eq!(readout.rgba, [128, 64, 255, 255]);
+        assert!(!editor.sample_in_flight);
+        editor.rederive();
+        assert_eq!(
+            editor.workspace.histogram.caption_line(),
+            "Output \u{b7} sRGB \u{b7} after crop \u{b7} R 128 \u{b7} G 64 \u{b7} B 255 \u{b7} 7, 8"
+        );
+        assert_eq!(
+            editor.snapshot()["readout"]["rgba"],
+            json!([128, 64, 255, 255])
+        );
+
+        // The pointer leaving clears the readout and any waiting position.
+        let _ = editor.update(Message::PointerMoved(None));
+        assert!(editor.readout.is_none() && editor.pending_sample.is_none());
+        finish(editor, catalog);
+    }
+
+    /// A view change re-renders nothing and re-reduces nothing: the retained report and raster are
+    /// untouched, no preview generation is taken and no request is opened. Only the overlay's cell
+    /// grid follows the zoom, and only while an overlay is actually on.
+    #[test]
+    fn zooming_and_panning_ask_for_no_preview_and_no_analysis() {
+        let (mut editor, catalog, _, _) = opened(Vec::new(), 4);
+        let (analysis, raster) = analysed(&editor, 3, &[[0, 0, 0, 255]; 4], 2, 2);
+        editor.preview_generation = 3;
+        editor.incoming = Some((analysis, raster));
+        editor.adopt_analysis(3);
+        let before = (
+            editor.preview_generation,
+            editor.activity.requested,
+            editor.analysis.clone(),
+        );
+        // No overlay is on, so a zoom or a pan derives nothing at all.
+        for message in [
+            Message::Fit,
+            Message::HundredPercent,
+            Message::Zoom("50".into()),
+            Message::ApplyZoom,
+            Message::Panned(120.0, 40.0),
+            Message::Resized(1200.0, 800.0),
+        ] {
+            let _ = editor.update(message);
+        }
+        assert_eq!(editor.preview_generation, before.0, "no preview requested");
+        assert_eq!(editor.activity.requested, before.1, "no request opened");
+        assert_eq!(editor.analysis, before.2, "the report is untouched");
+        assert!(editor.overlay_request.is_none(), "nothing to derive");
+
+        // With an overlay on, the same view changes re-derive only the bounded overlay, from the
+        // retained raster: still no preview, no request and no second reduction.
+        editor.session.workspace.clip_shadows = true;
+        editor.session.preview.view.zoom = Zoom::Fit;
+        let _ = editor.update(Message::Resized(1440.0, 900.0));
+        let fitted = editor.overlay_request.clone().expect("a fitted overlay");
+        assert!(fitted.shadows && !fitted.highlights);
+        // The photograph is 2x2 and drawn far larger than itself, so the grid is the source.
+        assert_eq!((fitted.cells_w, fitted.cells_h), (2, 2));
+        editor.session.preview.view.zoom = Zoom::Percent { value: 100.0 };
+        let _ = editor.update(Message::ApplyZoom);
+        let hundred = editor.overlay_request.clone().expect("a 100% overlay");
+        assert_eq!(
+            (hundred.cells_w, hundred.cells_h),
+            (2, 2),
+            "one cell per pixel"
+        );
+        assert_eq!(editor.preview_generation, before.0, "still no preview");
+        assert_eq!(editor.activity.requested, before.1);
+        assert_eq!(
+            editor.analysis, before.2,
+            "the histogram is not reduced again"
+        );
+        // An unchanged view derives nothing a second time.
+        let repeated = editor.overlay_request.clone();
+        let _ = editor.update(Message::Panned(10.0, 10.0));
+        assert_eq!(editor.overlay_request, repeated, "a pan re-derives nothing");
         finish(editor, catalog);
     }
 

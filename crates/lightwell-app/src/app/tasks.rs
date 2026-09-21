@@ -1,7 +1,7 @@
 //! The owner tasks. Every desktop request goes through `call`, which is the same method table the
 //! JSON API dispatches; there is no desktop-only mutation path. Each task takes the narrowest
 //! completion path the performance rules allow.
-use crate::app::message::Message;
+use crate::{app::message::Message, state::histogram::Readout};
 use iced::Task;
 use lightwell_core::{
     ApiRequest, AssetId, ClientId, ClientSession, ContentPoint, Draft, DraftId, EditorState,
@@ -146,7 +146,15 @@ pub(crate) fn refresh(
         json!({"asset_id":asset_id,"before_sequence":1,"limit":1}),
     )?)?;
     let job = owner
-        .preview_job(PreviewRequest::new(client, asset_id).entry(selected))
+        // Every preview of the displayed target is reduced by the same worker that rendered it, so
+        // the histogram needs no second render and an `analysis.request` for this identity is a
+        // cache hit. A truncated crop-draft job is the one exception; the core refuses to analyse
+        // it, because its identity describes the whole stack rather than the prefix it renders.
+        .preview_job(
+            PreviewRequest::new(client, asset_id)
+                .entry(selected)
+                .analyse(),
+        )
         .map_err(|error| error.to_string())?;
     Ok(Refresh {
         state,
@@ -213,7 +221,11 @@ pub(crate) fn preview_task(
             let (mut result, sequence) = call(&owner, client, method, params)?;
             let session: ClientSession = parse(result["session"].take())?;
             let job = owner
-                .preview_job(PreviewRequest::new(client, asset_id).entry(entry_id))
+                .preview_job(
+                    PreviewRequest::new(client, asset_id)
+                        .entry(entry_id)
+                        .analyse(),
+                )
                 .map_err(|error| error.to_string())?;
             Ok(PreviewPayload {
                 job,
@@ -454,6 +466,41 @@ pub(crate) fn locate_task(
         move |result| Message::PointLocated {
             entry: picked.clone(),
             view: (x, y),
+            result,
+        },
+    )
+}
+
+/// One pixel of the displayed stack for the pointer readout. It is a point query: `render.sample`
+/// evaluates the compiled recipe at one coordinate and rasterizes nothing, so hovering costs
+/// O(layers) on the owner thread and never a frame. The entry travels back with the answer, so a
+/// response that arrives after the canvas moved to another stack is dropped rather than shown.
+pub(crate) fn sample_task(
+    owner: OwnerHandle,
+    client: ClientId,
+    asset_id: AssetId,
+    entry: EntryId,
+    draft_id: Option<String>,
+    x: u32,
+    y: u32,
+) -> Task<Message> {
+    let sampled = entry.clone();
+    Task::perform(
+        async move {
+            let mut params = json!({"asset_id":asset_id,"x":x,"y":y});
+            if let Some(draft_id) = draft_id
+                && let Some(object) = params.as_object_mut()
+            {
+                object.insert("draft_id".into(), Value::from(draft_id));
+            }
+            let (sampled, _) = call(&owner, client, "render.sample", params)?;
+            let rgba: Option<[u8; 4]> = parse(sampled["rgba"].clone())?;
+            // Outside the output stage is not an error: the pointer simply has nothing under it.
+            rgba.map(|rgba| Readout { x, y, rgba })
+                .ok_or_else(|| format!("({x}, {y}) is outside the rendered image"))
+        },
+        move |result| Message::Sampled {
+            entry: sampled.clone(),
             result,
         },
     )

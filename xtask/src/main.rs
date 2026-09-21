@@ -4,6 +4,7 @@ mod diagnostics;
 mod editor_acceptance;
 mod editor_performance;
 mod fixtures;
+mod histogram_smoke;
 mod launch;
 mod package;
 mod policy;

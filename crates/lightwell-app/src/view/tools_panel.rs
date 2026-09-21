@@ -5,11 +5,14 @@
 use crate::{
     app::{
         fields,
-        message::{CropMessage, MenuTarget, Message},
+        message::{ClipEndpoint, CropMessage, MenuTarget, Message},
     },
-    state::tools::{
-        ActionControl, ColorControl, ControlModel, CropSectionModel, EnumControl, GroupControl,
-        SectionModel, SliderControl, ToolsModel, ValueEdit,
+    state::{
+        histogram::{HIGHLIGHT_GLYPH, HIGHLIGHT_RULE, HistogramModel, SHADOW_GLYPH, SHADOW_RULE},
+        tools::{
+            ActionControl, ColorControl, ControlModel, CropSectionModel, EnumControl, GroupControl,
+            SectionModel, SliderControl, ToolsModel, ValueEdit,
+        },
     },
 };
 use iced::{
@@ -17,22 +20,34 @@ use iced::{
     widget::{Row, button, column, mouse_area, row, scrollable, text_input},
 };
 use lightwell_ui::{
-    ChipModel, IconButtonModel, SectionHeaderModel, SegmentedModel, SliderModel,
-    SubGroupHeaderModel, caption, chip, error_caption, icon_button, inline_menu, section_header,
-    section_label, segmented, slider, sub_group_header, theme,
+    BINS, ChipModel, ClipTriangleModel, HistogramChannel, IconButtonModel, SectionHeaderModel,
+    SegmentedModel, SliderModel, SubGroupHeaderModel, caption, chip, clip_triangle, error_caption,
+    histogram, icon_button, inline_menu, section_header, section_label, segmented, slider,
+    sub_group_header, theme,
 };
 
-pub(crate) fn tools_panel(model: &ToolsModel) -> Element<'_, Message> {
+pub(crate) fn tools_panel<'a>(
+    model: &'a ToolsModel,
+    plot: &'a HistogramModel,
+) -> Element<'a, Message> {
     if let Some(message) = model.status.message() {
-        return scrollable(iced::widget::container(caption(message)).padding(theme::SPACING))
-            .height(Length::Fill)
-            .into();
+        return scrollable(
+            iced::widget::container(
+                column![inspector(plot), caption(message)].spacing(theme::SPACING),
+            )
+            .padding(theme::SPACING),
+        )
+        .height(Length::Fill)
+        .into();
     }
     let menu = model.menu.as_ref();
     let mut panel = column![]
         .spacing(theme::SPACING)
         .padding(theme::SPACING)
         .width(Length::Fill);
+    // The histogram sits above the first module section with no header of its own, as the Develop
+    // workspace layout reserves.
+    panel = panel.push(inspector(plot));
     for section in &model.sections {
         panel = panel.push(section_view(section, menu));
     }
@@ -43,6 +58,72 @@ pub(crate) fn tools_panel(model: &ToolsModel) -> Element<'_, Message> {
         }
     }
     scrollable(panel).height(Length::Fill).into()
+}
+
+/// The histogram inspector: the plot, the two clipping triangles in its bottom corners, the domain
+/// caption with the pointer readout, and the textual endpoint counts under it.
+///
+/// The view decides nothing here. Which channel is which colour, what the counts say, which
+/// triangle is tinted and what its tooltip states are all in the model; this turns them into
+/// widgets and publishes one semantic message per triangle.
+fn inspector(model: &HistogramModel) -> Element<'_, Message> {
+    let colours = [
+        theme::CHANNEL_RED,
+        theme::CHANNEL_GREEN,
+        theme::CHANNEL_BLUE,
+    ];
+    let mut channels = [HistogramChannel::default(); 3];
+    for (index, channel) in channels.iter_mut().enumerate() {
+        channel.color = colours[index];
+        if let Some(bins) = &model.bins {
+            channel.bins = bins[index];
+        }
+    }
+    let plot = histogram(&lightwell_ui::HistogramModel {
+        channels,
+        stale: model.stale,
+    });
+    let triangles = row![
+        clip_triangle(
+            &ClipTriangleModel {
+                glyph: SHADOW_GLYPH.into(),
+                tooltip: SHADOW_RULE.into(),
+                tint: theme::CLIPPING_SHADOW,
+                tinted: model.shadow.tinted,
+                active: model.shadow.active,
+                enabled: model.shadow.enabled,
+            },
+            Some(Message::ToggleClipping(Some(ClipEndpoint::Shadows))),
+        ),
+        iced::widget::Space::new().width(Length::Fill),
+        clip_triangle(
+            &ClipTriangleModel {
+                glyph: HIGHLIGHT_GLYPH.into(),
+                tooltip: HIGHLIGHT_RULE.into(),
+                tint: theme::CLIPPING_HIGHLIGHT,
+                tinted: model.highlight.tinted,
+                active: model.highlight.active,
+                enabled: model.highlight.enabled,
+            },
+            Some(Message::ToggleClipping(Some(ClipEndpoint::Highlights))),
+        ),
+    ]
+    .align_y(Alignment::Center);
+    let mut block = column![plot, triangles].spacing(theme::SPACING / 2.0);
+    // The domain is always named, so an output endpoint count is never read as sensor clipping.
+    block = block.push(caption(model.caption_line()));
+    match model.notice() {
+        // Pending, updating, unavailable: an explicit line rather than a silently empty plot.
+        Some(notice) => block = block.push(caption(notice)),
+        None => {
+            // The counters in words, for a reader who cannot measure the plot's heights.
+            block = block.push(caption(model.counters.shadow_text()));
+            block = block.push(caption(model.counters.highlight_text()));
+            block = block.push(caption(model.counters.both_text()));
+        }
+    }
+    debug_assert_eq!(BINS, 256, "one bin per 8-bit output code");
+    block.into()
 }
 
 fn section_view<'a>(

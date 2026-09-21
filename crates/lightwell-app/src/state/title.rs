@@ -25,6 +25,9 @@ pub(crate) struct TitleBarModel {
     pub(crate) tools_panel_open: bool,
     /// Compare is holding the Original entry's preview.
     pub(crate) compare_held: bool,
+    /// Both clipping overlays are on, so the bar's Clipping toggle reads as selected. `J` and this
+    /// button drive the pair together; the two triangles drive them one at a time.
+    pub(crate) clipping_on: bool,
 }
 
 pub(crate) fn derive(inputs: &Inputs<'_>) -> TitleBarModel {
@@ -52,5 +55,7 @@ pub(crate) fn derive(inputs: &Inputs<'_>) -> TitleBarModel {
         state_panel_open: inputs.session.workspace.state_panel,
         tools_panel_open: inputs.session.workspace.tools_panel,
         compare_held: inputs.compare_held,
+        clipping_on: inputs.session.workspace.clip_shadows
+            && inputs.session.workspace.clip_highlights,
     }
 }

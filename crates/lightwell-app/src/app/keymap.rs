@@ -154,6 +154,11 @@ pub(crate) fn keymap(event: &Event, status: Status, context: &KeyContext) -> Opt
     if character(key, "o") {
         return Some(Message::ToggleThirds);
     }
+    // Both clipping overlays at once. The histogram's triangles toggle them one at a time; this
+    // key and the title bar's Clipping button move the pair together.
+    if character(key, "j") {
+        return Some(Message::ToggleClipping(None));
+    }
     if character(key, "v") {
         return Some(Message::SetMode(POINTER_MODE.into()));
     }
