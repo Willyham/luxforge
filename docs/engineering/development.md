@@ -112,15 +112,14 @@ The command never opens a frame. Read a capture as an image only for a failed sc
 review.
 
 Wall-clock on the owner's M4 Pro, release build already current and the Cargo cache warm, on a host
-shared with other work. Back to back at one-minute load averages of 4.0 and 3.5, `rendered` with
-`--jobs 1` took 32.2 s and `rendered` with the default pool 17.7 s; `check` was 8.1 s of each, and
-the same 17 scenarios and 19 editor launches took 23.4 s of wall clock serially against 8.9 s
-through the pool, whose scenarios added up to 25.8 s of their own elapsed time. `check` dominates
-either tier and varies with how much Cargo has to redo, so the pool's wall clock against the
-scenario time inside the same run is the figure to read. `timing` took 67.7 s with the default
-sample counts at load averages of 4.80, 5.86 and 6.59 across its three components, of which
-`measure` was 49.2 s and 17 launches, `editor-performance` 4.2 s and `editor-latency` 5.1 s. On a
-busier run whose `measure` started at 8.33, that component's rows and target verdicts came back
+shared with other work at one-minute load averages between 4 and 13: `quick` 9 s, of which `check`
+is 8 s and varies with how much Cargo has to redo; `rendered` 18 s, its 17 scenarios and 19 editor
+launches taking 9 s of wall clock through the pool against 26 s of their own summed elapsed time, or
+23 s serially with `--jobs 1`; `timing` 70 s with the default sample counts, of which `measure` is
+48 s and 17 launches, `editor-performance` 4 s and `editor-latency` 5 s; `full` with the owner's three-source
+manifest adds `raw-reference` and `raw-editor`, whose default three trials per source cost about 8 s
+each for the Z6, 19 s for the X100VI and 18 s for the Air 2S, two launches per trial. On a run whose
+`measure` started at a load average of 8.33, that component's rows and target verdicts came back
 `unreliable` while the two components below the threshold still gave verdicts.
 
 ### Rendered scenario cost: why every scenario stays in `rendered`
@@ -154,8 +153,8 @@ therefore stays in `rendered`; `full` adds only the RAW components (`raw-referen
 | `unavailable` | 1.80 s | 2.3 s | rendered |
 
 Reproduce with `verify --tier rendered --output NEW_DIR` for the pool and `--jobs 1` for the serial
-figures; both read `vm.loadavg` themselves only for timing components; the load quoted above is
-`sysctl -n vm.loadavg` read by hand immediately before each run.
+figures. The summary records the load average for timing components only; the loads quoted above
+were read with `sysctl -n vm.loadavg` immediately before each run.
 
 ## Running the application
 
