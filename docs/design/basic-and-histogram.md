@@ -1,6 +1,6 @@
 # Basic adjustments and histogram
 
-Status: design with the product choices decided by the owner on 2026-09-21 ([decisions](../decisions.md#basic-adjustments-and-histogram)); implementation was authorized the same day and runs against the [integration contract](#integration-contract) below. Sections describing behaviour that is not yet demonstrated say so. It builds on the delivered M3 modules, M4 crop drafts and conflicts, content-space edits, the orientation layer and the [Develop workspace](develop-workspace.md), whose generated tools panel already renders a `number` control as a slider that commits once on release.
+Status: implemented and verified on the M4 Mac. The owner's product choices ([decisions](../decisions.md#basic-adjustments-and-histogram), 2026-09-21) and the [integration contract](#integration-contract) below govern the delivered behaviour; the [tone](basic-tone.md), [white balance](basic-white-balance.md) and [colour](basic-colour.md) studies freeze the equations; [verification and acceptance](#verification-and-acceptance) states what is demonstrated and [performance](../specs/performance.md) records the measurements against the provisional targets. It builds on the M3 modules, the M4 crop drafts and conflicts, content-space edits, the orientation layer and the [Develop workspace](develop-workspace.md).
 
 ## Outcome and delivery order
 
