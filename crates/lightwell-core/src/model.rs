@@ -7,6 +7,9 @@ pub const RECIPE_FORMAT: u32 = 1;
 pub const PIXEL_EFFECT: &str = "lightwell.pixel.replace";
 pub const ORIENTATION_EFFECT: &str = "lightwell.geometry.orientation";
 pub const CROP_EFFECT: &str = "lightwell.geometry.crop";
+/// The one colour-stage effect of the Basic module: every implemented Basic parameter of a stack
+/// lives in one layer of this effect.
+pub const BASIC_EFFECT: &str = "lightwell.basic.adjust";
 pub const EFFECT_FORMAT: u32 = 1;
 
 fn valid_id(value: &str, prefix: &str) -> bool {

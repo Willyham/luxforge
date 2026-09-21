@@ -66,6 +66,24 @@ With the orientation layer and content-space placement, the 24 MP rows re-measur
 | `crop-fit` commit: validation, fitting, compile and persistence, no render | 1.3 ms | 0.9 ms |
 | Identity render from the cached decode (shared buffer, no copy) | under 0.01 ms | under 0.01 ms |
 
+With the Basic module's Exposure parameter, `editor-performance` on 24 and 60 MP, 30 samples each,
+release, warm cache, on the M4 Pro; core render only, with no desktop scheduling, GPU upload or
+presentation. Each row renders the same recipe through `render`, so the difference between the last
+two rows is the streamed pointwise colour pass alone: the same frames are materialized either way.
+
+| Measurement | 24 MP | 60 MP |
+| --- | --- | --- |
+| Identity recipe (shared source buffer, no frame) | under 0.01 ms | under 0.01 ms |
+| The 200-transform and 10° crop stack, no colour layer (p50 / p95) | 35.2 / 42.4 ms | 85.6 / 142.4 ms |
+| The same stack with one `+1 EV` Basic layer (p50 / p95) | 56.3 / 123.4 ms | 129.4 / 221.3 ms |
+
+The colour pass costs about 21 ms at 24 MP and 44 ms at 60 MP at the median. Both p95 tails are far
+above their medians (123 ms and 221 ms) because the run materializes two photo-sized frames per
+sample and the tail follows the allocator, not the pass; the slider-to-presented-frame threshold in
+the [Basic design](../design/basic-and-histogram.md#resource-and-responsiveness-constraints) is a
+desktop measurement that this core-only diagnostic does not make. Recorded here with that scope; no
+threshold is claimed met or missed from these numbers alone.
+
 Editor process measurements from `measure`, five app-cold launches per workload plus one repeated
 60 MP run, on the same host. Launch to observed frame is an upper bound: it includes the harness's
 capture readback, not scanout.

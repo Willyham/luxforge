@@ -1,113 +1,18 @@
 use crate::*;
 use lightwell_core::{
-    ActionInput, ActionPlan, Availability, CROP_EFFECT, ColorOperation, CropPayload, CropStage,
-    EditorService, EffectDescriptor, EffectStage, Error, ErrorKind, Layer, LayerId,
-    ModuleDescriptor, ModuleRegistry, Mutation, PointwiseColor, Processing, Raster, Recipe,
-    SnapshotId, SourceImage, Stage, StageContext, ToolModule, Transform, analysis, render,
+    BASIC_EFFECT, CROP_EFFECT, CropPayload, CropStage, EditorService, EffectStage, Layer, LayerId,
+    ModuleRegistry, Mutation, Raster, Recipe, SnapshotId, SourceImage, Transform, analysis, render,
 };
-use serde_json::Map;
-use std::{sync::Arc, time::Instant};
+use std::time::Instant;
 
-const DIAGNOSTIC_COLOR_EFFECT: &str = "diagnostic.exposure.adjust";
-
-/// One diagnostic exposure unit: multiply linear light by `2^EV`, which is the pointwise equation
-/// the Basic module will own. It exists here only to measure the host's colour pass before that
-/// module lands, and is registered into a diagnostic registry, never into `ModuleRegistry::builtin`.
-struct DiagnosticExposure {
-    ev: f64,
-    gain: f32,
-}
-
-impl PointwiseColor for DiagnosticExposure {
-    fn apply_row(&self, rgb: &mut [[f32; 3]]) {
-        for pixel in rgb {
-            for channel in pixel {
-                *channel *= self.gain;
-            }
-        }
-    }
-    fn is_finite(&self) -> bool {
-        self.ev.is_finite() && self.gain.is_finite()
-    }
-    fn describe(&self) -> String {
-        format!("diagnostic exposure {:+.2} EV", self.ev)
-    }
-}
-
-/// The diagnostic module that provides that one colour effect. Its payload is `{"ev": <number>}`.
-struct DiagnosticColorModule(ModuleDescriptor);
-
-impl DiagnosticColorModule {
-    fn shared() -> Arc<dyn ToolModule> {
-        Arc::new(Self(ModuleDescriptor {
-            id: "diagnostic.exposure".into(),
-            title: "Diagnostic exposure".into(),
-            hint: None,
-            effects: vec![EffectDescriptor {
-                id: DIAGNOSTIC_COLOR_EFFECT.into(),
-                format: 1,
-                stage: EffectStage::Color,
-            }],
-            actions: Vec::new(),
-            controls: Vec::new(),
-            reset: None,
-            canvas: None,
-            developer: true,
-            availability: Availability::Available,
-        }))
-    }
-}
-
-impl ToolModule for DiagnosticColorModule {
-    fn descriptor(&self) -> &ModuleDescriptor {
-        &self.0
-    }
-    fn parse(&self, _: &str, _: &Map<String, Value>) -> std::result::Result<ActionInput, Error> {
-        Err(Error::new(ErrorKind::Internal, "diagnostic module"))
-    }
-    fn plan(
-        &self,
-        _: &ActionInput,
-        _: &StageContext<'_>,
-    ) -> std::result::Result<ActionPlan, Error> {
-        Ok(ActionPlan::NoOp)
-    }
-    fn validate_payload(&self, _: &str, _: u32, _: &Value) -> std::result::Result<(), Error> {
-        Ok(())
-    }
-    fn describe_layer(
-        &self,
-        _: &str,
-        _: u32,
-        payload: &Value,
-    ) -> std::result::Result<String, Error> {
-        Ok(format!("diagnostic exposure {payload}"))
-    }
-    fn compile(
-        &self,
-        _: &str,
-        _: u32,
-        payload: &Value,
-        _: Stage,
-    ) -> std::result::Result<Processing, Error> {
-        let ev = payload["ev"]
-            .as_f64()
-            .ok_or_else(|| Error::new(ErrorKind::Validation, "diagnostic exposure needs ev"))?;
-        Ok(Processing::Color(ColorOperation::new(vec![Arc::new(
-            DiagnosticExposure {
-                ev,
-                gain: ev.exp2() as f32,
-            },
-        )])))
-    }
-}
-
-fn diagnostic_colour_layer(ev: f64) -> Layer {
+/// The Basic layer the colour rows measure: one exposure value, the real module's payload and the
+/// real compiled unit, placed where the host would place a colour-stage commit.
+fn basic_exposure_layer(ev: f64) -> Layer {
     Layer {
         id: LayerId::new(),
-        effect_id: DIAGNOSTIC_COLOR_EFFECT.into(),
+        effect_id: BASIC_EFFECT.into(),
         effect_format: 1,
-        payload: json!({ "ev": ev }),
+        payload: json!({ "exposure": ev }),
     }
 }
 
@@ -276,15 +181,13 @@ pub fn run(root: &Path, source: &Path, out: &Path, samples: usize) -> Result {
             crop_raster.width, crop_raster.height, crop_rect.width, crop_rect.height
         ),
     )?;
-    // The host's pointwise colour pass on the same stack and the same decoded source. The Basic
-    // module is a separate deliverable, so a diagnostic module supplies one +1 EV unit; the colour
-    // layer goes where the host would place a colour-stage commit, before the geometry tail. The
-    // identity render shares the source buffer and allocates no frame, so it is the floor; the
-    // same stack without the colour layer is the honest baseline for the pass itself, because it
-    // materializes exactly the same frames.
+    // The host's pointwise colour pass on the same stack and the same decoded source, through the
+    // real Basic module's +1 EV exposure unit; the colour layer goes where the host would place a
+    // colour-stage commit, before the geometry tail. The identity render shares the source buffer
+    // and allocates no frame, so it is the floor; the same stack without the colour layer is the
+    // honest baseline for the pass itself, because it materializes exactly the same frames.
     let colour_job = service.preview_job(&asset, Some(&crop_entry), None, None)?;
-    let mut colour_registry = ModuleRegistry::builtin();
-    colour_registry.register(DiagnosticColorModule::shared())?;
+    let colour_registry = ModuleRegistry::builtin();
     let stack = colour_job.entry.snapshot.recipe.clone();
     let identity = Recipe {
         format: stack.format,
@@ -292,7 +195,7 @@ pub fn run(root: &Path, source: &Path, out: &Path, samples: usize) -> Result {
     };
     let mut coloured = stack.clone();
     let index = colour_registry.insertion_index(&coloured.layers, EffectStage::Color);
-    coloured.layers.insert(index, diagnostic_colour_layer(1.0));
+    coloured.layers.insert(index, basic_exposure_layer(1.0));
     let (identity_samples, identity_stage) =
         recipe_render_samples(&colour_registry, &colour_job.source, &identity, samples)?;
     let (stack_samples, stack_stage) =
@@ -355,7 +258,7 @@ pub fn run(root: &Path, source: &Path, out: &Path, samples: usize) -> Result {
             "two_hundred_transform_actions_and_a_10_degree_crop":angled_crop,
             "colour_identity_render":identity_render,
             "colour_baseline_same_stack_without_colour":stack_render,
-            "colour_same_stack_with_one_1ev_operation":colour_render,
+            "colour_same_stack_with_one_1ev_basic_layer":colour_render,
             "reopen_source_and_preview_job":cold_source_and_job_ms,
             "reopen_original_render":cold_original_render_ms,
             "total":milliseconds(total),
@@ -366,7 +269,7 @@ pub fn run(root: &Path, source: &Path, out: &Path, samples: usize) -> Result {
             "analysis::reduce_raster's pixel_count matches the rendered raster on every sample",
             "One and 200 exact transform actions, composed into one orientation layer, render from the same immutable source",
             "A 10 degree crop-fit adds one resample stage boundary and renders its declared stage",
-            "One +1 EV pointwise colour operation, from a diagnostic module, renders the same stage as the stack without it; the difference against that baseline is the streamed colour pass",
+            "One +1 EV Basic exposure layer, compiled by the real lightwell.basic module, renders the same stage as the stack without it; the difference against that baseline is the streamed colour pass",
             "Catalog reopen reconstructs the original historical state",
             "Source SHA-256 is unchanged"
         ]

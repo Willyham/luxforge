@@ -1,6 +1,7 @@
 //! Tool modules: each one owns its descriptor, input parsing, state validation, no-op detection
 //! and the compilation of its persisted payloads into host processing primitives. Modules never
 //! write the catalog, never keep an undo stack and never render.
+mod basic;
 mod crop;
 mod descriptor;
 mod pixel;
@@ -8,6 +9,7 @@ mod processing;
 mod registry;
 mod transform;
 
+pub use basic::BasicModule;
 pub use crop::CropModule;
 pub use crop::geometry::{
     BoxRect, COVERAGE_TOLERANCE, CropPayload, CropStage, Edge, MAX_ANGLE, MIN_ANGLE, OutputRect,
@@ -85,6 +87,14 @@ pub struct StageContext<'a> {
 
 pub trait ToolModule: Send + Sync {
     fn descriptor(&self) -> &ModuleDescriptor;
+    /// Whether a stack may hold at most one layer of this effect. The host refuses to compile a
+    /// stack that holds two of them, because a module that owns exactly one layer cannot say which
+    /// one an action or a payload belongs to; nothing is rewritten and the stack stays readable.
+    /// The default is `false`, so a module says so only when one layer is its contract.
+    fn single_layer(&self, effect_id: &str) -> bool {
+        let _ = effect_id;
+        false
+    }
     /// Normalize an already schema-checked request into its durable action identity and stored
     /// parameters.
     fn parse(&self, action_id: &str, parameters: &Map<String, Value>)

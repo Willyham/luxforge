@@ -311,9 +311,21 @@ mod tests {
             .find(|parameter| matches!(parameter.kind, ParameterKind::Color))
             .expect("the pixel action declares a color");
         assert_eq!(fields.get(action, &color.name), Some("0,0,0"));
-        // Only declared fields exist: an action driven by presets alone has none.
-        assert!(
-            fields.summary().as_object().expect("an object").len() == 3,
+        // Only declared fields exist: an action driven by presets alone has none, and every
+        // declared number, integer and colour parameter of a built-in has exactly one.
+        assert_eq!(
+            fields
+                .summary()
+                .as_object()
+                .expect("an object")
+                .keys()
+                .collect::<Vec<_>>(),
+            [
+                "set-basic.exposure",
+                "set-pixel.rgb",
+                "set-pixel.x",
+                "set-pixel.y"
+            ],
             "{}",
             fields.summary()
         );
@@ -466,9 +478,11 @@ mod tests {
             Some(Map::new()),
             "the pixel action is driven by its fields alone"
         );
+        // The transform module's controls are action buttons rather than fields, which is the
+        // shape this submit rule is about; Basic's are sliders of a patch action.
         let choice = modules
             .iter()
-            .find(|module| module.canvas.is_none())
+            .find(|module| module.id == "lightwell.transform")
             .expect("the transform module");
         let Some(Rendered::Action { action, preset, .. }) =
             choice.controls.first().map(classify).map(|control| {

@@ -46,8 +46,23 @@ pub fn run(root: &Path, out: &Path) -> Result {
             .map(|action| action.id.clone())
             .collect();
         ensure(
-            modules == ["lightwell.pixel", "lightwell.transform", "lightwell.crop"]
-                && actions == ["set-pixel", "transform", "crop", "crop-fit", "crop-reset"],
+            modules
+                == [
+                    "lightwell.pixel",
+                    "lightwell.basic",
+                    "lightwell.transform",
+                    "lightwell.crop",
+                ]
+                && actions
+                    == [
+                        "set-pixel",
+                        "set-basic",
+                        "reset-basic",
+                        "transform",
+                        "crop",
+                        "crop-fit",
+                        "crop-reset",
+                    ],
             "Built-in module discovery changed",
         )?;
         drop(registry);

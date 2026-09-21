@@ -1108,6 +1108,8 @@ mod tests {
             generated,
             [
                 "edit.set-pixel",
+                "edit.set-basic",
+                "edit.reset-basic",
                 "edit.transform",
                 "edit.crop",
                 "edit.crop-fit",

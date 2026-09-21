@@ -131,6 +131,7 @@ fn registry(disabled: &[String]) -> Result<ModuleRegistry, String> {
     let mut unknown: Vec<&str> = disabled.iter().map(String::as_str).collect();
     for module in [
         Arc::new(lightwell_core::PixelModule::new()) as Arc<dyn ToolModule>,
+        Arc::new(lightwell_core::BasicModule::new()),
         Arc::new(lightwell_core::TransformModule::new()),
         Arc::new(lightwell_core::CropModule::new()),
     ] {

@@ -124,11 +124,13 @@ Tone, white balance and colour equations, ranges and tolerances are frozen by th
 
 ## Basic controls and interaction
 
+Exposure is implemented as the Basic module's first and only parameter, at the range, step and precision below; every other row is still a starting range for a control that does not exist yet.
+
 These are the starting Lightwell ranges and units, taken from the [Lightroom research](../research/lightroom/tone-and-color-tools.md) as the owner decided, not claims of numeric equivalence to Lightroom. Defaults are neutral, zero. The numerical tasks may adjust a range against independent references before a control ships. Ranges, step, display precision, defaults and descriptions belong in descriptors and API schemas.
 
 | Group/control | Starting UI range | Required behavior |
 | --- | --- | --- |
-| Tone / Exposure | −5.00 to +5.00 EV, 0.01 step | Multiply linear-light channels by `2^EV` |
+| Tone / Exposure — **implemented** | −5.00 to +5.00 EV, 0.01 step | Multiply linear-light channels by `2^EV` |
 | Tone / Contrast | −100 to +100, step 1 | Change midtone separation with a defined pivot and smooth monotone curve |
 | Tone / Highlights, Shadows | −100 to +100, step 1 | Smoothly change bright/dark ranges while retaining ordering and exposing retained detail |
 | Tone / Whites, Blacks | −100 to +100, step 1 | Control bright/dark endpoints separately from broad highlight/shadow shaping |

@@ -1,7 +1,7 @@
 //! The provider index: descriptors validated once at registration, then hash lookups by effect
 //! and action identity. Registration touches no image or catalog resource.
 use super::{
-    ActionDescriptor, CanvasInteraction, CropModule, EffectDescriptor, EffectStage,
+    ActionDescriptor, BasicModule, CanvasInteraction, CropModule, EffectDescriptor, EffectStage,
     MAX_COLOR_UNITS, ModuleDescriptor, PixelModule, Processing, Stage, ToolModule, TransformModule,
 };
 use crate::{
@@ -64,6 +64,7 @@ impl ModuleRegistry {
         let mut registry = Self::new();
         for module in [
             Arc::new(PixelModule::new()) as Arc<dyn ToolModule>,
+            Arc::new(BasicModule::new()),
             Arc::new(TransformModule::new()),
             Arc::new(CropModule::new()),
         ] {
@@ -234,6 +235,10 @@ impl ModuleRegistry {
         layers: &[Layer],
     ) -> Result<Compiled, Error> {
         let mut layer_ids = HashSet::with_capacity(layers.len());
+        // The effects whose module owns exactly one layer of a stack, seen so far. A module that
+        // declares this cannot say which of two layers holds its state, so the host refuses the
+        // stack here as well as when the module plans against it, and rewrites nothing.
+        let mut single_effects: HashSet<&str> = HashSet::new();
         let mut segments = vec![Segment::new(None, source_width, source_height)];
         for layer in layers {
             if !layer_ids.insert(&layer.id) {
@@ -242,6 +247,14 @@ impl ModuleRegistry {
             let module = self
                 .provider(&layer.effect_id)
                 .ok_or_else(|| self.unavailable_in(layers, &layer.effect_id))?;
+            if module.single_layer(&layer.effect_id)
+                && !single_effects.insert(layer.effect_id.as_str())
+            {
+                return Err(validation(format!(
+                    "ambiguous {} layers",
+                    module.descriptor().title
+                )));
+            }
             let segment = segments.last_mut().expect("one segment always exists");
             let processing = module.compile(
                 &layer.effect_id,
@@ -315,8 +328,8 @@ impl ModuleRegistry {
 pub(crate) mod tests {
     use super::*;
     use crate::{
-        AssetId, CROP_EFFECT, EFFECT_FORMAT, LayerId, ORIENTATION_EFFECT, Orientation,
-        PIXEL_EFFECT, SnapshotId, SourceImage,
+        AssetId, BASIC_EFFECT, CROP_EFFECT, EFFECT_FORMAT, LayerId, ORIENTATION_EFFECT,
+        Orientation, PIXEL_EFFECT, SnapshotId, SourceImage,
         modules::{
             ActionInput, ActionPlan, Availability, CropPayload, EffectStage, ModuleDescriptor,
             StageContext,
@@ -586,7 +599,10 @@ pub(crate) mod tests {
         assert!(registry.effect(ORIENTATION_EFFECT).is_some());
         assert!(registry.action("crop").is_some());
         assert!(registry.effect(CROP_EFFECT).is_some());
-        assert_eq!(registry.descriptors().len(), 3);
+        assert!(registry.action("set-basic").is_some());
+        assert!(registry.action("reset-basic").is_some());
+        assert!(registry.effect(BASIC_EFFECT).is_some());
+        assert_eq!(registry.descriptors().len(), 4);
         assert!(registry.action("edit.set-pixel").is_none());
 
         for (case, module) in [
@@ -632,7 +648,7 @@ pub(crate) mod tests {
         }
         assert_eq!(
             registry.descriptors().len(),
-            3,
+            4,
             "nothing was half-registered"
         );
         assert!(
@@ -645,7 +661,7 @@ pub(crate) mod tests {
                 ))
                 .is_ok()
         );
-        assert_eq!(registry.descriptors().len(), 4);
+        assert_eq!(registry.descriptors().len(), 5);
     }
 
     /// A module whose canvas claims one mode-strip letter.

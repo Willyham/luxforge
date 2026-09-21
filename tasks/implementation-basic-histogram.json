@@ -506,7 +506,7 @@
     {
       "id": "TASK-008",
       "description": "Implement Exposure as the first persistent Basic action and compiled processor.",
-      "status": "in_progress",
+      "status": "completed",
       "dependencies": [
         "TASK-003",
         "TASK-004"
