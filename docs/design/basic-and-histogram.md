@@ -120,13 +120,13 @@ Preview during a gesture: `OwnerHandle::preview_job` accepts a `draft: Option<Dr
 
 ### What this contract does not decide
 
-Tone, white balance and colour equations, ranges and tolerances are frozen by their numerical tasks against independent references before their controls ship. The provisional performance thresholds, the overlay colours, the picker patch and the order of later modules keep their recorded defaults.
+Tone, white balance and colour equations, ranges and tolerances were frozen by the numerical studies ([tone](basic-tone.md), [white balance](basic-white-balance.md), [colour](basic-colour.md)) against independent references before their controls shipped. The provisional performance thresholds, the overlay colours, the picker patch and the order of later modules keep their recorded defaults.
 
 ## Basic controls and interaction
 
 Every Basic control in the table below is implemented — Temperature and Tint, Exposure, the five Tone controls (Contrast, Highlights, Shadows, Whites, Blacks), Vibrance and Saturation — at the ranges, steps and precisions shown, together with the `neutral-sample` picker query behind the White Balance group.
 
-These are the starting Lightwell ranges and units, taken from the [Lightroom research](../research/lightroom/tone-and-color-tools.md) as the owner decided, not claims of numeric equivalence to Lightroom. Defaults are neutral, zero. The numerical tasks may adjust a range against independent references before a control ships. Ranges, step, display precision, defaults and descriptions belong in descriptors and API schemas.
+These are the Lightwell ranges and units, taken from the [Lightroom research](../research/lightroom/tone-and-color-tools.md) as the owner decided, not claims of numeric equivalence to Lightroom. Defaults are neutral, zero. The numerical studies confirmed every range against independent references before the controls shipped. Ranges, step, display precision, defaults and descriptions live in the descriptor and the API schema.
 
 | Group/control | Starting UI range | Required behavior |
 | --- | --- | --- |
@@ -160,11 +160,7 @@ Geometry/color operations are ordered, not globally commutative. Nonlinear tonal
 
 Point sampling and the future neutral picker use the same compiled evaluation as rendering without rasterizing a frame. A bounded crop filter may require a fixed local neighborhood; document its cost instead of claiming every interpolated query has the old exact-geometry cost. The initial Basic algorithms are pointwise and add no image-sized analysis to a sample or no-op check.
 
-### Tone contract to prove before shipping
-
-Recommend a deterministic, pointwise luminance-based family for the first Tone controls. Start from linear-sRGB luminance with documented coefficients, use smooth overlapping tonal weights, and reconstruct RGB with explicit handling near black and outside gamut. Contrast has a fixed documented pivot; endpoint adjustments have an explicit crossing-prevention rule. Define the complete parameter-to-curve equations, internal order, extrapolation beyond white/below black and zero-luminance behavior in the numerical task before writing production controls.
-
-Prove identity, finite output, nondecreasing neutral-ramp response over all allowed parameter combinations, smooth transitions, no dark/bright range inversion, and distinct broad-range versus endpoint effects. Use equal-luminance patches in different surroundings to prove this first algorithm is global. Reference photos must show usable shadow/highlight adjustments without obvious posterization, hue shifts or loss of local contrast. If the pointwise proposal cannot meet the visual acceptance, return the algorithm/scope decision to the owner; do not silently introduce an edge-aware local stage or call a weak brightness offset finished.
+### Tone
 
 These controls reshape retained information. A clipped JPEG plateau cannot regain missing detail. Adobe describes its tone controls as image-adaptive; its formulas and numeric behavior are not this contract. [Adobe tone procedure](https://helpx.adobe.com/lightroom-classic/desktop/help/tone-control-adjustment.html)
 
@@ -172,17 +168,11 @@ Frozen: [Tone mathematics](basic-tone.md). Luminance is Rec. 709 on linear sRGB;
 
 ### White balance and neutral picker
 
-Recommend a documented relative chromatic-adaptation or channel-gain transform with luminance normalization, not multiplying encoded bytes. The numerical task selects one, fixes its matrices/gain mapping and produces warm/cool, green/magenta, near-black and saturated-patch references. Zero/zero means the JPEG's existing rendering, shown as Original; do not imply the camera's RAW white balance is recoverable. A custom value shows Custom.
-
-The neutral picker samples a bounded patch (default 5×5 at input-stage pixel centers, clipped at image edges), evaluates before the target Basic layer, and computes reproducible parameters. Store the resulting numeric settings in the recipe; the sampled position/statistics may be action metadata, not a dependency on a future screen image. Map displayed coordinates back through subsequent geometry. Reject near-black, clipped or non-invertible/invalid samples with an explanation; do not guess. If the relative axes cannot represent the correction within range, report it rather than silently clamping. Freeze averaging, rejection thresholds and solver tolerance in the numerical task. UI and API use the same sample coordinates and solver; cancel commits nothing.
-
 Frozen: [White balance mathematics](basic-white-balance.md). A von Kries adaptation in Bradford LMS anchored at the sRGB D65 white, Temperature as a mired shift along the daylight locus (about 3900 K to 20000 K across ±100) and Tint as a perpendicular CIE 1960 uv offset with positive tint magenta; 0/0 is the exact identity; the neutral picker averages the 5 × 5 patch in linear light, rejects clipped, near-black and non-finite samples with a reason, solves by bounded Newton iteration, rounds to whole steps and refuses corrections outside ±100 rather than clamping.
 
 Implemented: Temperature and Tint are the White balance group of the one Basic layer, compiled as one composite 3 × 3 linear-sRGB matrix that runs first in the layer's unit order, and the neutral picker is the module query `neutral-sample` reached as `query.neutral-sample` and put on the canvas mode strip by a `sample-apply` interaction. The picker reads the 5 × 5 patch from the stage the Basic layer receives, so it evaluates before that layer's own correction; UI and API use the same coordinates, the same patch and the same solver, and a refusal commits nothing.
 
 ### Saturation and vibrance
-
-Select a documented perceptual chroma space and fixed gamut policy in the numerical task; evaluate Oklab as the first candidate. Saturation scales chroma while preserving its achromatic axis; Vibrance varies gain with existing chroma, with smooth hue weighting if skin-like hue protection is selected. Skin-like weighting is a color heuristic, not face detection or a promise about every skin tone. Define negative-value behavior, order, neutral/black cases and gamut handling explicitly, and verify neutral preservation, saturation −100 grayscale, monotone response and varied portrait/saturated-color fixtures. No ML resource is needed.
 
 Frozen: [Saturation and Vibrance mathematics](basic-colour.md). Oklab passed every property test, so it is the accepted space; saturation and vibrance both scale Oklab `a`/`b` about the achromatic axis, vibrance's gain depends on existing chroma and a skin-like Oklab hue band (55° ± 35°, at most 60% gain reduction at the band centre), neither unit clamps internally, and production is checked against the independent f64 reference within `1e-5 + 1e-5 × |reference|`.
 
