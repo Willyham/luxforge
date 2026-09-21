@@ -791,7 +791,7 @@
           "cargo xtask check"
         ],
         "expected_results": [
-          "A documented formula set and expected outputs unblock production Tone, or a specific unmet visual requirement remains an explicit owner decision."
+          "A documented formula set and expected outputs unblock production Tone; any unmet visual requirement is recorded as a documented limitation with a later proposal."
         ]
       }
     },
