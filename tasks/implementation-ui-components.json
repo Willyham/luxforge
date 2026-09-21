@@ -1,0 +1,351 @@
+{
+  "schema_version": "1.0",
+  "plan_id": "ui-components-implementation",
+  "title": "UI components for modules",
+  "objective": "Deliver the closed control vocabulary of the UI components design: new parameter kinds and control kinds in the core descriptor, pure widgets in lightwell-ui, the desktop mapping with per-kind gesture rules, a developer proof module for whole-vocabulary parity, and rendered evidence, so Tone Curve, Detail and the colour mixer can be declared without a desktop change.",
+  "context_summary": "The Develop workspace generates its tools panel from module descriptors with four control kinds (group, number, color, action) over four parameter kinds. The design adds toggle, choice, curve, styled number, styled colour and styled action controls, boolean and curve parameters, range and rail hints, and named icons, with text and pad specified but deferred to a second slice. Widgets stay in lightwell-ui with no core dependency; continuous controls draft through the core draft lifecycle and discrete controls commit once.",
+  "tasks": [
+    {
+      "id": "TASK-001",
+      "description": "Extend the core descriptor with the boolean and curve parameter kinds, the number hints (soft range, fine step, zero), the toggle, choice and curve control kinds, the style and rail hints on number, color and action controls, and icon names on actions; validate every binding at registration and every request against the new kinds.",
+      "status": "pending",
+      "dependencies": [],
+      "extra_context": [
+        "The host validates and stores exactly what it is sent; hints change what a client draws, never what the host accepts. A curve is an ordered list of [x, y] fractions with strictly increasing x, monotone when declared, and fixed x values when declared.",
+        "The string parameter kind, the text control and the pad control are the second slice and are not added here. Existing built-in modules keep their descriptors; only the descriptor types, validation and module.list change."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "UI components design",
+          "target": "docs/design/ui-components.md",
+          "locator": "Control kinds",
+          "relevance": "Defines every kind, hint and validation rule this task implements."
+        },
+        {
+          "kind": "file",
+          "label": "Descriptor types",
+          "target": "crates/lightwell-core/src/modules/descriptor.rs",
+          "relevance": "The Control, ParameterKind and ParameterDescriptor types and their validation."
+        },
+        {
+          "kind": "file",
+          "label": "Module and API design",
+          "target": "docs/design/modules-and-api.md",
+          "locator": "Descriptor",
+          "relevance": "The descriptor table that must list the new kinds once delivered."
+        }
+      ],
+      "acceptance_criteria": [
+        "Registration rejects a toggle on a non-boolean, a choice on a non-enum, a curve channel on a non-curve, a rail hint on a non-number, a soft range outside the hard range, a non-positive fine step, a zero outside the range and an icon name that is not lowercase-hyphenated, each with the control and parameter named.",
+        "Requests with a boolean or curve field are validated against the declared kind and refused with the field named when malformed; nothing is rounded or rewritten.",
+        "module.list serializes every new kind and hint, omitted hints take the documented defaults, and the descriptor table in the module design lists them.",
+        "The performance-rules checklist is answered: registration stays a descriptor-only hash build with no new allocation per request beyond the curve's point list."
+      ],
+      "test_strategy": {
+        "approach": "unit",
+        "steps": [
+          "Add one rejection test per invalid binding and one acceptance test per valid kind.",
+          "Round-trip a descriptor with every new kind through JSON and module.list.",
+          "Validate boolean and curve requests, including monotone and fixed-x violations."
+        ],
+        "commands": [
+          "cargo test --locked --package lightwell-core"
+        ],
+        "expected_results": [
+          "Every invalid binding is refused explicitly, every valid one is accepted, and the JSON shape matches the design."
+        ]
+      }
+    },
+    {
+      "id": "TASK-002",
+      "description": "Add the basic widgets to lightwell-ui: the soft-range and rail-decorated slider, the factored number field, the stepper, the toggle, the menu choice, and the named Icon enumeration drawn as vector paths, with pure geometry functions and gallery states.",
+      "status": "pending",
+      "dependencies": [],
+      "extra_context": [
+        "Every widget takes a plain-data model and messages and holds no state; fractions are mapped to values by the caller. Canvas-drawn icons cache their geometry.",
+        "The existing slider's value field becomes the number field so the slider, the stepper and the crop angle share one implementation."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "UI components design",
+          "target": "docs/design/ui-components.md",
+          "locator": "Widget library",
+          "relevance": "Lists each widget's model and messages."
+        },
+        {
+          "kind": "file",
+          "label": "Slider widget",
+          "target": "crates/lightwell-ui/src/widgets/slider.rs",
+          "relevance": "The row being extended with soft range, over-range mark and rail decoration."
+        },
+        {
+          "kind": "file",
+          "label": "Slider geometry",
+          "target": "crates/lightwell-ui/src/geometry.rs",
+          "relevance": "The pure fill and fraction mapping functions the soft range extends."
+        }
+      ],
+      "acceptance_criteria": [
+        "Soft-range fill, over-range side and rail-stop placement are pure functions with tests; the gallery builds every new state without panicking; no test links lightwell-core.",
+        "Each icon in the enumeration draws at 12 and 16 points in the text colour and the icon button accepts an Icon in place of a glyph.",
+        "The components board gains a row per new widget and state and cargo xtask check-repository keeps the layer boundary."
+      ],
+      "test_strategy": {
+        "approach": "unit",
+        "steps": [
+          "Test the pure geometry for soft ranges and rail stops.",
+          "Extend the gallery and its build test with every new state.",
+          "Run the repository layer check."
+        ],
+        "commands": [
+          "cargo test --locked --package lightwell-ui",
+          "cargo xtask check-repository"
+        ],
+        "expected_results": [
+          "Pure functions pass, the gallery builds, and the widget crate still depends on Iced only."
+        ]
+      }
+    },
+    {
+      "id": "TASK-003",
+      "description": "Add the colour swatch, the colour picker and the curve editor to lightwell-ui as canvas widgets with cached geometry, pure HSV, hex and hit-test functions, and gallery states.",
+      "status": "pending",
+      "dependencies": [],
+      "extra_context": [
+        "The curve editor draws a polyline the host supplies and never interpolates; the picker maps pointer positions to fractions and the caller turns them into channel values.",
+        "Tessellated geometry is cached on the model's version the way the histogram plot caches its polygons, so an unchanged model costs nothing per frame."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "UI components design",
+          "target": "docs/design/ui-components.md",
+          "locator": "Widget library",
+          "relevance": "The picker and curve editor models, messages and caching rule."
+        },
+        {
+          "kind": "file",
+          "label": "Histogram widget",
+          "target": "crates/lightwell-ui/src/widgets/histogram.rs",
+          "relevance": "The existing cached canvas plot the new widgets follow."
+        },
+        {
+          "kind": "file",
+          "label": "Performance rules",
+          "target": "docs/engineering/performance-rules.md",
+          "relevance": "Bounded allocation and no per-frame work without a model change."
+        }
+      ],
+      "acceptance_criteria": [
+        "HSV and hex conversions round-trip every 8-bit sRGB triple; the curve hit test selects the nearest point within its radius and none beyond it; both are tested without a renderer.",
+        "A picker drag and a curve point drag emit fractions and a release; adding, removing and selecting points emit their own messages; the channel switch emits a selection.",
+        "An unchanged model re-tessellates nothing, shown by a cache-hit test keyed on the model version; the gallery builds every state."
+      ],
+      "test_strategy": {
+        "approach": "unit",
+        "steps": [
+          "Test conversions, hit tests and cache keys as pure functions.",
+          "Add gallery states for rest, dragging, selected point, histogram background, two channels and disabled."
+        ],
+        "commands": [
+          "cargo test --locked --package lightwell-ui"
+        ],
+        "expected_results": [
+          "Pure functions and the gallery pass with no core dependency."
+        ]
+      }
+    },
+    {
+      "id": "TASK-004",
+      "description": "Map every control kind in the desktop view model and view with the per-kind gesture rules, put the control menu on every generated control, and rebuild the crop section's chips, fields, stepper and toggle on the generic widgets.",
+      "status": "pending",
+      "dependencies": [
+        "TASK-001",
+        "TASK-002",
+        "TASK-003"
+      ],
+      "extra_context": [
+        "Continuous controls of a field-patch action draft through draft.begin, draft.set and draft.commit under the existing 16 ms tick; discrete controls commit once. A curve channel submits its one parameter; the crop draft keeps its own messages.",
+        "Enum parameters currently render through a kind-driven mapping; the declared choice control replaces that path."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "UI components design",
+          "target": "docs/design/ui-components.md",
+          "locator": "Desktop mapping and gesture rules",
+          "relevance": "The commit and draft rule per kind and the crop rebuild."
+        },
+        {
+          "kind": "file",
+          "label": "Tools view model",
+          "target": "crates/lightwell-app/src/state/tools.rs",
+          "relevance": "Where declared controls become control models."
+        },
+        {
+          "kind": "file",
+          "label": "Tools panel view",
+          "target": "crates/lightwell-app/src/view/tools_panel.rs",
+          "relevance": "Where control models become widgets and messages."
+        },
+        {
+          "kind": "file",
+          "label": "Develop workspace architecture",
+          "target": "docs/design/develop-workspace.md",
+          "locator": "Message flow",
+          "relevance": "The draft-backed gesture bound the new continuous controls must keep."
+        }
+      ],
+      "acceptance_criteria": [
+        "A slider, stepper, picker or curve drag opens one draft and commits once on release; a toggle sends one boolean; a choice sends one option; a field commits on Enter and not on blur; Escape cancels every continuous gesture.",
+        "Right-click on any generated control offers Copy as JSON request with the current expected revision and shows the action and parameter names.",
+        "The crop section renders with the generic widgets and the crop smoke scenarios pass unchanged; per-section re-derivation keeps an untouched section's version.",
+        "Iced's slider keyboard limitation is still stated in the workspace design and not claimed as fixed."
+      ],
+      "test_strategy": {
+        "approach": "mixed",
+        "steps": [
+          "Unit-test the view model per kind and the update function per gesture.",
+          "Run the existing crop and workspace smoke scenarios in the background."
+        ],
+        "commands": [
+          "cargo test --locked --package lightwell-app",
+          "cargo xtask smoke --scenario crop-draft",
+          "cargo xtask smoke --scenario workspace"
+        ],
+        "expected_results": [
+          "Each gesture produces exactly the requests the design states and existing scenarios keep passing."
+        ]
+      }
+    },
+    {
+      "id": "TASK-005",
+      "description": "Add the lightwell.controls developer proof module declaring one control of every kind over one field-patch action, and prove UI/API parity for the whole vocabulary through the JSON method table.",
+      "status": "pending",
+      "dependencies": [
+        "TASK-001",
+        "TASK-004"
+      ],
+      "extra_context": [
+        "The module compiles to a no-op colour stage, is marked developer and appears only with --developer, like the pixel proof. It is the fixture for parity, not a photo tool."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "UI components design",
+          "target": "docs/design/ui-components.md",
+          "locator": "Controls proof module",
+          "relevance": "What the module declares and what parity means."
+        },
+        {
+          "kind": "file",
+          "label": "Pixel proof module",
+          "target": "crates/lightwell-core/src/modules/pixel.rs",
+          "relevance": "The existing developer module pattern."
+        }
+      ],
+      "acceptance_criteria": [
+        "Every generated control's message produces the request an independent JSON client sends for that parameter, and a client's request is reflected in that control after refresh.",
+        "The module is absent from the default workspace and from module.list of a build without --developer's registry flag, and its recipe layer renders identical pixels to no layer."
+      ],
+      "test_strategy": {
+        "approach": "integration",
+        "steps": [
+          "Drive each control through the update function and compare with the JSON method table.",
+          "Post each parameter through the API and assert the control model's value."
+        ],
+        "commands": [
+          "cargo test --locked --workspace"
+        ],
+        "expected_results": [
+          "Parity holds for every kind with no per-kind exceptions."
+        ]
+      }
+    },
+    {
+      "id": "TASK-006",
+      "description": "Capture rendered evidence with gallery and controls smoke scenarios on the M4 Mac, measure that slider-to-frame latency has not regressed and that a curve point drag meets the slider threshold, and update the workspace design, module design, feature status and user guide.",
+      "status": "pending",
+      "dependencies": [
+        "TASK-005"
+      ],
+      "extra_context": [
+        "Launches stay in the background through cargo xtask smoke and editor-latency. Captures are compared with the components board with correlated state and logs; a skipped scenario is not a pass.",
+        "Docs describe delivered kinds only; text, pad and the string kind stay listed as the second slice."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "UI components design",
+          "target": "docs/design/ui-components.md",
+          "locator": "Verification and acceptance",
+          "relevance": "The evidence this task must produce."
+        },
+        {
+          "kind": "file",
+          "label": "Development and evidence rules",
+          "target": "docs/engineering/development.md",
+          "relevance": "How smoke scenarios and captures are run and recorded."
+        },
+        {
+          "kind": "file",
+          "label": "Performance spec",
+          "target": "docs/specs/performance.md",
+          "relevance": "The provisional slider latency threshold the curve drag is measured against."
+        }
+      ],
+      "acceptance_criteria": [
+        "The gallery and controls scenarios produce captures with correlated state and logs that match the components board for every widget state.",
+        "Measured 24 MP slider-to-frame p95 is within the recorded threshold before and after, and a curve point drag is recorded against the same threshold with its scope stated.",
+        "The workspace design's widget row, the module design's descriptor table, feature status and the user guide describe the delivered vocabulary and nothing that is not built."
+      ],
+      "test_strategy": {
+        "approach": "end-to-end",
+        "steps": [
+          "Run both smoke scenarios in the background and inspect captures against the board.",
+          "Run editor-latency in drag mode on the 24 MP fixture for a slider and a curve point.",
+          "Run the headless check and update the docs."
+        ],
+        "commands": [
+          "cargo xtask smoke --scenario gallery",
+          "cargo xtask smoke --scenario controls",
+          "cargo xtask editor-latency --mode drag",
+          "cargo xtask check"
+        ],
+        "expected_results": [
+          "Rendered evidence and recorded measurements support every claim in the updated docs."
+        ]
+      }
+    }
+  ],
+  "execution_waves": [
+    {
+      "wave": 1,
+      "task_ids": [
+        "TASK-001",
+        "TASK-002",
+        "TASK-003"
+      ]
+    },
+    {
+      "wave": 2,
+      "task_ids": [
+        "TASK-004"
+      ]
+    },
+    {
+      "wave": 3,
+      "task_ids": [
+        "TASK-005"
+      ]
+    },
+    {
+      "wave": 4,
+      "task_ids": [
+        "TASK-006"
+      ]
+    }
+  ]
+}

@@ -63,6 +63,16 @@ The work ran to completion on the defaults below without further owner input; th
 - Float exactness: results match an f64 stepwise reference within `1e-6 + 1e-6 × |reference|` and at most one output code of rounding where the design permits it.
 - After Slice B, Tone Curve is the next module candidate; Detail, Texture and Clarity, Dehaze and the colour mixer follow in that order unless the owner reorders them.
 
+## UI components
+
+Accepted on 2026-09-21 for the [UI components design](design/ui-components.md), the closed control vocabulary modules may declare. Implementation is planned, not started.
+
+- No scroll-wheel editing of controls in v0, and no preference to enable it: a trackpad scroll over a panel of sliders must never edit a photograph.
+- `text`, `pad` and the `string` parameter kind are the second slice and wait for the colour mixer design; `curve` channels ship with the curve kind.
+- Icon buttons are a declared style, so the Unicode glyphs are replaced with canvas-drawn vector paths in this work.
+- Curve interpolation belongs to the module and is sampled through a declared query; the host owns no curve spline and the widget never interpolates.
+- Option steps by one tenth of the declared step alongside Shift at ten times; the modifier can change later without a descriptor change.
+
 ## Programmable operations and modules
 
 Every operation is programmable, including future tools, masks, clone strokes, settings and module lifecycle. The core owns recipe transactions, history, invariants and bounded services; tool modules own parameters, validation, controls and algorithms through those APIs. M3 uses linked modules with cheap registration and lazy resources. Real external loading is required later, and a missing or disabled provider must never silently erase edits or produce an incomplete export. Still open: the first external use case, package and runtime format, trust and UI contribution. See [modules](design/modules-and-api.md).

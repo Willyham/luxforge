@@ -170,6 +170,8 @@ The desktop is split into layers with hard boundaries. The boundaries are enforc
 | Update and effects | `crates/lightwell-app/src/app/` | Everything above plus the owner handle | The Iced application: the `Editor` state, semantic messages, the update function, owner tasks, evidence mode and scripts, the keymap in one file, and the crop-draft driver |
 | Draft state machines | `crates/lightwell-app/src/crop_draft.rs`, `crop_canvas.rs` | As today | The crop draft and its canvas program stay their own modules and are driven from `app/` |
 
+The closed set of control kinds a module may declare, and the widgets proposed to render them, are specified in [UI components](ui-components.md); that design is accepted and not yet built.
+
 The widget crate is a separate crate for two reasons. It cannot depend on `lightwell-core`, so a widget cannot reach authoritative state, validate a parameter or build a request: the compiler enforces the "widgets hold no logic" rule rather than a review. And it compiles in isolation, so a styling change rebuilds the widgets and the app, never the core. It is a compile-time boundary only: it links into the same binary, adds no startup work, and `cargo xtask measure` on the empty workload before and after the split shows no launch-to-frame or idle cost.
 
 ### Message flow
