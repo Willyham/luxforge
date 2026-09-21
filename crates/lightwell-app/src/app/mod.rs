@@ -1,6 +1,9 @@
 //! The Iced application: the editor's own state, the update function and the effects it starts.
 //! Every change to authoritative state goes through an owner call; the view models are re-derived
 //! after each message and the view renders those alone.
+pub(crate) mod controls;
+#[cfg(test)]
+mod controls_tests;
 pub(crate) mod crop;
 pub(crate) mod evidence;
 pub(crate) mod fields;
@@ -306,6 +309,14 @@ pub(crate) struct Editor {
     pub(crate) developer: bool,
     /// The text typed into each generated field, by (action id, parameter name).
     pub(crate) fields: Fields,
+    /// Local presentation state of generated controls; authoritative values stay in the recipe.
+    pub(crate) controls_ui: tools::ControlsUi,
+    pub(crate) curve_sample_sequence: u64,
+    pub(crate) curve_sample_requested: BTreeMap<(String, String), u64>,
+    pub(crate) curve_sample_requested_source:
+        BTreeMap<(String, String), (lightwell_core::EntryId, Value)>,
+    pub(crate) curve_sample_in_flight: bool,
+    pub(crate) curve_sample_pending: Option<controls::CurveSampleRequest>,
     /// The (action, parameter) whose value is being typed.
     pub(crate) editing: Option<(String, String)>,
     /// The (action, parameter) whose slider is being dragged.
@@ -450,6 +461,12 @@ impl Editor {
             modules_ready: false,
             developer: config.developer,
             fields: Fields::default(),
+            controls_ui: tools::ControlsUi::default(),
+            curve_sample_sequence: 0,
+            curve_sample_requested: BTreeMap::new(),
+            curve_sample_requested_source: BTreeMap::new(),
+            curve_sample_in_flight: false,
+            curve_sample_pending: None,
             editing: None,
             dragging: None,
             slider_draft: None,
@@ -720,8 +737,14 @@ impl Editor {
     }
 
     pub(crate) fn update(&mut self, message: Message) -> Task<Message> {
+        let before_entry = self.displayed_entry();
         let task = self.dispatch(message);
-        let task = self.sync_mode(task);
+        if self.displayed_entry() != before_entry {
+            self.controls_ui.curve_samples.clear();
+            self.curve_sample_requested_source.clear();
+        }
+        let sample = self.request_visible_curve_samples();
+        let task = self.sync_mode(Task::batch([task, sample]));
         self.refresh_overlay();
         self.rederive();
         task
@@ -931,6 +954,7 @@ impl Editor {
             modules_ready: self.modules_ready,
             recipe: self.recipe.as_ref(),
             fields: &self.fields,
+            control_ui: &self.controls_ui,
             editing: self.editing.as_ref(),
             dragging: self.dragging.as_ref(),
             expanded: &self.expanded,
@@ -1553,7 +1577,95 @@ impl Editor {
                 self.editing = None;
                 self.dragging = Some((action, parameter));
             }
-            Message::EditValue { action, parameter } => self.editing = Some((action, parameter)),
+            Message::ControlFraction {
+                action,
+                parameter,
+                fraction,
+            } => {
+                return self.control_fraction(action, parameter, fraction);
+            }
+            Message::ControlDiscrete {
+                action,
+                parameter,
+                value,
+            } => {
+                return self.control_value(action, parameter, value, false);
+            }
+            Message::ControlReleased { action, parameter } => {
+                return self.control_release(action, parameter);
+            }
+            Message::ControlStep {
+                action,
+                parameter,
+                direction,
+            } => {
+                return self.control_step(action, parameter, direction);
+            }
+            Message::ControlKeyNudge {
+                action,
+                parameter,
+                direction,
+                shift,
+                option,
+            } => {
+                return self.control_key_nudge(action, parameter, direction, shift, option);
+            }
+            Message::ControlFieldNudge {
+                action,
+                parameter,
+                direction,
+                shift,
+                option,
+            } => {
+                return self.control_field_nudge(action, parameter, direction, shift, option);
+            }
+            Message::TogglePicker { action, parameter } => {
+                let open = self
+                    .controls_ui
+                    .color_open
+                    .entry((action, parameter))
+                    .or_default();
+                *open = !*open;
+            }
+            Message::ToggleGroup { module_id, path } => {
+                let key = format!(
+                    "{module_id}/{}",
+                    path.iter()
+                        .map(usize::to_string)
+                        .collect::<Vec<_>>()
+                        .join(".")
+                );
+                let initial = controls::initial_group_expanded(&self.modules, &module_id, &path)
+                    .unwrap_or(true);
+                let entry = self
+                    .controls_ui
+                    .group_expanded
+                    .entry(key)
+                    .or_insert(initial);
+                *entry = !*entry;
+            }
+            Message::ControlPicker {
+                action,
+                parameter,
+                event,
+            } => {
+                return self.control_picker(action, parameter, event);
+            }
+            Message::ControlCurve {
+                action,
+                parameter,
+                event,
+            } => {
+                return self.control_curve(action, parameter, event);
+            }
+            Message::CurveSampled { identity, result } => {
+                return self.curve_sampled(identity, result);
+            }
+            Message::EditValue { action, parameter } => {
+                let id = fields::field_id(&action, &parameter, None);
+                self.editing = Some((action, parameter));
+                return operation::focus(iced::widget::Id::from(id));
+            }
             Message::CancelEdit => self.editing = None,
             Message::SliderReleased { action, parameter } => {
                 // Release ends the gesture: an open draft commits once, and a slider that never
@@ -1811,8 +1923,14 @@ impl Editor {
             }
             Message::OpenMenu(target) => self.menu = Some(target),
             Message::CloseMenu => self.menu = None,
-            Message::CopyRequest { action, parameter } => {
-                let Some(request) = self.request_for(&action, parameter.as_deref()) else {
+            Message::CopyRequest {
+                action,
+                parameter,
+                preset,
+            } => {
+                let Some(request) =
+                    self.request_for_preset(&action, parameter.as_deref(), preset.as_ref())
+                else {
                     return Task::none();
                 };
                 self.status = format!("Copied the edit.{action} request");
@@ -2260,7 +2378,17 @@ impl Editor {
     /// The JSON request one control would send right now, with this desktop's own envelope. A
     /// control of a patch action names its own field, so the copied request is the one that
     /// control sends and not a patch over the whole module.
+    #[cfg(test)]
     pub(crate) fn request_for(&mut self, action: &str, parameter: Option<&str>) -> Option<Value> {
+        self.request_for_preset(action, parameter, None)
+    }
+
+    pub(crate) fn request_for_preset(
+        &mut self,
+        action: &str,
+        parameter: Option<&str>,
+        preset: Option<&Map<String, Value>>,
+    ) -> Option<Value> {
         let Some(state) = &self.state else {
             self.status = "No photograph is open".into();
             return None;
@@ -2269,7 +2397,11 @@ impl Editor {
             self.status = format!("No module declares the action {action}");
             return None;
         };
-        let preset = match submit_preset(&self.modules, action, parameter, &self.fields) {
+        let preset = match preset
+            .cloned()
+            .map(Ok)
+            .unwrap_or_else(|| submit_preset(&self.modules, action, parameter, &self.fields))
+        {
             Ok(preset) => preset,
             Err(message) => {
                 self.status = message;
@@ -2292,6 +2424,8 @@ impl Editor {
     }
 
     pub(crate) fn accept(&mut self, refresh: Refresh) {
+        self.controls_ui.curve_samples.clear();
+        self.curve_sample_requested_source.clear();
         self.api_sequence = refresh.sequence;
         self.adopt(refresh.session);
         match refresh.history {
@@ -2375,14 +2509,7 @@ impl Editor {
                     }
                     let reported = values
                         .and_then(|values| values.get(&parameter.name))
-                        .and_then(|value| match value {
-                            Value::Number(_) => value
-                                .as_f64()
-                                .filter(|value| value.is_finite())
-                                .map(number_text),
-                            Value::String(text) => Some(text.clone()),
-                            _ => None,
-                        });
+                        .and_then(|value| fields::value_text(parameter, value).ok());
                     match reported {
                         Some(text) => self.fields.set(&key.0, &key.1, text),
                         None if action.patch => {
@@ -3363,7 +3490,7 @@ mod tests {
             );
             assert_eq!(
                 rebased.sent,
-                Some(*value),
+                Some(Value::from(*value)),
                 "{parameter} did not re-send the value this client set"
             );
             was_set(&mut editor, &asset, &current);
@@ -3470,6 +3597,7 @@ mod tests {
                     label,
                     controls,
                     reset: Some(reset),
+                    ..
                 } = control
                 else {
                     continue;
@@ -4845,6 +4973,7 @@ mod tests {
         let _ = editor.update(Message::CopyRequest {
             action: "crop-reset".into(),
             parameter: None,
+            preset: None,
         });
         assert!(editor.status.contains("Copied"), "{}", editor.status);
         finish(editor, catalog);

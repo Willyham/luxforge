@@ -28,6 +28,11 @@ pub enum Icon {
     Redo,
     Before,
     After,
+    Clipping,
+    StatePanel,
+    ToolsPanel,
+    ChevronDown,
+    ChevronRight,
 }
 
 impl Icon {
@@ -51,6 +56,11 @@ impl Icon {
             "redo" => Self::Redo,
             "before" => Self::Before,
             "after" => Self::After,
+            "clipping" => Self::Clipping,
+            "state-panel" => Self::StatePanel,
+            "tools-panel" => Self::ToolsPanel,
+            "chevron-down" => Self::ChevronDown,
+            "chevron-right" => Self::ChevronRight,
             _ => return None,
         })
     }
@@ -284,6 +294,20 @@ fn draw_path(frame: &mut canvas::Frame, icon: Icon, color: Color) {
                 line(frame, (10.0, 4.0), (13.0, 4.0));
             }
         }
+        Icon::Clipping => {
+            poly(frame, &[(2.0, 12.5), (8.0, 3.0), (14.0, 12.5), (2.0, 12.5)]);
+            line(frame, (8.0, 6.0), (8.0, 9.5));
+        }
+        Icon::StatePanel | Icon::ToolsPanel => {
+            frame.stroke(
+                &canvas::Path::rectangle(p(2.0, 2.0), iced::Size::new(12.0 * s, 12.0 * s)),
+                stroke,
+            );
+            let x = if icon == Icon::StatePanel { 6.0 } else { 10.0 };
+            line(frame, (x, 2.0), (x, 14.0));
+        }
+        Icon::ChevronDown => poly(frame, &[(3.5, 6.0), (8.0, 10.5), (12.5, 6.0)]),
+        Icon::ChevronRight => poly(frame, &[(6.0, 3.5), (10.5, 8.0), (6.0, 12.5)]),
     }
 }
 
@@ -311,6 +335,11 @@ mod tests {
             Icon::Redo,
             Icon::Before,
             Icon::After,
+            Icon::Clipping,
+            Icon::StatePanel,
+            Icon::ToolsPanel,
+            Icon::ChevronDown,
+            Icon::ChevronRight,
         ] {
             let _: Element<'_, ()> = super::icon(icon, 12.0, theme::TEXT_PRIMARY);
             let _: Element<'_, ()> = super::icon(icon, 16.0, theme::TEXT_PRIMARY);

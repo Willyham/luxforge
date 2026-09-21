@@ -9,6 +9,7 @@ mod color_picker;
 mod color_swatch;
 mod curve_editor;
 mod floating_bar;
+mod focus_control;
 mod histogram;
 mod icon_button;
 mod inline_menu;
@@ -37,6 +38,7 @@ pub use curve_editor::{
     point_fraction, round_fraction,
 };
 pub use floating_bar::floating_bar;
+pub use focus_control::{ControlKey, ControlKeyEvent, focus_control};
 pub use histogram::{
     BINS, ClipTriangleModel, HistogramChannel, HistogramModel, bin_x, clip_triangle, histogram,
     polygon_points,

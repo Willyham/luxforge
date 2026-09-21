@@ -18,6 +18,8 @@ pub enum ValueEdit {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct NumberFieldModel {
+    /// Stable host-supplied focus target for the editing input.
+    pub id: Option<String>,
     pub label: String,
     pub display: String,
     pub edit: ValueEdit,
@@ -82,14 +84,19 @@ pub(crate) fn field_header<'a, M: Clone + 'a>(
                 .on_press_maybe(model.enabled.then_some(on_edit_start))
                 .into()
         }
-        ValueEdit::Editing { text, .. } => text_input("", text)
-            .size(theme::SIZE_CONTROL)
-            .width(Length::Fixed(theme::VALUE_WIDTH))
-            .align_x(Horizontal::Right)
-            .style(theme::text_input_style(invalid.is_some()))
-            .on_input_maybe(model.enabled.then_some(on_text))
-            .on_submit_maybe(model.enabled.then_some(on_submit))
-            .into(),
+        ValueEdit::Editing { text, .. } => {
+            let input = text_input("", text)
+                .size(theme::SIZE_CONTROL)
+                .width(Length::Fixed(theme::VALUE_WIDTH))
+                .align_x(Horizontal::Right)
+                .style(theme::text_input_style(invalid.is_some()))
+                .on_input_maybe(model.enabled.then_some(on_text))
+                .on_submit_maybe(model.enabled.then_some(on_submit));
+            match &model.id {
+                Some(id) => input.id(iced::widget::Id::from(id.clone())).into(),
+                None => input.into(),
+            }
+        }
     };
     (
         row![iced::widget::container(label).width(Length::Fill), value]

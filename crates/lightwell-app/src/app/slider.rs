@@ -14,7 +14,6 @@ use crate::{
     app::{
         Editor,
         evidence::Settle,
-        fields::number_text,
         message::Message,
         tasks::{
             draft_begin_task, draft_cancel_task, draft_commit_task, draft_reapply_task,
@@ -52,22 +51,24 @@ pub(crate) struct SliderDraft {
     /// A `draft.*` round trip is in flight; nothing else is sent until it answers.
     pub(crate) in_flight: bool,
     /// The newest value the pointer produced that no `draft.set` has carried yet.
-    pub(crate) pending: Option<f64>,
+    pub(crate) pending: Option<Value>,
     /// The value the last accepted `draft.set` carried.
-    pub(crate) sent: Option<f64>,
+    pub(crate) sent: Option<Value>,
     /// The gesture ended while a round trip was in flight.
     pub(crate) finish: Option<Finish>,
 }
 
 impl SliderDraft {
     /// The field this gesture would commit, as one patch.
-    fn fields(&self, value: f64) -> Value {
+    fn fields(&self, value: &Value) -> Value {
         json!({ self.parameter.clone(): value })
     }
 
     /// A value is waiting to be sent when it differs from the one already accepted.
-    fn outstanding(&self) -> Option<f64> {
-        self.pending.filter(|value| Some(*value) != self.sent)
+    fn outstanding(&self) -> Option<&Value> {
+        self.pending
+            .as_ref()
+            .filter(|value| Some(*value) != self.sent.as_ref())
     }
 
     /// Nothing is in flight and nothing is waiting: the displayed preview is the drafted one.
@@ -82,7 +83,7 @@ impl SliderDraft {
         json!({
             "draft_id": self.draft_id.as_ref().map(DraftId::as_str),
             "action": self.action,
-            "fields": self.sent.map(|value| self.fields(value)).unwrap_or_else(|| json!({})),
+            "fields": self.sent.as_ref().map(|value| self.fields(value)).unwrap_or_else(|| json!({})),
             "base_revision": self.base_revision,
             "draft_revision": self.draft_revision,
             "conflicted": self.conflicted,
@@ -114,15 +115,28 @@ impl Editor {
         parameter: String,
         value: f64,
     ) -> Task<Message> {
-        if let Some(draft) = &mut self.slider_draft {
+        self.control_moved(action, parameter, Value::from(value))
+    }
+
+    /// Draft one declared field of any JSON kind. A control never carries a second parameter.
+    pub(crate) fn control_moved(
+        &mut self,
+        action: String,
+        parameter: String,
+        value: Value,
+    ) -> Task<Message> {
+        if let Some(draft) = &self.slider_draft {
             if draft.action != action || draft.parameter != parameter {
                 self.status = "Finish the open slider gesture before starting another".into();
                 return Task::none();
             }
-            self.fields.set(&action, &parameter, number_text(value));
+            self.set_control_field_value(&action, &parameter, &value);
             self.editing = None;
             self.dragging = Some((action, parameter));
-            draft.pending = Some(value);
+            self.slider_draft
+                .as_mut()
+                .expect("the checked draft")
+                .pending = Some(value);
             return Task::none();
         }
         if let Some(reason) = self.slider_draft_refusal() {
@@ -136,7 +150,7 @@ impl Editor {
         let base_revision = state.revision;
         let label = tools::control_label(&self.modules, &action, &parameter)
             .unwrap_or_else(|| parameter.clone());
-        self.fields.set(&action, &parameter, number_text(value));
+        self.set_control_field_value(&action, &parameter, &value);
         self.editing = None;
         self.dragging = Some((action.clone(), parameter.clone()));
         self.slider_draft = Some(SliderDraft {
@@ -179,10 +193,11 @@ impl Editor {
         let Some(draft) = &mut self.slider_draft else {
             return Task::none();
         };
-        let (Some(draft_id), Some(value)) = (draft.draft_id.clone(), draft.outstanding()) else {
+        let (Some(draft_id), Some(value)) = (draft.draft_id.clone(), draft.outstanding().cloned())
+        else {
             return Task::none();
         };
-        let fields = draft.fields(value);
+        let fields = draft.fields(&value);
         let asset = draft.asset.clone();
         draft.in_flight = true;
         draft.sent = Some(value);
@@ -230,7 +245,7 @@ impl Editor {
                 draft.draft_revision = set.draft_revision;
                 draft.conflicted = set.conflicted;
                 let label = draft.label.clone();
-                let (draft_revision, sent) = (set.draft_revision, draft.sent);
+                let (draft_revision, sent) = (set.draft_revision, draft.sent.clone());
                 self.session.draft = Some(set);
                 self.preview_generation = self.preview_queue.request(job);
                 self.status = format!("Drafting {label}…");
@@ -405,7 +420,7 @@ impl Editor {
                 draft.conflicted = rebased.conflicted;
                 // Re-send what this client set: the rebased draft still holds it, but the preview
                 // on screen belongs to the revision that displaced it.
-                draft.pending = draft.sent;
+                draft.pending = draft.sent.clone();
                 draft.sent = None;
                 let label = draft.label.clone();
                 self.session.draft = Some(rebased);

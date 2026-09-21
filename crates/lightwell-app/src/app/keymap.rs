@@ -43,19 +43,8 @@ pub(crate) fn keymap(event: &Event, status: Status, context: &KeyContext) -> Opt
     {
         return Some(Message::CompareEnd);
     }
-    // Iced's slider steps on an arrow key-press and reports no key-up of its own, so the one thing
-    // that can end an arrow-key gesture is the key-up the window reports here. A held arrow is
-    // therefore one gesture that commits once, exactly as a pointer drag does. The key-up only
-    // acts while a slider draft is actually open, so it can never reach anything else.
-    if context.slider_drafting
-        && let Keys::KeyReleased { key, .. } = keyboard
-        && matches!(
-            key,
-            Key::Named(Named::ArrowUp) | Key::Named(Named::ArrowDown)
-        )
-    {
-        return Some(Message::SliderDraftCommit);
-    }
+    // The slider guard emits one release for keyboard stepping. The window keymap must not send a
+    // second commit for the same key-up; it only handles Escape for an open gesture below.
     // The modifier the canvas reads lives in the app, so it follows every change while drafting.
     if context.drafting {
         match keyboard {

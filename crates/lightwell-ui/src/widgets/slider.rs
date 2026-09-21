@@ -26,6 +26,7 @@ impl Default for RailDecoration {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct SliderModel {
+    pub id: Option<String>,
     pub label: String,
     /// Hard range, used only to display out-of-soft-range status; the rail spans `soft_*`.
     pub min: f64,
@@ -58,6 +59,7 @@ pub fn slider<'a, M: Clone + 'a>(
     on_reset: M,
 ) -> Element<'a, M> {
     let field = NumberFieldModel {
+        id: model.id.clone(),
         label: model.label.clone(),
         display: model.display.clone(),
         edit: model.edit.clone(),

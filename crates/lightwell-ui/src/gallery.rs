@@ -24,6 +24,7 @@ pub fn gallery() -> Vec<Element<'static, ()>> {
     // -- unipolar-at-rest, disabled.
     states.push(slider(
         &SliderModel {
+            id: None,
             label: "Highlights".into(),
             min: -100.0,
             max: 100.0,
@@ -51,6 +52,7 @@ pub fn gallery() -> Vec<Element<'static, ()>> {
     ));
     states.push(slider(
         &SliderModel {
+            id: None,
             label: "Exposure".into(),
             min: -5.0,
             max: 5.0,
@@ -78,6 +80,7 @@ pub fn gallery() -> Vec<Element<'static, ()>> {
     ));
     states.push(slider(
         &SliderModel {
+            id: None,
             label: "Contrast".into(),
             min: -100.0,
             max: 100.0,
@@ -108,6 +111,7 @@ pub fn gallery() -> Vec<Element<'static, ()>> {
     ));
     states.push(slider(
         &SliderModel {
+            id: None,
             label: "Temperature".into(),
             min: -100.0,
             max: 100.0,
@@ -138,6 +142,7 @@ pub fn gallery() -> Vec<Element<'static, ()>> {
     ));
     states.push(slider(
         &SliderModel {
+            id: None,
             label: "Saturation".into(),
             min: -100.0,
             max: 100.0,

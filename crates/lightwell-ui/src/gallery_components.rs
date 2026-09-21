@@ -6,6 +6,7 @@ use iced::Element;
 pub(crate) fn gallery_components() -> Vec<Element<'static, ()>> {
     let mut states = Vec::new();
     let rail = SliderModel {
+        id: None,
         label: "Hue".into(),
         min: -180.0,
         max: 180.0,
@@ -61,6 +62,7 @@ pub(crate) fn gallery_components() -> Vec<Element<'static, ()>> {
         (),
     ));
     let field = |label: &str, edit: ValueEdit, enabled: bool| NumberFieldModel {
+        id: None,
         label: label.into(),
         display: "12".into(),
         edit,
