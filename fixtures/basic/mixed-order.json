@@ -1,0 +1,33 @@
+{
+ "width": 4,
+ "height": 3,
+ "base_rgba": [10, 20, 30, 255, 40, 50, 60, 255, 70, 80, 90, 255, 100, 110, 120, 255, 130, 140, 150, 255, 160, 170, 180, 255, 190, 200, 210, 255, 220, 230, 240, 255, 15, 25, 35, 255, 45, 55, 65, 255, 75, 85, 95, 255, 105, 115, 125, 255],
+ "ev": 1.0,
+ "replace": {
+  "x": 1,
+  "y": 1,
+  "rgb": [10, 20, 30]
+ },
+ "cases": {
+  "replace_then_expose": {
+   "description": "Point replacement at (1,1) committed first, then +1 EV exposure applied to the whole image: the replaced pixel is exposed like every other pixel.",
+   "order": ["point_replace", "exposure"],
+   "expected_rgba": [18, 31, 45, 255, 58, 71, 85, 255, 98, 111, 125, 255, 138, 152, 165, 255, 178, 192, 205, 255, 18, 31, 45, 255, 255, 255, 255, 255, 255, 255, 255, 255, 25, 38, 51, 255, 65, 78, 91, 255, 105, 118, 132, 255, 145, 158, 172, 255]
+  },
+  "expose_then_replace": {
+   "description": "+1 EV exposure applied first, then a point replacement at (1,1) committed last: the replacement pixel keeps its exact literal value, untouched by the earlier exposure.",
+   "order": ["exposure", "point_replace"],
+   "expected_rgba": [18, 31, 45, 255, 58, 71, 85, 255, 98, 111, 125, 255, 138, 152, 165, 255, 178, 192, 205, 255, 10, 20, 30, 255, 255, 255, 255, 255, 255, 255, 255, 255, 25, 38, 51, 255, 65, 78, 91, 255, 105, 118, 132, 255, 145, 158, 172, 255]
+  },
+  "mirror_then_expose": {
+   "description": "Horizontal mirror then +1 EV exposure.",
+   "order": ["mirror", "exposure"],
+   "expected_rgba": [138, 152, 165, 255, 98, 111, 125, 255, 58, 71, 85, 255, 18, 31, 45, 255, 255, 255, 255, 255, 255, 255, 255, 255, 218, 232, 245, 255, 178, 192, 205, 255, 145, 158, 172, 255, 105, 118, 132, 255, 65, 78, 91, 255, 25, 38, 51, 255]
+  },
+  "expose_then_mirror": {
+   "description": "+1 EV exposure then horizontal mirror: identical result to mirror_then_expose, proving exact geometry commutes with pointwise color.",
+   "order": ["exposure", "mirror"],
+   "expected_rgba": [138, 152, 165, 255, 98, 111, 125, 255, 58, 71, 85, 255, 18, 31, 45, 255, 255, 255, 255, 255, 255, 255, 255, 255, 218, 232, 245, 255, 178, 192, 205, 255, 145, 158, 172, 255, 105, 118, 132, 255, 65, 78, 91, 255, 25, 38, 51, 255]
+  }
+ }
+}

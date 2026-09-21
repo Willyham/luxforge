@@ -1,0 +1,794 @@
+[
+ {
+  "input": [0, 0, 0],
+  "ev": 0.0,
+  "expected": [0, 0, 0],
+  "note": "0 EV identity"
+ },
+ {
+  "input": [1, 1, 1],
+  "ev": 0.0,
+  "expected": [1, 1, 1],
+  "note": "0 EV identity"
+ },
+ {
+  "input": [127, 127, 127],
+  "ev": 0.0,
+  "expected": [127, 127, 127],
+  "note": "0 EV identity"
+ },
+ {
+  "input": [128, 128, 128],
+  "ev": 0.0,
+  "expected": [128, 128, 128],
+  "note": "0 EV identity"
+ },
+ {
+  "input": [254, 254, 254],
+  "ev": 0.0,
+  "expected": [254, 254, 254],
+  "note": "0 EV identity"
+ },
+ {
+  "input": [255, 255, 255],
+  "ev": 0.0,
+  "expected": [255, 255, 255],
+  "note": "0 EV identity"
+ },
+ {
+  "input": [0, 0, 0],
+  "ev": 1.0,
+  "expected": [0, 0, 0],
+  "note": "grey ramp EV sweep"
+ },
+ {
+  "input": [32, 32, 32],
+  "ev": 1.0,
+  "expected": [47, 47, 47],
+  "note": "grey ramp EV sweep"
+ },
+ {
+  "input": [64, 64, 64],
+  "ev": 1.0,
+  "expected": [90, 90, 90],
+  "note": "grey ramp EV sweep"
+ },
+ {
+  "input": [96, 96, 96],
+  "ev": 1.0,
+  "expected": [133, 133, 133],
+  "note": "grey ramp EV sweep"
+ },
+ {
+  "input": [128, 128, 128],
+  "ev": 1.0,
+  "expected": [176, 176, 176],
+  "note": "grey ramp EV sweep"
+ },
+ {
+  "input": [160, 160, 160],
+  "ev": 1.0,
+  "expected": [218, 218, 218],
+  "note": "grey ramp EV sweep"
+ },
+ {
+  "input": [192, 192, 192],
+  "ev": 1.0,
+  "expected": [255, 255, 255],
+  "note": "grey ramp EV sweep"
+ },
+ {
+  "input": [224, 224, 224],
+  "ev": 1.0,
+  "expected": [255, 255, 255],
+  "note": "grey ramp EV sweep"
+ },
+ {
+  "input": [255, 255, 255],
+  "ev": 1.0,
+  "expected": [255, 255, 255],
+  "note": "grey ramp EV sweep"
+ },
+ {
+  "input": [0, 0, 0],
+  "ev": -1.0,
+  "expected": [0, 0, 0],
+  "note": "grey ramp EV sweep"
+ },
+ {
+  "input": [32, 32, 32],
+  "ev": -1.0,
+  "expected": [20, 20, 20],
+  "note": "grey ramp EV sweep"
+ },
+ {
+  "input": [64, 64, 64],
+  "ev": -1.0,
+  "expected": [44, 44, 44],
+  "note": "grey ramp EV sweep"
+ },
+ {
+  "input": [96, 96, 96],
+  "ev": -1.0,
+  "expected": [68, 68, 68],
+  "note": "grey ramp EV sweep"
+ },
+ {
+  "input": [128, 128, 128],
+  "ev": -1.0,
+  "expected": [92, 92, 92],
+  "note": "grey ramp EV sweep"
+ },
+ {
+  "input": [160, 160, 160],
+  "ev": -1.0,
+  "expected": [116, 116, 116],
+  "note": "grey ramp EV sweep"
+ },
+ {
+  "input": [192, 192, 192],
+  "ev": -1.0,
+  "expected": [140, 140, 140],
+  "note": "grey ramp EV sweep"
+ },
+ {
+  "input": [224, 224, 224],
+  "ev": -1.0,
+  "expected": [164, 164, 164],
+  "note": "grey ramp EV sweep"
+ },
+ {
+  "input": [255, 255, 255],
+  "ev": -1.0,
+  "expected": [188, 188, 188],
+  "note": "grey ramp EV sweep"
+ },
+ {
+  "input": [0, 0, 0],
+  "ev": 2.0,
+  "expected": [0, 0, 0],
+  "note": "grey ramp EV sweep"
+ },
+ {
+  "input": [32, 32, 32],
+  "ev": 2.0,
+  "expected": [68, 68, 68],
+  "note": "grey ramp EV sweep"
+ },
+ {
+  "input": [64, 64, 64],
+  "ev": 2.0,
+  "expected": [125, 125, 125],
+  "note": "grey ramp EV sweep"
+ },
+ {
+  "input": [96, 96, 96],
+  "ev": 2.0,
+  "expected": [182, 182, 182],
+  "note": "grey ramp EV sweep"
+ },
+ {
+  "input": [128, 128, 128],
+  "ev": 2.0,
+  "expected": [239, 239, 239],
+  "note": "grey ramp EV sweep"
+ },
+ {
+  "input": [160, 160, 160],
+  "ev": 2.0,
+  "expected": [255, 255, 255],
+  "note": "grey ramp EV sweep"
+ },
+ {
+  "input": [192, 192, 192],
+  "ev": 2.0,
+  "expected": [255, 255, 255],
+  "note": "grey ramp EV sweep"
+ },
+ {
+  "input": [224, 224, 224],
+  "ev": 2.0,
+  "expected": [255, 255, 255],
+  "note": "grey ramp EV sweep"
+ },
+ {
+  "input": [255, 255, 255],
+  "ev": 2.0,
+  "expected": [255, 255, 255],
+  "note": "grey ramp EV sweep"
+ },
+ {
+  "input": [0, 0, 0],
+  "ev": -2.0,
+  "expected": [0, 0, 0],
+  "note": "grey ramp EV sweep"
+ },
+ {
+  "input": [32, 32, 32],
+  "ev": -2.0,
+  "expected": [12, 12, 12],
+  "note": "grey ramp EV sweep"
+ },
+ {
+  "input": [64, 64, 64],
+  "ev": -2.0,
+  "expected": [30, 30, 30],
+  "note": "grey ramp EV sweep"
+ },
+ {
+  "input": [96, 96, 96],
+  "ev": -2.0,
+  "expected": [48, 48, 48],
+  "note": "grey ramp EV sweep"
+ },
+ {
+  "input": [128, 128, 128],
+  "ev": -2.0,
+  "expected": [66, 66, 66],
+  "note": "grey ramp EV sweep"
+ },
+ {
+  "input": [160, 160, 160],
+  "ev": -2.0,
+  "expected": [84, 84, 84],
+  "note": "grey ramp EV sweep"
+ },
+ {
+  "input": [192, 192, 192],
+  "ev": -2.0,
+  "expected": [102, 102, 102],
+  "note": "grey ramp EV sweep"
+ },
+ {
+  "input": [224, 224, 224],
+  "ev": -2.0,
+  "expected": [120, 120, 120],
+  "note": "grey ramp EV sweep"
+ },
+ {
+  "input": [255, 255, 255],
+  "ev": -2.0,
+  "expected": [137, 137, 137],
+  "note": "grey ramp EV sweep"
+ },
+ {
+  "input": [0, 0, 0],
+  "ev": 0.5,
+  "expected": [0, 0, 0],
+  "note": "grey ramp EV sweep"
+ },
+ {
+  "input": [32, 32, 32],
+  "ev": 0.5,
+  "expected": [39, 39, 39],
+  "note": "grey ramp EV sweep"
+ },
+ {
+  "input": [64, 64, 64],
+  "ev": 0.5,
+  "expected": [76, 76, 76],
+  "note": "grey ramp EV sweep"
+ },
+ {
+  "input": [96, 96, 96],
+  "ev": 0.5,
+  "expected": [113, 113, 113],
+  "note": "grey ramp EV sweep"
+ },
+ {
+  "input": [128, 128, 128],
+  "ev": 0.5,
+  "expected": [150, 150, 150],
+  "note": "grey ramp EV sweep"
+ },
+ {
+  "input": [160, 160, 160],
+  "ev": 0.5,
+  "expected": [187, 187, 187],
+  "note": "grey ramp EV sweep"
+ },
+ {
+  "input": [192, 192, 192],
+  "ev": 0.5,
+  "expected": [224, 224, 224],
+  "note": "grey ramp EV sweep"
+ },
+ {
+  "input": [224, 224, 224],
+  "ev": 0.5,
+  "expected": [255, 255, 255],
+  "note": "grey ramp EV sweep"
+ },
+ {
+  "input": [255, 255, 255],
+  "ev": 0.5,
+  "expected": [255, 255, 255],
+  "note": "grey ramp EV sweep"
+ },
+ {
+  "input": [0, 0, 0],
+  "ev": -0.5,
+  "expected": [0, 0, 0],
+  "note": "grey ramp EV sweep"
+ },
+ {
+  "input": [32, 32, 32],
+  "ev": -0.5,
+  "expected": [26, 26, 26],
+  "note": "grey ramp EV sweep"
+ },
+ {
+  "input": [64, 64, 64],
+  "ev": -0.5,
+  "expected": [54, 54, 54],
+  "note": "grey ramp EV sweep"
+ },
+ {
+  "input": [96, 96, 96],
+  "ev": -0.5,
+  "expected": [81, 81, 81],
+  "note": "grey ramp EV sweep"
+ },
+ {
+  "input": [128, 128, 128],
+  "ev": -0.5,
+  "expected": [109, 109, 109],
+  "note": "grey ramp EV sweep"
+ },
+ {
+  "input": [160, 160, 160],
+  "ev": -0.5,
+  "expected": [137, 137, 137],
+  "note": "grey ramp EV sweep"
+ },
+ {
+  "input": [192, 192, 192],
+  "ev": -0.5,
+  "expected": [164, 164, 164],
+  "note": "grey ramp EV sweep"
+ },
+ {
+  "input": [224, 224, 224],
+  "ev": -0.5,
+  "expected": [192, 192, 192],
+  "note": "grey ramp EV sweep"
+ },
+ {
+  "input": [255, 255, 255],
+  "ev": -0.5,
+  "expected": [219, 219, 219],
+  "note": "grey ramp EV sweep"
+ },
+ {
+  "input": [0, 0, 0],
+  "ev": 5.0,
+  "expected": [0, 0, 0],
+  "note": "grey ramp EV sweep"
+ },
+ {
+  "input": [32, 32, 32],
+  "ev": 5.0,
+  "expected": [181, 181, 181],
+  "note": "grey ramp EV sweep"
+ },
+ {
+  "input": [64, 64, 64],
+  "ev": 5.0,
+  "expected": [255, 255, 255],
+  "note": "grey ramp EV sweep"
+ },
+ {
+  "input": [96, 96, 96],
+  "ev": 5.0,
+  "expected": [255, 255, 255],
+  "note": "grey ramp EV sweep"
+ },
+ {
+  "input": [128, 128, 128],
+  "ev": 5.0,
+  "expected": [255, 255, 255],
+  "note": "grey ramp EV sweep"
+ },
+ {
+  "input": [160, 160, 160],
+  "ev": 5.0,
+  "expected": [255, 255, 255],
+  "note": "grey ramp EV sweep"
+ },
+ {
+  "input": [192, 192, 192],
+  "ev": 5.0,
+  "expected": [255, 255, 255],
+  "note": "grey ramp EV sweep"
+ },
+ {
+  "input": [224, 224, 224],
+  "ev": 5.0,
+  "expected": [255, 255, 255],
+  "note": "grey ramp EV sweep"
+ },
+ {
+  "input": [255, 255, 255],
+  "ev": 5.0,
+  "expected": [255, 255, 255],
+  "note": "grey ramp EV sweep"
+ },
+ {
+  "input": [0, 0, 0],
+  "ev": -5.0,
+  "expected": [0, 0, 0],
+  "note": "grey ramp EV sweep"
+ },
+ {
+  "input": [32, 32, 32],
+  "ev": -5.0,
+  "expected": [1, 1, 1],
+  "note": "grey ramp EV sweep"
+ },
+ {
+  "input": [64, 64, 64],
+  "ev": -5.0,
+  "expected": [5, 5, 5],
+  "note": "grey ramp EV sweep"
+ },
+ {
+  "input": [96, 96, 96],
+  "ev": -5.0,
+  "expected": [12, 12, 12],
+  "note": "grey ramp EV sweep"
+ },
+ {
+  "input": [128, 128, 128],
+  "ev": -5.0,
+  "expected": [19, 19, 19],
+  "note": "grey ramp EV sweep"
+ },
+ {
+  "input": [160, 160, 160],
+  "ev": -5.0,
+  "expected": [27, 27, 27],
+  "note": "grey ramp EV sweep"
+ },
+ {
+  "input": [192, 192, 192],
+  "ev": -5.0,
+  "expected": [35, 35, 35],
+  "note": "grey ramp EV sweep"
+ },
+ {
+  "input": [224, 224, 224],
+  "ev": -5.0,
+  "expected": [42, 42, 42],
+  "note": "grey ramp EV sweep"
+ },
+ {
+  "input": [255, 255, 255],
+  "ev": -5.0,
+  "expected": [49, 49, 49],
+  "note": "grey ramp EV sweep"
+ },
+ {
+  "input": [255, 0, 0],
+  "ev": 1.0,
+  "expected": [255, 0, 0],
+  "note": "saturated primary EV sweep"
+ },
+ {
+  "input": [0, 255, 0],
+  "ev": 1.0,
+  "expected": [0, 255, 0],
+  "note": "saturated primary EV sweep"
+ },
+ {
+  "input": [0, 0, 255],
+  "ev": 1.0,
+  "expected": [0, 0, 255],
+  "note": "saturated primary EV sweep"
+ },
+ {
+  "input": [255, 255, 0],
+  "ev": 1.0,
+  "expected": [255, 255, 0],
+  "note": "saturated primary EV sweep"
+ },
+ {
+  "input": [0, 255, 255],
+  "ev": 1.0,
+  "expected": [0, 255, 255],
+  "note": "saturated primary EV sweep"
+ },
+ {
+  "input": [255, 0, 255],
+  "ev": 1.0,
+  "expected": [255, 0, 255],
+  "note": "saturated primary EV sweep"
+ },
+ {
+  "input": [255, 0, 0],
+  "ev": -1.0,
+  "expected": [188, 0, 0],
+  "note": "saturated primary EV sweep"
+ },
+ {
+  "input": [0, 255, 0],
+  "ev": -1.0,
+  "expected": [0, 188, 0],
+  "note": "saturated primary EV sweep"
+ },
+ {
+  "input": [0, 0, 255],
+  "ev": -1.0,
+  "expected": [0, 0, 188],
+  "note": "saturated primary EV sweep"
+ },
+ {
+  "input": [255, 255, 0],
+  "ev": -1.0,
+  "expected": [188, 188, 0],
+  "note": "saturated primary EV sweep"
+ },
+ {
+  "input": [0, 255, 255],
+  "ev": -1.0,
+  "expected": [0, 188, 188],
+  "note": "saturated primary EV sweep"
+ },
+ {
+  "input": [255, 0, 255],
+  "ev": -1.0,
+  "expected": [188, 0, 188],
+  "note": "saturated primary EV sweep"
+ },
+ {
+  "input": [255, 0, 0],
+  "ev": 2.0,
+  "expected": [255, 0, 0],
+  "note": "saturated primary EV sweep"
+ },
+ {
+  "input": [0, 255, 0],
+  "ev": 2.0,
+  "expected": [0, 255, 0],
+  "note": "saturated primary EV sweep"
+ },
+ {
+  "input": [0, 0, 255],
+  "ev": 2.0,
+  "expected": [0, 0, 255],
+  "note": "saturated primary EV sweep"
+ },
+ {
+  "input": [255, 255, 0],
+  "ev": 2.0,
+  "expected": [255, 255, 0],
+  "note": "saturated primary EV sweep"
+ },
+ {
+  "input": [0, 255, 255],
+  "ev": 2.0,
+  "expected": [0, 255, 255],
+  "note": "saturated primary EV sweep"
+ },
+ {
+  "input": [255, 0, 255],
+  "ev": 2.0,
+  "expected": [255, 0, 255],
+  "note": "saturated primary EV sweep"
+ },
+ {
+  "input": [255, 0, 0],
+  "ev": -2.0,
+  "expected": [137, 0, 0],
+  "note": "saturated primary EV sweep"
+ },
+ {
+  "input": [0, 255, 0],
+  "ev": -2.0,
+  "expected": [0, 137, 0],
+  "note": "saturated primary EV sweep"
+ },
+ {
+  "input": [0, 0, 255],
+  "ev": -2.0,
+  "expected": [0, 0, 137],
+  "note": "saturated primary EV sweep"
+ },
+ {
+  "input": [255, 255, 0],
+  "ev": -2.0,
+  "expected": [137, 137, 0],
+  "note": "saturated primary EV sweep"
+ },
+ {
+  "input": [0, 255, 255],
+  "ev": -2.0,
+  "expected": [0, 137, 137],
+  "note": "saturated primary EV sweep"
+ },
+ {
+  "input": [255, 0, 255],
+  "ev": -2.0,
+  "expected": [137, 0, 137],
+  "note": "saturated primary EV sweep"
+ },
+ {
+  "input": [255, 0, 0],
+  "ev": 0.5,
+  "expected": [255, 0, 0],
+  "note": "saturated primary EV sweep"
+ },
+ {
+  "input": [0, 255, 0],
+  "ev": 0.5,
+  "expected": [0, 255, 0],
+  "note": "saturated primary EV sweep"
+ },
+ {
+  "input": [0, 0, 255],
+  "ev": 0.5,
+  "expected": [0, 0, 255],
+  "note": "saturated primary EV sweep"
+ },
+ {
+  "input": [255, 255, 0],
+  "ev": 0.5,
+  "expected": [255, 255, 0],
+  "note": "saturated primary EV sweep"
+ },
+ {
+  "input": [0, 255, 255],
+  "ev": 0.5,
+  "expected": [0, 255, 255],
+  "note": "saturated primary EV sweep"
+ },
+ {
+  "input": [255, 0, 255],
+  "ev": 0.5,
+  "expected": [255, 0, 255],
+  "note": "saturated primary EV sweep"
+ },
+ {
+  "input": [255, 0, 0],
+  "ev": -0.5,
+  "expected": [219, 0, 0],
+  "note": "saturated primary EV sweep"
+ },
+ {
+  "input": [0, 255, 0],
+  "ev": -0.5,
+  "expected": [0, 219, 0],
+  "note": "saturated primary EV sweep"
+ },
+ {
+  "input": [0, 0, 255],
+  "ev": -0.5,
+  "expected": [0, 0, 219],
+  "note": "saturated primary EV sweep"
+ },
+ {
+  "input": [255, 255, 0],
+  "ev": -0.5,
+  "expected": [219, 219, 0],
+  "note": "saturated primary EV sweep"
+ },
+ {
+  "input": [0, 255, 255],
+  "ev": -0.5,
+  "expected": [0, 219, 219],
+  "note": "saturated primary EV sweep"
+ },
+ {
+  "input": [255, 0, 255],
+  "ev": -0.5,
+  "expected": [219, 0, 219],
+  "note": "saturated primary EV sweep"
+ },
+ {
+  "input": [255, 0, 0],
+  "ev": 5.0,
+  "expected": [255, 0, 0],
+  "note": "saturated primary EV sweep"
+ },
+ {
+  "input": [0, 255, 0],
+  "ev": 5.0,
+  "expected": [0, 255, 0],
+  "note": "saturated primary EV sweep"
+ },
+ {
+  "input": [0, 0, 255],
+  "ev": 5.0,
+  "expected": [0, 0, 255],
+  "note": "saturated primary EV sweep"
+ },
+ {
+  "input": [255, 255, 0],
+  "ev": 5.0,
+  "expected": [255, 255, 0],
+  "note": "saturated primary EV sweep"
+ },
+ {
+  "input": [0, 255, 255],
+  "ev": 5.0,
+  "expected": [0, 255, 255],
+  "note": "saturated primary EV sweep"
+ },
+ {
+  "input": [255, 0, 255],
+  "ev": 5.0,
+  "expected": [255, 0, 255],
+  "note": "saturated primary EV sweep"
+ },
+ {
+  "input": [255, 0, 0],
+  "ev": -5.0,
+  "expected": [49, 0, 0],
+  "note": "saturated primary EV sweep"
+ },
+ {
+  "input": [0, 255, 0],
+  "ev": -5.0,
+  "expected": [0, 49, 0],
+  "note": "saturated primary EV sweep"
+ },
+ {
+  "input": [0, 0, 255],
+  "ev": -5.0,
+  "expected": [0, 0, 49],
+  "note": "saturated primary EV sweep"
+ },
+ {
+  "input": [255, 255, 0],
+  "ev": -5.0,
+  "expected": [49, 49, 0],
+  "note": "saturated primary EV sweep"
+ },
+ {
+  "input": [0, 255, 255],
+  "ev": -5.0,
+  "expected": [0, 49, 49],
+  "note": "saturated primary EV sweep"
+ },
+ {
+  "input": [255, 0, 255],
+  "ev": -5.0,
+  "expected": [49, 0, 49],
+  "note": "saturated primary EV sweep"
+ },
+ {
+  "input": [200, 200, 200],
+  "ev": 1.0,
+  "expected": [255, 255, 255],
+  "note": "clips at output: 200 code -> +1EV -> 255"
+ },
+ {
+  "input": [10, 10, 10],
+  "ev": -1.0,
+  "expected": [5, 5, 5],
+  "note": "stays well below 1.0, no clipping"
+ },
+ {
+  "input": [8, 8, 8],
+  "ev": -5.0,
+  "expected": [0, 0, 0],
+  "note": "very low code at strong negative EV floors at output code 0"
+ },
+ {
+  "input": [16, 16, 16],
+  "ev": -5.0,
+  "expected": [1, 1, 1],
+  "note": "low code at strong negative EV stays at output code 1, does not floor to 0"
+ },
+ {
+  "input": [200, 200, 200],
+  "ev": 0.5,
+  "expected": [233, 233, 233],
+  "note": "moderate positive EV, stays below the output clip (233)"
+ },
+ {
+  "input": [220, 220, 220],
+  "ev": 0.5,
+  "expected": [255, 255, 255],
+  "note": "moderate positive EV that does clip at output (255)"
+ }
+]
