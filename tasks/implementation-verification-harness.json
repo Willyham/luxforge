@@ -137,7 +137,7 @@
     {
       "id": "TASK-003",
       "description": "Add a hidden-window evidence mode and make it the default for every automated launch, with a launcher check that no focus change occurred.",
-      "status": "ready",
+      "status": "completed",
       "dependencies": [],
       "extra_context": [
         "The LSBackgroundOnly bundle prevents activation, but the evidence window is still created visible; nothing needs it on screen.",
