@@ -40,8 +40,13 @@ impl Fields {
 
     /// Reflect the displayed RAW history entry. While a person edits one field, keep their text;
     /// all other controls follow authoritative recipe state across undo, redo and reopen.
+    ///
+    /// Each value is written with the decimals its own parameter declares, so a bound field reads
+    /// exactly like one the person set: the descriptors are the only place that knows, which is why
+    /// they are passed in rather than the RAW names being formatted by a rule of their own here.
     pub(crate) fn bind_raw(
         &mut self,
+        modules: &[ModuleDescriptor],
         recipe: &Recipe,
         editing: Option<&(String, String)>,
         dragging: Option<&(String, String)>,
@@ -60,26 +65,26 @@ impl Fields {
             WhiteBalanceMode::AsShot => payload.as_shot_gains,
             WhiteBalanceMode::Custom => payload.gains,
         };
-        for (action, parameter, text) in [
-            ("set-raw-exposure", "ev", number_text(payload.exposure_ev)),
+        for (action, parameter, value) in [
+            ("set-raw-exposure", "ev", payload.exposure_ev),
             (
                 "set-raw-temperature",
                 "kelvin",
-                number_text(payload.temperature_kelvin.unwrap_or(6504.0)),
+                payload.temperature_kelvin.unwrap_or(6504.0),
             ),
-            (
-                "set-raw-tint",
-                "tint",
-                number_text(payload.tint.unwrap_or(0.0)),
-            ),
-            ("set-raw-red-gain", "gain", gains[0].to_string()),
-            ("set-raw-blue-gain", "gain", gains[2].to_string()),
+            ("set-raw-tint", "tint", payload.tint.unwrap_or(0.0)),
+            ("set-raw-red-gain", "gain", f64::from(gains[0])),
+            ("set-raw-blue-gain", "gain", f64::from(gains[2])),
         ] {
             if editing.is_some_and(|field| field.0 == action && field.1 == parameter)
                 || dragging.is_some_and(|field| field.0 == action && field.1 == parameter)
             {
                 continue;
             }
+            let text = match declared(modules, action, parameter) {
+                Some(declared) => format_number(declared, value),
+                None => number_text(value),
+            };
             self.set(action, parameter, text);
         }
     }
@@ -116,6 +121,15 @@ fn seed_controls(module: &ModuleDescriptor, controls: &[Control], fields: &mut F
     }
 }
 
+/// One action's declared parameter, wherever the registered modules declare that action.
+pub(crate) fn declared<'a>(
+    modules: &'a [ModuleDescriptor],
+    action: &str,
+    parameter: &str,
+) -> Option<&'a ParameterDescriptor> {
+    crate::state::tools::declared_action(modules, action)?.parameter(parameter)
+}
+
 /// A field starts at the declared default; without one it starts at the lowest accepted value.
 pub(crate) fn seed_text(parameter: &ParameterDescriptor) -> String {
     match &parameter.kind {
@@ -125,7 +139,8 @@ pub(crate) fn seed_text(parameter: &ParameterDescriptor) -> String {
             .and_then(Value::as_i64)
             .unwrap_or(*min)
             .to_string(),
-        ParameterKind::Number { min, .. } => number_text(
+        ParameterKind::Number { min, .. } => format_number(
+            parameter,
             parameter
                 .default
                 .as_ref()
@@ -168,9 +183,71 @@ fn number_range_message(name: &str, min: f64, max: f64) -> String {
     )
 }
 
-/// A number as a field would hold it: `0`, `-3.5`, no trailing zeros or exponent noise.
+/// A number as text, with no declared parameter to say how it should read: `0`, `-3.5`, no
+/// trailing zeros or exponent noise.
+///
+/// This is for numbers that are not a declared parameter's value — a range message's limits, the
+/// crop draft's own readout. Every number that **is** one goes through [`format_number`], which
+/// shows the decimals the parameter declares and never leaves `1.7000000000000002` on screen.
 pub(crate) fn number_text(value: f64) -> String {
     format!("{value}")
+}
+
+/// How many decimals a declared parameter's value is shown with.
+///
+/// In order: the declared `precision`, else the decimals of the declared `step`, else the decimals
+/// of the generic step the panel derives from the range. An integer parameter is shown as an
+/// integer, whatever else it declares.
+pub(crate) fn decimals_for(parameter: &ParameterDescriptor) -> usize {
+    let (min, max) = match &parameter.kind {
+        ParameterKind::Integer { .. } => return 0,
+        ParameterKind::Number { min, max } => (*min, *max),
+        ParameterKind::Color | ParameterKind::Enum { .. } => return 0,
+    };
+    if let Some(precision) = parameter.precision {
+        return usize::from(precision).min(lightwell_ui::geometry::MAX_DECIMALS);
+    }
+    let step = parameter
+        .step
+        .filter(|step| step.is_finite() && *step > 0.0)
+        .unwrap_or_else(|| crate::state::tools::generic_step(min, max));
+    decimals_of(step)
+}
+
+/// The decimals one increment needs: `0.01` → 2, `0.5` → 1, `10` → 0. Capped at the largest
+/// precision a descriptor may declare, so an unrepresentable step cannot ask for endless digits.
+fn decimals_of(step: f64) -> usize {
+    if !step.is_finite() || step <= 0.0 {
+        return 0;
+    }
+    (0..=lightwell_ui::geometry::MAX_DECIMALS)
+        .find(|decimals| {
+            let scaled = step * 10f64.powi(*decimals as i32);
+            (scaled - scaled.round()).abs() <= 1e-9 * scaled.abs().max(1.0)
+        })
+        .unwrap_or(lightwell_ui::geometry::MAX_DECIMALS)
+}
+
+/// One declared parameter's value as its field shows it: a fixed number of decimals, so a control
+/// reads `1.70`, `0.00` or `-3.50` rather than whatever the last arithmetic left behind.
+///
+/// A value that rounds to zero is always `0` or `0.00`, never `-0.00`: the sign of a zero is an
+/// artefact of the arithmetic, not something the person did.
+pub(crate) fn format_number(parameter: &ParameterDescriptor, value: f64) -> String {
+    format_decimals(value, decimals_for(parameter))
+}
+
+/// `value` with exactly `decimals` decimals, and no negative zero.
+fn format_decimals(value: f64, decimals: usize) -> String {
+    if !value.is_finite() {
+        return number_text(value);
+    }
+    let text = format!("{value:.decimals$}");
+    match text.strip_prefix('-') {
+        // "-0", "-0.00": the digits are all zeros, so the sign says nothing.
+        Some(rest) if rest.bytes().all(|byte| byte == b'0' || byte == b'.') => rest.to_owned(),
+        _ => text,
+    }
 }
 
 /// One field's text read as the value its parameter declares, or the message naming what it needs.
@@ -392,6 +469,19 @@ mod tests {
         }
     }
 
+    /// The same parameter with the hints a module can declare for it.
+    fn hinted(
+        default: Option<Value>,
+        step: Option<f64>,
+        precision: Option<u8>,
+    ) -> ParameterDescriptor {
+        ParameterDescriptor {
+            step,
+            precision,
+            ..number_parameter(default)
+        }
+    }
+
     #[test]
     fn fields_are_seeded_from_declared_defaults_and_limits() {
         let modules = descriptors();
@@ -458,7 +548,92 @@ mod tests {
             "0",
             "a whole number default seeds without trailing noise"
         );
-        assert_eq!(seed_text(&number_parameter(Some(json!(-3.5)))), "-3.5");
+        // A parameter that declares nothing is shown with the decimals of the generic step the
+        // panel derives from its range, which over -45..45 is whole degrees.
+        assert_eq!(seed_text(&number_parameter(Some(json!(-3.5)))), "-4");
+        // Declaring a precision is how a module asks for the digits it cares about.
+        assert_eq!(
+            seed_text(&hinted(Some(json!(-3.5)), Some(0.1), Some(1))),
+            "-3.5"
+        );
+        assert_eq!(
+            seed_text(&hinted(Some(json!(-3.5)), Some(0.01), Some(2))),
+            "-3.50"
+        );
+    }
+
+    /// Every number a declared parameter's field shows has a fixed number of decimals, so a value
+    /// never arrives on screen as `1.7000000000000002`, and a value that rounds to zero is `0`
+    /// rather than `-0.00`.
+    #[test]
+    fn a_declared_parameters_value_is_shown_with_the_decimals_it_declares() {
+        // A declared precision wins outright.
+        let declared = hinted(None, Some(0.01), Some(2));
+        assert_eq!(decimals_for(&declared), 2);
+        for (value, text) in [
+            (1.7000000000000002, "1.70"),
+            (0.0, "0.00"),
+            (-3.5, "-3.50"),
+            (-0.0, "0.00"),
+            (-0.004, "0.00"),
+            (-0.006, "-0.01"),
+        ] {
+            assert_eq!(format_number(&declared, value), text, "{value}");
+        }
+        // Without a precision the declared step decides: 0.5 is one decimal, 10 is none.
+        assert_eq!(decimals_for(&hinted(None, Some(0.5), None)), 1);
+        assert_eq!(format_number(&hinted(None, Some(0.5), None), 2.25), "2.2");
+        assert_eq!(decimals_for(&hinted(None, Some(10.0), None)), 0);
+        assert_eq!(format_number(&hinted(None, Some(10.0), None), 40.0), "40");
+        assert_eq!(decimals_for(&hinted(None, Some(0.001), None)), 3);
+        // Without either, the generic step over the range does: 90 degrees give whole degrees.
+        assert_eq!(decimals_for(&number_parameter(None)), 0);
+        assert_eq!(format_number(&number_parameter(None), -0.4), "0");
+        // An integer parameter is an integer whatever else it says.
+        let modules = descriptors();
+        let (action, x, _) = point_pick(&modules).expect("a canvas pick");
+        let coordinate = parameter_of(&modules, action, x);
+        assert_eq!(decimals_for(coordinate), 0);
+        assert_eq!(format_number(coordinate, 12.0), "12");
+        // A step no control could use asks for no decimals rather than endless ones.
+        assert_eq!(decimals_for(&hinted(None, Some(1.0 / 3.0), None)), 6);
+        assert_eq!(decimals_for(&hinted(None, Some(f64::NAN), None)), 0);
+    }
+
+    /// Every number parameter a registered module puts behind a generated control declares its
+    /// own step and precision, so no slider on screen falls back to the generic rule. Parameters
+    /// the host drives itself (the crop frame's rectangle and angle, which the crop panel edits)
+    /// are not generated controls and are not covered by this.
+    #[test]
+    fn every_generated_number_control_of_a_built_in_names_its_step_and_precision() {
+        let modules = descriptors();
+        fn walk(module: &ModuleDescriptor, controls: &[Control], checked: &mut usize) {
+            for control in controls {
+                match classify(control) {
+                    Rendered::Group { controls, .. } => walk(module, controls, checked),
+                    Rendered::Number {
+                        action, parameter, ..
+                    } => {
+                        let declared = declared_parameter(module, action, parameter)
+                            .expect("a generated control names a declared parameter");
+                        if !matches!(declared.kind, ParameterKind::Number { .. }) {
+                            continue;
+                        }
+                        assert!(
+                            declared.step.is_some() && declared.precision.is_some(),
+                            "{action}.{parameter} declares no step or precision"
+                        );
+                        *checked += 1;
+                    }
+                    _ => {}
+                }
+            }
+        }
+        let mut checked = 0;
+        for module in &modules {
+            walk(module, &module.controls, &mut checked);
+        }
+        assert!(checked >= 10, "only {checked} generated number controls");
     }
 
     #[test]

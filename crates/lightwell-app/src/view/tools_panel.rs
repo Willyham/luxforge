@@ -260,25 +260,14 @@ fn with_control_menu<'a>(
     }
 }
 
-/// The generic step for a non-integer slider: a fraction of its range, rounded to a power of ten.
-fn generic_step(min: f64, max: f64) -> f64 {
-    let span = (max - min).abs();
-    if !span.is_finite() || span <= 0.0 {
-        return 0.01;
-    }
-    10f64.powf((span / 200.0).log10().round())
-}
-
 fn slider_view<'a>(
     enabled: bool,
     field: &'a SliderControl,
     menu: Option<&'a MenuTarget>,
 ) -> Element<'a, Message> {
-    let step = if field.integer {
-        1.0
-    } else {
-        generic_step(field.min, field.max)
-    };
+    // The step and the decimals are the model's: they come from what the parameter declares, and
+    // the widget quantizes every dragged value to them before the message reaches the app.
+    let step = field.step;
     let zero = (field.min < 0.0 && field.max > 0.0).then_some(field.zero);
     // `ValueEdit::text` is the one place that resolves "what a field shows right now" (what was
     // typed, else the formatted value); the widget's own `Editing`/`Display` split follows it.
@@ -303,6 +292,7 @@ fn slider_view<'a>(
             value: field.value,
             step,
             shift_step: step * 10.0,
+            decimals: field.decimals,
             zero,
             unit: field.unit.clone(),
             display: field.display.clone(),

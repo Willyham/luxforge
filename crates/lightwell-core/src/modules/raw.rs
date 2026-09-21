@@ -144,15 +144,25 @@ impl RawPayload {
     }
 }
 
-fn number(name: &str, min: f64, max: f64, default: f64, unit: &str) -> ParameterDescriptor {
+/// One declared number parameter, with the increment and the display precision a client should
+/// use for it. Both are hints: the host stores what it is sent and never rounds a request to them.
+fn number(
+    name: &str,
+    min: f64,
+    max: f64,
+    default: f64,
+    unit: &str,
+    step: f64,
+    precision: u8,
+) -> ParameterDescriptor {
     ParameterDescriptor {
         name: name.into(),
         kind: ParameterKind::Number { min, max },
         required: true,
         default: Some(Value::from(default)),
         unit: Some(unit.into()),
-        step: None,
-        precision: None,
+        step: Some(step),
+        precision: Some(precision),
         notes: "finite value".into(),
     }
 }
@@ -211,27 +221,27 @@ impl RawModule {
                     action(
                         SET_EXPOSURE,
                         "Exposure",
-                        vec![number("ev", -5.0, 5.0, 0.0, "EV")],
+                        vec![number("ev", -5.0, 5.0, 0.0, "EV", 0.01, 2)],
                     ),
                     action(
                         SET_TEMPERATURE,
                         "Custom temperature",
-                        vec![number("kelvin", 2000.0, 12000.0, 6504.0, "K")],
+                        vec![number("kelvin", 2000.0, 12000.0, 6504.0, "K", 10.0, 0)],
                     ),
                     action(
                         SET_TINT,
                         "Custom tint",
-                        vec![number("tint", -100.0, 100.0, 0.0, "Lightwell")],
+                        vec![number("tint", -100.0, 100.0, 0.0, "Lightwell", 1.0, 0)],
                     ),
                     action(
                         SET_RED,
                         "Red gain",
-                        vec![number("gain", 0.01, MAX_RAW_GAIN, 1.0, "×")],
+                        vec![number("gain", 0.01, MAX_RAW_GAIN, 1.0, "×", 0.01, 2)],
                     ),
                     action(
                         SET_BLUE,
                         "Blue gain",
-                        vec![number("gain", 0.01, MAX_RAW_GAIN, 1.0, "×")],
+                        vec![number("gain", 0.01, MAX_RAW_GAIN, 1.0, "×", 0.01, 2)],
                     ),
                     action(
                         PICK_NEUTRAL,
