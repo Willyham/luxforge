@@ -661,11 +661,11 @@ impl Editor {
                     return Task::none();
                 }
                 points[index][axis] = value;
-                if let Some(declared) = declared.as_ref() {
-                    if let Err(error) = check_value(declared, &json!(points)) {
-                        self.status = error.to_string();
-                        return Task::none();
-                    }
+                if let Some(declared) = declared.as_ref()
+                    && let Err(error) = check_value(declared, &json!(points))
+                {
+                    self.status = error.to_string();
+                    return Task::none();
                 }
                 self.controls_ui.curve_edits.remove(&(
                     action.clone(),

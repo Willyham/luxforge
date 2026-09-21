@@ -26,8 +26,8 @@ mod gallery_components;
 /// (`docs/design/develop-workspace/components.png`), as `Element<'_, ()>` values, so a caller can
 /// prove the whole set builds without panicking.
 ///
-/// Hidden because it exists for verification (today, the unit test in this crate; later, an
-/// evidence renderer), not for reuse as part of the widget API.
+/// Hidden because it exists for unit checks and the real-app gallery evidence renderer,
+/// not for reuse as part of the widget API.
 #[doc(hidden)]
 pub fn gallery_states() -> Vec<iced::Element<'static, ()>> {
     gallery::gallery()
@@ -36,7 +36,7 @@ pub fn gallery_states() -> Vec<iced::Element<'static, ()>> {
 /// Names the exact gallery states in draw order for the real-app evidence board.
 #[doc(hidden)]
 pub fn gallery_named_states() -> Vec<(&'static str, iced::Element<'static, ()>)> {
-    const NAMES: [&str; 62] = [
+    const NAMES: [&str; 63] = [
         "Highlights · resting slider",
         "Exposure · dragging slider",
         "Contrast · editing slider value",
@@ -99,6 +99,7 @@ pub fn gallery_named_states() -> Vec<(&'static str, iced::Element<'static, ()>)>
         "Curve · selected point dragging",
         "Curve · histogram and two channels",
         "Curve · disabled",
+        "Named vector icons · 12 and 16 points",
     ];
     let states = gallery_states();
     assert_eq!(
@@ -114,6 +115,6 @@ mod tests {
     #[test]
     fn gallery_builds_every_widget_state_without_panicking() {
         let states = super::gallery_named_states();
-        assert_eq!(states.len(), 62);
+        assert_eq!(states.len(), 63);
     }
 }

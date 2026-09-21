@@ -451,7 +451,7 @@ mod tests {
     fn boolean_color_and_curve_fields_reflect_exact_authoritative_values() {
         let descriptor = crate::app::testing::controls_descriptor();
         let action = descriptor.action("fixture-set").unwrap();
-        let mut fields = Fields::seeded(&[descriptor.clone()]);
+        let mut fields = Fields::seeded(std::slice::from_ref(&descriptor));
         for (name, value, expected_text) in [
             ("enabled", json!(true), "true"),
             ("rgb", json!([12, 34, 56]), "12,34,56"),

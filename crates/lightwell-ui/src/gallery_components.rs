@@ -246,5 +246,47 @@ pub(crate) fn gallery_components() -> Vec<Element<'static, ()>> {
         },
         |_| (),
     ));
+    let mut icons = iced::widget::column![].spacing(6.0);
+    for name in [
+        "rotate-left",
+        "rotate-right",
+        "flip",
+        "mirror",
+        "crop",
+        "picker",
+        "reset",
+        "plus",
+        "minus",
+        "lock",
+        "swap",
+        "guide",
+        "pointer",
+        "versions",
+        "undo",
+        "redo",
+        "before",
+        "after",
+        "clipping",
+        "shadow-clipping",
+        "highlight-clipping",
+        "state-panel",
+        "tools-panel",
+        "chevron-down",
+        "chevron-right",
+    ] {
+        let symbol = Icon::from_name(name).expect("named gallery icon");
+        icons = icons.push(
+            iced::widget::row![
+                iced::widget::text(name)
+                    .size(theme::SIZE_CAPTION)
+                    .width(180.0),
+                icon::<()>(symbol, 12.0, theme::TEXT_PRIMARY),
+                icon::<()>(symbol, 16.0, theme::TEXT_PRIMARY),
+            ]
+            .spacing(12.0)
+            .align_y(iced::Alignment::Center),
+        );
+    }
+    states.push(icons.into());
     states
 }

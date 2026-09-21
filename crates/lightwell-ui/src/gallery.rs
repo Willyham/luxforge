@@ -371,13 +371,13 @@ pub fn gallery() -> Vec<Element<'static, ()>> {
     states.push(mode_strip(
         &[
             ModeEntry {
-                label: "\u{2726}".into(),
+                label: "Pointer".into(),
                 shortcut: Some("V".into()),
                 selected: true,
                 enabled: true,
             },
             ModeEntry {
-                label: "\u{2712}".into(),
+                label: "Crop".into(),
                 shortcut: Some("R".into()),
                 selected: false,
                 enabled: true,
@@ -385,7 +385,7 @@ pub fn gallery() -> Vec<Element<'static, ()>> {
         ],
         |_: usize| (),
         &[ToggleEntry {
-            label: "\u{229e}".into(),
+            label: "Thirds".into(),
             shortcut: Some("O".into()),
             on: false,
         }],

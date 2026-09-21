@@ -785,19 +785,19 @@ fn control_model(
             ..
         } => {
             let mut model = value_model(module, inputs, action, parameter, label);
-            if let Rendered::Choice { style, .. } = classify(control) {
-                if let ControlModel::Enum(choice) = &mut model {
-                    choice.style = choice_style(style, choice.options.len());
-                    choice.segmented = choice.style == ChoiceControlStyle::Segmented;
-                }
+            if let Rendered::Choice { style, .. } = classify(control)
+                && let ControlModel::Enum(choice) = &mut model
+            {
+                choice.style = choice_style(style, choice.options.len());
+                choice.segmented = choice.style == ChoiceControlStyle::Segmented;
             }
-            if let Rendered::Color { style, .. } = classify(control) {
-                if let ControlModel::Color(color) = &mut model {
-                    color.style = match style {
-                        ColorStyle::Fields => ColorControlStyle::Fields,
-                        ColorStyle::Picker => ColorControlStyle::Picker,
-                    };
-                }
+            if let Rendered::Color { style, .. } = classify(control)
+                && let ControlModel::Color(color) = &mut model
+            {
+                color.style = match style {
+                    ColorStyle::Fields => ColorControlStyle::Fields,
+                    ColorStyle::Picker => ColorControlStyle::Picker,
+                };
             }
             model
         }
@@ -1132,12 +1132,15 @@ fn curve_model(
     };
     let parameter = &channel.parameter;
     let text = inputs.fields.get(action, parameter).unwrap_or_default();
-    let parsed = inputs
+    let declared = inputs
         .modules
         .iter()
         .find_map(|module| module.action(action))
-        .and_then(|declared| declared.parameter(parameter))
-        .and_then(|declared| parse_field(declared, text).ok());
+        .and_then(|declared| declared.parameter(parameter));
+    let precision = declared
+        .and_then(|parameter| parameter.precision)
+        .unwrap_or(3) as usize;
+    let parsed = declared.and_then(|declared| parse_field(declared, text).ok());
     let points = parsed
         .as_ref()
         .and_then(Value::as_array)
@@ -1164,7 +1167,24 @@ fn curve_model(
         .iter()
         .enumerate()
         .map(|(index, point)| CurvePointRowModel {
-            display: [number_text(point[0] as f64), number_text(point[1] as f64)],
+            display: [0, 1].map(|axis| {
+                // Plot coordinates use f32; field text retains the authoritative f64 value.
+                let value = parsed
+                    .as_ref()
+                    .and_then(|value| value.get(index))
+                    .and_then(|value| value.get(axis))
+                    .and_then(Value::as_f64)
+                    .unwrap_or(point[axis] as f64);
+                let formatted = format!("{value:.precision$}");
+                if precision == 0 {
+                    formatted
+                } else {
+                    formatted
+                        .trim_end_matches('0')
+                        .trim_end_matches('.')
+                        .to_owned()
+                }
+            }),
             edit: [0, 1].map(|axis| {
                 inputs
                     .control_ui

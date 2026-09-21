@@ -10,7 +10,7 @@ use lightwell_ui::{caption, gallery_named_states, theme, title};
 
 /// Small pages keep every example visible in a native 1440×1000 background capture. The two
 /// large canvases get their own pages, while related compact states stay together.
-const PAGES: [(&str, usize, usize); 9] = [
+const PAGES: [(&str, usize, usize); 10] = [
     ("Sliders and sections", 0, 9),
     ("Actions and history", 9, 19),
     ("Notices and menus", 19, 24),
@@ -20,6 +20,7 @@ const PAGES: [(&str, usize, usize); 9] = [
     ("Colour picker", 55, 58),
     ("Curve points", 58, 60),
     ("Curve channels", 60, 62),
+    ("Named vector icons", 62, 63),
 ];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -114,7 +115,7 @@ mod tests {
             let _ = gallery(index);
         }
         assert_eq!(next, gallery_named_states().len());
-        assert_eq!(page_count(), 9);
+        assert_eq!(page_count(), 10);
         assert!(page_info(page_count()).is_none());
     }
 }

@@ -368,6 +368,8 @@ pub(crate) fn scripted(steps: &str) -> (Editor, PathBuf, AssetId, PathBuf) {
         capture_pending: false,
         saving: false,
         had_errors: false,
+        gallery_page: None,
+        tools_scroll: None,
     });
     editor.activity.requested = 1;
     (editor, catalog, asset, dir)
