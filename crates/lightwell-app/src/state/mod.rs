@@ -671,6 +671,7 @@ mod tests {
                 module: Some(crop.id.clone()),
                 title: Some("Crop".into()),
                 summary: "Whole image".into(),
+                values: serde_json::Map::new(),
                 available: true,
             }],
         });

@@ -287,6 +287,8 @@ mod tests {
             required: true,
             default,
             unit: Some("deg".into()),
+            step: None,
+            precision: None,
             notes: "test".into(),
         }
     }

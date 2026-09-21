@@ -1,6 +1,8 @@
 //! One thread owns the catalog and every client session; all clients call it in turn.
 use super::{ApiEvent, ApiRequest, ApiResponse, ClientSession, EventsResult, methods};
-use crate::{AssetId, EditorService, EntryId, Error, ErrorKind, ModuleRegistry, PreviewJob};
+use crate::{
+    AssetId, DraftId, EditorService, EntryId, Error, ErrorKind, ModuleRegistry, PreviewJob,
+};
 use serde::Deserialize;
 use std::{
     collections::{HashMap, VecDeque},
@@ -28,14 +30,53 @@ struct OwnerCall {
 enum OwnerMessage {
     Call(OwnerCall),
     Preview {
-        asset_id: AssetId,
-        entry_id: Option<EntryId>,
-        /// `Some(n)` renders the entry's first `n` layers only.
-        layer_count: Option<usize>,
+        request: PreviewRequest,
         response: SyncSender<Result<PreviewJob, Error>>,
     },
     Disconnect(ClientId),
     Stop,
+}
+
+/// What one preview job should render. The client identity travels with it because a draft belongs
+/// to that client's session, which only the owner holds: a client can never ask for another's.
+#[derive(Clone, Debug)]
+pub struct PreviewRequest {
+    pub client: ClientId,
+    pub asset_id: AssetId,
+    /// The entry to show; `None` is the current one.
+    pub entry_id: Option<EntryId>,
+    /// `Some(n)` renders the first `n` layers of the resulting stack only.
+    pub layer_count: Option<usize>,
+    /// Render this client's open draft instead of the stored stack.
+    pub draft: Option<DraftId>,
+}
+
+impl PreviewRequest {
+    /// The current entry of one asset, whole.
+    pub fn new(client: ClientId, asset_id: AssetId) -> Self {
+        Self {
+            client,
+            asset_id,
+            entry_id: None,
+            layer_count: None,
+            draft: None,
+        }
+    }
+    /// Show this entry instead of the current one.
+    pub fn entry(mut self, entry_id: Option<EntryId>) -> Self {
+        self.entry_id = entry_id;
+        self
+    }
+    /// Render the first `count` layers only: the input stage of the layer at that index.
+    pub fn layers(mut self, count: usize) -> Self {
+        self.layer_count = Some(count);
+        self
+    }
+    /// Render the effective recipe of this client's draft.
+    pub fn draft(mut self, draft: DraftId) -> Self {
+        self.draft = Some(draft);
+        self
+    }
 }
 
 #[derive(Clone)]
@@ -98,22 +139,12 @@ impl OwnerHandle {
         let _ = self.sender.send(OwnerMessage::Stop);
     }
 
-    /// A preview job from the catalog owner. `layer_count` truncates the rendered stack to its
-    /// first `n` layers; this is a desktop-internal path, not a JSON method.
-    pub fn preview_job(
-        &self,
-        asset_id: AssetId,
-        entry_id: Option<EntryId>,
-        layer_count: Option<usize>,
-    ) -> Result<PreviewJob, Error> {
+    /// A preview job from the catalog owner. The owner resolves a named draft from the requesting
+    /// client's own session; this is a desktop-internal path, not a JSON method.
+    pub fn preview_job(&self, request: PreviewRequest) -> Result<PreviewJob, Error> {
         let (response, receiver) = sync_channel(1);
         self.sender
-            .send(OwnerMessage::Preview {
-                asset_id,
-                entry_id,
-                layer_count,
-                response,
-            })
+            .send(OwnerMessage::Preview { request, response })
             .map_err(|_| Error::new(ErrorKind::Protocol, "catalog owner is unavailable"))?;
         receiver
             .recv()
@@ -131,14 +162,33 @@ fn owner_loop(mut service: EditorService, receiver: Receiver<OwnerMessage>) {
             OwnerMessage::Disconnect(client) => {
                 sessions.remove(&client);
             }
-            OwnerMessage::Preview {
-                asset_id,
-                entry_id,
-                layer_count,
-                response,
-            } => {
-                let _ =
-                    response.send(service.preview_job(&asset_id, entry_id.as_ref(), layer_count));
+            OwnerMessage::Preview { request, response } => {
+                // A draft is session state, so the owner looks it up in the requesting client's own
+                // session: naming another client's draft, or one that has ended, is a validation
+                // error rather than a preview of someone else's gesture.
+                let draft = match &request.draft {
+                    None => Ok(None),
+                    Some(draft_id) => sessions
+                        .get(&request.client)
+                        .and_then(|session| session.draft.as_ref())
+                        .filter(|draft| &draft.draft_id == draft_id)
+                        .map(Some)
+                        .ok_or_else(|| {
+                            Error::new(
+                                ErrorKind::Validation,
+                                format!("unknown draft {draft_id} for this client"),
+                            )
+                        }),
+                };
+                let job = draft.and_then(|draft| {
+                    service.preview_job(
+                        &request.asset_id,
+                        request.entry_id.as_ref(),
+                        request.layer_count,
+                        draft,
+                    )
+                });
+                let _ = response.send(job);
             }
             OwnerMessage::Call(call) => {
                 let session = sessions.entry(call.client).or_default();
@@ -369,6 +419,134 @@ mod tests {
         assert_eq!(
             call(fresh, "fresh", "session.state", json!({}))["preview"]["view"]["zoom"]["mode"],
             json!("fit")
+        );
+        owner.stop();
+        join.join().unwrap();
+        std::fs::remove_file(catalog).unwrap();
+    }
+
+    /// A preview job of an open draft renders what committing it would produce, and only for the
+    /// client that holds it. The owner resolves the draft from that client's own session.
+    #[test]
+    fn a_preview_job_renders_the_requesting_clients_draft_and_nobody_elses() {
+        let catalog = temp("preview-draft.sqlite");
+        let _ = std::fs::remove_file(&catalog);
+        let mut registry = crate::ModuleRegistry::builtin();
+        registry
+            .register(crate::modules::PatchModule::shared())
+            .unwrap();
+        let (owner, join) = OwnerHandle::start_with(&catalog, Arc::new(registry)).unwrap();
+        let client = owner.register();
+        let other = owner.register();
+        let call = |client: ClientId, id: &str, method: &str, params: Value| {
+            let response = owner
+                .call(
+                    client,
+                    ApiRequest {
+                        id: id.into(),
+                        method: method.into(),
+                        params,
+                        token: None,
+                    },
+                )
+                .unwrap();
+            assert!(response.error.is_none(), "{id}: {:?}", response.error);
+            response.result.unwrap()
+        };
+        let imported = call(
+            client,
+            "import",
+            "catalog.import",
+            json!({"path": fixture()}),
+        );
+        let asset_value = imported["asset"]["id"].clone();
+        let asset = crate::AssetId::parse(asset_value.as_str().unwrap()).unwrap();
+        let begun = call(
+            client,
+            "begin",
+            "draft.begin",
+            json!({"asset_id": asset_value, "action": crate::modules::PATCH_ACTION}),
+        );
+        let draft_value = begun["draft_id"].clone();
+        let draft = crate::DraftId::parse(draft_value.as_str().unwrap()).unwrap();
+        call(
+            client,
+            "set",
+            "draft.set",
+            json!({"draft_id": draft_value, "fields": {"red": 200.0}}),
+        );
+
+        let job = owner
+            .preview_job(PreviewRequest::new(client, asset.clone()).draft(draft.clone()))
+            .expect("the drafted preview");
+        assert_eq!(job.draft_revision, Some(1));
+        assert_eq!(job.recipe.layers.len(), 1, "the draft's planned layer");
+        let rendered = crate::render(
+            &job.registry,
+            &job.source,
+            job.entry.snapshot.id.clone(),
+            &job.recipe,
+        )
+        .expect("a drafted frame");
+        assert_eq!(rendered.pixel(0, 0), Some([200, 0, 0, 255]));
+
+        // The stored stack is untouched, and a truncated job still applies to what is rendered.
+        let stored = owner
+            .preview_job(PreviewRequest::new(client, asset.clone()))
+            .expect("the committed preview");
+        assert!(stored.recipe.layers.is_empty());
+        assert_eq!(stored.draft_revision, None);
+        assert_ne!(
+            crate::render(
+                &stored.registry,
+                &stored.source,
+                stored.entry.snapshot.id.clone(),
+                &stored.recipe,
+            )
+            .unwrap()
+            .pixel(0, 0),
+            rendered.pixel(0, 0)
+        );
+        assert_eq!(
+            owner
+                .preview_job(
+                    PreviewRequest::new(client, asset.clone())
+                        .draft(draft.clone())
+                        .layers(0)
+                )
+                .expect("the draft layer's input stage")
+                .layer_count,
+            Some(0)
+        );
+        let too_many = owner
+            .preview_job(
+                PreviewRequest::new(client, asset.clone())
+                    .draft(draft.clone())
+                    .layers(2),
+            )
+            .expect_err("the drafted stack has one layer");
+        assert_eq!(too_many.kind, ErrorKind::Validation);
+
+        // Another client cannot preview this gesture: a draft belongs to one session.
+        let foreign = owner
+            .preview_job(PreviewRequest::new(other, asset.clone()).draft(draft.clone()))
+            .expect_err("a draft is not shared");
+        assert_eq!(foreign.kind, ErrorKind::Validation);
+        assert!(foreign.detail.contains("unknown draft"), "{foreign}");
+
+        // Cancelling ends it, so the same request is refused for its own client too.
+        call(
+            client,
+            "cancel",
+            "draft.cancel",
+            json!({"draft_id": draft_value}),
+        );
+        assert_eq!(
+            owner
+                .preview_job(PreviewRequest::new(client, asset).draft(draft))
+                .expect_err("the draft has ended")
+                .kind,
+            ErrorKind::Validation
         );
         owner.stop();
         join.join().unwrap();

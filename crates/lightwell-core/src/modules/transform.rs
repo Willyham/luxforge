@@ -153,7 +153,8 @@ impl TransformModule {
                     title: "Transform".into(),
                     notes: "exact quarter turns and reflections; integer mappings with no interpolation".into(),
                     summary: Some("{transform}".into()),
-                    parameters: vec![ParameterDescriptor {
+                    patch: false,
+parameters: vec![ParameterDescriptor {
                         name: "transform".into(),
                         kind: ParameterKind::Enum {
                             options: vec![
@@ -166,7 +167,8 @@ impl TransformModule {
                         required: true,
                         default: None,
                         unit: None,
-                        notes: "the exact transform to compose into the stack's orientation".into(),
+                        step: None, precision: None,
+notes: "the exact transform to compose into the stack's orientation".into(),
                     }],
                 }],
                 controls: vec![Control::Group {

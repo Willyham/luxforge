@@ -72,6 +72,7 @@ identifier!(AssetId, "asset-");
 identifier!(LayerId, "layer-");
 identifier!(SnapshotId, "snapshot-");
 identifier!(EntryId, "entry-");
+identifier!(DraftId, "draft-");
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Layer {

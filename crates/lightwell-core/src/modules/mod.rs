@@ -16,13 +16,15 @@ pub use crop::geometry::{
 pub use descriptor::{
     ActionDescriptor, Availability, CanvasInteraction, Control, EffectDescriptor, EffectStage,
     ModuleDescriptor, ParameterDescriptor, ParameterKind, ResetAction, action_label,
-    check_parameters, render_summary, valid_identity, valid_name,
+    check_parameters, check_value, render_summary, valid_identity, valid_name,
 };
 pub use pixel::PixelModule;
 pub use processing::{
     ColorOperation, ExactGeometry, MAX_COLOR_UNITS, PointwiseColor, Processing, Resample, Stage,
 };
 pub use registry::ModuleRegistry;
+#[cfg(test)]
+pub(crate) use registry::tests::{PATCH_ACTION, PATCH_MODULE, PatchModule};
 pub use transform::TransformModule;
 
 use crate::{Error, Layer};
@@ -99,6 +101,25 @@ pub trait ToolModule: Send + Sync {
         format: u32,
         payload: &Value,
     ) -> Result<String, Error>;
+    /// The history label this request deserves, when the rendered `summary` template cannot say it:
+    /// a patch naming the one field it changed, or a reset naming the group it cleared. The host
+    /// consults this before the template and the title. Reading the request only.
+    fn label(&self, input: &ActionInput) -> Option<String> {
+        let _ = input;
+        None
+    }
+    /// The parameter values a stored layer represents, reported on the layer's row of
+    /// `recipe.describe` so a client can seed its controls from the displayed entry. Reading a
+    /// payload only, like [`ToolModule::describe_layer`]: no render, no sample, no source.
+    fn values(
+        &self,
+        effect_id: &str,
+        format: u32,
+        payload: &Value,
+    ) -> Result<Map<String, Value>, Error> {
+        let _ = (effect_id, format, payload);
+        Ok(Map::new())
+    }
     /// Turn a persisted payload into a host processing primitive at its input stage.
     fn compile(
         &self,

@@ -3,6 +3,7 @@ pub mod analysis;
 mod api;
 #[cfg(test)]
 mod command_contracts;
+mod draft;
 mod editor;
 mod error;
 mod model;
@@ -11,6 +12,7 @@ mod preview;
 mod profile;
 mod render;
 pub use api::*;
+pub use draft::Draft;
 pub use editor::*;
 pub use error::{Error, ErrorKind};
 use image::{ImageDecoder, ImageReader, Limits};

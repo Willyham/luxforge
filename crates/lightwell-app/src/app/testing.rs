@@ -75,6 +75,8 @@ pub(crate) fn crop_descriptor() -> ModuleDescriptor {
             required,
             default,
             unit: None,
+            step: None,
+            precision: None,
             notes: "test".into(),
         }
     };
@@ -98,6 +100,8 @@ pub(crate) fn crop_descriptor() -> ModuleDescriptor {
             required: false,
             default: Some(json!("free")),
             unit: None,
+            step: None,
+            precision: None,
             notes: "test".into(),
         },
         number("aspect-width", 1.0, 10000.0, false, None),
@@ -121,6 +125,7 @@ pub(crate) fn crop_descriptor() -> ModuleDescriptor {
                 title: "Crop".into(),
                 notes: "test".into(),
                 summary: Some("Crop {angle}°".into()),
+                patch: false,
                 parameters: crop,
             },
             ActionDescriptor {
@@ -128,6 +133,7 @@ pub(crate) fn crop_descriptor() -> ModuleDescriptor {
                 title: "Fit crop".into(),
                 notes: "test".into(),
                 summary: Some("Crop {aspect}".into()),
+                patch: false,
                 parameters: fit,
             },
             ActionDescriptor {
@@ -135,6 +141,7 @@ pub(crate) fn crop_descriptor() -> ModuleDescriptor {
                 title: "Reset crop".into(),
                 notes: "test".into(),
                 summary: None,
+                patch: false,
                 parameters: Vec::new(),
             },
         ],
@@ -232,8 +239,10 @@ pub(crate) fn refresh_for(
                 fingerprint: "f".into(),
                 orientation: 1,
             },
+            recipe: current.snapshot.recipe.clone(),
             entry: current.clone(),
             layer_count: None,
+            draft_revision: None,
         },
         session: ClientSession::default(),
         sequence: 7,

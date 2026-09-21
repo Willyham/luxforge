@@ -101,12 +101,20 @@ impl PreviewSession {
 #[derive(Clone, Debug)]
 pub struct PreviewJob {
     pub source: SourceImage,
+    /// The entry this preview shows. Its identity and snapshot correlate the frame with history;
+    /// what is rendered is [`PreviewJob::recipe`], which differs from the entry's own stack while a
+    /// draft is open.
     pub entry: HistoryEntry,
     /// The providers the worker evaluates this stack with; shared, never rebuilt per job.
     pub registry: Arc<ModuleRegistry>,
-    /// `Some(n)` renders only the entry's first `n` layers, which is how the desktop shows the
-    /// input stage of the layer it is drafting. `None` renders the whole stack.
+    /// The stack to render: the entry's own recipe, or an open draft's effective recipe.
+    pub recipe: Recipe,
+    /// `Some(n)` renders only the first `n` layers of that recipe, which is how the desktop shows
+    /// the input stage of the layer it is drafting. `None` renders the whole stack.
     pub layer_count: Option<usize>,
+    /// The draft revision this recipe was planned from, for correlating a frame with the settings
+    /// that produced it. `None` when no draft was involved.
+    pub draft_revision: Option<u64>,
 }
 
 #[derive(Debug)]
@@ -152,22 +160,14 @@ impl PreviewQueue {
             let entry_id = job.entry.id.clone();
             // A truncated job copies the layer prefix only; the whole stack is rendered in place.
             let prefix = job.layer_count.map(|count| Recipe {
-                format: job.entry.snapshot.recipe.format,
-                layers: job
-                    .entry
-                    .snapshot
-                    .recipe
-                    .layers
-                    .iter()
-                    .take(count)
-                    .cloned()
-                    .collect(),
+                format: job.recipe.format,
+                layers: job.recipe.layers.iter().take(count).cloned().collect(),
             });
             let result = render(
                 &job.registry,
                 &job.source,
                 job.entry.snapshot.id.clone(),
-                prefix.as_ref().unwrap_or(&job.entry.snapshot.recipe),
+                prefix.as_ref().unwrap_or(&job.recipe),
             );
             let _ = sender.send(PreviewResult {
                 generation,
@@ -227,7 +227,9 @@ mod tests {
                 orientation: 1,
             },
             registry: Arc::new(ModuleRegistry::builtin()),
+            recipe: snapshot.recipe.clone(),
             layer_count: None,
+            draft_revision: None,
             entry: HistoryEntry {
                 id: EntryId::new(),
                 asset_id: asset,

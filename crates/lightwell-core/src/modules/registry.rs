@@ -349,6 +349,7 @@ pub(crate) mod tests {
                     title: "Test action".into(),
                     notes: "test".into(),
                     summary: None,
+                    patch: false,
                     parameters: Vec::new(),
                 }],
                 controls: Vec::new(),
@@ -393,6 +394,167 @@ pub(crate) mod tests {
         }
         fn compile(&self, _: &str, _: u32, _: &Value, _: Stage) -> Result<Processing, Error> {
             Err(Error::new(ErrorKind::Internal, "test module never renders"))
+        }
+    }
+
+    pub(crate) const PATCH_MODULE: &str = "test.patch";
+    pub(crate) const PATCH_EFFECT: &str = "test.patch.effect";
+    pub(crate) const PATCH_ACTION: &str = "set-patch";
+
+    /// A module whose one action is a field patch, the shape Basic's sliders will take: the host
+    /// hands it only the fields the caller named, it merges them over the layer it already has, and
+    /// it reports an unchanged result as a no-op. Its layer replaces one pixel, so a preview, a
+    /// sample and a rendered frame all show which fields are in effect.
+    pub(crate) struct PatchModule(ModuleDescriptor);
+
+    impl PatchModule {
+        pub(crate) fn shared() -> Arc<dyn ToolModule> {
+            let channel = |name: &str| crate::ParameterDescriptor {
+                name: name.into(),
+                kind: crate::ParameterKind::Number {
+                    min: 0.0,
+                    max: 255.0,
+                },
+                required: false,
+                default: Some(json!(0.0)),
+                unit: Some("code".into()),
+                step: Some(1.0),
+                precision: Some(0),
+                notes: format!("the {name} channel of the replaced pixel"),
+            };
+            Arc::new(Self(ModuleDescriptor {
+                id: PATCH_MODULE.into(),
+                title: "Patch".into(),
+                hint: Some("A patched pixel".into()),
+                effects: vec![EffectDescriptor {
+                    id: PATCH_EFFECT.into(),
+                    format: EFFECT_FORMAT,
+                    stage: EffectStage::Pixel,
+                }],
+                actions: vec![ActionDescriptor {
+                    id: PATCH_ACTION.into(),
+                    title: "Set patch".into(),
+                    notes: "merges the named channels into the one patch layer".into(),
+                    summary: Some("Patch {red} {green}".into()),
+                    patch: true,
+                    parameters: vec![channel("red"), channel("green")],
+                }],
+                controls: Vec::new(),
+                reset: None,
+                canvas: None,
+                developer: false,
+                availability: Availability::Available,
+            }))
+        }
+
+        /// The channels a payload holds; a missing channel is neutral.
+        pub(crate) fn channels(payload: &Value) -> [f64; 2] {
+            let channel = |name: &str| payload.get(name).and_then(Value::as_f64).unwrap_or(0.0);
+            [channel("red"), channel("green")]
+        }
+
+        fn merged(payload: &Value, fields: &Map<String, Value>) -> Value {
+            let [red, green] = Self::channels(payload);
+            let field = |name: &str, current: f64| {
+                fields.get(name).and_then(Value::as_f64).unwrap_or(current)
+            };
+            json!({"red": field("red", red), "green": field("green", green)})
+        }
+    }
+
+    impl ToolModule for PatchModule {
+        fn descriptor(&self) -> &ModuleDescriptor {
+            &self.0
+        }
+        fn parse(
+            &self,
+            action_id: &str,
+            parameters: &Map<String, Value>,
+        ) -> Result<ActionInput, Error> {
+            // Exactly the fields the host checked: a patch stores what was sent, not the merge.
+            Ok(ActionInput {
+                action_id: action_id.into(),
+                parameters: parameters.clone(),
+            })
+        }
+        fn plan(
+            &self,
+            input: &ActionInput,
+            context: &StageContext<'_>,
+        ) -> Result<ActionPlan, Error> {
+            let existing = context
+                .layers
+                .iter()
+                .find(|layer| layer.effect_id == PATCH_EFFECT);
+            let current = existing.map(|layer| layer.payload.clone());
+            let payload = Self::merged(current.as_ref().unwrap_or(&json!({})), &input.parameters);
+            match (existing, current) {
+                (Some(_), Some(current))
+                    if Self::channels(&current) == Self::channels(&payload) =>
+                {
+                    Ok(ActionPlan::NoOp)
+                }
+                (Some(layer), _) => Ok(ActionPlan::Update(Layer {
+                    payload,
+                    ..layer.clone()
+                })),
+                (None, _) if Self::channels(&payload) == [0.0, 0.0] => Ok(ActionPlan::NoOp),
+                (None, _) => Ok(ActionPlan::Commit(Layer {
+                    id: LayerId::new(),
+                    effect_id: PATCH_EFFECT.into(),
+                    effect_format: EFFECT_FORMAT,
+                    payload,
+                })),
+            }
+        }
+        /// One changed field names itself, so a slider's history row says what moved.
+        fn label(&self, input: &ActionInput) -> Option<String> {
+            match input.parameters.len() {
+                1 => input.parameters.iter().next().map(|(name, value)| {
+                    format!("Patch {name} {}", value.as_f64().unwrap_or_default())
+                }),
+                _ => None,
+            }
+        }
+        fn validate_payload(&self, _: &str, format: u32, payload: &Value) -> Result<(), Error> {
+            if format != EFFECT_FORMAT {
+                return Err(Error::new(
+                    ErrorKind::Incompatible,
+                    format!("unsupported effect format {format}"),
+                ));
+            }
+            let object = payload
+                .as_object()
+                .ok_or_else(|| validation("patch payload must be an object"))?;
+            for (name, value) in object {
+                if !["red", "green"].contains(&name.as_str())
+                    || !value
+                        .as_f64()
+                        .is_some_and(|value| (0.0..=255.0).contains(&value))
+                {
+                    return Err(validation(format!("invalid patch field {name}")));
+                }
+            }
+            Ok(())
+        }
+        fn describe_layer(&self, _: &str, _: u32, payload: &Value) -> Result<String, Error> {
+            let [red, green] = Self::channels(payload);
+            Ok(format!("Patch {red}, {green}"))
+        }
+        fn values(&self, _: &str, _: u32, payload: &Value) -> Result<Map<String, Value>, Error> {
+            let [red, green] = Self::channels(payload);
+            Ok(json!({"red": red, "green": green})
+                .as_object()
+                .expect("an object")
+                .clone())
+        }
+        fn compile(&self, _: &str, _: u32, payload: &Value, _: Stage) -> Result<Processing, Error> {
+            let [red, green] = Self::channels(payload);
+            Ok(Processing::PointReplace {
+                x: 0,
+                y: 0,
+                rgb: [red as u8, green as u8, 0],
+            })
         }
     }
 
@@ -494,6 +656,8 @@ pub(crate) mod tests {
             required: true,
             default: None,
             unit: None,
+            step: None,
+            precision: None,
             notes: "test".into(),
         };
         let mut descriptor = TestModule::new(id, effect, action, Availability::Available).0;
@@ -555,6 +719,83 @@ pub(crate) mod tests {
             ))
             .expect_err("K is now claimed too");
         assert_eq!(error.kind, ErrorKind::Validation);
+    }
+
+    /// The generic check in front of a patch action: the module is handed exactly the fields the
+    /// caller named, with no declared default filled in and no required parameter demanded, and it
+    /// merges them over the state it already holds.
+    #[test]
+    fn a_patch_action_is_checked_field_by_field_and_fills_no_defaults() {
+        let mut registry = ModuleRegistry::builtin();
+        registry
+            .register(PatchModule::shared())
+            .expect("a patch descriptor is valid");
+        let (module, action) = registry.action(PATCH_ACTION).expect("the patch action");
+        assert!(action.patch);
+        let checked = crate::check_parameters(action, &json!({"red": 12})).expect("one field");
+        assert_eq!(
+            checked,
+            json!({"red": 12}).as_object().unwrap().clone(),
+            "only the field that was sent, exactly as it was sent"
+        );
+        assert_eq!(
+            crate::check_parameters(action, &json!({}))
+                .expect("an empty patch")
+                .len(),
+            0,
+            "a patch fills no declared default"
+        );
+        for (case, sent, fragment) in [
+            (
+                "unknown field",
+                json!({"blue": 1}),
+                "unknown parameter blue",
+            ),
+            (
+                "out of range",
+                json!({"red": 300}),
+                "parameter red must be a number within 0..=255",
+            ),
+            (
+                "wrong kind",
+                json!({"red": "12"}),
+                "parameter red must be a number",
+            ),
+        ] {
+            let error = crate::check_parameters(action, &sent).expect_err(case);
+            assert_eq!(error.kind, ErrorKind::Validation, "{case}");
+            assert!(error.detail.contains(fragment), "{case}: {error}");
+        }
+        // The module merges what it was handed over what it already stores.
+        let input = ActionInput {
+            action_id: PATCH_ACTION.into(),
+            parameters: checked,
+        };
+        let parsed = module.parse(PATCH_ACTION, &input.parameters).unwrap();
+        assert_eq!(parsed.parameters, input.parameters);
+        assert_eq!(
+            module
+                .values(PATCH_EFFECT, EFFECT_FORMAT, &json!({"red": 12.0}))
+                .unwrap(),
+            json!({"red": 12.0, "green": 0.0})
+                .as_object()
+                .unwrap()
+                .clone(),
+            "a stored layer reports every parameter it represents, neutral fields included"
+        );
+        assert_eq!(
+            module.label(&parsed).as_deref(),
+            Some("Patch red 12"),
+            "one changed field labels its own entry"
+        );
+        assert_eq!(
+            module.label(&ActionInput {
+                action_id: PATCH_ACTION.into(),
+                parameters: json!({"red": 1, "green": 2}).as_object().unwrap().clone(),
+            }),
+            None,
+            "a module that has nothing to add leaves the label to the host"
+        );
     }
 
     #[test]

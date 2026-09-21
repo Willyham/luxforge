@@ -205,7 +205,7 @@ pub fn run(root: &Path, source: &Path, out: &Path, samples: usize) -> Result {
     let original = state.current_entry.id;
 
     let started = Instant::now();
-    let original_job = service.preview_job(&asset, Some(&original), None)?;
+    let original_job = service.preview_job(&asset, Some(&original), None, None)?;
     let cached_preview_job_ms = milliseconds(started);
     let started = Instant::now();
     let original_raster = render(
@@ -314,7 +314,7 @@ pub fn run(root: &Path, source: &Path, out: &Path, samples: usize) -> Result {
 
     let service = EditorService::open(&catalog)?;
     let started = Instant::now();
-    let cold_job = service.preview_job(&asset, Some(&original), None)?;
+    let cold_job = service.preview_job(&asset, Some(&original), None, None)?;
     let cold_source_and_job_ms = milliseconds(started);
     let started = Instant::now();
     let cold_raster = render(

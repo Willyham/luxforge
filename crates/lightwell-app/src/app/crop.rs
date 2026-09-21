@@ -174,7 +174,7 @@ impl Editor {
         if !reapply {
             self.mode_sync = Some(module_id);
         }
-        crop_preview_task(self.owner.clone(), asset, layer_count)
+        crop_preview_task(self.owner.clone(), self.client, asset, layer_count)
     }
 
     /// The truncated preview arrived, so the crop layer's input stage is known: open or rebase the

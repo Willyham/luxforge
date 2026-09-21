@@ -58,6 +58,8 @@ fn angle_parameter() -> ParameterDescriptor {
         required: false,
         default: Some(Value::from(0.0)),
         unit: Some("deg".into()),
+        step: None,
+        precision: None,
         notes: "straightening angle, positive turns the image clockwise on screen".into(),
     }
 }
@@ -69,6 +71,8 @@ fn rectangle_parameter(name: &str, notes: &str) -> ParameterDescriptor {
         required: true,
         default: None,
         unit: Some("box".into()),
+        step: None,
+        precision: None,
         notes: notes.into(),
     }
 }
@@ -83,6 +87,8 @@ fn aspect_side(name: &str) -> ParameterDescriptor {
         required: false,
         default: None,
         unit: None,
+        step: None,
+        precision: None,
         notes: format!(
             "the {name} of a custom ratio; required with aspect custom and rejected with any other aspect"
         ),
@@ -96,6 +102,8 @@ fn center_parameter(name: &str) -> ParameterDescriptor {
         required: false,
         default: None,
         unit: Some("box".into()),
+        step: None,
+        precision: None,
         notes: format!(
             "{name} of the fitted rectangle's center, normalized to the rotated box at angle; both center-x and center-y or neither"
         ),
@@ -131,7 +139,8 @@ impl CropModule {
                         title: "Crop".into(),
                         notes: "sets the straightening angle and the crop rectangle of the stack's one crop layer, updating it in place or appending it; a rectangle that would need an empty corner is rejected".into(),
                         summary: Some("Crop {angle}°".into()),
-                        parameters: vec![
+                        patch: false,
+parameters: vec![
                             angle_parameter(),
                             rectangle_parameter(
                                 "x",
@@ -156,7 +165,8 @@ impl CropModule {
                         title: "Fit crop to a ratio".into(),
                         notes: "commits the largest covered rectangle with the chosen ratio about the chosen center".into(),
                         summary: Some("Crop {aspect}".into()),
-                        parameters: vec![
+                        patch: false,
+parameters: vec![
                             ParameterDescriptor {
                                 name: "aspect".into(),
                                 kind: ParameterKind::Enum {
@@ -165,7 +175,8 @@ impl CropModule {
                                 required: false,
                                 default: Some(Value::from(FREE)),
                                 unit: None,
-                                notes: "free keeps the existing crop's ratio, or the input stage's without a crop; original is the input stage ratio".into(),
+                                step: None, precision: None,
+notes: "free keeps the existing crop's ratio, or the input stage's without a crop; original is the input stage ratio".into(),
                             },
                             aspect_side("aspect-width"),
                             aspect_side("aspect-height"),
@@ -179,7 +190,8 @@ impl CropModule {
                         title: "Reset crop".into(),
                         notes: "returns an existing crop layer to the neutral payload; a no-op without one".into(),
                         summary: None,
-                        parameters: Vec::new(),
+                        patch: false,
+parameters: Vec::new(),
                     },
                 ],
                 // The section's reset is the same API action the header button calls.
@@ -556,6 +568,25 @@ impl ToolModule for CropModule {
             percent(crop.width),
             percent(crop.height)
         ))
+    }
+
+    /// The frame this layer holds, named exactly as the `crop` action's parameters are, so a client
+    /// can seed its controls from the displayed entry without parsing the payload itself.
+    fn values(
+        &self,
+        effect_id: &str,
+        format: u32,
+        value: &Value,
+    ) -> Result<Map<String, Value>, Error> {
+        let crop = payload(effect_id, format, value)?;
+        crop.validate()?;
+        Ok(stored([
+            ("angle", Value::from(crop.angle)),
+            ("x", Value::from(crop.x)),
+            ("y", Value::from(crop.y)),
+            ("width", Value::from(crop.width)),
+            ("height", Value::from(crop.height)),
+        ]))
     }
 
     fn compile(

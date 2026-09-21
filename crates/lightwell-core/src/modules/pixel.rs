@@ -27,6 +27,8 @@ fn coordinate(name: &str) -> ParameterDescriptor {
         required: true,
         default: None,
         unit: Some("px".into()),
+        step: None,
+        precision: None,
         notes: format!(
             "{name} in the content stage, the source after EXIF orientation, origin top left"
         ),
@@ -61,7 +63,8 @@ impl PixelModule {
                     title: "Set pixel".into(),
                     notes: "replaces one pixel of the content stage, the source after EXIF orientation; later rotations, reflections and the crop carry the edit, and replacing a pixel with its current value is a reported no-op".into(),
                     summary: Some("Pixel {x}, {y}".into()),
-                    parameters: vec![
+                    patch: false,
+parameters: vec![
                         coordinate("x"),
                         coordinate("y"),
                         ParameterDescriptor {
@@ -70,7 +73,8 @@ impl PixelModule {
                             required: true,
                             default: None,
                             unit: None,
-                            notes: "three 8-bit sRGB channels".into(),
+                            step: None, precision: None,
+notes: "three 8-bit sRGB channels".into(),
                         },
                     ],
                 }],

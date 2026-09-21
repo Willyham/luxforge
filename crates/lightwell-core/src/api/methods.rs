@@ -3,8 +3,8 @@
 //! discovery, event emission and dispatch cannot drift apart.
 use super::{ApiRequest, ApiResponse, ClientSession, POINTER_MODE, PROTOCOL};
 use crate::{
-    ActionDescriptor, AssetId, EditorService, EntryId, Error, ErrorKind, HistorySelection,
-    ModuleRegistry, Mutation, Zoom,
+    ActionDescriptor, AssetId, Draft, DraftId, EditorService, EntryId, Error, ErrorKind,
+    HistorySelection, ModuleRegistry, Mutation, Zoom,
 };
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::{Map, Value, json};
@@ -200,11 +200,62 @@ pub(super) const METHODS: &[MethodSpec] = &[
         handler: Some(session_state),
     },
     MethodSpec {
+        name: "draft.begin",
+        mutates: false,
+        required: &["asset_id", "action"],
+        optional: &[],
+        notes: "opens this client's one draft of that action, bound to the asset's current revision; refused while a draft is open or a historical entry is previewed",
+        handler: Some(draft_begin),
+    },
+    MethodSpec {
+        name: "draft.set",
+        mutates: false,
+        required: &["draft_id", "fields"],
+        optional: &[],
+        notes: "validates the named fields against the action's parameters and merges them into the draft; an invalid field changes nothing",
+        handler: Some(draft_set),
+    },
+    MethodSpec {
+        name: "draft.read",
+        mutates: false,
+        required: &["draft_id"],
+        optional: &[],
+        notes: "the draft with conflicted recomputed against the asset's current revision",
+        handler: Some(draft_read),
+    },
+    MethodSpec {
+        name: "draft.cancel",
+        mutates: false,
+        required: &["draft_id"],
+        optional: &[],
+        notes: "ends the draft and commits nothing",
+        handler: Some(draft_cancel),
+    },
+    MethodSpec {
+        name: "draft.commit",
+        mutates: true,
+        required: &["draft_id", "mutation"],
+        optional: &[],
+        notes: "runs the draft's action with its accumulated fields and ends the draft; a conflicted draft or a mismatched expected_revision is refused and the draft is kept",
+        handler: Some(draft_commit),
+    },
+    MethodSpec {
+        name: "draft.reapply",
+        mutates: false,
+        required: &["draft_id"],
+        optional: &[],
+        notes: "rebases the draft on the asset's current revision, keeping and revalidating only the fields this client set",
+        handler: Some(draft_reapply),
+    },
+    MethodSpec {
         name: "render.sample",
         mutates: false,
         required: &["asset_id", "x", "y"],
-        optional: &[],
-        notes: "one pixel of the session's selected entry, evaluated without rasterizing",
+        optional: &[(
+            "draft_id",
+            "this client's draft to sample instead of the stored stack",
+        )],
+        notes: "one pixel of the session's selected entry, or of an open draft's effective recipe, evaluated without rasterizing",
         handler: Some(render_sample),
     },
     MethodSpec {
@@ -308,7 +359,9 @@ fn action_schema(action: &ActionDescriptor) -> Value {
     let mut required = vec![json!("asset_id"), json!("mutation")];
     let mut optional = Map::new();
     for parameter in &action.parameters {
-        if parameter.required && parameter.default.is_none() {
+        // A patch carries whichever fields the caller names, so none of them is required however
+        // the parameter is declared; its default is what a client seeds or resets the field to.
+        if !action.patch && parameter.required && parameter.default.is_none() {
             required.push(json!(parameter.name));
         } else {
             optional.insert(parameter.name.clone(), json!(parameter.notes));
@@ -316,6 +369,7 @@ fn action_schema(action: &ActionDescriptor) -> Value {
     }
     json!({
         "mutates": true,
+        "patch": action.patch,
         "required": required,
         "optional": optional,
         "notes": action.notes,
@@ -580,21 +634,21 @@ fn preview_select(
     };
     let generation = session.preview.select(selection);
     session.touch();
-    Ok(json!({"generation": generation, "session": session}))
+    Ok(json!({"generation": generation, "session": session_value(service, session)?}))
 }
 
 fn preview_return_current(
-    _: &mut EditorService,
+    service: &mut EditorService,
     session: &mut ClientSession,
     _: &Value,
 ) -> Result<Value, Error> {
     let generation = session.preview.return_current();
     session.touch();
-    Ok(json!({"generation": generation, "session": session}))
+    Ok(json!({"generation": generation, "session": session_value(service, session)?}))
 }
 
 fn view_set(
-    _: &mut EditorService,
+    service: &mut EditorService,
     session: &mut ClientSession,
     params: &Value,
 ) -> Result<Value, Error> {
@@ -616,7 +670,7 @@ fn view_set(
         )?;
     }
     session.touch();
-    value(session)
+    session_value(service, session)
 }
 
 fn recipe_describe(
@@ -685,15 +739,15 @@ fn workspace_set(
         session.workspace.thirds = thirds;
     }
     session.touch();
-    value(session)
+    session_value(service, session)
 }
 
 fn session_state(
-    _: &mut EditorService,
+    service: &mut EditorService,
     session: &mut ClientSession,
     _: &Value,
 ) -> Result<Value, Error> {
-    value(session)
+    session_value(service, session)
 }
 
 fn render_sample(
@@ -707,15 +761,212 @@ fn render_sample(
         asset_id: AssetId,
         x: u32,
         y: u32,
+        draft_id: Option<DraftId>,
     }
     let p = parse::<P>(params)?;
-    let entry_id = match &session.preview.selection {
-        HistorySelection::Current => service.state(&p.asset_id)?.current_entry.id,
-        HistorySelection::Entry(id) => id.clone(),
+    let mut sampled = match &p.draft_id {
+        // A draft's effective recipe answers the point, so a readout during a gesture matches the
+        // frame the same draft is previewing.
+        Some(draft_id) => {
+            let draft = held_draft(session, draft_id)?.clone();
+            value(service.sample_draft(&p.asset_id, &draft, p.x, p.y)?)?
+        }
+        None => {
+            let entry_id = match &session.preview.selection {
+                HistorySelection::Current => service.state(&p.asset_id)?.current_entry.id,
+                HistorySelection::Entry(id) => id.clone(),
+            };
+            value(service.sample_entry(&p.asset_id, &entry_id, p.x, p.y)?)?
+        }
     };
-    let mut sampled = value(service.sample_entry(&p.asset_id, &entry_id, p.x, p.y)?)?;
     sampled["source_detail_ready"] = json!(true);
     Ok(sampled)
+}
+
+/// The draft this client holds under that identity. Another client's draft, or one that has
+/// already ended, is simply not this session's.
+fn held_draft<'a>(session: &'a ClientSession, draft_id: &DraftId) -> Result<&'a Draft, Error> {
+    session
+        .draft
+        .as_ref()
+        .filter(|draft| &draft.draft_id == draft_id)
+        .ok_or_else(|| {
+            Error::new(
+                ErrorKind::Validation,
+                format!("unknown draft {draft_id} for this client"),
+            )
+        })
+}
+
+/// `conflicted` is derived, never notified: the asset moved under the draft. Every read, set,
+/// commit and session report recomputes it from the asset's current revision.
+fn refresh_conflict(service: &EditorService, session: &mut ClientSession) -> Result<(), Error> {
+    if let Some(draft) = &mut session.draft {
+        draft.conflicted = draft.base_revision != service.state(&draft.asset_id)?.revision;
+    }
+    Ok(())
+}
+
+/// The session as a client reads it, with its draft's conflict state recomputed first.
+fn session_value(service: &EditorService, session: &mut ClientSession) -> Result<Value, Error> {
+    refresh_conflict(service, session)?;
+    value(session)
+}
+
+/// The action a draft will run, and the parameters its fields are validated against.
+fn draft_action<'a>(
+    service: &'a EditorService,
+    action_id: &str,
+) -> Result<&'a ActionDescriptor, Error> {
+    service
+        .registry()
+        .action(action_id)
+        .map(|(_, action)| action)
+        .ok_or_else(|| Error::new(ErrorKind::Validation, format!("unknown action {action_id}")))
+}
+
+fn draft_begin(
+    service: &mut EditorService,
+    session: &mut ClientSession,
+    params: &Value,
+) -> Result<Value, Error> {
+    #[derive(Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct P {
+        asset_id: AssetId,
+        action: String,
+    }
+    let p = parse::<P>(params)?;
+    if let Some(draft) = &session.draft {
+        return Err(Error::new(
+            ErrorKind::Conflict,
+            format!(
+                "this client already holds draft {} of action {}",
+                draft.draft_id, draft.action
+            ),
+        ));
+    }
+    if !session.preview.can_edit() {
+        return Err(Error::new(
+            ErrorKind::Validation,
+            "return to current before drafting an edit",
+        ));
+    }
+    let _ = draft_action(service, &p.action)?;
+    let revision = service.state(&p.asset_id)?.revision;
+    let draft = Draft::new(&p.action, p.asset_id, revision);
+    session.draft = Some(draft);
+    session.touch();
+    value(session.draft.as_ref().expect("the draft just opened"))
+}
+
+fn draft_set(
+    service: &mut EditorService,
+    session: &mut ClientSession,
+    params: &Value,
+) -> Result<Value, Error> {
+    #[derive(Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct P {
+        draft_id: DraftId,
+        fields: Map<String, Value>,
+    }
+    let p = parse::<P>(params)?;
+    let draft = held_draft(session, &p.draft_id)?;
+    // Validate every field before merging any, so a rejected request leaves the draft as it was.
+    let action = draft_action(service, &draft.action)?;
+    draft.checked_fields(&action.parameters, &p.fields)?;
+    let draft = session.draft.as_mut().expect("the draft was just found");
+    draft.merge(p.fields);
+    session.touch();
+    draft_value(service, session)
+}
+
+fn draft_read(
+    service: &mut EditorService,
+    session: &mut ClientSession,
+    params: &Value,
+) -> Result<Value, Error> {
+    let p = parse::<DraftParams>(params)?;
+    held_draft(session, &p.draft_id)?;
+    draft_value(service, session)
+}
+
+fn draft_cancel(
+    _: &mut EditorService,
+    session: &mut ClientSession,
+    params: &Value,
+) -> Result<Value, Error> {
+    let p = parse::<DraftParams>(params)?;
+    held_draft(session, &p.draft_id)?;
+    session.draft = None;
+    session.touch();
+    Ok(json!({"cancelled": true}))
+}
+
+fn draft_commit(
+    service: &mut EditorService,
+    session: &mut ClientSession,
+    params: &Value,
+) -> Result<Value, Error> {
+    #[derive(Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct P {
+        draft_id: DraftId,
+        mutation: Mutation,
+    }
+    let p = parse::<P>(params)?;
+    refresh_conflict(service, session)?;
+    let draft = held_draft(session, &p.draft_id)?;
+    if draft.conflicted {
+        return Err(Error::new(
+            ErrorKind::Conflict,
+            "the asset changed under this draft; discard it or reapply it",
+        ));
+    }
+    if p.mutation.expected_revision != draft.base_revision {
+        return Err(Error::new(
+            ErrorKind::Conflict,
+            format!(
+                "stale revision {}; this draft is based on revision {}",
+                p.mutation.expected_revision, draft.base_revision
+            ),
+        ));
+    }
+    let asset_id = draft.asset_id.clone();
+    let action = draft.action.clone();
+    let fields = Value::Object(draft.fields.clone());
+    // A failed commit keeps the draft, so the client can correct it and try again; a no-op ends it
+    // exactly like an applied one, because the gesture is over either way.
+    let result = service.apply_action(&asset_id, p.mutation, &action, fields)?;
+    session.draft = None;
+    session.touch();
+    value(result)
+}
+
+fn draft_reapply(
+    service: &mut EditorService,
+    session: &mut ClientSession,
+    params: &Value,
+) -> Result<Value, Error> {
+    let p = parse::<DraftParams>(params)?;
+    let draft = held_draft(session, &p.draft_id)?;
+    // Only the fields this client set survive, revalidated against the action they belong to;
+    // whatever another client changed meanwhile stays in the layer the commit merges over.
+    let action = draft_action(service, &draft.action)?;
+    draft.checked_fields(&action.parameters, &draft.fields.clone())?;
+    let revision = service.state(&draft.asset_id)?.revision;
+    let draft = session.draft.as_mut().expect("the draft was just found");
+    draft.base_revision = revision;
+    draft.conflicted = false;
+    session.touch();
+    value(session.draft.as_ref().expect("the draft is still open"))
+}
+
+/// The open draft with its conflict state recomputed.
+fn draft_value(service: &EditorService, session: &mut ClientSession) -> Result<Value, Error> {
+    refresh_conflict(service, session)?;
+    value(session.draft.as_ref().expect("the draft is still open"))
 }
 
 /// Where a view point lands in the content stage. Read-only: the session's selection decides which
@@ -772,6 +1023,11 @@ struct MutationParams {
     asset_id: AssetId,
     mutation: Mutation,
 }
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct DraftParams {
+    draft_id: DraftId,
+}
 
 fn parse<T: DeserializeOwned>(value: &Value) -> Result<T, Error> {
     params(value)
@@ -791,6 +1047,7 @@ mod tests {
         ActionInput, ActionPlan, Availability, EFFECT_FORMAT, EffectDescriptor, EffectStage,
         ExactGeometry, Layer, LayerId, ModuleDescriptor, ParameterDescriptor, ParameterKind,
         Processing, Stage, StageContext, ToolModule,
+        modules::{PATCH_ACTION, PATCH_MODULE, PatchModule},
     };
     use std::{
         collections::HashSet,
@@ -1115,6 +1372,7 @@ mod tests {
                     title: "Set angle".into(),
                     notes: "test".into(),
                     summary: Some("Angle {angle}".into()),
+                    patch: false,
                     parameters: vec![ParameterDescriptor {
                         name: "angle".into(),
                         kind: ParameterKind::Number {
@@ -1124,6 +1382,8 @@ mod tests {
                         required: true,
                         default: None,
                         unit: Some("deg".into()),
+                        step: None,
+                        precision: None,
                         notes: "test".into(),
                     }],
                 }],
@@ -1207,6 +1467,7 @@ mod tests {
                     title: "Mark".into(),
                     notes: "test".into(),
                     summary: None,
+                    patch: false,
                     parameters: Vec::new(),
                 }],
                 controls: Vec::new(),
@@ -1445,6 +1706,728 @@ mod tests {
             set["workspace"],
             "an empty request keeps the state"
         );
+        drop(service);
+        std::fs::remove_file(catalog).unwrap();
+    }
+
+    /// A service serving the built-ins plus the test patch module, with one asset imported. The
+    /// patch module is the shape a field-patch tool takes: one layer, merged field by field.
+    fn patched(name: &str) -> (EditorService, PathBuf, Value) {
+        let catalog = std::env::temp_dir().join(format!(
+            "lightwell-methods-{name}-{}.sqlite",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_file(&catalog);
+        let mut registry = ModuleRegistry::builtin();
+        registry.register(PatchModule::shared()).unwrap();
+        let mut service = EditorService::open_with(&catalog, Arc::new(registry)).unwrap();
+        let asset = json!(service.import(&fixture()).unwrap().asset.id);
+        (service, catalog, asset)
+    }
+
+    fn mutation(revision: u64, request: &str) -> Value {
+        json!({"expected_revision": revision, "request_id": request, "actor": "test"})
+    }
+
+    fn patch_method() -> String {
+        format!("edit.{PATCH_ACTION}")
+    }
+
+    /// The entry a mutation result points at.
+    fn entry_of(
+        service: &mut EditorService,
+        session: &mut ClientSession,
+        asset: &Value,
+        result: &Value,
+    ) -> Value {
+        ok(
+            service,
+            session,
+            "history.inspect",
+            json!({"asset_id": asset, "entry_id": result["current_entry_id"]}),
+        )
+    }
+
+    fn described(service: &mut EditorService, session: &mut ClientSession, asset: &Value) -> Value {
+        ok(
+            service,
+            session,
+            "recipe.describe",
+            json!({"asset_id": asset}),
+        )
+    }
+
+    #[test]
+    fn a_patch_action_merges_the_fields_it_was_sent_and_reports_them_on_the_recipe_row() {
+        let (mut service, catalog, asset) = patched("patch");
+        let mut session = ClientSession::default();
+        // Discovery says it is a patch: no parameter is required, and both carry decimal hints.
+        let schema = schemas(service.registry());
+        let listed = &schema["methods"][patch_method()];
+        assert_eq!(listed["patch"], json!(true));
+        assert_eq!(listed["required"], json!(["asset_id", "mutation"]));
+        assert_eq!(
+            listed["optional"]
+                .as_object()
+                .expect("the patch fields")
+                .keys()
+                .collect::<Vec<_>>(),
+            ["green", "red"]
+        );
+        assert_eq!(listed["parameters"][0]["step"], json!(1.0));
+        assert_eq!(listed["parameters"][0]["precision"], json!(0));
+        assert_eq!(
+            schema["methods"]["edit.crop"]["patch"],
+            json!(false),
+            "an ordinary action is not a patch and keeps its required fields"
+        );
+        assert_eq!(
+            schema["methods"]["edit.crop"]["required"],
+            json!(["asset_id", "mutation", "x", "y", "width", "height"])
+        );
+
+        let patch = |service: &mut EditorService,
+                     session: &mut ClientSession,
+                     revision: u64,
+                     request: &str,
+                     fields: Value| {
+            let mut params = fields;
+            params["asset_id"] = asset.clone();
+            params["mutation"] = mutation(revision, request);
+            ok(service, session, &patch_method(), params)
+        };
+
+        // One field commits the module's one layer and the module labels the entry.
+        let first = patch(&mut service, &mut session, 0, "red", json!({"red": 12.0}));
+        assert_eq!(first["outcome"], json!("applied"));
+        let entry = entry_of(&mut service, &mut session, &asset, &first);
+        assert_eq!(entry["label"], json!("Patch red 12"));
+        assert_eq!(
+            entry["parameters"],
+            json!({"red": 12.0}),
+            "the entry stores the patch as sent, not the merged payload"
+        );
+        let rows = described(&mut service, &mut session, &asset);
+        let layer_id = rows["layers"][0]["id"].clone();
+        assert_eq!(rows["layers"].as_array().unwrap().len(), 1);
+        assert_eq!(rows["layers"][0]["module"], json!(PATCH_MODULE));
+        assert_eq!(
+            rows["layers"][0]["values"],
+            json!({"red": 12.0, "green": 0.0})
+        );
+
+        // A second field merges into the same layer, which keeps its identity and position.
+        let second = patch(
+            &mut service,
+            &mut session,
+            1,
+            "green",
+            json!({"green": 30.0}),
+        );
+        assert_eq!(second["outcome"], json!("applied"));
+        assert_eq!(
+            entry_of(&mut service, &mut session, &asset, &second)["label"],
+            json!("Patch green 30")
+        );
+        let rows = described(&mut service, &mut session, &asset);
+        assert_eq!(rows["layers"].as_array().unwrap().len(), 1);
+        assert_eq!(rows["layers"][0]["id"], layer_id);
+        assert_eq!(
+            rows["layers"][0]["values"],
+            json!({"red": 12.0, "green": 30.0})
+        );
+
+        // The same value again changes nothing, so no entry is written.
+        let again = patch(
+            &mut service,
+            &mut session,
+            2,
+            "again",
+            json!({"green": 30.0}),
+        );
+        assert_eq!(again["outcome"], json!("no-op"));
+        assert_eq!(again["revision"], json!(2));
+        assert_eq!(again["created_entry_id"], json!(null));
+
+        // A patch the module has nothing to say about falls back to the summary template.
+        let both = patch(
+            &mut service,
+            &mut session,
+            2,
+            "both",
+            json!({"red": 1.0, "green": 2.0}),
+        );
+        assert_eq!(
+            entry_of(&mut service, &mut session, &asset, &both)["label"],
+            json!("Patch 1 2")
+        );
+
+        // The crop module reports its frame the same way, so a client seeds its controls from the
+        // displayed entry instead of parsing payloads itself.
+        ok(
+            &mut service,
+            &mut session,
+            "edit.crop",
+            json!({"asset_id": asset, "mutation": mutation(3, "crop"), "x": 0.0, "y": 0.0, "width": 0.5, "height": 0.5}),
+        );
+        let rows = described(&mut service, &mut session, &asset);
+        let crop = rows["layers"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|layer| layer["module"] == json!("lightwell.crop"))
+            .expect("the crop layer")
+            .clone();
+        assert_eq!(
+            crop["values"],
+            json!({"angle": 0.0, "x": 0.0, "y": 0.0, "width": 0.5, "height": 0.5})
+        );
+        assert_eq!(
+            rows["layers"][0]["values"],
+            json!({"red": 1.0, "green": 2.0}),
+            "the patch layer stays before the geometry tail with its own values"
+        );
+        drop(service);
+        std::fs::remove_file(catalog).unwrap();
+    }
+
+    #[test]
+    fn a_draft_begins_sets_reads_and_commits_one_entry() {
+        let (mut service, catalog, asset) = patched("draft");
+        let mut session = ClientSession::default();
+        let begun = ok(
+            &mut service,
+            &mut session,
+            "draft.begin",
+            json!({"asset_id": asset, "action": PATCH_ACTION}),
+        );
+        let draft_id = begun["draft_id"].clone();
+        assert!(
+            draft_id.as_str().expect("a draft id").starts_with("draft-"),
+            "{draft_id}"
+        );
+        assert_eq!(begun["action"], json!(PATCH_ACTION));
+        assert_eq!(begun["asset_id"], asset);
+        assert_eq!(begun["base_revision"], json!(0));
+        assert_eq!(begun["draft_revision"], json!(0));
+        assert_eq!(begun["fields"], json!({}));
+        assert_eq!(begun["conflicted"], json!(false));
+        assert_eq!(
+            ok(&mut service, &mut session, "session.state", json!({}))["draft"],
+            begun,
+            "the session reports the open draft"
+        );
+
+        // Every set validates and merges; the draft revision counts the steps of the gesture.
+        let set = ok(
+            &mut service,
+            &mut session,
+            "draft.set",
+            json!({"draft_id": draft_id, "fields": {"red": 10.0}}),
+        );
+        assert_eq!(set["fields"], json!({"red": 10.0}));
+        assert_eq!(set["draft_revision"], json!(1));
+        let set = ok(
+            &mut service,
+            &mut session,
+            "draft.set",
+            json!({"draft_id": draft_id, "fields": {"red": 20.0}}),
+        );
+        assert_eq!(set["fields"], json!({"red": 20.0}));
+        assert_eq!(set["draft_revision"], json!(2));
+        assert_eq!(
+            ok(
+                &mut service,
+                &mut session,
+                "draft.read",
+                json!({"draft_id": draft_id})
+            ),
+            set
+        );
+
+        // Nothing is committed while the draft is open.
+        assert_eq!(
+            ok(
+                &mut service,
+                &mut session,
+                "asset.state",
+                json!({"asset_id": asset})
+            )["revision"],
+            json!(0)
+        );
+        assert_eq!(
+            described(&mut service, &mut session, &asset)["layers"],
+            json!([])
+        );
+
+        // A sample of the draft shows what committing would produce; the stored stack does not.
+        let drafted = ok(
+            &mut service,
+            &mut session,
+            "render.sample",
+            json!({"asset_id": asset, "x": 0, "y": 0, "draft_id": draft_id}),
+        );
+        assert_eq!(drafted["rgba"], json!([20, 0, 0, 255]));
+        assert_eq!(
+            drafted["draft"],
+            json!({"draft_id": draft_id, "draft_revision": 2})
+        );
+        let stored = ok(
+            &mut service,
+            &mut session,
+            "render.sample",
+            json!({"asset_id": asset, "x": 0, "y": 0}),
+        );
+        assert_ne!(stored["rgba"], drafted["rgba"]);
+        assert_eq!(stored["draft"], json!(null));
+
+        let committed = ok(
+            &mut service,
+            &mut session,
+            "draft.commit",
+            json!({"draft_id": draft_id, "mutation": mutation(0, "gesture")}),
+        );
+        assert_eq!(committed["outcome"], json!("applied"));
+        assert_eq!(committed["revision"], json!(1));
+        assert_eq!(
+            entry_of(&mut service, &mut session, &asset, &committed)["label"],
+            json!("Patch red 20")
+        );
+        assert_eq!(
+            ok(&mut service, &mut session, "session.state", json!({}))["draft"],
+            json!(null),
+            "committing ends the draft"
+        );
+        assert_eq!(
+            ok(
+                &mut service,
+                &mut session,
+                "render.sample",
+                json!({"asset_id": asset, "x": 0, "y": 0})
+            )["rgba"],
+            drafted["rgba"],
+            "the committed stack now produces what the draft previewed"
+        );
+        let error = call(
+            &mut service,
+            &mut session,
+            "draft.read",
+            json!({"draft_id": draft_id}),
+        )
+        .error
+        .expect("the draft has ended");
+        assert_eq!(error.code, "validation");
+        assert!(error.message.contains("unknown draft"), "{}", error.message);
+        drop(service);
+        std::fs::remove_file(catalog).unwrap();
+    }
+
+    #[test]
+    fn a_draft_is_refused_while_one_is_open_or_a_historical_entry_is_previewed() {
+        let (mut service, catalog, asset) = patched("draft-refused");
+        let mut session = ClientSession::default();
+        let original = ok(
+            &mut service,
+            &mut session,
+            "asset.state",
+            json!({"asset_id": asset}),
+        )["current_entry"]["id"]
+            .clone();
+        let unknown = call(
+            &mut service,
+            &mut session,
+            "draft.begin",
+            json!({"asset_id": asset, "action": "set-nothing"}),
+        )
+        .error
+        .expect("an unknown action cannot be drafted");
+        assert_eq!(unknown.code, "validation");
+        assert!(unknown.message.contains("unknown action set-nothing"));
+
+        let begun = ok(
+            &mut service,
+            &mut session,
+            "draft.begin",
+            json!({"asset_id": asset, "action": PATCH_ACTION}),
+        );
+        let draft_id = begun["draft_id"].clone();
+        let second = call(
+            &mut service,
+            &mut session,
+            "draft.begin",
+            json!({"asset_id": asset, "action": PATCH_ACTION}),
+        )
+        .error
+        .expect("one draft per client");
+        assert_eq!(second.code, "conflict");
+        assert!(
+            second.message.contains("already holds draft"),
+            "{}",
+            second.message
+        );
+        assert_eq!(
+            ok(
+                &mut service,
+                &mut session,
+                "draft.cancel",
+                json!({"draft_id": draft_id})
+            ),
+            json!({"cancelled": true})
+        );
+        assert_eq!(
+            ok(&mut service, &mut session, "session.state", json!({}))["draft"],
+            json!(null),
+            "cancelling ends the draft and commits nothing"
+        );
+        assert_eq!(
+            ok(
+                &mut service,
+                &mut session,
+                "asset.state",
+                json!({"asset_id": asset})
+            )["revision"],
+            json!(0)
+        );
+        assert_eq!(
+            call(
+                &mut service,
+                &mut session,
+                "draft.cancel",
+                json!({"draft_id": draft_id})
+            )
+            .error
+            .expect("the draft is gone")
+            .code,
+            "validation"
+        );
+
+        // A historical preview is read-only, so no gesture may start there.
+        ok(
+            &mut service,
+            &mut session,
+            &patch_method(),
+            json!({"asset_id": asset, "mutation": mutation(0, "one"), "red": 5.0}),
+        );
+        ok(
+            &mut service,
+            &mut session,
+            "preview.select",
+            json!({"asset_id": asset, "entry_id": original}),
+        );
+        let previewing = call(
+            &mut service,
+            &mut session,
+            "draft.begin",
+            json!({"asset_id": asset, "action": PATCH_ACTION}),
+        )
+        .error
+        .expect("a historical preview cannot be edited");
+        assert_eq!(previewing.code, "validation");
+        assert!(
+            previewing.message.contains("return to current"),
+            "{}",
+            previewing.message
+        );
+        ok(
+            &mut service,
+            &mut session,
+            "preview.return-current",
+            json!({}),
+        );
+        assert!(
+            ok(
+                &mut service,
+                &mut session,
+                "draft.begin",
+                json!({"asset_id": asset, "action": PATCH_ACTION})
+            )["draft_id"]
+                .is_string(),
+            "returning to current allows the gesture again"
+        );
+        drop(service);
+        std::fs::remove_file(catalog).unwrap();
+    }
+
+    #[test]
+    fn an_invalid_field_leaves_the_draft_exactly_as_it_was() {
+        let (mut service, catalog, asset) = patched("draft-invalid");
+        let mut session = ClientSession::default();
+        let draft_id = ok(
+            &mut service,
+            &mut session,
+            "draft.begin",
+            json!({"asset_id": asset, "action": PATCH_ACTION}),
+        )["draft_id"]
+            .clone();
+        let good = ok(
+            &mut service,
+            &mut session,
+            "draft.set",
+            json!({"draft_id": draft_id, "fields": {"red": 10.0}}),
+        );
+        for (case, fields, fragment) in [
+            (
+                "unknown field",
+                json!({"blue": 1.0}),
+                "unknown parameter blue",
+            ),
+            (
+                "out of range",
+                json!({"red": 300.0}),
+                "parameter red must be a number within 0..=255",
+            ),
+            (
+                "not finite",
+                json!({"red": f64::NAN}),
+                "parameter red must be a number",
+            ),
+            (
+                "wrong kind",
+                json!({"red": "10"}),
+                "parameter red must be a number",
+            ),
+            (
+                // One bad field rejects the whole request: a draft never half-applies a set.
+                "a good field beside a bad one",
+                json!({"green": 5.0, "blue": 1.0}),
+                "unknown parameter blue",
+            ),
+        ] {
+            let error = call(
+                &mut service,
+                &mut session,
+                "draft.set",
+                json!({"draft_id": draft_id, "fields": fields}),
+            )
+            .error
+            .unwrap_or_else(|| panic!("{case} must be refused"));
+            assert_eq!(error.code, "validation", "{case}");
+            assert!(
+                error.message.contains(fragment),
+                "{case}: {}",
+                error.message
+            );
+            assert_eq!(
+                ok(
+                    &mut service,
+                    &mut session,
+                    "draft.read",
+                    json!({"draft_id": draft_id})
+                ),
+                good,
+                "{case} changed the draft"
+            );
+        }
+        drop(service);
+        std::fs::remove_file(catalog).unwrap();
+    }
+
+    #[test]
+    fn a_gesture_that_returns_to_its_start_commits_nothing_and_ends_the_draft() {
+        let (mut service, catalog, asset) = patched("draft-noop");
+        let mut session = ClientSession::default();
+        ok(
+            &mut service,
+            &mut session,
+            &patch_method(),
+            json!({"asset_id": asset, "mutation": mutation(0, "start"), "red": 10.0}),
+        );
+        let entries = |service: &mut EditorService, session: &mut ClientSession| -> usize {
+            ok(service, session, "history.list", json!({"asset_id": asset}))["entries"]
+                .as_array()
+                .expect("the history page")
+                .len()
+        };
+        let before = entries(&mut service, &mut session);
+        let draft_id = ok(
+            &mut service,
+            &mut session,
+            "draft.begin",
+            json!({"asset_id": asset, "action": PATCH_ACTION}),
+        )["draft_id"]
+            .clone();
+        for value in [30.0, 10.0] {
+            ok(
+                &mut service,
+                &mut session,
+                "draft.set",
+                json!({"draft_id": draft_id, "fields": {"red": value}}),
+            );
+        }
+        let committed = ok(
+            &mut service,
+            &mut session,
+            "draft.commit",
+            json!({"draft_id": draft_id, "mutation": mutation(1, "return")}),
+        );
+        assert_eq!(committed["outcome"], json!("no-op"));
+        assert_eq!(committed["revision"], json!(1));
+        assert_eq!(committed["created_entry_id"], json!(null));
+        assert_eq!(entries(&mut service, &mut session), before, "no new entry");
+        assert_eq!(
+            ok(&mut service, &mut session, "session.state", json!({}))["draft"],
+            json!(null),
+            "a no-op ends the gesture like any other commit"
+        );
+        drop(service);
+        std::fs::remove_file(catalog).unwrap();
+    }
+
+    #[test]
+    fn an_external_commit_conflicts_a_draft_and_reapply_keeps_only_this_clients_fields() {
+        let (mut service, catalog, asset) = patched("draft-conflict");
+        let mut editor = ClientSession::default();
+        let mut agent = ClientSession::default();
+        let draft_id = ok(
+            &mut service,
+            &mut editor,
+            "draft.begin",
+            json!({"asset_id": asset, "action": PATCH_ACTION}),
+        )["draft_id"]
+            .clone();
+        ok(
+            &mut service,
+            &mut editor,
+            "draft.set",
+            json!({"draft_id": draft_id, "fields": {"red": 40.0}}),
+        );
+        // Another client changes a field this gesture never touched.
+        ok(
+            &mut service,
+            &mut agent,
+            &patch_method(),
+            json!({"asset_id": asset, "mutation": mutation(0, "agent"), "green": 60.0}),
+        );
+        assert!(
+            agent.draft.is_none() && editor.draft.is_some(),
+            "two clients' drafts never interact"
+        );
+
+        let read = ok(
+            &mut service,
+            &mut editor,
+            "draft.read",
+            json!({"draft_id": draft_id}),
+        );
+        assert_eq!(read["conflicted"], json!(true));
+        assert_eq!(read["base_revision"], json!(0));
+        assert_eq!(
+            ok(&mut service, &mut editor, "session.state", json!({}))["draft"]["conflicted"],
+            json!(true),
+            "the session reports the conflict without any notification path"
+        );
+        let refused = call(
+            &mut service,
+            &mut editor,
+            "draft.commit",
+            json!({"draft_id": draft_id, "mutation": mutation(0, "editor")}),
+        )
+        .error
+        .expect("a conflicted draft cannot commit");
+        assert_eq!(refused.code, "conflict");
+        assert_eq!(
+            ok(
+                &mut service,
+                &mut editor,
+                "draft.read",
+                json!({"draft_id": draft_id})
+            )["fields"],
+            json!({"red": 40.0}),
+            "the refused draft is kept with its settings"
+        );
+
+        let reapplied = ok(
+            &mut service,
+            &mut editor,
+            "draft.reapply",
+            json!({"draft_id": draft_id}),
+        );
+        assert_eq!(reapplied["conflicted"], json!(false));
+        assert_eq!(reapplied["base_revision"], json!(1));
+        assert_eq!(
+            reapplied["fields"],
+            json!({"red": 40.0}),
+            "reapply keeps only the fields this client set"
+        );
+        let committed = ok(
+            &mut service,
+            &mut editor,
+            "draft.commit",
+            json!({"draft_id": draft_id, "mutation": mutation(1, "editor")}),
+        );
+        assert_eq!(committed["outcome"], json!("applied"));
+        assert_eq!(
+            described(&mut service, &mut editor, &asset)["layers"][0]["values"],
+            json!({"red": 40.0, "green": 60.0}),
+            "the other client's field survives this client's commit"
+        );
+        drop(service);
+        std::fs::remove_file(catalog).unwrap();
+    }
+
+    #[test]
+    fn a_draft_commit_checks_the_expected_revision_and_a_retried_request_is_deduplicated() {
+        let (mut service, catalog, asset) = patched("draft-revision");
+        let mut session = ClientSession::default();
+        let draft_id = ok(
+            &mut service,
+            &mut session,
+            "draft.begin",
+            json!({"asset_id": asset, "action": PATCH_ACTION}),
+        )["draft_id"]
+            .clone();
+        ok(
+            &mut service,
+            &mut session,
+            "draft.set",
+            json!({"draft_id": draft_id, "fields": {"red": 10.0}}),
+        );
+        let stale = call(
+            &mut service,
+            &mut session,
+            "draft.commit",
+            json!({"draft_id": draft_id, "mutation": mutation(1, "stale")}),
+        )
+        .error
+        .expect("the envelope must name the revision the draft was based on");
+        assert_eq!(stale.code, "conflict");
+        assert!(
+            stale.message.contains("based on revision 0"),
+            "{}",
+            stale.message
+        );
+        assert!(
+            session.draft.is_some(),
+            "a refused commit keeps the gesture alive"
+        );
+        let committed = ok(
+            &mut service,
+            &mut session,
+            "draft.commit",
+            json!({"draft_id": draft_id, "mutation": mutation(0, "gesture")}),
+        );
+        assert_eq!(committed["outcome"], json!("applied"));
+
+        // The commit is an ordinary action underneath, so retrying the identical request returns
+        // the original result and writes no second entry.
+        let retried = ok(
+            &mut service,
+            &mut session,
+            &patch_method(),
+            json!({"asset_id": asset, "mutation": mutation(0, "gesture"), "red": 10.0}),
+        );
+        assert_eq!(retried["deduplicated"], json!(true));
+        assert_eq!(retried["current_entry_id"], committed["current_entry_id"]);
+        assert_eq!(retried["revision"], committed["revision"]);
+        let reused = call(
+            &mut service,
+            &mut session,
+            &patch_method(),
+            json!({"asset_id": asset, "mutation": mutation(0, "gesture"), "red": 11.0}),
+        )
+        .error
+        .expect("the same request id with different input is a conflict");
+        assert_eq!(reused.code, "conflict");
         drop(service);
         std::fs::remove_file(catalog).unwrap();
     }

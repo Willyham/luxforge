@@ -89,6 +89,14 @@ pub struct ParameterDescriptor {
     pub required: bool,
     pub default: Option<Value>,
     pub unit: Option<String>,
+    /// The keyboard and slider increment of a `number` parameter. A client hint: the host validates
+    /// that it is finite and positive and stores it, and never rounds a request to it.
+    #[serde(default)]
+    pub step: Option<f64>,
+    /// How many decimals a client shows for a `number` parameter, at most six. A display hint: the
+    /// stored value keeps every digit it was sent with.
+    #[serde(default)]
+    pub precision: Option<u8>,
     pub notes: String,
 }
 
@@ -112,6 +120,11 @@ pub struct ActionDescriptor {
     /// Every `{name}` names a declared parameter; without a template the label is the title.
     #[serde(default)]
     pub summary: Option<String>,
+    /// A field patch: the generic check validates the fields the caller sent and fills no declared
+    /// defaults, so the module receives exactly those fields and merges them over its own stored
+    /// state. Every parameter of a patch action is optional, whatever it declares.
+    #[serde(default)]
+    pub patch: bool,
     pub parameters: Vec<ParameterDescriptor>,
 }
 
@@ -317,6 +330,7 @@ impl ModuleDescriptor {
                     }
                     _ => {}
                 }
+                check_hints(parameter)?;
                 if let Some(default) = &parameter.default {
                     check_value(parameter, default)?;
                 }
@@ -504,6 +518,38 @@ impl ModuleDescriptor {
     }
 }
 
+/// The largest number of decimals a client is asked to display. Beyond this a slider's text is
+/// noise rather than information, so a descriptor declaring more is rejected at registration.
+const MAX_PRECISION: u8 = 6;
+
+/// A step and a display precision describe a decimal control, so only a `number` parameter may
+/// declare them, a step is finite and positive, and a precision is at most [`MAX_PRECISION`].
+fn check_hints(parameter: &ParameterDescriptor) -> Result<(), Error> {
+    let name = &parameter.name;
+    if !matches!(parameter.kind, ParameterKind::Number { .. })
+        && (parameter.step.is_some() || parameter.precision.is_some())
+    {
+        return Err(validation(format!(
+            "parameter {name} declares a step or precision but is not a number"
+        )));
+    }
+    if let Some(step) = parameter.step
+        && (!step.is_finite() || step <= 0.0)
+    {
+        return Err(validation(format!(
+            "parameter {name} declares a step that is not finite and positive"
+        )));
+    }
+    if let Some(precision) = parameter.precision
+        && precision > MAX_PRECISION
+    {
+        return Err(validation(format!(
+            "parameter {name} declares a precision above {MAX_PRECISION}"
+        )));
+    }
+    Ok(())
+}
+
 /// Every `{name}` in a summary template names a parameter of its own action, and the braces are
 /// balanced, so rendering one at commit cannot silently produce a wrong label.
 fn check_summary(action: &ActionDescriptor) -> Result<(), Error> {
@@ -607,7 +653,9 @@ fn title_case(text: &str) -> String {
     }
 }
 
-fn check_value(parameter: &ParameterDescriptor, value: &Value) -> Result<(), Error> {
+/// One value against one declared parameter: the check every caller of an action gets, exposed so
+/// a draft can validate a single field without assembling a whole request.
+pub fn check_value(parameter: &ParameterDescriptor, value: &Value) -> Result<(), Error> {
     let name = &parameter.name;
     match &parameter.kind {
         ParameterKind::Integer { min, max } => {
@@ -663,6 +711,10 @@ fn check_value(parameter: &ParameterDescriptor, value: &Value) -> Result<(), Err
 
 /// Apply declared defaults and reject anything an action did not declare, so every caller of an
 /// action gets the same structured validation error before the module sees the request.
+///
+/// A patch action is checked differently: the fields the caller sent are validated and returned as
+/// sent, no declared default is applied and no required parameter is demanded, so the module
+/// receives exactly the named fields and merges them over the state it already holds.
 pub fn check_parameters(
     action: &ActionDescriptor,
     input: &Value,
@@ -687,6 +739,16 @@ pub fn check_parameters(
         }
     }
     let mut checked = Map::new();
+    if action.patch {
+        for (name, value) in object {
+            let parameter = action
+                .parameter(name)
+                .expect("every key was matched to a declared parameter above");
+            check_value(parameter, value)?;
+            checked.insert(name.clone(), value.clone());
+        }
+        return Ok(checked);
+    }
     for parameter in &action.parameters {
         match (object.get(&parameter.name), &parameter.default) {
             (Some(value), _) => {
@@ -720,6 +782,8 @@ mod tests {
             required: true,
             default: None,
             unit: Some("px".into()),
+            step: None,
+            precision: None,
             notes: "test".into(),
         }
     }
@@ -731,7 +795,32 @@ mod tests {
             required: true,
             default: None,
             unit: None,
+            step: None,
+            precision: None,
             notes: "test".into(),
+        }
+    }
+
+    /// A descriptor whose one parameter carries these decimal hints and no controls, so only the
+    /// hint rule under test can fail.
+    fn with_hints(
+        step: Option<f64>,
+        precision: Option<u8>,
+        parameter: ParameterDescriptor,
+    ) -> ModuleDescriptor {
+        ModuleDescriptor {
+            actions: vec![ActionDescriptor {
+                summary: None,
+                parameters: vec![ParameterDescriptor {
+                    step,
+                    precision,
+                    ..parameter
+                }],
+                ..action()
+            }],
+            controls: Vec::new(),
+            reset: None,
+            ..descriptor()
         }
     }
 
@@ -744,6 +833,8 @@ mod tests {
             required: true,
             default: None,
             unit: None,
+            step: None,
+            precision: None,
             notes: "test".into(),
         }
     }
@@ -773,6 +864,7 @@ mod tests {
                     title: "Set frame".into(),
                     notes: "test".into(),
                     summary: None,
+                    patch: false,
                     parameters: vec![
                         number("angle", -45.0, 45.0),
                         number("x", 0.0, 1.0),
@@ -786,6 +878,7 @@ mod tests {
                     title: "Fit frame".into(),
                     notes: "test".into(),
                     summary: None,
+                    patch: false,
                     parameters: vec![enumerated("aspect"), number("angle", -45.0, 45.0)],
                 },
             ],
@@ -820,6 +913,7 @@ mod tests {
             title: "Set thing".into(),
             notes: "test".into(),
             summary: Some("Thing {x} {mode}".into()),
+            patch: false,
             parameters: vec![
                 integer("x"),
                 ParameterDescriptor {
@@ -828,6 +922,8 @@ mod tests {
                     required: true,
                     default: None,
                     unit: None,
+                    step: None,
+                    precision: None,
                     notes: "test".into(),
                 },
                 ParameterDescriptor {
@@ -838,6 +934,8 @@ mod tests {
                     required: false,
                     default: Some(json!("exact")),
                     unit: None,
+                    step: None,
+                    precision: None,
                     notes: "test".into(),
                 },
             ],
@@ -1015,6 +1113,8 @@ mod tests {
                             required: true,
                             default: None,
                             unit: None,
+                            step: None,
+                            precision: None,
                             notes: "test".into(),
                         }],
                         ..action()
@@ -1335,6 +1435,34 @@ mod tests {
                     ..descriptor()
                 },
             ),
+            (
+                "a step that is zero",
+                with_hints(Some(0.0), None, number("angle", -45.0, 45.0)),
+            ),
+            (
+                "a negative step",
+                with_hints(Some(-0.5), None, number("angle", -45.0, 45.0)),
+            ),
+            (
+                "a step that is not finite",
+                with_hints(Some(f64::NAN), None, number("angle", -45.0, 45.0)),
+            ),
+            (
+                "an infinite step",
+                with_hints(Some(f64::INFINITY), None, number("angle", -45.0, 45.0)),
+            ),
+            (
+                "a precision above six",
+                with_hints(None, Some(7), number("angle", -45.0, 45.0)),
+            ),
+            (
+                "a step on an integer parameter",
+                with_hints(Some(1.0), None, integer("x")),
+            ),
+            (
+                "a precision on an enum parameter",
+                with_hints(None, Some(2), enumerated("mode")),
+            ),
         ];
         for (case, descriptor) in cases {
             let error = descriptor
@@ -1512,9 +1640,52 @@ mod tests {
                 "required": true,
                 "default": null,
                 "unit": null,
+                "step": null,
+                "precision": null,
                 "notes": "test",
             })
         );
+        // The decimal hints a slider needs travel with the parameter and survive a round trip.
+        let exposure = ParameterDescriptor {
+            step: Some(0.01),
+            precision: Some(2),
+            unit: Some("EV".into()),
+            ..number("exposure", -5.0, 5.0)
+        };
+        assert_eq!(
+            serde_json::to_value(&exposure).unwrap(),
+            json!({
+                "name": "exposure",
+                "kind": "number",
+                "min": -5.0,
+                "max": 5.0,
+                "required": true,
+                "default": null,
+                "unit": "EV",
+                "step": 0.01,
+                "precision": 2,
+                "notes": "test",
+            })
+        );
+        assert_eq!(
+            serde_json::from_value::<ParameterDescriptor>(serde_json::to_value(&exposure).unwrap())
+                .unwrap(),
+            exposure
+        );
+        // A descriptor written before the hints existed still reads, with neither hint declared.
+        let without = serde_json::from_value::<ParameterDescriptor>(json!({
+            "name": "exposure",
+            "kind": "number",
+            "min": -5.0,
+            "max": 5.0,
+            "required": true,
+            "default": null,
+            "unit": null,
+            "notes": "test",
+        }))
+        .expect("the hints are optional");
+        assert_eq!(without.step, None);
+        assert_eq!(without.precision, None);
         let canvas = serde_json::to_value(frame_canvas("set-frame", "fit-frame")).unwrap();
         assert_eq!(
             canvas,
@@ -1603,6 +1774,95 @@ mod tests {
             assert_eq!(error.kind, ErrorKind::Validation, "{case}");
             assert!(error.detail.contains(fragment), "{case}: {error}");
         }
+    }
+
+    /// A patch action is validated field by field: what the caller named is checked and returned,
+    /// nothing declared is filled in, and an action that is not a patch keeps its old behaviour.
+    #[test]
+    fn a_patch_action_validates_the_sent_fields_and_fills_no_defaults() {
+        let parameter = |name: &str| ParameterDescriptor {
+            required: false,
+            default: Some(json!(0.0)),
+            step: Some(0.01),
+            precision: Some(2),
+            ..number(name, -5.0, 5.0)
+        };
+        let patch = ActionDescriptor {
+            summary: None,
+            patch: true,
+            parameters: vec![
+                parameter("exposure"),
+                // A required parameter of a patch is still not demanded: only what was sent counts.
+                ParameterDescriptor {
+                    required: true,
+                    default: None,
+                    ..number("contrast", -100.0, 100.0)
+                },
+            ],
+            ..action()
+        };
+        assert!(
+            ModuleDescriptor {
+                actions: vec![patch.clone()],
+                controls: Vec::new(),
+                reset: None,
+                ..descriptor()
+            }
+            .validate()
+            .is_ok(),
+            "declared steps and precisions on number parameters are accepted"
+        );
+        let checked = check_parameters(&patch, &json!({"exposure": -0.5})).unwrap();
+        assert_eq!(
+            checked,
+            json!({"exposure": -0.5}).as_object().unwrap().clone()
+        );
+        assert!(
+            check_parameters(&patch, &json!({})).unwrap().is_empty(),
+            "an empty patch is a legal request that changes nothing"
+        );
+        assert!(
+            check_parameters(&patch, &Value::Null).unwrap().is_empty(),
+            "no parameters at all is the same empty patch"
+        );
+        for (case, sent, fragment) in [
+            (
+                "unknown field",
+                json!({"vibrance": 1}),
+                "unknown parameter vibrance",
+            ),
+            (
+                "out of range",
+                json!({"exposure": 6.0}),
+                "parameter exposure must be a number within -5..=5",
+            ),
+            (
+                "not finite",
+                json!({"exposure": f64::NAN}),
+                "parameter exposure must be a number",
+            ),
+            (
+                "wrong kind",
+                json!({"exposure": "0.5"}),
+                "parameter exposure must be a number",
+            ),
+        ] {
+            let error = check_parameters(&patch, &sent).expect_err(case);
+            assert_eq!(error.kind, ErrorKind::Validation, "{case}");
+            assert!(error.detail.contains(fragment), "{case}: {error}");
+        }
+        // The same parameters without the patch marker keep the whole-request behaviour.
+        let whole = ActionDescriptor {
+            patch: false,
+            ..patch
+        };
+        let error = check_parameters(&whole, &json!({"exposure": -0.5})).expect_err("required");
+        assert!(error.detail.contains("missing required parameter contrast"));
+        assert_eq!(
+            check_parameters(&whole, &json!({"contrast": 0.0})).unwrap()["exposure"],
+            json!(0.0),
+            "a declared default is applied when the action is not a patch"
+        );
     }
 
     #[test]

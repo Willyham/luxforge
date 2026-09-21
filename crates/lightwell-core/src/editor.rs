@@ -1,6 +1,7 @@
 use crate::{
-    AssetId, ContentPoint, EntryId, Error, ErrorKind, HistoryEntry, Layer, LayerId, ModuleRegistry,
-    Mutation, PreviewJob, Raster, Snapshot, SnapshotId, SourceImage, Transform, locate,
+    AssetId, ContentPoint, Draft, DraftId, EntryId, Error, ErrorKind, HistoryEntry, Layer, LayerId,
+    ModuleRegistry, Mutation, PreviewJob, Raster, Recipe, Snapshot, SnapshotId, SourceImage,
+    Transform, locate,
     modules::{
         ActionInput, ActionPlan, EffectStage, Stage, StageContext, action_label, check_parameters,
     },
@@ -12,7 +13,7 @@ use rusqlite::{
     Connection, ErrorCode, OptionalExtension, Transaction, TransactionBehavior, params,
 };
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
-use serde_json::{Value, json};
+use serde_json::{Map, Value, json};
 use sha2::{Digest, Sha256};
 use std::{
     cell::RefCell,
@@ -116,6 +117,18 @@ pub struct PixelSample {
     pub x: u32,
     pub y: u32,
     pub rgba: [u8; 4],
+    /// Present when the sample was evaluated against an open draft instead of the stored stack, so
+    /// a client can tell which settings produced this value.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub draft: Option<DraftStamp>,
+}
+
+/// Which draft, at which revision, a sample or a preview was evaluated against.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DraftStamp {
+    pub draft_id: DraftId,
+    pub draft_revision: u64,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -155,6 +168,10 @@ pub struct LayerDescription {
     pub module: Option<String>,
     pub title: Option<String>,
     pub summary: String,
+    /// The parameter values this stored layer represents, as its module reports them. Empty for a
+    /// module that declares none and for a layer whose provider is missing or unavailable.
+    #[serde(default)]
+    pub values: Map<String, Value>,
     pub available: bool,
 }
 
@@ -513,13 +530,21 @@ impl EditorService {
                     module: None,
                     title: None,
                     summary: "no provider".into(),
+                    values: Map::new(),
                     available: false,
                 },
                 Some((module, _)) => {
                     let descriptor = module.descriptor();
-                    let (summary, available) = match &descriptor.availability {
+                    let unreadable = |error: Error| {
+                        (
+                            format!("unreadable payload: {}", error.detail),
+                            Map::new(),
+                            false,
+                        )
+                    };
+                    let (summary, values, available) = match &descriptor.availability {
                         crate::Availability::Unavailable { reason } => {
-                            (format!("unavailable: {reason}"), false)
+                            (format!("unavailable: {reason}"), Map::new(), false)
                         }
                         // A payload the provider cannot read is reported on its own row; the
                         // rest of the stack is still described.
@@ -528,8 +553,15 @@ impl EditorService {
                             layer.effect_format,
                             &layer.payload,
                         ) {
-                            Ok(summary) => (summary, true),
-                            Err(error) => (format!("unreadable payload: {}", error.detail), false),
+                            Ok(summary) => match module.values(
+                                &layer.effect_id,
+                                layer.effect_format,
+                                &layer.payload,
+                            ) {
+                                Ok(values) => (summary, values, true),
+                                Err(error) => unreadable(error),
+                            },
+                            Err(error) => unreadable(error),
                         },
                     };
                     LayerDescription {
@@ -538,6 +570,7 @@ impl EditorService {
                         module: Some(descriptor.id.clone()),
                         title: Some(descriptor.title.clone()),
                         summary,
+                        values,
                         available,
                     }
                 }
@@ -555,21 +588,37 @@ impl EditorService {
         self.render_entry(asset_id, &state.current_entry.id)
     }
 
-    /// A preview job for one entry. `layer_count` truncates the rendered stack to its first `n`
-    /// layers, which the desktop uses to show a layer's input stage while drafting it; it must not
-    /// exceed the entry's layer count.
+    /// A preview job for one entry, or for an open draft's effective recipe. `layer_count`
+    /// truncates the rendered stack to its first `n` layers, which the desktop uses to show a
+    /// layer's input stage while drafting it; it must not exceed the rendered stack's layer count.
+    /// A draft previews the current entry, so naming a historical one beside it is refused.
     pub fn preview_job(
         &self,
         asset_id: &AssetId,
         entry_id: Option<&EntryId>,
         layer_count: Option<usize>,
+        draft: Option<&Draft>,
     ) -> Result<PreviewJob, Error> {
         let state = self.state(asset_id)?;
+        if draft.is_some() && entry_id.is_some_and(|entry_id| entry_id != &state.current_entry.id) {
+            return Err(Error::new(
+                ErrorKind::Validation,
+                "a draft previews the current entry, not a historical one",
+            ));
+        }
         let entry = match entry_id {
             Some(entry_id) => self.entry(asset_id, entry_id)?,
-            None => state.current_entry,
+            None => state.current_entry.clone(),
         };
-        let layers = entry.snapshot.recipe.layers.len();
+        // The draft's effective recipe is planned, not persisted, and costs point queries only.
+        let (recipe, draft_revision) = match draft {
+            Some(draft) => {
+                let (recipe, _) = self.draft_recipe(asset_id, draft)?;
+                (recipe, Some(draft.draft_revision))
+            }
+            None => (entry.snapshot.recipe.clone(), None),
+        };
+        let layers = recipe.layers.len();
         if let Some(count) = layer_count.filter(|count| *count > layers) {
             return Err(Error::new(
                 ErrorKind::Validation,
@@ -580,7 +629,9 @@ impl EditorService {
             source: self.verified_source(&state.asset)?,
             entry,
             registry: self.registry.clone(),
+            recipe,
             layer_count,
+            draft_revision,
         })
     }
 
@@ -608,25 +659,33 @@ impl EditorService {
         let entry = self.entry(asset_id, entry_id)?;
         let source = self.verified_source(&state.asset)?;
         let sampled = sample(&self.registry, &source, &entry.snapshot.recipe, x, y)?;
-        let rgba = sampled.rgba.ok_or_else(|| {
-            Error::new(
-                ErrorKind::Validation,
-                format!(
-                    "sample ({x}, {y}) is outside the {}x{} rendered image",
-                    sampled.width, sampled.height
-                ),
-            )
-        })?;
-        Ok(PixelSample {
-            entry_id: entry.id,
-            snapshot_id: entry.snapshot.id,
-            source_fingerprint: source.fingerprint,
-            width: sampled.width,
-            height: sampled.height,
+        pixel_sample(entry, &source, sampled, x, y, None)
+    }
+
+    /// One output pixel of an open draft's effective recipe, evaluated the same way: the draft's
+    /// action is planned against the current stack and the resulting recipe answers the point. No
+    /// frame is rasterized and nothing is persisted.
+    pub fn sample_draft(
+        &self,
+        asset_id: &AssetId,
+        draft: &Draft,
+        x: u32,
+        y: u32,
+    ) -> Result<PixelSample, Error> {
+        let (recipe, state) = self.draft_recipe(asset_id, draft)?;
+        let source = self.verified_source(&state.asset)?;
+        let sampled = sample(&self.registry, &source, &recipe, x, y)?;
+        pixel_sample(
+            state.current_entry,
+            &source,
+            sampled,
             x,
             y,
-            rgba,
-        })
+            Some(DraftStamp {
+                draft_id: draft.draft_id.clone(),
+                draft_revision: draft.draft_revision,
+            }),
+        )
     }
 
     /// Map one output pixel of a saved entry back to the pixel of the content stage it shows: the
@@ -661,9 +720,12 @@ impl EditorService {
         })?;
         let checked = check_parameters(action, &parameters)?;
         let input = module.parse(action_id, &checked)?;
-        // The label comes from the action that was requested, which is not always the durable
-        // action identity the entry stores: `transform` renders the label, `rotate-left` is stored.
-        let label = action_label(action, &input.parameters);
+        // The module labels a request its template cannot describe, such as a field patch; the
+        // fallback comes from the action that was requested, which is not always the durable action
+        // identity the entry stores: `transform` renders the label, `rotate-left` is stored.
+        let label = module
+            .label(&input)
+            .unwrap_or_else(|| action_label(action, &input.parameters));
         let request = request_input(&input, &mutation)?;
         if let Some(result) = self.request_result(asset_id, &mutation.request_id, &request)? {
             return Ok(result);
@@ -671,35 +733,7 @@ impl EditorService {
         let state = self.state(asset_id)?;
         ensure_revision(&state, mutation.expected_revision)?;
         let source = self.verified_source(&state.asset)?;
-        // The stack is compiled once; planning answers point queries and never rasterizes.
-        let recipe = &state.current_entry.snapshot.recipe;
-        let evaluation = Evaluation::new(&registry, &source, recipe)?;
-        let sampler = |x: u32, y: u32| -> Result<Option<[u8; 4]>, Error> { evaluation.pixel(x, y) };
-        // The stage one layer receives: compile the prefix before it. Compiling folds declared
-        // output stages and allocates only the operation lists, so this copies no part of the stack
-        // and rasterizes nothing. The whole recipe compiled above, so its format is known good.
-        let stage_before = |index: usize| -> Result<Stage, Error> {
-            Ok(registry
-                .compile_layers(source.width, source.height, prefix(&recipe.layers, index)?)?
-                .stage())
-        };
-        // One pixel of the stage a prefix produces, for a module planning against the position its
-        // layer will take. Compiling the prefix costs O(layers) and the evaluation answers the
-        // point per segment, so nothing is rasterized here either.
-        let sample_before = |index: usize, x: u32, y: u32| -> Result<Option<[u8; 4]>, Error> {
-            let prefix = prefix(&recipe.layers, index)?;
-            Evaluation::over_layers(&registry, &source, prefix)?.pixel(x, y)
-        };
-        let insertion_index = |stage: EffectStage| registry.insertion_index(&recipe.layers, stage);
-        let context = StageContext {
-            stage: evaluation.stage(),
-            layers: &recipe.layers,
-            sampler: &sampler,
-            stage_before: &stage_before,
-            insertion_index: &insertion_index,
-            sample_before: &sample_before,
-        };
-        let snapshot = match module.plan(&input, &context)? {
+        let snapshot = match self.plan_input(&state, &source, module, &input)? {
             ActionPlan::NoOp => {
                 return self.persist_noop(asset_id, &mutation, &request, &state);
             }
@@ -707,7 +741,8 @@ impl EditorService {
             // later crop change carries it instead of moving or invalidating it. An effect no
             // provider declares is appended and rejected by the whole-stack compile below.
             ActionPlan::Commit(layer) => {
-                let index = insertion_index(
+                let index = registry.insertion_index(
+                    &state.current_entry.snapshot.recipe.layers,
                     registry
                         .effect_stage(&layer.effect_id)
                         .unwrap_or(EffectStage::Geometry),
@@ -729,6 +764,98 @@ impl EditorService {
             &source,
             CommittedAction { input, label },
         )
+    }
+
+    /// Ask a module what one parsed request would do to this stack. The stack is compiled once and
+    /// every question the module may ask is a point query or a prefix compile, so planning costs
+    /// `O(layers)` and rasterizes nothing. Shared by a commit and by a draft's effective recipe, so
+    /// a drafted preview evaluates exactly what committing that draft would produce.
+    fn plan_input(
+        &self,
+        state: &EditorState,
+        source: &SourceImage,
+        module: &dyn crate::ToolModule,
+        input: &ActionInput,
+    ) -> Result<ActionPlan, Error> {
+        let registry = &self.registry;
+        let recipe = &state.current_entry.snapshot.recipe;
+        let evaluation = Evaluation::new(registry, source, recipe)?;
+        let sampler = |x: u32, y: u32| -> Result<Option<[u8; 4]>, Error> { evaluation.pixel(x, y) };
+        // The stage one layer receives: compile the prefix before it. Compiling folds declared
+        // output stages and allocates only the operation lists, so this copies no part of the stack
+        // and rasterizes nothing. The whole recipe compiled above, so its format is known good.
+        let stage_before = |index: usize| -> Result<Stage, Error> {
+            Ok(registry
+                .compile_layers(source.width, source.height, prefix(&recipe.layers, index)?)?
+                .stage())
+        };
+        // One pixel of the stage a prefix produces, for a module planning against the position its
+        // layer will take. Compiling the prefix costs O(layers) and the evaluation answers the
+        // point per segment, so nothing is rasterized here either.
+        let sample_before = |index: usize, x: u32, y: u32| -> Result<Option<[u8; 4]>, Error> {
+            let prefix = prefix(&recipe.layers, index)?;
+            Evaluation::over_layers(registry, source, prefix)?.pixel(x, y)
+        };
+        let insertion_index = |stage: EffectStage| registry.insertion_index(&recipe.layers, stage);
+        let context = StageContext {
+            stage: evaluation.stage(),
+            layers: &recipe.layers,
+            sampler: &sampler,
+            stage_before: &stage_before,
+            insertion_index: &insertion_index,
+            sample_before: &sample_before,
+        };
+        module.plan(input, &context)
+    }
+
+    /// The recipe an open draft would produce: the current snapshot with the draft's action planned
+    /// against it and its plan applied, computed on demand and never persisted. A `NoOp` plan means
+    /// the current recipe unchanged, so a gesture that returned to its start previews exactly what
+    /// is committed. Nothing is rendered here; the caller decides what to do with the recipe.
+    pub fn draft_recipe(
+        &self,
+        asset_id: &AssetId,
+        draft: &Draft,
+    ) -> Result<(Recipe, EditorState), Error> {
+        if &draft.asset_id != asset_id {
+            return Err(Error::new(
+                ErrorKind::Validation,
+                "draft belongs to another asset",
+            ));
+        }
+        let registry = self.registry.clone();
+        let (module, action) = registry.action(&draft.action).ok_or_else(|| {
+            Error::new(
+                ErrorKind::Validation,
+                format!("unknown action {}", draft.action),
+            )
+        })?;
+        let checked = check_parameters(action, &Value::Object(draft.fields.clone()))?;
+        let input = module.parse(&draft.action, &checked)?;
+        let state = self.state(asset_id)?;
+        let source = self.verified_source(&state.asset)?;
+        let recipe = match self.plan_input(&state, &source, module, &input)? {
+            ActionPlan::NoOp => state.current_entry.snapshot.recipe.clone(),
+            ActionPlan::Commit(layer) => {
+                let index = registry.insertion_index(
+                    &state.current_entry.snapshot.recipe.layers,
+                    registry
+                        .effect_stage(&layer.effect_id)
+                        .unwrap_or(EffectStage::Geometry),
+                );
+                state
+                    .current_entry
+                    .snapshot
+                    .recipe
+                    .with_layer_inserted(index, layer)?
+            }
+            ActionPlan::Update(layer) => state
+                .current_entry
+                .snapshot
+                .recipe
+                .with_layer_replaced(layer)?,
+        };
+        Ok((recipe, state))
     }
 
     pub fn apply_pixel(
@@ -1250,6 +1377,38 @@ struct CommittedAction {
     label: String,
 }
 
+/// One evaluated point with the identities that produced it. A point outside the rendered image is
+/// a validation error naming the stage it missed.
+fn pixel_sample(
+    entry: HistoryEntry,
+    source: &SourceImage,
+    sampled: crate::Sample,
+    x: u32,
+    y: u32,
+    draft: Option<DraftStamp>,
+) -> Result<PixelSample, Error> {
+    let rgba = sampled.rgba.ok_or_else(|| {
+        Error::new(
+            ErrorKind::Validation,
+            format!(
+                "sample ({x}, {y}) is outside the {}x{} rendered image",
+                sampled.width, sampled.height
+            ),
+        )
+    })?;
+    Ok(PixelSample {
+        entry_id: entry.id,
+        snapshot_id: entry.snapshot.id,
+        source_fingerprint: source.fingerprint.clone(),
+        width: sampled.width,
+        height: sampled.height,
+        x,
+        y,
+        rgba,
+        draft,
+    })
+}
+
 /// The ordered layers before a position in the stack, which is what a module asks about when it
 /// plans against the stage that position receives. A position past the end is a validation error.
 fn prefix(layers: &[Layer], index: usize) -> Result<&[Layer], Error> {
@@ -1678,8 +1837,12 @@ mod tests {
         let catalog = temp("source-cache.sqlite");
         let mut service = EditorService::open(&catalog).unwrap();
         let state = service.import(&fixture()).unwrap();
-        let first = service.preview_job(&state.asset.id, None, None).unwrap();
-        let second = service.preview_job(&state.asset.id, None, None).unwrap();
+        let first = service
+            .preview_job(&state.asset.id, None, None, None)
+            .unwrap();
+        let second = service
+            .preview_job(&state.asset.id, None, None, None)
+            .unwrap();
         assert!(std::sync::Arc::ptr_eq(
             &first.source.rgba,
             &second.source.rgba
@@ -1704,7 +1867,7 @@ mod tests {
         std::fs::copy(fixture(), &source).unwrap();
         let mut service = EditorService::open(&dir.join("catalog.sqlite")).unwrap();
         let asset = service.import(&source).unwrap().asset.id;
-        service.preview_job(&asset, None, None).unwrap();
+        service.preview_job(&asset, None, None, None).unwrap();
         let replacement =
             Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/s0/orientation-2.jpg");
         assert_eq!(
@@ -1713,7 +1876,10 @@ mod tests {
         );
         std::fs::copy(replacement, &source).unwrap();
         assert_eq!(
-            service.preview_job(&asset, None, None).unwrap_err().kind,
+            service
+                .preview_job(&asset, None, None, None)
+                .unwrap_err()
+                .kind,
             ErrorKind::SourceUnavailable
         );
         drop(service);
@@ -2524,6 +2690,8 @@ mod tests {
                 required: true,
                 default: None,
                 unit: Some("px".into()),
+                step: None,
+                precision: None,
                 notes: "test".into(),
             };
             let action = |id: &str| ActionDescriptor {
@@ -2531,6 +2699,7 @@ mod tests {
                 title: "Shrink".into(),
                 notes: "test".into(),
                 summary: Some("Shrink {width}x{height}".into()),
+                patch: false,
                 parameters: vec![extent("width"), extent("height")],
             };
             let effect = |id: &str| EffectDescriptor {
@@ -2854,7 +3023,9 @@ mod tests {
             )
             .unwrap();
         let rendered = |service: &EditorService, layer_count: Option<usize>| -> Raster {
-            let job = service.preview_job(&asset, None, layer_count).unwrap();
+            let job = service
+                .preview_job(&asset, None, layer_count, None)
+                .unwrap();
             let mut queue = PreviewQueue::default();
             queue.request(job);
             let deadline = Instant::now() + Duration::from_secs(5);
@@ -2880,7 +3051,7 @@ mod tests {
         assert_eq!(none.pixel(0, 0), Some(original), "no layer, no edit");
         assert_ne!(none.pixel(0, 0), prefix.pixel(0, 0));
         let error = service
-            .preview_job(&asset, None, Some(3))
+            .preview_job(&asset, None, Some(3), None)
             .expect_err("an out-of-range layer count");
         assert_eq!(error.kind, ErrorKind::Validation);
         assert!(

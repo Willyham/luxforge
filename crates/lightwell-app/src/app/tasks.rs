@@ -6,7 +6,7 @@ use iced::Task;
 use lightwell_core::{
     ApiRequest, AssetId, ClientId, ClientSession, ContentPoint, EditorState, EntryId, EventsResult,
     HistoryEntry, HistoryPage, HistorySelection, Lineage, ModuleDescriptor, Mutation, OwnerHandle,
-    PreviewJob, RecipeDescription, Version,
+    PreviewJob, PreviewRequest, RecipeDescription, Version,
 };
 use serde_json::{Value, json};
 use std::{
@@ -143,7 +143,7 @@ pub(crate) fn refresh(
         json!({"asset_id":asset_id,"before_sequence":1,"limit":1}),
     )?)?;
     let job = owner
-        .preview_job(asset_id, selected, None)
+        .preview_job(PreviewRequest::new(client, asset_id).entry(selected))
         .map_err(|error| error.to_string())?;
     Ok(Refresh {
         state,
@@ -210,7 +210,7 @@ pub(crate) fn preview_task(
             let (mut result, sequence) = call(&owner, client, method, params)?;
             let session: ClientSession = parse(result["session"].take())?;
             let job = owner
-                .preview_job(asset_id, entry_id, None)
+                .preview_job(PreviewRequest::new(client, asset_id).entry(entry_id))
                 .map_err(|error| error.to_string())?;
             Ok(PreviewPayload {
                 job,
@@ -248,13 +248,14 @@ pub(crate) fn recipe_task(
 /// is exactly that layer's input stage. Starting a draft and reapplying it are the only two requests.
 pub(crate) fn crop_preview_task(
     owner: OwnerHandle,
+    client: ClientId,
     asset_id: AssetId,
     layer_count: usize,
 ) -> Task<Message> {
     Task::perform(
         async move {
             owner
-                .preview_job(asset_id, None, Some(layer_count))
+                .preview_job(PreviewRequest::new(client, asset_id).layers(layer_count))
                 .map_err(|error| error.to_string())
         },
         |result| {

@@ -5,10 +5,10 @@ mod owner;
 mod transport;
 
 pub use methods::schemas;
-pub use owner::{ClientId, OwnerHandle};
+pub use owner::{ClientId, OwnerHandle, PreviewRequest};
 pub use transport::{LocalServer, LocalSessionInfo, serve_json_lines};
 
-use crate::{Error, ErrorKind, PreviewSession};
+use crate::{Draft, Error, ErrorKind, PreviewSession};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -122,6 +122,10 @@ pub struct ClientSession {
     pub preview: PreviewSession,
     #[serde(default)]
     pub workspace: WorkspaceState,
+    /// The one draft this client holds, if any. Session state: it emits no event, appears in no
+    /// history and never outlives the session.
+    #[serde(default)]
+    pub draft: Option<Draft>,
     #[serde(default)]
     pub revision: u64,
 }
