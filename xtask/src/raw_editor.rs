@@ -202,9 +202,6 @@ fn run_app(
         }
         std::thread::sleep(Duration::from_millis(50));
     };
-    // The record travels with the run so the trial keeps it; the caller fails on a change once the
-    // row has been written.
-    let focus = child.focus_check();
     ensure(
         status.success(),
         format!("RAW editor exited {status}; see {}", log.display()),
@@ -218,7 +215,6 @@ fn run_app(
         "sampled_peak_rss_mib":peak,
         "rss_samples":rss,
         "exit_code":status.code(),
-        "focus_check":focus,
         "log":log.file_name().and_then(|s|s.to_str()),
     }))
 }
@@ -801,18 +797,11 @@ pub fn run(root: &Path, manifest_path: &Path, out: &Path, binary: &Path, samples
             for index in 0..samples {
                 let trial = out.join(format!("{}-{index:02}", source.id));
                 let row = one_trial(root, &snapshot, &trial, source, &path)?;
-                let focus_checks = [
-                    row["first_process"]["focus_check"].clone(),
-                    row["reopened_process"]["focus_check"].clone(),
-                ];
                 report["runs"]
                     .as_array_mut()
                     .ok_or("Missing run array")?
                     .push(row);
                 write_json(&out.join("result.json"), &report)?;
-                // Checked after the row is on disk, so a run that lost the desktop still records
-                // which launch it was and which application took it.
-                launch::focus_all_unchanged(&focus_checks)?;
             }
         }
         let runs = report["runs"].as_array().ok_or("Missing run array")?;

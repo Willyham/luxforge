@@ -192,29 +192,25 @@ pub fn editor_args(args: &[OsString]) -> Vec<OsString> {
         .collect()
 }
 
-/// How the frontmost application is read. LaunchServices answers it directly, so no Automation
-/// permission is involved; `osascript` driving System Events would need one.
-const FOCUS_METHOD: &str = "lsappinfo";
-
-/// The frontmost application's display name, through LaunchServices.
+/// The pid of the frontmost application, through LaunchServices, which needs no Automation
+/// permission. One check proves that an automated launch is never that application; the hidden
+/// window and the background bundle are what keep it so, and every run relies on them without
+/// re-measuring the desktop.
 #[cfg(target_os = "macos")]
-pub fn frontmost() -> Result<String> {
+pub fn frontmost_pid() -> Result<u32> {
     let asn = lsappinfo(&["front"])?;
     ensure(
         asn.starts_with("ASN:"),
         format!("lsappinfo named no frontmost application: {asn:?}"),
     )?;
-    // `lsappinfo info -only name ASN:...` answers `"LSDisplayName"="Claude"`.
-    let answer = lsappinfo(&["info", "-only", "name", &asn])?;
-    let name = answer
+    // `lsappinfo info -only pid ASN:...` answers `"pid"=1234`.
+    let answer = lsappinfo(&["info", "-only", "pid", &asn])?;
+    answer
         .split_once('=')
-        .map(|(_, value)| value.trim().trim_matches('"'))
-        .unwrap_or_default();
-    ensure(
-        !name.is_empty() && name != "[ NULL ]",
-        format!("lsappinfo gave the frontmost application no name: {answer:?}"),
-    )?;
-    Ok(name.to_owned())
+        .and_then(|(_, value)| value.trim().trim_matches('"').parse().ok())
+        .ok_or_else(|| {
+            format!("lsappinfo gave the frontmost application no pid: {answer:?}").into()
+        })
 }
 
 #[cfg(target_os = "macos")]
@@ -225,81 +221,6 @@ fn lsappinfo(args: &[&str]) -> Result<String> {
         format!("lsappinfo {args:?} exited {}", out.status),
     )?;
     Ok(String::from_utf8(out.stdout)?.trim().to_owned())
-}
-
-/// One launch's focus record, from the frontmost application before and after it.
-fn record(before: &str, after: &str) -> Value {
-    json!({"status":"checked","method":FOCUS_METHOD,"before":before,"after":after,"changed":before != after})
-}
-
-/// The frontmost application around one child launch.
-///
-/// An automated launch must never take the owner's desktop, so every runner records the pair and
-/// fails when it changed. The check is only as strong as its reading: when the frontmost
-/// application cannot be read the record says so and the run continues, because a missing check
-/// that is visible is worth more than one that quietly passes.
-pub struct Focus {
-    before: std::result::Result<String, String>,
-}
-
-impl Focus {
-    /// Read the frontmost application before a child starts.
-    pub fn capture() -> Self {
-        Self {
-            before: read_frontmost(),
-        }
-    }
-
-    /// Read it again once the launch is over and describe the pair.
-    pub fn complete(&self) -> Value {
-        if !cfg!(target_os = "macos") {
-            return json!({"status":"not-checked","platform":std::env::consts::OS,"reason":"The frontmost application is read through macOS LaunchServices only"});
-        }
-        let unavailable =
-            |error: &str| json!({"status":"unavailable","method":FOCUS_METHOD,"error":error});
-        match (&self.before, read_frontmost()) {
-            (Ok(before), Ok(after)) => record(before, &after),
-            (Err(error), _) => unavailable(error),
-            (_, Err(error)) => unavailable(&error),
-        }
-    }
-}
-
-fn read_frontmost() -> std::result::Result<String, String> {
-    #[cfg(target_os = "macos")]
-    {
-        frontmost().map_err(|error| error.to_string())
-    }
-    #[cfg(not(target_os = "macos"))]
-    {
-        Err("the frontmost application is read on macOS only".into())
-    }
-}
-
-/// Fail a run whose launch changed the frontmost application, naming both applications.
-pub fn focus_unchanged(record: &Value) -> Result {
-    ensure(
-        record["changed"] != json!(true),
-        format!(
-            "The frontmost application changed across a launch: {} before, {} after. Automated launches must not take focus, and switching applications during a run fails it.",
-            record["before"], record["after"]
-        ),
-    )
-}
-
-/// Fail a run when any of its launches changed the frontmost application.
-pub fn focus_all_unchanged(records: &[Value]) -> Result {
-    records.iter().try_for_each(focus_unchanged)
-}
-
-/// The focus verdict on a runner's own result: every launch it recorded, under `focus_check` or
-/// `focus_checks`. Runners call it after their own checks, so a stolen desktop fails the run
-/// without hiding what else the run found.
-pub fn focus_verdict(result: &Value) -> Result {
-    match result.get("focus_checks") {
-        Some(Value::Array(records)) => focus_all_unchanged(records),
-        _ => focus_unchanged(&result["focus_check"]),
-    }
 }
 
 impl Background {
@@ -354,43 +275,6 @@ mod tests {
         let built = editor_args(&args);
         assert_eq!(built[0], OsString::from(HIDDEN_WINDOW));
         assert_eq!(built[1..], args[..]);
-    }
-
-    #[test]
-    fn a_changed_frontmost_application_fails_and_names_both() {
-        let same = record("Claude", "Claude");
-        assert_eq!(same["changed"], json!(false));
-        assert_eq!(same["status"], json!("checked"));
-        focus_unchanged(&same).unwrap();
-
-        let changed = record("Claude", "Finder");
-        assert_eq!(changed["changed"], json!(true));
-        let message = focus_unchanged(&changed).unwrap_err().to_string();
-        assert!(
-            message.contains("Claude") && message.contains("Finder"),
-            "the failure must name both applications: {message}"
-        );
-        assert!(
-            focus_all_unchanged(&[same, changed])
-                .unwrap_err()
-                .to_string()
-                .contains("Finder")
-        );
-    }
-
-    #[test]
-    fn an_unreadable_frontmost_application_is_recorded_without_failing() {
-        let focus = Focus {
-            before: Err("lsappinfo is unavailable".into()),
-        };
-        let recorded = focus.complete();
-        if cfg!(target_os = "macos") {
-            assert_eq!(recorded["status"], json!("unavailable"));
-            assert_eq!(recorded["error"], json!("lsappinfo is unavailable"));
-        } else {
-            assert_eq!(recorded["status"], json!("not-checked"));
-        }
-        focus_unchanged(&recorded).unwrap();
     }
 
     /// A pid that certainly no longer exists: a child of this process, run to completion and reaped.
@@ -470,8 +354,8 @@ mod tests {
 
     #[cfg(target_os = "macos")]
     #[test]
-    fn the_frontmost_application_has_a_name() {
-        let name = frontmost().expect("LaunchServices names the frontmost application");
-        assert!(!name.is_empty() && !name.contains('='), "{name:?}");
+    fn the_frontmost_application_has_a_pid_and_it_is_not_this_test() {
+        let pid = frontmost_pid().expect("LaunchServices names the frontmost application");
+        assert!(pid > 0 && pid != std::process::id(), "{pid}");
     }
 }

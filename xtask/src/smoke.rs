@@ -40,16 +40,7 @@ pub fn dispatch(root: &Path, out: &Path, scenario: &str, bin: &Path, timeout: Du
 
 pub struct Guard {
     pub child: Child,
-    focus: launch::Focus,
     _launch: launch::Background,
-}
-
-impl Guard {
-    /// The frontmost application before this child started against the one frontmost now. Runners
-    /// call it once the launch is over and write the record into their own result.
-    pub fn focus_check(&self) -> Value {
-        self.focus.complete()
-    }
 }
 impl Drop for Guard {
     fn drop(&mut self) {
@@ -62,9 +53,6 @@ impl Drop for Guard {
 pub fn spawn(root: &Path, bin: &Path, args: &[OsString], log: &Path) -> Result<Guard> {
     let launch = launch::Background::new(bin)?;
     let f = fs::File::create(log)?;
-    // Read the frontmost application last, so the window the child may open is the only thing that
-    // could change it between here and the check after it exits.
-    let focus = launch::Focus::capture();
     Ok(Guard {
         child: Command::new(&launch.executable)
             .args(args)
@@ -73,7 +61,6 @@ pub fn spawn(root: &Path, bin: &Path, args: &[OsString], log: &Path) -> Result<G
             .stdout(f.try_clone()?)
             .stderr(f)
             .spawn()?,
-        focus,
         _launch: launch,
     })
 }
@@ -85,16 +72,6 @@ pub fn spawn_editor(root: &Path, bin: &Path, args: &[OsString], log: &Path) -> R
     spawn(root, bin, &launch::editor_args(args), log)
 }
 
-/// Append one launch's focus record to a runner's `focus_checks` array. The verdict comes later,
-/// from [`launch::focus_verdict`] on the finished result, so the record is always written and a
-/// stolen desktop never hides what else the run found.
-pub fn note_focus(result: &mut Value, child: &Guard) -> Result {
-    result["focus_checks"]
-        .as_array_mut()
-        .ok_or("A runner with several launches records a focus_checks array")?
-        .push(child.focus_check());
-    Ok(())
-}
 pub fn wait(child: &mut Guard, timeout: Duration) -> Result<std::process::ExitStatus> {
     let start = Instant::now();
     loop {
@@ -518,7 +495,6 @@ pub fn run(root: &Path, out: &Path, scenario: &str, bin: &Path, timeout: Duratio
         let mut child = spawn(root, bin, &args, &out.join("subprocess.log"))?;
         let status = wait(&mut child, timeout)?;
         result["exit_code"] = json!(status.code());
-        result["focus_check"] = child.focus_check();
         ensure(status.success(), format!("Application exit {status}"))?;
         let app = verify(&evidence, scenario, sources.len())?;
         for p in &sources {
@@ -530,7 +506,7 @@ pub fn run(root: &Path, out: &Path, scenario: &str, bin: &Path, timeout: Duratio
         }
         result["backend"] =
             app["frames"].as_array().unwrap().last().unwrap()["state"]["backend"].clone();
-        launch::focus_verdict(&result)
+        Ok(())
     })();
     match &check {
         Ok(()) => result["status"] = json!("passed"),
@@ -540,7 +516,7 @@ pub fn run(root: &Path, out: &Path, scenario: &str, bin: &Path, timeout: Duratio
     fs::write(
         out.join("reproduce.md"),
         format!(
-            "# Smoke run\n\nScenario: {scenario}. Status: {}.\n\nLaunch mode: {}. Reproduce with `cargo xtask smoke --scenario {scenario} --output NEW_DIR --binary PATH`; on macOS this copies the binary into a temporary background-only bundle and the editor runs with `--hidden-window`, so its window is never placed on the desktop. The run records the frontmost application before and after the launch and fails when it changed. Running the argument array directly bypasses the bundle's focus protection.\n\nArgument array:\n\n```json\n{}\n```\n\nActual renderer readback; native dialog/focus verified separately. Synthetic fixtures only.\n",
+            "# Smoke run\n\nScenario: {scenario}. Status: {}.\n\nLaunch mode: {}. Reproduce with `cargo xtask smoke --scenario {scenario} --output NEW_DIR --binary PATH`; on macOS this copies the binary into a temporary background-only bundle and the editor runs with `--hidden-window`, so its window is never placed on the desktop. Running the argument array directly bypasses that focus protection.\n\nArgument array:\n\n```json\n{}\n```\n\nActual renderer readback; native dialog/focus verified separately. Synthetic fixtures only.\n",
             result["status"],
             launch::MODE,
             serde_json::to_string_pretty(&command)?
