@@ -1,6 +1,6 @@
 use crate::{
-    basic_smoke as basic, crop_smoke as crop, histogram_smoke as histogram,
-    workspace_smoke as workspace, *,
+    basic_smoke as basic, controls_smoke as controls, crop_smoke as crop, gallery_smoke as gallery,
+    histogram_smoke as histogram, workspace_smoke as workspace, *,
 };
 use std::{
     process::{Child, Stdio},
@@ -241,7 +241,33 @@ pub fn frame_identity(evidence: &Path, app: &Value, frame: &Value) -> Result<Pat
     Ok(evidence.join(name))
 }
 
+/// Evidence records the parser's explicit default `finish: open` on picker/curve steps. Match a
+/// script's shorter spelling to that same parsed request without weakening any other field.
+pub fn script_request_matches(recorded: &Value, scripted: &Value) -> bool {
+    let mut normalized = recorded.clone();
+    for kind in ["picker", "curve"] {
+        if scripted
+            .get(kind)
+            .is_some_and(|step| step.get("finish").is_none())
+            && let Some(object) = normalized.get_mut(kind).and_then(Value::as_object_mut)
+        {
+            object.remove("finish");
+        }
+    }
+    normalized == *scripted
+}
+
 pub fn verify(evidence: &Path, scenario: &str, count: usize) -> Result<Value> {
+    if let Some(frames) = gallery::frames(scenario) {
+        let (app, events) = preamble(evidence, frames)?;
+        gallery::verify(evidence, &app, &events)?;
+        return Ok(app);
+    }
+    if let Some(frames) = controls::frames(scenario) {
+        let (app, events) = preamble(evidence, frames)?;
+        controls::verify(evidence, &app, &events)?;
+        return Ok(app);
+    }
     if let Some(frames) = crop::frames(scenario) {
         let (app, events) = preamble(evidence, frames)?;
         crop::verify(evidence, scenario, &app, &events)?;
@@ -378,7 +404,12 @@ pub fn run(root: &Path, out: &Path, scenario: &str, bin: &Path, timeout: Duratio
         // `workspace` drives the panels, canvas mode, thirds, preview and palette; `basic` drives
         // the generated Exposure slider's whole gesture. Both need the window size the design's
         // layout constants are written against.
-        "workspace" | "basic" => vec![root.join("fixtures/s0/orientation-1.jpg")],
+        "workspace" | "basic" | "gallery" => {
+            vec![root.join("fixtures/s0/orientation-1.jpg")]
+        }
+        scenario if controls::source(scenario).is_some() => {
+            vec![root.join(controls::source(scenario).expect("controls fixture"))]
+        }
         // `basic-panel` drives the rest of the Basic section and the neutral picker. It opens the
         // greyscale fixture because the picker needs both a genuinely neutral patch to sample and
         // a clipped one to be refused on, and that fixture has each: uniform grey quadrants and a
@@ -394,10 +425,28 @@ pub fn run(root: &Path, out: &Path, scenario: &str, bin: &Path, timeout: Duratio
     fs::create_dir_all(out)?;
     let evidence = out.join("app");
     let mut args = vec!["--evidence-dir".into(), evidence.clone().into_os_string()];
+    if matches!(scenario, "gallery" | "controls") {
+        args.push("--developer".into());
+    }
     for p in &sources {
         args.extend(["--open".into(), p.as_os_str().into()]);
     }
-    if let Some(script) = crop::script(scenario)? {
+    if let Some(script) = gallery::script(scenario).or_else(|| controls::script(scenario)) {
+        let window = if scenario == "gallery" {
+            gallery::WINDOW
+        } else {
+            controls::WINDOW
+        };
+        let file = out.join("script.json");
+        write_json(&file, &script)?;
+        args.extend([
+            "--evidence-script".into(),
+            file.into_os_string(),
+            "--window-size".into(),
+            window[0].into(),
+            window[1].into(),
+        ]);
+    } else if let Some(script) = crop::script(scenario)? {
         // The crop frames need room for the overlay at Fit and at 100%.
         let file = out.join("script.json");
         write_json(&file, &script)?;
