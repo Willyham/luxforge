@@ -176,6 +176,12 @@ impl Args {
         )
     }
 }
+fn samples(a: &mut Args, default: usize) -> Result<usize> {
+    Ok(a.value("--samples")?
+        .map(|s| s.to_string_lossy().parse::<usize>())
+        .transpose()?
+        .unwrap_or(default))
+}
 fn main() -> ExitCode {
     match main_result() {
         Ok(()) => ExitCode::SUCCESS,
@@ -304,11 +310,7 @@ fn main_result() -> Result {
         "raw-editor" => {
             let manifest = absolute(&root, &a.path("--manifest")?);
             let out = absolute(&root, &a.path("--output")?);
-            let samples = a
-                .value("--samples")?
-                .map(|s| s.to_string_lossy().parse::<usize>())
-                .transpose()?
-                .unwrap_or(30);
+            let samples = samples(&mut a, 3)?;
             let selected_binary = a.value("--binary")?.map(PathBuf::from);
             a.done()?;
             let bin = selected_binary
@@ -339,11 +341,7 @@ fn main_result() -> Result {
         "editor-performance" => {
             let source = absolute(&root, &a.path("--source")?);
             let out = absolute(&root, &a.path("--output")?);
-            let samples = a
-                .value("--samples")?
-                .map(|s| s.to_string_lossy().parse::<usize>())
-                .transpose()?
-                .unwrap_or(10);
+            let samples = samples(&mut a, 10)?;
             a.done()?;
             editor_performance::run(&root, &source, &out, samples)?;
         }
@@ -354,11 +352,7 @@ fn main_result() -> Result {
                 .value("--binary")?
                 .map(|path| absolute(&root, Path::new(&path)))
                 .map_or_else(|| binary(&root), Ok)?;
-            let samples = a
-                .value("--samples")?
-                .map(|s| s.to_string_lossy().parse::<usize>())
-                .transpose()?
-                .unwrap_or(30);
+            let samples = samples(&mut a, 30)?;
             let crop = a
                 .value("--crop")?
                 .map(|s| s.to_string_lossy().parse::<f64>())
@@ -452,11 +446,7 @@ fn main_result() -> Result {
         "hardening" | "measure" => {
             let out = absolute(&root, &a.path("--output")?);
             let bin = absolute(&root, &a.path("--binary")?);
-            let samples = a
-                .value("--samples")?
-                .map(|s| s.to_string_lossy().parse::<usize>())
-                .transpose()?
-                .unwrap_or(30);
+            let samples = samples(&mut a, 5)?;
             a.done()?;
             if op == "hardening" {
                 diagnostics::hardening(&root, &out, &bin)?
