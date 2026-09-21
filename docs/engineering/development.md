@@ -123,6 +123,40 @@ sample counts at load averages of 4.80, 5.86 and 6.59 across its three component
 busier run whose `measure` started at 8.33, that component's rows and target verdicts came back
 `unreliable` while the two components below the threshold still gave verdicts.
 
+### Rendered scenario cost: why every scenario stays in `rendered`
+
+Per-scenario elapsed time comes from each run's own `summary.json`. Back to back on the same shared
+host, one-minute load averages of 12.96 (`--jobs 1`) and 13.24 (the default pool of three), the 17
+scenarios cost 24.40 s serially and 30.00 s summed inside the pool, whose own wall clock was 10.30 s.
+Every scenario costs one to two seconds either way, and none exceeds 2.3 s; against a rendered tier
+whose own total stays under two minutes, no single scenario is a material share of it. Every scenario
+therefore stays in `rendered`; `full` adds only the RAW components (`raw-reference` and, with
+`--manifest`, `raw-editor`), which is already the tier's composition.
+
+| Scenario | Serial elapsed (`--jobs 1`) | Pooled elapsed (default `--jobs 3`) | Tier |
+| --- | --- | --- | --- |
+| `empty` | 1.03 s | 1.8 s | rendered |
+| `load` | 0.96 s | 1.2 s | rendered |
+| `replacement` | 1.02 s | 2.1 s | rendered |
+| `invalid` | 0.91 s | 1.6 s | rendered |
+| `repeated` | 1.56 s | 2.0 s | rendered |
+| `alternating` | 2.08 s | 2.3 s | rendered |
+| `large24` | 1.04 s | 1.2 s | rendered |
+| `large60` | 1.17 s | 1.1 s | rendered |
+| `crop` | 1.49 s | 1.7 s | rendered |
+| `crop-draft` | 1.24 s | 1.3 s | rendered |
+| `workspace` | 1.63 s | 1.6 s | rendered |
+| `basic` | 1.95 s | 2.3 s | rendered |
+| `basic-panel` | 1.70 s | 2.3 s | rendered |
+| `basic-crop` | 1.25 s | 1.5 s | rendered |
+| `basic-restart` | 1.87 s | 1.9 s | rendered |
+| `histogram` | 1.69 s | 2.0 s | rendered |
+| `unavailable` | 1.80 s | 2.3 s | rendered |
+
+Reproduce with `verify --tier rendered --output NEW_DIR` for the pool and `--jobs 1` for the serial
+figures; both read `vm.loadavg` themselves only for timing components; the load quoted above is
+`sysctl -n vm.loadavg` read by hand immediately before each run.
+
 ## Running the application
 
 `cargo xtask develop` starts the editor. It owns the catalog (`--catalog FILE`, defaulting to the platform configuration directory), offers native Open with Cmd+O or Ctrl+O and starts an authenticated loopback JSON service. `--data-root DIR` isolates config, cache and log paths. The application also accepts `--window-size W H` (320 to 4096 logical), `--developer`, `--disable-module MODULE_ID`, `--hidden-window`, `--evidence-dir NEW_DIR` and `--evidence-script FILE`. `--hidden-window` creates the window invisible: it owns a real surface and renders and captures through it exactly as a visible window does, but the window server never places it on screen. Every automated editor launch the harness makes passes it; `develop` in either mode never does. `--developer` lists proof and diagnostic modules, which are hidden by default so the workspace stays a photo editor; the API is unaffected. `--disable-module MODULE_ID` registers that built-in wrapped as unavailable, keeping its effect identities readable so a stack that uses it reports the unavailable effect instead of rendering without it; an unknown identity is a startup error. Evidence mode is the same editor driven by the harness: each `--open` goes through the ordinary import call into a catalog created inside the new evidence directory, a window frame is captured after each outcome, the script's steps then run with a frame each, and the run exits after writing its results. Manual Open is disabled during collection, and `--open` may repeat only with `--evidence-dir`.
@@ -391,10 +425,10 @@ Rules for any UI or image check:
 ## Agent loop
 
 1. Read the applicable spec and task, including any owner-decision gates.
-2. Run `doctor` and the smallest checks appropriate to the change.
-3. For UI or image changes, run a smoke scenario or the acceptance journey and inspect the capture as an image.
+2. Run `doctor`, then pick the [verify tier](#verification-tiers) the change needs: `quick` for any change, including a docs-only one; `rendered` for a change touching rendering or the UI, at an integration point; `timing` alongside it for a change under `crates/` at an integration point; `full` before a milestone claim.
+3. For UI or image changes, run a smoke scenario, the `rendered` tier, or the acceptance journey and inspect the capture as an image.
    On macOS, use the background harness or `develop --background` for every automated GUI launch; use the live API and renderer readbacks to drive and inspect it. Only perform foreground interaction checks when the owner explicitly requests them.
-4. For changes under `crates/`, answer the [performance rules](performance-rules.md) checklist and run `editor-performance` on a generated 24 MP input in release.
+4. For changes under `crates/`, answer the [performance rules](performance-rules.md) checklist and run `editor-performance` on a generated 24 MP input in release, or the `timing` tier.
 5. Report exact commands, artifact paths, results and unsupported cases. Update task and feature status only when acceptance is met.
 
 ## Packaging
