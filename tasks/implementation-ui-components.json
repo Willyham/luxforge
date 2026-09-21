@@ -61,11 +61,12 @@
     {
       "id": "TASK-002",
       "description": "Add the basic widgets to lightwell-ui: the soft-range and rail-decorated slider, the factored number field, the stepper, the toggle, the menu choice, and the named Icon enumeration drawn as vector paths, with pure geometry functions and gallery states.",
-      "status": "in_progress",
+      "status": "completed",
       "dependencies": [],
       "extra_context": [
         "Every widget takes a plain-data model and messages and holds no state; fractions are mapped to values by the caller. Canvas-drawn icons cache their geometry.",
-        "The existing slider's value field becomes the number field so the slider, the stepper and the crop angle share one implementation."
+        "The existing slider's value field becomes the number field so the slider, the stepper and the crop angle share one implementation.",
+        "Evidence: 24b527a; lightwell-ui 39 tests pass, check-repository passes, companion components-ui.svg validates as XML. Gallery includes all new basic and canvas states. Slider event filter prevents all wheel editing and implements Option fine-step; desktop keyboard focus integration remains TASK-004."
       ],
       "context_links": [
         {
@@ -162,7 +163,7 @@
     {
       "id": "TASK-004",
       "description": "Map every control kind in the desktop view model and view with the per-kind gesture rules, put the control menu on every generated control, and rebuild the crop section's chips, fields, stepper and toggle on the generic widgets.",
-      "status": "pending",
+      "status": "completed",
       "dependencies": [
         "TASK-001",
         "TASK-002",
@@ -170,7 +171,8 @@
       ],
       "extra_context": [
         "Continuous controls of a field-patch action draft through draft.begin, draft.set and draft.commit under the existing 16 ms tick; discrete controls commit once. A curve channel submits its one parameter; the crop draft keeps its own messages.",
-        "Enum parameters currently render through a kind-driven mapping; the declared choice control replaces that path."
+        "Enum parameters currently render through a kind-driven mapping; the declared choice control replaces that path.",
+        "Evidence: state/view/controller integration; all 164 app unit tests and JSON CLI integration pass (2 fixture-dependent RAW CLI checks remain ignored). Nine generated-gesture tests prove one-field requests, fine step, field Enter-only, one draft/commit, Escape, and preset copy. check-repository passes. Native M4 Pro/Metal crop-draft and workspace smoke pass: artifacts/ui-components-crop-draft-final and artifacts/ui-components-workspace-final (binary 8ad8168); corrected header/gutter capture inspected. No source/frame changes or new timers; module curve queries are bounded to one active plus one replaceable pending query and 1024 returned points. Photo-sized measurements remain TASK-006."
       ],
       "context_links": [
         {
@@ -225,7 +227,7 @@
     {
       "id": "TASK-005",
       "description": "Add the lightwell.controls developer proof module declaring one control of every kind over one field-patch action, and prove UI/API parity for the whole vocabulary through the JSON method table.",
-      "status": "pending",
+      "status": "in_progress",
       "dependencies": [
         "TASK-001",
         "TASK-004"
