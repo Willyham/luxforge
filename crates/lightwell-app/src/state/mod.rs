@@ -13,7 +13,8 @@ use crate::{
     crop_draft::CropDraft,
 };
 use lightwell_core::{
-    ClientSession, EditorState, EntryId, HistoryPage, ModuleDescriptor, RecipeDescription, Version,
+    ClientSession, EditorState, EntryId, ErrorKind, HistoryPage, ModuleDescriptor,
+    RecipeDescription, Version,
 };
 use std::collections::{BTreeMap, HashSet};
 
@@ -63,8 +64,14 @@ pub(crate) struct Inputs<'a> {
     pub(crate) dimensions: Option<(u32, u32)>,
     /// A preview is on the GPU.
     pub(crate) photo: bool,
-    pub(crate) phase: &'static str,
-    pub(crate) clients: usize,
+    /// Live API clients, or `None` when the local server could not start on this host.
+    pub(crate) clients: Option<usize>,
+    /// A preview job is in flight or its pixels are still being uploaded.
+    pub(crate) rendering: bool,
+    /// How long the displayed preview took from request to upload.
+    pub(crate) render_ms: Option<f64>,
+    /// The last preview failure, cleared by the next successful upload.
+    pub(crate) render_error: Option<&'a (ErrorKind, String)>,
     pub(crate) pointer: Option<(u32, u32)>,
     pub(crate) menu: Option<&'a MenuTarget>,
     pub(crate) palette_open: bool,
@@ -144,6 +151,7 @@ mod tests {
         busy: bool,
         developer: bool,
         crop_angle: String,
+        render_error: Option<(lightwell_core::ErrorKind, String)>,
     }
 
     impl Scene {
@@ -171,6 +179,7 @@ mod tests {
                 busy: false,
                 developer: false,
                 crop_angle: "0".into(),
+                render_error: None,
             }
         }
 
@@ -242,8 +251,10 @@ mod tests {
                 version_form_open: false,
                 dimensions: Some((480, 320)),
                 photo: true,
-                phase: "ready",
-                clients: 1,
+                clients: Some(1),
+                rendering: false,
+                render_ms: Some(41.0),
+                render_error: self.render_error.as_ref(),
                 pointer: None,
                 menu: None,
                 palette_open: false,
@@ -635,6 +646,237 @@ mod tests {
         // A description of a different entry is never shown against this one.
         scene.display_entry = Some(EntryId::new());
         assert!(scene.derive().panel.recipe.is_empty());
+    }
+
+    #[test]
+    fn an_empty_recipe_says_whether_anything_is_displayed_at_all() {
+        let mut scene = Scene::new(vec![crop_descriptor()]).opened(Vec::new());
+        assert_eq!(
+            scene.derive().panel.recipe_caption.as_deref(),
+            Some("Original · no edit layers"),
+            "a displayed entry with no layers is the original, not an empty selection"
+        );
+        scene.display_entry = None;
+        assert_eq!(
+            scene.derive().panel.recipe_caption.as_deref(),
+            Some("No entry displayed")
+        );
+    }
+
+    #[test]
+    fn the_mode_strip_lists_the_pointer_then_every_declared_canvas_mode() {
+        let mut scene = Scene::new(descriptors()).opened(Vec::new());
+        let strip = scene.derive().canvas.modes;
+        assert_eq!(strip[0].id, POINTER_MODE);
+        assert_eq!(strip[0].shortcut.as_deref(), Some("V"));
+        assert!(strip[0].selected, "the pointer is the default mode");
+        let crop = strip
+            .iter()
+            .find(|mode| mode.id == "lightwell.crop")
+            .expect("the crop module declares a canvas mode");
+        assert_eq!(crop.label, "Crop", "the descriptor's own canvas title");
+        assert_eq!(crop.shortcut.as_deref(), Some("R"));
+        assert!(crop.enabled);
+        // A developer module's mode is listed only when the run asked for developer tools.
+        let developer: Vec<String> = scene
+            .modules
+            .iter()
+            .filter(|module| module.developer && module.canvas.is_some())
+            .map(|module| module.id.clone())
+            .collect();
+        for id in &developer {
+            assert!(
+                !strip.iter().any(|mode| &mode.id == id),
+                "{id} is a developer mode and is hidden by default"
+            );
+        }
+        scene.developer = true;
+        let strip = scene.derive().canvas.modes;
+        for id in &developer {
+            assert!(strip.iter().any(|mode| &mode.id == id), "{id} is listed");
+        }
+        // An unavailable module offers no mode at all.
+        scene.modules = vec![ModuleDescriptor {
+            availability: Availability::Unavailable {
+                reason: "disabled by --disable-module".into(),
+            },
+            ..crop_descriptor()
+        }];
+        assert_eq!(scene.derive().canvas.modes.len(), 1, "the pointer alone");
+    }
+
+    #[test]
+    fn the_draft_bar_reads_out_the_draft_and_names_why_apply_is_refused() {
+        let crop = crop_descriptor();
+        let mut scene = Scene::new(vec![crop.clone()]).opened(Vec::new());
+        scene.session.workspace.mode = crop.id.clone();
+        scene.draft = Some(CropDraft::neutral(
+            lightwell_core::CropStage {
+                width: 480,
+                height: 320,
+                angle: 0.0,
+            },
+            3,
+            0,
+        ));
+        let bar = scene.derive().canvas.draft_bar.expect("an open draft");
+        assert_eq!(bar.title, "Crop");
+        assert_eq!(bar.readout, "480 × 320 px · 0°");
+        assert!(bar.can_apply && bar.apply_reason.is_none());
+
+        scene.draft.as_mut().expect("a draft").mark_conflicted();
+        let bar = scene.derive().canvas.draft_bar.expect("an open draft");
+        assert!(!bar.can_apply && bar.conflicted);
+        assert_eq!(
+            bar.apply_reason.as_deref(),
+            Some("Changed elsewhere: discard the draft or reapply it")
+        );
+    }
+
+    #[test]
+    fn a_render_failure_becomes_the_notice_that_names_its_cause() {
+        let unavailable = ModuleDescriptor {
+            availability: Availability::Unavailable {
+                reason: "disabled by --disable-module".into(),
+            },
+            ..crop_descriptor()
+        };
+        let effect = unavailable.effects[0].id.clone();
+        let mut scene = Scene::new(vec![unavailable]).opened(Vec::new());
+        // An unavailable provider on its own is reported by its section header, not by a notice.
+        assert!(scene.derive().canvas.notices.is_empty());
+
+        scene.render_error = Some((
+            lightwell_core::ErrorKind::Incompatible,
+            format!("unavailable effect {effect} (layers l1)"),
+        ));
+        let notice = &scene.derive().canvas.notices[0];
+        assert_eq!(notice.title, "Preview is stale");
+        assert_eq!(
+            notice.body, "Crop is unavailable: disabled by --disable-module",
+            "the notice names the module and the reason, not the effect identity"
+        );
+        assert!(notice.actions.is_empty(), "Locate is a later feature");
+
+        // A layer nothing provides is still named, by its effect identity.
+        scene.render_error = Some((
+            lightwell_core::ErrorKind::Incompatible,
+            "unavailable effect other.effect (layers l1)".into(),
+        ));
+        assert_eq!(
+            scene.derive().canvas.notices[0].body,
+            "No registered module provides other.effect"
+        );
+
+        for (kind, title) in [
+            (
+                lightwell_core::ErrorKind::SourceUnavailable,
+                "Original not found",
+            ),
+            (lightwell_core::ErrorKind::FileAccess, "Original not found"),
+            (lightwell_core::ErrorKind::ResourceLimit, "Rendering limit"),
+        ] {
+            scene.render_error = Some((kind, "the detail".into()));
+            let notice = &scene.derive().canvas.notices[0];
+            assert_eq!(notice.title, title, "{kind:?}");
+            assert_eq!(notice.body, "the detail");
+            assert!(notice.actions.is_empty());
+        }
+        // A kind the workspace has nothing to say about is left to the status bar.
+        scene.render_error = Some((lightwell_core::ErrorKind::Internal, "boom".into()));
+        assert!(scene.derive().canvas.notices.is_empty());
+    }
+
+    #[test]
+    fn the_conflict_notice_names_the_revision_that_arrived() {
+        let crop = crop_descriptor();
+        let mut scene = Scene::new(vec![crop]).opened(Vec::new());
+        let mut draft = CropDraft::neutral(
+            lightwell_core::CropStage {
+                width: 480,
+                height: 320,
+                angle: 0.0,
+            },
+            2,
+            0,
+        );
+        draft.mark_conflicted();
+        scene.draft = Some(draft);
+        let notice = &scene.derive().canvas.notices[0];
+        assert_eq!(notice.title, "Changed elsewhere");
+        assert!(notice.body.contains("revision 3"), "{}", notice.body);
+        assert_eq!(
+            notice
+                .actions
+                .iter()
+                .map(|(label, _)| label.as_str())
+                .collect::<Vec<_>>(),
+            ["Discard", "Reapply"]
+        );
+    }
+
+    #[test]
+    fn the_status_bar_reports_clients_render_state_and_what_the_zoom_means() {
+        let scene = Scene::new(vec![crop_descriptor()]).opened(Vec::new());
+        let status = scene.derive().status;
+        assert_eq!(status.clients, "1 client");
+        assert_eq!(status.render, "Rendered in 41 ms");
+        assert_eq!(status.zoom_text, "Fit", "the session's zoom, not the field");
+        assert_eq!(status.scale_text, "@2.00×");
+
+        let mut inputs = scene.inputs();
+        inputs.clients = Some(3);
+        inputs.rendering = true;
+        let mut workspace = Workspace::default();
+        workspace.derive(&inputs);
+        assert_eq!(workspace.status.clients, "3 clients");
+        assert_eq!(workspace.status.render, "Rendering…");
+
+        // No local server is a stated fact, never a client count of zero.
+        let mut inputs = scene.inputs();
+        inputs.clients = None;
+        inputs.render_ms = None;
+        workspace.derive(&inputs);
+        assert_eq!(workspace.status.clients, "live API unavailable");
+        assert_eq!(workspace.status.render, "Idle");
+    }
+
+    #[test]
+    fn a_historical_preview_disables_every_control_and_withdraws_the_reset() {
+        let crop = crop_descriptor();
+        let mut scene = Scene::new(vec![crop.clone()]).opened(Vec::new());
+        assert!(section(&scene.derive(), &crop.id).reset.is_some());
+        scene.session.preview.selection = lightwell_core::HistorySelection::Entry(EntryId::new());
+        let workspace = scene.derive();
+        let section = section(&workspace, &crop.id);
+        assert!(!section.enabled);
+        assert_eq!(
+            section.disabled_reason.as_deref(),
+            Some("Return to current to edit")
+        );
+        assert!(
+            section.reset.is_none(),
+            "a section that cannot edit offers no reset"
+        );
+        assert!(
+            section.expanded,
+            "the values stay visible while the preview is shown"
+        );
+        fn all_refused(controls: &[ControlModel]) {
+            for control in controls {
+                match control {
+                    ControlModel::Action(action) => {
+                        assert!(!action.runnable, "{} stayed runnable", action.action)
+                    }
+                    ControlModel::Group(group) => all_refused(&group.controls),
+                    ControlModel::CropFrame(frame) => {
+                        assert!(!frame.enabled && !frame.can_start && !frame.can_apply)
+                    }
+                    _ => {}
+                }
+            }
+        }
+        all_refused(&section.controls);
     }
 
     #[test]

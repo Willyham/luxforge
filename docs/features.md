@@ -7,7 +7,7 @@
 | Windows/Linux automated builds and packages | Hosted baseline verified; refresh open | Native desktop checks deferred |
 | License and dependency policy | Enforced | Manual license, native and asset review deferred; two expiring advisory exceptions ([dependencies](engineering/dependencies.md)) |
 | Referenced assets in a SQLite catalog | Implemented (M1) | Stable IDs, fingerprints, explicit missing or changed-source errors |
-| Copyable status and error messages | Implemented | Copy message in the desktop footer copies the full text; JSON failures expose code and message |
+| Copyable status and error messages | Implemented | Copy in the desktop status bar copies the full text; JSON failures expose code and message |
 | Ordered non-destructive edit layers | Implemented (M1) | Stable layer IDs, immutable complete recipe snapshots |
 | Test pixel-change tool | Implemented (M1) | Integer x/y and 8-bit sRGB; exact lossless-buffer proof |
 | Persistent history, undo/redo, append-only Restore | Implemented (M1) | Every committed action; all branches retained |

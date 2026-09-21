@@ -56,6 +56,8 @@ pub(crate) struct Activity {
     pub(crate) orientation: Option<u8>,
     pub(crate) backend: Option<Value>,
     pub(crate) request_started: Instant,
+    /// How long the displayed preview took from its request to its upload, for the status bar.
+    pub(crate) render_ms: Option<f64>,
 }
 
 /// Catalog ownership and the live service start before the window so failures are reported, not panics.
@@ -232,6 +234,9 @@ pub(crate) struct Editor {
     pub(crate) dimensions: Option<(u32, u32)>,
     pub(crate) preview_queue: PreviewQueue,
     pub(crate) preview_generation: u64,
+    /// Why the last preview failed, cleared by the next successful upload. The canvas turns this
+    /// into the notice that names the cause; nothing here decides what it means.
+    pub(crate) render_error: Option<(ErrorKind, String)>,
     pub(crate) uploading: bool,
     pub(crate) busy: bool,
     pub(crate) syncing: bool,
@@ -333,6 +338,7 @@ impl Editor {
                 orientation: None,
                 backend: None,
                 request_started: Instant::now(),
+                render_ms: None,
             },
             evidence,
             diagnostics: config.diagnostics.clone(),
@@ -354,6 +360,7 @@ impl Editor {
             dimensions: None,
             preview_queue: PreviewQueue::default(),
             preview_generation: 0,
+            render_error: None,
             uploading: false,
             busy: false,
             syncing: false,
@@ -431,7 +438,27 @@ impl Editor {
 
     /// The state correlated with every event and captured frame; never includes source paths.
     pub(crate) fn snapshot(&self) -> Value {
-        json!({"run_id":self.run_id,"mode":if self.evidence.is_some() {"evidence"} else {"editor"},"orientation":self.activity.orientation,"phase":self.activity.phase,"requested_generation":self.activity.requested,"displayed_generation":self.activity.displayed,"source_dimensions":self.activity.source_dimensions,"preview_dimensions":self.activity.preview_dimensions,"backend":self.activity.backend,"status":self.status,"error_code":self.activity.error_code,"modules":module_summary(&self.modules),"controls":self.fields.summary(),"crop":self.crop_summary(),"stack":self.stack_summary(),"workspace":serde_json::to_value(&self.session.workspace).unwrap_or(Value::Null),"developer":self.developer,"expanded":self.workspace.expanded()})
+        json!({"run_id":self.run_id,"mode":if self.evidence.is_some() {"evidence"} else {"editor"},"orientation":self.activity.orientation,"phase":self.activity.phase,"requested_generation":self.activity.requested,"displayed_generation":self.activity.displayed,"source_dimensions":self.activity.source_dimensions,"preview_dimensions":self.activity.preview_dimensions,"backend":self.activity.backend,"status":self.status,"error_code":self.activity.error_code,"modules":module_summary(&self.modules),"controls":self.fields.summary(),"crop":self.crop_summary(),"stack":self.stack_summary(),"workspace":serde_json::to_value(&self.session.workspace).unwrap_or(Value::Null),"developer":self.developer,"expanded":self.workspace.expanded(),"notices":self.notice_titles(),"compare":self.compare_return.is_some(),"render_error":self.render_error_summary()})
+    }
+
+    /// The notices the captured frame drew, by title, so a frame's chrome is observable.
+    fn notice_titles(&self) -> Value {
+        Value::Array(
+            self.workspace
+                .canvas
+                .notices
+                .iter()
+                .map(|notice| Value::from(notice.title.clone()))
+                .collect(),
+        )
+    }
+
+    /// The failure the notices were derived from, as its code and detail.
+    fn render_error_summary(&self) -> Value {
+        match &self.render_error {
+            Some((kind, detail)) => json!({"code":kind.code(),"detail":detail}),
+            None => Value::Null,
+        }
     }
 
     /// The committed stack the captured frame belongs to: the revision, the current entry and every
@@ -574,12 +601,10 @@ impl Editor {
             version_form_open: self.version_form_open,
             dimensions: self.dimensions,
             photo: self.photo.is_some(),
-            phase: self.activity.phase,
-            clients: self
-                .live_server
-                .as_ref()
-                .map(LocalServer::connected)
-                .unwrap_or(0),
+            clients: self.live_server.as_ref().map(LocalServer::connected),
+            rendering: self.preview_queue.is_busy() || self.uploading,
+            render_ms: self.activity.render_ms,
+            render_error: self.render_error.as_ref(),
             pointer: self.pointer,
             menu: self.menu.as_ref(),
             palette_open: self.palette_open,
@@ -902,6 +927,9 @@ impl Editor {
                         }
                         Err(error) => {
                             self.status = error.to_string();
+                            // The canvas explains the failure: the kind and the detail are all the
+                            // view model needs to name the cause and offer the allowed actions.
+                            self.render_error = Some((error.kind, error.detail.clone()));
                             if self.activity.pending {
                                 self.activity.pending = false;
                                 self.activity.phase = "error";
@@ -926,6 +954,10 @@ impl Editor {
                         self.photo = Some(allocation);
                         self.dimensions = Some((upload.width, upload.height));
                         self.display_entry = Some(upload.entry_id.clone());
+                        // A frame on screen is the proof the last failure is over.
+                        self.render_error = None;
+                        self.activity.render_ms =
+                            Some(self.activity.request_started.elapsed().as_secs_f64() * 1000.);
                         if self.activity.pending {
                             self.activity.pending = false;
                             self.activity.displayed = self.activity.requested;
@@ -936,19 +968,7 @@ impl Editor {
                             );
                             self.outcome_ready(false);
                         }
-                        let marker = if self.session.preview.can_edit() {
-                            "Current"
-                        } else {
-                            "Previewing history"
-                        };
-                        self.status = format!(
-                            "{marker} · {} × {} · entry {} · snapshot {} · source {}",
-                            upload.width,
-                            upload.height,
-                            short(upload.entry_id.as_str()),
-                            short(&upload.snapshot_id),
-                            short(&upload.source_fingerprint)
-                        );
+                        self.status = self.displayed_status(&upload);
                     }
                     Err(_) => {
                         self.status = "Could not upload rendered pixels".into();
@@ -1104,6 +1124,14 @@ impl Editor {
                 return Task::batch(tasks);
             }
             Message::CompareBegin => {
+                // Compare selects the Original entry, which pauses an open draft: the draft would
+                // have to be resumed on release, and the design keeps one draft and one preview
+                // selection at a time. Refuse it and say so rather than pausing silently.
+                if self.crop.is_some() {
+                    self.status =
+                        "Apply or Cancel the crop draft before comparing with the original".into();
+                    return Task::none();
+                }
                 let (Some(state), Some(original)) = (&self.state, self.original_entry.clone())
                 else {
                     return Task::none();
@@ -1368,6 +1396,37 @@ impl Editor {
         Task::none()
     }
 
+    /// What the status bar says about the frame that just reached the screen. A historical preview
+    /// names the entry it shows by the sequence number the history rows carry, so the status bar
+    /// and the state panel agree about which entry is on screen.
+    fn displayed_status(&self, upload: &Upload) -> String {
+        let marker = if self.session.preview.can_edit() {
+            "Current".to_owned()
+        } else {
+            match self.sequence_of(&upload.entry_id) {
+                Some(sequence) => format!("Previewing entry {sequence}"),
+                None => "Previewing history".to_owned(),
+            }
+        };
+        format!(
+            "{marker} · {} × {} · entry {} · snapshot {} · source {}",
+            upload.width,
+            upload.height,
+            short(upload.entry_id.as_str()),
+            short(&upload.snapshot_id),
+            short(&upload.source_fingerprint)
+        )
+    }
+
+    /// The sequence number of a loaded entry, when the history page holds it.
+    fn sequence_of(&self, entry_id: &lightwell_core::EntryId) -> Option<u64> {
+        self.history
+            .entries
+            .iter()
+            .find(|entry| &entry.id == entry_id)
+            .map(|entry| entry.sequence)
+    }
+
     /// The JSON request one control would send right now, with this desktop's own envelope.
     fn request_for(&mut self, action: &str) -> Option<Value> {
         let Some(state) = &self.state else {
@@ -1532,6 +1591,7 @@ impl Editor {
     fn key_context(&self) -> keymap::KeyContext {
         keymap::KeyContext {
             drafting: self.crop.is_some(),
+            palette_open: self.palette_open,
             modes: self
                 .modules
                 .iter()
@@ -1939,6 +1999,162 @@ mod tests {
         finish(editor, catalog);
     }
 
+    /// Compare selects the Original entry, which would pause an open draft. The rule is simple and
+    /// explicit: it is refused with a reason, and the release that follows a refused hold does
+    /// nothing at all rather than restoring a selection Compare never took.
+    #[test]
+    fn compare_is_refused_while_a_crop_draft_is_open() {
+        let (mut editor, catalog, _, _) = opened(Vec::new(), 1);
+        editor.original_entry = Some(lightwell_core::EntryId::new());
+        let _ = editor.update(Message::Crop(CropMessage::Start));
+        editor.open_draft(CropStage {
+            width: 480,
+            height: 320,
+            angle: 0.0,
+        });
+        let selection = editor.session.preview.selection.clone();
+
+        let _ = editor.update(Message::CompareBegin);
+        assert!(
+            editor.compare_return.is_none(),
+            "no compare hold was taken: {}",
+            editor.status
+        );
+        assert!(
+            editor.status.contains("Apply or Cancel the crop draft"),
+            "{}",
+            editor.status
+        );
+        assert!(editor.crop.is_some(), "the draft is untouched");
+        assert_eq!(editor.session.preview.selection, selection);
+        assert!(!editor.workspace.title.compare_held);
+
+        // The release of a refused hold changes nothing.
+        let _ = editor.update(Message::CompareEnd);
+        assert!(editor.compare_return.is_none());
+        assert_eq!(editor.session.preview.selection, selection);
+        assert!(!editor.busy, "nothing was sent");
+
+        // With the draft gone, Compare works as before and reaches the title bar model.
+        let _ = editor.update(Message::Crop(CropMessage::Cancel));
+        let _ = editor.update(Message::CompareBegin);
+        assert_eq!(editor.compare_return, Some(HistorySelection::Current));
+        assert!(editor.workspace.title.compare_held);
+        assert_eq!(editor.snapshot()["compare"], json!(true));
+        finish(editor, catalog);
+    }
+
+    /// The panel toggles, the mode and the thirds overlay are the owner's per-client workspace
+    /// state: the desktop asks for a change and adopts whatever the session comes back with, so the
+    /// screen follows `session.state` and never a local flag.
+    #[test]
+    fn workspace_state_reaches_the_models_only_through_the_adopted_session() {
+        let (mut editor, catalog, _, _) = opened(Vec::new(), 1);
+        assert!(!editor.workspace.canvas.thirds);
+
+        // The toggle sends the request; nothing changes until the owner answers.
+        let _ = editor.update(Message::ToggleThirds);
+        assert!(
+            !editor.workspace.canvas.thirds,
+            "the desktop holds no flag of its own"
+        );
+        let mut session = ClientSession {
+            revision: 2,
+            ..ClientSession::default()
+        };
+        session.workspace.thirds = true;
+        let _ = editor.update(Message::WorkspaceUpdated(Ok((session.clone(), 3))));
+        assert!(editor.workspace.canvas.thirds);
+        assert_eq!(editor.snapshot()["workspace"]["thirds"], json!(true));
+
+        // A session that hides the state panel hides it and narrows the captured photo surface.
+        let scale = 2.0;
+        let width = 1440.0;
+        let open = view::surface_columns(width, scale, &editor.workspace);
+        assert_eq!(open[0], (view::STATE_PANEL_WIDTH * scale) as u32);
+        session.revision = 3;
+        session.workspace.state_panel = false;
+        let _ = editor.update(Message::WorkspaceUpdated(Ok((session.clone(), 4))));
+        assert!(!editor.workspace.title.state_panel_open);
+        let collapsed = view::surface_columns(width, scale, &editor.workspace);
+        assert_eq!(collapsed[0], 0, "the canvas now starts at the window edge");
+        assert_eq!(collapsed[1], open[1], "the tools panel is still open");
+
+        // And one that hides the tools panel gives the canvas the rest of the width.
+        session.revision = 4;
+        session.workspace.tools_panel = false;
+        let _ = editor.update(Message::WorkspaceUpdated(Ok((session, 5))));
+        assert!(!editor.workspace.title.tools_panel_open);
+        assert_eq!(
+            view::surface_columns(width, scale, &editor.workspace),
+            [0, (width * scale) as u32]
+        );
+        finish(editor, catalog);
+    }
+
+    /// During a historical preview the status bar names the entry by its sequence, the panel keeps
+    /// Return to current and Restore, and the tools panel stays visible with nothing runnable.
+    #[test]
+    fn a_historical_preview_names_the_entry_and_keeps_the_panels_visible() {
+        let (mut editor, catalog, asset, entry_id) = opened(Vec::new(), 4);
+        let older = entry(&asset, 2, None);
+        editor.history.entries.push(older.clone());
+        let upload = Upload {
+            generation: 1,
+            width: 480,
+            height: 320,
+            entry_id: older.id.clone(),
+            snapshot_id: "snapshot-1".into(),
+            source_fingerprint: "source-1".into(),
+            started: Instant::now(),
+        };
+        assert!(
+            editor.displayed_status(&upload).starts_with("Current · "),
+            "the current state is not a preview"
+        );
+
+        editor.session.preview.selection = HistorySelection::Entry(older.id.clone());
+        assert!(
+            editor
+                .displayed_status(&upload)
+                .starts_with("Previewing entry 2 · "),
+            "{}",
+            editor.displayed_status(&upload)
+        );
+        // An entry the loaded page does not hold is still reported, without inventing a number.
+        let unknown = Upload {
+            entry_id: lightwell_core::EntryId::new(),
+            ..upload
+        };
+        assert!(
+            editor
+                .displayed_status(&unknown)
+                .starts_with("Previewing history · ")
+        );
+
+        editor.rederive();
+        assert!(
+            editor.workspace.title.tools_panel_open,
+            "the tools panel stays visible during a preview"
+        );
+        assert_eq!(
+            editor.workspace.panel.preview,
+            Some(crate::state::panel::PreviewControls {
+                can_return: true,
+                can_restore: true
+            })
+        );
+        let section = editor
+            .workspace
+            .tools
+            .all()
+            .next()
+            .expect("the crop section");
+        assert!(!section.enabled && section.reset.is_none());
+        let _ = std::hint::black_box(&entry_id);
+        finish(editor, catalog);
+    }
+
     #[test]
     fn failed_discovery_is_reported_and_never_blocks_evidence() {
         let (mut editor, catalog) = boot();
@@ -1951,6 +2167,36 @@ mod tests {
             editor.status
         );
         finish(editor, catalog);
+    }
+
+    /// Compare is a hold, so the keyboard subscription has to forward releases as well as presses;
+    /// a filter that admitted only presses would leave the original preview stuck on screen.
+    #[test]
+    fn the_event_filter_forwards_key_releases_as_well_as_presses() {
+        let window = iced::window::Id::unique();
+        let key = iced::keyboard::Key::Character("\\".into());
+        let release = iced::Event::Keyboard(iced::keyboard::Event::KeyReleased {
+            key: key.clone(),
+            modified_key: key,
+            physical_key: iced::keyboard::key::Physical::Unidentified(
+                iced::keyboard::key::NativeCode::Unidentified,
+            ),
+            location: iced::keyboard::Location::Standard,
+            modifiers: iced::keyboard::Modifiers::empty(),
+        });
+        assert!(matches!(
+            raw_event(release, iced::event::Status::Ignored, window),
+            Some(Message::Key(..))
+        ));
+        assert!(
+            raw_event(
+                iced::Event::Mouse(iced::mouse::Event::CursorLeft),
+                iced::event::Status::Ignored,
+                window
+            )
+            .is_none(),
+            "a pointer event still never wakes the update function"
+        );
     }
 
     #[test]

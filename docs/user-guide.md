@@ -18,7 +18,7 @@ For agent-driven API or rendered checks on macOS, add `--background` to keep the
 
 Open references an existing supported sRGB or greyscale JPEG without copying or modifying it. Cmd+O on macOS and Ctrl+O elsewhere opens the picker. EXIF orientation is applied once before any edit. The catalog stores stable identities, the source fingerprint, ordered operations and history. It is not a backup of the original photo.
 
-Choose Copy message beside the status text at the bottom of the window to copy the complete message, including any error, to the clipboard. The message stays visible after copying.
+Choose Copy beside the status text at the bottom of the window to copy the complete message, including any error, to the clipboard. The message stays visible after copying. The rest of the status bar reports how many clients the live API has, what the renderer is doing or how long the displayed frame took, and the current zoom with what it means on this display.
 
 ## Edit and inspect
 
@@ -28,7 +28,17 @@ Pixel proof accepts integer x/y coordinates and RGB values from 0 to 255. Coordi
 
 Exact transforms are Rotate left, Rotate right, Mirror horizontal and Flip vertical. Quarter-turns swap dimensions. Order is preserved: a pixel edit before a rotation moves with the image, and one made afterwards addresses the rotated dimensions.
 
-Fit shows the whole image. Enter a percentage from 10 to 1600 and choose Set, or choose 100%. On a high-DPI display, 100% maps one source pixel to one physical framebuffer pixel. Both scroll axes pan content larger than the viewport.
+Fit shows the whole image, centred with a margin of canvas around it. Type a percentage from 10 to 1600 in the field beside it and press Enter, or choose 100%; neither Fit nor 100% is selected while a typed percentage is in force. On a high-DPI display, 100% maps one source pixel to one physical framebuffer pixel. Both scroll axes pan content larger than the viewport.
+
+Hold Compare in the title bar, or hold `\`, to see the Original entry for as long as the key or the button is down; releasing returns to whatever was selected before, without touching history or anything else in the session. Compare is refused while a crop draft is open, and the status bar says so.
+
+A strip floats under the photograph with the pointer, one entry per registered module that declares a canvas mode, and the Thirds overlay. Thirds draws two guides each way over the fitted photograph; at a percentage zoom, and while a crop draft is open, the overlay is left to the crop rectangle's own guides.
+
+Cards appear over the top of the canvas when something needs saying: a draft that was changed elsewhere, a preview that is stale because a stored layer's module is unavailable, an original that cannot be found, or a rendering limit. They name the cause and offer only the actions the core allows; none of them blocks the rest of the screen.
+
+### Keyboard
+
+Letters act only when no text field has focus. `F` fits, `1` is 100%, `O` toggles the thirds overlay, `V` returns to the pointer, and each module's declared letter (`R` for crop and straighten) enters its canvas mode. `\` holds Compare. Cmd+Option+[ and Cmd+Option+] show and hide the two side panels. Cmd+O / Ctrl+O opens a file, Cmd+Z / Ctrl+Z and Shift+Cmd+Z / Shift+Ctrl+Z undo and redo, and Tab and Shift+Tab move between fields.
 
 ### Crop and straighten
 

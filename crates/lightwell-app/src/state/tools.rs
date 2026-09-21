@@ -301,7 +301,11 @@ fn section(
         expanded,
         active,
         unavailable,
-        reset: ResetRef::of(module.reset.as_ref()),
+        // A reset is a mutation, so a section that cannot edit (a historical preview, a request in
+        // flight, a missing provider) offers none at all rather than a dimmed one.
+        reset: enabled
+            .then(|| ResetRef::of(module.reset.as_ref()))
+            .flatten(),
         controls,
         version: previous.map(|previous| previous.version + 1).unwrap_or(1),
         enabled,

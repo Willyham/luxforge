@@ -1,18 +1,22 @@
 //! The keyboard table, as one pure function. Key codes never reach the update function: an event
 //! becomes a semantic message here or nothing at all, so the whole mapping is testable without a
 //! window.
-use crate::app::message::{CropMessage, Message};
+use crate::app::message::{CropMessage, Message, Panel};
 use iced::{
     Event,
     event::Status,
     keyboard::{Event as Keys, Key, key::Named},
 };
+use lightwell_core::POINTER_MODE;
 
-/// What the mapping depends on: whether a draft is open, and the canvas modes the registry offers.
+/// What the mapping depends on: whether a draft is open, whether the palette has the keyboard, and
+/// the canvas modes the registry offers.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct KeyContext {
     /// A crop draft is open, so Enter, Escape, Space and Option drive it.
     pub(crate) drafting: bool,
+    /// The command palette is open, so Escape closes it rather than reaching a draft.
+    pub(crate) palette_open: bool,
     /// The declared canvas-mode shortcut letters and the module each one selects.
     pub(crate) modes: Vec<(char, String)>,
 }
@@ -26,6 +30,13 @@ pub(crate) fn keymap(event: &Event, status: Status, context: &KeyContext) -> Opt
     let Event::Keyboard(keyboard) = event else {
         return None;
     };
+    // Compare is a hold, so its release must arrive whatever has focus: a field that swallowed the
+    // press would otherwise leave the original preview on screen with nothing to end it.
+    if let Keys::KeyReleased { key, .. } = keyboard
+        && character(key, "\\")
+    {
+        return Some(Message::CompareEnd);
+    }
     // The modifier the canvas reads lives in the app, so it follows every change while drafting.
     if context.drafting {
         match keyboard {
@@ -39,7 +50,13 @@ pub(crate) fn keymap(event: &Event, status: Status, context: &KeyContext) -> Opt
             _ => {}
         }
     }
-    let Keys::KeyPressed { key, modifiers, .. } = keyboard else {
+    let Keys::KeyPressed {
+        key,
+        modifiers,
+        repeat,
+        ..
+    } = keyboard
+    else {
         return None;
     };
     if modifiers.command() {
@@ -53,7 +70,24 @@ pub(crate) fn keymap(event: &Event, status: Status, context: &KeyContext) -> Opt
                 Message::Undo
             });
         }
+        if character(key, "k") {
+            return Some(Message::OpenPalette);
+        }
+        // The panel toggles are the one pair that also needs Option, so they cannot collide with a
+        // bracket a field might want.
+        if modifiers.alt() {
+            if character(key, "[") {
+                return Some(Message::TogglePanel(Panel::State));
+            }
+            if character(key, "]") {
+                return Some(Message::TogglePanel(Panel::Tools));
+            }
+        }
         return None;
+    }
+    // The palette owns Escape while it is open, whatever its own query field did with the key.
+    if context.palette_open && matches!(key, Key::Named(Named::Escape)) {
+        return Some(Message::ClosePalette);
     }
     // Tab walks the generated fields; shift is the only modifier it tolerates.
     if matches!(key, Key::Named(Named::Tab))
@@ -78,7 +112,28 @@ pub(crate) fn keymap(event: &Event, status: Status, context: &KeyContext) -> Opt
             _ => {}
         }
     }
-    // A module's declared canvas-mode letter, which acts only when no text field took the key.
+    // Single-key shortcuts act only when no text field took the key, and only on the first press:
+    // holding a letter down must not re-run its command once per repeat.
+    if *repeat {
+        return None;
+    }
+    if character(key, "f") {
+        return Some(Message::Fit);
+    }
+    if character(key, "1") {
+        return Some(Message::HundredPercent);
+    }
+    if character(key, "o") {
+        return Some(Message::ToggleThirds);
+    }
+    if character(key, "v") {
+        return Some(Message::SetMode(POINTER_MODE.into()));
+    }
+    if character(key, "\\") {
+        return Some(Message::CompareBegin);
+    }
+    // A module's declared canvas-mode letter. The host's own letters above are reserved: the
+    // registry rejects a duplicate shortcut, but not one that collides with a host key.
     context
         .modes
         .iter()
@@ -96,6 +151,11 @@ mod tests {
     use iced::keyboard::Modifiers;
 
     fn pressed(key: Key, modifiers: Modifiers) -> Event {
+        held(key, modifiers, false)
+    }
+
+    /// The same press with the toolkit's auto-repeat flag, so a held key is distinguishable.
+    fn held(key: Key, modifiers: Modifiers, repeat: bool) -> Event {
         Event::Keyboard(Keys::KeyPressed {
             key: key.clone(),
             modified_key: key.clone(),
@@ -105,7 +165,19 @@ mod tests {
             location: iced::keyboard::Location::Standard,
             modifiers,
             text: None,
-            repeat: false,
+            repeat,
+        })
+    }
+
+    fn released(key: Key) -> Event {
+        Event::Keyboard(Keys::KeyReleased {
+            key: key.clone(),
+            modified_key: key.clone(),
+            physical_key: iced::keyboard::key::Physical::Unidentified(
+                iced::keyboard::key::NativeCode::Unidentified,
+            ),
+            location: iced::keyboard::Location::Standard,
+            modifiers: Modifiers::empty(),
         })
     }
 
@@ -116,6 +188,7 @@ mod tests {
     fn context() -> KeyContext {
         KeyContext {
             drafting: false,
+            palette_open: false,
             modes: vec![('R', "lightwell.crop".into())],
         }
     }
@@ -127,8 +200,18 @@ mod tests {
             drafting: true,
             ..context()
         };
+        let palette = KeyContext {
+            palette_open: true,
+            ..context()
+        };
+        let drafting_palette = KeyContext {
+            drafting: true,
+            palette_open: true,
+            ..context()
+        };
         let command = Modifiers::COMMAND;
         let shift_command = Modifiers::COMMAND | Modifiers::SHIFT;
+        let option_command = Modifiers::COMMAND | Modifiers::ALT;
         let cases: Vec<(&str, Event, Status, &KeyContext, Option<&str>)> = vec![
             (
                 "close",
@@ -162,6 +245,111 @@ mod tests {
                 "unbound command key",
                 pressed(letter("q"), command),
                 Status::Ignored,
+                &plain,
+                None,
+            ),
+            (
+                "command palette",
+                pressed(letter("k"), command),
+                Status::Ignored,
+                &plain,
+                Some("OpenPalette"),
+            ),
+            (
+                "close the palette",
+                pressed(Key::Named(Named::Escape), Modifiers::empty()),
+                Status::Captured,
+                &palette,
+                Some("ClosePalette"),
+            ),
+            (
+                "the palette's Escape beats a draft's",
+                pressed(Key::Named(Named::Escape), Modifiers::empty()),
+                Status::Ignored,
+                &drafting_palette,
+                Some("ClosePalette"),
+            ),
+            (
+                "toggle the state panel",
+                pressed(letter("["), option_command),
+                Status::Ignored,
+                &plain,
+                Some("TogglePanel"),
+            ),
+            (
+                "toggle the tools panel",
+                pressed(letter("]"), option_command),
+                Status::Ignored,
+                &plain,
+                Some("TogglePanel"),
+            ),
+            (
+                "a bracket without Option",
+                pressed(letter("["), command),
+                Status::Ignored,
+                &plain,
+                None,
+            ),
+            (
+                "fit",
+                pressed(letter("f"), Modifiers::empty()),
+                Status::Ignored,
+                &plain,
+                Some("Fit"),
+            ),
+            (
+                "one hundred percent",
+                pressed(letter("1"), Modifiers::empty()),
+                Status::Ignored,
+                &plain,
+                Some("HundredPercent"),
+            ),
+            (
+                "thirds",
+                pressed(letter("o"), Modifiers::empty()),
+                Status::Ignored,
+                &plain,
+                Some("ToggleThirds"),
+            ),
+            (
+                "pointer mode",
+                pressed(letter("v"), Modifiers::empty()),
+                Status::Ignored,
+                &plain,
+                Some("SetMode"),
+            ),
+            (
+                "compare begins on the first press",
+                pressed(letter("\\"), Modifiers::empty()),
+                Status::Ignored,
+                &plain,
+                Some("CompareBegin"),
+            ),
+            (
+                "a repeated backslash press",
+                held(letter("\\"), Modifiers::empty(), true),
+                Status::Ignored,
+                &plain,
+                None,
+            ),
+            (
+                "a repeated letter press",
+                held(letter("f"), Modifiers::empty(), true),
+                Status::Ignored,
+                &plain,
+                None,
+            ),
+            (
+                "a letter typed into a focused field",
+                pressed(letter("f"), Modifiers::empty()),
+                Status::Captured,
+                &plain,
+                None,
+            ),
+            (
+                "a thirds letter typed into a focused field",
+                pressed(letter("o"), Modifiers::empty()),
+                Status::Captured,
                 &plain,
                 None,
             ),
@@ -264,17 +452,27 @@ mod tests {
             }
         }
         // Space released ends the pan only while a draft is open.
-        let release = Event::Keyboard(Keys::KeyReleased {
-            key: Key::Named(Named::Space),
-            modified_key: Key::Named(Named::Space),
-            physical_key: iced::keyboard::key::Physical::Unidentified(
-                iced::keyboard::key::NativeCode::Unidentified,
-            ),
-            location: iced::keyboard::Location::Standard,
-            modifiers: Modifiers::empty(),
-        });
+        let release = released(Key::Named(Named::Space));
         assert!(keymap(&release, Status::Ignored, &drafting).is_some());
         assert!(keymap(&release, Status::Ignored, &plain).is_none());
+        // Compare's release arrives whatever took the press, and whatever else is open.
+        for (case, status, context) in [
+            ("plain", Status::Ignored, &plain),
+            ("a field has focus", Status::Captured, &plain),
+            ("a draft is open", Status::Ignored, &drafting),
+        ] {
+            let mapped = keymap(&released(letter("\\")), status, context);
+            assert!(
+                mapped
+                    .as_ref()
+                    .is_some_and(|message| format!("{message:?}").starts_with("CompareEnd")),
+                "{case}: {mapped:?}"
+            );
+        }
+        assert!(
+            keymap(&released(letter("f")), Status::Ignored, &plain).is_none(),
+            "no other release is bound"
+        );
         // A registry without canvas modes binds no letters at all.
         let bare = KeyContext::default();
         assert!(

@@ -44,7 +44,7 @@ Where each tool lives, what kind of thing it is and whether it exists. Kinds: **
 | Tool | Where | Kind | Status | Programmable through |
 | --- | --- | --- | --- | --- |
 | Fit, 100%, typed zoom, pan | Title bar, Space-drag | view | Implemented | `view.set` |
-| Compare with original (hold `\`) | Title bar | view | Proposed | `preview.select` and `preview.return-current` on the Original entry |
+| Compare with original (hold `\`) | Title bar | view | Implemented | `preview.select` and `preview.return-current` on the Original entry; refused while a draft is open |
 | Histogram, clipping triangles and overlays, RGB readout | Top of tools panel | core inspector | Proposed ([Basic and histogram](basic-and-histogram.md)) | Histogram and overlay capabilities in that design; readout via `render.sample` |
 | Basic: White balance (Temperature, Tint, Original/Custom, neutral picker), Tone (Exposure, Contrast, Highlights, Shadows, Whites, Blacks), Color (Vibrance, Saturation) | Tools panel, first section | module + picker mode | Proposed ([Basic and histogram](basic-and-histogram.md)) | `edit.set-basic` and the draft lifecycle in that design |
 | Transform: Rotate left/right, Mirror, Flip | Tools panel | module | Implemented (M2, M3) | `edit.transform` |

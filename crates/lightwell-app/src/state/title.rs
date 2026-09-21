@@ -1,15 +1,21 @@
 //! The title bar model: what is open, the view controls and the things that act on the whole photo.
 use crate::state::Inputs;
 
-#[allow(dead_code)]
+/// Which segment of the [Fit, 100%] view control is selected. A typed percentage selects neither,
+/// so the control never claims a zoom the session does not hold.
+pub(crate) const SEGMENT_FIT: usize = 0;
+pub(crate) const SEGMENT_HUNDRED: usize = 1;
+/// No segment: an index the control can never match.
+pub(crate) const SEGMENT_NONE: usize = usize::MAX;
+
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct TitleBarModel {
     pub(crate) file_name: Option<String>,
     pub(crate) dimensions: Option<(u32, u32)>,
     /// The zoom field's text as typed.
     pub(crate) zoom_text: String,
-    pub(crate) fit_selected: bool,
-    pub(crate) hundred_selected: bool,
+    /// Which of [Fit, 100%] the session's zoom selects, or [`SEGMENT_NONE`].
+    pub(crate) zoom_segment: usize,
     /// A photograph is open, so the view controls act on something.
     pub(crate) can_view: bool,
     pub(crate) can_open: bool,
@@ -34,8 +40,11 @@ pub(crate) fn derive(inputs: &Inputs<'_>) -> TitleBarModel {
         }),
         dimensions: inputs.dimensions,
         zoom_text: inputs.zoom.to_owned(),
-        fit_selected: matches!(zoom, lightwell_core::Zoom::Fit),
-        hundred_selected: matches!(zoom, lightwell_core::Zoom::Percent { value } if *value == 100.0),
+        zoom_segment: match zoom {
+            lightwell_core::Zoom::Fit => SEGMENT_FIT,
+            lightwell_core::Zoom::Percent { value } if *value == 100.0 => SEGMENT_HUNDRED,
+            lightwell_core::Zoom::Percent { .. } => SEGMENT_NONE,
+        },
         can_view: inputs.state.is_some(),
         can_open: inputs.can_open,
         can_undo: editable,

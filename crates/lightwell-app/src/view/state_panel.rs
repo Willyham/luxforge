@@ -146,8 +146,8 @@ fn history(model: &StatePanelModel) -> Element<'_, Message> {
 
 fn recipe(model: &StatePanelModel) -> Element<'_, Message> {
     let mut block = column![section_label("Recipe")].spacing(4.0);
-    if model.recipe.is_empty() {
-        block = block.push(lightwell_ui::caption("No layer selected"));
+    if let Some(message) = &model.recipe_caption {
+        block = block.push(lightwell_ui::caption(message.clone()));
         return block.into();
     }
     for (index, layer) in model.recipe.iter().enumerate() {

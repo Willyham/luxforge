@@ -65,6 +65,9 @@ pub(crate) struct StatePanelModel {
     pub(crate) can_load_older: bool,
     pub(crate) preview: Option<PreviewControls>,
     pub(crate) recipe: Vec<RecipeRow>,
+    /// What the recipe block says in place of rows: a displayed entry with no layers is the
+    /// original, and no displayed entry means nothing is open at all.
+    pub(crate) recipe_caption: Option<String>,
     pub(crate) menu: Option<MenuTarget>,
     /// A request is in flight, so nothing here may start another.
     pub(crate) busy: bool,
@@ -72,6 +75,14 @@ pub(crate) struct StatePanelModel {
 
 pub(crate) fn derive(inputs: &Inputs<'_>) -> StatePanelModel {
     let current = inputs.state.map(|state| &state.current_entry.id);
+    let recipe = recipe(inputs);
+    let recipe_caption = recipe.is_empty().then(|| {
+        if inputs.display_entry.is_some() {
+            "Original · no edit layers".to_owned()
+        } else {
+            "No entry displayed".to_owned()
+        }
+    });
     StatePanelModel {
         versions: inputs
             .versions
@@ -110,7 +121,8 @@ pub(crate) fn derive(inputs: &Inputs<'_>) -> StatePanelModel {
             can_return: !inputs.busy,
             can_restore: !inputs.busy,
         }),
-        recipe: recipe(inputs),
+        recipe,
+        recipe_caption,
         menu: inputs.menu.cloned(),
         busy: inputs.busy,
     }

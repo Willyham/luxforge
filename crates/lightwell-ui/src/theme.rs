@@ -46,6 +46,17 @@ pub const CLIPPING_HIGHLIGHT: Color = Color::from_rgb8(0xe5, 0x53, 0x4b);
 /// Shadow clipping indicator. Reserved for clipping.
 pub const CLIPPING_SHADOW: Color = Color::from_rgb8(0x4c, 0x8b, 0xe0);
 
+/// The colour of a composition guide drawn over the photograph (the thirds overlay, the crop
+/// overlay's own thirds). It is [`BORDER`]'s white at the opacity a line needs to stay readable
+/// over an image rather than over a panel, which is why it is its own token and not a reuse of a
+/// chrome colour.
+pub const GUIDE: Color = Color {
+    r: 1.0,
+    g: 1.0,
+    b: 1.0,
+    a: 0.30,
+};
+
 // -- Type sizes -----------------------------------------------------------------------------
 
 /// Control text.
@@ -326,6 +337,12 @@ mod tests {
         assert_eq!(ACCENT, Color::from_rgb8(0xe2, 0xb4, 0x6a));
         assert_eq!(CLIPPING_HIGHLIGHT, Color::from_rgb8(0xe5, 0x53, 0x4b));
         assert_eq!(CLIPPING_SHADOW, Color::from_rgb8(0x4c, 0x8b, 0xe0));
+    }
+
+    #[test]
+    fn the_guide_token_is_white_at_thirty_percent() {
+        assert_eq!((GUIDE.r, GUIDE.g, GUIDE.b), (BORDER.r, BORDER.g, BORDER.b));
+        assert!((GUIDE.a - 0.30).abs() < f32::EPSILON);
     }
 
     #[test]

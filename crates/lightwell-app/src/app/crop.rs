@@ -546,7 +546,15 @@ mod tests {
         assert!(draft.conflicted);
         assert_eq!(draft.rect, composed, "the composition is untouched");
         assert!(editor.crop_request().is_none(), "Apply is refused");
-        assert_eq!(editor.snapshot()["crop"]["conflicted"], json!(true));
+        let snapshot = editor.snapshot();
+        assert_eq!(snapshot["crop"]["conflicted"], json!(true));
+        assert_eq!(
+            snapshot["notices"],
+            json!(["Changed elsewhere"]),
+            "the captured frame records the chrome it drew"
+        );
+        assert_eq!(snapshot["render_error"], json!(null));
+        assert_eq!(snapshot["compare"], json!(false));
 
         // Reapply re-reads the stack and rebases onto the new revision and input stage.
         editor.busy = false;

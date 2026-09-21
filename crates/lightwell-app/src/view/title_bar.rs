@@ -1,18 +1,24 @@
 //! The title bar: the file's identity at the leading edge, the centred view control and, at the
 //! trailing edge, Undo, Redo and the two panel-visibility toggles the design keeps in the bar.
 //!
-//! The view control (Fit, 100%, the typed zoom field) and the status scale caption are the plain
-//! rendering the design defers to the canvas-and-bars task; they are only relocated here, into the
-//! title bar region the five-region layout gives them, not restyled.
+//! The design's title bar carries no Open action, because opening belongs to a library the editor
+//! does not have yet. Until it does, Open stays here as a plain button at the leading edge: without
+//! it a fresh launch could reach no photograph at all.
 use crate::{
     app::message::{Message, Panel},
-    state::{Workspace, title::TitleBarModel},
+    state::{
+        Workspace,
+        title::{SEGMENT_FIT, SEGMENT_HUNDRED, TitleBarModel},
+    },
 };
 use iced::{
-    Alignment, Element,
-    widget::{button, row, text, text_input},
+    Alignment, Element, Length,
+    widget::{button, mouse_area, row, text, text_input},
 };
-use lightwell_ui::{IconButtonModel, icon_button, theme};
+use lightwell_ui::{IconButtonModel, SegmentedModel, icon_button, segmented, theme};
+
+/// How wide the typed-percentage field is: enough for four digits and the caret.
+const ZOOM_FIELD_WIDTH: f32 = 56.0;
 
 /// The file name, its dimensions when known, and the Open action.
 pub(crate) fn identity(model: &TitleBarModel) -> Element<'_, Message> {
@@ -24,33 +30,83 @@ pub(crate) fn identity(model: &TitleBarModel) -> Element<'_, Message> {
                 .clone()
                 .unwrap_or_else(|| "Lightwell".to_owned()),
         )
-        .size(theme::SIZE_TITLE),
+        .size(theme::SIZE_TITLE)
+        .color(theme::TEXT_PRIMARY),
     );
     if let Some((width, height)) = model.dimensions {
-        content = content.push(text(format!("{width} × {height}")).size(theme::SIZE_CAPTION));
+        content = content.push(lightwell_ui::caption(format!("{width} × {height}")));
     }
-    content =
-        content.push(button("Open image").on_press_maybe(model.can_open.then_some(Message::Open)));
+    content = content.push(
+        button(lightwell_ui::label("Open image"))
+            .padding([4.0, 10.0])
+            .style(theme::button_plain)
+            .on_press_maybe(model.can_open.then_some(Message::Open)),
+    );
     content.into()
 }
 
-/// Fit, 100% and a typed percentage, with what 100% means on this display. Kept exactly as today:
-/// the design's segmented look for these controls, the Compare and Clipping toggles, land with the
-/// canvas and bars task.
+/// Fit, 100%, a typed percentage and Compare. Compare is held, not toggled, so it needs both the
+/// press and the release: a plain button would only report one of them, so the control is wrapped
+/// in a `mouse_area` that publishes both, and treats the pointer leaving as a release so a drag off
+/// the button cannot leave the original preview stuck on screen.
 pub(crate) fn view_controls(model: &Workspace) -> Element<'_, Message> {
-    let can_view = model.title.can_view;
+    let title = &model.title;
+    let can_view = title.can_view;
+    let zoom = segmented(
+        &SegmentedModel {
+            options: vec!["Fit".into(), "100%".into()],
+            selected: title.zoom_segment,
+            enabled: can_view,
+        },
+        |index| {
+            if index == SEGMENT_FIT {
+                Message::Fit
+            } else {
+                Message::HundredPercent
+            }
+        },
+    );
+    debug_assert_eq!(SEGMENT_HUNDRED, 1, "the second segment is 100%");
     row![
-        button("Fit").on_press_maybe(can_view.then_some(Message::Fit)),
-        button("100%").on_press_maybe(can_view.then_some(Message::HundredPercent)),
-        text_input("Zoom %", &model.title.zoom_text)
+        zoom,
+        text_input("%", &title.zoom_text)
             .on_input(Message::Zoom)
             .on_submit(Message::ApplyZoom)
-            .width(80),
-        button("Set").on_press_maybe(can_view.then_some(Message::ApplyZoom)),
+            .style(theme::text_input_style(false))
+            .size(theme::SIZE_CONTROL)
+            .width(Length::Fixed(ZOOM_FIELD_WIDTH)),
+        compare(title.compare_held, can_view),
     ]
-    .spacing(6)
+    .spacing(theme::SPACING / 2.0)
     .align_y(Alignment::Center)
     .into()
+}
+
+/// The Compare control. The button carries no `on_press` of its own so it never swallows the press
+/// the `mouse_area` around it needs; its style maps the resulting disabled status back to the
+/// resting one, so a held-not-clicked control still reads as a live control.
+fn compare(held: bool, can_view: bool) -> Element<'static, Message> {
+    let face = button(lightwell_ui::label("Compare"))
+        .padding([4.0, 10.0])
+        .style(move |theme: &iced::Theme, status: button::Status| {
+            let status = match status {
+                button::Status::Disabled => button::Status::Active,
+                other => other,
+            };
+            if held {
+                theme::button_selected(theme, status)
+            } else {
+                theme::button_plain(theme, status)
+            }
+        });
+    if !can_view {
+        return face.into();
+    }
+    mouse_area(face)
+        .on_press(Message::CompareBegin)
+        .on_release(Message::CompareEnd)
+        .on_exit(Message::CompareEnd)
+        .into()
 }
 
 /// Undo, Redo and the two panel-visibility toggles, at the bar's trailing edge.
