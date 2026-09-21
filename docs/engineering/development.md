@@ -27,6 +27,7 @@ Doctor reports missing tools and the graphics environment without installing any
 | Run an agent's editor check without taking focus (macOS) | `cargo xtask develop --background --catalog FILE [--open PATH]` |
 | Exact current-editor journey, display-independent, including the Basic and histogram chapter | `cargo run --release --locked --package xtask -- editor-acceptance --output NEW_DIR` |
 | Core timing on a real-sized JPEG | `cargo run --release --locked --package xtask -- editor-performance --source JPEG --output NEW_DIR [--samples N]` |
+| Desktop slider-to-presented-frame and settled-histogram timing, peak RSS, scratch and idle CPU | `cargo run --release --locked --package xtask -- editor-latency --source JPEG --output NEW_DIR [--binary PATH] [--samples N] [--crop DEGREES] [--idle]` |
 | Verify golden fixtures; generate 24 and 60 MP workloads | `cargo xtask fixtures`, `cargo xtask generate-fixtures [--output NEW_DIR]` |
 | RAW corpus integrity; independent numerical stage references | `cargo xtask raw-corpus --manifest FILE --output NEW_DIR`, `cargo xtask raw-reference --output NEW_DIR` |
 | Authentic RAW editor journey, reopen and resource sampling | `cargo run --release --locked --package xtask -- raw-editor --manifest FILE --output NEW_DIR [--samples N] [--binary PATH]` |
@@ -275,6 +276,26 @@ that the second launch's frame reports `state.render_error.code` `incompatible`,
 naming "Preview is stale", the crop module listed unavailable in `state.modules`, no fixture colour
 drawn anywhere in the photo surface, and the source fixture's hash unchanged throughout. It writes
 `unavailable-checks.json` beside its own two launch directories rather than one `app/` directory.
+
+`editor-latency` is the desktop counterpart to `editor-performance`, which measures `render` on the
+catalog owner's thread and so cannot see scheduling, GPU upload or presentation. It writes its own
+evidence script, drives the release binary through a background evidence launch, and reads the
+timings out of that run's `events.jsonl`. Each measured input is one scripted `slider` step left
+open, so the step settles only once the gesture has drained: one input, one `draft.set`, one preview
+job, one upload, with nothing from the previous input still in flight. `slider_draft_set` gives the
+input's time, `slider_draft_preview` names the preview generation that `draft.set` produced, and the
+`preview_displayed` of that generation is when the pixels became a renderer texture. Presented
+therefore means the desktop's `Uploaded` message, not display scanout: the figures are an upper
+bound on the editor's own work and a lower bound on what an eye sees. The last scripted value also
+releases, so its drafted preview is superseded by the commit — that is the queue cancellation the
+report counts — and it is measured through to the `analysis_adopted` of the committed frame, which
+is the settled exact histogram. A final burst step sends every value between two ticks to show the
+driver's coalescing. `--crop DEGREES` commits a straightening 16:9 crop first, so the measured stack
+carries the crop resample as well as the colour pass. `--idle` adds a second workload: one evidence
+run commits a Basic layer with all ten fields non-neutral into a catalog that outlives it, then an
+ordinary launch reopens the same file from that catalog and is left alone for thirty seconds, which
+is where peak RSS with a full stack and idle CPU come from. `latency.json` and `resources.json` keep
+every sample, the scratch budget's high-water mark and the correlated state.
 
 On macOS, smoke, hardening, measurement and probe subprocesses always use the same background bundle as `develop --background`. Reports record `launch_mode`; reproduce through the harness to preserve focus protection. A native graphical session is still required. Windows and Linux retain direct launches; background behavior is not claimed there. Measurement launch times include the temporary bundle and executable copy, so they do not measure normal foreground activation.
 

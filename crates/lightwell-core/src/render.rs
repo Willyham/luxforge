@@ -82,11 +82,15 @@ const DEFAULT_SCRATCH_BYTES: u64 = 64 * 1024 * 1024;
 pub struct ScratchBudget {
     limit: AtomicU64,
     used: AtomicU64,
+    /// The largest `used` any reservation ever reached, so a process that is idle when it is asked
+    /// can still report what the budget actually had to carry. It is only ever raised.
+    peak: AtomicU64,
 }
 
 static SCRATCH_BUDGET: ScratchBudget = ScratchBudget {
     limit: AtomicU64::new(DEFAULT_SCRATCH_BYTES),
     used: AtomicU64::new(0),
+    peak: AtomicU64::new(0),
 };
 
 impl ScratchBudget {
@@ -111,12 +115,20 @@ impl ScratchBudget {
         self.used.load(Ordering::SeqCst)
     }
 
+    /// The high-water mark of [`Self::in_use`] since the process started. A render's scratch is
+    /// released as soon as its chunk is done, so `in_use` observed from outside a pass is almost
+    /// always zero; this is what makes the budget observable after the fact.
+    pub fn peak(&self) -> u64 {
+        self.peak.load(Ordering::Relaxed)
+    }
+
     /// Reserve `bytes` or fail with `ResourceLimit`. The reservation is released when the returned
     /// guard is dropped, including on an early return from the work it covers.
     fn reserve(&self, bytes: usize) -> Result<Reservation<'_>, Error> {
         let bytes = bytes as u64;
         let limit = self.limit();
-        self.used
+        let total = self
+            .used
             .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |used| {
                 used.checked_add(bytes).filter(|total| *total <= limit)
             })
@@ -127,7 +139,11 @@ impl ScratchBudget {
                         "colour processing needs {bytes} bytes of scratch, and {used} of the {limit} byte budget is in use"
                     ),
                 )
-            })?;
+            })?
+            + bytes;
+        // One relaxed maximum beside the reservation that already happened: the counter is only
+        // read by diagnostics, so no other value depends on the order it becomes visible in.
+        self.peak.fetch_max(total, Ordering::Relaxed);
         Ok(Reservation {
             budget: self,
             bytes,

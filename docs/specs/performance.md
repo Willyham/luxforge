@@ -51,146 +51,235 @@ Native M4 Pro, release builds, warm filesystem cache, synthetic fixtures. Diagno
 | Core one transform on 24 MP after the module registry (p50 / p95, 20 samples) | 12.2 / 13.5 ms; 200 composed transforms 11.4 / 11.9 ms; registration of the built-in modules 0.18 ms and first render after open 0.05 ms on the 480×320 fixture (release acceptance run) |
 | Editor RSS after M1/M2 journey with a small fixture | about 101 MiB, 0.2% CPU idle |
 
-With the crop module, `editor-performance` on 24 and 60 MP, 30 samples each, warm cache. The crop
-rows render the whole stack: 200 composed exact transforms and then one straightened crop, whose
-resample is a stage boundary, so the difference between the two rows is the interpolating pass.
+### Host and build for the current JPEG editor baseline
 
-| Measurement | 24 MP | 60 MP |
+Native Apple M4 Pro (14 cores), 48 GiB RAM, macOS 26.5.2 (25F84), Metal on the `Apple M4 Pro`
+adapter, a 2880 × 1800 physical window at 2× scale; files on the internal APFS SSD. Release builds,
+`--locked`, background-only launches, warm filesystem cache without an OS cache purge. Application
+SHA-256 `2960abd8bcc922b43db7170e8579ff60df56a1177f86d8658e332dbb649239ed`, Cargo.lock SHA-256
+`e1f96098ab03786e8976afd4e0ed78b0ed3d4c58cd071c032390552c97b4a600`. Fixtures are
+`fixtures/generated/24mp.jpg` (6000 × 4000, SHA-256 `b54c2a15…`) and `fixtures/generated/60mp.jpg`
+(10000 × 6000, SHA-256 `b9e0118a…`). The host is shared with other sessions: the one-minute load
+average was between 2.3 and 5.7 at the start of every run recorded below, and the `editor-performance`
+runs themselves drive the shared Rayon pool across all cores, so these are diagnostic samples on a
+live machine, not a quiesced benchmark.
+
+### Core render, one run, 30 samples per recipe
+
+`editor-performance` on 24 and 60 MP, 30 samples each, release, warm cache. Every row below comes
+from **one** invocation per size, so the rows are directly comparable to each other; earlier
+per-task rows measured in separate runs are superseded (see the note after the table). This is
+core request-to-render on the catalog owner's thread only: no desktop scheduling, GPU upload or
+presentation. The colour rows all render the same 200-transform-and-10°-crop stack with one Basic
+layer inserted where the host places a colour-stage commit, compiled by the real `lightwell.basic`
+module, so the difference between a colour row and the baseline row is that unit's own per-pixel
+work on identical frames.
+
+| Measurement (p50 / p95 ms) | 24 MP | 60 MP |
 | --- | --- | --- |
-| Core render of one exact transform (p50 / p95) | 10.7 / 11.2 ms | 22.7 / 26.0 ms |
-| Core render of 200 composed exact transforms (p50 / p95) | 10.7 / 11.1 ms | 22.5 / 24.2 ms |
-| The same stack with a 10° `crop-fit` on top (p50 / p95) | 33.2 / 37.7 ms | 70.5 / 77.0 ms |
-| Crop output stage that measures | 3695 × 2077 from a 4000 × 6000 input | 5542 × 3116 from a 6000 × 10000 input |
+| Identity recipe (shared source buffer, no frame allocated) | under 0.01 / 0.01 | under 0.01 / 0.01 |
+| One exact transform | 10.9 / 15.0 | 24.6 / 38.5 |
+| 200 transform actions folded into one orientation layer | 10.7 / 12.7 | 22.1 / 26.1 |
+| The same stack with a 10° `crop-fit` on top | 33.7 / 68.9 | 69.7 / 85.4 |
+| Colour baseline: the same stack, no colour layer | 32.8 / 41.4 | 69.7 / 74.6 |
+| … with one `+1 EV` Basic layer (Exposure) | 48.3 / 55.9 | 111.9 / 120.7 |
+| … with `+1 EV` and all five Tone fields | 80.8 / 105.2 | 196.4 / 210.8 |
+| … with `vibrance 50, saturation 20` (the fused `ColourAdjust` unit) | 106.0 / 117.3 | 273.6 / 289.9 |
+| … with `temperature 30, tint −10` (white balance) | 53.4 / 70.3 | 128.0 / 136.4 |
+| `analysis::reduce_raster` alone, over an already-rendered raster | 6.9 / 7.7 | 17.4 / 27.5 |
+| `query.neutral-sample`: the whole picker, 25 point samples | 0.01 / 0.03 | 0.02 / 0.03 |
+| `crop-fit` commit: validation, fitting, compile and persistence, no render | 0.79 (single) | 0.85 (single) |
+| Import | 54.4 (single) | 127.3 (single) |
+| Reopen: source and preview job after a fresh `EditorService` | 30.5 (single) | 89.9 (single) |
 
-With the orientation layer and content-space placement, the 24 MP rows re-measured on the M4 Pro (release, 30 samples, warm cache, core request-to-render only) at 10.3 / 14.3 ms for one transform, 10.5 / 11.1 ms for 200 transform actions folded into one orientation layer and 31.5 / 34.0 ms with the 10° `crop-fit` on top; the crop-fit commit fell from 1.2 to 0.6 ms because it plans against a one-layer prefix instead of two hundred. 60 MP was not re-measured.
-| `crop-fit` commit: validation, fitting, compile and persistence, no render | 1.3 ms | 0.9 ms |
-| Identity render from the cached decode (shared buffer, no copy) | under 0.01 ms | under 0.01 ms |
+The crop output stage measures 3695 × 2077 from the rotated 4000 × 6000 input at 24 MP and
+5542 × 3116 from 6000 × 10000 at 60 MP. Against the colour baseline on the same run, each unit's own
+added cost at the median is about 15 ms (24 MP) and 42 ms (60 MP) for Exposure's single multiply,
+48 ms and 127 ms for Exposure plus the three composed Tone curve stages, 73 ms and 204 ms for the
+fused Oklab `ColourAdjust`, and 21 ms and 58 ms for the one composite 3 × 3 linear-sRGB white-balance
+matrix. The neutral picker is not a frame operation: it evaluates 25 point samples of the stage the
+Basic layer receives at `O(layers)` each and allocates no frame, so its cost does not grow with the
+pixel count.
 
-With the Basic module's Exposure parameter, `editor-performance` on 24 and 60 MP, 30 samples each,
-release, warm cache, on the M4 Pro; core render only, with no desktop scheduling, GPU upload or
-presentation. Each row renders the same recipe through `render`, so the difference between the last
-two rows is the streamed pointwise colour pass alone: the same frames are materialized either way.
+**Superseded rows.** This table replaces the following earlier records, each of which came from its
+own separate invocation on the same host and is no longer the current figure: the crop-module table
+(one transform 10.7 / 11.2 ms and 22.7 / 26.0 ms, 200 composed transforms, and the 10° `crop-fit`
+stack at 33.2 / 37.7 ms and 70.5 / 77.0 ms); the orientation-layer re-measurement of the 24 MP rows
+(10.3 / 14.3, 10.5 / 11.1 and 31.5 / 34.0 ms, with the `crop-fit` commit falling from 1.2 to 0.6 ms
+once it plans against a one-layer prefix); the Exposure row (56.3 / 123.4 ms and 129.4 / 221.3 ms,
+whose tails followed the allocator rather than the pass); the Exposure-plus-Tone row (95.7 / 139.1 ms
+and 235.0 / 264.7 ms); the separate-unit Vibrance/Saturation row (150.8 / 163.2 ms and
+402.3 / 594.1 ms) and its fused replacement measured under heavy host load (107.6 / 112.4 ms and
+357.8 / 440.3 ms); and the Temperature/Tint run (50.9 / 54.9 ms and 122.4 / 133.3 ms with its own
+31.8 / 34.4 ms and 68.9 / 73.8 ms baseline). The conclusion those rows were recorded for still
+holds — fusing Vibrance and Saturation into one Oklab round trip removed a whole conversion pair,
+and `ColourAdjust` remains the most expensive single unit — but the numbers above are the ones to
+quote.
 
-| Measurement | 24 MP | 60 MP |
-| --- | --- | --- |
-| Identity recipe (shared source buffer, no frame) | under 0.01 ms | under 0.01 ms |
-| The 200-transform and 10° crop stack, no colour layer (p50 / p95) | 35.2 / 42.4 ms | 85.6 / 142.4 ms |
-| The same stack with one `+1 EV` Basic layer (p50 / p95) | 56.3 / 123.4 ms | 129.4 / 221.3 ms |
+### Desktop slider-to-presented-frame and settled histogram
 
-The colour pass costs about 21 ms at 24 MP and 44 ms at 60 MP at the median. Both p95 tails are far
-above their medians (123 ms and 221 ms) because the run materializes two photo-sized frames per
-sample and the tail follows the allocator, not the pass; the slider-to-presented-frame threshold in
-the [Basic design](../design/basic-and-histogram.md#resource-and-responsiveness-constraints) is a
-desktop measurement that this core-only diagnostic does not make. Recorded here with that scope; no
-threshold is claimed met or missed from these numbers alone.
+`editor-latency`, release, warm cache, background evidence launches on the host above, 30 samples
+each. This is the desktop measurement the core rows cannot make. **Presented means the desktop's
+`Uploaded` message**, recorded as the `preview_displayed` event: the rendered pixels have become a
+renderer texture and the canvas draws them from the next frame on. It is **not** display scanout,
+which the harness cannot observe, so every figure is an upper bound on the editor's own work and a
+lower bound on what an eye sees.
 
-With the Basic module's five Tone fields (Contrast, Highlights, Shadows, Whites, Blacks) added,
-`editor-performance` on 24 and 60 MP, 30 samples each, release, warm cache, on the M4 Pro; core
-render only. The same 200-transform-and-10°-crop stack as the row above, with one Basic layer
-holding `exposure` and all five Tone fields non-neutral, compiled by the real `lightwell.basic`
-module into two real pointwise units (`Exposure`, then `Tone`) run as one streamed colour pass.
+Each measured input is one scripted `slider` step left open, so the step settles only when the
+gesture has drained: one input, one `draft.set`, one preview job, one upload, with nothing from the
+previous input still in flight. The interval runs from the `slider_draft_set` event to the
+`preview_displayed` of the preview generation that `draft.set` produced, correlated by generation
+and cross-checked against the draft revision on both ends.
 
-| Measurement | 24 MP | 60 MP |
-| --- | --- | --- |
-| The 200-transform and 10° crop stack, no colour layer (p50 / p95) | 37.3 / 46.0 ms | 135.1 / 274.6 ms |
-| The same stack with one `+1 EV` Basic layer, exposure only (p50 / p95) | 53.1 / 60.8 ms | 129.2 / 148.5 ms |
-| The same stack with `+1 EV` exposure and all five Tone fields (p50 / p95) | 95.7 / 139.1 ms | 235.0 / 264.7 ms |
+| Interaction (p50 / p95 ms, 30 samples) | 24 MP | 24 MP + 7° crop | 60 MP |
+| --- | --- | --- | --- |
+| Input to presented frame | 74.8 / 83.4 | 150.3 / 170.2 | 125.0 / 141.3 |
+| … of which `draft.set` round trip on the owner | 8.3 / 9.2 | 32.7 / 34.2 | 8.2 / 16.7 |
+| … of which render and GPU upload | 66.6 / 75.1 | 117.9 / 143.8 | 116.7 / 133.1 |
+| … of which the GPU upload the desktop times itself | 32.5 / 33.6 | 33.4 / 50.9 | 49.7 / 50.5 |
+| Final input to settled exact histogram | 99.7 / 107.0 | 184.7 / 213.3 | 185.4 / 208.8 |
+| … of which commit to settled histogram | 91.6 / 100.1 | 176.3 / 208.4 | 177.4 / 200.3 |
 
-The Tone unit's own added cost over the exposure-only row is about 43 ms at the 24 MP median and
-about 106 ms at the 60 MP median; both rows compile a second `PointwiseColor` unit into the same
-streamed colour operation, so this reflects the `Tone` unit's own per-pixel work (encode/decode
-through the extended sRGB transfer function plus the three composed curve stages), not a second
-render or a second frame allocation. As with the exposure-only row, this is a core-only diagnostic
-without desktop scheduling, GPU upload or presentation; no responsiveness threshold is claimed met
-or missed from these numbers alone. The baseline row's own run-to-run variance (24 MP p50 37.3 ms
-here versus 35.2 ms in the row above, both from independent `editor-performance` invocations on the
-same host) is a useful reminder that these are diagnostic samples, not a controlled A/B on identical
-process state.
+The settled-histogram rows come from a companion `--mode commit` run of 30 samples, where each step
+is a whole gesture moved and released at once, so every sample is one committed frame and its own
+exact report. A drafted preview is never analysed — the design keeps the plot labelled stale during
+a gesture — so the exact histogram is always reduced from the frame the commit's own refresh
+renders, and `analysis_adopted` is the moment that frame and its report are adopted together. The
+drag runs measure the same interval once each and agree: 74.8 / 90.3 ms at 24 MP, 239.5 / 248.3 ms
+on the crop stack and 182.2 / 200.9 ms at 60 MP, from two commits each.
 
-With Vibrance and Saturation added to the Basic module (TASK-016) as two separate `PointwiseColor`
-units, the same diagnostic on 24 and 60 MP, 30 samples each, release, warm cache, M4 Pro, measured
-against the same `colour_baseline_same_stack_without_colour` row on that run (32.7 / 35.1 ms at
-24 MP, 87.6 / 100.9 ms at 60 MP; run-to-run variance against the table above, same scope: core
-render only, no desktop scheduling, GPU upload or presentation), gave a `vibrance: 50, saturation:
-20` Basic layer (two Oklab units, one per parameter) a p50/p95 of 150.8 / 163.2 ms at 24 MP and
-402.3 / 594.1 ms at 60 MP — a colour-pass cost, against that run's own baseline, of about 118 ms at
-24 MP and 315 ms at 60 MP, against about 17 ms and 33 ms for the single-unit `+1 EV` exposure pass
-measured the same way. Each Oklab unit round-trips every pixel through `to_oklab`/`from_oklab` once
-(two signed cube roots and two 3×3 matrix products each way), so the two separate units cost close
-to double one exposure unit's single multiply-only pass, with a second, avoidable round trip: the
-saturation unit re-converts the pixel vibrance already adjusted, discarding and immediately
-recomputing values the vibrance unit already held.
+The crop stack is slower than plain 60 MP at the input-to-frame median because its `draft.set` round
+trip is four times longer: the owner replans the crop prefix on every set. Its render and upload are
+close to 60 MP's despite a much smaller output stage (5653 × 3180), which is the crop resample's own
+interpolating pass.
 
-Vibrance and Saturation were subsequently fused into one `ColourAdjust` unit (`colour.rs`): it
-converts to Oklab once, computes vibrance's chroma-/hue-dependent gain and saturation's uniform
-gain from that one conversion, scales `a`/`b` by their combined factor, and converts back once,
-mathematically identical to the sequential pair (`docs/design/basic-colour.md`'s frozen equations
-are unchanged; the two are within `1e-6` to `2.5e-5` of each other depending on how far out of
-gamut the input is — see `colour_adjust_matches_the_sequential_pair_within_the_frozen_tolerance` in
-`colour.rs`) but without the second round trip. Re-measured the same way, 30 samples each, release,
-warm cache, M4 Pro (host under heavy concurrent load from other sessions at measurement time — load
-average around 14–20 on a 14-core M4 Pro, so these figures carry more run-to-run noise than usual,
-particularly at 60 MP; a second back-to-back run's 60 MP delta ranged from 169 ms to 233 ms against
-the same 118 ms/315 ms before-figures above):
+### Queue cancellation during a gesture
 
-| Measurement | 24 MP | 60 MP |
-| --- | --- | --- |
-| Before: two separate Oklab units (p50 / p95) | 150.8 / 163.2 ms | 402.3 / 594.1 ms |
-| After: one fused `ColourAdjust` Oklab unit (p50 / p95) | 107.6 / 112.4 ms | 357.8 / 440.3 ms |
+From the same runs, counted out of the event log. Two separate bounds hold.
 
-Against each run's own baseline (32.7 ms / 87.6 ms before; 31.7 ms / 188.8 ms after — the 60 MP
-baseline itself moved between runs under the load noted above, which is why the delta below, not
-the raw after-figure, is the comparable number), the colour pass's own added cost dropped from about
-118 ms to about 76 ms at 24 MP (roughly a third less) and from about 315 ms to somewhere in the
-169–233 ms range at 60 MP across repeated runs (roughly a quarter to close to half less), consistent
-with removing one of the two round trips through the independently rounded inverse matrices while
-keeping the same per-pixel vibrance weight computation. The 60 MP p95 sits well above its median for
-the same allocator-tail reason noted above; no desktop responsiveness threshold is claimed met or
-missed from this core-only number.
+| Observation | 24 MP drag | 24 MP commit | 60 MP drag | 60 MP commit |
+| --- | --- | --- | --- | --- |
+| Scripted slider values | 62 | 30 | 62 | 30 |
+| `draft.set` requests sent | 32 | 30 | 32 | 30 |
+| Preview jobs requested | 32 | 30 | 32 | 30 |
+| Preview jobs superseded before display | 2 | 30 | 2 | 30 |
+| Commits | 2 | 30 | 2 | 30 |
+| Analysis reports adopted | 3 | 31 | 3 | 31 |
+| Analysis jobs superseded | 0 | 0 | 0 | 0 |
 
-With the Basic module's Temperature and Tint, `editor-performance` re-run on 24 and 60 MP, 30 samples
-each, release, warm cache, on the M4 Pro; core render only, with no desktop scheduling, GPU upload or
-presentation. The baseline and the exposure row were re-measured in the same run, so the three colour
-rows are directly comparable to each other; they are faster than the exposure figures recorded above,
-which came from a separate run, so compare rows within a run and not across runs.
+The first bound is the gesture driver's. A drag step that sends 31 values between two ticks produces
+exactly **one** `draft.set` and one preview job: the driver keeps at most one round trip in flight
+and only the newest value waiting, so intermediate values are coalesced and never reach the owner at
+all. That is why 62 scripted values become 32 requests in the drag runs.
 
-| Measurement | 24 MP | 60 MP |
-| --- | --- | --- |
-| The 200-transform and 10° crop stack, no colour layer (p50 / p95) | 31.8 / 34.4 ms | 68.9 / 73.8 ms |
-| The same stack with one `+1 EV` Basic layer (p50 / p95) | 46.6 / 49.9 ms | 110.0 / 126.3 ms |
-| The same stack with one `temperature 30, tint −10` Basic layer (p50 / p95) | 50.9 / 54.9 ms | 122.4 / 133.3 ms |
-| `query.neutral-sample`: the whole picker, 25 point samples (p50 / p95) | 0.013 / 0.024 ms | 0.015 / 0.027 ms |
+The second bound is the preview queue's. Every commit supersedes the drafted preview of the value it
+commits, because the commit's own refresh requests a newer generation before the drafted pixels are
+uploaded; the superseded frame is rejected on generation rather than drawn. In the commit runs all
+30 drafted previews are superseded this way. In the drag runs only the two releases supersede
+anything, because the open steps drain one at a time by construction. **No analysis job is
+superseded in any run**: a drafted preview is never analysed, so the only reductions are the ones
+belonging to committed frames, and each is adopted with the pixels it was reduced from.
 
-The white-balance pass costs about 19 ms at 24 MP and 54 ms at 60 MP at the median, roughly 4 ms and
-12 ms more than exposure's single scalar multiply on the same frames: the unit is one composite 3 × 3
-linear-sRGB matrix per pixel, folded once in `f64` at compile time and applied in `f32`, against
-exposure's one multiply. The neutral picker is not a frame operation at all. It evaluates 25 point
-samples of the stage the Basic layer receives, each at `O(layers)` through the compiled stack, and
-allocates no frame, so a pick costs about 0.015 ms on the catalog owner at either size and does not
-grow with the image. Its cost grows with the stack depth, not the pixel count. Recorded with that
-scope; no threshold is claimed met or missed from these numbers alone.
+### Memory, scratch and idle with a full Basic layer
 
-Editor process measurements from `measure`, five app-cold launches per workload plus one repeated
-60 MP run, on the same host. Launch to observed frame is an upper bound: it includes the harness's
-capture readback, not scanout.
+`editor-latency --idle` holds one 24 MP image with a Basic layer in which all ten fields are
+non-neutral (`exposure 0.5, contrast 25, highlights −30, shadows 30, whites −15, blacks 15,
+temperature 20, tint −10, vibrance 30, saturation 15`) and the histogram on — the tools panel is
+open by default and the captured state confirms `tools_panel: true` with the plot `ready` and not
+stale. RSS is sampled by `ps` about every 50 ms and includes captures, GPU resources and allocator
+retention; it is not a CPU-heap figure and GPU memory is not separated.
 
 | Measurement | Result |
 | --- | --- |
-| Launch to observed frame (empty / 24 MP / 60 MP) | median 231 / 285 / 396 ms |
-| Open request to captured frame (24 / 60 MP) | median 196 / 303 ms, of which upload 27 / 67 ms |
-| Sampled peak RSS (empty / 24 / 60 MP) | 124 / 469 / 987 MiB; 1151 MiB after sixteen 60 MP loads |
-| Idle CPU with a 60 MP image open, 30 s after settling | 1.03% of one core, RSS flat at 967 MiB |
+| Peak RSS, 24 MP, gesture process committing the full Basic layer | 645.3 MiB |
+| Peak RSS, 24 MP, second process holding that committed layer | 568.2 MiB, settling to 408.0 MiB |
+| Idle CPU, 24 MP with the full Basic layer, 30 s after settling | 1.46% of one core |
+| Scratch budget high-water mark, 24 MP colour pass | 14 112 000 B (13.46 MiB) of the 64 MiB limit |
+| Scratch budget high-water mark, 60 MP colour pass | 13 440 000 B (12.82 MiB) of the 64 MiB limit |
+| Peak RSS during a 30-input 24 MP latency run (32 window captures retained) | 1336.5 MiB |
+| Peak RSS during a 30-input 60 MP latency run (32 window captures retained) | 2143.0 MiB |
 
-That last figure sits just above the provisional idle budget. It is one 30-second sample with a
-60 MP image open, so the 500 ms event poll and the window's own redraws are included; it is a
-measurement to reproduce and attribute, not an accepted regression.
+The scratch figure is the point of `ScratchBudget::peak`: a reservation is released as soon as its
+chunk is done, so `in_use` read from outside a pass is always zero and only the high-water mark says
+what the budget carried. It is stable across image size because the colour pass streams bounded row
+chunks — at most one megabyte of `[f32; 3]` per Rayon worker — so scratch scales with the worker
+count, not the pixel count. The two latency-run peaks are **not** working-set figures: those runs
+retain a full-window PNG readback for each of 32 captured frames, which is harness cost, and they are
+recorded only so the number is not mistaken for one later.
+
+### Editor process measurements, before and after this work
+
+`measure`, five app-cold launches per workload plus one repeated 60 MP run, on the host above. The
+"before" column is the binary built from `3c5def1` (`main` before the Basic panel and histogram,
+SHA-256 `ff9eecab…`), measured in the same session minutes apart from the same fixtures, so the two
+columns share host conditions. Launch to observed frame is an upper bound: it includes the temporary
+background bundle, the executable copy and the harness's capture readback, not scanout.
+
+| Measurement | Before `3c5def1` | After |
+| --- | --- | --- |
+| Launch to observed frame, empty (median / p95) | 632.9 / 689.7 ms | 671.2 / 751.7 ms |
+| Launch to observed frame, 24 MP (median / p95) | 689.3 / 734.7 ms | 734.7 / 742.5 ms |
+| Launch to observed frame, 60 MP (median / p95) | 802.6 / 859.0 ms | 808.8 / 857.4 ms |
+| Sampled peak RSS (empty / 24 / 60 MP, median) | 143.7 / 489.2 / 967.4 MiB | 133.2 / 466.0 / 975.0 MiB |
+| Sampled peak RSS after sixteen 60 MP loads | 1316.0 MiB | 1316.4 MiB |
+| Open request to captured frame (24 / 60 MP, median) | 219.7 / 314.1 ms | 222.2 / 314.3 ms |
+| … of which GPU upload (24 / 60 MP, median) | 21.3 / 55.8 ms | 21.4 / 52.3 ms |
+| Open to full-resolution CPU raster (24 / 60 MP, median) | 172.7 / 239.9 ms | 178.1 / 240.7 ms |
+| Idle CPU with a 60 MP image open, 30 s after settling | 0.93% of one core | 1.29% of one core |
+
+Registering the Basic module and the histogram adds no measurable launch cost: the medians differ by
+38, 45 and 6 ms across the three workloads with five samples each, the p95 differences are mixed in
+direction, and the empty-shell median moves by more than the 60 MP one, which neither a per-image
+cost nor a fixed registration cost could produce. Registration of the built-in modules was measured
+at 0.18 ms when the registry was introduced, three orders of magnitude below this spread. Peak RSS is lower after the change at the empty and 24 MP workloads and 8 MiB higher at
+60 MP, and identical after sixteen 60 MP loads. Both columns sit far above the 233 / 296 / 412 ms
+S0 viewer launch medians in the table above, and above the 231 / 285 / 396 ms an earlier `measure`
+run recorded for the RAW-era build; because before and after agree here, that gap belongs to the
+host and OS state of this session, not to this change, and those older figures should not be
+compared against these.
+
+Idle CPU is the one figure that moved: 0.93% before against 1.29% after, one 30-second sample each
+with a 60 MP image open. The companion 24 MP run with a full Basic layer measured 1.46%. These are
+single samples, and the 500 ms event poll and the window's own redraws are inside all of them, but
+the direction is consistent and the histogram plot is now drawn on each of those redraws. It is a
+measurement to attribute, not an accepted regression, and it is reported as a miss below.
+
+### Provisional targets: measured
+
+Each target with the figure that answers it. A miss is a finding for the owner's review, not a
+blocker, and no approximate processing, cache or timer was added to reach any of these.
+
+| Provisional target | Measured | Verdict |
+| --- | --- | --- |
+| Warm 24 MP slider-to-presented-frame p95 below 100 ms | 83.4 ms p95 (74.8 p50, 30 samples) | **Pass** |
+| Settled exact histogram p95 below 200 ms after the final input, 24 MP | 107.0 ms p95 (99.7 p50, 30 samples) | **Pass** |
+| Scratch aggregate at most 64 MiB | 13.46 MiB high-water at 24 MP, 12.82 MiB at 60 MP | **Pass** |
+| 24 MP single-image edit working set ≤ 600 MiB CPU-resident | 645.3 MiB peak in the process that commits the full Basic layer, which also retains two full-window capture readbacks; 568.2 MiB in a second process holding the same committed layer with no captures, settling to 408.0 MiB | **Miss by 45 MiB** on the capturing process, **pass** on the same stack without the harness's captures |
+| 60 MP peak ≤ 1 GiB process RSS | 975.0 MiB median peak on a 60 MP open; 1316.4 MiB after sixteen consecutive 60 MP loads | **Pass** on one image, **miss** on the sixteen-load workload (unchanged from before this work: 1316.0 MiB) |
+| Idle CPU < 1% of one core over 30 s | 1.29% with a 60 MP image open; 1.46% with a 24 MP full Basic layer; 0.93% for the same 60 MP workload before this work | **Miss** |
+| Geometry input to presented preview p95 < 50 ms once the source preview is ready | not measured for geometry in this round | Open |
+
+The same two targets at 60 MP, which have no stated threshold and are recorded because the design
+asks for the tails: slider-to-presented-frame 125.0 / 141.3 ms and settled histogram 185.4 /
+208.8 ms. On the 24 MP crop stack, 150.3 / 170.2 ms and 184.7 / 213.3 ms. The 24 MP crop stack misses
+the 100 ms interaction threshold by a wide margin and the largest single contributor is the
+`draft.set` round trip, which replans the crop prefix on every set; the 60 MP miss is the
+full-resolution render and upload, which is the already-recorded open cost of uploading every preview
+at full resolution.
 
 Crop correctness evidence is rendered, not timed: the `crop` and `crop-draft` smoke scenarios record
 correlated state, events and pixel checks, and no latency is claimed from them.
 
-Core figures exclude desktop scheduling, GPU upload and presentation. Reproduce with `editor-performance` and `measure` as described in [development](../engineering/development.md).
+Core figures exclude desktop scheduling, GPU upload and presentation. Reproduce with
+`editor-performance`, `editor-latency` and `measure` as described in
+[development](../engineering/development.md). Reports under `artifacts/final-perf-24`,
+`artifacts/final-perf-60`, `artifacts/final-latency-24-drag`, `artifacts/final-latency-24-commit`,
+`artifacts/final-latency-24-crop`, `artifacts/final-latency-24-crop-commit`,
+`artifacts/final-latency-60-drag`, `artifacts/final-latency-60-commit`, `artifacts/final-measure` and
+`artifacts/before-measure` retain every sample, the correlated state and the source and binary
+hashes; they are local evidence and are not repository assets.
 
-Current macOS `measure` runs use background-only bundles to preserve desktop focus. Launch-to-frame timings include copying the executable and creating its temporary bundle; they are background renderer measurements, not foreground activation measurements. Reports identify the launch mode. Earlier launch baselines above predate this wrapper and are not directly comparable.
+Current macOS `measure` and `editor-latency` runs use background-only bundles to preserve desktop focus. Launch-to-frame timings include copying the executable and creating its temporary bundle; they are background renderer measurements, not foreground activation measurements. Reports identify the launch mode. Earlier launch baselines above predate this wrapper and are not directly comparable.
 
 ## Current RAW and JPEG measurements
 

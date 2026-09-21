@@ -511,7 +511,16 @@ impl Editor {
 
     /// The state correlated with every event and captured frame; never includes source paths.
     pub(crate) fn snapshot(&self) -> Value {
-        json!({"run_id":self.run_id,"mode":if self.evidence.is_some() {"evidence"} else {"editor"},"selection":self.session.preview.selection,"orientation":self.activity.orientation,"phase":self.activity.phase,"requested_generation":self.activity.requested,"displayed_generation":self.activity.displayed,"displayed_draft_revision":self.displayed_draft_revision,"source_dimensions":self.activity.source_dimensions,"preview_dimensions":self.activity.preview_dimensions,"backend":self.activity.backend,"status":self.status,"error_code":self.activity.error_code,"modules":module_summary(&self.modules),"controls":self.fields.summary(),"crop":self.crop_summary(),"draft":self.draft_summary(),"stack":self.stack_summary(),"workspace":serde_json::to_value(&self.session.workspace).unwrap_or(Value::Null),"developer":self.developer,"expanded":self.workspace.expanded(),"notices":self.notice_titles(),"compare":self.compare_return.is_some(),"render_error":self.render_error_summary(),"palette":{"open":self.palette_open,"query":self.palette_query},"histogram":self.histogram_summary(),"readout":self.readout_summary()})
+        json!({"run_id":self.run_id,"mode":if self.evidence.is_some() {"evidence"} else {"editor"},"selection":self.session.preview.selection,"orientation":self.activity.orientation,"phase":self.activity.phase,"requested_generation":self.activity.requested,"displayed_generation":self.activity.displayed,"displayed_draft_revision":self.displayed_draft_revision,"source_dimensions":self.activity.source_dimensions,"preview_dimensions":self.activity.preview_dimensions,"backend":self.activity.backend,"status":self.status,"error_code":self.activity.error_code,"modules":module_summary(&self.modules),"controls":self.fields.summary(),"crop":self.crop_summary(),"draft":self.draft_summary(),"stack":self.stack_summary(),"workspace":serde_json::to_value(&self.session.workspace).unwrap_or(Value::Null),"developer":self.developer,"expanded":self.workspace.expanded(),"notices":self.notice_titles(),"compare":self.compare_return.is_some(),"render_error":self.render_error_summary(),"palette":{"open":self.palette_open,"query":self.palette_query},"histogram":self.histogram_summary(),"readout":self.readout_summary(),"scratch":Self::scratch_summary()})
+    }
+
+    /// The process-wide colour scratch budget as it stands when the frame is captured, with the
+    /// high-water mark the renders behind that frame actually reached. A pass releases its
+    /// reservation as soon as its chunk is done, so `in_use` here is normally zero; `peak` is the
+    /// figure a resource measurement wants.
+    fn scratch_summary() -> Value {
+        let budget = lightwell_core::ScratchBudget::default();
+        json!({"limit_bytes":budget.limit(),"in_use_bytes":budget.in_use(),"peak_bytes":budget.peak()})
     }
 
     /// The core draft this client holds, as `session.state` reports it. The desktop adopts every
@@ -1375,6 +1384,7 @@ impl Editor {
                                 "entry_id":upload.entry_id,
                                 "snapshot_id":upload.snapshot_id,
                                 "generation":upload.generation,
+                                "draft_revision":upload.draft_revision,
                                 "dimensions":[upload.width,upload.height],
                                 "upload_ms":upload.started.elapsed().as_secs_f64()*1000.,
                             }),

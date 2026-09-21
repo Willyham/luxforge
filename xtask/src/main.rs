@@ -3,6 +3,7 @@ mod basic_smoke;
 mod crop_smoke;
 mod diagnostics;
 mod editor_acceptance;
+mod editor_latency;
 mod editor_performance;
 mod fixtures;
 mod histogram_smoke;
@@ -346,6 +347,42 @@ fn main_result() -> Result {
             a.done()?;
             editor_performance::run(&root, &source, &out, samples)?;
         }
+        "editor-latency" => {
+            let source = absolute(&root, &a.path("--source")?);
+            let out = absolute(&root, &a.path("--output")?);
+            let bin = a
+                .value("--binary")?
+                .map(|path| absolute(&root, Path::new(&path)))
+                .map_or_else(|| binary(&root), Ok)?;
+            let samples = a
+                .value("--samples")?
+                .map(|s| s.to_string_lossy().parse::<usize>())
+                .transpose()?
+                .unwrap_or(30);
+            let crop = a
+                .value("--crop")?
+                .map(|s| s.to_string_lossy().parse::<f64>())
+                .transpose()?;
+            let idle = a.flag("--idle");
+            let mode = match a.value("--mode")?.as_deref().and_then(OsStr::to_str) {
+                None | Some("drag") => editor_latency::Mode::Drag,
+                Some("commit") => editor_latency::Mode::Commit,
+                Some(other) => return Err(format!("--mode is drag or commit, not {other}").into()),
+            };
+            a.done()?;
+            editor_latency::run(
+                &root,
+                &out,
+                &bin,
+                editor_latency::Options {
+                    source: &source,
+                    samples,
+                    mode,
+                    crop,
+                    idle,
+                },
+            )?;
+        }
         "smoke" => {
             let out = absolute(&root, &a.path("--output")?);
             let scenario = a
@@ -439,7 +476,7 @@ fn main_result() -> Result {
         }
         "__hang" => std::thread::sleep(std::time::Duration::from_secs(60)),
         "help" => println!(
-            "cargo xtask doctor|check|check-repository|fmt|lint|test|build [--release]|develop [--debug] [--background] [app args]|fixtures|generate-fixtures [--output NEW]|audit|raw-corpus --manifest FILE --output NEW|raw-reference --output NEW|raw-editor --manifest FILE --output NEW [--samples N] [--binary PATH]|editor-acceptance --output NEW|editor-performance --source JPEG --output NEW [--samples N]|inventory --output NEW|package --output NEW|smoke --output NEW [--scenario NAME] [--binary PATH]|check-capture --image PNG [--orientation N] [--aspect R] [--columns LEFT,RIGHT]|hardening --binary PATH --output NEW|measure --binary PATH --output NEW [--samples N]|probe --candidate iced|egui --output NEW"
+            "cargo xtask doctor|check|check-repository|fmt|lint|test|build [--release]|develop [--debug] [--background] [app args]|fixtures|generate-fixtures [--output NEW]|audit|raw-corpus --manifest FILE --output NEW|raw-reference --output NEW|raw-editor --manifest FILE --output NEW [--samples N] [--binary PATH]|editor-acceptance --output NEW|editor-performance --source JPEG --output NEW [--samples N]|editor-latency --source JPEG --output NEW [--binary PATH] [--samples N] [--mode drag|commit] [--crop DEGREES] [--idle]|inventory --output NEW|package --output NEW|smoke --output NEW [--scenario NAME] [--binary PATH]|check-capture --image PNG [--orientation N] [--aspect R] [--columns LEFT,RIGHT]|hardening --binary PATH --output NEW|measure --binary PATH --output NEW [--samples N]|probe --candidate iced|egui --output NEW"
         ),
         _ => return Err("Unknown command; use cargo xtask help".into()),
     }

@@ -230,9 +230,18 @@ impl Editor {
                 draft.draft_revision = set.draft_revision;
                 draft.conflicted = set.conflicted;
                 let label = draft.label.clone();
+                let (draft_revision, sent) = (set.draft_revision, draft.sent);
                 self.session.draft = Some(set);
                 self.preview_generation = self.preview_queue.request(job);
                 self.status = format!("Drafting {label}…");
+                // The one record that ties an input to the frame it will produce: the `draft.set`
+                // this answers carried `value`, and the preview job just queued for it is
+                // `generation`, which the `preview_displayed` event of its upload repeats. Without
+                // it a measurement can only guess which frame belongs to which slider value.
+                self.event(
+                    "slider_draft_preview",
+                    json!({"generation":self.preview_generation,"draft_revision":draft_revision,"value":sent}),
+                );
                 self.after_slider_round_trip()
             }
             Err(error) => {
