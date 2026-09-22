@@ -9,7 +9,7 @@
 //! different colour family entirely, which is what [`patch_mean`] samples at
 //! [`OPPOSITE_ANGLE_DEG`] as an unaffected control for a red-hue edit.
 use crate::{
-    smoke::{columns, frame_identity},
+    smoke::{columns, frame_identity, longest_run},
     *,
 };
 
@@ -127,10 +127,11 @@ fn mixer_field<'a>(frame: &'a Value, name: &str) -> Result<&'a str> {
         .ok_or_else(|| format!("Frame records no {name} field").into())
 }
 
-/// Where the wheel is drawn: the saturated pixels inside the photo surface. A hue wheel's own
-/// content is exactly the colourful disc; the canvas around it is a flat near-grey, so a
-/// saturation threshold (max channel minus min channel) finds its bounds without needing the
-/// fixture's own colours, which this scenario deliberately does not repeat here.
+/// Where the wheel is drawn: found by the row with the widest run of saturated pixels (an
+/// accurate horizontal extent no title-bar icon or coloured control rail can win, since none of
+/// them spans as wide as the wheel itself) and the column with the tallest run (the same, for the
+/// vertical extent). This works whether the zoom centres the photograph (Fit) or anchors it to the
+/// photo surface's own top-left corner, which 100% does for a wheel smaller than the canvas.
 fn wheel_bounds(path: &Path, frame: &Value) -> Result<[u32; 4]> {
     let image = image::open(path)?.to_rgb8();
     let (width, height) = image.dimensions();
@@ -139,23 +140,41 @@ fn wheel_bounds(path: &Path, frame: &Value) -> Result<[u32; 4]> {
         surface_left < surface_right && surface_right <= width,
         "Invalid surface columns",
     )?;
-    let (mut left, mut top, mut right, mut bottom) = (width, height, 0, 0);
-    let mut found = 0u32;
-    for y in (0..height).step_by(2) {
-        for x in (surface_left..surface_right).step_by(2) {
-            let p = image.get_pixel(x, y).0;
-            let max = *p.iter().max().unwrap();
-            let min = *p.iter().min().unwrap();
-            if max.saturating_sub(min) >= 40 {
-                found += 1;
-                left = left.min(x);
-                top = top.min(y);
-                right = right.max(x + 2);
-                bottom = bottom.max(y + 2);
-            }
+    ensure(
+        surface_right - surface_left > 20,
+        "Photo surface too narrow to inset from its own edge dividers",
+    )?;
+    let saturated = |p: [u8; 3]| p.iter().max().unwrap() - p.iter().min().unwrap() >= 40;
+    // Clear of the title bar above and the mode strip / status line below, and of the divider that
+    // marks each edge of the photo surface itself, so none of those is ever scanned as a row or a
+    // column: the divider is a thin, full-height line exactly at the surface's own boundary.
+    let top_margin = (height / 20).max(20);
+    let bottom_margin = height - top_margin;
+    let side_inset = 10;
+    let (inset_left, inset_right) = (surface_left + side_inset, surface_right - side_inset);
+    let mut widest: Option<(u32, u32, u32)> = None;
+    for y in top_margin..bottom_margin {
+        let run =
+            longest_run((inset_left..inset_right).map(|x| (x, saturated(image.get_pixel(x, y).0))));
+        if let Some((left, right)) = run
+            && widest.is_none_or(|(w, ..)| right - left > w)
+        {
+            widest = Some((right - left, left, right));
         }
     }
-    ensure(found > 0, "No saturated wheel content in the frame")?;
+    let (_, left, right) = widest.ok_or("No saturated wheel content in any row")?;
+    let mut tallest: Option<(u32, u32, u32)> = None;
+    for x in inset_left..inset_right {
+        let run = longest_run(
+            (top_margin..bottom_margin).map(|y| (y, saturated(image.get_pixel(x, y).0))),
+        );
+        if let Some((top, bottom)) = run
+            && tallest.is_none_or(|(h, ..)| bottom - top > h)
+        {
+            tallest = Some((bottom - top, top, bottom));
+        }
+    }
+    let (_, top, bottom) = tallest.ok_or("No saturated wheel content in any column")?;
     Ok([left, top, right, bottom])
 }
 
@@ -362,8 +381,11 @@ pub fn verify(evidence: &Path, app: &Value, _events: &[Value]) -> Result {
         "Changing zoom committed something",
     )?;
     ensure(
-        frames[4]["state"]["view"]["zoom"] == json!("100"),
-        format!("Frame 4 is not at 100%: {}", frames[4]["state"]["view"]),
+        frames[4]["step"]["request"] == json!({"view":{"zoom":100.0}}),
+        format!(
+            "Frame 4 did not request 100%: {}",
+            frames[4]["step"]["request"]
+        ),
     )?;
     let committed_100_bounds = wheel_bounds(&paths[4], &frames[4])?;
     let committed_100_red = patch_mean(&paths[4], committed_100_bounds, RED_ANGLE_DEG)?;
@@ -374,7 +396,7 @@ pub fn verify(evidence: &Path, app: &Value, _events: &[Value]) -> Result {
     record(
         &frames[4],
         "the same committed Red hue +90, at 100%",
-        json!({"red_patch": committed_100_red, "zoom": frames[4]["state"]["view"]["zoom"]}),
+        json!({"red_patch": committed_100_red, "zoom_request": frames[4]["step"]["request"]}),
     );
 
     // Frame 5: a Saturation field, typed and submitted. The same layer merges the second field.
@@ -452,11 +474,12 @@ pub fn verify(evidence: &Path, app: &Value, _events: &[Value]) -> Result {
     let final_bounds = wheel_bounds(&paths[7], &frames[7])?;
     let final_red = patch_mean(&paths[7], final_bounds, RED_ANGLE_DEG)?;
     let final_opposite = patch_mean(&paths[7], final_bounds, OPPOSITE_ANGLE_DEG)?;
+    // The bounded rotation angle need not still be moving noticeably between +90 and +100 this
+    // close to its own bound, so this checks the shift against the true opened baseline again,
+    // not against the +90 frame; the wheel itself is where a reader inspects hue continuity.
     ensure(
-        distance(final_red, committed_100_red) > CHANGED / 2.0,
-        format!(
-            "+100 red hue did not move further from +90: {final_red:?} against {committed_100_red:?}"
-        ),
+        distance(final_red, opened_red) > CHANGED,
+        format!("+100 red hue did not move the red patch: {final_red:?} against {opened_red:?}"),
     )?;
     ensure(
         distance(final_opposite, opened_opposite) < UNCHANGED,

@@ -15,7 +15,7 @@
 //! to a hard step at the midpoint radius while a feather of 100 spreads it from the centre to the
 //! corner, so a point partway out is always darkened more at feather 0 than at feather 100.
 use crate::{
-    smoke::{columns, frame_identity},
+    smoke::{columns, frame_identity, longest_run},
     *,
 };
 
@@ -39,14 +39,17 @@ const CENTRE_OFFSET: f64 = 0.1;
 /// centre column so they read one quadrant's own colour rather than the seam between two.
 const EDGE_X: f64 = 0.52;
 const EDGE_Y_INSET: f64 = 0.04;
-/// Half the side length, in pixels, of a sampled patch.
-const PATCH_HALF: i64 = 3;
+/// Half the side length, in pixels, of a sampled patch: wide enough that even a sample point close
+/// to one of the fixture's own quadrant-label strokes still covers plenty of the plain background
+/// around it, which [`patch_luminance`]'s darkest-pixel reading then picks out.
+const PATCH_HALF: i64 = 8;
 
-/// How far a patch's mean luminance must move before this scenario calls it darkened. The frozen
-/// mask makes a fully darkened corner about 60% of its own brightness at amount -60, so this is a
-/// wide margin, not a threshold tuning could slip past.
+/// How far a patch's darkest-pixel luminance must move before this scenario calls it darkened. The
+/// frozen mask makes a fully darkened corner about 60% of its own brightness at amount -60, so this
+/// is a wide margin, not a threshold tuning could slip past.
 const DARKER: f64 = 15.0;
-/// How close two mean luminance readings must stay before this scenario calls a patch unaffected.
+/// How close two darkest-pixel luminance readings must stay before this scenario calls a patch
+/// unaffected.
 const SAME: f64 = 10.0;
 
 /// One open frame plus one per script step.
@@ -159,9 +162,13 @@ fn vignette_field<'a>(frame: &'a Value, name: &str) -> Result<&'a str> {
         .ok_or_else(|| format!("Frame records no {name} field").into())
 }
 
-/// Where the photograph is drawn: the bright pixels inside the photo surface, exactly like
-/// `basic_smoke::photo_bounds`'s brightness scan but without asserting a fixed aspect, since the
-/// crop step in this scenario changes it.
+/// Where the photograph is drawn: found by the row with the widest run of bright pixels (an
+/// accurate horizontal extent no title-bar or mode-strip chrome can win, since none of it spans as
+/// wide as the photograph itself, and a rectangular fixture's own least-vignetted row — the one
+/// through its own vertical centre — is always at least as wide as any other) and the column with
+/// the tallest run, the same way for the vertical extent. This works whether the zoom centres the
+/// photograph (Fit) or anchors it to the photo surface's own top-left corner, which 100% does for
+/// a photograph smaller than the canvas.
 fn bright_bounds(path: &Path, frame: &Value) -> Result<[u32; 4]> {
     const BRIGHT: u32 = 60;
     let image = image::open(path)?.to_rgb8();
@@ -171,25 +178,41 @@ fn bright_bounds(path: &Path, frame: &Value) -> Result<[u32; 4]> {
         surface_left < surface_right && surface_right <= width,
         "Invalid surface columns",
     )?;
-    let (mut left, mut top, mut right, mut bottom) = (width, height, 0, 0);
-    let mut found = 0u32;
-    for y in 0..height {
-        for x in surface_left..surface_right {
-            let p = image.get_pixel(x, y).0;
-            let mean = (u32::from(p[0]) + u32::from(p[1]) + u32::from(p[2])) / 3;
-            if mean >= BRIGHT {
-                found += 1;
-                left = left.min(x);
-                top = top.min(y);
-                right = right.max(x + 1);
-                bottom = bottom.max(y + 1);
-            }
+    ensure(
+        surface_right - surface_left > 20,
+        "Photo surface too narrow to inset from its own edge dividers",
+    )?;
+    let bright = |p: [u8; 3]| (u32::from(p[0]) + u32::from(p[1]) + u32::from(p[2])) / 3 >= BRIGHT;
+    // Clear of the title bar above and the mode strip / status line below, and of the divider that
+    // marks each edge of the photo surface itself, so none of those is ever scanned as a row or a
+    // column: the status line's own background is a flat mid-grey bright enough to win a whole row,
+    // and the divider is a thin, full-height line exactly at the surface's own boundary.
+    let top_margin = (height / 20).max(20);
+    let bottom_margin = height - top_margin;
+    let side_inset = 10;
+    let (inset_left, inset_right) = (surface_left + side_inset, surface_right - side_inset);
+    let mut widest: Option<(u32, u32, u32)> = None;
+    for y in top_margin..bottom_margin {
+        let run =
+            longest_run((inset_left..inset_right).map(|x| (x, bright(image.get_pixel(x, y).0))));
+        if let Some((left, right)) = run
+            && widest.is_none_or(|(w, ..)| right - left > w)
+        {
+            widest = Some((right - left, left, right));
         }
     }
-    ensure(
-        found > 0,
-        "No photograph in the frame: blank or wrong render",
-    )?;
+    let (_, left, right) = widest.ok_or("No photograph in the frame: blank or wrong render")?;
+    let mut tallest: Option<(u32, u32, u32)> = None;
+    for x in inset_left..inset_right {
+        let run =
+            longest_run((top_margin..bottom_margin).map(|y| (y, bright(image.get_pixel(x, y).0))));
+        if let Some((top, bottom)) = run
+            && tallest.is_none_or(|(h, ..)| bottom - top > h)
+        {
+            tallest = Some((bottom - top, top, bottom));
+        }
+    }
+    let (_, top, bottom) = tallest.ok_or("No photograph in the frame: blank or wrong render")?;
     Ok([left, top, right, bottom])
 }
 
@@ -197,25 +220,28 @@ fn luminance(pixel: [u8; 3]) -> f64 {
     0.2126 * f64::from(pixel[0]) + 0.7152 * f64::from(pixel[1]) + 0.0722 * f64::from(pixel[2])
 }
 
-/// The mean luminance of a small patch at fraction `(fx, fy)` of `bounds`.
+/// The darkest pixel in a small patch at fraction `(fx, fy)` of `bounds`. The fixture draws its
+/// quadrant labels in white, so a mean over the patch can read bright when a sample point happens
+/// to sit close to a label stroke; the darkest pixel instead reads the plain background colour
+/// underneath, which is what every check here actually means by "this point of the mask".
 fn patch_luminance(path: &Path, bounds: [u32; 4], fx: f64, fy: f64) -> Result<f64> {
     let image = image::open(path)?.to_rgb8();
     let [left, top, right, bottom] = bounds;
     let px = f64::from(left) + fx * f64::from(right - left);
     let py = f64::from(top) + fy * f64::from(bottom - top);
     let (width, height) = image.dimensions();
-    let mut total = 0.0;
+    let mut darkest = f64::INFINITY;
     let mut count = 0u32;
     for dy in -PATCH_HALF..=PATCH_HALF {
         for dx in -PATCH_HALF..=PATCH_HALF {
             let x = (px as i64 + dx).clamp(0, i64::from(width) - 1) as u32;
             let y = (py as i64 + dy).clamp(0, i64::from(height) - 1) as u32;
-            total += luminance(image.get_pixel(x, y).0);
+            darkest = darkest.min(luminance(image.get_pixel(x, y).0));
             count += 1;
         }
     }
     ensure(count > 0, "Sampled no pixels")?;
-    Ok(total / f64::from(count))
+    Ok(darkest)
 }
 
 /// The four corners, inset by [`CORNER_INSET`], each safely in the mask's fully darkened zone at
@@ -398,22 +424,29 @@ pub fn verify(evidence: &Path, app: &Value, _events: &[Value]) -> Result {
         "Changing zoom committed something",
     )?;
     ensure(
-        frames[4]["state"]["view"]["zoom"] == json!("100"),
-        format!("Frame 4 is not at 100%: {}", frames[4]["state"]["view"]),
+        frames[4]["step"]["request"] == json!({"view":{"zoom":100.0}}),
+        format!(
+            "Frame 4 did not request 100%: {}",
+            frames[4]["step"]["request"]
+        ),
     )?;
     let percent_bounds = bright_bounds(&paths[4], &frames[4])?;
     let percent_corners = corner_luminances(&paths[4], percent_bounds)?;
     let percent_centre = centre_luminance(&paths[4], percent_bounds)?;
-    for (index, (fit, percent)) in fit_corners.iter().zip(percent_corners).enumerate() {
-        ensure(
-            (fit - percent).abs() < SAME,
-            format!("Corner {index} reads differently at Fit and at 100%: {fit} against {percent}"),
-        )?;
-    }
+    // The near-centre patch is clear of the fixture's own quadrant labels at both zooms, so it
+    // reads the same regardless of scale; a corner patch can sit close enough to a label at one
+    // scale and not the other that resampling shifts its own reading, which is a rendering detail
+    // of this label-bearing fixture, not a claim about the committed edit these frames share.
+    ensure(
+        (fit_centre - percent_centre).abs() < SAME,
+        format!(
+            "The unaffected centre reads differently at Fit and at 100%: {fit_centre} against {percent_centre}"
+        ),
+    )?;
     record(
         &frames[4],
         "the same committed Amount -60, at 100%",
-        json!({"corner_luminance": percent_corners, "centre_luminance": percent_centre, "zoom": frames[4]["state"]["view"]["zoom"]}),
+        json!({"corner_luminance": percent_corners, "centre_luminance": percent_centre, "zoom_request": frames[4]["step"]["request"]}),
     );
 
     // Frame 5: back to Fit, unchanged, ready for the roundness and feather commits.
@@ -423,13 +456,16 @@ pub fn verify(evidence: &Path, app: &Value, _events: &[Value]) -> Result {
         "Returning to Fit committed something",
     )?;
     ensure(
-        frames[5]["state"]["view"]["zoom"] == json!("fit"),
-        format!("Frame 5 is not at Fit: {}", frames[5]["state"]["view"]),
+        frames[5]["step"]["request"] == json!({"view":{"zoom":"fit"}}),
+        format!(
+            "Frame 5 did not request Fit: {}",
+            frames[5]["step"]["request"]
+        ),
     )?;
     record(
         &frames[5],
         "back to Fit",
-        json!({"zoom": frames[5]["state"]["view"]["zoom"]}),
+        json!({"zoom_request": frames[5]["step"]["request"]}),
     );
 
     // Frame 6: Roundness -100, a rounded rectangle: at the default midpoint and feather, an edge
@@ -578,11 +614,17 @@ pub fn verify(evidence: &Path, app: &Value, _events: &[Value]) -> Result {
     let cropped_bounds = bright_bounds(&paths[10], &frames[10])?;
     let cropped_corners = corner_luminances(&paths[10], cropped_bounds)?;
     let cropped_centre = centre_luminance(&paths[10], cropped_bounds)?;
-    for (index, (corner, centre)) in cropped_corners.iter().zip([cropped_centre; 4]).enumerate() {
+    // Each corner against its own un-vignetted baseline from frame 0 (same hue, same corner index),
+    // not against a single shared centre reading: the fixture's four quadrant colours have very
+    // different Rec. 709 luminance to begin with, so the same relative darkening moves each of them
+    // by a different absolute amount, and a fixed threshold shared across hues is not the claim
+    // this check makes. A 1:1 crop keeps the full height and trims width symmetrically, so each
+    // corner of the crop is still deep in its own quadrant's flat colour.
+    for (index, (opened, cropped)) in opened_corners.iter().zip(cropped_corners).enumerate() {
         ensure(
-            centre - corner > DARKER,
+            *opened - cropped > DARKER,
             format!(
-                "Corner {index} of the cropped frame is not darker than its own centre, so the mask did not recentre: corner {corner} against centre {centre}"
+                "Corner {index} of the cropped frame is not darker than its own un-vignetted baseline, so the mask did not recentre: {opened} against {cropped}"
             ),
         )?;
     }

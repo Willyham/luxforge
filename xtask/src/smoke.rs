@@ -213,6 +213,26 @@ pub fn pixels(path: &Path, expect: &Expect) -> Result<Value> {
         json!({"status":"passed","physical_size":[w,h],"surface_columns":[surface_left,surface_right],"image_bounds":[left,top,right,bottom],"measured_aspect":measured,"expected_aspect":aspect,"aspect_tolerance":expect.tolerance,"quadrant_sample_counts":counts,"corner_rgb":actual,"tolerance_per_channel":8,"scope":"Displayed geometry and sRGB interiors; not monitor calibration or native picker"}),
     )
 }
+/// The inclusive `(start, end)` of the longest contiguous run of matching positions, or `None` if
+/// none matched at all. Used to find a photograph's own drawn extent by its widest row and tallest
+/// column: unlike the leftmost-to-rightmost span between any two matches, a contiguous run is never
+/// fooled by scattered chrome (title-bar text, an icon) that happens to span a wide gap of
+/// unmatched background between its own characters or glyphs.
+pub fn longest_run(positions: impl Iterator<Item = (u32, bool)>) -> Option<(u32, u32)> {
+    let mut best: Option<(u32, u32)> = None;
+    let mut run_start = None;
+    for (position, matched) in positions {
+        if matched {
+            let start = *run_start.get_or_insert(position);
+            if best.is_none_or(|(best_start, best_end)| position - start > best_end - best_start) {
+                best = Some((start, position));
+            }
+        } else {
+            run_start = None;
+        }
+    }
+    best
+}
 pub fn columns(frame: &Value) -> Result<Option<[u32; 2]>> {
     match frame.get("surface_columns") {
         None | Some(Value::Null) => Ok(None),
