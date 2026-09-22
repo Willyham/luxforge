@@ -33,38 +33,45 @@ pub enum Icon {
     ToolsPanel,
     ChevronDown,
     ChevronRight,
+    Return,
 }
 
 impl Icon {
+    /// Every icon with its name, in the order the gallery's icon board lists them.
+    pub const NAMED: [(&'static str, Icon); 26] = [
+        ("rotate-left", Self::RotateLeft),
+        ("rotate-right", Self::RotateRight),
+        ("flip", Self::Flip),
+        ("mirror", Self::Mirror),
+        ("crop", Self::Crop),
+        ("picker", Self::Picker),
+        ("reset", Self::Reset),
+        ("plus", Self::Plus),
+        ("minus", Self::Minus),
+        ("lock", Self::Lock),
+        ("swap", Self::Swap),
+        ("guide", Self::Guide),
+        ("pointer", Self::Pointer),
+        ("versions", Self::Versions),
+        ("undo", Self::Undo),
+        ("redo", Self::Redo),
+        ("before", Self::Before),
+        ("after", Self::After),
+        ("clipping", Self::Clipping),
+        ("shadow-clipping", Self::ShadowClipping),
+        ("highlight-clipping", Self::HighlightClipping),
+        ("state-panel", Self::StatePanel),
+        ("tools-panel", Self::ToolsPanel),
+        ("chevron-down", Self::ChevronDown),
+        ("chevron-right", Self::ChevronRight),
+        ("return", Self::Return),
+    ];
+
     pub fn from_name(name: &str) -> Option<Self> {
-        Some(match name {
-            "rotate-left" => Self::RotateLeft,
-            "rotate-right" => Self::RotateRight,
-            "flip" => Self::Flip,
-            "mirror" => Self::Mirror,
-            "crop" => Self::Crop,
-            "picker" => Self::Picker,
-            "reset" => Self::Reset,
-            "plus" => Self::Plus,
-            "minus" => Self::Minus,
-            "lock" => Self::Lock,
-            "swap" => Self::Swap,
-            "guide" => Self::Guide,
-            "pointer" => Self::Pointer,
-            "versions" => Self::Versions,
-            "undo" => Self::Undo,
-            "redo" => Self::Redo,
-            "before" => Self::Before,
-            "after" => Self::After,
-            "clipping" => Self::Clipping,
-            "shadow-clipping" => Self::ShadowClipping,
-            "highlight-clipping" => Self::HighlightClipping,
-            "state-panel" => Self::StatePanel,
-            "tools-panel" => Self::ToolsPanel,
-            "chevron-down" => Self::ChevronDown,
-            "chevron-right" => Self::ChevronRight,
-            _ => return None,
-        })
+        Self::NAMED
+            .iter()
+            .find(|(named, _)| *named == name)
+            .map(|&(_, icon)| icon)
     }
 }
 
@@ -150,7 +157,7 @@ fn sized_icon_button<'a, M: Clone + 'a>(
                 .size(theme::SIZE_CAPTION)
                 .color(theme::TEXT_PRIMARY),
         )
-        .padding(6.0)
+        .padding(theme::TOOLTIP_PADDING)
         .style(theme::bar_surface),
         tooltip::Position::Top,
     )
@@ -201,9 +208,21 @@ const ARROW_HEAD: [(f32, f32); 3] = [(3.7, 3.4), (3.7, 7.0), (7.2, 7.0)];
 /// (165°), leaving the upper-left gap the head sits in. A polyline rather than a canvas arc so
 /// the mirrored icons are a plain reflection.
 fn circular_arrow_arc() -> Vec<(f32, f32)> {
+    arc_points(8.15, 8.2, 4.15, -115.0, 165.0)
+}
+
+/// The quarter-turn arrow's head: the same L as [`ARROW_HEAD`], on the larger circle.
+const QUARTER_TURN_HEAD: [(f32, f32); 3] = [(3.2, 2.4), (3.2, 6.2), (6.9, 6.2)];
+
+/// The quarter-turn arrow's arc: centre (8, 8), radius 4.6, from −125° clockwise round to 186°,
+/// as the Transforms reference draws it, 11 pt of ink in a 16 pt icon.
+fn quarter_turn_arc() -> Vec<(f32, f32)> {
+    arc_points(8.0, 8.0, 4.6, -125.0, 186.0)
+}
+
+fn arc_points(cx: f32, cy: f32, radius: f32, start: f32, end: f32) -> Vec<(f32, f32)> {
     const STEPS: usize = 24;
-    let (cx, cy, radius) = (8.15_f32, 8.2_f32, 4.15_f32);
-    let (start, end) = (-115.0_f32.to_radians(), 165.0_f32.to_radians());
+    let (start, end) = (start.to_radians(), end.to_radians());
     (0..=STEPS)
         .map(|step| {
             let angle = start + (end - start) * step as f32 / STEPS as f32;
@@ -240,27 +259,36 @@ fn draw_path(frame: &mut canvas::Frame, icon: Icon, color: Color) {
         Icon::Reset | Icon::RotateLeft | Icon::RotateRight | Icon::Undo | Icon::Redo => {
             // A circular arrow: an open circle from the top, round through the right and the
             // bottom to the left, with an L-shaped head in the gap at its upper left. The
-            // clockwise icons are the mirror image.
+            // clockwise icons are the mirror image. A quarter turn is the transform itself rather
+            // than a header's small reset, so it draws the larger arrow the Transforms row does.
             let mirror = matches!(icon, Icon::RotateRight | Icon::Redo);
+            let turn = matches!(icon, Icon::RotateLeft | Icon::RotateRight);
             let x = |x: f32| if mirror { 16.0 - x } else { x };
-            let points: Vec<(f32, f32)> = circular_arrow_arc()
-                .into_iter()
-                .map(|(px, py)| (x(px), py))
-                .collect();
+            let (arc, head) = if turn {
+                (quarter_turn_arc(), &QUARTER_TURN_HEAD)
+            } else {
+                (circular_arrow_arc(), &ARROW_HEAD)
+            };
+            let points: Vec<(f32, f32)> = arc.into_iter().map(|(px, py)| (x(px), py)).collect();
             poly(frame, &points);
-            let head: Vec<(f32, f32)> = ARROW_HEAD.iter().map(|&(px, py)| (x(px), py)).collect();
+            let head: Vec<(f32, f32)> = head.iter().map(|&(px, py)| (x(px), py)).collect();
             poly(frame, &head);
         }
-        Icon::Flip | Icon::Mirror => {
-            if icon == Icon::Flip {
-                line(frame, (2.0, 8.0), (14.0, 8.0));
-                poly(frame, &[(4.0, 3.0), (12.0, 3.0), (8.0, 6.5), (4.0, 3.0)]);
-                poly(frame, &[(4.0, 13.0), (12.0, 13.0), (8.0, 9.5), (4.0, 13.0)]);
-            } else {
-                line(frame, (8.0, 2.0), (8.0, 14.0));
-                poly(frame, &[(3.0, 4.0), (3.0, 12.0), (6.5, 8.0), (3.0, 4.0)]);
-                poly(frame, &[(13.0, 4.0), (13.0, 12.0), (9.5, 8.0), (13.0, 4.0)]);
-            }
+        // A reflection: the axis, with an open chevron on either side pointing away from it.
+        Icon::Mirror => {
+            line(frame, (8.0, 1.5), (8.0, 14.5));
+            poly(frame, &[(5.25, 5.0), (2.25, 8.0), (5.25, 11.0)]);
+            poly(frame, &[(10.75, 5.0), (13.75, 8.0), (10.75, 11.0)]);
+        }
+        Icon::Flip => {
+            line(frame, (1.75, 8.0), (14.25, 8.0));
+            poly(frame, &[(5.0, 5.25), (8.0, 2.25), (11.0, 5.25)]);
+            poly(frame, &[(5.0, 10.75), (8.0, 13.75), (11.0, 10.75)]);
+        }
+        // The Return key: down from the top right, then left to an arrowhead.
+        Icon::Return => {
+            poly(frame, &[(12.5, 3.5), (12.5, 10.0), (3.5, 10.0)]);
+            poly(frame, &[(6.5, 7.0), (3.5, 10.0), (6.5, 13.0)]);
         }
         Icon::Crop => {
             poly(frame, &[(3.0, 2.0), (3.0, 11.0), (13.0, 11.0)]);
@@ -376,35 +404,22 @@ mod tests {
     use super::*;
     #[test]
     fn every_icon_builds_at_both_sizes() {
-        for icon in [
-            Icon::RotateLeft,
-            Icon::RotateRight,
-            Icon::Flip,
-            Icon::Mirror,
-            Icon::Crop,
-            Icon::Picker,
-            Icon::Reset,
-            Icon::Plus,
-            Icon::Minus,
-            Icon::Lock,
-            Icon::Swap,
-            Icon::Guide,
-            Icon::Pointer,
-            Icon::Versions,
-            Icon::Undo,
-            Icon::Redo,
-            Icon::Before,
-            Icon::After,
-            Icon::Clipping,
-            Icon::ShadowClipping,
-            Icon::HighlightClipping,
-            Icon::StatePanel,
-            Icon::ToolsPanel,
-            Icon::ChevronDown,
-            Icon::ChevronRight,
-        ] {
+        for (_, icon) in Icon::NAMED {
             let _: Element<'_, ()> = super::icon(icon, 12.0, theme::TEXT_PRIMARY);
             let _: Element<'_, ()> = super::icon(icon, 16.0, theme::TEXT_PRIMARY);
         }
+    }
+
+    #[test]
+    fn every_name_is_distinct_and_resolves_to_its_icon() {
+        for (index, (name, icon)) in Icon::NAMED.iter().enumerate() {
+            assert_eq!(Icon::from_name(name), Some(*icon));
+            assert!(
+                Icon::NAMED[..index]
+                    .iter()
+                    .all(|(other, i)| other != name && i != icon)
+            );
+        }
+        assert_eq!(Icon::from_name("unknown"), None);
     }
 }

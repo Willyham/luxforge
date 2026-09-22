@@ -247,34 +247,7 @@ pub(crate) fn gallery_components() -> Vec<Element<'static, ()>> {
         |_| (),
     ));
     let mut icons = iced::widget::column![].spacing(6.0);
-    for name in [
-        "rotate-left",
-        "rotate-right",
-        "flip",
-        "mirror",
-        "crop",
-        "picker",
-        "reset",
-        "plus",
-        "minus",
-        "lock",
-        "swap",
-        "guide",
-        "pointer",
-        "versions",
-        "undo",
-        "redo",
-        "before",
-        "after",
-        "clipping",
-        "shadow-clipping",
-        "highlight-clipping",
-        "state-panel",
-        "tools-panel",
-        "chevron-down",
-        "chevron-right",
-    ] {
-        let symbol = Icon::from_name(name).expect("named gallery icon");
+    for (name, symbol) in Icon::NAMED {
         icons = icons.push(
             iced::widget::row![
                 iced::widget::text(name)

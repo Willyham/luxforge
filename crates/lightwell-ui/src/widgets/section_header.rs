@@ -202,9 +202,41 @@ mod tests {
         assert_eq!(vignette, 195.0);
         // Basic: three group headers, ten sliders and the picker's button row.
         let basic = expanded_section_height(
-            3.0 * group + 10.0 * theme::SLIDER_ROW_HEIGHT + super::super::button_row_height(),
+            3.0 * group
+                + 10.0 * theme::SLIDER_ROW_HEIGHT
+                + super::super::button_row_height(
+                    super::super::ButtonSize::Compact,
+                    super::super::RowPlacement {
+                        after_header: false,
+                        followed: true,
+                    },
+                ),
             14,
         );
         assert_eq!(basic, 465.0);
+        // Transforms: one group header and its icon row straight under it.
+        let transforms = expanded_section_height(
+            group
+                + super::super::button_row_height(
+                    super::super::ButtonSize::Regular,
+                    super::super::RowPlacement {
+                        after_header: true,
+                        followed: false,
+                    },
+                ),
+            2,
+        );
+        assert_eq!(transforms, 105.0);
+        // RAW: one group header, three sliders and the picker row ending the section.
+        let raw = expanded_section_height(
+            group
+                + 3.0 * theme::SLIDER_ROW_HEIGHT
+                + super::super::button_row_height(
+                    super::super::ButtonSize::Compact,
+                    super::super::RowPlacement::default(),
+                ),
+            5,
+        );
+        assert_eq!(raw, 193.0);
     }
 }

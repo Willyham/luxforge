@@ -216,8 +216,18 @@ pub const OVER_RANGE_MARK: iced::Size = iced::Size {
     width: 2.0,
     height: 9.0,
 };
-/// A labelled button in a section: a picker or an action.
-pub const BUTTON_HEIGHT: f32 = 22.0;
+/// A button on a row of its own in a section: an action (Crop, Apply), or a cell of an icon row.
+pub const BUTTON_HEIGHT: f32 = 26.0;
+/// A labelled button in a row under a group's sliders that holds a picker.
+pub const COMPACT_BUTTON_HEIGHT: f32 = 22.0;
+/// A button that shares its row equally with another (Cancel, Apply): its inset on either side,
+/// the label at the left and the key hint at the right.
+pub const WIDE_BUTTON_PADDING: f32 = 10.0;
+/// A key hint on the accent fill of a primary button: the Canvas ink at reduced strength, so the
+/// label reads first.
+pub const PRIMARY_HINT: Color = Color::from_rgb8(0x5c, 0x4a, 0x2e);
+/// The inset of a tooltip's text inside its Bar surface.
+pub const TOOLTIP_PADDING: f32 = 6.0;
 /// A labelled button's inset before its icon or label.
 pub const BUTTON_PADDING_LEFT: f32 = 7.0;
 /// A labelled button's inset after its label or key hint.
@@ -230,6 +240,9 @@ pub const BUTTON_HINT_SPACING: f32 = 10.0;
 pub const BUTTON_ICON_SIZE: f32 = 14.0;
 /// The margin above a button row, on top of [`ROW_SPACING`].
 pub const BUTTON_ROW_MARGIN: f32 = 4.0;
+/// The margin above a button row that comes straight under a group header, on top of
+/// [`ROW_SPACING`].
+pub const HEADER_BUTTON_ROW_MARGIN: f32 = 2.0;
 /// The margin under a button row, on top of [`ROW_SPACING`], before the group header that follows.
 pub const BUTTON_ROW_BOTTOM: f32 = 2.0;
 /// Between buttons in one row.
@@ -626,7 +639,10 @@ mod tests {
             12.0,
             "a 12 pt thumb"
         );
-        assert_eq!((BUTTON_HEIGHT, BUTTON_ROW_MARGIN), (22.0, 4.0));
+        assert_eq!(
+            (BUTTON_HEIGHT, COMPACT_BUTTON_HEIGHT, BUTTON_ROW_MARGIN),
+            (26.0, 22.0, 4.0)
+        );
         assert_eq!(TAB_ROW_HEIGHT, 24.0);
         assert_eq!(LIST_ROW_HEIGHT, 26.0);
     }

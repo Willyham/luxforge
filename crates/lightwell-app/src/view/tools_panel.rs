@@ -22,14 +22,15 @@ use iced::{
     widget::{Row, column, mouse_area, row, scrollable},
 };
 use lightwell_ui::{
-    BINS, ButtonTone, ChipModel, ClipTriangleModel, ColorPickerModel, ColorSwatchModel, ControlKey,
-    ControlKeyEvent, CurveEditorModel, CurvePointRow, HistogramChannel, Icon, IconButtonModel,
-    LabelledButtonModel, MenuChoiceModel, NumberFieldModel, RailDecoration, SectionHeaderModel,
-    SegmentedModel, SliderModel, StepperModel, SubGroupHeaderModel, Tab, TabRowModel, ToggleModel,
-    button_row, caption, chip, clip_triangle, color_picker, color_swatch, curve_editor,
-    error_caption, focus_control, histogram, icon_button, inline_menu, labelled_button,
-    menu_choice, module_section, number_field, section_label, segmented, slider, stepper,
-    sub_group_header, tab_row, theme, toggle, value_input,
+    BINS, ButtonSize, ButtonTone, ChipModel, ClipTriangleModel, ColorPickerModel, ColorSwatchModel,
+    ControlKey, ControlKeyEvent, CurveEditorModel, CurvePointRow, HistogramChannel, Icon,
+    IconButtonModel, LabelledButtonModel, MenuChoiceModel, NumberFieldModel, RailDecoration,
+    RowPlacement, SectionHeaderModel, SegmentedModel, SliderModel, StepperModel,
+    SubGroupHeaderModel, Tab, TabRowModel, ToggleModel, button_row, caption, chip, clip_triangle,
+    color_picker, color_swatch, curve_editor, error_caption, focus_control, histogram, icon_button,
+    icon_button_row, inline_menu, labelled_button, menu_choice, module_section, number_field,
+    row_icon_button, section_label, segmented, slider, stepper, sub_group_header, tab_row, theme,
+    toggle, value_input,
 };
 use serde_json::{Map, Value};
 
@@ -192,15 +193,19 @@ fn section_view<'a>(
 ) -> Element<'a, Message> {
     // An unavailable module cannot expand, per the design; nothing under it is drawn. Otherwise a
     // disabled section (busy, a historical preview) still shows its values, just not interactive.
-    let body = (section.expanded && section.unavailable.is_none()).then(|| match section.layout {
-        SectionLayout::Stacked => control_rows(
-            &section.module_id,
-            section.enabled,
-            &section.controls,
-            menu,
-            plot,
-        ),
-        SectionLayout::Tabs { selected } => tabbed_rows(section, selected, menu, plot),
+    let body = (section.expanded && section.unavailable.is_none()).then(|| {
+        let rows = match section.layout {
+            SectionLayout::Stacked => control_rows(
+                &section.module_id,
+                section.enabled,
+                &section.controls,
+                menu,
+                plot,
+                false,
+            ),
+            SectionLayout::Tabs { selected } => tabbed_rows(section, selected, menu, plot),
+        };
+        finish_rows(rows, menu)
     });
     module_section(
         &SectionHeaderModel {
@@ -226,7 +231,7 @@ fn tabbed_rows<'a>(
     selected: usize,
     menu: Option<&'a MenuTarget>,
     plot: &HistogramModel,
-) -> Vec<Element<'a, Message>> {
+) -> Vec<PanelRow<'a>> {
     let module_id = section.module_id.as_str();
     let enabled = section.enabled;
     let groups: Vec<&GroupControl> = section
@@ -238,7 +243,7 @@ fn tabbed_rows<'a>(
         })
         .collect();
     let Some(visible) = groups.get(selected).or_else(|| groups.first()).copied() else {
-        return control_rows(module_id, enabled, &section.controls, menu, plot);
+        return control_rows(module_id, enabled, &section.controls, menu, plot, false);
     };
     let tabs = tab_row(
         &TabRowModel {
@@ -274,17 +279,20 @@ fn tabbed_rows<'a>(
         }
         None => tabs,
     };
-    let mut rows = vec![tabs];
+    let mut rows = vec![PanelRow::Plain(tabs)];
     rows.extend(control_rows(
         module_id,
         enabled,
         &visible.controls,
         menu,
         plot,
+        false,
     ));
     for control in &section.controls {
         if !matches!(control, ControlModel::Group(_)) {
-            rows.push(control_view(module_id, enabled, control, menu, plot));
+            rows.push(PanelRow::Plain(control_view(
+                module_id, enabled, control, menu, plot,
+            )));
         }
     }
     rows
@@ -295,37 +303,169 @@ fn is_button(control: &ControlModel) -> bool {
     matches!(control, ControlModel::Action(_) | ControlModel::Picker(_))
 }
 
+/// One row of a section body before it is laid out. A run of buttons stays as its controls until
+/// the whole body is known, because a button row's margins depend on what is above and below it.
+enum PanelRow<'a> {
+    Plain(Element<'a, Message>),
+    Buttons {
+        controls: Vec<&'a ControlModel>,
+        /// The run comes straight under its group's header.
+        after_header: bool,
+    },
+}
+
 /// The rows a list of controls occupies in a section body. A group contributes its header and
 /// its own rows flush with its siblings, so every row in a section sits on one pitch; consecutive
-/// pickers and actions share one button row under the sliders they follow.
+/// pickers and actions share one button row under the sliders they follow. `under_header` says the
+/// list is a group's, directly under that group's header.
 fn control_rows<'a>(
     module_id: &str,
     enabled: bool,
     controls: &'a [ControlModel],
     menu: Option<&'a MenuTarget>,
     plot: &HistogramModel,
-) -> Vec<Element<'a, Message>> {
+    under_header: bool,
+) -> Vec<PanelRow<'a>> {
     let mut rows = Vec::new();
-    let mut buttons: Vec<Element<'a, Message>> = Vec::new();
+    let mut buttons: Vec<&'a ControlModel> = Vec::new();
+    let flush = |rows: &mut Vec<PanelRow<'a>>, buttons: &mut Vec<&'a ControlModel>| {
+        if !buttons.is_empty() {
+            let after_header = under_header && rows.is_empty();
+            rows.push(PanelRow::Buttons {
+                controls: std::mem::take(buttons),
+                after_header,
+            });
+        }
+    };
     for control in controls {
         if is_button(control) {
-            buttons.push(control_view(module_id, enabled, control, menu, plot));
+            buttons.push(control);
             continue;
         }
-        if !buttons.is_empty() {
-            rows.push(button_row(std::mem::take(&mut buttons)));
-        }
+        flush(&mut rows, &mut buttons);
         match control {
             ControlModel::Group(group) => {
                 rows.extend(group_rows(module_id, enabled, group, menu, plot));
             }
-            other => rows.push(control_view(module_id, enabled, other, menu, plot)),
+            other => rows.push(PanelRow::Plain(control_view(
+                module_id, enabled, other, menu, plot,
+            ))),
         }
     }
-    if !buttons.is_empty() {
-        rows.push(button_row(buttons));
-    }
+    flush(&mut rows, &mut buttons);
     rows
+}
+
+/// Lays out a section body's rows: each run of buttons becomes its row, knowing whether it sits
+/// under a group header and whether anything follows it in the section.
+fn finish_rows<'a>(
+    rows: Vec<PanelRow<'a>>,
+    menu: Option<&'a MenuTarget>,
+) -> Vec<Element<'a, Message>> {
+    let count = rows.len();
+    let mut finished = Vec::with_capacity(count);
+    for (index, row) in rows.into_iter().enumerate() {
+        match row {
+            PanelRow::Plain(element) => finished.push(element),
+            PanelRow::Buttons {
+                controls,
+                after_header,
+            } => {
+                let placement = RowPlacement {
+                    after_header,
+                    followed: index + 1 < count,
+                };
+                finished.extend(buttons_row(&controls, placement, menu));
+            }
+        }
+    }
+    finished
+}
+
+/// One run of buttons as its row. A run of actions that all name an icon this build draws is one
+/// row of equal-width icon buttons, the labels as tooltips, since each is a single operation whose
+/// label is its icon; its open context menu, if any, follows the row. Any other run is a row of
+/// labelled buttons, compact when it holds a picker, as a row under a group's sliders does.
+fn buttons_row<'a>(
+    controls: &[&'a ControlModel],
+    placement: RowPlacement,
+    menu: Option<&'a MenuTarget>,
+) -> Vec<Element<'a, Message>> {
+    let icons: Option<Vec<(&'a ActionControl, Icon)>> = controls
+        .iter()
+        .map(|control| match control {
+            ControlModel::Action(action) => action
+                .icon
+                .as_deref()
+                .and_then(Icon::from_name)
+                .map(|icon| (action, icon)),
+            _ => None,
+        })
+        .collect();
+    if let Some(icons) = icons {
+        let cells = icons
+            .iter()
+            .map(|(action, icon)| icon_action_cell(action, *icon))
+            .collect();
+        let mut rows = vec![icon_button_row(cells, placement)];
+        rows.extend(icons.iter().find_map(|(action, _)| {
+            menu_open_for_preset(menu, &action.action, None, Some(&action.preset))
+                .then(|| control_menu_preset(&action.action, None, Some(&action.preset)))
+        }));
+        return rows;
+    }
+    let size = if controls
+        .iter()
+        .any(|control| matches!(control, ControlModel::Picker(_)))
+    {
+        ButtonSize::Compact
+    } else {
+        ButtonSize::Regular
+    };
+    let buttons = controls
+        .iter()
+        .map(|control| match control {
+            ControlModel::Action(action) => action_view(action, size, menu),
+            ControlModel::Picker(picker) => picker_view(picker, size, menu),
+            _ => unreachable!("a button run holds only actions and pickers"),
+        })
+        .collect();
+    vec![button_row(buttons, placement)]
+}
+
+/// One action as a cell of an icon row: focusable, and right-clickable for its request.
+fn icon_action_cell<'a>(action: &'a ActionControl, icon: Icon) -> Element<'a, Message> {
+    let press = action.runnable.then(|| Message::RunAction {
+        action: action.action.clone(),
+        preset: action.preset.clone(),
+    });
+    let control = row_icon_button(
+        &IconButtonModel {
+            icon,
+            tooltip: match &action.reason {
+                Some(reason) if !action.runnable => format!("{} \u{00b7} {reason}", action.label),
+                _ => action.label.clone(),
+            },
+            enabled: action.runnable,
+            selected: false,
+        },
+        press,
+    );
+    let action_name = action.action.clone();
+    let preset = action.preset.clone();
+    let control = focus_control(control, action.runnable, move |event| {
+        activates(event).then(|| Message::RunAction {
+            action: action_name.clone(),
+            preset: preset.clone(),
+        })
+    });
+    mouse_area(control)
+        .on_right_press(Message::OpenMenu(control_target_preset(
+            &action.action,
+            None,
+            Some(&action.preset),
+        )))
+        .into()
 }
 
 fn control_view<'a>(
@@ -341,11 +481,14 @@ fn control_view<'a>(
         ControlModel::Enum(choice) => enum_view(enabled, choice, menu),
         ControlModel::Color(color) => color_view(enabled, color, menu),
         ControlModel::Curve(curve) => curve_view(enabled, curve, menu, plot),
-        ControlModel::Group(group) => column(group_rows(module_id, enabled, group, menu, plot))
-            .spacing(theme::ROW_SPACING)
-            .into(),
-        ControlModel::Action(action) => action_view(action, menu),
-        ControlModel::Picker(picker) => picker_view(picker, menu),
+        ControlModel::Group(group) => column(finish_rows(
+            group_rows(module_id, enabled, group, menu, plot),
+            menu,
+        ))
+        .spacing(theme::ROW_SPACING)
+        .into(),
+        ControlModel::Action(action) => action_view(action, ButtonSize::Regular, menu),
+        ControlModel::Picker(picker) => picker_view(picker, ButtonSize::Compact, menu),
         ControlModel::Unsupported(message) => error_caption(message.clone()),
         ControlModel::CropFrame(frame) => crop_section_view(frame, menu),
     }
@@ -962,7 +1105,7 @@ fn group_rows<'a>(
     group: &'a GroupControl,
     menu: Option<&'a MenuTarget>,
     plot: &HistogramModel,
-) -> Vec<Element<'a, Message>> {
+) -> Vec<PanelRow<'a>> {
     let header = sub_group_header(
         &SubGroupHeaderModel {
             label: group.label.clone(),
@@ -987,7 +1130,7 @@ fn group_rows<'a>(
         }
         None => header,
     };
-    let mut rows = vec![header];
+    let mut rows = vec![PanelRow::Plain(header)];
     if group.expanded {
         rows.extend(control_rows(
             module_id,
@@ -995,6 +1138,7 @@ fn group_rows<'a>(
             &group.controls,
             menu,
             plot,
+            true,
         ));
     }
     rows
@@ -1002,6 +1146,7 @@ fn group_rows<'a>(
 
 fn action_view<'a>(
     action: &'a ActionControl,
+    size: ButtonSize,
     menu: Option<&'a MenuTarget>,
 ) -> Element<'a, Message> {
     let press = action.runnable.then(|| Message::RunAction {
@@ -1031,6 +1176,8 @@ fn action_view<'a>(
                 } else {
                     ButtonTone::Control
                 },
+                size,
+                fill: false,
                 enabled: action.runnable,
             },
             press,
@@ -1050,7 +1197,7 @@ fn action_view<'a>(
         Some(reason) if !action.runnable => iced::widget::tooltip(
             control,
             iced::widget::container(caption(reason.clone()))
-                .padding(6.0)
+                .padding(theme::TOOLTIP_PADDING)
                 .style(theme::bar_surface),
             iced::widget::tooltip::Position::Top,
         )
@@ -1065,6 +1212,7 @@ fn action_view<'a>(
 /// nothing: the gesture is one `workspace.set`, which is what its context menu copies.
 fn picker_view<'a>(
     picker: &'a PickerControl,
+    size: ButtonSize,
     menu: Option<&'a MenuTarget>,
 ) -> Element<'a, Message> {
     let control = labelled_button(
@@ -1077,6 +1225,8 @@ fn picker_view<'a>(
             } else {
                 ButtonTone::Control
             },
+            size,
+            fill: false,
             enabled: picker.enabled,
         },
         Some(Message::SetMode(picker.target.clone())),
@@ -1086,7 +1236,7 @@ fn picker_view<'a>(
         Some(key) => iced::widget::tooltip(
             control,
             iced::widget::container(caption(format!("{} \u{00b7} {key}", picker.title)))
-                .padding(6.0)
+                .padding(theme::TOOLTIP_PADDING)
                 .style(theme::bar_surface),
             iced::widget::tooltip::Position::Top,
         )
@@ -1292,14 +1442,17 @@ fn crop_section_view<'a>(
     let apply: Element<'a, Message> = mouse_area(apply)
         .on_right_press(Message::OpenMenu(MenuTarget::Draft))
         .into();
-    panel = panel.push(button_row(vec![
-        text_button(
-            "Cancel",
-            ButtonTone::Control,
-            Some(Message::Crop(CropMessage::Cancel)),
-        ),
-        apply,
-    ]));
+    panel = panel.push(button_row(
+        vec![
+            text_button(
+                "Cancel",
+                ButtonTone::Control,
+                Some(Message::Crop(CropMessage::Cancel)),
+            ),
+            apply,
+        ],
+        RowPlacement::default(),
+    ));
     if matches!(menu, Some(MenuTarget::Draft)) {
         panel = panel.push(inline_menu(vec![
             ("Copy as JSON request".to_owned(), Message::CopyDraftRequest),
@@ -1324,6 +1477,8 @@ fn text_button<'a>(
             icon: None,
             key_hint: None,
             tone,
+            size: ButtonSize::Regular,
+            fill: false,
             enabled: on_press.is_some(),
         },
         on_press,

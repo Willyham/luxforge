@@ -31,7 +31,8 @@ mod text;
 mod toggle;
 
 pub use button_row::{
-    ButtonTone, LabelledButtonModel, button_row, button_row_height, labelled_button,
+    ButtonSize, ButtonTone, LabelledButtonModel, RowPlacement, button_row, button_row_height,
+    equal_button_row, icon_button_row, labelled_button, row_icon_button,
 };
 pub use chip::{ChipModel, chip};
 pub use color_picker::{

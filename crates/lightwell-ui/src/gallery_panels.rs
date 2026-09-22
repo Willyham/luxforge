@@ -3,9 +3,9 @@
 //! exactly as a generated section composes them.
 
 use crate::{
-    ButtonTone, Icon, LabelledButtonModel, RailDecoration, SectionHeaderModel, SliderModel,
-    SubGroupHeaderModel, Tab, TabRowModel, ValueEdit, button_row, labelled_button, module_section,
-    section_header, slider, sub_group_header, tab_row, theme,
+    ButtonSize, ButtonTone, Icon, LabelledButtonModel, RailDecoration, RowPlacement,
+    SectionHeaderModel, SliderModel, SubGroupHeaderModel, Tab, TabRowModel, ValueEdit, button_row,
+    labelled_button, module_section, section_header, slider, sub_group_header, tab_row, theme,
 };
 use iced::widget::{Column, Row, column, container};
 use iced::{Element, Length};
@@ -106,6 +106,8 @@ fn picker(tone: ButtonTone, enabled: bool) -> Element<'static, ()> {
             icon: Some(Icon::Picker),
             key_hint: Some("W".into()),
             tone,
+            size: ButtonSize::Compact,
+            fill: false,
             enabled,
         },
         Some(()),
@@ -127,7 +129,13 @@ pub(crate) fn gallery_panels() -> Vec<Element<'static, ()>> {
             group("White balance", true, true),
             row_slider("Temperature", 6.0, "+6", None, temperature()),
             row_slider("Tint", -2.0, "\u{2212}2", None, tint()),
-            button_row(vec![picker(ButtonTone::Control, true)]),
+            button_row(
+                vec![picker(ButtonTone::Control, true)],
+                RowPlacement {
+                    after_header: false,
+                    followed: true,
+                },
+            ),
             group("Tone", true, true),
             row_slider("Exposure", 7.0, "+0.35", Some("EV"), plain()),
             row_slider("Contrast", 12.0, "+12", None, plain()),
@@ -205,23 +213,31 @@ pub(crate) fn gallery_panels() -> Vec<Element<'static, ()>> {
     // -- Labelled buttons: resting with its icon and key hint, selected (its mode is active),
     // -- disabled, and a primary action.
     let buttons: Element<'static, ()> = Column::new()
-        .push(button_row(vec![
-            picker(ButtonTone::Control, true),
-            picker(ButtonTone::Selected, true),
-        ]))
-        .push(button_row(vec![
-            picker(ButtonTone::Control, false),
-            labelled_button(
-                &LabelledButtonModel {
-                    label: "Apply".into(),
-                    icon: None,
-                    key_hint: None,
-                    tone: ButtonTone::Primary,
-                    enabled: true,
-                },
-                Some(()),
-            ),
-        ]))
+        .push(button_row(
+            vec![
+                picker(ButtonTone::Control, true),
+                picker(ButtonTone::Selected, true),
+            ],
+            RowPlacement::default(),
+        ))
+        .push(button_row(
+            vec![
+                picker(ButtonTone::Control, false),
+                labelled_button(
+                    &LabelledButtonModel {
+                        label: "Apply".into(),
+                        icon: None,
+                        key_hint: None,
+                        tone: ButtonTone::Primary,
+                        size: ButtonSize::Compact,
+                        fill: false,
+                        enabled: true,
+                    },
+                    Some(()),
+                ),
+            ],
+            RowPlacement::default(),
+        ))
         .into();
     states.push(
         Row::new()
