@@ -1,4 +1,10 @@
 //! A slider row whose rail reports fractions and whose value field is shared with the stepper.
+//!
+//! The row is two lines: the label line (the label, and the value right-aligned in a fixed box)
+//! and the rail line (the rail, its fill, the zero tick and the handle). Iced's slider draws only
+//! the handle and owns the pointer; the rail under it is drawn here from
+//! [`geometry::rail_geometry`], on the same scale Iced places the handle on, so the fill always
+//! meets the handle and the tick always sits where the handle rests at zero.
 
 use crate::geometry::{self, Side};
 use crate::theme;
@@ -6,8 +12,10 @@ use crate::widgets::double_click::double_click;
 use crate::widgets::number_field::{NumberFieldModel, field_header};
 use crate::widgets::slider_guard::SliderGuard;
 use crate::widgets::text::error_caption;
-use iced::widget::{column, container, row, slider as iced_slider};
-use iced::{Alignment, Color, Element, Length};
+use iced::widget::canvas::gradient;
+use iced::widget::{canvas, column, container, slider as iced_slider, stack};
+use iced::{Color, Element, Length, Point, Rectangle, Renderer, Size, Theme};
+use std::cell::RefCell;
 use std::rc::Rc;
 
 pub use crate::widgets::number_field::ValueEdit;
@@ -67,7 +75,6 @@ pub fn slider<'a, M: Clone + 'a>(
     };
     let (header, invalid) =
         field_header(&field, on_edit_start, on_text, on_submit, on_reset.clone());
-    let fill = geometry::fill_stops(model.soft_min, model.soft_max, model.zero, model.value);
     let range = model.soft_min..=model.soft_max;
     let soft_min = model.soft_min;
     let soft_max = model.soft_max;
@@ -77,21 +84,16 @@ pub fn slider<'a, M: Clone + 'a>(
     let on_change: Rc<dyn Fn(f64) -> M + 'a> = Rc::new(on_change);
     let slider_change = Rc::clone(&on_change);
     let fine_change = Rc::clone(&on_change);
-    let rail = iced_slider(range, value, move |v| {
+    let handle = iced_slider(range, value, move |v| {
         slider_change(geometry::fraction_from_value(soft_min, soft_max, v))
     })
     .step(model.step)
     .shift_step(model.shift_step)
     .on_release(on_release.clone())
-    .height(16.0)
-    .style(theme::slider_style_decorated(
-        fill,
-        model.dragging,
-        model.rail.clone(),
-        geometry::fraction_from_value(soft_min, soft_max, value) as f32,
-    ));
-    let rail: Element<'a, M> = SliderGuard {
-        content: rail.into(),
+    .height(theme::SLIDER_RAIL_HEIGHT)
+    .style(theme::slider_style(model.dragging));
+    let handle: Element<'a, M> = SliderGuard {
+        content: handle.into(),
         enabled: model.enabled,
         value,
         min: soft_min,
@@ -103,33 +105,164 @@ pub fn slider<'a, M: Clone + 'a>(
         on_release,
     }
     .into();
-    let low = over_range_mark(model.over_range == Some(Side::Low));
-    let high = over_range_mark(model.over_range == Some(Side::High));
-    let rail = if model.enabled {
-        double_click(rail, on_reset)
+    let handle = if model.enabled {
+        double_click(handle, on_reset)
     } else {
-        rail
+        handle
     };
-    let rail = row![low, rail, high]
-        .spacing(3.0)
-        .align_y(Alignment::Center);
-    let mut body = column![header, rail].spacing(4.0);
+    let rail = RailDrawing::from_model(model);
+    let mut layers = stack![
+        canvas(rail)
+            .width(Length::Fill)
+            .height(theme::SLIDER_RAIL_HEIGHT),
+        handle
+    ];
+    // The over-range mark sits on the rail's end, where the pinned handle is, so it is drawn over
+    // the handle rather than under it.
+    if let Some(side) = model.over_range {
+        layers = layers.push(
+            canvas(OverRangeMark { side })
+                .width(Length::Fill)
+                .height(theme::SLIDER_RAIL_HEIGHT),
+        );
+    }
+    let rail_line = container(layers)
+        .width(Length::Fill)
+        .height(theme::SLIDER_RAIL_HEIGHT);
+    let mut body = column![header, rail_line].spacing(theme::SLIDER_GAP);
     if let Some(message) = invalid {
         body = body.push(error_caption(message));
     }
     body.into()
 }
 
-fn over_range_mark<'a, M: 'a>(visible: bool) -> Element<'a, M> {
-    container(iced::widget::Space::new())
-        .width(Length::Fixed(2.0))
-        .height(Length::Fixed(9.0))
-        .style(move |_theme| {
-            iced::widget::container::Style::default().background(if visible {
-                theme::ACCENT
-            } else {
-                Color::TRANSPARENT
-            })
-        })
-        .into()
+/// Everything the rail line draws under the handle, as plain values.
+#[derive(Debug, Clone, PartialEq)]
+struct RailDrawing {
+    /// The value as a fraction of the soft rail.
+    value: f64,
+    /// The zero as a fraction of the soft rail, for a bipolar slider.
+    zero: Option<f64>,
+    rail: RailDecoration,
+}
+
+impl RailDrawing {
+    fn from_model(model: &SliderModel) -> Self {
+        let fraction = |v: f64| geometry::fraction_from_value(model.soft_min, model.soft_max, v);
+        Self {
+            value: fraction(model.value),
+            zero: geometry::zero_fraction(model.soft_min, model.soft_max, model.zero),
+            rail: model.rail.clone(),
+        }
+    }
+}
+
+#[derive(Default)]
+struct RailCache {
+    cache: canvas::Cache,
+    key: RefCell<Option<(RailDrawing, Size)>>,
+}
+
+impl<M> canvas::Program<M> for RailDrawing {
+    type State = RailCache;
+
+    fn draw(
+        &self,
+        state: &Self::State,
+        renderer: &Renderer,
+        _theme: &Theme,
+        bounds: Rectangle,
+        _cursor: iced::mouse::Cursor,
+    ) -> Vec<canvas::Geometry> {
+        if bounds.width <= 0.0 || bounds.height <= 0.0 {
+            return Vec::new();
+        }
+        let key = Some((self.clone(), bounds.size()));
+        if *state.key.borrow() != key {
+            state.cache.clear();
+            *state.key.borrow_mut() = key;
+        }
+        vec![
+            state
+                .cache
+                .draw(renderer, bounds.size(), |frame| draw_rail(frame, self)),
+        ]
+    }
+}
+
+fn draw_rail(frame: &mut canvas::Frame, rail: &RailDrawing) {
+    let width = frame.width();
+    let middle = frame.height() / 2.0;
+    let geometry = geometry::rail_geometry(width, theme::THUMB_RADIUS, rail.value, rail.zero);
+    let band = |thickness: f32, from: f32, to: f32| {
+        (
+            Point::new(from, middle - thickness / 2.0),
+            Size::new((to - from).max(0.0), thickness),
+        )
+    };
+    match &rail.rail {
+        RailDecoration::Colors(colors) if !colors.is_empty() => {
+            // A declared colour rail replaces the fill: its colour is the module's meaning.
+            let (origin, size) = band(theme::DECORATED_RAIL_WIDTH, 0.0, width);
+            let mut linear =
+                gradient::Linear::new(Point::new(0.0, middle), Point::new(width, middle));
+            for (position, color) in geometry::rail_stop_positions(colors.len())
+                .into_iter()
+                .zip(colors)
+                .take(8)
+            {
+                linear = linear.add_stop(position, *color);
+            }
+            frame.fill_rectangle(origin, size, canvas::Fill::from(linear));
+        }
+        _ => {
+            let (origin, size) = band(theme::RAIL_WIDTH, 0.0, width);
+            frame.fill_rectangle(origin, size, theme::RAIL);
+            if let Some((from, to)) = geometry.fill {
+                let (origin, size) = band(theme::RAIL_WIDTH, from, to);
+                frame.fill_rectangle(origin, size, theme::RAIL_FILL);
+            }
+        }
+    }
+    if let Some(tick) = geometry.tick {
+        frame.fill_rectangle(
+            Point::new(
+                tick - theme::ZERO_TICK_WIDTH / 2.0,
+                middle - theme::ZERO_TICK_HEIGHT / 2.0,
+            ),
+            Size::new(theme::ZERO_TICK_WIDTH, theme::ZERO_TICK_HEIGHT),
+            theme::ZERO_TICK,
+        );
+    }
+}
+
+/// The accent mark at the end of the rail beyond which the value lies.
+struct OverRangeMark {
+    side: Side,
+}
+
+impl<M> canvas::Program<M> for OverRangeMark {
+    type State = ();
+
+    fn draw(
+        &self,
+        _state: &Self::State,
+        renderer: &Renderer,
+        _theme: &Theme,
+        bounds: Rectangle,
+        _cursor: iced::mouse::Cursor,
+    ) -> Vec<canvas::Geometry> {
+        let mut frame = canvas::Frame::new(renderer, bounds.size());
+        let mark = theme::OVER_RANGE_MARK;
+        let x = match self.side {
+            Side::Low => 0.0,
+            Side::High => bounds.width - mark.width,
+        };
+        frame.fill_rectangle(
+            Point::new(x, (bounds.height - mark.height) / 2.0),
+            mark,
+            theme::ACCENT,
+        );
+        vec![frame.into_geometry()]
+    }
 }

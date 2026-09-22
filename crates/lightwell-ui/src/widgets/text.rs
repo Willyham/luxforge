@@ -1,6 +1,8 @@
 //! Text helpers at the sizes and colours the visual language defines.
 
 use crate::theme;
+use iced::alignment::Horizontal;
+use iced::widget::text::{LineHeight, Wrapping};
 use iced::widget::{container, text};
 use iced::{Element, Font, Length, font::Weight};
 
@@ -28,6 +30,7 @@ pub fn label<'a, M: Clone + 'a>(content: impl Into<String>) -> Element<'a, M> {
 pub fn caption<'a, M: Clone + 'a>(content: impl Into<String>) -> Element<'a, M> {
     text(content.into())
         .size(theme::SIZE_CAPTION)
+        .line_height(LineHeight::Absolute(theme::CAPTION_LINE_HEIGHT.into()))
         .color(theme::TEXT_TERTIARY)
         .into()
 }
@@ -39,6 +42,7 @@ pub fn caption<'a, M: Clone + 'a>(content: impl Into<String>) -> Element<'a, M> 
 pub fn error_caption<'a, M: Clone + 'a>(content: impl Into<String>) -> Element<'a, M> {
     text(content.into())
         .size(theme::SIZE_CAPTION)
+        .line_height(LineHeight::Absolute(theme::CAPTION_LINE_HEIGHT.into()))
         .color(theme::CLIPPING_HIGHLIGHT)
         .into()
 }
@@ -61,8 +65,39 @@ pub fn value_text<'a, M: Clone + 'a>(content: impl Into<String>) -> Element<'a, 
     container(
         text(content.into())
             .size(theme::SIZE_CONTROL)
+            .line_height(LineHeight::Absolute(theme::SLIDER_LABEL_HEIGHT.into()))
+            .wrapping(Wrapping::None)
+            .align_x(Horizontal::Right)
+            .width(Length::Fill)
             .color(theme::TEXT_PRIMARY),
     )
-    .align_right(Length::Fixed(theme::VALUE_WIDTH))
+    .padding(iced::Padding::default().right(theme::VALUE_INSET))
+    .width(Length::Fixed(theme::VALUE_WIDTH))
     .into()
+}
+
+/// A control's label on its label line: 12 pt in the label colour, one line
+/// [`theme::SLIDER_LABEL_HEIGHT`] tall, so a slider row keeps its pitch.
+pub fn control_label<'a>(content: impl Into<String>, enabled: bool) -> iced::widget::Text<'a> {
+    text(content.into())
+        .size(theme::SIZE_CONTROL)
+        .line_height(LineHeight::Absolute(theme::SLIDER_LABEL_HEIGHT.into()))
+        .color(if enabled {
+            theme::TEXT_LABEL
+        } else {
+            theme::TEXT_TERTIARY
+        })
+}
+
+/// 11 pt semibold secondary text in sentence case: a sub-group's label (White balance, Tone).
+pub fn group_label<'a, M: Clone + 'a>(content: impl Into<String>) -> Element<'a, M> {
+    text(content.into())
+        .size(theme::SIZE_CAPTION)
+        .font(Font {
+            weight: Weight::Semibold,
+            ..Font::DEFAULT
+        })
+        .color(theme::TEXT_SECONDARY)
+        .wrapping(Wrapping::None)
+        .into()
 }

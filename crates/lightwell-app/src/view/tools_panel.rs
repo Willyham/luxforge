@@ -11,7 +11,7 @@ use crate::{
         histogram::{HIGHLIGHT_RULE, HistogramModel, SHADOW_RULE},
         tools::{
             ActionControl, ActionControlStyle, ChoiceControlStyle, ColorControl, ColorControlStyle,
-            ControlModel, CropSectionModel, CurveControl, EnumControl, GroupControl,
+            ControlModel, CropSectionModel, CurveControl, EnumControl, GroupControl, GroupState,
             NumberControlStyle, PickerControl, RailStyle, SectionModel, SliderControl,
             ToggleControl, ToolsModel, ValueEdit,
         },
@@ -19,16 +19,17 @@ use crate::{
 };
 use iced::{
     Alignment, Color, Element, Length,
-    widget::{Row, button, column, mouse_area, row, scrollable},
+    widget::{Row, column, mouse_area, row, scrollable},
 };
 use lightwell_ui::{
-    BINS, ChipModel, ClipTriangleModel, ColorPickerModel, ColorSwatchModel, ControlKey,
+    BINS, ButtonTone, ChipModel, ClipTriangleModel, ColorPickerModel, ColorSwatchModel, ControlKey,
     ControlKeyEvent, CurveEditorModel, CurvePointRow, HistogramChannel, Icon, IconButtonModel,
-    MenuChoiceModel, NumberFieldModel, RailDecoration, SectionHeaderModel, SegmentedModel,
-    SliderModel, StepperModel, SubGroupHeaderModel, ToggleModel, caption, chip, clip_triangle,
-    color_picker, color_swatch, curve_editor, error_caption, focus_control, histogram, icon_button,
-    inline_menu, menu_choice, number_field, section_header, section_label, segmented, slider,
-    stepper, sub_group_header, theme, toggle, value_input,
+    LabelledButtonModel, MenuChoiceModel, NumberFieldModel, RailDecoration, SectionHeaderModel,
+    SegmentedModel, SliderModel, StepperModel, SubGroupHeaderModel, ToggleModel, button_row,
+    caption, chip, clip_triangle, color_picker, color_swatch, curve_editor, error_caption,
+    focus_control, histogram, icon_button, inline_menu, labelled_button, menu_choice,
+    module_section, number_field, section_label, segmented, slider, stepper, sub_group_header,
+    theme, toggle, value_input,
 };
 use serde_json::{Map, Value};
 
@@ -53,31 +54,26 @@ pub(crate) fn tools_panel<'a>(
         .into();
     }
     let menu = model.menu.as_ref();
-    let mut panel = column![]
-        .spacing(theme::SPACING)
-        // The scroll handle overlays the content edge. Reserve its width so the number fields
-        // remain legible even at the panel's narrowest supported width.
-        .padding(iced::Padding {
-            right: theme::SPACING * 3.0,
-            top: theme::SPACING,
-            bottom: theme::SPACING,
-            left: theme::SPACING,
-        })
-        .width(Length::Fill);
+    // Module sections are full-width bands stacked edge to edge; each owns its border, header and
+    // body padding, so the panel adds no spacing or padding of its own around them.
+    let mut panel = column![].width(Length::Fill);
     // The histogram sits above the first module section with no header of its own, as the Develop
     // workspace layout reserves.
-    panel = panel.push(inspector(plot));
+    panel = panel.push(iced::widget::container(inspector(plot)).padding(theme::SPACING));
     for section in &model.sections {
         panel = panel.push(section_view(section, menu, plot));
     }
     if !model.developer.is_empty() {
-        panel = panel.push(section_label("Developer"));
+        panel = panel.push(
+            iced::widget::container(section_label("Developer")).padding(theme::SECTION_PADDING),
+        );
         for section in &model.developer {
             panel = panel.push(section_view(section, menu, plot));
         }
     }
     scrollable(panel)
         .id(scroll_id())
+        .direction(theme::panel_scrollbar())
         .height(Length::Fill)
         .into()
 }
@@ -140,15 +136,14 @@ fn inspector(model: &HistogramModel) -> Element<'_, Message> {
     // Four rows, always: the caption (the domain — so an output endpoint count is never read as
     // sensor clipping — plus the readout and the status), then the counters in words, for a reader
     // who cannot measure the plot's heights.
-    let block = column![
-        plot,
-        triangles,
+    // The readout lines sit on the caption's own line pitch, as one block of text.
+    let readout = column![
         caption(model.caption_line()),
         caption(model.shadow_text()),
         caption(model.highlight_text()),
         caption(model.both_text()),
-    ]
-    .spacing(theme::SPACING / 2.0);
+    ];
+    let block = column![plot, triangles, readout].spacing(theme::SPACING / 2.0);
     debug_assert_eq!(BINS, 256, "one bin per 8-bit output code");
     block.into()
 }
@@ -195,7 +190,18 @@ fn section_view<'a>(
     menu: Option<&'a MenuTarget>,
     plot: &HistogramModel,
 ) -> Element<'a, Message> {
-    let header = section_header(
+    // An unavailable module cannot expand, per the design; nothing under it is drawn. Otherwise a
+    // disabled section (busy, a historical preview) still shows its values, just not interactive.
+    let body = (section.expanded && section.unavailable.is_none()).then(|| {
+        control_rows(
+            &section.module_id,
+            section.enabled,
+            &section.controls,
+            menu,
+            plot,
+        )
+    });
+    module_section(
         &SectionHeaderModel {
             title: section.title.clone(),
             expanded: section.expanded,
@@ -207,22 +213,46 @@ fn section_view<'a>(
         },
         Message::ToggleSection(section.module_id.clone()),
         Message::ResetModule(section.module_id.clone()),
-    );
-    let mut block = column![header].spacing(theme::SPACING);
-    // An unavailable module cannot expand, per the design; nothing under it is drawn. Otherwise a
-    // disabled section (busy, a historical preview) still shows its values, just not interactive.
-    if section.expanded && section.unavailable.is_none() {
-        for control in &section.controls {
-            block = block.push(control_view(
-                &section.module_id,
-                section.enabled,
-                control,
-                menu,
-                plot,
-            ));
+        body,
+    )
+}
+
+/// A button-like control: a picker, or an action drawn as a button.
+fn is_button(control: &ControlModel) -> bool {
+    matches!(control, ControlModel::Action(_) | ControlModel::Picker(_))
+}
+
+/// The rows a list of controls occupies in a section body. A group contributes its header and
+/// its own rows flush with its siblings, so every row in a section sits on one pitch; consecutive
+/// pickers and actions share one button row under the sliders they follow.
+fn control_rows<'a>(
+    module_id: &str,
+    enabled: bool,
+    controls: &'a [ControlModel],
+    menu: Option<&'a MenuTarget>,
+    plot: &HistogramModel,
+) -> Vec<Element<'a, Message>> {
+    let mut rows = Vec::new();
+    let mut buttons: Vec<Element<'a, Message>> = Vec::new();
+    for control in controls {
+        if is_button(control) {
+            buttons.push(control_view(module_id, enabled, control, menu, plot));
+            continue;
+        }
+        if !buttons.is_empty() {
+            rows.push(button_row(std::mem::take(&mut buttons)));
+        }
+        match control {
+            ControlModel::Group(group) => {
+                rows.extend(group_rows(module_id, enabled, group, menu, plot));
+            }
+            other => rows.push(control_view(module_id, enabled, other, menu, plot)),
         }
     }
-    block.into()
+    if !buttons.is_empty() {
+        rows.push(button_row(buttons));
+    }
+    rows
 }
 
 fn control_view<'a>(
@@ -238,7 +268,9 @@ fn control_view<'a>(
         ControlModel::Enum(choice) => enum_view(enabled, choice, menu),
         ControlModel::Color(color) => color_view(enabled, color, menu),
         ControlModel::Curve(curve) => curve_view(enabled, curve, menu, plot),
-        ControlModel::Group(group) => group_view(module_id, enabled, group, menu, plot),
+        ControlModel::Group(group) => column(group_rows(module_id, enabled, group, menu, plot))
+            .spacing(theme::ROW_SPACING)
+            .into(),
         ControlModel::Action(action) => action_view(action, menu),
         ControlModel::Picker(picker) => picker_view(picker, menu),
         ControlModel::Unsupported(message) => error_caption(message.clone()),
@@ -850,78 +882,49 @@ fn curve_view<'a>(
     with_control_menu(widget.into(), &curve.action, Some(&channel.parameter), menu)
 }
 
-fn group_view<'a>(
+/// A group's rows: its header, then (while expanded) its controls flush under it.
+fn group_rows<'a>(
     module_id: &str,
     enabled: bool,
     group: &'a GroupControl,
     menu: Option<&'a MenuTarget>,
     plot: &HistogramModel,
-) -> Element<'a, Message> {
+) -> Vec<Element<'a, Message>> {
     let header = sub_group_header(
         &SubGroupHeaderModel {
             label: group.label.clone(),
             state: group.state.map(|state| state.caption().to_owned()),
+            state_accent: group.state == Some(GroupState::Custom),
+            expanded: Some(group.expanded),
             reset: group.reset.is_some(),
             enabled,
         },
+        Some(Message::ToggleGroup {
+            module_id: module_id.to_owned(),
+            path: group.path.clone(),
+        }),
         Message::ResetGroup {
             module_id: module_id.to_owned(),
             path: group.path.clone(),
         },
     );
-    let header = if let Some(reset) = &group.reset {
-        let module_id = module_id.to_owned();
-        let path = group.path.clone();
-        let header = focus_control(header, enabled, move |event| {
-            activates(event).then(|| Message::ResetGroup {
-                module_id: module_id.clone(),
-                path: path.clone(),
-            })
-        });
-        with_control_menu_preset(header, &reset.action, None, Some(&reset.preset), menu)
-    } else {
-        header
+    let header = match &group.reset {
+        Some(reset) => {
+            with_control_menu_preset(header, &reset.action, None, Some(&reset.preset), menu)
+        }
+        None => header,
     };
-    let indent = iced::Padding::default().left(theme::SPACING);
-    let mut inner = column![].spacing(theme::SPACING).padding(indent);
+    let mut rows = vec![header];
     if group.expanded {
-        for control in &group.controls {
-            inner = inner.push(control_view(module_id, enabled, control, menu, plot));
-        }
-    }
-    let toggle = icon_button(
-        &IconButtonModel {
-            icon: if group.expanded {
-                Icon::ChevronDown
-            } else {
-                Icon::ChevronRight
-            },
-            tooltip: format!(
-                "{} {}",
-                if group.expanded { "Collapse" } else { "Expand" },
-                group.label
-            ),
+        rows.extend(control_rows(
+            module_id,
             enabled,
-            selected: false,
-        },
-        enabled.then_some(Message::ToggleGroup {
-            module_id: module_id.to_owned(),
-            path: group.path.clone(),
-        }),
-    );
-    let toggle = focus_control(toggle, enabled, {
-        let module_id = module_id.to_owned();
-        let path = group.path.clone();
-        move |event| {
-            activates(event).then(|| Message::ToggleGroup {
-                module_id: module_id.clone(),
-                path: path.clone(),
-            })
-        }
-    });
-    column![row![toggle, header].align_y(Alignment::Center), inner]
-        .spacing(theme::SPACING / 2.0)
-        .into()
+            &group.controls,
+            menu,
+            plot,
+        ));
+    }
+    rows
 }
 
 fn action_view<'a>(
@@ -945,15 +948,20 @@ fn action_view<'a>(
             },
             press,
         ),
-        (style, _) => button(lightwell_ui::label(action.label.clone()))
-            .padding([4.0, 10.0])
-            .style(if style == ActionControlStyle::Primary {
-                theme::button_accent
-            } else {
-                theme::button_plain
-            })
-            .on_press_maybe(press)
-            .into(),
+        (style, icon) => labelled_button(
+            &LabelledButtonModel {
+                label: action.label.clone(),
+                icon,
+                key_hint: None,
+                tone: if style == ActionControlStyle::Primary {
+                    ButtonTone::Primary
+                } else {
+                    ButtonTone::Control
+                },
+                enabled: action.runnable,
+            },
+            press,
+        ),
     };
     let action_name = action.action.clone();
     let preset = action.preset.clone();
@@ -986,19 +994,20 @@ fn picker_view<'a>(
     picker: &'a PickerControl,
     menu: Option<&'a MenuTarget>,
 ) -> Element<'a, Message> {
-    let style = if picker.selected {
-        theme::button_selected
-    } else {
-        theme::button_plain
-    };
-    let control = button(lightwell_ui::label(picker.label.clone()))
-        .padding([4.0, 10.0])
-        .style(style)
-        .on_press_maybe(
-            picker
-                .enabled
-                .then(|| Message::SetMode(picker.target.clone())),
-        );
+    let control = labelled_button(
+        &LabelledButtonModel {
+            label: picker.label.clone(),
+            icon: Some(Icon::Picker),
+            key_hint: picker.shortcut.clone(),
+            tone: if picker.selected {
+                ButtonTone::Selected
+            } else {
+                ButtonTone::Control
+            },
+            enabled: picker.enabled,
+        },
+        Some(Message::SetMode(picker.target.clone())),
+    );
     // The mode strip named the mode and its letter in a tooltip; the panel says the same thing.
     let control: Element<'a, Message> = match &picker.shortcut {
         Some(key) => iced::widget::tooltip(
@@ -1009,7 +1018,7 @@ fn picker_view<'a>(
             iced::widget::tooltip::Position::Top,
         )
         .into(),
-        None => control.into(),
+        None => control,
     };
     let target = MenuTarget::Mode(picker.module_id.clone());
     let area: Element<'a, Message> = mouse_area(control)
@@ -1041,12 +1050,11 @@ fn crop_section_view<'a>(
 ) -> Element<'a, Message> {
     let mut panel = column![lightwell_ui::title(model.title.clone())].spacing(theme::SPACING);
     if !model.drafting {
-        panel = panel.push(
-            button(lightwell_ui::label("Crop & straighten"))
-                .padding([4.0, 10.0])
-                .style(theme::button_plain)
-                .on_press_maybe(model.can_start.then_some(Message::Crop(CropMessage::Start))),
-        );
+        panel = panel.push(text_button(
+            "Crop & straighten",
+            ButtonTone::Control,
+            model.can_start.then_some(Message::Crop(CropMessage::Start)),
+        ));
         if model.pending {
             panel = panel.push(caption("Preparing the crop's input stage…"));
         }
@@ -1056,18 +1064,18 @@ fn crop_section_view<'a>(
         panel = panel.push(error_caption("Changed elsewhere · Discard or Reapply"));
         panel = panel.push(
             row![
-                button(lightwell_ui::label("Discard"))
-                    .padding([4.0, 10.0])
-                    .style(theme::button_plain)
-                    .on_press(Message::Crop(CropMessage::Cancel)),
-                button(lightwell_ui::label("Reapply"))
-                    .padding([4.0, 10.0])
-                    .style(theme::button_accent)
-                    .on_press_maybe(
-                        model
-                            .can_reapply
-                            .then_some(Message::Crop(CropMessage::Reapply))
-                    ),
+                text_button(
+                    "Discard",
+                    ButtonTone::Control,
+                    Some(Message::Crop(CropMessage::Cancel)),
+                ),
+                text_button(
+                    "Reapply",
+                    ButtonTone::Primary,
+                    model
+                        .can_reapply
+                        .then_some(Message::Crop(CropMessage::Reapply)),
+                ),
             ]
             .spacing(theme::SPACING / 2.0),
         );
@@ -1134,14 +1142,16 @@ fn crop_section_view<'a>(
                 Message::Crop(CropMessage::CustomHeight(model.custom.1.clone())),
                 Message::Crop(CropMessage::CustomHeight(model.custom.1.clone()))
             ),
-            button(lightwell_ui::label(model.lock_label.clone()))
-                .padding([4.0, 10.0])
-                .style(theme::button_plain)
-                .on_press_maybe(model.enabled.then_some(Message::Crop(CropMessage::Lock))),
-            button(lightwell_ui::label("Swap"))
-                .padding([4.0, 10.0])
-                .style(theme::button_plain)
-                .on_press_maybe(model.can_swap.then_some(Message::Crop(CropMessage::Swap))),
+            text_button(
+                &model.lock_label,
+                ButtonTone::Control,
+                model.enabled.then_some(Message::Crop(CropMessage::Lock)),
+            ),
+            text_button(
+                "Swap",
+                ButtonTone::Control,
+                model.can_swap.then_some(Message::Crop(CropMessage::Swap)),
+            ),
         ]
         .spacing(theme::SPACING / 2.0)
         .align_y(Alignment::Center),
@@ -1201,23 +1211,22 @@ fn crop_section_view<'a>(
         .spacing(theme::SPACING / 2.0)
         .align_y(Alignment::Center),
     );
-    let apply = button(lightwell_ui::label("Apply"))
-        .padding([4.0, 10.0])
-        .style(theme::button_accent)
-        .on_press_maybe(model.can_apply.then_some(Message::Crop(CropMessage::Apply)));
+    let apply = text_button(
+        "Apply",
+        ButtonTone::Primary,
+        model.can_apply.then_some(Message::Crop(CropMessage::Apply)),
+    );
     let apply: Element<'a, Message> = mouse_area(apply)
         .on_right_press(Message::OpenMenu(MenuTarget::Draft))
         .into();
-    panel = panel.push(
-        row![
-            button(lightwell_ui::label("Cancel"))
-                .padding([4.0, 10.0])
-                .style(theme::button_plain)
-                .on_press(Message::Crop(CropMessage::Cancel)),
-            apply,
-        ]
-        .spacing(theme::SPACING / 2.0),
-    );
+    panel = panel.push(button_row(vec![
+        text_button(
+            "Cancel",
+            ButtonTone::Control,
+            Some(Message::Crop(CropMessage::Cancel)),
+        ),
+        apply,
+    ]));
     if matches!(menu, Some(MenuTarget::Draft)) {
         panel = panel.push(inline_menu(vec![
             ("Copy as JSON request".to_owned(), Message::CopyDraftRequest),
@@ -1228,6 +1237,24 @@ fn crop_section_view<'a>(
         panel = panel.push(caption(line.clone()));
     }
     panel.into()
+}
+
+/// A labelled button with no icon or key hint.
+fn text_button<'a>(
+    label: &str,
+    tone: ButtonTone,
+    on_press: Option<Message>,
+) -> Element<'a, Message> {
+    labelled_button(
+        &LabelledButtonModel {
+            label: label.to_owned(),
+            icon: None,
+            key_hint: None,
+            tone,
+            enabled: on_press.is_some(),
+        },
+        on_press,
+    )
 }
 
 fn straighten_toggle(model: &CropSectionModel) -> Element<'_, Message> {

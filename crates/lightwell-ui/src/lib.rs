@@ -23,6 +23,7 @@ pub use widgets::*;
 
 mod gallery;
 mod gallery_components;
+mod gallery_panels;
 
 /// Builds one instance of every widget in every state shown on the components board
 /// (`docs/design/develop-workspace/components.png`), as `Element<'_, ()>` values, so a caller can
@@ -38,7 +39,7 @@ pub fn gallery_states() -> Vec<iced::Element<'static, ()>> {
 /// Names the exact gallery states in draw order for the real-app evidence board.
 #[doc(hidden)]
 pub fn gallery_named_states() -> Vec<(&'static str, iced::Element<'static, ()>)> {
-    const NAMES: [&str; 64] = [
+    const NAMES: [&str; 68] = [
         "Highlights · resting slider",
         "Exposure · dragging slider",
         "Contrast · editing slider value",
@@ -103,6 +104,10 @@ pub fn gallery_named_states() -> Vec<(&'static str, iced::Element<'static, ()>)>
         "Curve · histogram and two channels",
         "Curve · disabled",
         "Named vector icons · 12 and 16 points",
+        "Basic · expanded module section",
+        "Module bands · collapsed, unavailable, collapsed group",
+        "Colour mixer · tab row per selected tab",
+        "Neutral picker · labelled buttons",
     ];
     let states = gallery_states();
     assert_eq!(
@@ -118,6 +123,6 @@ mod tests {
     #[test]
     fn gallery_builds_every_widget_state_without_panicking() {
         let states = super::gallery_named_states();
-        assert_eq!(states.len(), 64);
+        assert_eq!(states.len(), 68);
     }
 }

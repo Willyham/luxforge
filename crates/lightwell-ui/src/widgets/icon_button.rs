@@ -5,8 +5,6 @@ use iced::widget::{button, canvas, container, tooltip};
 use iced::{Color, Element, Length, Point, Rectangle, Renderer, Theme};
 use std::cell::Cell;
 
-const BUTTON_SIZE: f32 = 28.0;
-
 /// Icons exposed to module action controls and the desktop shell.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Icon {
@@ -90,19 +88,59 @@ pub fn icon_button<'a, M: Clone + 'a>(
     model: &IconButtonModel,
     on_press: Option<M>,
 ) -> Element<'a, M> {
-    let style = if model.selected {
-        theme::button_selected
-    } else {
-        theme::button_icon
-    };
     let color = if model.enabled {
         theme::TEXT_PRIMARY
     } else {
         theme::TEXT_TERTIARY
     };
-    let control = button(container(icon::<M>(model.icon, 16.0, color)).center(Length::Fill))
-        .width(Length::Fixed(BUTTON_SIZE))
-        .height(Length::Fixed(BUTTON_SIZE))
+    sized_icon_button(
+        model,
+        on_press,
+        theme::ICON_BUTTON_SIZE,
+        theme::ICON_SIZE,
+        color,
+    )
+}
+
+/// The compact icon button a module band or a sub-group header carries at its right end, such as
+/// its reset: a [`theme::HEADER_ICON_SIZE`] icon in the secondary text colour inside a
+/// [`theme::HEADER_BUTTON_SIZE`] square.
+pub fn header_icon_button<'a, M: Clone + 'a>(
+    model: &IconButtonModel,
+    on_press: Option<M>,
+) -> Element<'a, M> {
+    let color = if model.enabled {
+        theme::TEXT_SECONDARY
+    } else {
+        theme::TEXT_TERTIARY
+    };
+    sized_icon_button(
+        model,
+        on_press,
+        theme::HEADER_BUTTON_SIZE,
+        theme::HEADER_ICON_SIZE,
+        color,
+    )
+}
+
+fn sized_icon_button<'a, M: Clone + 'a>(
+    model: &IconButtonModel,
+    on_press: Option<M>,
+    size: f32,
+    icon_size: f32,
+    color: Color,
+) -> Element<'a, M> {
+    let style = if model.selected {
+        theme::button_selected
+    } else {
+        theme::button_icon
+    };
+    // No padding: Iced's default button padding would squeeze the icon's canvas below its
+    // declared size and draw the glyph shrunk into the top-left corner.
+    let control = button(container(icon::<M>(model.icon, icon_size, color)).center(Length::Fill))
+        .padding(0)
+        .width(Length::Fixed(size))
+        .height(Length::Fixed(size))
         .style(style)
         .on_press_maybe(if model.enabled { on_press } else { None });
     tooltip(
@@ -154,12 +192,32 @@ impl<M> canvas::Program<M> for IconDrawing {
     }
 }
 
+/// The circular arrow's head on the 16-unit icon grid: an L whose corner sits on the circle in the
+/// arc's open upper-left gap, one arm up and one along, as the module references draw it.
+const ARROW_HEAD: [(f32, f32); 3] = [(3.7, 3.4), (3.7, 7.0), (7.2, 7.0)];
+
+/// The circular arrow's arc on the 16-unit icon grid, as a polyline: centre (8.15, 8.2), radius
+/// 4.15, from left of the top (−115°) clockwise in screen space round to the left side
+/// (165°), leaving the upper-left gap the head sits in. A polyline rather than a canvas arc so
+/// the mirrored icons are a plain reflection.
+fn circular_arrow_arc() -> Vec<(f32, f32)> {
+    const STEPS: usize = 24;
+    let (cx, cy, radius) = (8.15_f32, 8.2_f32, 4.15_f32);
+    let (start, end) = (-115.0_f32.to_radians(), 165.0_f32.to_radians());
+    (0..=STEPS)
+        .map(|step| {
+            let angle = start + (end - start) * step as f32 / STEPS as f32;
+            (cx + radius * angle.cos(), cy + radius * angle.sin())
+        })
+        .collect()
+}
+
 fn draw_path(frame: &mut canvas::Frame, icon: Icon, color: Color) {
     let s = frame.width().min(frame.height()) / 16.0;
     let p = |x: f32, y: f32| Point::new(x * s, y * s);
     let stroke = canvas::Stroke::default()
         .with_color(color)
-        .with_width(1.55 * s);
+        .with_width(theme::ICON_STROKE_WIDTH);
     let line = |frame: &mut canvas::Frame, a: (f32, f32), b: (f32, f32)| {
         frame.stroke(&canvas::Path::line(p(a.0, a.1), p(b.0, b.1)), stroke);
     };
@@ -180,33 +238,18 @@ fn draw_path(frame: &mut canvas::Frame, icon: Icon, color: Color) {
         }
         Icon::Minus => line(frame, (3.0, 8.0), (13.0, 8.0)),
         Icon::Reset | Icon::RotateLeft | Icon::RotateRight | Icon::Undo | Icon::Redo => {
-            let right = matches!(icon, Icon::RotateRight | Icon::Redo);
-            let x = if right { 12.5 } else { 3.5 };
-            let arc = if right {
-                [
-                    (4.0, 5.0),
-                    (6.0, 3.5),
-                    (9.0, 3.5),
-                    (12.0, 5.0),
-                    (13.0, 8.0),
-                    (11.5, 11.0),
-                    (8.0, 12.5),
-                    (5.0, 11.0),
-                ]
-            } else {
-                [
-                    (12.0, 5.0),
-                    (10.0, 3.5),
-                    (7.0, 3.5),
-                    (4.0, 5.0),
-                    (3.0, 8.0),
-                    (4.5, 11.0),
-                    (8.0, 12.5),
-                    (11.0, 11.0),
-                ]
-            };
-            poly(frame, &arc);
-            poly(frame, &[(x - 2.0, 5.0), (x, 5.0), (x, 3.0)]);
+            // A circular arrow: an open circle from the top, round through the right and the
+            // bottom to the left, with an L-shaped head in the gap at its upper left. The
+            // clockwise icons are the mirror image.
+            let mirror = matches!(icon, Icon::RotateRight | Icon::Redo);
+            let x = |x: f32| if mirror { 16.0 - x } else { x };
+            let points: Vec<(f32, f32)> = circular_arrow_arc()
+                .into_iter()
+                .map(|(px, py)| (x(px), py))
+                .collect();
+            poly(frame, &points);
+            let head: Vec<(f32, f32)> = ARROW_HEAD.iter().map(|&(px, py)| (x(px), py)).collect();
+            poly(frame, &head);
         }
         Icon::Flip | Icon::Mirror => {
             if icon == Icon::Flip {

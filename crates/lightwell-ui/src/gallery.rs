@@ -215,9 +215,12 @@ pub fn gallery() -> Vec<Element<'static, ()>> {
         &SubGroupHeaderModel {
             label: "Tone".into(),
             state: Some("Custom".into()),
+            state_accent: true,
+            expanded: Some(true),
             reset: true,
             enabled: true,
         },
+        Some(()),
         (),
     ));
 
@@ -463,5 +466,6 @@ pub fn gallery() -> Vec<Element<'static, ()>> {
     states.push(value_text::<()>("+0.62"));
 
     states.extend(crate::gallery_components::gallery_components());
+    states.extend(crate::gallery_panels::gallery_panels());
     states
 }

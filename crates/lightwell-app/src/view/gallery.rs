@@ -20,7 +20,7 @@ const PAGES: [(&str, usize, usize); 10] = [
     ("Colour picker", 56, 59),
     ("Curve points", 59, 61),
     ("Curve channels", 61, 63),
-    ("Named vector icons", 63, 64),
+    ("Named vector icons and module panels", 63, 68),
 ];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

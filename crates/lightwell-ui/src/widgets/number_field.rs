@@ -1,9 +1,9 @@
 //! A labelled value that switches between formatted display and editable text.
 
 use crate::theme;
-use crate::widgets::text::{error_caption, value_text};
+use crate::widgets::text::{control_label, error_caption, value_text};
 use iced::alignment::Horizontal;
-use iced::widget::{button, column, mouse_area, row, text, text_input};
+use iced::widget::{button, column, mouse_area, row, text_input};
 use iced::{Alignment, Element, Length};
 
 /// The value field's visible state. Parsing and validation belong to the caller.
@@ -71,24 +71,12 @@ pub(crate) fn field_header<'a, M: Clone + 'a>(
         ValueEdit::Editing { invalid, .. } => invalid.clone(),
         ValueEdit::Display => None,
     };
-    let color = if model.enabled {
-        theme::TEXT_PRIMARY
-    } else {
-        theme::TEXT_TERTIARY
-    };
-    let label = mouse_area(
-        text(model.label.clone())
-            .size(theme::SIZE_CONTROL)
-            .color(color),
-    )
-    .on_double_click(on_reset);
     let label: Element<'a, M> = if model.enabled {
-        label.into()
-    } else {
-        text(model.label.clone())
-            .size(theme::SIZE_CONTROL)
-            .color(color)
+        mouse_area(control_label(model.label.clone(), true))
+            .on_double_click(on_reset)
             .into()
+    } else {
+        control_label(model.label.clone(), false).into()
     };
     let value: Element<'a, M> = match &model.edit {
         ValueEdit::Display => {

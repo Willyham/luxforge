@@ -66,8 +66,9 @@ pub fn list_row<'a, M: Clone + 'a>(
         content = content.push(caption(trailing.clone()));
     }
 
-    let control = button(content)
-        .padding([theme::SPACING / 2.0, theme::SPACING])
+    let control = button(content.height(Length::Fill))
+        .padding([0.0, theme::SPACING])
+        .height(Length::Fixed(theme::LIST_ROW_HEIGHT))
         .style(theme::button_plain)
         .on_press_maybe(model.enabled.then_some(on_press).flatten());
 
