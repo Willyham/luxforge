@@ -8,6 +8,7 @@ Each JSON file is an independent plan. IDs start at `TASK-001` inside every file
 | [Editor follow-ups](implementation-editor-followups.json) | Export, color and metadata, Locate, MCP and full-editor verification |
 | [Initial RAW editing](implementation-initial-raw.json) | Continuous high-precision RAW recipes for the original Nikon Z6, Fujifilm X100VI and supplied DJI Air 2S DNG: mode qualification, decoder/development evidence, bounded preparation, neutral rendering, exposure/WB, history and UI/API parity |
 | [UI components](implementation-ui-components.json) | The closed control vocabulary for modules: new parameter and control kinds, pure widgets, desktop gesture rules, a controls proof module and rendered evidence, per the accepted [design](../docs/design/ui-components.md); completed with native M4 captures and scoped before/after timing evidence |
+| [Presence, colour mixer and vignette](implementation-presence-mixer-vignette.json) | Texture, Clarity and Dehaze as a Presence module, a Lightroom-style HSL colour mixer and a post-crop Vignette module: host stage and ordering additions, the tiled spatial primitive, frozen numerical studies, generated controls and API, acceptance, native evidence and measurements, per the proposed [design](../docs/design/presence-mixer-vignette.md) |
 | [Later extensions](implementation-extensions.json) | External-loader measurements and proof planning after a selected use case |
 | [Product decisions](product-decisions.json) | Open product questions |
 

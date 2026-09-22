@@ -52,9 +52,10 @@ Where each tool lives, what kind of thing it is and whether it exists. Kinds: **
 | Transform: Rotate left/right, Mirror, Flip | Tools panel | module | Implemented (M2, M3) | `edit.transform` |
 | Crop and straighten: free handles, ratio presets, lock and swap, angle, straighten guide, reset | Mode strip, `R`; Crop section while drafting | mode | Implemented (M4) | `edit.crop`, `edit.crop-fit`, `edit.crop-reset` |
 | Tone curve | Tools panel, collapsed | module | Later | Its own design |
-| Color: mixer and B&W | Tools panel, collapsed | module | Later | Its own design |
+| Colour mixer: Hue, Saturation and Luminance for eight colour ranges | Tools panel, collapsed, after Presence | module | Proposed ([design](presence-mixer-vignette.md)); B&W mix is later | `edit.set-mixer`, `edit.reset-mixer` once built |
 | Detail: sharpening, noise reduction | Tools panel, collapsed | module | Later | Its own design |
-| Effects: Texture, Clarity, Dehaze | Tools panel, collapsed | module | Later | Its own design |
+| Presence: Texture, Clarity, Dehaze | Tools panel, collapsed, after Basic | module | Proposed ([design](presence-mixer-vignette.md)) | `edit.set-presence`, `edit.reset-presence` once built |
+| Vignette: Amount, Midpoint, Roundness, Feather | Tools panel, collapsed, after Crop | module | Proposed ([design](presence-mixer-vignette.md)) | `edit.set-vignette`, `edit.reset-vignette` once built |
 | Heal, Mask | Mode strip | mode | Later | Their own designs |
 | History, Undo, Redo, preview, Restore, Load older | State panel, title bar, shortcuts | core | Implemented (M1) | `history.list`, `history.inspect`, `history.undo`, `history.redo`, `history.restore`, `preview.select` |
 | Versions: save, select, delete | State panel | core | Implemented | `version.create`, `version.list`, `version.delete` |

@@ -220,6 +220,47 @@
           "Publish a workload/priority record with no invented machine specifications or unmeasured performance claims."
         ]
       }
+    },
+    {
+      "id": "TASK-005",
+      "description": "Refine the recorded defaults of the Presence, colour mixer and vignette proposals after reviewing the delivered work.",
+      "status": "ready",
+      "dependencies": [],
+      "extra_context": [
+        "The design records a default for every proposal so the plan can run without further input: Presence as the section name for Texture, Clarity and Dehaze; colour before spatial before geometry before finish with the mixer after Basic; three property groups for the mixer; one luminance-neutral vignette style; the spatial operation reading the quantized frame on the JPEG path; full-resolution drafts for spatial sliders with misses reported; the declared point-sample cost through a spatial layer.",
+        "Implementation was authorized on 2026-09-22 on the recorded defaults. A proposal is not a decision until the owner records it; until then the delivered behaviour follows the default and the design keeps calling it a proposal."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Presence, mixer and vignette design",
+          "target": "docs/design/presence-mixer-vignette.md",
+          "locator": "Proposals with recorded defaults",
+          "relevance": "The questions, defaults and alternatives to decide."
+        },
+        {
+          "kind": "file",
+          "label": "Owner decisions",
+          "target": "docs/decisions.md",
+          "locator": "Open product questions",
+          "relevance": "Where the decisions are recorded once made."
+        }
+      ],
+      "acceptance_criteria": [
+        "Each proposal is either accepted as its default, changed with the design updated to match, or explicitly left as a recorded default the plan runs on.",
+        "The decisions document records each outcome, and the design and feature status are updated where a default changed."
+      ],
+      "test_strategy": {
+        "approach": "manual",
+        "steps": [
+          "Review the proposals table with the owner.",
+          "Record the outcome in the decisions document and adjust the design where a default changed."
+        ],
+        "commands": [],
+        "expected_results": [
+          "No proposal is silently treated as accepted."
+        ]
+      }
     }
   ],
   "execution_waves": [
@@ -229,7 +270,8 @@
         "TASK-001",
         "TASK-002",
         "TASK-003",
-        "TASK-004"
+        "TASK-004",
+        "TASK-005"
       ]
     }
   ]

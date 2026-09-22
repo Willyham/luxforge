@@ -34,7 +34,7 @@ Initial RAW implementation is requested, with a [design](design/initial-raw.md) 
 | Useful small library | Multi-image import, virtualized browsing, filtering, tagging, collections, lazy shoot subsets, multi-selection and stacking, broader source recovery |
 | Tonal editing and PNG | Exposure, white balance, contrast and related controls with explicit numerical and color contracts |
 | Trustworthy RAW | [Continuous RAW editing](design/initial-raw.md) for Nikon Z6, Fujifilm X100VI and DJI Air 2S by actual mode; measured decoder/development selection, high-precision recipe evaluation and neutral exposure/WB |
-| Richer tools | Texture, clarity, dehaze; separately scoped masks and clone/heal |
+| Richer tools | Texture, clarity and dehaze, the colour mixer and a post-crop vignette have a proposed [design](design/presence-mixer-vignette.md) and [task plan](../tasks/implementation-presence-mixer-vignette.json) awaiting the owner's go-ahead; separately scoped masks and clone/heal |
 | External modules | Measured activation costs and a separately authored module loaded through documented host APIs |
 
 ## Not in scope

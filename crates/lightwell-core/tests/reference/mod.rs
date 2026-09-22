@@ -17,7 +17,10 @@
 #![allow(dead_code)]
 
 pub mod colour;
+pub mod mixer;
+pub mod presence;
 pub mod tone;
+pub mod vignette;
 pub mod white_balance;
 
 /// Aliases so every study module can share one set of helpers.

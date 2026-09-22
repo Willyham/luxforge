@@ -1,0 +1,137 @@
+# Presence, colour mixer and vignette
+
+Status: design with a validated [task plan](../../tasks/implementation-presence-mixer-vignette.json); implementation was authorized by the owner on 2026-09-22 on the recorded defaults and is in progress. The [proposals](#proposals-with-recorded-defaults) at the end carry those defaults so the plan runs to completion on agent judgement; each is the owner's to refine, as the Basic defaults were. It builds on the delivered [Basic adjustments](basic-and-histogram.md) integration contract (field patches, the draft lifecycle, pointwise colour runs), the [module and API contract](modules-and-api.md), the [UI components](ui-components.md) vocabulary and the [Develop workspace](develop-workspace.md) tool array.
+
+## Outcome and scope
+
+Three further Lightroom-familiar editing sections over the delivered editor, each a built-in module with generated controls and generated API methods:
+
+| Module | Controls | What it needs from the host that does not exist yet |
+| --- | --- | --- |
+| Presence (`lightwell.presence`) | Texture, Clarity, Dehaze | A neighbourhood-dependent (spatial) processing primitive with a declared stage, tiled halo-bounded execution and a bounded point-sample path |
+| Colour mixer (`lightwell.mixer`) | Hue, Saturation and Luminance for eight colour ranges: red, orange, yellow, green, aqua, blue, purple, magenta | A deterministic order among colour-stage layers of different modules |
+| Vignette (`lightwell.vignette`) | Amount, Midpoint, Roundness, Feather | A finishing stage evaluated after the geometry tail in output coordinates, and colour units that know their pixel position |
+
+Lightroom is the familiarity reference for names, ranges and panel placement, not a rendering target: no value is claimed as Lightroom-equivalent, and the equations are selected and frozen by numerical studies against independent references before a control ships, exactly as the [tone](basic-tone.md), [white balance](basic-white-balance.md) and [colour](basic-colour.md) studies did for Basic.
+
+In scope: the supported JPEG subset and the implemented RAW sources through the same modules, with each module's stage joining both evaluation paths. Out of scope, with no placeholders: Lightroom's per-colour mixer view and targeted adjustment drag, Point Color, B&W mix, vignette styles beyond the one selected below, grain, sharpening and noise reduction (the Detail module keeps its own later design), masks, and any approximate preview processing.
+
+## Module boundaries
+
+| Component | Owns | Does not own |
+| --- | --- | --- |
+| Presence module | Parameters, validation, neutral rules, controls, the texture, clarity and dehaze units (their scales, halos, equations and global estimates) | Tiling, scratch, scheduling, sampling, history |
+| Colour mixer module | Parameters, validation, controls, the hue-range basis and the hue, saturation and luminance equations as one pointwise unit | Colour run execution, quantization, ordering among layers |
+| Vignette module | Parameters, validation, controls, the mask geometry and the amount equation as one positional unit | Where the finish stage sits, output-stage coordinates, quantization |
+| Shared host additions | Two new effect stages and their placement rules, an order among layers of one stage, the spatial primitive, positional colour units, the spatial sample path and its cost contract | Any module equation |
+
+Each module is one editable layer with a fixed internal order, updated in place at the same identity and position, exactly as Basic is: `single_layer` is declared, a neutral payload is a legal layer that compiles to nothing, a reset keeps the layer, and planning or rendering against a stack with two layers of the effect fails with `validation: ambiguous <title> layers` without rewriting anything. Each module persists only its current payload format and rejects others explicitly.
+
+## Placement and stage order
+
+The delivered host places a new layer by its effect stage: pixel and colour layers before the first geometry layer, geometry layers at the end. That is not enough for these modules, because the mixer must run after Basic whatever was touched first, local contrast must run after the pointwise colour run so Basic's neutral picker never has to sample through a neighbourhood operation, and a post-crop vignette must run after the crop it recentres on.
+
+Stage additions (`EffectStage`):
+
+| Stage | Meaning | Host placement of a new layer |
+| --- | --- | --- |
+| `spatial` (new) | Depends on a bounded neighbourhood of its input stage, in content coordinates | After the last pixel or colour layer and before the first geometry layer |
+| `finish` (new) | Pointwise but position-dependent, in output coordinates after the geometry tail | At the end of the stack |
+| `pixel`, `color` | As delivered | Before the first spatial or geometry layer, instead of before the first geometry layer |
+| `geometry` | As delivered | Before the first finish layer, instead of at the end |
+
+Order within a stage: `EffectDescriptor` gains `order: u16` (default `0`). A new layer is placed after the last existing layer of its stage whose order is at most its own and before the first whose order is greater. Basic keeps order `0`; the mixer declares `10`, so a mixer layer always follows the Basic layer in the colour run. The pixel proof, transform, crop and RAW modules are unchanged. Existing layers never move; a stack stored in another order renders in its stored order, and the one order the host cannot evaluate, a finish layer followed by a geometry layer, fails compilation with `validation: finish layer precedes geometry` instead of being rearranged.
+
+Resulting canonical stack for a fully edited photograph: source (RAW only) → pixel proof → Basic → mixer → presence → orientation → crop → vignette.
+
+## Processing contracts
+
+### Presence: the spatial primitive
+
+`Processing` gains `Spatial(SpatialOperation)`: an ordered list of at most 4 `Arc<dyn SpatialUnit>` units. A unit declares `halo(stage) -> u32`, the neighbourhood radius in input pixels it needs beyond a tile, `prepare(reduction) -> Option<Global>`, an optional global estimate computed once from a bounded reduction of the whole stage, and `apply_tile(input, output, global)` over f32 linear-sRGB RGB tiles. The host owns everything else:
+
+- **A spatial operation is a stage boundary**, like a resample: the segment before it rasterizes to one frame at the existing quantization boundary, the spatial operation reads that frame and writes the next, and later exact layers compose as before. On the JPEG path the frames are bytes decoded through the existing table; on the RAW path the operation reads the retained float planes through the compiled prefix and writes float. At most two full frames exist at once, each within the 512 MiB frame limit, as today.
+- **Tiled, halo-bounded execution.** The host streams fixed 512 × 512 output tiles on the shared Rayon pool above the one-megapixel threshold, reading each tile plus the summed halo of the operation's units from the input frame with edge clamping. The summed halo is bounded at 512 pixels; a unit whose halo exceeds it at the stage's size is refused at compile time with `resource-limit`, never silently reduced. Per-tile scratch (input and output planes plus each unit's declared scratch) is reserved from the process-wide 64 MiB `ScratchBudget` before allocation and released after the tile. Cancellation is checked between tiles. Rendering a stage with tiles of any size gives byte-identical output; the study fixes the tolerance between tiled and whole-frame f64 references.
+- **Global estimates.** `prepare` receives a bounded reduction of the stage input at 1/16 scale per side (at most 0.25 megapixels) built by the host, and returns a small (at most 4 KiB) value the tiles read. The host caches estimates in an eight-entry store keyed by `(source fingerprint, prefix recipe hash, stage)` and evicts oldest first. Dehaze's atmospheric light is the one such estimate in this design; texture and clarity declare none.
+- **Point sampling.** `render.sample`, `pixel_in`, the neutral picker's `sample_before` and every other point query keep their contract for stacks whose spatial layer lies after the sampled prefix, which the placement rule guarantees for Basic. A sample through a spatial layer evaluates the compiled prefix over the point's tile-plus-halo neighbourhood only, on the calling thread, allocating at most one tile from the scratch budget: its cost is O(halo² × layers) rather than O(layers), and a global estimate on a cache miss costs one 1/16-scale reduction of the stage. This is the declared exception to [performance rule 4](../engineering/performance-rules.md#rules), recorded here with the crop filter's neighbourhood cost as precedent; no-op checks and validation never take it because these modules plan by payload comparison alone.
+- **Non-finite values** after any unit fail the render or sample with `resource-limit`, as colour runs do. Alpha is never touched. A neutral presence payload compiles to no operation, keeps the identity byte path and shares the source buffer.
+
+The units, to be selected and frozen by the presence study against the candidates in the [darktable](../research/darktable/detail-and-local-contrast.md) and [Lightroom](../research/lightroom/detail-and-local-contrast.md) research:
+
+| Unit | Range | Candidate contract to freeze |
+| --- | --- | --- |
+| Texture | −100..+100, step 1 | A medium-frequency luminance band (about 2 to 8 pixels, scaled with image size) isolated by an edge-aware filter and scaled by a bounded gain; negative values attenuate the band. Luminance is Rec. 709 on linear sRGB, RGB is reconstructed by the luminance ratio with the tone study's near-black rule |
+| Clarity | −100..+100, step 1 | Broad local contrast: the residual of luminance against an edge-aware base at about 2% of the long side, computed on a downsampled base to keep the halo under the bound, amplified through a compressive curve in the tone study's encoded working domain so that highlights do not clip and halos stay bounded |
+| Dehaze | −100..+100, step 1 | The atmospheric model `I = t·J + (1 − t)·A`: atmospheric light `A` from the global estimate, a dark-channel transmission refined by a guided filter with a transmission floor, strength scaling the estimated veil; negative values add haze through the forward model. Applied to RGB, because a veil is chromatic |
+
+Guided-filter and downsampled-base candidates are preferred because they tile; a local-Laplacian candidate is rejected unless it can tile within the halo bound, which the pinned darktable source says its own path cannot.
+
+### Colour mixer: one pointwise unit
+
+The mixer is one `PointwiseColor` unit in the existing colour run, so it joins the Basic run in the same segment with no new quantization boundary and the same output rules. It works in Oklab, the space the [colour study](basic-colour.md) accepted for saturation and vibrance, and its study freezes:
+
+- **Eight hue ranges** over Oklab hue with overlapping smooth weights that sum to one everywhere, centred on the hues of the sRGB reference colours for red, orange, yellow, green, aqua, blue, purple and magenta. Weights vanish on the achromatic axis with a chroma ramp, so greys, near-greys and noise in shadows are never coloured by any slider.
+- **Hue** −100..+100 rotates hue within the range by a bounded angle toward the neighbouring range; **Saturation** −100..+100 scales chroma; **Luminance** −100..+100 scales `L` through a compressive response with the near-black rule. Every slider at 0 is the exact identity; production matches an independent f64 reference within the frozen tolerance; a single range's slider changes no pixel whose weight for that range is zero.
+- Neither unit clamps internally; the gamut policy is the colour study's.
+
+Twenty-four `number` parameters, one field-patch action `set-mixer` and a non-patch `reset-mixer`, with labels of the form `Red hue +20` and group resets `Reset Hue`, `Reset Saturation`, `Reset Luminance`.
+
+### Vignette: one positional unit
+
+`PointwiseColor::apply_row` gains the row's `y` and starting `x` so a unit may depend on position; existing units ignore them. A finish-stage layer is compiled against its input stage, which is the output stage of the geometry tail, so a later change to the crop, which updates the crop layer in place before the vignette layer, recentres the vignette exactly as a post-crop vignette should. The RAW linear path receives the same coordinates for its terminal evaluation, so `sample_linear` and `render_linear` agree.
+
+The vignette study freezes the mask and the amount equation:
+
+- **Mask** `m(x, y)` in `[0, 1]`: 0 at the centre and inside the midpoint radius, 1 at the corners, over an elliptical-to-rounded-rectangle shape. Midpoint 0..100 (default 50) sets where the falloff begins as a fraction of the half-diagonal; Roundness −100..+100 (default 0) morphs the shape from a rounded rectangle through an ellipse to a circle; Feather 0..100 (default 50) sets the width of the transition. The mask is symmetric under mirror and flip, and the centre pixel is unchanged for every parameter combination.
+- **Amount** −100..+100 (default 0): negative darkens toward black in linear light with the gain `1 − |a|·m`; positive lightens toward the display white with a compressive mapping that never exceeds 1 in encoded terms. Amount 0 is the exact identity for every mask. The one style shipped is this luminance-neutral one; Lightroom's highlight-priority and paint-overlay styles are not selected.
+
+One `set-vignette` field patch, `reset-vignette`, labels like `Vignette amount −35` and `Reset Vignette`.
+
+## Controls and interaction
+
+All three sections render from descriptors with the delivered vocabulary; no new control kind and no desktop change is expected. Every slider is a `number` control of a field-patch action, so it drafts through the core lifecycle on the 16 ms tick, previews live and commits once on release, key-up or Enter; Escape cancels; a right-click copies the exact JSON request.
+
+| Section | Registry position and initial state | Groups and controls |
+| --- | --- | --- |
+| Presence | After Basic, collapsed | One group: Texture, Clarity, Dehaze sliders, zero at 0; module reset |
+| Colour mixer | After Presence, collapsed | Hue, Saturation and Luminance groups, each with the eight colour sliders in the order red, orange, yellow, green, aqua, blue, purple, magenta and its own reset. Rails use the `gradient` hint: a hue rail runs from the previous to the next range colour through this one, a saturation rail from grey to the colour, a luminance rail from the dark to the light version of the colour |
+| Vignette | After Crop, collapsed | One group: Amount (zero 0, soft range full), Midpoint, Roundness, Feather; module reset |
+
+History labels come from `ToolModule::label`, recipe rows from `describe_layer`, and seeded slider values from `values`, so the panel shows authoritative current or historical values for each module as it does for Basic.
+
+## API
+
+Generated from the descriptors: `edit.set-presence`, `edit.reset-presence`, `edit.set-mixer`, `edit.reset-mixer`, `edit.set-vignette`, `edit.reset-vignette`, all discoverable through `module.list` and `schema.list`, each patch action validating exactly the fields sent, storing the patch as sent, deduplicating by request id and creating no entry for a patch that changes nothing. `draft.begin` accepts each patch action. `recipe.describe` reports the three layers' values. `render.sample` and `analysis.request` carry their existing identities; a report over a stack with a spatial layer is exact full-resolution counts as today. UI and API parity is verified through the acceptance chapter, not assumed.
+
+## Resource and responsiveness constraints
+
+The existing limits hold: 64 MP, 16384 px per side, 512 MiB per evaluated frame, 64 MiB aggregate float scratch, at most two full frames at once, no full-frame float buffer on the JPEG path. New bounded quantities: 4 spatial units per operation, a 512 pixel summed halo, 512 × 512 tiles whose scratch is charged to the existing budget, 4 KiB per global estimate and eight cached estimates, at most one tile allocated by a point sample.
+
+Every slider of the three modules is measured on the recorded M4 configuration in release builds at 24 MP and 60 MP with a warm source cache and at least 30 samples, separately for slider-to-presented-frame latency, the settled histogram, and the sample cost through a spatial layer. The provisional targets are the Basic ones: warm 24 MP slider p95 below 100 ms and settled histogram p95 below 200 ms. A spatial slider is expected to miss the slider target at 60 MP and may miss it at 24 MP; a miss is reported with its figures and does not block delivery, and no approximate preview, extra cache or timer is added to claim a pass. Peak RSS, scratch high-water mark and tile counts are recorded. Every implementation handoff answers the [performance checklist](../engineering/performance-rules.md#review-checklist).
+
+## Verification and acceptance
+
+1. **Frozen numerics before production.** Each study lands an f64 reference module under `crates/lightwell-core/tests/reference/`, hand-built fixtures under `fixtures/`, and its frozen equations, ranges and tolerances in its own design note, before the corresponding module task starts. Presence fixtures include step edges, sinusoidal frequency sweeps, textured patches, smooth gradients, noise at several amplitudes and a synthetic hazed image built from the forward model with known `t` and `A`; mixer fixtures include the eight reference colours, an achromatic ramp, near-black chroma and a hue wheel; vignette fixtures include a flat field with every parameter combination at the corners and the centre.
+2. **Exactness and bounds.** Production matches each reference within its frozen tolerance; neutral payloads keep the identity byte path and share the source buffer; tiled rendering is byte-identical across tile sizes and matches the whole-frame reference; halos are measured on the edge fixtures and stay under the study's bound; greys are invariant under every mixer slider; the vignette centre is invariant and the mask symmetric; non-finite values, over-limit halos, two layers of one effect and a finish layer before geometry are refused explicitly without rewriting anything.
+3. **Complete history journey through the API** for each module in the `editor-acceptance` chapter: gesture commit, cancel and return-to-start no-op, retry deduplication, group and module resets keeping the layer identity, undo, redo, preview, restore and reopen evaluating byte-identically, `render.sample` equal to the rendered raster including through a spatial layer, an unavailable provider refusing the stack while keeping the layer readable, the vignette recentring after a crop update, and the mixer following Basic whichever was touched first. The original's SHA-256 is unchanged throughout.
+4. **Native M4 rendered evidence** from background smoke scenarios `presence`, `mixer` and `vignette` with correlated state, requests and logs at Fit and 100%, inspected for halos on edges, noise in shadows, hue continuity on the wheel, and vignette shape at each roundness extreme.
+5. **Measurements** recorded in [performance](../specs/performance.md) with their scope, and the docs updated for demonstrated behaviour only: [feature status](../features.md), the [user guide](../user-guide.md), the workspace tool array and the module design's descriptor and stage tables.
+
+## Proposals with recorded defaults
+
+Recommendations for the owner, recorded as proposals until decided. The plan runs on the defaults.
+
+| Question | Default the plan runs on | Alternatives |
+| --- | --- | --- |
+| Section names | Texture, Clarity and Dehaze are a Presence section, the label Lightroom users look for; the vignette is its own Vignette section | Keep the workspace mockup's Effects label for the three sliders; fold the vignette into an Effects section once grain exists |
+| Stage order | Colour before spatial before geometry before finish, with the mixer after Basic by declared order | Spatial before colour, which would require sampling through neighbourhoods for the neutral picker |
+| Mixer layout | Three property groups (Hue, Saturation, Luminance) with eight sliders each | Lightroom's per-colour view and targeted-adjustment drag, which need a view switch and a drag canvas interaction that the vocabulary does not have |
+| Vignette style | One luminance-neutral style; positive amount lightens toward white | Highlight-priority and paint-overlay styles, colour-priority desaturation |
+| Spatial precision on the JPEG path | The spatial operation reads the quantized frame of the preceding segment, one extra 8-bit boundary on an 8-bit source | A float hand-off from the colour run, which needs a full-frame float plane the memory limits do not allow |
+| Gesture latency for spatial sliders | Full-resolution drafts as today; misses are reported | A bounded Fit-resolution draft render, to be measured as a separate proposal |
+| Point-sample cost through a spatial layer | The declared O(halo² × layers) exception | Refusing samples through spatial layers, which would break readout and acceptance parity |
+
+## References
+
+- Repository contracts: [modules](modules-and-api.md), [Basic and histogram](basic-and-histogram.md), [UI components](ui-components.md), [workspace](develop-workspace.md), [architecture](architecture.md), [performance rules](../engineering/performance-rules.md), [RAW integration](raw-integration.md).
+- Local research: [Lightroom detail and dehaze](../research/lightroom/detail-and-local-contrast.md), [Lightroom tone and colour](../research/lightroom/tone-and-color-tools.md), [darktable detail and haze](../research/darktable/detail-and-local-contrast.md), [darktable previews and tiling](../research/darktable/previews-and-performance.md). These supply context and candidate mechanisms, not accepted Lightwell behaviour.

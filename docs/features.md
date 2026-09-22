@@ -45,7 +45,8 @@
 | PNG input | Later | Separate from the proposed JPEG Basic controls |
 | Nikon Z6 and Fujifilm X100VI RAW editing | Implemented; initial M4 verification | [Continuous RAW editing](design/initial-raw.md): retained sensor/float sources, source exposure, custom temperature/tint (each drafting with a live preview while dragging), the Neutral WB picker in the RAW panel, history and shared API; full-size 12/14-bit lossless NEF and 14-bit uncompressed/lossless RAF, with explicit scene/resource/platform qualification gaps |
 | DJI Air 2S DNG | Implemented; initial M4 verification | Supplied FC3411 uncompressed 16-bit-stored mode, required GainMap/chromatic WarpRectilinear, fixed D65 calibration and continuous RAW history; [scope and numerical contract](design/air2s-dng.md). Unknown required corrections fail while preserving the previous photo |
-| Texture, clarity, dehaze, masks, clone/heal | Later | Full API required whenever introduced |
+| Texture, clarity, dehaze; HSL colour mixer; post-crop vignette | Proposed | [Design](design/presence-mixer-vignette.md) and task plan; not started. Full API arrives with each module |
+| Masks, clone/heal | Later | Full API required whenever introduced |
 | Bitmap layers, blend modes, layer reordering | Not selected | |
 | Sidecars, sync, managed-copy import, folder relinking | Later decisions | |
 | Marketplace, cloud or accounts, Map/Book/Print/Web modules | Excluded | |
