@@ -14,9 +14,19 @@ use std::{
 };
 mod dng;
 mod format;
+mod profiles;
 pub use dng::{DngCalibrationMetadata, DngCorrectionMetadata, DngOpcodeProvenance};
 pub use format::required_dng_opcodes;
 use format::{classify_mode, raf_default_crop};
+use profiles::{Catalog, Crop};
+
+fn camera_catalog() -> &'static Catalog {
+    static CATALOG: std::sync::OnceLock<Catalog> = std::sync::OnceLock::new();
+    CATALOG.get_or_init(|| {
+        Catalog::parse(include_str!("../data/cameras.json"))
+            .expect("camera catalog validated at build time")
+    })
+}
 
 const MAX_SOURCE_BYTES: usize = 128 * 1024 * 1024;
 const MAX_PIXELS: usize = 64_000_000;
@@ -63,13 +73,15 @@ pub struct RawRect {
     pub height: u32,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum RawMode {
-    NikonZ6Lossless12,
-    NikonZ6Lossless14,
-    FujifilmX100ViUncompressed14,
-    FujifilmX100ViLossless14,
-    DjiAir2sDng16,
+include!(concat!(env!("OUT_DIR"), "/raw_modes.rs"));
+
+impl RawMode {
+    /// The correction record is required by the mode's processing capability.
+    pub fn requires_dng_corrections(self) -> bool {
+        camera_catalog().cameras.iter().any(|camera| {
+            camera.dng.is_some() && camera.modes.iter().any(|mode| mode.id == self.id())
+        })
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -235,10 +247,10 @@ fn native_error(code: c_int, buffer: &[c_char]) -> RawError {
 }
 
 fn reject_unhandled_required_opcodes(
-    mode: RawMode,
+    handles_dng_corrections: bool,
     opcodes: &[format::DngOpcode],
 ) -> Result<(), RawError> {
-    if mode != RawMode::DjiAir2sDng16 {
+    if !handles_dng_corrections {
         let mut ids = opcodes
             .iter()
             .filter(|op| op.flags & 1 == 0)
@@ -504,8 +516,11 @@ impl RawSource {
         let make = c_text(&native.make);
         let model = c_text(&native.model);
         let decoder = c_text(&native.decoder);
-        let mode = classify_mode(native, &make, &model, &decoder, bytes)?;
-        reject_unhandled_required_opcodes(mode, opcodes)?;
+        let (profile, recording) =
+            classify_mode(camera_catalog(), native, &make, &model, &decoder, bytes)?;
+        let mode = serde_json::from_value(serde_json::Value::String(recording.id.clone()))
+            .expect("mode identifiers generated from the validated catalog");
+        reject_unhandled_required_opcodes(profile.dng.is_some(), opcodes)?;
         let rect = |x, y, width, height| RawRect {
             x,
             y,
@@ -631,39 +646,43 @@ impl RawSource {
         }
         let cam_xyz = std::array::from_fn(|y| std::array::from_fn(|x| native.cam_xyz[y * 3 + x]));
         let mut warnings = Vec::new();
-        let dji_container = if mode == RawMode::DjiAir2sDng16 {
-            Some(format::dji_container(bytes, native)?)
-        } else {
-            None
-        };
-        let default_crop = if matches!(
-            mode,
-            RawMode::FujifilmX100ViUncompressed14 | RawMode::FujifilmX100ViLossless14
-        ) {
-            // LibRaw trims three additional top rows here; RAF's own crop tag
-            // describes the camera frame. Do not silently change framing.
-            let raf =
-                raf_default_crop(bytes).ok_or(RawError::InvalidInput("missing RAF crop tags"))?;
-            let parsed = checked_rect(raf, native.width, native.height)?;
-            if parsed != inset {
-                warnings.push("LibRaw inset differs from RAF camera crop".to_string());
+        let dng_container = profile
+            .dng
+            .as_ref()
+            .map(|settings| format::dng_container(bytes, native, &settings.container))
+            .transpose()?;
+        let default_crop = match profile.crop {
+            Crop::RafTags => {
+                // The format's own crop tags are authoritative for this capability.
+                let raf = raf_default_crop(bytes)
+                    .ok_or(RawError::InvalidInput("missing RAF crop tags"))?;
+                let parsed = checked_rect(raf, native.width, native.height)?;
+                if parsed != inset {
+                    warnings.push("LibRaw inset differs from RAF camera crop".to_string());
+                }
+                parsed
             }
-            parsed
-        } else if let Some(container) = dji_container {
-            if container.default_crop != inset {
-                warnings.push("LibRaw inset differs from DNG DefaultCrop tags".to_string());
+            Crop::DngTags => {
+                let container = dng_container
+                    .as_ref()
+                    .expect("validated DNG crop capability");
+                if container.default_crop != inset {
+                    warnings.push("LibRaw inset differs from DNG DefaultCrop tags".to_string());
+                }
+                container.default_crop
             }
-            container.default_crop
-        } else {
-            inset
+            Crop::LibrawInset => inset,
         };
-        let (cam_xyz, dng_correction) = if mode == RawMode::DjiAir2sDng16 {
-            let (matrix, calibration) = format::dji_color_calibration(bytes, native)?;
+        let (cam_xyz, dng_correction) = if let Some(settings) = &profile.dng {
+            let (matrix, calibration) = format::dng_color_calibration(bytes, native, settings)?;
             let correction = dng::DngCorrection::parse(
                 opcodes,
                 active,
-                dji_container.expect("DJI container parsed").raw_ifd,
+                dng_container
+                    .expect("validated DNG processing capability")
+                    .raw_ifd,
                 calibration,
+                settings,
             )?;
             (matrix, Some(correction))
         } else {
@@ -769,7 +788,7 @@ mod tests {
         ));
     }
     #[test]
-    fn dng_opcode_allowance_is_limited_to_qualified_dji_mode() {
+    fn dng_opcode_allowance_requires_processing_capability() {
         let required = format::DngOpcode {
             ifd: 0,
             list: 51022,
@@ -779,10 +798,10 @@ mod tests {
             data: vec![],
         };
         assert!(matches!(
-            reject_unhandled_required_opcodes(RawMode::NikonZ6Lossless14, std::slice::from_ref(&required)),
+            reject_unhandled_required_opcodes(false, std::slice::from_ref(&required)),
             Err(RawError::UnsupportedRequiredOpcodes(ids)) if ids == vec![9]
         ));
-        assert!(reject_unhandled_required_opcodes(RawMode::DjiAir2sDng16, &[required]).is_ok());
+        assert!(reject_unhandled_required_opcodes(true, &[required]).is_ok());
     }
     #[test]
     fn geometry_and_orientation_are_bounded() {

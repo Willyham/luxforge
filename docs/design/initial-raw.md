@@ -2,6 +2,10 @@
 
 Status: continuous RAW editing is implemented; supplied-file M4 verification passes, with broader qualification tracked separately. The owner NEF, RAF and DNG pass native development, actual JSON editing/history/reopen and background Metal rendering. The supplied DJI Air 2S DNG uses required GainMap and WarpRectilinear corrections under the [Air 2S contract](air2s-dng.md). The [task plan](../../tasks/implementation-initial-raw.json), [integration contract](raw-integration.md) and [coverage manifest](../../fixtures/raw-coverage.json) distinguish delivered behavior from remaining controlled-scene, resource and platform qualification.
 
+Camera-specific mode and processing policy is defined in the validated embedded
+[RAW camera catalog](raw-camera-profiles.md). Camera profiles select existing
+capabilities; capture-specific metadata remains authoritative in each original.
+
 ## Outcome and delivery boundaries
 
 Open the owner's original Nikon Z6 NEF and Fujifilm X100VI RAF files directly, develop their sensor data into a useful neutral rendition, edit through the same history and command service as JPEG, and preserve every original byte. A camera's embedded JPEG is not the developed result. Support is qualified by actual recording mode and evidence, not by extension or a decoder's camera list.

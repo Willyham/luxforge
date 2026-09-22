@@ -1,6 +1,7 @@
 //! Narrow, bounded container inspection for the qualified modes. LibRaw still
 //! owns decompression; these reads validate recording-mode and crop semantics.
-use super::{DngCalibrationMetadata, NativeMetadata, RawError, RawMode, RawRect};
+use super::profiles::{Camera, Catalog, CompressionProbe, Dng, DngCalibration, DngContainer, Mode};
+use super::{DngCalibrationMetadata, NativeMetadata, RawError, RawRect};
 use sha2::{Digest, Sha256};
 
 #[derive(Clone, Copy)]
@@ -101,7 +102,7 @@ impl<'a> Tiff<'a> {
     }
 }
 
-fn nikon_compression(bytes: &[u8]) -> Option<u16> {
+fn nef_compression(bytes: &[u8]) -> Option<u16> {
     let (root, first) = Tiff::header(bytes, 0)?;
     let (ifd, _) = root.entries(first)?;
     let exif = ifd
@@ -299,7 +300,7 @@ pub fn required_dng_opcodes(bytes: &[u8]) -> Result<Vec<u32>, RawError> {
 }
 
 #[derive(Clone, Copy)]
-pub(super) struct DjiContainer {
+pub(super) struct DngSensorContainer {
     pub raw_ifd: u32,
     pub default_crop: RawRect,
 }
@@ -326,10 +327,12 @@ fn rational_values(tiff: &Tiff<'_>, entry: Entry, count: usize) -> Option<Vec<(u
 /// crop semantics. The supplied camera uses unity DefaultScale and
 /// BestQualityScale; reject other scaling rather than silently changing the
 /// stage-three coordinate domain.
-pub(super) fn dji_container(
+pub(super) fn dng_container(
     bytes: &[u8],
     native: &NativeMetadata,
-) -> Result<DjiContainer, RawError> {
+    strategy: &DngContainer,
+) -> Result<DngSensorContainer, RawError> {
+    let DngContainer::UncompressedU16SingleStrip = strategy;
     let (tiff, first) = Tiff::header(bytes, 0).ok_or(RawError::InvalidInput("DNG TIFF header"))?;
     let (root, _) = tiff
         .entries(first)
@@ -389,9 +392,7 @@ pub(super) fn dji_container(
                 .and_then(|end| bytes.get(strip_offset as usize..end))
                 .is_none()
         {
-            return Err(RawError::UnsupportedMode(
-                "FC3411 DNG strip encoding".into(),
-            ));
+            return Err(RawError::UnsupportedMode("DNG strip encoding".into()));
         }
         let active_tag = get(50829).ok_or(RawError::InvalidInput("DNG ActiveArea"))?;
         if active_tag.kind != 4 || active_tag.count != 4 {
@@ -430,7 +431,7 @@ pub(super) fn dji_container(
                     .ok_or(RawError::InvalidInput("DNG scale rational"))?;
                 if values.iter().any(|(num, den)| num != den) {
                     return Err(RawError::UnsupportedMode(format!(
-                        "FC3411 DNG nonunity scale tag {tag}"
+                        "DNG nonunity scale tag {tag}"
                     )));
                 }
             }
@@ -451,9 +452,7 @@ pub(super) fn dji_container(
         )
         .ok_or(RawError::InvalidInput("DNG DefaultCropSize"))?;
         if origin.iter().chain(size.iter()).any(|(_, d)| *d != 1) {
-            return Err(RawError::UnsupportedMode(
-                "FC3411 fractional default crop".into(),
-            ));
+            return Err(RawError::UnsupportedMode("fractional default crop".into()));
         }
         let crop = RawRect {
             x: native
@@ -484,23 +483,25 @@ pub(super) fn dji_container(
         {
             return Err(RawError::InvalidInput("DNG default crop bounds"));
         }
-        candidate = Some(DjiContainer {
+        candidate = Some(DngSensorContainer {
             raw_ifd: rel,
             default_crop: crop,
         });
     }
-    candidate.ok_or(RawError::UnsupportedMode("FC3411 DNG raw encoding".into()))
+    candidate.ok_or(RawError::UnsupportedMode("DNG raw encoding".into()))
 }
 
 /// DNG ColorMatrix1/2 are XYZ-to-reference-camera matrices. The current RAW
-/// Temperature/Tint control uses one immutable matrix, so FC3411 selects its
-/// D65 ColorMatrix2, after proving AnalogBalance is identity and no camera
+/// Temperature/Tint control uses the profile-selected immutable matrix,
+/// after proving AnalogBalance is identity and no camera
 /// calibration/forward profile changes that relation. Record both source
-/// payloads so reopening cannot confuse this fixed-daylight interpretation.
-pub(super) fn dji_color_calibration(
+/// payloads so reopening cannot confuse this fixed-matrix interpretation.
+pub(super) fn dng_color_calibration(
     bytes: &[u8],
     native: &NativeMetadata,
+    settings: &Dng,
 ) -> Result<([[f32; 3]; 4], DngCalibrationMetadata), RawError> {
+    let DngCalibration::RootFixedMatrix = settings.calibration;
     let (tiff, first) = Tiff::header(bytes, 0).ok_or(RawError::InvalidInput("DNG TIFF header"))?;
     let (root, root_next) = tiff
         .entries(first)
@@ -516,7 +517,7 @@ pub(super) fn dji_color_calibration(
         .any(|tag| get(tag).is_some())
     {
         return Err(RawError::UnsupportedMode(
-            "FC3411 DNG camera calibration or forward profile".into(),
+            "DNG camera calibration or forward profile".into(),
         ));
     }
     // The root supplies this file's calibration. Do not combine it with a
@@ -582,20 +583,19 @@ pub(super) fn dji_color_calibration(
             }
         }
     }
-    if tiff.scalar(get(50778).ok_or(RawError::MissingCalibration("DNG illuminant A"))?) != Some(17)
-        || tiff.scalar(get(50779).ok_or(RawError::MissingCalibration("DNG illuminant D65"))?)
-            != Some(21)
+    if tiff.scalar(get(50778).ok_or(RawError::MissingCalibration("DNG illuminant 1"))?)
+        != Some(settings.illuminants[0] as u32)
+        || tiff.scalar(get(50779).ok_or(RawError::MissingCalibration("DNG illuminant 2"))?)
+            != Some(settings.illuminants[1] as u32)
     {
-        return Err(RawError::UnsupportedMode(
-            "FC3411 DNG illuminant pair".into(),
-        ));
+        return Err(RawError::UnsupportedMode("DNG illuminant pair".into()));
     }
     if let Some(balance) = get(50727) {
         let values = rational_values(&tiff, balance, 3)
             .ok_or(RawError::MissingCalibration("DNG AnalogBalance"))?;
         if values.iter().any(|(n, d)| n != d) {
             return Err(RawError::UnsupportedMode(
-                "FC3411 DNG nonunity AnalogBalance".into(),
+                "DNG nonunity AnalogBalance".into(),
             ));
         }
     }
@@ -673,80 +673,65 @@ pub(super) fn dji_color_calibration(
         }
         Ok((matrix, format!("{:x}", Sha256::digest(payload))))
     };
-    let (_, hash1) = parse_matrix(50721)?;
+    let (matrix1, hash1) = parse_matrix(50721)?;
     let (matrix2, hash2) = parse_matrix(50722)?;
     Ok((
-        matrix2,
+        if settings.selected_matrix == 1 {
+            matrix1
+        } else {
+            matrix2
+        },
         DngCalibrationMetadata {
-            illuminants: [17, 21],
+            illuminants: settings.illuminants,
             color_matrix1_sha256: hash1,
             color_matrix2_sha256: hash2,
-            selected: "ColorMatrix2-D65-fixed-XYZ-to-camera".into(),
+            selected: settings.calibration_identity.clone(),
         },
     ))
 }
 
-pub(super) fn classify_mode(
+pub(super) fn classify_mode<'a>(
+    catalog: &'a Catalog,
     native: &NativeMetadata,
     make: &str,
     model: &str,
     decoder: &str,
     bytes: &[u8],
-) -> Result<RawMode, RawError> {
-    match (make, model) {
-        ("Nikon", "Z 6")
-            if native.width == 6064
-                && native.height == 4040
-                && decoder == "nikon_load_raw()"
-                && native.cfa_width == 2
-                && native.cfa_height == 2 =>
-        {
-            if nikon_compression(bytes) != Some(3) {
-                return Err(RawError::UnsupportedMode(
-                    "Nikon Z6 NEF must be lossless compressed".into(),
-                ));
-            }
-            match native.raw_bps {
-                12 => Ok(RawMode::NikonZ6Lossless12),
-                14 => Ok(RawMode::NikonZ6Lossless14),
-                _ => Err(RawError::UnsupportedMode(format!(
-                    "Nikon Z6 {} bit",
-                    native.raw_bps
-                ))),
-            }
-        }
-        ("Fujifilm", "X100VI")
-            if native.width == 7872
-                && native.height == 5196
-                && native.raw_bps == 14
-                && native.cfa_width == 6
-                && native.cfa_height == 6 =>
-        {
-            match (raf_compression(bytes), decoder) {
-                (Some(0), "unpacked_load_raw()") => Ok(RawMode::FujifilmX100ViUncompressed14),
-                (Some(2), "fuji_compressed_load_raw()") => Ok(RawMode::FujifilmX100ViLossless14),
-                (other, _) => Err(RawError::UnsupportedMode(format!(
-                    "X100VI RAF compression {other:?} via {decoder}"
-                ))),
-            }
-        }
-        ("DJI", "FC3411")
-            if native.width == 5568
-                && native.height == 3648
-                && native.raw_bps == 16
-                && native.dng_version == 0x0104_0000
-                && native.cfa_width == 2
-                && native.cfa_height == 2
-                && decoder == "packed_dng_load_raw()" =>
-        {
-            dji_container(bytes, native)?;
-            Ok(RawMode::DjiAir2sDng16)
-        }
-        _ => Err(RawError::UnsupportedMode(format!(
+) -> Result<(&'a Camera, &'a Mode), RawError> {
+    let unsupported = || {
+        RawError::UnsupportedMode(format!(
             "{make} {model}, {decoder}, {}bit {}x{}",
             native.raw_bps, native.width, native.height
-        ))),
+        ))
+    };
+    let camera = catalog
+        .cameras
+        .iter()
+        .find(|camera| camera.make == make && camera.model == model)
+        .ok_or_else(unsupported)?;
+    if native.raw_count != 1
+        || camera.sensor_size != [native.width, native.height]
+        || camera.cfa_size != [native.cfa_width, native.cfa_height]
+    {
+        return Err(unsupported());
     }
+    let mode = camera
+        .modes
+        .iter()
+        .find(|mode| {
+            mode.bits == native.raw_bps
+                && mode.decoder == decoder
+                && mode.dng_version.is_none_or(|v| v == native.dng_version)
+                && mode.compression.as_ref().is_none_or(|compression| {
+                    let value = match compression.probe {
+                        CompressionProbe::NefMakerNote => nef_compression(bytes).map(u32::from),
+                        CompressionProbe::RafHeader => raf_compression(bytes),
+                    };
+                    value == Some(compression.value)
+                })
+        })
+        .ok_or_else(unsupported)?;
+    Ok((camera, mode))
 }
 
 #[cfg(test)]
@@ -756,7 +741,7 @@ mod tests {
     fn truncated_inputs_are_rejected() {
         assert_eq!(raf_default_crop(b"FUJIFILM"), None);
         assert!(required_dng_opcodes(b"II*\0\x08\0\0").is_err());
-        assert_eq!(nikon_compression(b"II*\0\x08\0\0\0"), None);
+        assert_eq!(nef_compression(b"II*\0\x08\0\0\0"), None);
     }
     fn opcode_tiff(flags: u32, payload_size: u32) -> Vec<u8> {
         let mut b = vec![0_u8; 46];

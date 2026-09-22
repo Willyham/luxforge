@@ -2,6 +2,7 @@
 // beyond the temporary decoder handle, which is destroyed before decode returns.
 #include "libraw/libraw.h"
 #include "librtprocess.h"
+#include "camera_allowlist.h"
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
@@ -66,10 +67,10 @@ extern "C" int lw_raw_open(const uint8_t *bytes, size_t length,
     int code=h->decoder.open_buffer(bytes, length);
     if (code != LIBRAW_SUCCESS) { error(err, err_len, libraw_strerror(code)); return code == LIBRAW_CANCELLED_BY_CALLBACK ? 2 : 3; }
     const auto &identity=h->decoder.imgdata.idata;
-    const bool nikon=std::strcmp(identity.make,"Nikon")==0 && std::strcmp(identity.model,"Z 6")==0;
-    const bool fuji=std::strcmp(identity.make,"Fujifilm")==0 && std::strcmp(identity.model,"X100VI")==0;
-    const bool dji=std::strcmp(identity.make,"DJI")==0 && std::strcmp(identity.model,"FC3411")==0;
-    if(!(nikon||fuji||dji)){error(err,err_len,"camera model is outside the RAW allowlist");return 7;}
+    const bool supported=std::any_of(std::begin(lw_cameras),std::end(lw_cameras),[&](const auto &camera){
+      return std::strcmp(identity.make,camera.make)==0 && std::strcmp(identity.model,camera.model)==0;
+    });
+    if(!supported){error(err,err_len,"camera model is outside the RAW catalog");return 7;}
     if(identity.raw_count!=1){error(err,err_len,"multi-frame RAW containers are outside the supported mode");return 7;}
     const auto &s=h->decoder.imgdata.sizes;
     const uint64_t n=uint64_t(s.raw_width)*s.raw_height;

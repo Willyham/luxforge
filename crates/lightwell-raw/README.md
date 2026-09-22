@@ -15,6 +15,25 @@ The caller must read/hash a stable original through the catalog's source-verific
 
 The qualified DJI Air 2S FC3411 DNG has required OpcodeList3 GainMap (9) followed by per-channel WarpRectilinear (1). `decode` associates them with the unique raw sensor SubIFD, validates their versions, area, finite values and warp geometry, and rejects unknown mandatory operations. `develop` applies the gain in active-area coordinates and then resamples each camera plane through its own chromatic warp before the caller's color matrix and default crop. It recognizes the exact identity green warp and retains those gained pixels without interpolation. It reuses one active-plane scratch buffer and keeps the full-sensor output layout. `corrected_sensor_sample_location` and `gain_at_sensor` provide bounded per-channel queries for the neutral picker. `dng_corrections` records the exact operation order, payload hashes, optional operations skipped and interpretation identity. This float path preserves negative values and highlight headroom. The DNG specification calls for clipping after OpcodeList2/3, so these float values are not a strict clipped DNG rendering when an intermediate value leaves [0,1]. This preserves the existing Lightwell RAW contract: scene headroom remains available to later exposure edits, with clipping only at terminal display.
 
+## Camera catalog
+
+[data/cameras.json](data/cameras.json) is the single source for Lightwell camera
+identities, sensor dimensions, CFA dimensions, recording-mode selectors, crop
+source and DNG calibration/correction settings. The [format contract](../../docs/design/raw-camera-profiles.md)
+describes the fields and how to add a profile. The strict parser in
+[src/profiles.rs](src/profiles.rs) validates the catalog at build time; the build
+produces the native pre-unpack allowlist and public mode identifiers from it.
+The same JSON is embedded and parsed once on first use, without runtime file I/O.
+Adding a camera that uses existing capabilities requires a data entry and authentic
+qualification, without a new camera-name branch. Unknown models/modes and invalid
+capability combinations fail explicitly.
+
+Camera-dependent processing chooses typed capabilities (`raf_tags`, `dng_tags`,
+`root_fixed_matrix`, `stage3_gain_map_then_warp`), never make/model or mode labels.
+Capture-specific calibration, crops and optical coefficients still come from the
+original. TIFF/RAF/NEF encoding constants, numerical algorithms, resource bounds,
+and pinned LibRaw's upstream camera tables remain code-owned.
+
 ## Bounds and liveness
 
 | Allocation or resource | Bound / owner |
@@ -41,5 +60,7 @@ LIGHTWELL_RAW_OWNER_DIR=/path/to/owner/raw \
 LIGHTWELL_RAW_PUBLIC_DIR=/path/to/cc0/raw \
   cargo test --release -p lightwell-raw --locked --test real_files -- --ignored --nocapture
 ```
+
+The owner and public corpus checks are separate tests. If only owner originals are available, run the same command with `--skip authentic_public_modes` and report the public modes as untested.
 
 The authentic tests compare full sensor u16 buffers to independent LibRaw probe hashes, verify source hashes before/after, mode, crop, CFA, white metadata, owner Z6 EXIF orientation, finite developed floats, retained subzero/above-one latitude, invalid gains and cancellation. The DJI test also checks the opcode/calibration payload hashes, fixed matrix against LibRaw's rendered matrix, malformed mandatory operations, and 18 corrected camera-plane samples computed independently from sparse pre-correction pixels in [the DNG reference](../../probes/raw/dng_reference.json). The fixture itself and generated sparse dump stay outside the repository. Manual dependency/native/asset review and clean Windows/Linux package verification are still outstanding. This crate alone does not qualify visible color, export or end-to-end latency.

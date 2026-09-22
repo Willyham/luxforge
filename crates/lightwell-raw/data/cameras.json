@@ -1,0 +1,52 @@
+{
+  "version": 1,
+  "cameras": [
+    {
+      "make": "Nikon",
+      "model": "Z 6",
+      "sensor_size": [6064, 4040],
+      "cfa_size": [2, 2],
+      "crop": "libraw_inset",
+      "dng": null,
+      "modes": [
+        { "id": "NikonZ6Lossless12", "bits": 12, "decoder": "nikon_load_raw()", "dng_version": null, "compression": { "probe": "nef_maker_note", "value": 3 } },
+        { "id": "NikonZ6Lossless14", "bits": 14, "decoder": "nikon_load_raw()", "dng_version": null, "compression": { "probe": "nef_maker_note", "value": 3 } }
+      ]
+    },
+    {
+      "make": "Fujifilm",
+      "model": "X100VI",
+      "sensor_size": [7872, 5196],
+      "cfa_size": [6, 6],
+      "crop": "raf_tags",
+      "dng": null,
+      "modes": [
+        { "id": "FujifilmX100ViUncompressed14", "bits": 14, "decoder": "unpacked_load_raw()", "dng_version": null, "compression": { "probe": "raf_header", "value": 0 } },
+        { "id": "FujifilmX100ViLossless14", "bits": 14, "decoder": "fuji_compressed_load_raw()", "dng_version": null, "compression": { "probe": "raf_header", "value": 2 } }
+      ]
+    },
+    {
+      "make": "DJI",
+      "model": "FC3411",
+      "sensor_size": [5568, 3648],
+      "cfa_size": [2, 2],
+      "crop": "dng_tags",
+      "dng": {
+        "container": "uncompressed_u16_single_strip",
+        "calibration": "root_fixed_matrix",
+        "illuminants": [17, 21],
+        "selected_matrix": 2,
+        "calibration_identity": "ColorMatrix2-D65-fixed-XYZ-to-camera",
+        "corrections": "stage3_gain_map_then_warp",
+        "interpretation": "fc3411-stage3-active-v1-unclipped-bicubic-a-0.75",
+        "required_opcodes": [
+          { "id": 9, "list": 51022, "version": 16973824, "flags": 0 },
+          { "id": 1, "list": 51022, "version": 16973824, "flags": 0 }
+        ]
+      },
+      "modes": [
+        { "id": "DjiAir2sDng16", "bits": 16, "decoder": "packed_dng_load_raw()", "dng_version": 17039360, "compression": null }
+      ]
+    }
+  ]
+}

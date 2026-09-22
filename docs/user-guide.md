@@ -4,7 +4,7 @@ The Develop workspace opens supported JPEG, Nikon Z6 NEF, Fujifilm X100VI RAF an
 
 JPEG Basic exposure, tone, white balance and colour controls are built, with the neutral picker, and so are the histogram and clipping inspector that share their [design](design/basic-and-histogram.md).
 
-Initial RAW support covers full-size Z6 12/14-bit lossless NEF, X100VI 14-bit uncompressed/lossless RAF and the supplied Air 2S FC3411 uncompressed DNG mode with 16-bit stored samples. Air 2S development includes its required embedded gain-map and chromatic-warp corrections. Broader recording modes and controlled color/detail qualification remain in the [coverage manifest](../fixtures/raw-coverage.json); generic DNG support is not implied. A failed Open keeps the previous photo.
+Initial RAW support covers full-size Z6 12/14-bit lossless NEF, X100VI 14-bit uncompressed/lossless RAF and the supplied Air 2S FC3411 uncompressed DNG mode with 16-bit stored samples. Air 2S development includes its required embedded gain-map and chromatic-warp corrections. Broader recording modes and controlled color/detail qualification remain in the [coverage manifest](../fixtures/raw-coverage.json); generic DNG support is not implied. A failed Open keeps the previous photo. Support is explicitly listed in the bundled [camera catalog](../crates/lightwell-raw/data/cameras.json); a matching filename extension alone does not enable a camera.
 
 ## Start the editor
 

@@ -32,11 +32,10 @@ fn mosaic_hash(samples: &[u16]) -> String {
 }
 
 #[test]
-#[ignore = "requires explicit local authentic RAW fixture paths"]
-fn authentic_modes_preserve_sources_and_develop_float() {
+#[ignore = "requires explicit local authentic owner RAW fixture paths"]
+fn authentic_owner_modes_preserve_sources_and_develop_float() {
     let owner = env::var("LIGHTWELL_RAW_OWNER_DIR").expect("owner fixture directory");
-    let public = env::var("LIGHTWELL_RAW_PUBLIC_DIR").expect("public fixture directory");
-    let cases = [
+    verify_authentic_modes(&[
         (
             owner.as_str(),
             "nikon_z6.NEF",
@@ -45,6 +44,22 @@ fn authentic_modes_preserve_sources_and_develop_float() {
             4040,
             "86c76c382dd4273e619a2dcc177a27b15c9e9b2d1187639c54d4d4c1336e8bfc",
         ),
+        (
+            owner.as_str(),
+            "fujifilm_x100vi.RAF",
+            RawMode::FujifilmX100ViUncompressed14,
+            7872,
+            5196,
+            "268eb98243c9a5b58fd57ed3ac79f0cc95101c20df26e0ac7ab241e594db1dce",
+        ),
+    ]);
+}
+
+#[test]
+#[ignore = "requires explicit local authentic public RAW fixture paths"]
+fn authentic_public_modes_preserve_sources_and_develop_float() {
+    let public = env::var("LIGHTWELL_RAW_PUBLIC_DIR").expect("public fixture directory");
+    verify_authentic_modes(&[
         (
             public.as_str(),
             "z6-12-lossless.NEF",
@@ -62,14 +77,6 @@ fn authentic_modes_preserve_sources_and_develop_float() {
             "9896187fd3e3e29922b5b051a62f24afedbbbb75ddf63b5879a2b28de896116c",
         ),
         (
-            owner.as_str(),
-            "fujifilm_x100vi.RAF",
-            RawMode::FujifilmX100ViUncompressed14,
-            7872,
-            5196,
-            "268eb98243c9a5b58fd57ed3ac79f0cc95101c20df26e0ac7ab241e594db1dce",
-        ),
-        (
             public.as_str(),
             "x100vi-uncompressed.RAF",
             RawMode::FujifilmX100ViUncompressed14,
@@ -85,9 +92,12 @@ fn authentic_modes_preserve_sources_and_develop_float() {
             5196,
             "f10be69db8c3731fdcacf3741fd188fcef2557efd5de79f84a22a34adf443283",
         ),
-    ];
+    ]);
+}
+
+fn verify_authentic_modes(cases: &[(&str, &str, RawMode, u32, u32, &str)]) {
     let cancel = AtomicBool::new(false);
-    for (dir, file, mode, w, h, expected_mosaic) in cases {
+    for &(dir, file, mode, w, h, expected_mosaic) in cases {
         let path = Path::new(dir).join(file);
         let (bytes, hash) = read_with_hash(&path);
         let raw = RawSource::decode(bytes, &cancel).unwrap_or_else(|e| panic!("{file}: {e}"));

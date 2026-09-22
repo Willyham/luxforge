@@ -1,4 +1,4 @@
-//! FC3411 DNG stage-3 corrections. Coordinates here are local to ActiveArea;
+//! Profile-selected DNG stage-3 corrections. Coordinates here are local to ActiveArea;
 //! the public source still exposes full-sensor planes and absolute sensor crop.
 //!
 //! The numeric layout and mapping follow Adobe DNG 1.4 opcodes (DNG 1.7.1
@@ -150,9 +150,7 @@ impl GainMap {
                 .iter()
                 .all(|v| v.is_finite() && *v >= -1.0 && *v <= 2.0)
         {
-            return Err(RawError::UnsupportedMode(
-                "FC3411 DNG GainMap layout".into(),
-            ));
+            return Err(RawError::UnsupportedMode("DNG GainMap layout".into()));
         }
         let entries = rows
             .checked_mul(cols)
@@ -239,7 +237,7 @@ impl Warp {
     fn parse(data: &[u8], active: RawRect) -> Result<Self, RawError> {
         if data.len() != 164 || be_u32(data, 0)? != 3 {
             return Err(RawError::UnsupportedMode(
-                "FC3411 DNG WarpRectilinear layout".into(),
+                "DNG WarpRectilinear layout".into(),
             ));
         }
         let mut radial = [[0.0; 4]; 3];
@@ -390,20 +388,27 @@ impl DngCorrection {
         active: RawRect,
         raw_ifd: u32,
         calibration: DngCalibrationMetadata,
+        settings: &super::profiles::Dng,
     ) -> Result<Self, RawError> {
         if opcodes.iter().any(|op| op.ifd != raw_ifd) {
             return Err(RawError::InvalidInput("DNG opcode list outside raw IFD"));
         }
         let required: Vec<_> = opcodes.iter().filter(|op| op.flags & 1 == 0).collect();
-        if required.len() != 2
-            || required[0].id != 9
-            || required[1].id != 1
-            || required.iter().any(|op| {
-                op.list != 51022 || op.ifd != raw_ifd || op.version != 0x0103_0000 || op.flags != 0
-            })
+        let super::profiles::DngCorrections::Stage3GainMapThenWarp = settings.corrections;
+        if required.len() != settings.required_opcodes.len()
+            || required
+                .iter()
+                .zip(&settings.required_opcodes)
+                .any(|(op, expected)| {
+                    op.id != expected.id
+                        || op.list != expected.list
+                        || op.ifd != raw_ifd
+                        || op.version != expected.version
+                        || op.flags != expected.flags
+                })
         {
             return Err(RawError::UnsupportedMode(
-                "FC3411 DNG opcode stage/order/version".into(),
+                "DNG opcode stage/order/version".into(),
             ));
         }
         let skipped_optional: Vec<_> = opcodes
@@ -418,7 +423,7 @@ impl DngCorrection {
             gain,
             warp,
             metadata: DngCorrectionMetadata {
-                interpretation: "fc3411-stage3-active-v1-unclipped-bicubic-a-0.75".into(),
+                interpretation: settings.interpretation.clone(),
                 applied: required.into_iter().map(provenance).collect(),
                 skipped_optional,
                 calibration,

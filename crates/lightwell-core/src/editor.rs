@@ -2289,7 +2289,7 @@ fn parse_raw_interpretation(
 ) -> Result<lightwell_raw::RawMetadata, Error> {
     let parsed: lightwell_raw::RawMetadata =
         serde_json::from_value(metadata.clone()).map_err(|e| json_error(context, e))?;
-    let is_dng = matches!(parsed.mode, lightwell_raw::RawMode::DjiAir2sDng16);
+    let is_dng = parsed.mode.requires_dng_corrections();
     if (is_dng
         && (!metadata
             .as_object()
