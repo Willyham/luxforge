@@ -30,7 +30,7 @@ pub use render::{
 use sha2::{Digest, Sha256};
 use std::{
     fs::File,
-    io::{Cursor, Read},
+    io::{Cursor, Read, Seek, SeekFrom},
     path::Path,
     sync::Arc,
     time::Instant,
@@ -123,11 +123,22 @@ pub(crate) fn read_bounded_file(file: &mut File) -> Result<Vec<u8>, Error> {
             "expected a regular file",
         ));
     }
+    let mut magic = [0_u8; 2];
+    let _ = file.read(&mut magic).map_err(file_error)?;
+    file.seek(SeekFrom::Start(0)).map_err(file_error)?;
+    let limit = if magic == [0xff, 0xd8] {
+        128 * 1024 * 1024
+    } else {
+        lightwell_raw::MAX_SOURCE_BYTES
+    };
+    if file.metadata().map_err(file_error)?.len() > limit as u64 {
+        return Err(Error::new(ErrorKind::ResourceLimit, "encoded bytes"));
+    }
     let mut bytes = Vec::new();
-    file.take(128 * 1024 * 1024 + 1)
+    file.take(limit.saturating_add(1) as u64)
         .read_to_end(&mut bytes)
         .map_err(file_error)?;
-    if bytes.len() > 128 * 1024 * 1024 {
+    if bytes.len() > limit {
         return Err(Error::new(ErrorKind::ResourceLimit, "encoded bytes"));
     }
     Ok(bytes)
@@ -259,6 +270,26 @@ mod tests {
             .join("../../fixtures/s0")
             .join(name)
     }
+
+    #[test]
+    fn oversized_jpeg_is_rejected_from_file_length_before_buffer_allocation() {
+        use std::io::{Seek, SeekFrom, Write};
+        let path = std::env::temp_dir().join(format!(
+            "lightwell-oversized-jpeg-{}-{}.jpg",
+            std::process::id(),
+            std::thread::current().name().unwrap_or("test")
+        ));
+        let mut file = std::fs::File::create(&path).unwrap();
+        file.set_len(128 * 1024 * 1024 + 1).unwrap();
+        file.seek(SeekFrom::Start(0)).unwrap();
+        file.write_all(&[0xff, 0xd8]).unwrap();
+        file.flush().unwrap();
+        let mut opened = std::fs::File::open(&path).unwrap();
+        let error = read_bounded_file(&mut opened).unwrap_err();
+        assert_eq!(error.kind, ErrorKind::ResourceLimit);
+        std::fs::remove_file(path).unwrap();
+    }
+
     #[test]
     fn orientations_and_preservation() {
         let permutations = [

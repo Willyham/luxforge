@@ -310,6 +310,10 @@ fn exposure_parameter() -> ParameterDescriptor {
         step: Some(EXPOSURE_STEP),
         precision: Some(EXPOSURE_PRECISION),
         notes: "multiplies the linear-light channels by 2^EV. The input is a rendered sRGB JPEG decoded through the sRGB transfer function, not scene-linear RAW data, so this is an exposure correction of a rendered image and cannot recover detail a clipped plateau no longer holds".into(),
+        soft_min: None,
+        soft_max: None,
+        fine_step: None,
+        zero: None,
     }
 }
 
@@ -328,6 +332,10 @@ fn white_balance_parameter(name: &str, notes: &str) -> ParameterDescriptor {
         step: Some(WHITE_BALANCE_STEP),
         precision: Some(WHITE_BALANCE_PRECISION),
         notes: notes.into(),
+        soft_min: None,
+        soft_max: None,
+        fine_step: None,
+        zero: None,
     }
 }
 
@@ -359,6 +367,10 @@ fn tone_parameter(name: &str, notes: &str) -> ParameterDescriptor {
         step: Some(TONE_STEP),
         precision: Some(TONE_PRECISION),
         notes: notes.into(),
+        soft_min: None,
+        soft_max: None,
+        fine_step: None,
+        zero: None,
     }
 }
 
@@ -410,6 +422,10 @@ fn vibrance_parameter() -> ParameterDescriptor {
         step: Some(COLOUR_STEP),
         precision: Some(COLOUR_PRECISION),
         notes: "raises chroma more for near-neutral colour than for colour already close to the sRGB gamut edge, with reduced gain in a skin-like hue band; that hue weighting is a colour heuristic, not skin detection, and is not a promise about every skin tone".into(),
+        soft_min: None,
+        soft_max: None,
+        fine_step: None,
+        zero: None,
     }
 }
 
@@ -426,6 +442,10 @@ fn saturation_parameter() -> ParameterDescriptor {
         step: Some(COLOUR_STEP),
         precision: Some(COLOUR_PRECISION),
         notes: "scales chroma uniformly about the achromatic axis; -100 is neutral grayscale, not merely a strong desaturation".into(),
+        soft_min: None,
+        soft_max: None,
+        fine_step: None,
+        zero: None,
     }
 }
 
@@ -449,6 +469,10 @@ fn sample_coordinate(name: &str) -> ParameterDescriptor {
              stage, the source after EXIF orientation plus any pixel replacement before it. Map a \
              rendered pixel to it with render.locate"
         ),
+        soft_min: None,
+        soft_max: None,
+        fine_step: None,
+        zero: None,
     }
 }
 
@@ -530,17 +554,22 @@ impl BasicModule {
                                 action: SET_BASIC.into(),
                                 parameter: TEMPERATURE.into(),
                                 label: TEMPERATURE_LABEL.into(),
+                                style: crate::NumberStyle::Slider,
+                                rail: None,
                             },
                             Control::Number {
                                 action: SET_BASIC.into(),
                                 parameter: TINT.into(),
                                 label: TINT_LABEL.into(),
+                                style: crate::NumberStyle::Slider,
+                                rail: None,
                             },
                             // The neutral picker, beside the two fields a pick sets.
                             Control::Picker {
                                 label: NEUTRAL_PICKER_LABEL.into(),
                             },
                         ],
+                        collapsed: false,
                     },
                     Control::Group {
                         label: TONE_GROUP.into(),
@@ -556,33 +585,46 @@ impl BasicModule {
                                 action: SET_BASIC.into(),
                                 parameter: EXPOSURE.into(),
                                 label: EXPOSURE_LABEL.into(),
+                                style: crate::NumberStyle::Slider,
+                                rail: None,
                             },
                             Control::Number {
                                 action: SET_BASIC.into(),
                                 parameter: CONTRAST.into(),
                                 label: CONTRAST_LABEL.into(),
+                                style: crate::NumberStyle::Slider,
+                                rail: None,
                             },
                             Control::Number {
                                 action: SET_BASIC.into(),
                                 parameter: HIGHLIGHTS.into(),
                                 label: HIGHLIGHTS_LABEL.into(),
+                                style: crate::NumberStyle::Slider,
+                                rail: None,
                             },
                             Control::Number {
                                 action: SET_BASIC.into(),
                                 parameter: SHADOWS.into(),
                                 label: SHADOWS_LABEL.into(),
+                                style: crate::NumberStyle::Slider,
+                                rail: None,
                             },
                             Control::Number {
                                 action: SET_BASIC.into(),
                                 parameter: WHITES.into(),
                                 label: WHITES_LABEL.into(),
+                                style: crate::NumberStyle::Slider,
+                                rail: None,
                             },
                             Control::Number {
                                 action: SET_BASIC.into(),
                                 parameter: BLACKS.into(),
                                 label: BLACKS_LABEL.into(),
+                                style: crate::NumberStyle::Slider,
+                                rail: None,
                             },
                         ],
+                        collapsed: false,
                     },
                     Control::Group {
                         label: COLOUR_GROUP.into(),
@@ -598,13 +640,18 @@ impl BasicModule {
                                 action: SET_BASIC.into(),
                                 parameter: VIBRANCE.into(),
                                 label: VIBRANCE_LABEL.into(),
+                                style: crate::NumberStyle::Slider,
+                                rail: None,
                             },
                             Control::Number {
                                 action: SET_BASIC.into(),
                                 parameter: SATURATION.into(),
                                 label: SATURATION_LABEL.into(),
+                                style: crate::NumberStyle::Slider,
+                                rail: None,
                             },
                         ],
+                        collapsed: false,
                     },
                 ],
                 reset: Some(ResetAction {
@@ -1067,16 +1114,21 @@ mod tests {
                             action: SET_BASIC.into(),
                             parameter: "temperature".into(),
                             label: "Temperature".into(),
+                            style: crate::NumberStyle::Slider,
+                            rail: None,
                         },
                         Control::Number {
                             action: SET_BASIC.into(),
                             parameter: "tint".into(),
                             label: "Tint".into(),
+                            style: crate::NumberStyle::Slider,
+                            rail: None,
                         },
                         Control::Picker {
                             label: "Neutral picker".into(),
                         },
                     ],
+                    collapsed: false,
                 },
                 Control::Group {
                     label: "Tone".into(),
@@ -1098,33 +1150,46 @@ mod tests {
                             action: SET_BASIC.into(),
                             parameter: "exposure".into(),
                             label: "Exposure".into(),
+                            style: crate::NumberStyle::Slider,
+                            rail: None,
                         },
                         Control::Number {
                             action: SET_BASIC.into(),
                             parameter: "contrast".into(),
                             label: "Contrast".into(),
+                            style: crate::NumberStyle::Slider,
+                            rail: None,
                         },
                         Control::Number {
                             action: SET_BASIC.into(),
                             parameter: "highlights".into(),
                             label: "Highlights".into(),
+                            style: crate::NumberStyle::Slider,
+                            rail: None,
                         },
                         Control::Number {
                             action: SET_BASIC.into(),
                             parameter: "shadows".into(),
                             label: "Shadows".into(),
+                            style: crate::NumberStyle::Slider,
+                            rail: None,
                         },
                         Control::Number {
                             action: SET_BASIC.into(),
                             parameter: "whites".into(),
                             label: "Whites".into(),
+                            style: crate::NumberStyle::Slider,
+                            rail: None,
                         },
                         Control::Number {
                             action: SET_BASIC.into(),
                             parameter: "blacks".into(),
                             label: "Blacks".into(),
+                            style: crate::NumberStyle::Slider,
+                            rail: None,
                         },
                     ],
+                    collapsed: false,
                 },
                 Control::Group {
                     label: "Colour".into(),
@@ -1142,13 +1207,18 @@ mod tests {
                             action: SET_BASIC.into(),
                             parameter: "vibrance".into(),
                             label: "Vibrance".into(),
+                            style: crate::NumberStyle::Slider,
+                            rail: None,
                         },
                         Control::Number {
                             action: SET_BASIC.into(),
                             parameter: "saturation".into(),
                             label: "Saturation".into(),
+                            style: crate::NumberStyle::Slider,
+                            rail: None,
                         },
                     ],
+                    collapsed: false,
                 },
             ],
             "the White balance group's two sliders and its neutral picker, then the Tone group's \
@@ -1181,16 +1251,21 @@ mod tests {
                         action: SET_BASIC.into(),
                         parameter: "temperature".into(),
                         label: "Temperature".into(),
+                        style: crate::NumberStyle::Slider,
+                        rail: None,
                     },
                     Control::Number {
                         action: SET_BASIC.into(),
                         parameter: "tint".into(),
                         label: "Tint".into(),
+                        style: crate::NumberStyle::Slider,
+                        rail: None,
                     },
                     Control::Picker {
                         label: "Neutral picker".into(),
                     },
                 ],
+                collapsed: false,
             }),
             "white balance is the first group, before tone, and the neutral picker sits with the \
              two fields a pick sets"

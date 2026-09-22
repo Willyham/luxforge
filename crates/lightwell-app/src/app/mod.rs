@@ -1,12 +1,17 @@
 //! The Iced application: the editor's own state, the update function and the effects it starts.
 //! Every change to authoritative state goes through an owner call; the view models are re-derived
 //! after each message and the view renders those alone.
+pub(crate) mod controls;
+#[cfg(test)]
+mod controls_tests;
 pub(crate) mod crop;
 pub(crate) mod evidence;
 pub(crate) mod fields;
 pub(crate) mod keymap;
 pub(crate) mod message;
 pub(crate) mod overlay;
+#[cfg(test)]
+mod proof_controls_tests;
 pub(crate) mod slider;
 pub(crate) mod tasks;
 #[cfg(test)]
@@ -25,7 +30,7 @@ use crate::{
     view,
 };
 use crop::PendingDraft;
-use evidence::{EVIDENCE_DEADLINE, Evidence, Settle};
+use evidence::{EVIDENCE_DEADLINE, Evidence, SCRIPT_EVIDENCE_DEADLINE, Settle};
 use fields::{Fields, action_params, number_text, reset_field_preset, submit_preset};
 use iced::{Element, Subscription, Task, widget::operation};
 use iced_runtime::image as image_memory;
@@ -143,16 +148,20 @@ impl ToolModule for Disabled {
 }
 
 /// The providers this run serves, with any `--disable-module` built-in wrapped as unavailable.
-fn registry(disabled: &[String]) -> Result<ModuleRegistry, String> {
+fn registry(disabled: &[String], developer: bool) -> Result<ModuleRegistry, String> {
     let mut registry = ModuleRegistry::new();
     let mut unknown: Vec<&str> = disabled.iter().map(String::as_str).collect();
-    for module in [
+    let mut modules = vec![
         Arc::new(lightwell_core::PixelModule::new()) as Arc<dyn ToolModule>,
         Arc::new(lightwell_core::RawModule::new()),
         Arc::new(lightwell_core::BasicModule::new()),
         Arc::new(lightwell_core::TransformModule::new()),
         Arc::new(lightwell_core::CropModule::new()),
-    ] {
+    ];
+    if developer {
+        modules.push(Arc::new(lightwell_core::ControlsModule::new()));
+    }
+    for module in modules {
         let id = module.descriptor().id.clone();
         let module = if disabled.contains(&id) {
             unknown.retain(|named| *named != id);
@@ -180,7 +189,7 @@ pub(crate) fn run(config: Config, size: (f32, f32)) -> Result<(), String> {
             .config
             .join("catalog.sqlite"),
     };
-    let registry = Arc::new(registry(&config.disabled)?);
+    let registry = Arc::new(registry(&config.disabled, config.developer)?);
     let (owner, join) =
         OwnerHandle::start_with(&catalog, registry).map_err(|error| match error.kind {
             ErrorKind::Conflict => format!(
@@ -399,6 +408,14 @@ pub(crate) struct Editor {
     pub(crate) developer: bool,
     /// The text typed into each generated field, by (action id, parameter name).
     pub(crate) fields: Fields,
+    /// Local presentation state of generated controls; authoritative values stay in the recipe.
+    pub(crate) controls_ui: tools::ControlsUi,
+    pub(crate) curve_sample_sequence: u64,
+    pub(crate) curve_sample_requested: BTreeMap<(String, String), u64>,
+    pub(crate) curve_sample_requested_source:
+        BTreeMap<(String, String), (lightwell_core::AssetId, lightwell_core::EntryId, Value)>,
+    pub(crate) curve_sample_in_flight: bool,
+    pub(crate) curve_sample_pending: Option<controls::CurveSampleRequest>,
     /// The (action, parameter) whose value is being typed.
     pub(crate) editing: Option<(String, String)>,
     /// The (action, parameter) whose slider is being dragged.
@@ -475,6 +492,7 @@ impl Editor {
                 saving: false,
                 had_errors: false,
                 paced_slider: None,
+                tools_scroll: None,
             }
         });
         let initial = config.files.pop_front();
@@ -556,6 +574,12 @@ impl Editor {
             modules_ready: false,
             developer: config.developer,
             fields: Fields::default(),
+            controls_ui: tools::ControlsUi::default(),
+            curve_sample_sequence: 0,
+            curve_sample_requested: BTreeMap::new(),
+            curve_sample_requested_source: BTreeMap::new(),
+            curve_sample_in_flight: false,
+            curve_sample_pending: None,
             editing: None,
             dragging: None,
             slider_draft: None,
@@ -628,7 +652,89 @@ impl Editor {
 
     /// The state correlated with every event and captured frame; never includes source paths.
     pub(crate) fn snapshot(&self) -> Value {
-        json!({"run_id":self.run_id,"mode":if self.evidence.is_some() {"evidence"} else {"editor"},"selection":self.session.preview.selection,"orientation":self.activity.orientation,"phase":self.activity.phase,"requested_generation":self.activity.requested,"displayed_generation":self.activity.displayed,"displayed_draft_revision":self.displayed_draft_revision,"source_dimensions":self.activity.source_dimensions,"preview_dimensions":self.activity.preview_dimensions,"backend":self.activity.backend,"status":self.status,"error_code":self.activity.error_code,"modules":module_summary(&self.modules),"controls":self.fields.summary(),"crop":self.crop_summary(),"draft":self.draft_summary(),"stack":self.stack_summary(),"workspace":serde_json::to_value(&self.session.workspace).unwrap_or(Value::Null),"developer":self.developer,"expanded":self.workspace.expanded(),"pickers":self.workspace.pickers(),"notices":self.notice_titles(),"compare":self.compare_return.is_some(),"render_error":self.render_error_summary(),"palette":{"open":self.palette_open,"query":self.palette_query},"histogram":self.histogram_summary(),"readout":self.readout_summary(),"proxy":self.proxy_summary(),"scratch":Self::scratch_summary()})
+        fn summarize_controls(
+            controls: &[tools::ControlModel],
+            curves: &mut Vec<Value>,
+            pickers: &mut Vec<Value>,
+            samples: &std::collections::BTreeMap<(String, String), tools::CurveSamples>,
+            entry: Option<&lightwell_core::EntryId>,
+        ) {
+            for control in controls {
+                match control {
+                    tools::ControlModel::Group(group) => {
+                        summarize_controls(&group.controls, curves, pickers, samples, entry);
+                    }
+                    tools::ControlModel::Curve(curve) => {
+                        let parameter = &curve.channels[curve.selected_channel].parameter;
+                        let sampled = samples.get(&(curve.action.clone(), parameter.clone()));
+                        curves.push(json!({"action":curve.action,"parameter":parameter,
+                            "channel":curve.selected_channel,"selected_point":curve.selected_point,
+                            "point_count":curve.points.len(),"sample_count":curve.sampled.len(),
+                            "sample_version":sampled.map(|sample| sample.version),
+                            "sample_source":sampled.map(|sample| &sample.source),
+                            "sample_source_entry":sampled.map(|sample| &sample.entry),
+                            "sample_asset":sampled.map(|sample| &sample.asset),
+                            "display_entry":entry,"dragging":curve.dragging}));
+                    }
+                    tools::ControlModel::Color(color) => {
+                        pickers.push(json!({"action":color.action,"parameter":color.parameter,
+                            "open":color.picker_open,"dragging":color.dragging,"rgb":color.rgb}));
+                    }
+                    _ => {}
+                }
+            }
+        }
+        let gallery = self
+            .gallery_page()
+            .and_then(view::gallery_page_info)
+            .map(|info| {
+                json!({"page":info.page,"count":info.count,
+                "title":info.title,"state_count":info.state_count})
+            });
+        let tools_scroll = self
+            .evidence
+            .as_ref()
+            .and_then(|evidence| evidence.tools_scroll);
+        let curve_channels: Vec<Value> = self
+            .controls_ui
+            .curve_channels
+            .iter()
+            .map(|((action, parameter), channel)| {
+                json!({"action":action,
+                "parameter":parameter,"channel":channel})
+            })
+            .collect();
+        let curve_points: Vec<Value> = self
+            .controls_ui
+            .curve_points
+            .iter()
+            .map(|((action, parameter), point)| {
+                json!({"action":action,
+                "parameter":parameter,"point":point})
+            })
+            .collect();
+        let picker_open: Vec<Value> = self
+            .controls_ui
+            .color_open
+            .iter()
+            .map(|((action, parameter), open)| {
+                json!({"action":action,
+                "parameter":parameter,"open":open})
+            })
+            .collect();
+        let entry = self.displayed_entry();
+        let mut curves = Vec::new();
+        let mut pickers = Vec::new();
+        for section in self.workspace.tools.all() {
+            summarize_controls(
+                &section.controls,
+                &mut curves,
+                &mut pickers,
+                &self.controls_ui.curve_samples,
+                entry.as_ref(),
+            );
+        }
+        json!({"run_id":self.run_id,"mode":if self.evidence.is_some() {"evidence"} else {"editor"},"selection":self.session.preview.selection,"orientation":self.activity.orientation,"phase":self.activity.phase,"requested_generation":self.activity.requested,"displayed_generation":self.activity.displayed,"displayed_draft_revision":self.displayed_draft_revision,"source_dimensions":self.activity.source_dimensions,"preview_dimensions":self.activity.preview_dimensions,"backend":self.activity.backend,"status":self.status,"error_code":self.activity.error_code,"modules":module_summary(&self.modules),"controls":self.fields.summary(),"control_ui":{"group_expanded":self.controls_ui.group_expanded,"curve_channels":curve_channels,"curve_points":curve_points,"picker_open":picker_open,"curves":curves,"pickers":pickers},"gallery":gallery,"tools_scroll":tools_scroll,"crop":self.crop_summary(),"draft":self.draft_summary(),"stack":self.stack_summary(),"workspace":serde_json::to_value(&self.session.workspace).unwrap_or(Value::Null),"developer":self.developer,"expanded":self.workspace.expanded(),"pickers":self.workspace.pickers(),"notices":self.notice_titles(),"compare":self.compare_return.is_some(),"render_error":self.render_error_summary(),"palette":{"open":self.palette_open,"query":self.palette_query},"histogram":self.histogram_summary(),"readout":self.readout_summary(),"proxy":self.proxy_summary(),"scratch":Self::scratch_summary()})
     }
 
     /// The process-wide colour scratch budget as it stands when the frame is captured, with the
@@ -929,12 +1035,18 @@ impl Editor {
     fn update_inner(&mut self, message: Message) -> Task<Message> {
         let zoom = self.session.preview.view.zoom.clone();
         let busy = self.preview_queue.is_busy() || self.overlay_queue.is_busy();
+        let before_entry = self.displayed_entry();
         let task = self.dispatch(message);
+        if self.displayed_entry() != before_entry {
+            self.controls_ui.curve_samples.clear();
+            self.curve_sample_requested_source.clear();
+        }
+        let sample = self.request_visible_curve_samples();
         // Whatever route changed the zoom — the buttons, the field, a script or an API client's
         // `view.set` reaching us through an adopted session — is answered in one place.
         let zoomed = self.zoom_changed(&zoom);
         let refit = self.refit_proxy();
-        let task = self.sync_mode(task);
+        let task = self.sync_mode(Task::batch([task, sample]));
         self.refresh_overlay();
         let rederive_started = Instant::now();
         self.rederive();
@@ -1549,6 +1661,7 @@ impl Editor {
             modules_ready: self.modules_ready,
             recipe: self.recipe.as_ref(),
             fields: &self.fields,
+            control_ui: &self.controls_ui,
             editing: self.editing.as_ref(),
             dragging: self.dragging.as_ref(),
             expanded: &self.expanded,
@@ -1599,6 +1712,31 @@ impl Editor {
                     None => Task::none(),
                 };
             }
+            Message::GalleryPreview => return Task::none(),
+            Message::Gallery(page) => {
+                if !self.developer
+                    || page.is_some_and(|page| view::gallery_page_info(page).is_none())
+                {
+                    return Task::none();
+                }
+                if page.is_some()
+                    && (self.busy
+                        || self.crop.is_some()
+                        || self.crop_pending.is_some()
+                        || self.slider_draft.is_some()
+                        || self.compare_return.is_some())
+                {
+                    self.status = "Finish the current operation before opening Components".into();
+                    return Task::none();
+                }
+                self.palette_open = false;
+                self.menu = None;
+                return workspace_task(
+                    self.owner.clone(),
+                    self.client,
+                    json!({"component_gallery": page}),
+                );
+            }
             Message::CopyStatus => return iced::clipboard::write(self.status.clone()),
             Message::Open => {
                 if self.picker_open || self.busy || self.evidence.is_some() {
@@ -1608,7 +1746,13 @@ impl Editor {
                 return Task::perform(
                     async {
                         rfd::AsyncFileDialog::new()
-                            .add_filter("Photos", &["jpg", "jpeg", "nef", "raf", "dng"])
+                            .add_filter(
+                                "Photos",
+                                &[
+                                    "jpg", "jpeg", "nef", "raf", "dng", "arw", "cr2", "cr3", "nrw",
+                                    "rw2", "orf", "pef",
+                                ],
+                            )
                             .pick_file()
                             .await
                             .map(|file| file.path().to_path_buf())
@@ -1672,7 +1816,15 @@ impl Editor {
                 );
             }
             Message::EvidenceTick => {
-                if self.evidence.is_some() && self.started.elapsed() > EVIDENCE_DEADLINE {
+                let expired = self.evidence.as_ref().is_some_and(|evidence| {
+                    let deadline = if evidence.step > 0 || !evidence.script.is_empty() {
+                        SCRIPT_EVIDENCE_DEADLINE
+                    } else {
+                        EVIDENCE_DEADLINE
+                    };
+                    self.started.elapsed() > deadline
+                });
+                if expired {
                     eprintln!("Evidence deadline exceeded; inspect retained subprocess output");
                     std::process::exit(3);
                 }
@@ -1687,6 +1839,8 @@ impl Editor {
                     || evidence.saving
                     || self.activity.backend.is_none()
                     || !self.modules_ready
+                    || self.curve_sample_in_flight
+                    || self.curve_sample_pending.is_some()
                 {
                     return Task::none();
                 }
@@ -2220,7 +2374,95 @@ impl Editor {
                 self.editing = None;
                 self.dragging = Some((action, parameter));
             }
-            Message::EditValue { action, parameter } => self.editing = Some((action, parameter)),
+            Message::ControlFraction {
+                action,
+                parameter,
+                fraction,
+            } => {
+                return self.control_fraction(action, parameter, fraction);
+            }
+            Message::ControlDiscrete {
+                action,
+                parameter,
+                value,
+            } => {
+                return self.control_value(action, parameter, value, false);
+            }
+            Message::ControlReleased { action, parameter } => {
+                return self.control_release(action, parameter);
+            }
+            Message::ControlStep {
+                action,
+                parameter,
+                direction,
+            } => {
+                return self.control_step(action, parameter, direction);
+            }
+            Message::ControlKeyNudge {
+                action,
+                parameter,
+                direction,
+                shift,
+                option,
+            } => {
+                return self.control_key_nudge(action, parameter, direction, shift, option);
+            }
+            Message::ControlFieldNudge {
+                action,
+                parameter,
+                direction,
+                shift,
+                option,
+            } => {
+                return self.control_field_nudge(action, parameter, direction, shift, option);
+            }
+            Message::TogglePicker { action, parameter } => {
+                let open = self
+                    .controls_ui
+                    .color_open
+                    .entry((action, parameter))
+                    .or_default();
+                *open = !*open;
+            }
+            Message::ToggleGroup { module_id, path } => {
+                let key = format!(
+                    "{module_id}/{}",
+                    path.iter()
+                        .map(usize::to_string)
+                        .collect::<Vec<_>>()
+                        .join(".")
+                );
+                let initial = controls::initial_group_expanded(&self.modules, &module_id, &path)
+                    .unwrap_or(true);
+                let entry = self
+                    .controls_ui
+                    .group_expanded
+                    .entry(key)
+                    .or_insert(initial);
+                *entry = !*entry;
+            }
+            Message::ControlPicker {
+                action,
+                parameter,
+                event,
+            } => {
+                return self.control_picker(action, parameter, event);
+            }
+            Message::ControlCurve {
+                action,
+                parameter,
+                event,
+            } => {
+                return self.control_curve(action, parameter, event);
+            }
+            Message::CurveSampled { identity, result } => {
+                return self.curve_sampled(identity, result);
+            }
+            Message::EditValue { action, parameter } => {
+                let id = fields::field_id(&action, &parameter, None);
+                self.editing = Some((action, parameter));
+                return operation::focus(iced::widget::Id::from(id));
+            }
             Message::CancelEdit => self.editing = None,
             Message::SliderReleased { action, parameter } => {
                 // Release ends the gesture: an open draft commits once, and a slider that never
@@ -2484,8 +2726,14 @@ impl Editor {
             }
             Message::OpenMenu(target) => self.menu = Some(target),
             Message::CloseMenu => self.menu = None,
-            Message::CopyRequest { action, parameter } => {
-                let Some(request) = self.request_for(&action, parameter.as_deref()) else {
+            Message::CopyRequest {
+                action,
+                parameter,
+                preset,
+            } => {
+                let Some(request) =
+                    self.request_for_preset(&action, parameter.as_deref(), preset.as_ref())
+                else {
                     return Task::none();
                 };
                 self.status = format!("Copied the edit.{action} request");
@@ -2941,9 +3189,6 @@ impl Editor {
             .map(|entry| entry.sequence)
     }
 
-    /// The JSON request one control would send right now, with this desktop's own envelope. A
-    /// control of a patch action names its own field, so the copied request is the one that
-    /// control sends and not a patch over the whole module.
     /// The `workspace.set` request this module's picker control would send: its own mode when the
     /// mode is not active, and the pointer when it is, which is exactly what clicking it does. The
     /// panel gesture and the copied request are the same request by construction.
@@ -2960,7 +3205,18 @@ impl Editor {
         }
     }
 
+    /// The JSON request one control would send right now, with this desktop's own envelope.
+    #[cfg(test)]
     pub(crate) fn request_for(&mut self, action: &str, parameter: Option<&str>) -> Option<Value> {
+        self.request_for_preset(action, parameter, None)
+    }
+
+    pub(crate) fn request_for_preset(
+        &mut self,
+        action: &str,
+        parameter: Option<&str>,
+        preset: Option<&Map<String, Value>>,
+    ) -> Option<Value> {
         let Some(state) = &self.state else {
             self.status = "No photograph is open".into();
             return None;
@@ -2969,7 +3225,11 @@ impl Editor {
             self.status = format!("No module declares the action {action}");
             return None;
         };
-        let preset = match submit_preset(&self.modules, action, parameter, &self.fields) {
+        let preset = match preset
+            .cloned()
+            .map(Ok)
+            .unwrap_or_else(|| submit_preset(&self.modules, action, parameter, &self.fields))
+        {
             Ok(preset) => preset,
             Err(message) => {
                 self.status = message;
@@ -2992,6 +3252,8 @@ impl Editor {
     }
 
     pub(crate) fn accept(&mut self, refresh: Refresh) {
+        self.controls_ui.curve_samples.clear();
+        self.curve_sample_requested_source.clear();
         self.api_sequence = refresh.sequence;
         self.adopt(refresh.session);
         match refresh.history {
@@ -3076,16 +3338,8 @@ impl Editor {
                     }
                     let reported = values
                         .and_then(|values| values.get(&parameter.name))
-                        .and_then(|value| match value {
-                            // A reported number is written with the decimals its own parameter
-                            // declares, so a seeded field reads exactly like a dragged one.
-                            Value::Number(_) => value
-                                .as_f64()
-                                .filter(|value| value.is_finite())
-                                .map(|value| fields::format_number(parameter, value)),
-                            Value::String(text) => Some(text.clone()),
-                            _ => None,
-                        });
+                        .and_then(|value| fields::value_text(parameter, value).ok());
+
                     match reported {
                         Some(text) => self.fields.set(&key.0, &key.1, text),
                         None if action.patch => {
@@ -3247,8 +3501,17 @@ impl Editor {
         self.crop.is_some() && self.draft_photo.is_some() && self.session.preview.can_edit()
     }
 
+    fn gallery_page(&self) -> Option<usize> {
+        self.developer
+            .then_some(self.session.workspace.component_gallery)
+            .flatten()
+    }
+
     fn view(&self) -> Element<'_, Message> {
         let started = Instant::now();
+        if let Some(page) = self.gallery_page() {
+            return view::gallery(page);
+        }
         let element = view::workspace(
             &self.workspace,
             view::Surfaces {
@@ -3268,6 +3531,7 @@ impl Editor {
     /// What the keyboard table depends on right now.
     fn key_context(&self) -> keymap::KeyContext {
         keymap::KeyContext {
+            gallery_open: self.gallery_page().is_some(),
             drafting: self.crop.is_some(),
             slider_drafting: self.slider_draft.is_some(),
             palette_open: self.palette_open,
@@ -3473,6 +3737,44 @@ mod tests {
         attach_log, boot, crop_descriptor, descriptors, entry, finish, logged, opened, pick_events,
         pick_fields, pick_mode, picking, refresh_for, sample_mode,
     };
+
+    #[test]
+    fn gallery_uses_session_state_without_a_photo_and_respects_developer_mode() {
+        let (mut editor, catalog) = boot();
+        assert!(!editor.workspace.title.developer);
+        assert!(editor.gallery_page().is_none());
+        editor.developer = true;
+        editor.rederive();
+        assert!(editor.workspace.title.can_open_gallery);
+        assert!(editor.state.is_none());
+        assert_eq!(
+            view::gallery_page_info(0).unwrap().count,
+            lightwell_core::COMPONENT_GALLERY_PAGE_COUNT
+        );
+        let mut session = editor.session.clone();
+        session.workspace.component_gallery = Some(6);
+        session.revision += 1;
+        let _ = editor.update(Message::WorkspaceUpdated(Ok((session, 0))));
+        assert_eq!(editor.gallery_page(), Some(6));
+        assert_eq!(editor.snapshot()["gallery"]["page"], json!(6));
+        let before = editor.session.clone();
+        let generation = editor.activity.requested;
+        let _ = editor.update(Message::GalleryPreview);
+        assert_eq!(editor.session, before);
+        assert_eq!(editor.activity.requested, generation);
+        editor.developer = false;
+        editor.rederive();
+        assert!(editor.gallery_page().is_none());
+        assert!(!editor.workspace.title.developer);
+        editor.developer = true;
+        editor.busy = true;
+        editor.rederive();
+        assert!(!editor.workspace.title.can_open_gallery);
+        let _ = editor.update(Message::Gallery(Some(0)));
+        assert_eq!(editor.session, before);
+        assert!(editor.status.contains("Finish the current operation"));
+        finish(editor, catalog);
+    }
 
     /// The first patch action any registered module declares, and its first field: the tests below
     /// drive that control, so no module or parameter is named here either.
@@ -4304,7 +4606,7 @@ mod tests {
             );
             assert_eq!(
                 rebased.sent,
-                Some(*value),
+                Some(Value::from(*value)),
                 "{parameter} did not re-send the value this client set"
             );
             was_set(&mut editor, &asset, &current);
@@ -4411,6 +4713,7 @@ mod tests {
                     label,
                     controls,
                     reset: Some(reset),
+                    ..
                 } = control
                 else {
                     continue;
@@ -5556,7 +5859,7 @@ mod tests {
 
     #[test]
     fn desktop_registry_contains_every_core_builtin_including_raw() {
-        let desktop = registry(&[]).unwrap();
+        let desktop = registry(&[], false).unwrap();
         let core = ModuleRegistry::builtin();
         let ids = |registry: &ModuleRegistry| {
             registry
@@ -5566,7 +5869,20 @@ mod tests {
                 .collect::<Vec<_>>()
         };
         assert_eq!(ids(&desktop), ids(&core));
-        let disabled = registry(&["lightwell.raw".into()]).unwrap();
+        assert!(!ids(&desktop).contains(&"lightwell.controls".to_owned()));
+        let developer = registry(&[], true).unwrap();
+        assert!(ids(&developer).contains(&"lightwell.controls".to_owned()));
+        assert!(registry(&["lightwell.controls".into()], false).is_err());
+        assert!(
+            !registry(&["lightwell.controls".into()], true)
+                .unwrap()
+                .descriptors()
+                .iter()
+                .find(|module| module.id == "lightwell.controls")
+                .unwrap()
+                .is_available()
+        );
+        let disabled = registry(&["lightwell.raw".into()], false).unwrap();
         assert!(
             !disabled
                 .descriptors()
@@ -6020,6 +6336,7 @@ mod tests {
         let _ = editor.update(Message::CopyRequest {
             action: "crop-reset".into(),
             parameter: None,
+            preset: None,
         });
         assert!(editor.status.contains("Copied"), "{}", editor.status);
         finish(editor, catalog);

@@ -538,6 +538,60 @@ The host package passes one complete DNG journey with binary SHA-256
 its bundled native notices are present and runtime linkage uses no system RAW library.
 This is an unsigned macOS development package, not a license audit or platform qualification.
 
+## UI components qualification
+
+Native Apple M4 Pro (14 cores, 48 GiB), macOS 26.5.2 (25F84), Metal, internal APFS SSD,
+release `--locked`, warm filesystem cache. Desktop captures are 2880 × 1800 at 2×;
+the gallery is 2880 × 2000. Baseline commit `86dfa8438b5930ed9736d5bf03fad59ca3c98a8d`,
+binary `573cee81b613b5e70351afadb98265899a51aa655f796f5483e4edc0fa585d18`;
+qualified application binary `c630aa038041fe73c63358726a9dcd95d20afb0392da14b13b79a50e5cd4e35a`.
+The lockfile hash remains `e1f96098ab03786e8976afd4e0ed78b0ed3d4c58cd071c032390552c97b4a600`.
+All launches use the background bundle. Matched measurements run sequentially with this task's
+compilation and tests stopped; the shared host is not claimed to be quiescent.
+
+The 6000 × 4000 JPEG drag workload uses 30 drained inputs, one release and a coalesced burst.
+Input-to-frame ends at the renderer's `Uploaded` callback, not display scanout. The curve is
+visible and its module supplies the sampled polyline; its proof effect preserves photo pixels,
+so this measures the gesture, draft, preview and upload path, not a future Tone Curve processor.
+
+| Input-to-frame (ms) | p50 | p95 | Maximum | p95 < 100 ms |
+| --- | --- | --- | --- | --- |
+| Basic slider before | 75.00 | 91.10 | 92.40 | Pass |
+| Basic slider after | 70.66 | 87.75 | 91.82 | Pass |
+| Curve point drag | 57.09 | 74.76 | 108.17 | Pass |
+
+The matched slider pair shows no regression. The initial native baseline under concurrent RAW
+verification measured 223.68 ms p95 and **missed** the target; it is retained, not substituted into
+the matched comparison. An initial sandbox launch could not access macOS services. The initial
+curve timing failed strict decimal-value correlation despite ordered rendered inputs; the accepted
+run uses exactly representable fractions and keeps the same strict request/frame checks.
+
+Core diagnostics use 30 samples per recipe at 24 and 60 MP and exclude desktop scheduling,
+GPU upload and presentation. Values are p50 / p95 ms. Identity rendering remains below 0.01 ms
+and shares source pixels; all source hashes remain unchanged.
+
+| Core workload | 24 MP before | 24 MP after | 60 MP before | 60 MP after |
+| --- | --- | --- | --- | --- |
+| One exact transform | 11.35 / 12.90 | 10.59 / 12.21 | 23.74 / 27.13 | 23.70 / 26.78 |
+| 200 actions in one orientation layer | 12.09 / 14.62 | 10.82 / 11.56 | 22.04 / 24.96 | 23.28 / 26.25 |
+| Same stack plus 10° crop | 38.21 / 42.93 | 33.45 / 37.10 | 71.87 / 78.17 | 70.66 / 111.85 |
+| Exposure on the crop stack | 51.76 / 55.80 | 53.67 / 61.29 | 115.60 / 118.76 | 116.01 / 122.20 |
+| Exposure and five Tone fields | 94.26 / 112.15 | 91.08 / 156.10 | 206.06 / 219.86 | 204.94 / 222.84 |
+| Vibrance and saturation | 120.02 / 249.29 | 132.22 / 227.33 | 284.31 / 301.14 | 284.65 / 298.20 |
+| White balance | 62.41 / 76.42 | 60.39 / 64.29 | 133.80 / 145.05 | 135.06 / 140.08 |
+| Histogram reduction | 7.09 / 7.78 | 6.70 / 7.96 | 15.28 / 18.38 | 17.29 / 19.70 |
+| Neutral query (25 point samples) | 0.02 / 0.03 | 0.02 / 0.03 | 0.02 / 0.03 | 0.02 / 0.03 |
+
+These core observations are mixed: the 24 MP Tone and 60 MP crop tails increase, while several
+other timings fall. No JPEG raster loop changed; these samples do not establish a general
+speedup or zero core regression on the shared host. The complete samples, hashes, captures,
+state and logs are indexed by `artifacts/ui-components-verification/summary.json`, including
+`ui-components-before-matched`, `ui-components-after-slider`, `ui-components-after-curve-final`,
+`ui-components-{before-core-24-matched,after-core-24,before-core-60-matched,after-core-60}` and
+the retained initial attempts. Gallery and controls smoke cover 63 states on 10 pages and
+22 interactions respectively. Existing private RAW, manual visual/fixture-generation and explicit
+measurement tests remain skipped; this qualification makes no native Windows/Linux GPU claim.
+
 ## Method
 
 Optimized builds only, with commit, lockfile, OS, CPU/GPU, RAM, display and storage recorded. Report cold and warm runs separately and say which cold is meant. Keep at least 30 samples and never drop failures or tails silently. Measure user event to presented frame, not shader time, and account CPU RSS, cache bytes, GPU allocations and transient copies without double-counting unified memory. Capture idle after all background work stops. No timing gates in CI; CI enforces exactness, deterministic bounds and coverage. VM checks record hypervisor, guest graphics path and software versus accelerated rendering, and never stand in for native timings.

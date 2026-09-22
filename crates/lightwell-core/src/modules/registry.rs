@@ -505,6 +505,10 @@ pub(crate) mod tests {
                 step: Some(1.0),
                 precision: Some(0),
                 notes: format!("the {name} channel of the replaced pixel"),
+                soft_min: None,
+                soft_max: None,
+                fine_step: None,
+                zero: None,
             };
             Arc::new(Self(ModuleDescriptor {
                 id: PATCH_MODULE.into(),
@@ -750,6 +754,10 @@ pub(crate) mod tests {
             step: None,
             precision: None,
             notes: "test".into(),
+            soft_min: None,
+            soft_max: None,
+            fine_step: None,
+            zero: None,
         };
         let mut descriptor = TestModule::new(id, effect, action, Availability::Available).0;
         descriptor.actions[0].parameters = vec![coordinate("x"), coordinate("y")];

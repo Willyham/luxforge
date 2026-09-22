@@ -13,15 +13,24 @@ use std::{
     },
 };
 mod dng;
+mod dng_ops;
 mod format;
+mod limits;
+mod profiles;
 pub use dng::{DngCalibrationMetadata, DngCorrectionMetadata, DngOpcodeProvenance};
 pub use format::required_dng_opcodes;
 use format::{classify_mode, raf_default_crop};
+pub use limits::{MAX_PIXELS, MAX_RGB_BYTES, MAX_SIDE, MAX_SOURCE_BYTES};
+use profiles::{Catalog, Crop};
 
-const MAX_SOURCE_BYTES: usize = 128 * 1024 * 1024;
-const MAX_PIXELS: usize = 64_000_000;
-const MAX_SIDE: u32 = 16_384;
-const MAX_RGB_BYTES: usize = 512 * 1024 * 1024;
+fn camera_catalog() -> &'static Catalog {
+    static CATALOG: std::sync::OnceLock<Catalog> = std::sync::OnceLock::new();
+    CATALOG.get_or_init(|| {
+        Catalog::parse(include_str!("../data/cameras.json"))
+            .expect("camera catalog validated at build time")
+    })
+}
+
 const PROVIDER: &str = "LibRaw 0.22.2 + librtprocess 9a858270";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -63,13 +72,15 @@ pub struct RawRect {
     pub height: u32,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum RawMode {
-    NikonZ6Lossless12,
-    NikonZ6Lossless14,
-    FujifilmX100ViUncompressed14,
-    FujifilmX100ViLossless14,
-    DjiAir2sDng16,
+include!(concat!(env!("OUT_DIR"), "/raw_modes.rs"));
+
+impl RawMode {
+    /// The correction record is required by the mode's processing capability.
+    pub fn requires_dng_corrections(self) -> bool {
+        camera_catalog().cameras.iter().any(|camera| {
+            camera.dng.is_some() && camera.modes.iter().any(|mode| mode.id == self.id())
+        })
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -85,6 +96,7 @@ pub struct RawMetadata {
     pub cfa_width: u8,
     pub cfa_height: u8,
     pub cfa: Vec<u8>,
+    pub black_cfa: Vec<u8>,
     pub black_base: f32,
     pub black_channels: [f32; 4],
     pub black_repeat_width: u8,
@@ -97,17 +109,27 @@ pub struct RawMetadata {
     pub cam_xyz: [[f32; 3]; 4],
     pub backend: String,
     pub exif_orientation: u8,
-    pub libraw_inset: RawRect,
+    pub libraw_inset: Option<RawRect>,
     pub format_identity: String,
     pub warnings: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub dng_corrections: Option<DngCorrectionMetadata>,
 }
 
+/// Sparse sensor repairs applied during development while retaining the exact
+/// decoded mosaic. Sorted unique offsets; at most 65,536 entries per source.
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct MosaicCorrection {
+    pub index: u32,
+    pub value: u16,
+}
+
 #[derive(Debug, Clone)]
 pub struct RawSource {
     metadata: RawMetadata,
     mosaic: Arc<Vec<u16>>,
+    mosaic_corrections: Arc<Vec<MosaicCorrection>>,
     native: Box<NativeMetadata>,
     dng_correction: Option<dng::DngCorrection>,
 }
@@ -118,6 +140,30 @@ pub struct PlanarRgb {
     pub height: u32,
     /// One contiguous [red plane, green plane, blue plane] allocation.
     pub data: Vec<f32>,
+}
+
+fn validate_camera_response(matrix: &[[f32; 3]; 4]) -> Result<(), RawError> {
+    // LibRaw can unpack an uncalibrated camera with an identity rgb_cam and
+    // zero cam_xyz. Finite development alone would then silently use wrong
+    // display colors and leave temperature/tint unusable.
+    if matrix
+        .iter()
+        .flatten()
+        .any(|v| !v.is_finite() || v.abs() > 16.0)
+        || matrix[3] != [0.0; 3]
+    {
+        return Err(RawError::MissingCalibration("XYZ-to-camera response"));
+    }
+    let m = matrix.map(|row| row.map(f64::from));
+    let determinant = m[0][0] * (m[1][1] * m[2][2] - m[1][2] * m[2][1])
+        - m[0][1] * (m[1][0] * m[2][2] - m[1][2] * m[2][0])
+        + m[0][2] * (m[1][0] * m[2][1] - m[1][1] * m[2][0]);
+    if !determinant.is_finite() || determinant.abs() < 1e-8 {
+        return Err(RawError::MissingCalibration(
+            "singular XYZ-to-camera response",
+        ));
+    }
+    Ok(())
 }
 
 impl PlanarRgb {
@@ -157,6 +203,7 @@ struct NativeMetadata {
     flip: u32,
     raw_count: u32,
     cfa: [u8; 36],
+    black_cfa: [u8; 36],
     black_base: f32,
     black_channels: [f32; 4],
     black_repeat_width: u32,
@@ -192,6 +239,8 @@ unsafe extern "C" {
         samples: *const u16,
         count: usize,
         meta: *const NativeMetadata,
+        patches: *const MosaicCorrection,
+        patch_count: usize,
         gains: *const f32,
         red: *mut f32,
         green: *mut f32,
@@ -235,10 +284,10 @@ fn native_error(code: c_int, buffer: &[c_char]) -> RawError {
 }
 
 fn reject_unhandled_required_opcodes(
-    mode: RawMode,
+    handles_dng_corrections: bool,
     opcodes: &[format::DngOpcode],
 ) -> Result<(), RawError> {
-    if mode != RawMode::DjiAir2sDng16 {
+    if !handles_dng_corrections {
         let mut ids = opcodes
             .iter()
             .filter(|op| op.flags & 1 == 0)
@@ -262,6 +311,26 @@ fn checked_rect(rect: RawRect, width: u32, height: u32) -> Result<RawRect, RawEr
         return Err(RawError::InvalidInput("crop outside sensor"));
     }
     Ok(rect)
+}
+
+fn libraw_inset(
+    native: &NativeMetadata,
+    width: u32,
+    height: u32,
+) -> Result<Option<RawRect>, RawError> {
+    let rect = RawRect {
+        x: native.inset_x,
+        y: native.inset_y,
+        width: native.inset_width,
+        height: native.inset_height,
+    };
+    // LibRaw uses an empty size, or a 65535,65535 origin sentinel (while
+    // retaining the reported size), when no inset was supplied. Any other
+    // malformed/non-empty rectangle must fail explicitly.
+    if (rect.width == 0 && rect.height == 0) || (rect.x == 65_535 && rect.y == 65_535) {
+        return Ok(None);
+    }
+    checked_rect(rect, width, height).map(Some)
 }
 
 fn exif_orientation(libraw_flip: u32) -> Result<u8, RawError> {
@@ -289,7 +358,7 @@ impl RawSource {
             return Err(RawError::InvalidInput("empty source"));
         }
         if bytes.len() > MAX_SOURCE_BYTES {
-            return Err(RawError::ResourceLimit("source exceeds 128 MiB"));
+            return Err(RawError::ResourceLimit("source exceeds 512 MiB"));
         }
         if cancel.load(Ordering::Relaxed) {
             return Err(RawError::Cancelled);
@@ -298,7 +367,10 @@ impl RawSource {
             let found = format::dng_opcodes(&bytes)?;
             let mut unknown: Vec<_> = found
                 .iter()
-                .filter(|op| op.flags & 1 == 0 && !(op.list == 51022 && matches!(op.id, 1 | 9)))
+                .filter(|op| {
+                    op.flags & 1 == 0
+                        && !matches!((op.list, op.id), (51022, 1 | 3 | 9) | (51008, 4 | 5))
+                })
                 .map(|op| op.id)
                 .collect();
             unknown.sort_unstable();
@@ -332,7 +404,7 @@ impl RawSource {
         }
         let guard = NativeHandle(handle);
         let n = Self::checked_len(&native)?;
-        let (metadata, dng_correction) = Self::interpret(&native, &bytes, &opcodes)?;
+        let (mut metadata, dng_correction) = Self::interpret(&native, &bytes, &opcodes)?;
         let mut samples = Vec::new();
         samples
             .try_reserve_exact(n)
@@ -357,12 +429,29 @@ impl RawSource {
         if cancel.load(Ordering::Relaxed) {
             return Err(RawError::Cancelled);
         }
+        let (mosaic_corrections, unresolved) = match &dng_correction {
+            Some(correction) => correction.mosaic_corrections(
+                &samples,
+                native.width as usize,
+                native.height as usize,
+                &metadata.cfa,
+            )?,
+            None => (Vec::new(), 0),
+        };
+        if unresolved > 0 {
+            metadata.warnings.push(format!("DNG bad-pixel interpolation left {unresolved} markers unchanged because no usable same-color neighbors were available"));
+        }
         Ok(Self {
             metadata,
+            mosaic_corrections: Arc::new(mosaic_corrections),
             mosaic: Arc::new(samples),
             native,
             dng_correction,
         })
+    }
+
+    pub fn mosaic_corrections(&self) -> &[MosaicCorrection] {
+        &self.mosaic_corrections
     }
 
     /// Demosaic with green-normalized camera-channel gains. These gains are
@@ -399,7 +488,7 @@ impl RawSource {
             .and_then(|v| v.checked_mul(std::mem::size_of::<f32>()))
             .ok_or(RawError::ResourceLimit("RGB allocation overflow"))?;
         if rgb_bytes > MAX_RGB_BYTES {
-            return Err(RawError::ResourceLimit("RGB planes exceed 512 MiB"));
+            return Err(RawError::ResourceLimit("RGB planes exceed 1.5 GiB"));
         }
         let mut data = Vec::new();
         data.try_reserve_exact(n * 3)
@@ -416,6 +505,8 @@ impl RawSource {
                 self.mosaic.as_ptr(),
                 n,
                 &*self.native,
+                self.mosaic_corrections.as_ptr(),
+                self.mosaic_corrections.len(),
                 gains.as_ptr(),
                 red.as_mut_ptr(),
                 green.as_mut_ptr(),
@@ -454,9 +545,14 @@ impl RawSource {
         }
     }
 
-    /// GainMap multiplier at an absolute uncorrected sensor coordinate. The
-    /// caller can use this when sampling the immutable pre-WB CFA mosaic.
-    pub fn gain_at_sensor(&self, x: f64, y: f64, channel: usize) -> Result<f64, RawError> {
+    /// Combined opcode gain at an absolute corrected output coordinate.
+    /// Gain placement before or after a warp follows the source opcode order.
+    pub fn gain_at_corrected_sensor(
+        &self,
+        x: f64,
+        y: f64,
+        channel: usize,
+    ) -> Result<f64, RawError> {
         if channel >= 3
             || !x.is_finite()
             || !y.is_finite()
@@ -491,7 +587,7 @@ impl RawSource {
             .checked_mul(native.height as usize)
             .ok_or(RawError::ResourceLimit("sensor area overflow"))?;
         if n > MAX_PIXELS {
-            return Err(RawError::ResourceLimit("sensor exceeds 64 MP"));
+            return Err(RawError::ResourceLimit("sensor exceeds 128 MP"));
         }
         Ok(n)
     }
@@ -504,8 +600,11 @@ impl RawSource {
         let make = c_text(&native.make);
         let model = c_text(&native.model);
         let decoder = c_text(&native.decoder);
-        let mode = classify_mode(native, &make, &model, &decoder, bytes)?;
-        reject_unhandled_required_opcodes(mode, opcodes)?;
+        let (profile, recording) =
+            classify_mode(camera_catalog(), native, &make, &model, &decoder, bytes)?;
+        let mode = serde_json::from_value(serde_json::Value::String(recording.id.clone()))
+            .expect("mode identifiers generated from the validated catalog");
+        reject_unhandled_required_opcodes(profile.dng.is_some(), opcodes)?;
         let rect = |x, y, width, height| RawRect {
             x,
             y,
@@ -522,22 +621,21 @@ impl RawSource {
             native.width,
             native.height,
         )?;
-        let inset = checked_rect(
-            rect(
-                native.inset_x,
-                native.inset_y,
-                native.inset_width,
-                native.inset_height,
-            ),
-            native.width,
-            native.height,
-        )?;
+        let inset = libraw_inset(native, native.width, native.height)?;
         let (cfa_w, cfa_h) = (native.cfa_width as usize, native.cfa_height as usize);
         if !matches!((cfa_w, cfa_h), (2, 2) | (6, 6)) {
             return Err(RawError::UnsupportedCfa);
         }
         let cfa = native.cfa[..cfa_w * cfa_h].to_vec();
+        let black_cfa = native.black_cfa[..cfa_w * cfa_h].to_vec();
         if cfa.iter().any(|&c| c > 2) {
+            return Err(RawError::UnsupportedCfa);
+        }
+        if black_cfa
+            .iter()
+            .zip(&cfa)
+            .any(|(&site, &channel)| site > 3 || (if site == 3 { 1 } else { site }) != channel)
+        {
             return Err(RawError::UnsupportedCfa);
         }
         let counts = [0_u8, 1, 2].map(|color| cfa.iter().filter(|&&v| v == color).count());
@@ -571,11 +669,6 @@ impl RawSource {
             || !black_repeat.iter().all(|v| v.is_finite() && *v >= 0.0)
         {
             return Err(RawError::MissingCalibration("black levels"));
-        }
-        if cfa_w == 2 && native.black_channels[1] != native.black_channels[3] {
-            return Err(RawError::MissingCalibration(
-                "two green black levels differ",
-            ));
         }
         let max_black = native.black_base
             + native
@@ -631,44 +724,60 @@ impl RawSource {
         }
         let cam_xyz = std::array::from_fn(|y| std::array::from_fn(|x| native.cam_xyz[y * 3 + x]));
         let mut warnings = Vec::new();
-        let dji_container = if mode == RawMode::DjiAir2sDng16 {
-            Some(format::dji_container(bytes, native)?)
-        } else {
-            None
-        };
-        let default_crop = if matches!(
-            mode,
-            RawMode::FujifilmX100ViUncompressed14 | RawMode::FujifilmX100ViLossless14
-        ) {
-            // LibRaw trims three additional top rows here; RAF's own crop tag
-            // describes the camera frame. Do not silently change framing.
-            let raf =
-                raf_default_crop(bytes).ok_or(RawError::InvalidInput("missing RAF crop tags"))?;
-            let parsed = checked_rect(raf, native.width, native.height)?;
-            if parsed != inset {
-                warnings.push("LibRaw inset differs from RAF camera crop".to_string());
+        let dng_container = profile
+            .dng
+            .as_ref()
+            .map(|settings| {
+                format::dng_container(
+                    bytes,
+                    native,
+                    &settings.container,
+                    settings.decoder_active_bottom_trim,
+                )
+            })
+            .transpose()?;
+        let default_crop = match profile.crop {
+            Crop::RafTags => {
+                // The format's own crop tags are authoritative for this capability.
+                let raf = raf_default_crop(bytes)
+                    .ok_or(RawError::InvalidInput("missing RAF crop tags"))?;
+                let parsed = checked_rect(raf, native.width, native.height)?;
+                if inset.is_some_and(|inset| parsed != inset) {
+                    warnings.push("LibRaw inset differs from RAF camera crop".to_string());
+                }
+                parsed
             }
-            parsed
-        } else if let Some(container) = dji_container {
-            if container.default_crop != inset {
-                warnings.push("LibRaw inset differs from DNG DefaultCrop tags".to_string());
+            Crop::DngTags => {
+                let container = dng_container
+                    .as_ref()
+                    .expect("validated DNG crop capability");
+                if inset.is_some_and(|inset| container.default_crop != inset) {
+                    warnings.push("LibRaw inset differs from DNG DefaultCrop tags".to_string());
+                }
+                container.default_crop
             }
-            container.default_crop
-        } else {
-            inset
+            Crop::LibrawInset => inset.ok_or(RawError::InvalidInput("missing LibRaw inset"))?,
+            Crop::ActiveArea => active,
         };
-        let (cam_xyz, dng_correction) = if mode == RawMode::DjiAir2sDng16 {
-            let (matrix, calibration) = format::dji_color_calibration(bytes, native)?;
+        let (cam_xyz, dng_correction) = if let Some(settings) = &profile.dng {
+            let (matrix, calibration) = format::dng_color_calibration(bytes, native, settings)?;
             let correction = dng::DngCorrection::parse(
                 opcodes,
-                active,
-                dji_container.expect("DJI container parsed").raw_ifd,
+                dng_container
+                    .as_ref()
+                    .expect("validated DNG crop capability")
+                    .active_area,
+                dng_container
+                    .expect("validated DNG processing capability")
+                    .raw_ifd,
                 calibration,
+                settings,
             )?;
             (matrix, Some(correction))
         } else {
             (cam_xyz, None)
         };
+        validate_camera_response(&cam_xyz)?;
         let dng_corrections = dng_correction.as_ref().map(|v| v.metadata.clone());
         Ok((
             RawMetadata {
@@ -677,11 +786,14 @@ impl RawSource {
                 mode,
                 sensor_width: native.width,
                 sensor_height: native.height,
-                active_area: active,
+                active_area: dng_container
+                    .as_ref()
+                    .map_or(active, |container| container.active_area),
                 default_crop,
                 cfa_width: cfa_w as u8,
                 cfa_height: cfa_h as u8,
                 cfa,
+                black_cfa,
                 black_base: native.black_base,
                 black_channels: native.black_channels,
                 black_repeat_width: native.black_repeat_width as u8,
@@ -707,6 +819,194 @@ impl RawSource {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn absent_or_singular_camera_response_is_not_render_support() {
+        assert!(matches!(
+            validate_camera_response(&[[0.0; 3]; 4]),
+            Err(RawError::MissingCalibration(_))
+        ));
+        assert!(validate_camera_response(&[[1.0; 3], [1.0; 3], [1.0; 3], [0.0; 3]]).is_err());
+        let mut matrix = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0], [0.0; 3]];
+        assert!(validate_camera_response(&matrix).is_ok());
+        matrix[0][0] = f32::NAN;
+        assert!(validate_camera_response(&matrix).is_err());
+    }
+
+    #[test]
+    fn libraw_inset_absence_is_distinct_from_malformed_rectangles() {
+        let mut native = RawSource::blank_native();
+        native.inset_width = 0;
+        native.inset_height = 0;
+        assert_eq!(libraw_inset(&native, 100, 80).unwrap(), None);
+
+        native.inset_x = 65_535;
+        native.inset_y = 65_535;
+        native.inset_width = 6000;
+        native.inset_height = 4000;
+        assert_eq!(libraw_inset(&native, 100, 80).unwrap(), None);
+
+        native.inset_x = 0;
+        native.inset_y = 0;
+        native.inset_width = 99;
+        native.inset_height = 0;
+        assert!(matches!(
+            libraw_inset(&native, 100, 80),
+            Err(RawError::InvalidInput("crop outside sensor"))
+        ));
+    }
+
+    #[test]
+    fn active_area_crop_is_available_when_libraw_inset_is_absent() {
+        let mut native = RawSource::blank_native();
+        native.width = 100;
+        native.height = 80;
+        native.active_x = 2;
+        native.active_y = 3;
+        native.active_width = 96;
+        native.active_height = 74;
+        native.inset_width = 0;
+        native.inset_height = 0;
+        let inset = libraw_inset(&native, native.width, native.height).unwrap();
+        assert_eq!(inset, None);
+        let active = checked_rect(
+            RawRect {
+                x: native.active_x,
+                y: native.active_y,
+                width: native.active_width,
+                height: native.active_height,
+            },
+            native.width,
+            native.height,
+        )
+        .unwrap();
+        assert_eq!(
+            active,
+            RawRect {
+                x: 2,
+                y: 3,
+                width: 96,
+                height: 74
+            }
+        );
+    }
+
+    #[test]
+    fn native_calibration_uses_both_bayer_green_sites() {
+        let mut native = RawSource::blank_native();
+        native.width = 16;
+        native.height = 16;
+        native.cfa_width = 2;
+        native.cfa_height = 2;
+        native.cfa = [
+            0, 1, 1, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            0, 0, 0, 0, 0, 0, 0,
+        ];
+        native.black_cfa = [
+            0, 1, 3, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            0, 0, 0, 0, 0, 0, 0,
+        ];
+        native.black_base = 100.0;
+        native.black_channels = [10.0, 20.0, 30.0, 40.0];
+        native.white = 1000.0;
+        let samples: Vec<u16> = (0..256)
+            .map(|i| match ((i / 16) % 2) * 2 + (i % 16) % 2 {
+                0 => 110,
+                1 => 120,
+                2 => 140,
+                _ => 130,
+            })
+            .collect();
+        let mut red = vec![f32::NAN; samples.len()];
+        let mut green = vec![f32::NAN; samples.len()];
+        let mut blue = vec![f32::NAN; samples.len()];
+        let gains = [1.0_f32; 3];
+        let mut error = [0 as c_char; 128];
+        let cancel = AtomicBool::new(false);
+        let code = unsafe {
+            lw_raw_develop(
+                samples.as_ptr(),
+                samples.len(),
+                &native,
+                std::ptr::null(),
+                0,
+                gains.as_ptr(),
+                red.as_mut_ptr(),
+                green.as_mut_ptr(),
+                blue.as_mut_ptr(),
+                cancelled,
+                (&cancel as *const AtomicBool).cast_mut().cast(),
+                error.as_mut_ptr(),
+                error.len(),
+            )
+        };
+        assert_eq!(code, 0);
+        for plane in [&red[..], &green[..], &blue[..]] {
+            assert!(
+                plane
+                    .chunks_exact(16)
+                    .skip(3)
+                    .take(10)
+                    .flat_map(|row| row[3..13].iter())
+                    .all(|value| value.abs() < 1e-6),
+                "{plane:?}"
+            );
+        }
+
+        // A declared repair substitutes the bad site only in this develop
+        // pass. The retained decoded mosaic remains exactly unchanged.
+        let expected = [red.clone(), green.clone(), blue.clone()];
+        let mut damaged = samples.clone();
+        let repair = MosaicCorrection {
+            index: 8 * 16 + 8,
+            value: damaged[8 * 16 + 8],
+        };
+        damaged[repair.index as usize] = 0;
+        let damaged_before = damaged.clone();
+        let code = unsafe {
+            lw_raw_develop(
+                damaged.as_ptr(),
+                damaged.len(),
+                &native,
+                &repair,
+                1,
+                gains.as_ptr(),
+                red.as_mut_ptr(),
+                green.as_mut_ptr(),
+                blue.as_mut_ptr(),
+                cancelled,
+                (&cancel as *const AtomicBool).cast_mut().cast(),
+                error.as_mut_ptr(),
+                error.len(),
+            )
+        };
+        assert_eq!(code, 0);
+        assert_eq!([red.clone(), green.clone(), blue.clone()], expected);
+        assert_eq!(damaged, damaged_before);
+
+        // A merged green map would incorrectly use site 1's black for site 3.
+        native.black_cfa[2] = 1;
+        let code = unsafe {
+            lw_raw_develop(
+                samples.as_ptr(),
+                samples.len(),
+                &native,
+                std::ptr::null(),
+                0,
+                gains.as_ptr(),
+                red.as_mut_ptr(),
+                green.as_mut_ptr(),
+                blue.as_mut_ptr(),
+                cancelled,
+                (&cancel as *const AtomicBool).cast_mut().cast(),
+                error.as_mut_ptr(),
+                error.len(),
+            )
+        };
+        assert_eq!(code, 0);
+        assert!(green[3 * 16 + 3] > 1e-4);
+    }
+
     #[test]
     #[ignore = "requires local DJI original and an explicit temporary output path"]
     fn dump_dji_sparse_uncorrected_reference() {
@@ -769,7 +1069,7 @@ mod tests {
         ));
     }
     #[test]
-    fn dng_opcode_allowance_is_limited_to_qualified_dji_mode() {
+    fn dng_opcode_allowance_requires_processing_capability() {
         let required = format::DngOpcode {
             ifd: 0,
             list: 51022,
@@ -779,10 +1079,10 @@ mod tests {
             data: vec![],
         };
         assert!(matches!(
-            reject_unhandled_required_opcodes(RawMode::NikonZ6Lossless14, std::slice::from_ref(&required)),
+            reject_unhandled_required_opcodes(false, std::slice::from_ref(&required)),
             Err(RawError::UnsupportedRequiredOpcodes(ids)) if ids == vec![9]
         ));
-        assert!(reject_unhandled_required_opcodes(RawMode::DjiAir2sDng16, &[required]).is_ok());
+        assert!(reject_unhandled_required_opcodes(true, &[required]).is_ok());
     }
     #[test]
     fn geometry_and_orientation_are_bounded() {
@@ -795,6 +1095,16 @@ mod tests {
         ));
         n.width = 16_384;
         n.height = 16_384;
+        assert!(matches!(
+            RawSource::checked_len(&n),
+            Err(RawError::ResourceLimit(_))
+        ));
+        n.width = 16_000;
+        n.height = 8_000;
+        let admitted = RawSource::checked_len(&n).unwrap();
+        assert_eq!(admitted, MAX_PIXELS);
+        assert!(admitted * 3 * std::mem::size_of::<f32>() <= MAX_RGB_BYTES);
+        n.height += 1;
         assert!(matches!(
             RawSource::checked_len(&n),
             Err(RawError::ResourceLimit(_))

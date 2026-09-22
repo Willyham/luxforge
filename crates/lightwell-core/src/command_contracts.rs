@@ -387,6 +387,7 @@ fn the_workspace_additions_are_reachable_through_the_json_api() {
             "thirds": false,
             "clip_shadows": false,
             "clip_highlights": false,
+            "component_gallery": null,
         })
     );
     assert_eq!(
@@ -401,6 +402,7 @@ fn the_workspace_additions_are_reachable_through_the_json_api() {
             "thirds": false,
             "clip_shadows": false,
             "clip_highlights": false,
+            "component_gallery": null,
         })
     );
     let refused = request("workspace.set", json!({"mode": "lightwell.transform"}))

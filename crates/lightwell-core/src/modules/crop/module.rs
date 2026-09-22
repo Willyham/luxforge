@@ -61,6 +61,10 @@ fn angle_parameter() -> ParameterDescriptor {
         step: None,
         precision: None,
         notes: "straightening angle, positive turns the image clockwise on screen".into(),
+        soft_min: None,
+        soft_max: None,
+        fine_step: None,
+        zero: None,
     }
 }
 
@@ -74,6 +78,10 @@ fn rectangle_parameter(name: &str, notes: &str) -> ParameterDescriptor {
         step: None,
         precision: None,
         notes: notes.into(),
+        soft_min: None,
+        soft_max: None,
+        fine_step: None,
+        zero: None,
     }
 }
 
@@ -92,6 +100,10 @@ fn aspect_side(name: &str) -> ParameterDescriptor {
         notes: format!(
             "the {name} of a custom ratio; required with aspect custom and rejected with any other aspect"
         ),
+        soft_min: None,
+        soft_max: None,
+        fine_step: None,
+        zero: None,
     }
 }
 
@@ -107,6 +119,10 @@ fn center_parameter(name: &str) -> ParameterDescriptor {
         notes: format!(
             "{name} of the fitted rectangle's center, normalized to the rotated box at angle; both center-x and center-y or neither"
         ),
+        soft_min: None,
+        soft_max: None,
+        fine_step: None,
+        zero: None,
     }
 }
 
@@ -177,6 +193,10 @@ parameters: vec![
                                 unit: None,
                                 step: None, precision: None,
 notes: "free keeps the existing crop's ratio, or the input stage's without a crop; original is the input stage ratio".into(),
+                                soft_min: None,
+                                soft_max: None,
+                                fine_step: None,
+                                zero: None,
                             },
                             aspect_side("aspect-width"),
                             aspect_side("aspect-height"),

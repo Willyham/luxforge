@@ -27,7 +27,7 @@ The [darktable companion](../darktable/README.md) examines corresponding behavio
 - Current recipe, historical states, auxiliary edit assets and preview caches have different purposes. A preview cache is not an edit backup. [Storage details](storage-and-history.md).
 - Contrast, Clarity, Texture and sharpening act on different aspects of tone/detail. [Tool comparison and engineering evidence](detail-and-local-contrast.md).
 - Historical papers establish a local Laplacian connection to Adobe processing. They do not publish today's complete slider implementation. [Algorithm evidence](detail-and-local-contrast.md#published-local-laplacian-foundation).
-- Browsing previews, editable proxies and cached early-stage RAW data solve different latency problems. [Performance details](previews-and-performance.md).
+- Browsing previews, editable proxies and cached early-stage RAW data solve different latency problems. The Classic SDK also documents faster, lower-quality redraw while a Develop parameter is tracked, without publishing its resolution or frame timing. [Performance details](previews-and-performance.md).
 - Version matters: new AI storage, GPU preview generation and Neural Engine changes invalidate older blanket explanations. [Version ledger](versions-and-caveats.md).
 
 ## How to read the evidence

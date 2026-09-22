@@ -28,7 +28,7 @@ Doctor reports missing tools and the graphics environment without installing any
 | Run an agent's editor check without taking focus (macOS) | `cargo xtask develop --background --catalog FILE [--open PATH]` |
 | Exact current-editor journey, display-independent, including the Basic and histogram chapter | `cargo run --release --locked --package xtask -- editor-acceptance --output NEW_DIR` |
 | Core timing on a real-sized JPEG | `cargo run --release --locked --package xtask -- editor-performance --source JPEG --output NEW_DIR [--samples N]` |
-| Desktop slider-to-presented-frame and settled-histogram timing, peak RSS, scratch and idle CPU | `cargo run --release --locked --package xtask -- editor-latency --source JPEG --output NEW_DIR [--binary PATH] [--samples N] [--mode drag\|commit\|burst] [--crop DEGREES] [--basic] [--idle]` |
+| Desktop slider/curve-to-presented-frame and settled-histogram timing, peak RSS, scratch and idle CPU | `cargo run --release --locked --package xtask -- editor-latency --source JPEG --output NEW_DIR [--binary PATH] [--samples N] [--mode drag\|commit\|burst] [--control slider\|curve] [--crop DEGREES] [--basic] [--idle]` |
 | Verify golden fixtures; generate 24 and 60 MP workloads | `cargo xtask fixtures`, `cargo xtask generate-fixtures [--output NEW_DIR]` |
 | RAW corpus integrity; independent numerical stage references | `cargo xtask raw-corpus --manifest FILE --output NEW_DIR`, `cargo xtask raw-reference --output NEW_DIR` |
 | Authentic RAW editor journey, reopen and resource sampling; `--samples` defaults to 3 trials per source | `cargo run --release --locked --package xtask -- raw-editor --manifest FILE --output NEW_DIR [--samples N] [--binary PATH]` |
@@ -55,7 +55,7 @@ Every evidence command refuses an existing output directory: use a fresh `artifa
 | Tier | What it runs |
 | --- | --- |
 | `quick` | `check` and `editor-acceptance` |
-| `rendered` | quick plus every smoke scenario, through a bounded pool |
+| `rendered` | quick plus all 19 smoke scenarios, including `gallery` and `controls`, through a bounded pool |
 | `timing` | quick plus `editor-performance`, `editor-latency` and `measure`, in that order, serially, after everything else in the tier and behind the host-wide timing lock |
 | `full` | rendered plus timing plus `raw-reference` and, with `--manifest FILE`, `raw-editor` |
 
@@ -113,7 +113,7 @@ review.
 
 Wall-clock on the owner's M4 Pro, release build already current and the Cargo cache warm, on a host
 shared with other work at one-minute load averages between 4 and 13: `quick` 9 s, of which `check`
-is 8 s and varies with how much Cargo has to redo; `rendered` 18 s, its 17 scenarios and 19 editor
+is 8 s and varies with how much Cargo has to redo; `rendered` 18 s, a measured 17-scenario workload with 19 editor
 launches taking 9 s of wall clock through the pool against 26 s of their own summed elapsed time, or
 23 s serially with `--jobs 1`; `timing` 70 s with the default sample counts, of which `measure` is
 48 s and 17 launches, `editor-performance` 4 s and `editor-latency` 5 s; `full` with the owner's three-source
@@ -125,8 +125,7 @@ each for the Z6, 19 s for the X100VI and 18 s for the Air 2S, two launches per t
 ### Rendered scenario cost: why every scenario stays in `rendered`
 
 Per-scenario elapsed time comes from each run's own `summary.json`. Back to back on the same shared
-host, one-minute load averages of 12.96 (`--jobs 1`) and 13.24 (the default pool of three), the 17
-scenarios cost 24.40 s serially and 30.00 s summed inside the pool, whose own wall clock was 10.30 s.
+host, one-minute load averages of 12.96 (`--jobs 1`) and 13.24 (the default pool of three), a 17-scenario workload (excluding the gallery and controls boards) cost 24.40 s serially and 30.00 s summed inside the pool, whose own wall clock was 10.30 s.
 Every scenario costs one to two seconds either way, and none exceeds 2.3 s; against a rendered tier
 whose own total stays under two minutes, no single scenario is a material share of it. Every scenario
 therefore stays in `rendered`; `full` adds only the RAW components (`raw-reference` and, with
@@ -170,9 +169,17 @@ Start with `schema.list`. Request shapes and live-session behavior are in the [u
 
 On macOS, `develop --background` builds the selected profile and runs a temporary copy in an `LSBackgroundOnly` app bundle, preventing desktop activation. Use an isolated catalog or `--evidence-dir NEW_DIR` for automated checks. The live API and native GPU renderer remain available; this mode is for API and capture work, not keyboard, mouse or native-dialog checks. The bundle is removed after exit, and the original executable and packaged app are untouched. Restricted tool environments must permit macOS LaunchServices/window-server IPC: a background process can otherwise stall before image work, with only startup/open-request events and idle source/catalog workers. Retry with the required host access rather than activating the window. Ordinary `develop` remains an interactive launch. `--background` fails explicitly on other platforms.
 
+### Browsing the component gallery
+
+Debug builds expose the title-bar **Developer** button automatically. To inspect the gallery in
+an optimized build, run `cargo xtask develop --developer` (automated launches add `--background`).
+Its page chooser and Previous/Next controls browse ten pages; Back to editor or Escape returns.
+The `gallery` smoke covers all 63 reference states and the return to the unchanged editor via
+the same `workspace.set` path as the button.
+
 ## Rendered evidence
 
-Smoke runs the built or packaged editor through a deterministic evidence sequence (repeated `--open`, evidence directory, fixed window size, bounded deadlines); there is no separate viewer, so the captured frame is the editor window with its sidebar. Scenarios: `empty`, `load`, `replacement`, `invalid`, `repeated`, `alternating`, `large24`, `large60`, `crop`, `crop-draft`, `workspace`, `basic`, `basic-panel`, `basic-crop`, `basic-restart`, `histogram`, `unavailable`; generate the large fixtures first. Each run writes `result.json`, `app/events.jsonl`, `app/state.json`, `app/frame-*.png` (window-renderer readbacks, not OS screenshots), `subprocess.log` and `reproduce.md`. Each frame records `surface_columns`, the physical x range of the photo surface derived from the editor's layout constants, and the runner verifies fixture colors, Fit geometry and centering within that range, generation and state, backend, exit status and unchanged source hashes before writing `passed`; blank, stale or missing frames fail. The `render_ready` event marks the open request's preview raster becoming the photo surface's source, which is when a frame becomes capturable; when that raster is a display proxy it marks the adoption of the same job's exact phase instead, so a captured frame's histogram, clipping counters and overlay always describe the exact render of the picture on screen. A 25-second application deadline and a 35-second process deadline bound hangs.
+Smoke runs the built or packaged editor through a deterministic evidence sequence (repeated `--open`, evidence directory, fixed window size, bounded deadlines); there is no separate viewer, so the captured frame is the editor window with its sidebar. Scenarios: `empty`, `load`, `replacement`, `invalid`, `repeated`, `alternating`, `large24`, `large60`, `crop`, `crop-draft`, `workspace`, `basic`, `basic-panel`, `basic-crop`, `basic-restart`, `histogram`, `unavailable`; generate the large fixtures first. Each run writes `result.json`, `app/events.jsonl`, `app/state.json`, `app/frame-*.png` (window-renderer readbacks, not OS screenshots), `subprocess.log` and `reproduce.md`. Each frame records `surface_columns`, the physical x range of the photo surface derived from the editor's layout constants, and the runner verifies fixture colors, Fit geometry and centering within that range, generation and state, backend, exit status and unchanged source hashes before writing `passed`; blank, stale or missing frames fail. The `render_ready` event marks the upload of the open request's preview raster, which is when a frame becomes capturable. Single-open evidence has a 25-second application deadline; multi-step evidence scripts have 60 seconds for repeated RAW redevelopment. Smoke retains its 35-second process deadline; the RAW editor journey has a 70-second process deadline. These are harness hang bounds, not interactive latency targets.
 
 At Fit, and at any zoom that draws the stage smaller than itself, the frame a scenario captures is
 the **display proxy**: the whole recipe rendered against a source downscaled once to the photo area,
@@ -226,9 +233,9 @@ and are referenced rather than duplicated.
 
 ### Authentic RAW evidence
 
-`raw-editor` runs the actual background editor, then reopens the same isolated catalog in a second process. Each source passes exposure, gain and custom temperature/tint edits, a sensor-neutral pick, geometry, undo, Original/current history selection and Fit/100%. It checks displayed entry/snapshot/layers, bound control values, source hashes, actual photo pixels and exact reopened presentation. These comparisons prove reevaluation and state correlation, not controlled color accuracy.
+`raw-editor` runs the actual background editor, then reopens the same isolated catalog in a second process. Each source passes exposure, gain and custom temperature/tint edits, a sensor-neutral pick, geometry, undo, Original/current history selection and Fit/100%. It checks displayed entry/snapshot/layers, bound control values, source hashes, actual photo pixels and exact reopened presentation. These comparisons prove reevaluation and state correlation, not controlled color accuracy. Large RAWs and required DNG corrections can take substantially longer than small fixtures; a script that continues producing correlated frames must be assessed against the whole-journey deadline.
 
-The local manifest has `format:1` and a `sources` array. Each source supplies `id`, `path`, `sha256`, `mode`, `make`, `model`, upright `source_dimensions:[width,height]`, `orientation` and a fixture-verified `neutral_point:[x,y]`. Supported mode strings are `NikonZ6Lossless12`, `NikonZ6Lossless14`, `FujifilmX100ViUncompressed14`, `FujifilmX100ViLossless14` and `DjiAir2sDng16`. The DJI source additionally supplies exact `sensor_dimensions`, `active_area` and `default_crop` expectations, and the harness verifies the mandatory correction order and persisted interpretation. Keep private paths and derived evidence ignored. `--samples` defaults to 3 (range 1–100), a functional run; a latency distribution needs `--samples 30`. Use an explicit absolute `--binary` and the same `CARGO_TARGET_DIR` for build and harness when working across worktrees.
+The local manifest has `format:1` and a `sources` array. Each source supplies `id`, `path`, `sha256`, `mode`, `make`, `model`, upright `source_dimensions:[width,height]`, `orientation` and a fixture-verified `neutral_point:[x,y]`. Mode strings, make and model must match the current [camera catalog](../../crates/lightwell-raw/data/cameras.json). DNG sources additionally supply exact `sensor_dimensions`, `active_area` and `default_crop` expectations, and the harness verifies required opcode order, calibration and persisted interpretation against that profile. Keep private paths and derived evidence ignored. `--samples` defaults to 3 (range 1–100), a functional run; a latency distribution needs `--samples 30`. Use an explicit absolute `--binary` and the same `CARGO_TARGET_DIR` for build and harness when working across worktrees.
 
 Reports include binary/lock/manifest hashes, launch mode, stage events, frame checks and sampled process RSS. The filesystem cache is not purged; app-cold is not OS-cache-cold. GPU memory is not isolated from RSS, and capture readbacks can affect memory. Same-process editing without repeated captures is a separate resource control.
 
@@ -415,6 +422,10 @@ that the second launch's frame reports `state.render_error.code` `incompatible`,
 naming "Preview is stale", the crop module listed unavailable in `state.modules`, no fixture colour
 drawn anywhere in the photo surface, and the source fixture's hash unchanged throughout. It writes
 `unavailable-checks.json` beside its own two launch directories rather than one `app/` directory.
+
+`cargo xtask smoke --scenario gallery --output NEW_DIR` captures all 63 named widget states across ten pages in the real background editor at 1440×1000 logical points. Each page has renderer readback, state metadata and a matching script event; the board includes every named vector icon at 12 and 16 points. `cargo xtask smoke --scenario controls --output NEW_DIR` enables the developer proof, scrolls its generated panel, and exercises slider/picker/curve drafts, cancellation, channel selection, point add/remove, discrete controls, group disclosure and reset. Its checks correlate history revisions and values with captures and verify that the identity proof preserves the displayed photograph. The gallery and generated panel have different widths; both require visual review alongside their automated checks.
+
+`editor-latency --control curve` measures the controls proof's middle-point drag with the curve editor visible. The proof's colour stage is identity; this measures the control, query, draft, preview and upload path, not a future Tone Curve image algorithm. Slider remains the default workload. Both use the same provisional 100 ms p95 interaction threshold and retain all samples.
 
 `editor-latency` is the desktop counterpart to `editor-performance`, which measures `render` on the
 catalog owner's thread and so cannot see scheduling, GPU upload or presentation. It writes its own

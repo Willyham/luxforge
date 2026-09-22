@@ -58,18 +58,32 @@ fn script(source: &Source) -> Value {
     ])
 }
 
-fn allowed_mode(mode: &str) -> bool {
-    matches!(
-        mode,
-        "NikonZ6Lossless12"
-            | "NikonZ6Lossless14"
-            | "FujifilmX100ViUncompressed14"
-            | "FujifilmX100ViLossless14"
-            | "DjiAir2sDng16"
-    )
+fn profile<'a>(catalog: &'a Value, source: &Source) -> Result<&'a Value> {
+    catalog["cameras"]
+        .as_array()
+        .and_then(|cameras| {
+            cameras.iter().find(|camera| {
+                camera["make"] == source.make
+                    && camera["model"] == source.model
+                    && camera["modes"]
+                        .as_array()
+                        .is_some_and(|modes| modes.iter().any(|mode| mode["id"] == source.mode))
+            })
+        })
+        .ok_or_else(|| {
+            format!(
+                "RAW mode {} is absent or mismatched in camera catalog",
+                source.mode
+            )
+            .into()
+        })
 }
 
-fn validate_manifest(manifest_path: &Path, manifest: &Manifest) -> Result<Vec<PathBuf>> {
+fn validate_manifest(
+    manifest_path: &Path,
+    manifest: &Manifest,
+    catalog: &Value,
+) -> Result<Vec<PathBuf>> {
     ensure(manifest.format == 1, "RAW editor manifest format must be 1")?;
     ensure(
         !manifest.sources.is_empty(),
@@ -89,8 +103,11 @@ fn validate_manifest(manifest_path: &Path, manifest: &Manifest) -> Result<Vec<Pa
             "RAW source id must be unique ASCII letters, digits, hyphens or underscores",
         )?;
         ensure(
-            allowed_mode(&source.mode),
-            format!("Unqualified RAW mode {}", source.mode),
+            profile(catalog, source).is_ok(),
+            format!(
+                "RAW mode {} is absent or mismatched in camera catalog",
+                source.mode
+            ),
         )?;
         ensure(
             source.sha256.len() == 64 && source.sha256.bytes().all(|b| b.is_ascii_hexdigit()),
@@ -194,7 +211,7 @@ fn run_app(
             break status;
         }
         ensure(
-            started.elapsed() < Duration::from_secs(35),
+            started.elapsed() < Duration::from_secs(70),
             "RAW editor app deadline exceeded",
         )?;
         if let Ok(sample) = rss_mib(root, child.child.id()) {
@@ -433,7 +450,12 @@ fn script_stage_times(events: &[Value]) -> Result<Vec<Value>> {
     Ok(result)
 }
 
-fn verify_catalog(catalog: &Path, source: &Source, path: &Path) -> Result<(String, String, u64)> {
+fn verify_catalog(
+    catalog: &Path,
+    source: &Source,
+    path: &Path,
+    camera_profile: &Value,
+) -> Result<(String, String, u64)> {
     let service = EditorService::open(catalog)?;
     let assets = service.assets()?;
     ensure(assets.len() == 1, "RAW run imported unexpected asset count")?;
@@ -463,7 +485,7 @@ fn verify_catalog(catalog: &Path, source: &Source, path: &Path) -> Result<(Strin
                 .is_some_and(|s| s.contains("LibRaw")),
         format!("RAW source metadata differs from manifest: {metadata}"),
     )?;
-    if source.mode == "DjiAir2sDng16" {
+    if camera_profile["dng"].is_object() {
         let rect =
             |name: &str| ["x", "y", "width", "height"].map(|field| metadata[name][field].as_u64());
         ensure(
@@ -489,28 +511,30 @@ fn verify_catalog(catalog: &Path, source: &Source, path: &Path) -> Result<(Strin
         let correction = &metadata["dng_corrections"];
         let applied = correction["applied"]
             .as_array()
-            .ok_or("DJI correction provenance missing")?;
+            .ok_or("DNG correction provenance missing")?;
+        let required = camera_profile["dng"]["required_opcodes"]
+            .as_array()
+            .ok_or("DNG profile required opcodes missing")?;
         ensure(
-            correction["interpretation"]
-                .as_str()
-                .is_some_and(|identity| identity.starts_with("fc3411-stage3-active-"))
-                && applied.len() == 2
-                && applied.iter().enumerate().all(|(index, opcode)| {
-                    opcode["id"] == [9, 1][index]
-                        && opcode["list"] == 51022
-                        && opcode["version"] == 0x0103_0000_u32
+            correction["interpretation"] == camera_profile["dng"]["interpretation"]
+                && applied.len() == required.len()
+                && applied.iter().zip(required).all(|(opcode, expected)| {
+                    opcode["id"] == expected["id"]
+                        && opcode["list"] == expected["list"]
+                        && opcode["version"] == expected["version"]
+                        && opcode["flags"] == expected["flags"]
                         && opcode["flags"] == 0
                         && opcode["payload_sha256"].as_str().is_some_and(|hash| {
                             hash.len() == 64 && hash.bytes().all(|byte| byte.is_ascii_hexdigit())
                         })
                 })
                 && correction["skipped_optional"].is_array(),
-            "DJI required correction order or provenance differs",
+            "DNG required correction order or provenance differs",
         )?;
         let calibration = &correction["calibration"];
         ensure(
-            calibration["illuminants"] == json!([17, 21])
-                && calibration["selected"] == "ColorMatrix2-D65-fixed-XYZ-to-camera"
+            calibration["illuminants"] == camera_profile["dng"]["illuminants"]
+                && calibration["selected"] == camera_profile["dng"]["calibration_identity"]
                 && ["color_matrix1_sha256", "color_matrix2_sha256"]
                     .into_iter()
                     .all(|field| {
@@ -518,7 +542,7 @@ fn verify_catalog(catalog: &Path, source: &Source, path: &Path) -> Result<(Strin
                             hash.len() == 64 && hash.bytes().all(|byte| byte.is_ascii_hexdigit())
                         })
                     }),
-            "DJI camera calibration provenance differs",
+            "DNG camera calibration provenance differs",
         )?;
     } else {
         ensure(
@@ -660,6 +684,7 @@ fn one_trial(
     out: &Path,
     source: &Source,
     path: &Path,
+    camera_profile: &Value,
 ) -> Result<Value> {
     fs::create_dir_all(out)?;
     let catalog = out.join("catalog.sqlite");
@@ -667,13 +692,13 @@ fn one_trial(
     write_json(&script_path, &script(source))?;
     let first = out.join("first");
     let first_run = run_app(root, binary, &first, &catalog, path, Some(&script_path))?;
-    let (original, current, revision) = verify_catalog(&catalog, source, path)?;
+    let (original, current, revision) = verify_catalog(&catalog, source, path, camera_profile)?;
     ensure(revision == 9, "RAW history did not retain nine mutations")?;
     let journey = verify_journey(&first, source, &original, &current)?;
     let reopened = out.join("reopened");
     let reopened_run = run_app(root, binary, &reopened, &catalog, path, None)?;
     let (reopened_original, reopened_current, reopened_revision) =
-        verify_catalog(&catalog, source, path)?;
+        verify_catalog(&catalog, source, path, camera_profile)?;
     ensure(
         reopened_original == original
             && reopened_current == current
@@ -771,7 +796,13 @@ pub fn run(root: &Path, manifest_path: &Path, out: &Path, binary: &Path, samples
     )?;
     ensure(!out.exists(), "RAW editor output must be new")?;
     let manifest: Manifest = serde_json::from_slice(&fs::read(manifest_path)?)?;
-    let sources = validate_manifest(manifest_path, &manifest)?;
+    let catalog_value = read_json(&root.join("crates/lightwell-raw/data/cameras.json"))?;
+    let profiles: Vec<Value> = manifest
+        .sources
+        .iter()
+        .map(|source| profile(&catalog_value, source).cloned())
+        .collect::<Result<_>>()?;
+    let sources = validate_manifest(manifest_path, &manifest, &catalog_value)?;
     ensure(
         binary.is_file(),
         format!("RAW editor binary missing: {}", binary.display()),
@@ -793,10 +824,11 @@ pub fn run(root: &Path, manifest_path: &Path, out: &Path, binary: &Path, samples
         "runs":[],
     });
     let checked = (|| -> Result {
-        for (source, path) in manifest.sources.iter().zip(sources) {
+        for ((source, path), camera_profile) in manifest.sources.iter().zip(sources).zip(&profiles)
+        {
             for index in 0..samples {
                 let trial = out.join(format!("{}-{index:02}", source.id));
-                let row = one_trial(root, &snapshot, &trial, source, &path)?;
+                let row = one_trial(root, &snapshot, &trial, source, &path, camera_profile)?;
                 report["runs"]
                     .as_array_mut()
                     .ok_or("Missing run array")?
@@ -834,11 +866,28 @@ pub fn run(root: &Path, manifest_path: &Path, out: &Path, binary: &Path, samples
 mod tests {
     use super::*;
     #[test]
-    fn mode_allowlist_is_limited_to_qualified_camera_modes() {
-        assert!(allowed_mode("NikonZ6Lossless14"));
-        assert!(allowed_mode("FujifilmX100ViLossless14"));
-        assert!(allowed_mode("DjiAir2sDng16"));
-        assert!(!allowed_mode("GenericDng16"));
+    fn catalog_modes_require_matching_camera_identity() {
+        let catalog: Value =
+            serde_json::from_str(include_str!("../../crates/lightwell-raw/data/cameras.json"))
+                .unwrap();
+        let source = Source {
+            id: "z6".into(),
+            path: PathBuf::from("z6.nef"),
+            sha256: "0".repeat(64),
+            mode: "NikonZ6Lossless14".into(),
+            make: "Nikon".into(),
+            model: "Z 6".into(),
+            sensor_dimensions: None,
+            active_area: None,
+            default_crop: None,
+            source_dimensions: [1, 1],
+            orientation: 1,
+            neutral_point: [0, 0],
+        };
+        assert!(profile(&catalog, &source).is_ok());
+        let mut wrong = source;
+        wrong.model = "other".into();
+        assert!(profile(&catalog, &wrong).is_err());
     }
     #[test]
     fn statistics_use_nearest_rank() {

@@ -14,6 +14,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 pub const PROTOCOL: &str = "lightwell-jsonl-1";
+/// The diagnostic components board has these zero-based pages. It is per-client workspace state.
+pub const COMPONENT_GALLERY_PAGE_COUNT: usize = 10;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -94,9 +96,9 @@ pub struct EventsResult {
 }
 
 /// Per-client workspace state: which panels are open, which canvas mode is active, whether the
-/// thirds overlay is on and which clipping overlays are shown. It is a client preference the owner
-/// holds, never authoritative edit state: an overlay never alters the raster, the saved recipe, the
-/// histogram population or a future export.
+/// thirds overlay is on, which clipping overlays are shown and which diagnostic gallery page is
+/// open. It is a client preference the owner holds, never authoritative edit state: an overlay or
+/// gallery page never alters the raster, saved recipe, histogram population or a future export.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct WorkspaceState {
@@ -111,6 +113,8 @@ pub struct WorkspaceState {
     /// Show the highlight (any channel at code 255) clipping overlay.
     #[serde(default)]
     pub clip_highlights: bool,
+    /// Zero-based diagnostic components page, or `None` for the editor workspace.
+    pub component_gallery: Option<usize>,
 }
 
 /// The pointer mode: the canvas shows the photograph and nothing else.
@@ -125,6 +129,7 @@ impl Default for WorkspaceState {
             thirds: false,
             clip_shadows: false,
             clip_highlights: false,
+            component_gallery: None,
         }
     }
 }

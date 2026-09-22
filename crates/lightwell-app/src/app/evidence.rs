@@ -12,11 +12,15 @@ use crate::{
     state::tools::crop_frame,
 };
 use iced::Task;
+use lightwell_ui::{ColorPickerEvent, CurveEditorEvent};
 use serde_json::{Map, Value, json};
 use std::{collections::VecDeque, path::PathBuf, time::Duration};
 
 /// An evidence run that has not finished by then is stuck; exit so the harness reaps nothing.
 pub(crate) const EVIDENCE_DEADLINE: Duration = Duration::from_secs(25);
+/// Full RAW edit/history scripts can redevelop a 100 MP source several times.
+/// The Q2 correction journey makes progress beyond the single-open deadline.
+pub(crate) const SCRIPT_EVIDENCE_DEADLINE: Duration = Duration::from_secs(60);
 
 /// The most steps one evidence run accepts, so a script cannot outlive the evidence deadline
 /// unnoticed.
@@ -44,6 +48,9 @@ pub(crate) struct Evidence {
     /// A paced slider step's values still to send, one per tick of its own gated timer. `None` when
     /// no paced step is running, which is also when the timer that drives it does not exist.
     pub(crate) paced_slider: Option<PacedSlider>,
+    /// The gallery page shown instead of the workspace for a scripted capture.
+    /// Requested tools-panel scroll fraction, retained beside the capture for correlation.
+    pub(crate) tools_scroll: Option<f64>,
 }
 
 /// The state of a slider step sent by a timer rather than all at once. Each tick sends the next
@@ -75,6 +82,14 @@ pub(crate) enum Step {
     Draft(DraftStep),
     /// One slider gesture on a generated control: the exact messages a drag sends.
     Slider(SliderStep),
+    /// A first-slice generated slider (fraction) or discrete control gesture.
+    Controls(ControlsStep),
+    Picker(PickerStep),
+    Curve(CurveStep),
+    Group(GroupStep),
+    Section(SectionStep),
+    Gallery(Option<usize>),
+    ToolsScroll(f64),
     /// What one generated field is typed into, and whether Enter is pressed in it.
     Field(FieldStep),
     /// A module or group reset, through the control that declares it.
@@ -120,6 +135,67 @@ pub(crate) enum SliderEnd {
     Release,
     Cancel,
     Open,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) enum ControlsStep {
+    Slider {
+        action: String,
+        parameter: String,
+        fractions: Vec<f64>,
+        finish: SliderEnd,
+    },
+    Discrete {
+        action: String,
+        parameter: String,
+        value: Value,
+    },
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct PickerStep {
+    pub(crate) action: String,
+    pub(crate) parameter: String,
+    pub(crate) open: Option<bool>,
+    pub(crate) hue: Option<f32>,
+    pub(crate) plane: Option<[f32; 2]>,
+    pub(crate) finish: SliderEnd,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct CurveStep {
+    pub(crate) action: String,
+    pub(crate) parameter: String,
+    pub(crate) event: CurveStepEvent,
+    pub(crate) finish: SliderEnd,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) enum CurveStepEvent {
+    Move { index: usize, points: Vec<[f32; 2]> },
+    Add([f32; 2]),
+    Remove(usize),
+    Channel(usize),
+}
+
+#[derive(Clone, Copy)]
+enum GeneratedKind {
+    Slider,
+    Picker,
+    Curve,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct GroupStep {
+    pub(crate) module: String,
+    pub(crate) path: Vec<usize>,
+    pub(crate) expanded: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct SectionStep {
+    pub(crate) module: String,
+    pub(crate) expanded: bool,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -223,6 +299,66 @@ impl Step {
                 }
                 json!({"slider": object})
             }
+            Self::Controls(ControlsStep::Slider {
+                action,
+                parameter,
+                fractions,
+                finish,
+            }) => json!({
+                "controls":{"action":action,"parameter":parameter,"gesture":"slider",
+                    "fractions":fractions,"finish":finish.name()}
+            }),
+            Self::Controls(ControlsStep::Discrete {
+                action,
+                parameter,
+                value,
+            }) => json!({
+                "controls":{"action":action,"parameter":parameter,"gesture":"discrete","value":value}
+            }),
+            Self::Picker(step) => {
+                let mut value = json!({"action":step.action,"parameter":step.parameter,
+                    "finish":step.finish.name()});
+                if let Some(open) = step.open {
+                    value["open"] = json!(open);
+                }
+                if let Some(hue) = step.hue {
+                    value["hue"] = json!(hue);
+                }
+                if let Some(plane) = step.plane {
+                    value["plane"] = json!(plane);
+                }
+                json!({"picker":value})
+            }
+            Self::Curve(step) => {
+                let mut value = json!({"action":step.action,"parameter":step.parameter});
+                match &step.event {
+                    CurveStepEvent::Move { index, points } => {
+                        value["event"] = json!("move");
+                        value["index"] = json!(index);
+                        value["points"] = json!(points);
+                        value["finish"] = json!(step.finish.name());
+                    }
+                    CurveStepEvent::Add(point) => {
+                        value["event"] = json!("add");
+                        value["point"] = json!(point);
+                    }
+                    CurveStepEvent::Remove(index) => {
+                        value["event"] = json!("remove");
+                        value["index"] = json!(index);
+                    }
+                    CurveStepEvent::Channel(index) => {
+                        value["event"] = json!("channel");
+                        value["index"] = json!(index);
+                    }
+                }
+                json!({"curve":value})
+            }
+            Self::Group(step) => json!({"group":{"module":step.module,"path":step.path,
+                "expanded":step.expanded}}),
+            Self::Section(step) => json!({"section":{"module":step.module,
+                "expanded":step.expanded}}),
+            Self::Gallery(page) => json!({"gallery":{"page":page}}),
+            Self::ToolsScroll(fraction) => json!({"tools_scroll":fraction}),
             Self::Field(field) => json!({"field":{
                 "action": field.action,
                 "parameter": field.parameter,
@@ -246,6 +382,16 @@ impl Step {
             Self::Palette(PaletteStep::Query(query)) => json!({"palette":{"query":query}}),
             Self::Palette(PaletteStep::Run(query)) => json!({"palette":{"run":query}}),
             Self::Hover { x, y } => json!({"hover":{"x":x,"y":y}}),
+        }
+    }
+}
+
+impl SliderEnd {
+    fn name(self) -> &'static str {
+        match self {
+            Self::Open => "open",
+            Self::Release => "release",
+            Self::Cancel => "cancel",
         }
     }
 }
@@ -343,6 +489,13 @@ impl Editor {
             Step::Api { method, params } => self.api_step(method, params),
             Step::Draft(draft) => self.draft_step(draft),
             Step::Slider(slider) => self.slider_step(slider),
+            Step::Controls(control) => self.controls_step(control),
+            Step::Picker(picker) => self.picker_step(picker),
+            Step::Curve(curve) => self.curve_step(curve),
+            Step::Group(group) => self.group_step(group),
+            Step::Section(section) => self.section_step(section),
+            Step::Gallery(page) => self.gallery_step(page),
+            Step::ToolsScroll(fraction) => self.tools_scroll_step(fraction),
             Step::Field(field) => self.field_step(field),
             Step::Reset(reset) => self.reset_step(reset),
             Step::Pick(pick) => self.pick_step(pick),
@@ -609,6 +762,283 @@ impl Editor {
                 Task::none()
             }
         }
+    }
+
+    /// Generated controls publish fractions and typed values, then use the same bounded draft
+    /// driver as ordinary pointer input. The old `slider` step remains physical-value evidence.
+    fn controls_step(&mut self, step: ControlsStep) -> Task<Message> {
+        if self.state.is_none() {
+            return self.fail_step("no photograph is open");
+        }
+        match step {
+            ControlsStep::Slider {
+                action,
+                parameter,
+                fractions,
+                finish,
+            } => {
+                let mut tasks = Vec::new();
+                for fraction in fractions {
+                    tasks.push(self.update(Message::ControlFraction {
+                        action: action.clone(),
+                        parameter: parameter.clone(),
+                        fraction,
+                    }));
+                    tasks.push(self.update(Message::SliderDraftTick));
+                }
+                self.finish_generated_gesture(
+                    action,
+                    parameter,
+                    finish,
+                    tasks,
+                    GeneratedKind::Slider,
+                )
+            }
+            ControlsStep::Discrete {
+                action,
+                parameter,
+                value,
+            } => {
+                self.begin_request();
+                let task = self.update(Message::ControlDiscrete {
+                    action,
+                    parameter,
+                    value,
+                });
+                if !self.busy {
+                    return self.fail_step(format!("the control did not submit: {}", self.status));
+                }
+                task
+            }
+        }
+    }
+
+    fn picker_step(&mut self, step: PickerStep) -> Task<Message> {
+        if self.state.is_none() {
+            return self.fail_step("no photograph is open");
+        }
+        let key = (step.action.clone(), step.parameter.clone());
+        let current_open = self
+            .controls_ui
+            .color_open
+            .get(&key)
+            .copied()
+            .unwrap_or(false);
+        let mut tasks = Vec::new();
+        if current_open != step.open.unwrap_or(true) {
+            tasks.push(self.update(Message::TogglePicker {
+                action: step.action.clone(),
+                parameter: step.parameter.clone(),
+            }));
+        }
+        if let Some(hue) = step.hue {
+            tasks.push(self.update(Message::ControlPicker {
+                action: step.action.clone(),
+                parameter: step.parameter.clone(),
+                event: ColorPickerEvent::Hue(hue),
+            }));
+            tasks.push(self.update(Message::SliderDraftTick));
+        }
+        if let Some(plane) = step.plane {
+            tasks.push(self.update(Message::ControlPicker {
+                action: step.action.clone(),
+                parameter: step.parameter.clone(),
+                event: ColorPickerEvent::Plane(plane),
+            }));
+            tasks.push(self.update(Message::SliderDraftTick));
+        }
+        if step.hue.is_none() && step.plane.is_none() {
+            self.capture_next_frame();
+            return Task::batch(tasks);
+        }
+        self.finish_generated_gesture(
+            step.action,
+            step.parameter,
+            step.finish,
+            tasks,
+            GeneratedKind::Picker,
+        )
+    }
+
+    fn curve_step(&mut self, step: CurveStep) -> Task<Message> {
+        if self.state.is_none() {
+            return self.fail_step("no photograph is open");
+        }
+        let mut tasks = Vec::new();
+        match step.event {
+            CurveStepEvent::Move { index, points } => {
+                for position in points {
+                    tasks.push(self.update(Message::ControlCurve {
+                        action: step.action.clone(),
+                        parameter: step.parameter.clone(),
+                        event: CurveEditorEvent::Move { index, position },
+                    }));
+                    tasks.push(self.update(Message::SliderDraftTick));
+                }
+                self.finish_generated_gesture(
+                    step.action,
+                    step.parameter,
+                    step.finish,
+                    tasks,
+                    GeneratedKind::Curve,
+                )
+            }
+            CurveStepEvent::Add(point) => {
+                self.begin_request();
+                let task = self.update(Message::ControlCurve {
+                    action: step.action,
+                    parameter: step.parameter,
+                    event: CurveEditorEvent::Add(point),
+                });
+                if !self.busy {
+                    return self
+                        .fail_step(format!("the curve point was not added: {}", self.status));
+                }
+                task
+            }
+            CurveStepEvent::Remove(index) => {
+                self.begin_request();
+                let task = self.update(Message::ControlCurve {
+                    action: step.action,
+                    parameter: step.parameter,
+                    event: CurveEditorEvent::Remove(index),
+                });
+                if !self.busy {
+                    return self
+                        .fail_step(format!("the curve point was not removed: {}", self.status));
+                }
+                task
+            }
+            CurveStepEvent::Channel(index) => {
+                let task = self.update(Message::ControlCurve {
+                    action: step.action.clone(),
+                    parameter: step.parameter.clone(),
+                    event: CurveEditorEvent::Channel(index),
+                });
+                if selected_curve_channel(&self.workspace.tools, &step.action, &step.parameter)
+                    != Some(index)
+                {
+                    return self.fail_step("the declared curve channel was not selected");
+                }
+                self.capture_next_frame();
+                task
+            }
+        }
+    }
+
+    fn finish_generated_gesture(
+        &mut self,
+        action: String,
+        parameter: String,
+        finish: SliderEnd,
+        mut tasks: Vec<Task<Message>>,
+        kind: GeneratedKind,
+    ) -> Task<Message> {
+        if !self
+            .slider_draft
+            .as_ref()
+            .is_some_and(|draft| draft.action == action && draft.parameter == parameter)
+        {
+            return self.fail_step(format!(
+                "the {action} draft could not be opened: {}",
+                self.status
+            ));
+        }
+        match finish {
+            SliderEnd::Open => self.await_step(Settle::SliderDraft),
+            SliderEnd::Release => {
+                self.await_step(Settle::Preview);
+                let release = match kind {
+                    GeneratedKind::Slider => Message::ControlReleased { action, parameter },
+                    GeneratedKind::Picker => Message::ControlPicker {
+                        action,
+                        parameter,
+                        event: ColorPickerEvent::Release,
+                    },
+                    GeneratedKind::Curve => Message::ControlCurve {
+                        action,
+                        parameter,
+                        event: CurveEditorEvent::Release,
+                    },
+                };
+                tasks.push(self.update(release));
+            }
+            SliderEnd::Cancel => {
+                self.await_step(Settle::Preview);
+                tasks.push(self.update(Message::SliderDraftCancel));
+            }
+        }
+        Task::batch(tasks)
+    }
+
+    fn group_step(&mut self, step: GroupStep) -> Task<Message> {
+        let Some(initial) =
+            crate::app::controls::initial_group_expanded(&self.modules, &step.module, &step.path)
+        else {
+            return self.fail_step("the module declares no control group at that path");
+        };
+        let key = crate::state::tools::group_key(&step.module, &step.path);
+        let expanded = self
+            .controls_ui
+            .group_expanded
+            .get(&key)
+            .copied()
+            .unwrap_or(initial);
+        let task = if expanded == step.expanded {
+            Task::none()
+        } else {
+            self.update(Message::ToggleGroup {
+                module_id: step.module,
+                path: step.path,
+            })
+        };
+        self.capture_next_frame();
+        task
+    }
+
+    fn section_step(&mut self, step: SectionStep) -> Task<Message> {
+        let Some(section) = self
+            .workspace
+            .tools
+            .all()
+            .find(|section| section.module_id == step.module)
+        else {
+            return self.fail_step(format!("no section for {}", step.module));
+        };
+        let task = if section.expanded == step.expanded {
+            Task::none()
+        } else {
+            self.update(Message::ToggleSection(step.module))
+        };
+        self.capture_next_frame();
+        task
+    }
+
+    fn gallery_step(&mut self, page: Option<usize>) -> Task<Message> {
+        if !self.developer
+            || page.is_some_and(|page| crate::view::gallery_page_info(page).is_none())
+        {
+            return self.fail_step("gallery requires developer mode and an existing page");
+        }
+        if page.is_some() && !self.workspace.title.can_open_gallery {
+            return self.fail_step("gallery cannot interrupt the current operation");
+        }
+        self.await_step(Settle::Session);
+        self.update(Message::Gallery(page))
+    }
+
+    fn tools_scroll_step(&mut self, fraction: f64) -> Task<Message> {
+        if let Some(evidence) = &mut self.evidence {
+            evidence.tools_scroll = Some(fraction);
+        }
+        self.capture_next_frame();
+        iced::widget::operation::snap_to(
+            crate::view::tools_panel::scroll_id(),
+            iced::widget::scrollable::RelativeOffset {
+                x: 0.0,
+                y: fraction as f32,
+            },
+        )
     }
 
     /// Type into one generated field and, when the step says so, press Enter in it, which commits
@@ -1031,14 +1461,21 @@ fn sole(object: &Map<String, Value>) -> Result<(&str, &Value), String> {
 }
 
 fn parse_step(step: &Value) -> Result<Step, String> {
-    let object = step.as_object().ok_or(
-        "a step is an object with one key: api, draft, slider, slider_draft, field, reset, pick, view, workspace, preview, palette or hover",
-    )?;
+    let object = step
+        .as_object()
+        .ok_or("a step is an object with one recognized step key")?;
     let (kind, value) = sole(object)?;
     match kind {
         "api" => parse_api(value),
         "draft" => Ok(Step::Draft(parse_draft(value)?)),
         "slider" => Ok(Step::Slider(parse_slider(value)?)),
+        "controls" => Ok(Step::Controls(parse_controls(value)?)),
+        "picker" => Ok(Step::Picker(parse_picker(value)?)),
+        "curve" => Ok(Step::Curve(parse_curve(value)?)),
+        "group" => Ok(Step::Group(parse_group(value)?)),
+        "section" => Ok(Step::Section(parse_section(value)?)),
+        "gallery" => Ok(Step::Gallery(parse_gallery(value)?)),
+        "tools_scroll" => Ok(Step::ToolsScroll(unit_number(value, "tools_scroll")?)),
         "slider_draft" => Ok(Step::SliderDraft(parse_slider_draft(value)?)),
         "field" => Ok(Step::Field(parse_field_step(value)?)),
         "reset" => Ok(Step::Reset(parse_reset(value)?)),
@@ -1049,8 +1486,311 @@ fn parse_step(step: &Value) -> Result<Step, String> {
         "palette" => Ok(Step::Palette(parse_palette(value)?)),
         "hover" => parse_hover(value),
         other => Err(format!(
-            "unknown step kind {other}; expected api, draft, slider, slider_draft, field, reset, pick, view, workspace, preview, palette or hover"
+            "unknown step kind {other}; expected api, draft, slider, controls, picker, curve, group, section, gallery, tools_scroll, slider_draft, field, reset, pick, view, workspace, preview, palette or hover"
         )),
+    }
+}
+
+fn finish(object: &Map<String, Value>, step: &str) -> Result<SliderEnd, String> {
+    match object.get("finish").and_then(Value::as_str) {
+        None if !object.contains_key("finish") => Ok(SliderEnd::Open),
+        Some("open") => Ok(SliderEnd::Open),
+        Some("release") => Ok(SliderEnd::Release),
+        Some("cancel") => Ok(SliderEnd::Cancel),
+        _ => Err(format!("{step} finish is open, release or cancel")),
+    }
+}
+
+fn unit_number(value: &Value, field: &str) -> Result<f64, String> {
+    value
+        .as_f64()
+        .filter(|value| value.is_finite() && (0.0..=1.0).contains(value))
+        .ok_or_else(|| format!("{field} needs a finite fraction from 0 to 1"))
+}
+
+fn unit_fraction(value: &Value, field: &str) -> Result<f32, String> {
+    unit_number(value, field).map(|value| value as f32)
+}
+
+fn point(value: &Value, field: &str) -> Result<[f32; 2], String> {
+    let values = value
+        .as_array()
+        .filter(|values| values.len() == 2)
+        .ok_or_else(|| format!("{field} needs two fractions"))?;
+    Ok([
+        unit_fraction(&values[0], field)?,
+        unit_fraction(&values[1], field)?,
+    ])
+}
+
+fn required_index(object: &Map<String, Value>, field: &str, step: &str) -> Result<usize, String> {
+    object
+        .get(field)
+        .and_then(Value::as_u64)
+        .and_then(|value| usize::try_from(value).ok())
+        .ok_or_else(|| format!("{step} needs a non-negative whole {field}"))
+}
+
+fn parse_controls(value: &Value) -> Result<ControlsStep, String> {
+    let object = value.as_object().ok_or("controls takes an object")?;
+    known_fields(
+        object,
+        &[
+            "action",
+            "parameter",
+            "gesture",
+            "fractions",
+            "finish",
+            "value",
+        ],
+        "controls",
+    )?;
+    let action = required_text(object, "action", "controls")?;
+    let parameter = required_text(object, "parameter", "controls")?;
+    match object.get("gesture").and_then(Value::as_str) {
+        Some("slider") => {
+            if object.contains_key("value") {
+                return Err("slider takes fractions, not value".into());
+            }
+            let fractions = object
+                .get("fractions")
+                .and_then(Value::as_array)
+                .filter(|values| !values.is_empty())
+                .ok_or("slider needs nonempty fractions")?
+                .iter()
+                .map(|value| unit_number(value, "slider fraction"))
+                .collect::<Result<Vec<_>, _>>()?;
+            Ok(ControlsStep::Slider {
+                action,
+                parameter,
+                fractions,
+                finish: finish(object, "slider")?,
+            })
+        }
+        Some("discrete") => {
+            if object.contains_key("fractions") || object.contains_key("finish") {
+                return Err("discrete takes one value and commits once".into());
+            }
+            let value = object
+                .get("value")
+                .filter(|value| !value.is_null())
+                .ok_or("discrete needs a typed value")?
+                .clone();
+            Ok(ControlsStep::Discrete {
+                action,
+                parameter,
+                value,
+            })
+        }
+        _ => Err("controls gesture is slider or discrete".into()),
+    }
+}
+
+fn parse_picker(value: &Value) -> Result<PickerStep, String> {
+    let object = value.as_object().ok_or("picker takes an object")?;
+    known_fields(
+        object,
+        &["action", "parameter", "open", "hue", "plane", "finish"],
+        "picker",
+    )?;
+    let open = match object.get("open") {
+        None => None,
+        Some(Value::Bool(value)) => Some(*value),
+        _ => return Err("picker open takes true or false".into()),
+    };
+    let hue = object
+        .get("hue")
+        .map(|value| unit_fraction(value, "picker hue"))
+        .transpose()?;
+    let plane = object
+        .get("plane")
+        .map(|value| point(value, "picker plane"))
+        .transpose()?;
+    let finish = finish(object, "picker")?;
+    if hue.is_none() && plane.is_none() && open.is_none() {
+        return Err("picker needs open, hue or plane".into());
+    }
+    if hue.is_none() && plane.is_none() && finish != SliderEnd::Open {
+        return Err("picker cannot release or cancel without a drag".into());
+    }
+    if open == Some(false) && (hue.is_some() || plane.is_some()) {
+        return Err("picker cannot drag while closing".into());
+    }
+    Ok(PickerStep {
+        action: required_text(object, "action", "picker")?,
+        parameter: required_text(object, "parameter", "picker")?,
+        open,
+        hue,
+        plane,
+        finish,
+    })
+}
+
+fn parse_curve(value: &Value) -> Result<CurveStep, String> {
+    let object = value.as_object().ok_or("curve takes an object")?;
+    known_fields(
+        object,
+        &[
+            "action",
+            "parameter",
+            "event",
+            "index",
+            "points",
+            "point",
+            "finish",
+        ],
+        "curve",
+    )?;
+    let finish = finish(object, "curve")?;
+    let event = match object.get("event").and_then(Value::as_str) {
+        Some("move") => {
+            if object.contains_key("point") {
+                return Err("curve move takes points, not point".into());
+            }
+            let points = object
+                .get("points")
+                .and_then(Value::as_array)
+                .filter(|points| !points.is_empty())
+                .ok_or("curve move needs nonempty points")?
+                .iter()
+                .map(|value| point(value, "curve point"))
+                .collect::<Result<Vec<_>, _>>()?;
+            CurveStepEvent::Move {
+                index: required_index(object, "index", "curve move")?,
+                points,
+            }
+        }
+        Some("add") => {
+            if object.contains_key("index")
+                || object.contains_key("points")
+                || object.contains_key("finish")
+            {
+                return Err("curve add takes one point and commits once".into());
+            }
+            CurveStepEvent::Add(point(
+                object.get("point").ok_or("curve add needs point")?,
+                "curve point",
+            )?)
+        }
+        Some("remove") => {
+            if object.contains_key("point")
+                || object.contains_key("points")
+                || object.contains_key("finish")
+            {
+                return Err("curve remove takes one index and commits once".into());
+            }
+            CurveStepEvent::Remove(required_index(object, "index", "curve remove")?)
+        }
+        Some("channel") => {
+            if object.contains_key("point")
+                || object.contains_key("points")
+                || object.contains_key("finish")
+            {
+                return Err("curve channel takes one index and changes no edit".into());
+            }
+            CurveStepEvent::Channel(required_index(object, "index", "curve channel")?)
+        }
+        _ => return Err("curve event is move, add, remove or channel".into()),
+    };
+    Ok(CurveStep {
+        action: required_text(object, "action", "curve")?,
+        parameter: required_text(object, "parameter", "curve")?,
+        event,
+        finish,
+    })
+}
+
+fn parse_group(value: &Value) -> Result<GroupStep, String> {
+    let object = value.as_object().ok_or("group takes an object")?;
+    known_fields(object, &["module", "path", "expanded"], "group")?;
+    let path = object
+        .get("path")
+        .and_then(Value::as_array)
+        .filter(|path| !path.is_empty())
+        .ok_or("group needs a nonempty path")?
+        .iter()
+        .map(|part| {
+            part.as_u64()
+                .and_then(|part| usize::try_from(part).ok())
+                .ok_or_else(|| "group path takes non-negative whole indices".into())
+        })
+        .collect::<Result<Vec<_>, String>>()?;
+    let expanded = object
+        .get("expanded")
+        .and_then(Value::as_bool)
+        .ok_or("group expanded takes true or false")?;
+    Ok(GroupStep {
+        module: required_text(object, "module", "group")?,
+        path,
+        expanded,
+    })
+}
+
+fn parse_section(value: &Value) -> Result<SectionStep, String> {
+    let object = value.as_object().ok_or("section takes an object")?;
+    known_fields(object, &["module", "expanded"], "section")?;
+    let expanded = object
+        .get("expanded")
+        .and_then(Value::as_bool)
+        .ok_or("section expanded takes true or false")?;
+    Ok(SectionStep {
+        module: required_text(object, "module", "section")?,
+        expanded,
+    })
+}
+
+fn parse_gallery(value: &Value) -> Result<Option<usize>, String> {
+    let object = value.as_object().ok_or("gallery takes an object")?;
+    known_fields(object, &["page"], "gallery")?;
+    if object.get("page").is_some_and(Value::is_null) {
+        return Ok(None);
+    }
+    let page = required_index(object, "page", "gallery")?;
+    if crate::view::gallery_page_info(page).is_none() {
+        return Err("gallery page is outside the component board".into());
+    }
+    Ok(Some(page))
+}
+
+#[cfg(test)]
+mod control_script_tests {
+    use super::*;
+
+    #[test]
+    fn first_slice_steps_parse_before_the_window_opens() {
+        let script = json!([
+            {"section":{"module":"lightwell.controls","expanded":true}},
+            {"group":{"module":"lightwell.controls","path":[0],"expanded":false}},
+            {"controls":{"action":"set-controls","parameter":"amount","gesture":"slider","fractions":[0.25,0.75],"finish":"release"}},
+            {"controls":{"action":"set-controls","parameter":"enabled","gesture":"discrete","value":true}},
+            {"picker":{"action":"set-controls","parameter":"rgb","open":true}},
+            {"picker":{"action":"set-controls","parameter":"rgb","hue":0.125,"plane":[0.75,0.875],"finish":"cancel"}},
+            {"curve":{"action":"set-controls","parameter":"master","event":"move","index":1,"points":[[0.5,0.375]],"finish":"open"}},
+            {"curve":{"action":"set-controls","parameter":"master","event":"add","point":[0.25,0.25]}},
+            {"curve":{"action":"set-controls","parameter":"master","event":"channel","index":1}},
+            {"gallery":{"page":8}},
+            {"tools_scroll":1.0}
+        ]);
+        let parsed = parse_script(&script.to_string()).unwrap();
+        assert_eq!(parsed.len(), 11);
+        assert!(matches!(
+            parsed[2],
+            Step::Controls(ControlsStep::Slider { .. })
+        ));
+        assert!(matches!(parsed[9], Step::Gallery(Some(8))));
+    }
+
+    #[test]
+    fn first_slice_steps_reject_invalid_fractions_and_ambiguous_events() {
+        for step in [
+            json!({"controls":{"action":"set-controls","parameter":"amount","gesture":"slider","fractions":[1.1]}}),
+            json!({"picker":{"action":"set-controls","parameter":"rgb","plane":[0.5,-0.1]}}),
+            json!({"curve":{"action":"set-controls","parameter":"master","event":"add","point":[0.5,0.5],"finish":"release"}}),
+            json!({"curve":{"action":"set-controls","parameter":"master","event":"move","index":1,"points":[]}}),
+            json!({"gallery":{"page":-1}}),
+        ] {
+            assert!(parse_script(&json!([step]).to_string()).is_err());
+        }
     }
 }
 
@@ -1222,6 +1962,37 @@ fn group_path(controls: &[lightwell_core::Control], label: &str) -> Option<Vec<u
         }
     }
     None
+}
+
+fn selected_curve_channel(
+    tools: &crate::state::tools::ToolsModel,
+    action: &str,
+    parameter: &str,
+) -> Option<usize> {
+    fn find(
+        controls: &[crate::state::tools::ControlModel],
+        action: &str,
+        parameter: &str,
+    ) -> Option<usize> {
+        controls.iter().find_map(|control| match control {
+            crate::state::tools::ControlModel::Group(group) => {
+                find(&group.controls, action, parameter)
+            }
+            crate::state::tools::ControlModel::Curve(curve)
+                if curve.action == action
+                    && curve
+                        .channels
+                        .iter()
+                        .any(|channel| channel.parameter == parameter) =>
+            {
+                Some(curve.selected_channel)
+            }
+            _ => None,
+        })
+    }
+    tools
+        .all()
+        .find_map(|section| find(&section.controls, action, parameter))
 }
 
 fn parse_api(value: &Value) -> Result<Step, String> {
@@ -1742,6 +2513,7 @@ mod tests {
             saving: false,
             had_errors: false,
             paced_slider: None,
+            tools_scroll: None,
         });
         editor.activity.requested = 1;
 

@@ -46,6 +46,57 @@ pub(crate) fn finish(mut editor: Editor, catalog: PathBuf) {
     std::fs::remove_file(catalog).unwrap();
 }
 
+/// A descriptor-only fixture: the desktop must generate these controls without knowing a
+/// provider's identity. The production developer proof is tested separately through the API.
+pub(crate) fn controls_descriptor() -> ModuleDescriptor {
+    let mut parameters = vec![
+        json!({"name":"amount","kind":"number","min":-10.0,"max":10.0,
+            "soft_min":-5.0,"soft_max":5.0,"step":0.1,"fine_step":0.01,"zero":0.0,"default":0.0}),
+        json!({"name":"count","kind":"integer","min":0,"max":20,"step":1.0,"default":2}),
+        json!({"name":"enabled","kind":"boolean","default":false}),
+        json!({"name":"mode","kind":"enum","options":["one","two","three"],"default":"one"}),
+        json!({"name":"rgb","kind":"color","default":[32,64,128]}),
+        json!({"name":"master","kind":"curve","points_min":2,"points_max":8,"monotone":true,
+            "step":0.01,"default":[[0.0,0.0],[0.5,0.5],[1.0,1.0]]}),
+        json!({"name":"red","kind":"curve","points_min":2,"points_max":8,"monotone":false,
+            "step":0.01,"default":[[0.0,0.0],[0.5,0.5],[1.0,1.0]]}),
+        json!({"name":"coordinate","kind":"number","min":0.0,"max":100.0,"step":1.0,"fine_step":0.1,"default":5.0}),
+    ];
+    for parameter in &mut parameters {
+        parameter["required"] = json!(false);
+        parameter["notes"] =
+            json!("Descriptor fixture; curve samples come from its declared query");
+    }
+    let queries: Vec<Value> = parameters
+        .iter()
+        .filter(|parameter| parameter["kind"] == "curve")
+        .cloned()
+        .map(|mut parameter| {
+            parameter.as_object_mut().unwrap().remove("default");
+            parameter
+        })
+        .collect();
+    ModuleDescriptor::parse(&json!({
+        "id":"fixture.controls", "title":"Fixture controls", "effects":[],
+        "actions":[{"id":"fixture-set","title":"Set fixture","notes":"One field patch",
+            "patch":true,"parameters":parameters}],
+        "queries":[{"id":"fixture-samples","title":"Sample curve","notes":"Module samples",
+            "parameters":queries}],
+        "controls":[{"kind":"group","label":"Fixture group","collapsed":false,"controls":[
+            {"kind":"number","action":"fixture-set","parameter":"amount","label":"Amount","rail":"temperature"},
+            {"kind":"number","action":"fixture-set","parameter":"count","label":"Count","style":"stepper"},
+            {"kind":"number","action":"fixture-set","parameter":"coordinate","label":"Coordinate","style":"field"},
+            {"kind":"toggle","action":"fixture-set","parameter":"enabled","label":"Enabled"},
+            {"kind":"choice","action":"fixture-set","parameter":"mode","label":"Mode","style":"menu"},
+            {"kind":"color","action":"fixture-set","parameter":"rgb","label":"Colour","style":"picker"},
+            {"kind":"curve","action":"fixture-set","label":"Curve","sample_query":"fixture-samples",
+                "channels":[{"parameter":"master","label":"Master"},{"parameter":"red","label":"Red"}],
+                "background":"histogram"},
+            {"kind":"action","action":"fixture-set","label":"Reset amount","style":"icon","icon":"reset","preset":{"amount":0.0}}
+        ]}], "availability":{"kind":"available"}
+    })).expect("the whole-vocabulary fixture is a valid descriptor")
+}
+
 pub(crate) fn entry(asset: &AssetId, sequence: u64, parent: Option<&EntryId>) -> HistoryEntry {
     HistoryEntry {
         id: EntryId::new(),
@@ -78,6 +129,10 @@ pub(crate) fn crop_descriptor() -> ModuleDescriptor {
             unit: None,
             step: None,
             precision: None,
+            soft_min: None,
+            soft_max: None,
+            fine_step: None,
+            zero: None,
             notes: "test".into(),
         }
     };
@@ -103,6 +158,10 @@ pub(crate) fn crop_descriptor() -> ModuleDescriptor {
             unit: None,
             step: None,
             precision: None,
+            soft_min: None,
+            soft_max: None,
+            fine_step: None,
+            zero: None,
             notes: "test".into(),
         },
         number("aspect-width", 1.0, 10000.0, false, None),
@@ -150,10 +209,13 @@ pub(crate) fn crop_descriptor() -> ModuleDescriptor {
         controls: vec![Control::Group {
             label: "Crop".into(),
             reset: None,
+            collapsed: false,
             controls: vec![Control::Action {
                 action: "crop-reset".into(),
                 label: "Reset crop".into(),
                 preset: Map::new(),
+                style: Default::default(),
+                icon: None,
             }],
         }],
         reset: Some(lightwell_core::ResetAction {
@@ -308,6 +370,7 @@ pub(crate) fn scripted(steps: &str) -> (Editor, PathBuf, AssetId, PathBuf) {
         saving: false,
         had_errors: false,
         paced_slider: None,
+        tools_scroll: None,
     });
     editor.activity.requested = 1;
     (editor, catalog, asset, dir)

@@ -2,6 +2,10 @@
 
 Status: continuous RAW editing is implemented and verified on supplied files; broader qualification remains tracked. The editor opens the supplied Nikon Z6, Fujifilm X100VI and DJI Air 2S originals through the typed RAW path. Real-file adapter tests and background Metal renders pass; complete control, concurrency, resource and portability acceptance is tracked in [initial RAW](initial-raw.md) and the [task plan](../../tasks/implementation-initial-raw.json). The supplied FC3411 DNG uses required GainMap/WarpRectilinear corrections; its [contract](air2s-dng.md) records the precise encoding and float interpretation.
 
+Camera-specific mode and processing policy is defined in the validated embedded
+[RAW camera catalog](raw-camera-profiles.md). Camera profiles select existing
+capabilities; capture-specific metadata remains authoritative in each original.
+
 ## Source and interpretation
 
 `PreparedSource` is either the existing byte-exact JPEG `SourceImage` or a `RawPrepared`. RAW owns an immutable `Arc<RawSource>` containing the sensor mosaic and metadata, its resolved WB gains, and an optional `LinearImage` development. The optional development permits eviction without losing the unpacked mosaic. A display `Raster` never becomes an editing source.

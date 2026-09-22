@@ -13,9 +13,11 @@ use crate::{
 };
 use iced::{
     Alignment, Element, Length,
-    widget::{button, mouse_area, row, text, text_input},
+    widget::{button, mouse_area, row, text},
 };
-use lightwell_ui::{IconButtonModel, SegmentedModel, icon_button, segmented, theme};
+use lightwell_ui::{
+    Icon, IconButtonModel, SegmentedModel, icon_button, segmented, theme, value_input,
+};
 
 /// How wide the typed-percentage field is: enough for four digits and the caret.
 const ZOOM_FIELD_WIDTH: f32 = 56.0;
@@ -69,12 +71,15 @@ pub(crate) fn view_controls(model: &Workspace) -> Element<'_, Message> {
     debug_assert_eq!(SEGMENT_HUNDRED, 1, "the second segment is 100%");
     row![
         zoom,
-        text_input("%", &title.zoom_text)
-            .on_input(Message::Zoom)
-            .on_submit(Message::ApplyZoom)
-            .style(theme::text_input_style(false))
-            .size(theme::SIZE_CONTROL)
-            .width(Length::Fixed(ZOOM_FIELD_WIDTH)),
+        value_input(
+            "%",
+            &title.zoom_text,
+            false,
+            true,
+            Message::Zoom,
+            Message::ApplyZoom
+        )
+        .width(Length::Fixed(ZOOM_FIELD_WIDTH)),
         compare(title.compare_held, can_view),
     ]
     .spacing(theme::SPACING / 2.0)
@@ -113,10 +118,10 @@ fn compare(held: bool, can_view: bool) -> Element<'static, Message> {
 /// edge. Clipping drives both overlays together, exactly as `J` does; the histogram's own two
 /// triangles drive them one at a time.
 pub(crate) fn actions(model: &TitleBarModel) -> Element<'_, Message> {
-    row![
+    let mut actions = row![
         icon_button(
             &IconButtonModel {
-                glyph: "\u{25f0}".into(),
+                icon: Icon::Clipping,
                 tooltip: "Clipping overlays (J)".into(),
                 enabled: model.can_view,
                 selected: model.clipping_on,
@@ -125,7 +130,7 @@ pub(crate) fn actions(model: &TitleBarModel) -> Element<'_, Message> {
         ),
         icon_button(
             &IconButtonModel {
-                glyph: "\u{21b6}".into(),
+                icon: Icon::Undo,
                 tooltip: "Undo".into(),
                 enabled: model.can_undo,
                 selected: false,
@@ -134,7 +139,7 @@ pub(crate) fn actions(model: &TitleBarModel) -> Element<'_, Message> {
         ),
         icon_button(
             &IconButtonModel {
-                glyph: "\u{21b7}".into(),
+                icon: Icon::Redo,
                 tooltip: "Redo".into(),
                 enabled: model.can_redo,
                 selected: false,
@@ -143,7 +148,7 @@ pub(crate) fn actions(model: &TitleBarModel) -> Element<'_, Message> {
         ),
         icon_button(
             &IconButtonModel {
-                glyph: "\u{25e7}".into(),
+                icon: Icon::StatePanel,
                 tooltip: "Toggle the state panel".into(),
                 enabled: true,
                 selected: model.state_panel_open,
@@ -152,7 +157,7 @@ pub(crate) fn actions(model: &TitleBarModel) -> Element<'_, Message> {
         ),
         icon_button(
             &IconButtonModel {
-                glyph: "\u{25e8}".into(),
+                icon: Icon::ToolsPanel,
                 tooltip: "Toggle the tools panel".into(),
                 enabled: true,
                 selected: model.tools_panel_open,
@@ -161,6 +166,14 @@ pub(crate) fn actions(model: &TitleBarModel) -> Element<'_, Message> {
         ),
     ]
     .spacing(4.0)
-    .align_y(Alignment::Center)
-    .into()
+    .align_y(Alignment::Center);
+    if model.developer {
+        actions = actions.push(
+            button(lightwell_ui::label("Developer"))
+                .padding([4.0, 10.0])
+                .style(theme::button_plain)
+                .on_press_maybe(model.can_open_gallery.then_some(Message::Gallery(Some(0)))),
+        );
+    }
+    actions.into()
 }

@@ -1,4 +1,4 @@
-//! FC3411 DNG stage-3 corrections. Coordinates here are local to ActiveArea;
+//! Profile-selected DNG stage-3 corrections. Coordinates here are local to ActiveArea;
 //! the public source still exposes full-sensor planes and absolute sensor crop.
 //!
 //! The numeric layout and mapping follow Adobe DNG 1.4 opcodes (DNG 1.7.1
@@ -48,8 +48,31 @@ pub struct DngCalibrationMetadata {
 pub(crate) struct DngCorrection {
     pub metadata: DngCorrectionMetadata,
     active: RawRect,
-    gain: GainMap,
-    warp: Warp,
+    stages: Vec<Stage3>,
+    sensor_repair: Option<SensorRepair>,
+}
+
+#[derive(Debug, Clone)]
+enum Stage3 {
+    Gain(GainMap),
+    Warp(Warp),
+    Vignette(super::dng_ops::VignetteRadial),
+}
+
+#[derive(Debug, Clone)]
+enum SensorRepair {
+    Constant(u32, u32),
+    Listed(super::dng_ops::BadPixels),
+}
+
+fn opcode_error(error: super::dng_ops::OpcodeError) -> RawError {
+    use super::dng_ops::OpcodeError;
+    match error {
+        OpcodeError::Truncated => RawError::InvalidInput("truncated DNG correction"),
+        OpcodeError::Invalid(message) => RawError::InvalidInput(message),
+        OpcodeError::Unsupported(message) => RawError::UnsupportedMode(message.into()),
+        OpcodeError::Resource(message) => RawError::ResourceLimit(message),
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -150,9 +173,7 @@ impl GainMap {
                 .iter()
                 .all(|v| v.is_finite() && *v >= -1.0 && *v <= 2.0)
         {
-            return Err(RawError::UnsupportedMode(
-                "FC3411 DNG GainMap layout".into(),
-            ));
+            return Err(RawError::UnsupportedMode("DNG GainMap layout".into()));
         }
         let entries = rows
             .checked_mul(cols)
@@ -239,7 +260,7 @@ impl Warp {
     fn parse(data: &[u8], active: RawRect) -> Result<Self, RawError> {
         if data.len() != 164 || be_u32(data, 0)? != 3 {
             return Err(RawError::UnsupportedMode(
-                "FC3411 DNG WarpRectilinear layout".into(),
+                "DNG WarpRectilinear layout".into(),
             ));
         }
         let mut radial = [[0.0; 4]; 3];
@@ -390,20 +411,26 @@ impl DngCorrection {
         active: RawRect,
         raw_ifd: u32,
         calibration: DngCalibrationMetadata,
+        settings: &super::profiles::Dng,
     ) -> Result<Self, RawError> {
         if opcodes.iter().any(|op| op.ifd != raw_ifd) {
             return Err(RawError::InvalidInput("DNG opcode list outside raw IFD"));
         }
         let required: Vec<_> = opcodes.iter().filter(|op| op.flags & 1 == 0).collect();
-        if required.len() != 2
-            || required[0].id != 9
-            || required[1].id != 1
-            || required.iter().any(|op| {
-                op.list != 51022 || op.ifd != raw_ifd || op.version != 0x0103_0000 || op.flags != 0
-            })
+        if required.len() != settings.required_opcodes.len()
+            || required
+                .iter()
+                .zip(&settings.required_opcodes)
+                .any(|(op, expected)| {
+                    op.id != expected.id
+                        || op.list != expected.list
+                        || op.ifd != raw_ifd
+                        || op.version != expected.version
+                        || op.flags != expected.flags
+                })
         {
             return Err(RawError::UnsupportedMode(
-                "FC3411 DNG opcode stage/order/version".into(),
+                "DNG opcode stage/order/version".into(),
             ));
         }
         let skipped_optional: Vec<_> = opcodes
@@ -411,19 +438,89 @@ impl DngCorrection {
             .filter(|op| op.flags & 1 != 0)
             .map(provenance)
             .collect();
-        let gain = GainMap::parse(&required[0].data, active)?;
-        let warp = Warp::parse(&required[1].data, active)?;
+        let mut stages = Vec::new();
+        let mut sensor_repair = None;
+        for op in &required {
+            match (op.list, op.id) {
+                (51022, 9) => stages.push(Stage3::Gain(GainMap::parse(&op.data, active)?)),
+                (51022, 1) => stages.push(Stage3::Warp(Warp::parse(&op.data, active)?)),
+                (51022, 3) => stages.push(Stage3::Vignette(
+                    super::dng_ops::parse_vignette_radial(&op.data).map_err(opcode_error)?,
+                )),
+                (51008, 4 | 5) if sensor_repair.is_none() => {
+                    sensor_repair = Some(if op.id == 4 {
+                        let (constant, phase) = super::dng_ops::parse_bad_pixels_constant(&op.data)
+                            .map_err(opcode_error)?;
+                        SensorRepair::Constant(constant, phase)
+                    } else {
+                        SensorRepair::Listed(
+                            super::dng_ops::parse_bad_pixels_list(&op.data)
+                                .map_err(opcode_error)?,
+                        )
+                    });
+                }
+                _ => return Err(RawError::UnsupportedRequiredOpcodes(vec![op.id])),
+            }
+        }
         Ok(Self {
             active,
-            gain,
-            warp,
+            stages,
+            sensor_repair,
             metadata: DngCorrectionMetadata {
-                interpretation: "fc3411-stage3-active-v1-unclipped-bicubic-a-0.75".into(),
+                interpretation: settings.interpretation.clone(),
                 applied: required.into_iter().map(provenance).collect(),
                 skipped_optional,
                 calibration,
             },
         })
+    }
+
+    pub(crate) fn mosaic_corrections(
+        &self,
+        source: &[u16],
+        width: usize,
+        height: usize,
+        cfa: &[u8],
+    ) -> Result<(Vec<crate::MosaicCorrection>, usize), RawError> {
+        let phase = match &self.sensor_repair {
+            None => return Ok((Vec::new(), 0)),
+            Some(SensorRepair::Constant(_, phase)) => *phase,
+            Some(SensorRepair::Listed(list)) => list.bayer_phase,
+        };
+        let expected = match phase {
+            0 => [0, 1, 1, 2],
+            1 => [1, 0, 2, 1],
+            2 => [1, 2, 0, 1],
+            3 => [2, 1, 1, 0],
+            _ => return Err(RawError::InvalidInput("DNG bad-pixel Bayer phase")),
+        };
+        if cfa != expected {
+            return Err(RawError::InvalidInput(
+                "DNG bad-pixel phase differs from sensor CFA",
+            ));
+        }
+        let (patches, unresolved) = match &self.sensor_repair {
+            None => return Ok((Vec::new(), 0)),
+            Some(SensorRepair::Constant(value, phase)) => {
+                super::dng_ops::bad_pixel_constant_replacements_with_unresolved(
+                    source, width, height, *value, *phase,
+                )
+            }
+            Some(SensorRepair::Listed(list)) => {
+                list.replacements_with_unresolved(source, width, height)
+            }
+        }
+        .map_err(opcode_error)?;
+        Ok((
+            patches
+                .into_iter()
+                .map(|(index, value)| crate::MosaicCorrection {
+                    index: index as u32,
+                    value,
+                })
+                .collect(),
+            unresolved,
+        ))
     }
 
     pub(crate) fn source_location(
@@ -432,10 +529,38 @@ impl DngCorrection {
         y: u32,
         channel: usize,
     ) -> Result<(f64, f64), RawError> {
-        self.warp.source(x as f64, y as f64, channel, self.active)
+        let mut point = (x as f64, y as f64);
+        for stage in self.stages.iter().rev() {
+            if let Stage3::Warp(warp) = stage {
+                point = warp.source(point.0, point.1, channel, self.active)?;
+            }
+        }
+        Ok(point)
     }
+    /// Combined multiplier evaluated backwards from a corrected output point.
+    /// This preserves whether each gain occurs before or after a spatial warp.
     pub(crate) fn gain_at(&self, x: f64, y: f64, channel: usize) -> Result<f64, RawError> {
-        self.gain.gain(x, y, channel, self.active)
+        let mut point = (x, y);
+        let mut gain = 1.0;
+        for stage in self.stages.iter().rev() {
+            match stage {
+                Stage3::Gain(map) => gain *= map.gain(point.0, point.1, channel, self.active)?,
+                Stage3::Warp(warp) => {
+                    point = warp.source(point.0, point.1, channel, self.active)?
+                }
+                Stage3::Vignette(radial) => {
+                    gain *= radial
+                        .gain(
+                            point.0 - self.active.x as f64,
+                            point.1 - self.active.y as f64,
+                            self.active.width as usize,
+                            self.active.height as usize,
+                        )
+                        .map_err(opcode_error)?
+                }
+            }
+        }
+        Ok(gain)
     }
 
     pub(crate) fn apply(&self, rgb: &mut PlanarRgb, cancel: &AtomicBool) -> Result<(), RawError> {
@@ -446,56 +571,77 @@ impl DngCorrection {
         let n = rgb.plane_len();
         let area_w = self.active.width as usize;
         let area_h = self.active.height as usize;
-        let scratch_len = area_w
-            .checked_mul(area_h)
-            .ok_or(RawError::ResourceLimit("DNG warp plane overflow"))?;
+        // One active-area plane is allocated lazily for the first nonidentity
+        // warp, then reused across all channels/stages. Gain-only/no-op recipes
+        // allocate no frame scratch. The parent frame's pixel limit bounds it.
         let mut scratch = Vec::new();
-        scratch
-            .try_reserve_exact(scratch_len)
-            .map_err(|_| RawError::ResourceLimit("DNG warp scratch allocation"))?;
-        scratch.resize(scratch_len, 0.0_f32);
-        for channel in 0..3 {
-            let plane = &mut rgb.data[channel * n..(channel + 1) * n];
-            // OpcodeList3 order: gain the existing camera plane in place.
-            for yy in 0..area_h {
-                if yy & 63 == 0 && cancel.load(Ordering::Relaxed) {
-                    return Err(RawError::Cancelled);
-                }
-                let y = self.active.y as usize + yy;
-                for xx in 0..area_w {
-                    let x = self.active.x as usize + xx;
-                    let gain = self.gain_at(x as f64, y as f64, channel)?;
-                    let idx = y * width + x;
-                    let value = plane[idx] as f64 * gain;
-                    if !value.is_finite() || value.abs() > f32::MAX as f64 {
-                        return Err(RawError::InvalidInput("DNG gain output overflow"));
+        for stage in &self.stages {
+            for channel in 0..3 {
+                let plane = &mut rgb.data[channel * n..(channel + 1) * n];
+                match stage {
+                    Stage3::Gain(_) | Stage3::Vignette(_) => {
+                        for yy in 0..area_h {
+                            if yy & 63 == 0 && cancel.load(Ordering::Relaxed) {
+                                return Err(RawError::Cancelled);
+                            }
+                            let y = self.active.y as usize + yy;
+                            for xx in 0..area_w {
+                                let x = self.active.x as usize + xx;
+                                let gain = match stage {
+                                    Stage3::Gain(map) => {
+                                        map.gain(x as f64, y as f64, channel, self.active)?
+                                    }
+                                    Stage3::Vignette(radial) => radial
+                                        .gain(xx as f64, yy as f64, area_w, area_h)
+                                        .map_err(opcode_error)?,
+                                    Stage3::Warp(_) => unreachable!(),
+                                };
+                                let idx = y * width + x;
+                                let value = plane[idx] as f64 * gain;
+                                if !value.is_finite() || value.abs() > f32::MAX as f64 {
+                                    return Err(RawError::InvalidInput("DNG gain output overflow"));
+                                }
+                                plane[idx] = value as f32;
+                            }
+                        }
                     }
-                    plane[idx] = value as f32;
-                }
-            }
-            if self.warp.is_identity(channel) {
-                continue;
-            }
-            // Warp into one active-area plane, then reuse this allocation for
-            // the next channel. No second full RGB frame is ever live.
-            for yy in 0..area_h {
-                if yy & 63 == 0 && cancel.load(Ordering::Relaxed) {
-                    return Err(RawError::Cancelled);
-                }
-                for xx in 0..area_w {
-                    let x = self.active.x + xx as u32;
-                    let y = self.active.y + yy as u32;
-                    let (sx, sy) = self.source_location(x, y, channel)?;
-                    let value = bicubic(plane, width, self.active, sx, sy);
-                    if !value.is_finite() || value.abs() > f32::MAX as f64 {
-                        return Err(RawError::InvalidInput("DNG warp output overflow"));
+                    Stage3::Warp(warp) => {
+                        if warp.is_identity(channel) {
+                            continue;
+                        }
+                        if scratch.is_empty() {
+                            let len = area_w
+                                .checked_mul(area_h)
+                                .ok_or(RawError::ResourceLimit("DNG warp plane overflow"))?;
+                            scratch.try_reserve_exact(len).map_err(|_| {
+                                RawError::ResourceLimit("DNG warp scratch allocation")
+                            })?;
+                            scratch.resize(len, 0.0_f32);
+                        }
+                        for yy in 0..area_h {
+                            if yy & 63 == 0 && cancel.load(Ordering::Relaxed) {
+                                return Err(RawError::Cancelled);
+                            }
+                            for xx in 0..area_w {
+                                let x = self.active.x + xx as u32;
+                                let y = self.active.y + yy as u32;
+                                let (sx, sy) =
+                                    warp.source(x as f64, y as f64, channel, self.active)?;
+                                let value = bicubic(plane, width, self.active, sx, sy);
+                                if !value.is_finite() || value.abs() > f32::MAX as f64 {
+                                    return Err(RawError::InvalidInput("DNG warp output overflow"));
+                                }
+                                scratch[yy * area_w + xx] = value as f32;
+                            }
+                        }
+                        for yy in 0..area_h {
+                            let dst =
+                                (self.active.y as usize + yy) * width + self.active.x as usize;
+                            plane[dst..dst + area_w]
+                                .copy_from_slice(&scratch[yy * area_w..(yy + 1) * area_w]);
+                        }
                     }
-                    scratch[yy * area_w + xx] = value as f32;
                 }
-            }
-            for yy in 0..area_h {
-                let dst = (self.active.y as usize + yy) * width + self.active.x as usize;
-                plane[dst..dst + area_w].copy_from_slice(&scratch[yy * area_w..(yy + 1) * area_w]);
             }
         }
         Ok(())
@@ -563,6 +709,103 @@ mod tests {
     fn reference() -> Value {
         serde_json::from_str(include_str!("../../../probes/raw/dng_reference.json")).unwrap()
     }
+    #[test]
+    fn ordered_gain_and_warp_match_separate_stages_and_point_queries() {
+        let active = RawRect {
+            x: 0,
+            y: 0,
+            width: 8,
+            height: 8,
+        };
+        let gain = GainMap {
+            area: active,
+            plane: 0,
+            planes: 3,
+            row_pitch: 1,
+            col_pitch: 1,
+            rows: 2,
+            cols: 2,
+            spacing: [1.0, 1.0],
+            origin: [0.0, 0.0],
+            map_planes: 3,
+            values: vec![1.0, 1.0, 1.0, 3.0, 3.0, 3.0, 2.0, 2.0, 2.0, 4.0, 4.0, 4.0],
+        };
+        let warp = Warp {
+            radial: [[0.8, 0.0, 0.0, 0.0]; 3],
+            tangential: [[0.0; 2]; 3],
+            center_pixels: [4.0, 4.0],
+            norm_radius: 32.0_f64.sqrt(),
+        };
+        let metadata = DngCorrectionMetadata {
+            interpretation: "synthetic".into(),
+            applied: vec![],
+            skipped_optional: vec![],
+            calibration: DngCalibrationMetadata {
+                illuminants: [17, 21],
+                color_matrix1_sha256: String::new(),
+                color_matrix2_sha256: String::new(),
+                selected: "test".into(),
+            },
+        };
+        let original: Vec<f32> = (0..64).map(|i| 1.0 + i as f32 / 64.0).collect();
+        let cancel = AtomicBool::new(false);
+        for gains_first in [true, false] {
+            let correction = DngCorrection {
+                active,
+                metadata: metadata.clone(),
+                sensor_repair: None,
+                stages: if gains_first {
+                    vec![Stage3::Gain(gain.clone()), Stage3::Warp(warp.clone())]
+                } else {
+                    vec![Stage3::Warp(warp.clone()), Stage3::Gain(gain.clone())]
+                },
+            };
+            let mut image = PlanarRgb {
+                width: 8,
+                height: 8,
+                data: original.repeat(3),
+            };
+            correction.apply(&mut image, &cancel).unwrap();
+            let gained: Vec<f32> = original
+                .iter()
+                .enumerate()
+                .map(|(i, v)| {
+                    (*v as f64
+                        * gain
+                            .gain((i % 8) as f64, (i / 8) as f64, 0, active)
+                            .unwrap()) as f32
+                })
+                .collect();
+            for y in 0..8 {
+                for x in 0..8 {
+                    let (sx, sy) = warp.source(x as f64, y as f64, 0, active).unwrap();
+                    let expected = if gains_first {
+                        bicubic(&gained, 8, active, sx, sy) as f32
+                    } else {
+                        (bicubic(&original, 8, active, sx, sy) as f32 as f64
+                            * gain.gain(x as f64, y as f64, 0, active).unwrap())
+                            as f32
+                    };
+                    assert_eq!(image.data[y * 8 + x], expected);
+                    assert_eq!(
+                        correction.source_location(x as u32, y as u32, 0).unwrap(),
+                        (sx, sy)
+                    );
+                    let expected_gain = if gains_first {
+                        gain.gain(sx, sy, 0, active)
+                    } else {
+                        gain.gain(x as f64, y as f64, 0, active)
+                    }
+                    .unwrap();
+                    assert_eq!(
+                        correction.gain_at(x as f64, y as f64, 0).unwrap(),
+                        expected_gain
+                    );
+                }
+            }
+        }
+    }
+
     #[test]
     fn identity_warp_and_cubic_sampling() {
         let warp = Warp {

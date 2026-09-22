@@ -8,11 +8,14 @@
 //! takes whatever remains. Every region is styled from [`lightwell_ui::theme`], never an ad hoc
 //! colour, and the window carries no outer padding: the canvas pads its photo itself.
 pub(crate) mod canvas;
+mod gallery;
 pub(crate) mod palette;
 pub(crate) mod state_panel;
 pub(crate) mod status_bar;
 pub(crate) mod title_bar;
 pub(crate) mod tools_panel;
+
+pub(crate) use gallery::{gallery, page_info as gallery_page_info};
 
 use crate::{app::message::Message, crop_draft::CropDraft, state::Workspace};
 use iced::{

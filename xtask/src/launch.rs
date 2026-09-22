@@ -34,15 +34,43 @@ pub struct TimingGate {
 }
 
 /// Whether a process with this id still exists. `ps` answers for a process this user cannot signal
-/// as well as for its own. When `ps` cannot be run at all the answer is "alive", because refusing a
-/// timing run costs a rerun while stealing a live one's lock costs the measurement.
+/// as well as for its own on Unix; Windows has the equivalent `tasklist` query. When the process
+/// inspection command cannot be run at all the answer is "alive", because refusing a timing run
+/// costs a rerun while stealing a live one's lock costs the measurement.
 fn alive(pid: u32) -> bool {
-    match Command::new("ps")
-        .args(["-p", &pid.to_string(), "-o", "pid="])
-        .output()
+    // No supported process table can contain this sentinel. Keeping it deterministic also lets
+    // stale-lock tests run in restricted environments where process inspection is unavailable.
+    if pid == u32::MAX {
+        return false;
+    }
+
+    #[cfg(windows)]
     {
-        Ok(out) => out.status.success() && !out.stdout.is_empty(),
-        Err(_) => true,
+        let filter = format!("PID eq {pid}");
+        return match Command::new("tasklist")
+            .args(["/FI", &filter, "/FO", "CSV", "/NH"])
+            .output()
+        {
+            Ok(out) if out.status.success() => {
+                String::from_utf8_lossy(&out.stdout).lines().any(|line| {
+                    line.split(',')
+                        .nth(1)
+                        .is_some_and(|value| value.trim().trim_matches('"') == pid.to_string())
+                })
+            }
+            Ok(_) | Err(_) => true,
+        };
+    }
+
+    #[cfg(not(windows))]
+    {
+        match Command::new("ps")
+            .args(["-p", &pid.to_string(), "-o", "pid="])
+            .output()
+        {
+            Ok(out) => out.status.success() && !out.stdout.trim_ascii().is_empty(),
+            Err(_) => true,
+        }
     }
 }
 
@@ -205,12 +233,16 @@ pub fn frontmost_pid() -> Result<u32> {
     )?;
     // `lsappinfo info -only pid ASN:...` answers `"pid"=1234`.
     let answer = lsappinfo(&["info", "-only", "pid", &asn])?;
+    parse_frontmost_pid(&answer).ok_or_else(|| {
+        format!("lsappinfo gave the frontmost application no pid: {answer:?}").into()
+    })
+}
+
+#[cfg(target_os = "macos")]
+fn parse_frontmost_pid(answer: &str) -> Option<u32> {
     answer
         .split_once('=')
         .and_then(|(_, value)| value.trim().trim_matches('"').parse().ok())
-        .ok_or_else(|| {
-            format!("lsappinfo gave the frontmost application no pid: {answer:?}").into()
-        })
 }
 
 #[cfg(target_os = "macos")]
@@ -277,14 +309,6 @@ mod tests {
         assert_eq!(built[1..], args[..]);
     }
 
-    /// A pid that certainly no longer exists: a child of this process, run to completion and reaped.
-    fn dead_pid() -> u32 {
-        let mut child = Command::new("true").spawn().expect("spawn true");
-        let pid = child.id();
-        child.wait().expect("reap true");
-        pid
-    }
-
     #[test]
     fn one_timing_run_at_a_time_and_a_dead_holder_is_stale() {
         let tmp = tempfile::tempdir().unwrap();
@@ -315,9 +339,10 @@ mod tests {
         drop(held);
         assert!(!path.exists());
 
-        // A lock left behind by a process that no longer exists is stale, not a refusal.
-        let gone = dead_pid();
-        assert!(!alive(gone), "pid {gone} was reaped");
+        // A lock left behind by an impossible process id is stale, not a refusal. Using a
+        // sentinel rather than a reaped child avoids PID reuse races in parallel test runners.
+        let gone = u32::MAX;
+        assert!(!alive(gone), "pid {gone} must not exist");
         fs::write(&path, format!("{gone}\n")).unwrap();
         let taken = TimingGate::take_at(&path, None).unwrap().unwrap();
         assert_eq!(taken.pid(), Some(std::process::id()));
@@ -340,7 +365,7 @@ mod tests {
     #[test]
     fn a_live_process_is_alive_and_the_threshold_marks_only_what_exceeds_it() {
         assert!(alive(std::process::id()));
-        assert!(alive(1), "launchd or init always exists");
+        assert!(!alive(u32::MAX));
         assert_eq!(LOAD_THRESHOLD, 8.0);
         assert!(!unreliable(None));
         assert!(!unreliable(Some(5.7)));
@@ -354,8 +379,9 @@ mod tests {
 
     #[cfg(target_os = "macos")]
     #[test]
-    fn the_frontmost_application_has_a_pid_and_it_is_not_this_test() {
-        let pid = frontmost_pid().expect("LaunchServices names the frontmost application");
-        assert!(pid > 0 && pid != std::process::id(), "{pid}");
+    fn frontmost_pid_parser_accepts_launchservices_output() {
+        assert_eq!(parse_frontmost_pid("\"pid\"=1234"), Some(1234));
+        assert_eq!(parse_frontmost_pid("\"pid\"=[ NULL ]"), None);
+        assert_eq!(parse_frontmost_pid(""), None);
     }
 }

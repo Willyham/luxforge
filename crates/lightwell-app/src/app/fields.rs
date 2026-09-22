@@ -4,7 +4,7 @@
 use crate::state::tools::{Rendered, classify, declared_parameter};
 use lightwell_core::{
     ActionDescriptor, Control, ModuleDescriptor, ParameterDescriptor, ParameterKind, RAW_EFFECT,
-    RawPayload, Recipe, WhiteBalanceMode,
+    RawPayload, Recipe, WhiteBalanceMode, check_value,
 };
 use serde_json::{Map, Value};
 use std::collections::BTreeMap;
@@ -36,6 +36,28 @@ impl Fields {
     pub(crate) fn set(&mut self, action: &str, parameter: &str, text: String) {
         self.0
             .insert((action.to_owned(), parameter.to_owned()), text);
+    }
+
+    pub(crate) fn get_value(
+        &self,
+        action: &str,
+        parameter: &ParameterDescriptor,
+    ) -> Result<Value, String> {
+        parse_field(
+            parameter,
+            self.get(action, &parameter.name).unwrap_or_default(),
+        )
+    }
+
+    pub(crate) fn set_value(
+        &mut self,
+        action: &str,
+        parameter: &ParameterDescriptor,
+        value: &Value,
+    ) -> Result<(), String> {
+        let text = value_text(parameter, value)?;
+        self.set(action, &parameter.name, text);
+        Ok(())
     }
 
     /// Reflect the displayed RAW history entry. While a person edits one field, keep their text;
@@ -111,9 +133,24 @@ fn seed_controls(module: &ModuleDescriptor, controls: &[Control], fields: &mut F
             }
             | Rendered::Color {
                 action, parameter, ..
+            }
+            | Rendered::Toggle {
+                action, parameter, ..
+            }
+            | Rendered::Choice {
+                action, parameter, ..
             } => {
                 if let Some(declared) = declared_parameter(module, action, parameter) {
                     fields.set(action, parameter, seed_text(declared));
+                }
+            }
+            Rendered::Curve {
+                action, channels, ..
+            } => {
+                for channel in channels {
+                    if let Some(declared) = declared_parameter(module, action, &channel.parameter) {
+                        fields.set(action, &channel.parameter, seed_text(declared));
+                    }
                 }
             }
             // Neither carries a field of its own: an action button submits the fields already
@@ -170,6 +207,29 @@ pub(crate) fn seed_text(parameter: &ParameterDescriptor) -> String {
             .map(str::to_owned)
             .or_else(|| options.first().cloned())
             .unwrap_or_default(),
+        ParameterKind::Boolean => parameter
+            .default
+            .as_ref()
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+            .to_string(),
+        ParameterKind::Curve {
+            fixed_x,
+            points_min,
+            ..
+        } => parameter
+            .default
+            .as_ref()
+            .map(Value::to_string)
+            .unwrap_or_else(|| {
+                let xs = fixed_x.clone().unwrap_or_else(|| {
+                    (0..*points_min)
+                        .map(|index| index as f64 / (*points_min - 1) as f64)
+                        .collect()
+                });
+                Value::Array(xs.into_iter().map(|x| serde_json::json!([x, x])).collect())
+                    .to_string()
+            }),
     }
 }
 
@@ -204,7 +264,10 @@ pub(crate) fn decimals_for(parameter: &ParameterDescriptor) -> usize {
     let (min, max) = match &parameter.kind {
         ParameterKind::Integer { .. } => return 0,
         ParameterKind::Number { min, max } => (*min, *max),
-        ParameterKind::Color | ParameterKind::Enum { .. } => return 0,
+        ParameterKind::Color
+        | ParameterKind::Enum { .. }
+        | ParameterKind::Boolean
+        | ParameterKind::Curve { .. } => return 0,
     };
     if let Some(precision) = parameter.precision {
         return usize::from(precision).min(lightwell_ui::geometry::MAX_DECIMALS);
@@ -236,7 +299,34 @@ fn decimals_of(step: f64) -> usize {
 /// A value that rounds to zero is always `0` or `0.00`, never `-0.00`: the sign of a zero is an
 /// artefact of the arithmetic, not something the person did.
 pub(crate) fn format_number(parameter: &ParameterDescriptor, value: f64) -> String {
-    format_decimals(value, decimals_for(parameter))
+    let ordinary = decimals_for(parameter);
+    let fine = fine_decimals_for(parameter);
+    let factor = 10f64.powi(ordinary as i32);
+    let ordinary_value = (value * factor).round() / factor;
+    // A saved sensor value may be fractionally off the visible grid. Only expose the fine digits
+    // when they distinguish a real fine nudge rather than a conversion or floating-point residue.
+    let fine_quantum = 10f64.powi(-(fine as i32));
+    let decimals = if value.is_finite()
+        && (value - ordinary_value).abs() > (fine_quantum * 0.49).max(1e-9 * value.abs().max(1.0))
+    {
+        fine
+    } else {
+        ordinary
+    };
+    format_decimals(value, decimals)
+}
+
+/// Precision needed for an Option nudge (or fine rail drag), including an implicit tenth-step.
+pub(crate) fn fine_decimals_for(parameter: &ParameterDescriptor) -> usize {
+    let ordinary = decimals_for(parameter);
+    if matches!(&parameter.kind, ParameterKind::Integer { .. }) {
+        return 0;
+    }
+    let step = parameter.step.unwrap_or_else(|| match &parameter.kind {
+        ParameterKind::Number { min, max } => crate::state::tools::generic_step(*min, *max),
+        _ => 1.0,
+    });
+    ordinary.max(decimals_of(parameter.fine_step.unwrap_or(step / 10.0)))
 }
 
 /// `value` with exactly `decimals` decimals, and no negative zero.
@@ -278,7 +368,38 @@ pub(crate) fn parse_field(parameter: &ParameterDescriptor, text: &str) -> Result
             .find(|option| *option == text.trim())
             .map(|option| Value::from(option.clone()))
             .ok_or_else(|| format!("{name} must be one of {}", options.join(", "))),
+        ParameterKind::Boolean => text
+            .trim()
+            .parse::<bool>()
+            .map(Value::from)
+            .map_err(|_| format!("{name} must be a boolean")),
+        ParameterKind::Curve { .. } => serde_json::from_str::<Value>(text.trim())
+            .map_err(|_| format!("{name} must be a JSON curve point list"))
+            .and_then(|value| {
+                check_value(parameter, &value)
+                    .map_err(|error| error.detail)
+                    .map(|_| value)
+            }),
     }
+}
+
+/// One authoritative recipe or API value as this parameter's editable field text.
+pub(crate) fn value_text(parameter: &ParameterDescriptor, value: &Value) -> Result<String, String> {
+    check_value(parameter, value).map_err(|error| error.detail)?;
+    Ok(match &parameter.kind {
+        ParameterKind::Integer { .. } => value.as_i64().unwrap().to_string(),
+        ParameterKind::Number { .. } => format_number(parameter, value.as_f64().unwrap()),
+        ParameterKind::Enum { .. } => value.as_str().unwrap().to_owned(),
+        ParameterKind::Color => value
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(Value::to_string)
+            .collect::<Vec<_>>()
+            .join(","),
+        ParameterKind::Boolean => value.as_bool().unwrap().to_string(),
+        ParameterKind::Curve { .. } => value.to_string(),
+    })
 }
 
 fn parse_color(text: &str) -> Option<[u8; 3]> {
@@ -444,6 +565,41 @@ mod tests {
     use crate::state::tools::{control_kind, declared_action, point_pick};
     use serde_json::json;
 
+    #[test]
+    fn boolean_color_and_curve_fields_reflect_exact_authoritative_values() {
+        let descriptor = crate::app::testing::controls_descriptor();
+        let action = descriptor.action("fixture-set").unwrap();
+        let mut fields = Fields::seeded(std::slice::from_ref(&descriptor));
+        for (name, value, expected_text) in [
+            ("enabled", json!(true), "true"),
+            ("rgb", json!([12, 34, 56]), "12,34,56"),
+            (
+                "master",
+                json!([[0.0, 0.0], [0.25, 0.37], [1.0, 1.0]]),
+                "[[0.0,0.0],[0.25,0.37],[1.0,1.0]]",
+            ),
+        ] {
+            let parameter = action.parameter(name).unwrap();
+            fields.set_value(&action.id, parameter, &value).unwrap();
+            assert_eq!(fields.get(&action.id, name), Some(expected_text));
+            assert_eq!(fields.get_value(&action.id, parameter).unwrap(), value);
+        }
+        let curve = action.parameter("master").unwrap();
+        assert!(
+            fields
+                .set_value(
+                    &action.id,
+                    curve,
+                    &json!([[0.0, 0.0], [0.0, 0.5], [1.0, 1.0]])
+                )
+                .is_err()
+        );
+        assert_eq!(
+            fields.get_value(&action.id, curve).unwrap(),
+            json!([[0.0, 0.0], [0.25, 0.37], [1.0, 1.0]])
+        );
+    }
+
     /// The descriptors the desktop would fetch through `module.list`.
     fn descriptors() -> Vec<ModuleDescriptor> {
         lightwell_core::ModuleRegistry::builtin()
@@ -476,6 +632,10 @@ mod tests {
             unit: Some("deg".into()),
             step: None,
             precision: None,
+            soft_min: None,
+            soft_max: None,
+            fine_step: None,
+            zero: None,
             notes: "test".into(),
         }
     }
@@ -561,7 +721,7 @@ mod tests {
         );
         // A parameter that declares nothing is shown with the decimals of the generic step the
         // panel derives from its range, which over -45..45 is whole degrees.
-        assert_eq!(seed_text(&number_parameter(Some(json!(-3.5)))), "-4");
+        assert_eq!(seed_text(&number_parameter(Some(json!(-3.5)))), "-3.5");
         // Declaring a precision is how a module asks for the digits it cares about.
         assert_eq!(
             seed_text(&hinted(Some(json!(-3.5)), Some(0.1), Some(1))),
@@ -573,33 +733,37 @@ mod tests {
         );
     }
 
-    /// Every number a declared parameter's field shows has a fixed number of decimals, so a value
-    /// never arrives on screen as `1.7000000000000002`, and a value that rounds to zero is `0`
-    /// rather than `-0.00`.
+    /// Ordinary values use the declared decimals without float noise. A value reached through a
+    /// fine step shows the extra digits it needs, so its field remains editable without losing it.
     #[test]
     fn a_declared_parameters_value_is_shown_with_the_decimals_it_declares() {
         // A declared precision wins outright.
         let declared = hinted(None, Some(0.01), Some(2));
         assert_eq!(decimals_for(&declared), 2);
+        assert_eq!(format_number(&declared, 0.001), "0.001");
+        assert_eq!(
+            parse_field(&declared, &format_number(&declared, 0.001)),
+            Ok(json!(0.001))
+        );
         for (value, text) in [
             (1.7000000000000002, "1.70"),
             (0.0, "0.00"),
             (-3.5, "-3.50"),
             (-0.0, "0.00"),
-            (-0.004, "0.00"),
-            (-0.006, "-0.01"),
+            (-0.004, "-0.004"),
+            (-0.006, "-0.006"),
         ] {
             assert_eq!(format_number(&declared, value), text, "{value}");
         }
         // Without a precision the declared step decides: 0.5 is one decimal, 10 is none.
         assert_eq!(decimals_for(&hinted(None, Some(0.5), None)), 1);
-        assert_eq!(format_number(&hinted(None, Some(0.5), None), 2.25), "2.2");
+        assert_eq!(format_number(&hinted(None, Some(0.5), None), 2.25), "2.25");
         assert_eq!(decimals_for(&hinted(None, Some(10.0), None)), 0);
         assert_eq!(format_number(&hinted(None, Some(10.0), None), 40.0), "40");
         assert_eq!(decimals_for(&hinted(None, Some(0.001), None)), 3);
         // Without either, the generic step over the range does: 90 degrees give whole degrees.
         assert_eq!(decimals_for(&number_parameter(None)), 0);
-        assert_eq!(format_number(&number_parameter(None), -0.4), "0");
+        assert_eq!(format_number(&number_parameter(None), -0.4), "-0.4");
         // An integer parameter is an integer whatever else it says.
         let modules = descriptors();
         let (action, x, _) = point_pick(&modules).expect("a canvas pick");
@@ -917,21 +1081,27 @@ mod tests {
                 label: "Group".into(),
                 controls: Vec::new(),
                 reset: None,
+                collapsed: false,
             },
             Control::Number {
                 action: "act".into(),
                 parameter: "x".into(),
                 label: "X".into(),
+                style: lightwell_core::NumberStyle::Slider,
+                rail: None,
             },
             Control::Color {
                 action: "act".into(),
                 parameter: "rgb".into(),
                 label: "RGB".into(),
+                style: lightwell_core::ColorStyle::Fields,
             },
             Control::Action {
                 action: "act".into(),
                 label: "Apply".into(),
                 preset: Map::new(),
+                style: lightwell_core::ActionStyle::Default,
+                icon: None,
             },
         ];
         for (control, kind) in controls.iter().zip(["group", "number", "color", "action"]) {
