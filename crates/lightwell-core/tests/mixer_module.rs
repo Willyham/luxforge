@@ -180,7 +180,7 @@ fn module_list_and_schema_list_describe_the_mixer_module() {
     assert_eq!(mixer["title"], json!("Colour mixer"));
     assert_eq!(
         mixer["hint"],
-        json!("Hue, saturation and luminance by colour range")
+        json!("Hue, saturation and luminance by range")
     );
     assert_eq!(mixer["collapsed"], json!(true));
     assert_eq!(mixer["developer"], json!(false));

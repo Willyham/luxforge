@@ -337,7 +337,7 @@ impl MixerModule {
             descriptor: ModuleDescriptor {
                 id: "lightwell.mixer".into(),
                 title: "Colour mixer".into(),
-                hint: Some("Hue, saturation and luminance by colour range".into()),
+                hint: Some("Hue, saturation and luminance by range".into()),
                 effects: vec![EffectDescriptor {
                     id: MIXER_EFFECT.into(),
                     format: EFFECT_FORMAT,
@@ -628,7 +628,7 @@ mod tests {
         assert_eq!(descriptor.title, "Colour mixer");
         assert_eq!(
             descriptor.hint.as_deref(),
-            Some("Hue, saturation and luminance by colour range")
+            Some("Hue, saturation and luminance by range")
         );
         assert!(descriptor.collapsed);
         assert!(!descriptor.developer);

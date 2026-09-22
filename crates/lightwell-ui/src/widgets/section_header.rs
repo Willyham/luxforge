@@ -3,6 +3,7 @@
 use super::icon_button::{Icon, IconButtonModel, icon, icon_button};
 use super::text::{caption, error_caption, title};
 use crate::theme;
+use iced::alignment::Horizontal;
 use iced::widget::{Space, button, container, row};
 use iced::{Alignment, Border, Color, Element, Length, Theme};
 
@@ -46,16 +47,28 @@ pub fn section_header<'a, M: Clone + 'a>(
         leading = leading.push(accent_dot());
     }
 
-    let mut header = row![container(leading).width(Length::Fill)]
+    // The chevron and the title keep their own width; the hint or the unavailable reason takes
+    // whatever is left and wraps if it must, so a long hint can never squeeze the title out.
+    let mut header = row![container(leading).width(Length::Shrink)]
         .spacing(theme::SPACING)
         .align_y(Alignment::Center);
 
     if let Some(reason) = &model.unavailable {
-        header = header.push(error_caption(reason.clone()));
+        header = header.push(
+            container(error_caption(reason.clone()))
+                .width(Length::Fill)
+                .align_x(Horizontal::Right),
+        );
     } else if !model.expanded
         && let Some(hint) = &model.hint
     {
-        header = header.push(caption(hint.clone()));
+        header = header.push(
+            container(caption(hint.clone()))
+                .width(Length::Fill)
+                .align_x(Horizontal::Right),
+        );
+    } else {
+        header = header.push(Space::new().width(Length::Fill));
     }
 
     if model.reset {

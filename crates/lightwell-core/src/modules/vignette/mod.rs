@@ -330,7 +330,7 @@ impl VignetteModule {
             descriptor: ModuleDescriptor {
                 id: "lightwell.vignette".into(),
                 title: GROUP_LABEL.into(),
-                hint: Some("Post-crop darkening or lightening toward the corners".into()),
+                hint: Some("Darken or lighten the corners after the crop".into()),
                 effects: vec![EffectDescriptor {
                     id: VIGNETTE_EFFECT.into(),
                     format: EFFECT_FORMAT,
@@ -654,7 +654,7 @@ mod tests {
         assert_eq!(descriptor.title, "Vignette");
         assert_eq!(
             descriptor.hint.as_deref(),
-            Some("Post-crop darkening or lightening toward the corners")
+            Some("Darken or lighten the corners after the crop")
         );
         assert!(!descriptor.developer);
         assert!(descriptor.collapsed, "the section starts collapsed");
