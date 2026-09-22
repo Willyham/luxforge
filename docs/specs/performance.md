@@ -532,8 +532,13 @@ The three units together cost about eight times the sum of the singles. That is 
 | --- | --- | --- | --- | --- |
 | Colour mixer, Red hue | 157.1 / 216.1 (min 137.0, max 342.4) | 280.3 / 287.3 | 1357 MiB | **Miss** |
 | Vignette, Amount | 121.6 / 135.3 (min 112.0, max 147.9) | 125.0 / 201.4 | 1352 MiB | **Miss** |
+| Presence, Clarity | 211.2 / 227.9 | not measured | 1156 MiB | **Miss** |
+| Presence, Texture | 230.1 / 244.6 | not measured | 993 MiB | **Miss** |
+| Presence, Dehaze | 157.2 / 178.0 | not measured | 1056 MiB | **Miss** |
 
-The mixer's per-pixel cost is the Oklab conversion (three cube roots each way) that Basic's saturation and vibrance units already pay, now paid a second time for a second unit; the vignette's is the extended encode and decode of every channel in its positive branch and the per-pixel mask. Neither exceeds the per-frame cost of the crop resample the earlier rows record, and both stay well under the 1.5 GiB RSS investigation target.
+The mixer's per-pixel cost is the Oklab conversion (three cube roots each way) that Basic's saturation and vibrance units already pay, now paid a second time for a second unit; the vignette's is the extended encode and decode of every channel in its positive branch and the per-pixel mask. Neither exceeds the per-frame cost of the crop resample the earlier rows record, and both stay well under the 1.5 GiB RSS investigation target. The three Presence sliders miss as the design anticipated: each draft renders the whole 24 MP stage through a tiled neighbourhood operation, and the miss is the full-resolution draft policy, which stays until the owner decides on a bounded Fit-resolution draft.
+
+Rendered evidence is the `presence`, `mixer` and `vignette` smoke scenarios (15, 8 and 12 correlated frames at Fit and 100% with the module's own controls visible), and the acceptance chapter's ten checks per module through the JSON method table. A reviewer's render of the owner's 14 MP Sapa drone JPEG through the core alone (release, in memory: dehaze 65 ms, clarity 104 ms, texture 127 ms, all three at +50 672 ms) showed Dehaze +60 and +100 lifting the veil and deepening colour plausibly, Clarity +100 adding local contrast without visible halos at fit and at 100%, and Texture +100 sharpening fine detail with the expected crunch; it is a visual check, not a measurement. On a synthetic haze-free flat field Dehaze +100 drives the field toward black, because the dark-channel prior reads a uniform patch darker than the atmosphere as pure veil and the frozen `OMEGA_MAX = 1` removes all of it; the study records this and real photographs, whose windows contain dark pixels, do not show it.
 
 ## Method
 

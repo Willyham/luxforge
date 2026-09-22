@@ -1,7 +1,6 @@
 # Vignette study: the frozen mask and amount equations
 
-Status: frozen ahead of the `lightwell.vignette` module task (TASK-004 of the [Presence, colour
-mixer and vignette plan](../../tasks/implementation-presence-mixer-vignette.json)). This
+Status: frozen and implemented by the `lightwell.vignette` module, which is checked against it. This
 document, the independent [`f64` reference](../../crates/lightwell-core/tests/reference/vignette.rs)
 and the checked-in [oracle fixtures](../../fixtures/vignette/README.md) are the complete
 specification a future `lightwell.vignette` unit is checked against. It answers the ["Vignette:

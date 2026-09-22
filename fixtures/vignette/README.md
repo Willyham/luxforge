@@ -1,9 +1,9 @@
 # Vignette fixtures
 
 Synthetic-only, small, deterministic oracle fixtures for the post-crop [vignette
-study](../../docs/design/vignette-study.md) (TASK-004 of the [Presence, colour mixer and
-vignette](../../docs/design/presence-mixer-vignette.md) plan), ahead of any production
-implementation. Nothing here is a raster image; every case is a discrete `(pixel, parameters)`
+study](../../docs/design/vignette-study.md) of the [Presence, colour mixer and
+vignette](../../docs/design/presence-mixer-vignette.md) design, which the production
+`lightwell.vignette` module is checked against. Nothing here is a raster image; every case is a discrete `(pixel, parameters)`
 sample computed by the independent `f64` reference in
 `crates/lightwell-core/tests/reference/vignette.rs`, reloaded and checked bit-close against a
 fresh computation on every `cargo test --package lightwell-core --test vignette_reference` run
