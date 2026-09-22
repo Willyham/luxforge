@@ -37,6 +37,10 @@ Initial RAW implementation is requested, with a [design](design/initial-raw.md) 
 | Richer tools | Texture, clarity, dehaze; separately scoped masks and clone/heal |
 | External modules | Measured activation costs and a separately authored module loaded through documented host APIs |
 
+## Future extension possibilities
+
+[Shared editing](design/shared-editing.md) explores one host desktop, one invited collaborator or agent, and one photograph, using the shared command service and host-rendered previews. It is a future possibility with no scheduled milestone or implementation tasks. Collaborative undo, gesture sharing, permissions and conflict policy need explicit decisions; independent offline replicas and CRDTs are deferred until a workflow requires them. The proposal does not depend on cloud accounts or catalog sync.
+
 ## Not in scope
 
 Map, Book, Slideshow, Print, Web and Publish Services. Accounts, cloud sync, built-in AI chat, generative editing, a plugin marketplace, a public compatibility framework and a generalized processing graph. General bitmap layers with blend modes and reordering: a "layer" here is an ordered recipe operation.
