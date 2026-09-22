@@ -5,7 +5,7 @@
 //! evaluated in f64 and converted to the existing byte [`Raster`] only at the terminal boundary.
 //! The byte JPEG evaluator in [`super::render`] remains unchanged.
 
-use super::{Compiled, Raster};
+use super::{Cancel, Compiled, Raster};
 use crate::{Error, ErrorKind, Recipe, SnapshotId, modules::ModuleRegistry};
 use rayon::prelude::*;
 use std::sync::{Arc, Weak};
@@ -633,6 +633,29 @@ pub fn render_linear(
     recipe: &Recipe,
     settings: LinearSettings,
 ) -> Result<Raster, Error> {
+    render_linear_cancellable(
+        registry,
+        source,
+        snapshot_id,
+        recipe,
+        settings,
+        &Cancel::never(),
+    )
+}
+
+/// [`render_linear`] under a [`Cancel`] token the row pass reads once per row. With a token that is
+/// never cancelled this is byte for byte [`render_linear`]; it is the same code, and
+/// [`render_linear`] is one call to it.
+pub fn render_linear_cancellable(
+    registry: &ModuleRegistry,
+    source: &LinearImage,
+    snapshot_id: SnapshotId,
+    recipe: &Recipe,
+    settings: LinearSettings,
+    cancel: &Cancel,
+) -> Result<Raster, Error> {
+    // A token already cancelled when the call arrives costs no frame at all.
+    cancel.check()?;
     let evaluation = LinearEvaluation::new(registry, source, recipe, settings)?;
     let (width, height) = evaluation.stage();
     let output_len = output_len(width, height)?;
@@ -643,7 +666,10 @@ pub fn render_linear(
         )
     })?;
     let mut output = vec![0; output_len];
+    // One relaxed load per output row, ahead of that row's evaluations; the f64 evaluation and the
+    // terminal boundary are untouched.
     let render_row = |row_index: usize, row: &mut [u8]| -> Result<(), Error> {
+        cancel.check()?;
         for x in 0..width {
             let pixel = evaluation.pixel(x, row_index as u32)?.ok_or_else(|| {
                 Error::new(
@@ -1023,5 +1049,70 @@ mod tests {
         assert!(source.with_view([0, 0, 2, 2], 9).is_err());
         assert!(LinearSettings { exposure_ev: 5.1 }.multiplier().is_err());
         assert!(linear_bilinear(1.0, 1.0, 2, 2, |_x, _y| Ok([f64::INFINITY; 3])).is_err());
+    }
+
+    /// A synthetic linear source with a varying value in all three channels, filled
+    /// programmatically so no file is read.
+    fn cancellation_image(width: u32, height: u32) -> LinearImage {
+        let pixels = (width * height) as usize;
+        let mut planes = Vec::with_capacity(pixels * 3);
+        for channel in 0..3 {
+            planes.extend((0..pixels).map(|index| ((index * (channel + 1)) % 997) as f32 / 997.0));
+        }
+        LinearImage::with_fingerprint(width, height, planes, "sha256:linear-cancellation").unwrap()
+    }
+
+    fn cancellation_recipe() -> Recipe {
+        Recipe {
+            format: crate::RECIPE_FORMAT,
+            layers: vec![Layer {
+                id: crate::LayerId::new(),
+                effect_id: crate::BASIC_EFFECT.into(),
+                effect_format: crate::EFFECT_FORMAT,
+                payload: serde_json::json!({"exposure": 0.5, "contrast": 20.0, "vibrance": 30.0}),
+            }],
+        }
+    }
+
+    #[test]
+    fn an_uncancelled_token_renders_the_linear_bytes_the_plain_entry_point_renders() {
+        let registry = ModuleRegistry::builtin();
+        let source = cancellation_image(160, 120);
+        let recipe = cancellation_recipe();
+        let snapshot = SnapshotId::new();
+        let plain = render_linear(
+            &registry,
+            &source,
+            snapshot.clone(),
+            &recipe,
+            LinearSettings::default(),
+        )
+        .unwrap();
+        let cancellable = render_linear_cancellable(
+            &registry,
+            &source,
+            snapshot,
+            &recipe,
+            LinearSettings::default(),
+            &Cancel::never(),
+        )
+        .unwrap();
+        assert_eq!(plain, cancellable);
+    }
+
+    #[test]
+    fn a_pre_cancelled_token_stops_a_linear_render_before_it_allocates_a_frame() {
+        let cancel = Cancel::new();
+        cancel.cancel();
+        let error = render_linear_cancellable(
+            &ModuleRegistry::builtin(),
+            &cancellation_image(160, 120),
+            SnapshotId::new(),
+            &cancellation_recipe(),
+            LinearSettings::default(),
+            &cancel,
+        )
+        .expect_err("a cancelled token refuses the linear render");
+        assert_eq!(error.kind, crate::ErrorKind::Cancelled);
     }
 }

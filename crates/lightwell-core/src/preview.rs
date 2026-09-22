@@ -1,8 +1,8 @@
 use crate::{
-    EntryId, Error, HistoryEntry, LinearImage, LinearSettings, ModuleRegistry, Raster, Recipe,
-    SourceImage,
+    Cancel, EntryId, Error, HistoryEntry, LinearImage, LinearSettings, ModuleRegistry, Raster,
+    Recipe, SourceImage,
     analysis::{AnalysisIdentity, Report},
-    render, render_linear,
+    render, render_cancellable, render_linear, render_linear_cancellable,
 };
 use serde::{Deserialize, Serialize};
 use std::sync::{
@@ -147,6 +147,23 @@ impl PreviewSource {
             Self::Jpeg(image) => render(registry, image, snapshot_id, recipe),
             Self::Raw { image, settings } => {
                 render_linear(registry, image, snapshot_id, recipe, *settings)
+            }
+        }
+    }
+
+    /// [`Self::render`] under a [`Cancel`] token, through the same two paths: the exact phase of a
+    /// preview job, which a newer job stops within one row or chunk.
+    pub fn render_cancellable(
+        &self,
+        registry: &ModuleRegistry,
+        snapshot_id: crate::SnapshotId,
+        recipe: &Recipe,
+        cancel: &Cancel,
+    ) -> Result<Raster, Error> {
+        match self {
+            Self::Jpeg(image) => render_cancellable(registry, image, snapshot_id, recipe, cancel),
+            Self::Raw { image, settings } => {
+                render_linear_cancellable(registry, image, snapshot_id, recipe, *settings, cancel)
             }
         }
     }

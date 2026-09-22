@@ -23,8 +23,9 @@ pub use modules::*;
 pub use preview::*;
 pub use proxy::{ProxyBounds, ProxyCache, ProxyIdentity, ProxyKey, ProxyPlan};
 pub use render::{
-    ContentPoint, LinearImage, LinearSettings, Raster, Sample, ScratchBudget, extents, locate,
-    render, render_linear, sample, sample_linear,
+    Cancel, ContentPoint, LinearImage, LinearSettings, Raster, Sample, ScratchBudget, extents,
+    locate, render, render_cancellable, render_linear, render_linear_cancellable, sample,
+    sample_linear,
 };
 use sha2::{Digest, Sha256};
 use std::{

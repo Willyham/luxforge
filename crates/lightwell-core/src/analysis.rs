@@ -17,7 +17,7 @@ pub use overlay::{
     MAX_OVERLAY_CELLS, OVERLAY_BOTH, OVERLAY_HIGHLIGHT, OVERLAY_NONE, OVERLAY_SHADOW, overlay,
 };
 
-use crate::{Error, ErrorKind, Raster};
+use crate::{Cancel, Error, ErrorKind, Raster};
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 
@@ -271,34 +271,47 @@ impl Bins {
     }
 }
 
-fn reduce_serial(rgba: &[u8]) -> Bins {
+/// The pixels one worker chunk of the parallel reduction covers, and the span the serial path
+/// checks the token over. Counting is integer addition, so the split decides nothing about the
+/// result: the same buffer reduces to the same bins whatever the chunking is.
+const REDUCE_CHUNK_PIXELS: usize = 64 * 1024;
+
+fn reduce_serial(rgba: &[u8], cancel: &Cancel) -> Result<Bins, Error> {
     let mut bins = Bins::zero();
-    for pixel in rgba.chunks_exact(4) {
-        bins.add_pixel([pixel[0], pixel[1], pixel[2], pixel[3]]);
+    // One relaxed load per chunk, not per pixel; the counting loop below is unchanged.
+    for chunk in rgba.chunks(REDUCE_CHUNK_PIXELS * 4) {
+        cancel.check()?;
+        for pixel in chunk.chunks_exact(4) {
+            bins.add_pixel([pixel[0], pixel[1], pixel[2], pixel[3]]);
+        }
     }
-    bins
+    Ok(bins)
 }
 
-fn reduce_parallel(rgba: &[u8]) -> Bins {
+fn reduce_parallel(rgba: &[u8], cancel: &Cancel) -> Result<Bins, Error> {
     // Accumulators are boxed (see `merge_in_place`'s doc comment) so every fold/reduce step moves
-    // a pointer, not a ~6 KiB `Bins`.
+    // a pointer, not a ~6 KiB `Bins`. The token is read once per worker chunk, before that chunk's
+    // pixels are counted.
     let boxed = rgba
-        .par_chunks_exact(4)
-        .fold(
+        .par_chunks(REDUCE_CHUNK_PIXELS * 4)
+        .try_fold(
             || Box::new(Bins::zero()),
-            |mut bins, pixel| {
-                bins.add_pixel([pixel[0], pixel[1], pixel[2], pixel[3]]);
-                bins
+            |mut bins, chunk| {
+                cancel.check()?;
+                for pixel in chunk.chunks_exact(4) {
+                    bins.add_pixel([pixel[0], pixel[1], pixel[2], pixel[3]]);
+                }
+                Ok(bins)
             },
         )
-        .reduce(
+        .try_reduce(
             || Box::new(Bins::zero()),
             |mut a, b| {
                 a.merge_in_place(&b);
-                a
+                Ok(a)
             },
-        );
-    *boxed
+        )?;
+    Ok(*boxed)
 }
 
 /// `reduce` with an explicit parallel threshold, so tests can force either path on the same
@@ -309,7 +322,10 @@ fn reduce_with_threshold(
     width: u32,
     height: u32,
     threshold: u64,
+    cancel: &Cancel,
 ) -> Result<Report, Error> {
+    // A token already cancelled when the call arrives counts nothing at all.
+    cancel.check()?;
     let pixels = u64::from(width)
         .checked_mul(u64::from(height))
         .ok_or_else(|| Error::new(ErrorKind::ResourceLimit, "image dimensions overflow"))?;
@@ -332,9 +348,9 @@ fn reduce_with_threshold(
         ));
     }
     let bins = if pixels >= threshold {
-        reduce_parallel(rgba)
+        reduce_parallel(rgba, cancel)?
     } else {
-        reduce_serial(rgba)
+        reduce_serial(rgba, cancel)?
     };
     Ok(bins.into_report(width, height))
 }
@@ -345,13 +361,30 @@ fn reduce_with_threshold(
 /// `rgba` in place: no copy of the raster and no allocation proportional to the image (`Bins` is a
 /// fixed handful of kilobytes per worker, not per pixel).
 pub fn reduce(rgba: &[u8], width: u32, height: u32) -> Result<Report, Error> {
-    reduce_with_threshold(rgba, width, height, PARALLEL_REDUCE_PIXELS)
+    reduce_cancellable(rgba, width, height, &Cancel::never())
+}
+
+/// [`reduce`] under a [`Cancel`] token read once per worker chunk. With a token that is never
+/// cancelled this is [`reduce`]; it is the same code, and [`reduce`] is one call to it.
+pub fn reduce_cancellable(
+    rgba: &[u8],
+    width: u32,
+    height: u32,
+    cancel: &Cancel,
+) -> Result<Report, Error> {
+    reduce_with_threshold(rgba, width, height, PARALLEL_REDUCE_PIXELS, cancel)
 }
 
 /// [`reduce`] over a rendered [`Raster`], for callers that already hold one (a preview job, a
 /// desktop analysis request, `editor-performance`).
 pub fn reduce_raster(raster: &Raster) -> Result<Report, Error> {
-    reduce(raster.rgba.as_ref(), raster.width, raster.height)
+    reduce_raster_cancellable(raster, &Cancel::never())
+}
+
+/// [`reduce_raster`] under a [`Cancel`] token: the exact phase's reduction, which a newer request
+/// stops within one worker chunk.
+pub fn reduce_raster_cancellable(raster: &Raster, cancel: &Cancel) -> Result<Report, Error> {
+    reduce_cancellable(raster.rgba.as_ref(), raster.width, raster.height, cancel)
 }
 
 #[cfg(test)]
@@ -546,9 +579,9 @@ mod tests {
         // chunk size, exercising remainder handling in a parallel split.
         for (width, height) in [(2000u32, 600u32), (1013u32, 977u32)] {
             let rgba = synthetic_buffer(width, height);
-            let serial = reduce_with_threshold(&rgba, width, height, u64::MAX)
+            let serial = reduce_with_threshold(&rgba, width, height, u64::MAX, &Cancel::never())
                 .expect("serial reduction of the synthetic buffer");
-            let parallel = reduce_with_threshold(&rgba, width, height, 0)
+            let parallel = reduce_with_threshold(&rgba, width, height, 0, &Cancel::never())
                 .expect("parallel reduction of the synthetic buffer");
             assert_eq!(
                 serial, parallel,
@@ -629,5 +662,45 @@ mod tests {
             "measured report size: {} bytes (bound {REPORT_BOUND_BYTES})",
             json.len()
         );
+    }
+
+    // -------------------------------------------------------------------------------------------
+    // Cooperative cancellation.
+    // -------------------------------------------------------------------------------------------
+
+    fn cancellation_raster(width: u32, height: u32) -> Raster {
+        Raster {
+            width,
+            height,
+            rgba: synthetic_buffer(width, height).into(),
+            source_fingerprint: "sha256:reducer-cancellation".into(),
+            snapshot_id: crate::SnapshotId::new(),
+        }
+    }
+
+    #[test]
+    fn an_uncancelled_token_reduces_to_the_report_the_plain_entry_point_produces() {
+        // Both sides of the parallel threshold, so the chunked serial path and the chunked worker
+        // path are each compared against what the plain entry point returns.
+        for (width, height) in [(2000_u32, 600_u32), (1013_u32, 977_u32)] {
+            let raster = cancellation_raster(width, height);
+            assert_eq!(
+                reduce_raster(&raster).expect("plain reduction"),
+                reduce_raster_cancellable(&raster, &Cancel::never())
+                    .expect("cancellable reduction"),
+                "{width}x{height}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_pre_cancelled_token_stops_the_reducer_on_a_large_raster() {
+        let raster = cancellation_raster(2000, 600);
+        let cancel = Cancel::new();
+        cancel.cancel();
+        let error = reduce_raster_cancellable(&raster, &cancel)
+            .expect_err("a cancelled token refuses the reduction");
+        assert_eq!(error.kind, ErrorKind::Cancelled);
+        assert_eq!(error.kind.code(), "cancelled");
     }
 }

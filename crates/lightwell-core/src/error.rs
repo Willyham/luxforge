@@ -9,6 +9,10 @@ pub enum ErrorKind {
     Decode,
     ResourceLimit,
     Render,
+    /// A render, resample, colour pass or reduction that a newer request superseded. It is not a
+    /// failure of the work: nothing was wrong with the recipe, the source or the budget, and the
+    /// caller that cancelled already knows why. No partial frame or report accompanies it.
+    Cancelled,
     Diagnostics,
     Validation,
     Conflict,
@@ -30,6 +34,7 @@ impl ErrorKind {
             Self::Decode => "invalid-input",
             Self::ResourceLimit => "resource-limit",
             Self::Render => "render",
+            Self::Cancelled => "cancelled",
             Self::Diagnostics => "diagnostics",
             Self::Validation => "validation",
             Self::Conflict => "conflict",
