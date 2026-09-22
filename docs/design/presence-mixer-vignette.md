@@ -74,6 +74,8 @@ The mixer is one `PointwiseColor` unit in the existing colour run, so it joins t
 - **Hue** −100..+100 rotates hue within the range by a bounded angle toward the neighbouring range; **Saturation** −100..+100 scales chroma; **Luminance** −100..+100 scales `L` through a compressive response with the near-black rule. Every slider at 0 is the exact identity; production matches an independent f64 reference within the frozen tolerance; a single range's slider changes no pixel whose weight for that range is zero.
 - Neither unit clamps internally; the gamut policy is the colour study's.
 
+These are frozen, with their constants, property proofs, fixtures and tolerance, in the [colour mixer study](mixer-study.md).
+
 Twenty-four `number` parameters, one field-patch action `set-mixer` and a non-patch `reset-mixer`, with labels of the form `Red hue +20` and group resets `Reset Hue`, `Reset Saturation`, `Reset Luminance`.
 
 ### Vignette: one positional unit
@@ -133,6 +135,7 @@ Recommendations for the owner, recorded as proposals until decided. The plan run
 
 ## References
 
+- Frozen numerics: [colour mixer study](mixer-study.md).
 - Repository contracts: [modules](modules-and-api.md), [Basic and histogram](basic-and-histogram.md), [UI components](ui-components.md), [workspace](develop-workspace.md), [architecture](architecture.md), [performance rules](../engineering/performance-rules.md), [RAW integration](raw-integration.md).
 - Frozen numerical study: [vignette mask and amount equations](vignette-study.md), TASK-004's frozen equations, worked examples and tolerance for the "Vignette: one positional unit" section above.
 - Local research: [Lightroom detail and dehaze](../research/lightroom/detail-and-local-contrast.md), [Lightroom tone and colour](../research/lightroom/tone-and-color-tools.md), [darktable detail and haze](../research/darktable/detail-and-local-contrast.md), [darktable previews and tiling](../research/darktable/previews-and-performance.md). These supply context and candidate mechanisms, not accepted Lightwell behaviour.
