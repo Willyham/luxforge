@@ -1,10 +1,10 @@
 # Lightwell user guide
 
-The Develop workspace opens supported JPEG, Nikon Z6 NEF, Fujifilm X100VI RAF and DJI Air 2S DNG originals, with exact transforms, crop/straighten, persistent history and the JSON API. RAW adds editable source exposure and white balance. Export, Locate and MCP are planned; see [feature status](features.md).
+The Develop workspace opens JPEG and the camera recording modes listed in the bundled RAW catalog, with exact transforms, crop/straighten, persistent history and the JSON API. RAW adds editable source exposure and white balance. Export, Locate and MCP are planned; see [feature status](features.md).
 
 JPEG Basic exposure, tone, white balance and colour controls are built, with the neutral picker, and so are the histogram and clipping inspector that share their [design](design/basic-and-histogram.md).
 
-Initial RAW support covers full-size Z6 12/14-bit lossless NEF, X100VI 14-bit uncompressed/lossless RAF and the supplied Air 2S FC3411 uncompressed DNG mode with 16-bit stored samples. Air 2S development includes its required embedded gain-map and chromatic-warp corrections. Broader recording modes and controlled color/detail qualification remain in the [coverage manifest](../fixtures/raw-coverage.json); generic DNG support is not implied. A failed Open keeps the previous photo. Support is explicitly listed in the bundled [camera catalog](../crates/lightwell-raw/data/cameras.json); a matching filename extension alone does not enable a camera.
+RAW profiles cover selected modes from Nikon, Canon, Sony, Fujifilm, Panasonic, Olympus/OM System, Pentax, Ricoh, Leica and DJI. The [camera selection](../fixtures/modern-camera-selection.json) covers 100 enabled models, including high-resolution bodies; a listed camera does not imply every compression, resolution, burst or drone camera-module mode is supported. The original Z6 lossless NEF, X100VI uncompressed/lossless RAF and Air 2S FC3411 DNG modes remain covered. DNG development applies the supported embedded corrections in their recorded order. Unknown required corrections fail explicitly. Broader recording modes and controlled color/detail qualification remain open. A failed Open keeps the previous photo. The bundled [camera catalog](../crates/lightwell-raw/data/cameras.json) defines admission; a matching filename extension alone does not enable a camera.
 
 ## Start the editor
 

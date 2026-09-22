@@ -141,11 +141,13 @@ pub(crate) fn neutral_at(raw: &RawPrepared, x: u32, y: u32) -> Result<[f32; 3], 
     };
     let source = crate::SensorMosaic {
         samples: raw.sensor.mosaic(),
+        corrections: raw.sensor.mosaic_corrections(),
         width: metadata.sensor_width,
         height: metadata.sensor_height,
         cfa_width: metadata.cfa_width,
         cfa_height: metadata.cfa_height,
         cfa: &metadata.cfa,
+        black_cfa: &metadata.black_cfa,
         black_base: metadata.black_base,
         black_channels: metadata.black_channels,
         black_repeat_width: metadata.black_repeat_width,
@@ -171,12 +173,14 @@ pub(crate) fn neutral_at(raw: &RawPrepared, x: u32, y: u32) -> Result<[f32; 3], 
                     })
             },
             &|x, y, channel| {
-                raw.sensor.gain_at_sensor(x, y, channel).map_err(|error| {
-                    Error::new(
-                        ErrorKind::Validation,
-                        format!("neutral picker gain point: {error}"),
-                    )
-                })
+                raw.sensor
+                    .gain_at_corrected_sensor(x, y, channel)
+                    .map_err(|error| {
+                        Error::new(
+                            ErrorKind::Validation,
+                            format!("neutral picker gain point: {error}"),
+                        )
+                    })
             },
         )
     } else {

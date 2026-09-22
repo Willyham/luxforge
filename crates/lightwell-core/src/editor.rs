@@ -1608,8 +1608,14 @@ impl EditorService {
             )
         })?;
         let signature = source_signature(&asset.locator, &before);
+        let raw_source = matches!(&asset.source, SourceKind::Raw { .. });
+        let max_source_bytes = if raw_source {
+            lightwell_raw::MAX_SOURCE_BYTES as u64
+        } else {
+            128 * 1024 * 1024
+        };
         if signature.byte_len != asset.byte_len
-            || signature.byte_len > 128 * 1024 * 1024
+            || signature.byte_len > max_source_bytes
             || signature.file_identity != asset.file_identity
         {
             return Err(Error::new(
@@ -2569,6 +2575,7 @@ mod tests {
             cfa_width: 2,
             cfa_height: 2,
             cfa: vec![0, 1, 1, 2],
+            black_cfa: vec![0, 1, 3, 2],
             black_base: 12.125,
             black_channels: [0.1, 0.2, 0.3, 0.4],
             black_repeat_width: 1,
@@ -2581,7 +2588,7 @@ mod tests {
             cam_xyz: [[0.12345678; 3]; 4],
             backend: "pinned backend".into(),
             exif_orientation: 1,
-            libraw_inset: rect,
+            libraw_inset: Some(rect),
             format_identity: "test-format".into(),
             warnings: vec![],
             dng_corrections: None,

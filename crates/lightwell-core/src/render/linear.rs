@@ -10,9 +10,10 @@ use crate::{Error, ErrorKind, Recipe, SnapshotId, modules::ModuleRegistry};
 use rayon::prelude::*;
 use std::sync::{Arc, Weak};
 
-const MAX_PIXELS: u64 = 64_000_000;
+const MAX_PIXELS: u64 = lightwell_raw::MAX_PIXELS as u64;
 const MAX_SIDE: u32 = 16_384;
-const MAX_SOURCE_BYTES: u64 = 512 * 1024 * 1024;
+const MAX_SOURCE_BYTES: u64 = lightwell_raw::MAX_RGB_BYTES as u64;
+const MAX_RGBA_BYTES: u64 = 512 * 1024 * 1024;
 const MAX_RESAMPLES: usize = 1;
 const PARALLEL_RENDER_PIXELS: u64 = 1_000_000;
 
@@ -40,7 +41,7 @@ fn layout(width: u32, height: u32) -> Result<(usize, usize), Error> {
     if pixels > MAX_PIXELS {
         return Err(Error::new(
             ErrorKind::ResourceLimit,
-            "linear source exceeds 64 megapixels",
+            "linear source exceeds 128 megapixels",
         ));
     }
     let values = pixels.checked_mul(3).ok_or_else(|| {
@@ -95,10 +96,10 @@ fn output_len(width: u32, height: u32) -> Result<usize, Error> {
                 "linear output dimensions overflow",
             )
         })?;
-    if pixels > MAX_PIXELS {
+    if pixels > lightwell_raw::MAX_PIXELS as u64 {
         return Err(Error::new(
             ErrorKind::ResourceLimit,
-            "linear output exceeds 64 megapixels",
+            "linear output exceeds 128 megapixels",
         ));
     }
     let bytes = pixels.checked_mul(4).ok_or_else(|| {
@@ -107,7 +108,7 @@ fn output_len(width: u32, height: u32) -> Result<usize, Error> {
             "linear output byte length overflow",
         )
     })?;
-    if bytes > MAX_SOURCE_BYTES {
+    if bytes > MAX_RGBA_BYTES {
         return Err(Error::new(
             ErrorKind::ResourceLimit,
             "linear output exceeds 512 MiB",
@@ -675,6 +676,16 @@ mod tests {
         (encoded * 255.0).round() as u8
     }
 
+    #[test]
+    fn raw_planar_bound_is_separate_from_terminal_rgba_bound() {
+        // This checks admission arithmetic only; LinearImage is not allocated.
+        assert!(layout(16_000, 8_000).is_ok());
+        assert!(output_len(16_000, 6_250).is_ok());
+        assert!(output_len(16_000, 8_000).is_ok());
+        assert!(output_len(16_000, 8_001).is_err());
+        assert!(layout(16_384, 16_384).is_err());
+    }
+
     /// A colour-stage layer reaches the linear path too: the Basic module's units run on the
     /// scene-linear pixel, without the 8-bit decode and quantize the JPEG path needs, and the only
     /// encoding is the terminal boundary. A RAW stack therefore never silently omits a Basic edit.
@@ -966,7 +977,7 @@ mod tests {
         assert!(LinearImage::new(2, 2, vec![f32::NAN; 12]).is_err());
         assert!(LinearImage::new(0, 1, Vec::<f32>::new()).is_err());
         assert!(LinearImage::new(16_385, 1, Vec::<f32>::new()).is_err());
-        assert!(output_len(8_192, 8_192).is_err());
+        assert!(output_len(16_000, 8_001).is_err());
         let source = image(2, 2, &[[0.0, 0.0, 0.0]; 4]);
         assert!(source.with_view([1, 1, 2, 2], 1).is_err());
         assert!(source.with_view([u32::MAX, 0, 2, 1], 1).is_err());

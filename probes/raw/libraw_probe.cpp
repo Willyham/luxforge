@@ -32,14 +32,22 @@ template<typename T> static void array(std::ostream &o, const T *v, size_t n) {
 }
 int main(int argc, char **argv) {
   try {
-    if (argc != 3) throw std::runtime_error("usage: libraw_probe SOURCE NEW_OUTPUT_DIRECTORY");
+    if (argc != 3 && argc != 4) throw std::runtime_error("usage: libraw_probe SOURCE NEW_OUTPUT_DIRECTORY [--metadata-only]");
+    const bool metadata_only = argc == 4 && std::string(argv[3]) == "--metadata-only";
+    if (argc == 4 && !metadata_only) throw std::runtime_error("unknown option");
     const fs::path source(argv[1]), out(argv[2]);
-    if (!fs::is_regular_file(source) || fs::file_size(source) > 128ull * 1024 * 1024)
+    // Diagnostic corpus bounds are independent of the application's admission
+    // limits: inspect large modes before deciding whether they can be supported.
+    if (!fs::is_regular_file(source) || fs::file_size(source) > 512ull * 1024 * 1024)
       throw std::runtime_error("input bound");
     if (!fs::create_directory(out)) throw std::runtime_error("output directory must be new");
     LibRaw decoder;
     auto a = Clock::now();
     check(decoder.open_file(source.c_str()), "identify");
+    const auto &identified = decoder.imgdata.sizes;
+    if (!identified.raw_width || !identified.raw_height || identified.raw_width > 16384 ||
+        identified.raw_height > 16384 || uint64_t(identified.raw_width) * identified.raw_height > 128000000)
+      throw std::runtime_error("probe sensor bound");
     auto b = Clock::now();
     check(decoder.unpack(), "unpack");
     auto c = Clock::now();
@@ -48,8 +56,9 @@ int main(int argc, char **argv) {
     libraw_decoder_info_t decoder_info{};
     check(decoder.get_decoder_info(&decoder_info), "decoder info");
     if (!d.rawdata.raw_image || !s.raw_width || !s.raw_height || s.raw_width > 16384 || s.raw_height > 16384 ||
-        uint64_t(s.raw_width) * s.raw_height > 64000000 || s.raw_pitch < unsigned(s.raw_width) * 2 ||
+        uint64_t(s.raw_width) * s.raw_height > 128000000 || s.raw_pitch < unsigned(s.raw_width) * 2 ||
         s.raw_pitch % 2) throw std::runtime_error("unsupported probe mosaic/stride");
+    if (!metadata_only) {
     std::ofstream pixels(out / "samples.u16le", std::ios::binary | std::ios::out);
     if (!pixels) throw std::runtime_error("cannot create samples");
     for (unsigned y = 0; y < s.raw_height; ++y) {
@@ -62,6 +71,7 @@ int main(int argc, char **argv) {
     }
     pixels.close();
     if (!pixels) throw std::runtime_error("samples write failed");
+    }
     std::ofstream j(out / "result.json", std::ios::out);
     if (!j) throw std::runtime_error("cannot create result");
     j << "{\n  \"format\":1,\"backend\":\"LibRaw 0.22.2\",\"scope\":\"unpack experiment\",\n";
@@ -72,6 +82,7 @@ int main(int argc, char **argv) {
       << ",\"raw_pitch\":" << s.raw_pitch << ",\"flip\":" << s.flip
       << ",\"filters\":" << d.idata.filters << ",\"colors\":" << d.idata.colors
       << ",\"cdesc\":"; q(j,d.idata.cdesc); j << ",\"decoder_name\":";q(j,decoder_info.decoder_name?decoder_info.decoder_name:"");j<<",\"decoder_flags\":"<<decoder_info.decoder_flags<<",\"dng_version\":" << d.idata.dng_version;
+    j << ",\"raw_count\":" << d.idata.raw_count;
     j << ",\"raw_inset_crops\":[";
     for(int i=0;i<2;++i){if(i)j<<',';auto &r=s.raw_inset_crops[i];j<<'['<<r.cleft<<','<<r.ctop<<','<<r.cwidth<<','<<r.cheight<<']';}
     j << ']';

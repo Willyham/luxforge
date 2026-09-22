@@ -18,6 +18,9 @@ use std::{collections::VecDeque, path::PathBuf, time::Duration};
 
 /// An evidence run that has not finished by then is stuck; exit so the harness reaps nothing.
 pub(crate) const EVIDENCE_DEADLINE: Duration = Duration::from_secs(25);
+/// Full RAW edit/history scripts can redevelop a 100 MP source several times.
+/// The Q2 correction journey makes progress beyond the single-open deadline.
+pub(crate) const SCRIPT_EVIDENCE_DEADLINE: Duration = Duration::from_secs(60);
 
 /// The most steps one evidence run accepts, so a script cannot outlive the evidence deadline
 /// unnoticed.
