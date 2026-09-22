@@ -5,8 +5,17 @@
 //! evaluated in f64 and converted to the existing byte [`Raster`] only at the terminal boundary.
 //! The byte JPEG evaluator in [`super::render`] remains unchanged.
 
-use super::{Compiled, Raster};
-use crate::{Error, ErrorKind, Recipe, SnapshotId, modules::ModuleRegistry};
+use super::{
+    Compiled, Entry, Raster,
+    spatial::{
+        self, Cancel, PRODUCTION_TILE, SpatialPlan, build_reduction, fill_planes, resolve_globals,
+        run_batches, run_tile,
+    },
+};
+use crate::{
+    Error, ErrorKind, Recipe, SnapshotId,
+    modules::{Global, ModuleRegistry, SpatialOperation, Stage},
+};
 use rayon::prelude::*;
 use std::sync::{Arc, Weak};
 
@@ -460,6 +469,15 @@ struct LinearEvaluation<'a> {
     source: &'a LinearImage,
     compiled: Compiled,
     exposure_multiplier: f64,
+    /// The frame a spatial entry produces, at the index of the segment it enters. The linear path
+    /// pulls single pixels through the compiled prefix, and a neighbourhood cannot be pulled one
+    /// pixel at a time, so each spatial operation's output is materialized once, in stage order,
+    /// as three `f32` planes inside the 512 MiB frame limit. Nothing is quantized here: the values
+    /// stay float until the terminal boundary.
+    spatial_frames: Vec<Option<Arc<Vec<f32>>>>,
+    /// The output tile a spatial entry is evaluated in; [`PRODUCTION_TILE`] outside the tests that
+    /// prove the result does not depend on it.
+    tile: u32,
 }
 
 impl<'a> LinearEvaluation<'a> {
@@ -468,20 +486,112 @@ impl<'a> LinearEvaluation<'a> {
         source: &'a LinearImage,
         recipe: &Recipe,
         settings: LinearSettings,
+        cancel: &Cancel,
+        tile: u32,
     ) -> Result<Self, Error> {
         let exposure_multiplier = settings.multiplier()?;
         let compiled = registry.compile(source.width(), source.height(), recipe)?;
-        if compiled.segments.len() > MAX_RESAMPLES + 1 {
+        let resamples = compiled
+            .segments
+            .iter()
+            .filter(|segment| matches!(segment.entry.as_ref().map(Entry::resample), Some(Some(_))))
+            .count();
+        if resamples > MAX_RESAMPLES {
             return Err(Error::new(
                 ErrorKind::Validation,
                 "linear evaluation supports at most one resample stage",
             ));
         }
-        Ok(Self {
+        let spatial_frames = vec![None; compiled.segments.len()];
+        let mut evaluation = Self {
             source,
             compiled,
             exposure_multiplier,
-        })
+            spatial_frames,
+            tile,
+        };
+        // In order, because a later spatial operation pulls its input through the earlier one.
+        for index in 0..evaluation.compiled.segments.len() {
+            let Some(Entry::Spatial {
+                operation,
+                prefix_hash,
+            }) = &evaluation.compiled.segments[index].entry
+            else {
+                continue;
+            };
+            let frame = evaluation.build_spatial_frame(
+                index,
+                &operation.clone(),
+                &prefix_hash.clone(),
+                cancel,
+            )?;
+            evaluation.spatial_frames[index] = Some(Arc::new(frame));
+        }
+        Ok(evaluation)
+    }
+
+    /// Materialize one spatial operation's output over the whole stage, tile by tile, in the same
+    /// batches and against the same budget the byte path uses. Each tile's input region is pulled
+    /// through `pixel_in` of the previous segment, which already applies the source exposure,
+    /// every colour unit and every replacement, so the operation sees exactly the stage the design
+    /// says it does without an input frame ever existing.
+    fn build_spatial_frame(
+        &self,
+        index: usize,
+        operation: &SpatialOperation,
+        prefix_hash: &str,
+        cancel: &Cancel,
+    ) -> Result<Vec<f32>, Error> {
+        let previous = &self.compiled.segments[index - 1];
+        let stage = Stage {
+            width: previous.width,
+            height: previous.height,
+        };
+        // The frame limit applies to this float frame exactly as it does to a byte frame.
+        let (values, _) = layout(stage.width, stage.height)?;
+        let read = |x: u32, y: u32| -> Result<[f32; 3], Error> {
+            let pixel = self.pixel_in(index - 1, x, y)?.ok_or_else(|| {
+                Error::new(
+                    ErrorKind::Render,
+                    "a spatial read was outside its input stage",
+                )
+            })?;
+            Ok(pixel.map(|value| value as f32))
+        };
+        let plan = SpatialPlan::new(operation, stage, self.tile)?;
+        let globals: Vec<Option<Global>> = resolve_globals(
+            operation,
+            stage,
+            self.source.fingerprint(),
+            prefix_hash,
+            || build_reduction(stage, read),
+        )?;
+        let mut frame = vec![0.0_f32; values];
+        let plane = (u64::from(stage.width) * u64::from(stage.height)) as usize;
+        let _reservation = spatial::reserve_batch(&plan)?;
+        run_batches(
+            &plan,
+            cancel,
+            |tile| {
+                run_tile(&plan, operation, &globals, tile, |region, planes| {
+                    fill_planes(region, planes, read)
+                })
+            },
+            |tile, (region, tile_values)| -> Result<(), Error> {
+                for y in tile.y0..tile.y1() {
+                    for x in tile.x0..tile.x1() {
+                        let pixel = spatial::plane_pixel(region, &tile_values, x, y);
+                        let offset =
+                            (u64::from(y) * u64::from(stage.width) + u64::from(x)) as usize;
+                        frame[offset] = pixel[0];
+                        frame[plane + offset] = pixel[1];
+                        frame[2 * plane + offset] = pixel[2];
+                    }
+                }
+                Ok(())
+            },
+        )?;
+        Ok(frame)
     }
 
     fn stage(&self) -> (u32, u32) {
@@ -515,9 +625,24 @@ impl<'a> LinearEvaluation<'a> {
         let Some(resolved) = segment.resolve(x, y) else {
             return Ok(None);
         };
-        let mut pixel = match segment.entry {
+        let mut pixel = match &segment.entry {
             None => self.source_pixel(resolved.input_x, resolved.input_y)?,
-            Some(resample) => {
+            Some(Entry::Spatial { .. }) => {
+                let previous = &self.compiled.segments[index - 1];
+                let frame = self.spatial_frames[index]
+                    .as_ref()
+                    .expect("a spatial segment's frame is built before any pixel is pulled");
+                let plane = (u64::from(previous.width) * u64::from(previous.height)) as usize;
+                let offset = (u64::from(resolved.input_y) * u64::from(previous.width)
+                    + u64::from(resolved.input_x)) as usize;
+                [
+                    f64::from(frame[offset]),
+                    f64::from(frame[plane + offset]),
+                    f64::from(frame[2 * plane + offset]),
+                ]
+            }
+            Some(Entry::Resample(resample)) => {
+                let resample = *resample;
                 let previous = &self.compiled.segments[index - 1];
                 let (u, v) = resample.input_at(resolved.input_x, resolved.input_y);
                 linear_bilinear(
@@ -585,7 +710,51 @@ pub fn render_linear(
     recipe: &Recipe,
     settings: LinearSettings,
 ) -> Result<Raster, Error> {
-    let evaluation = LinearEvaluation::new(registry, source, recipe, settings)?;
+    render_linear_cancellable(
+        registry,
+        source,
+        snapshot_id,
+        recipe,
+        settings,
+        &Cancel::new(),
+    )
+}
+
+/// [`render_linear`] with a token a caller can set from another thread. It is checked between the
+/// tile batches of each spatial operation, which is where a RAW render's unbounded-in-layers work
+/// happens.
+pub fn render_linear_cancellable(
+    registry: &ModuleRegistry,
+    source: &LinearImage,
+    snapshot_id: SnapshotId,
+    recipe: &Recipe,
+    settings: LinearSettings,
+    cancel: &Cancel,
+) -> Result<Raster, Error> {
+    render_linear_tiled(
+        registry,
+        source,
+        snapshot_id,
+        recipe,
+        settings,
+        cancel,
+        PRODUCTION_TILE,
+    )
+}
+
+/// [`render_linear_cancellable`] with the spatial tile size as a parameter, for the tests that
+/// prove a rendered frame does not depend on it.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn render_linear_tiled(
+    registry: &ModuleRegistry,
+    source: &LinearImage,
+    snapshot_id: SnapshotId,
+    recipe: &Recipe,
+    settings: LinearSettings,
+    cancel: &Cancel,
+    tile: u32,
+) -> Result<Raster, Error> {
+    let evaluation = LinearEvaluation::new(registry, source, recipe, settings, cancel, tile)?;
     let (width, height) = evaluation.stage();
     let output_len = output_len(width, height)?;
     let row_bytes = usize::try_from(u64::from(width) * 4).map_err(|_| {
@@ -638,7 +807,14 @@ pub fn sample_linear(
     x: u32,
     y: u32,
 ) -> Result<super::Sample, Error> {
-    let evaluation = LinearEvaluation::new(registry, source, recipe, settings)?;
+    let evaluation = LinearEvaluation::new(
+        registry,
+        source,
+        recipe,
+        settings,
+        &Cancel::new(),
+        PRODUCTION_TILE,
+    )?;
     let (width, height) = evaluation.stage();
     let _ = output_len(width, height)?;
     let rgba = evaluation.pixel(x, y)?.map(terminal_pixel).transpose()?;
@@ -808,6 +984,8 @@ mod tests {
             &view,
             &recipe,
             LinearSettings::default(),
+            &Cancel::new(),
+            PRODUCTION_TILE,
         )
         .unwrap();
         assert_eq!(

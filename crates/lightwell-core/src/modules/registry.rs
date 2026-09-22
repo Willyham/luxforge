@@ -2,12 +2,15 @@
 //! action and query identity. Registration touches no image or catalog resource.
 use super::{
     ActionDescriptor, BasicModule, CanvasInteraction, CropModule, EffectDescriptor, EffectStage,
-    MAX_COLOR_UNITS, MixerModule, ModuleDescriptor, PixelModule, Processing, RawModule, Stage,
-    ToolModule, TransformModule, VignetteModule,
+    MAX_COLOR_UNITS, MixerModule, ModuleDescriptor, PixelModule, Processing, RawModule,
+    SPATIAL_TILE, Stage, ToolModule, TransformModule, VignetteModule,
 };
 use crate::{
     Error, ErrorKind, Layer, RECIPE_FORMAT, Recipe,
-    render::{Compiled, Segment},
+    render::{
+        Compiled, Entry, Segment,
+        spatial::{SpatialPlan, prefix_hash},
+    },
 };
 use std::{
     collections::{HashMap, HashSet},
@@ -374,15 +377,12 @@ impl ModuleRegistry {
                 )));
             }
             let segment = segments.last_mut().expect("one segment always exists");
-            let processing = module.compile(
-                &layer.effect_id,
-                layer.effect_format,
-                &layer.payload,
-                Stage {
-                    width: segment.width,
-                    height: segment.height,
-                },
-            )?;
+            let stage = Stage {
+                width: segment.width,
+                height: segment.height,
+            };
+            let processing =
+                module.compile(&layer.effect_id, layer.effect_format, &layer.payload, stage)?;
             match processing {
                 Processing::ExactGeometry(step) => {
                     if !step.reads_inside(segment.width, segment.height) {
@@ -421,6 +421,27 @@ impl ModuleRegistry {
                         segment.operations.push(Processing::Color(operation));
                     }
                 }
+                Processing::Spatial(operation) => {
+                    // A neutral payload compiles to no units, and no units is no processing: the
+                    // stack keeps its single pass, the identity byte path and the shared source
+                    // buffer, exactly as a neutral colour payload does.
+                    if operation.is_empty() {
+                        continue;
+                    }
+                    // Everything stage-dependent about the operation — the unit count, their
+                    // finiteness, the summed halo and the bytes one tile would need — is decided
+                    // here, before a pixel is read. Nothing is rewritten or reduced to fit.
+                    SpatialPlan::new(&operation, stage, SPATIAL_TILE)?;
+                    let prefix_hash = prefix_hash(&layers[..index])?;
+                    segments.push(Segment::new(
+                        Some(Entry::Spatial {
+                            operation,
+                            prefix_hash,
+                        }),
+                        stage.width,
+                        stage.height,
+                    ));
+                }
                 Processing::Resample(resample) => {
                     if resample.output_width == 0 || resample.output_height == 0 {
                         return Err(validation("a resample declares an empty output stage"));
@@ -431,7 +452,7 @@ impl ModuleRegistry {
                         ));
                     }
                     segments.push(Segment::new(
-                        Some(resample),
+                        Some(Entry::Resample(resample)),
                         resample.output_width,
                         resample.output_height,
                     ));

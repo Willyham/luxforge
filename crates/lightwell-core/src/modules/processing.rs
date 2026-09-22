@@ -1,5 +1,10 @@
 //! The closed host set of processing primitives a module may compile its payloads into.
 //! Composition, mapping and rasterizing stay in the host; a module only describes its step.
+//!
+//! The neighbourhood primitive is large enough to live next door, in
+//! [`spatial`](super::spatial): [`SpatialOperation`] and the [`SpatialUnit`](super::SpatialUnit)
+//! trait it holds are re-exported through this module's parent alongside everything here.
+use super::spatial::SpatialOperation;
 use std::sync::Arc;
 
 /// One image stage: the dimensions a layer's payload addresses.
@@ -139,5 +144,9 @@ pub enum Processing {
     },
     /// Pointwise colour over the whole stage, evaluated in linear-sRGB float by the host.
     Color(ColorOperation),
+    /// A bounded neighbourhood of the whole stage, evaluated in linear-sRGB float by the host in
+    /// tiles. Like a resample it is a stage boundary: it reads the frame the segment before it
+    /// produced and writes the next one, at the same dimensions.
+    Spatial(SpatialOperation),
     Resample(Resample),
 }

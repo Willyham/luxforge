@@ -10,6 +10,7 @@ mod pixel;
 mod processing;
 mod raw;
 mod registry;
+mod spatial;
 mod transform;
 mod vignette;
 
@@ -40,6 +41,11 @@ pub use registry::ModuleRegistry;
 #[cfg(test)]
 pub(crate) use registry::tests::{
     PATCH_ACTION, PATCH_MODULE, PatchModule, STAGE_ACTION, STAGE_EFFECT, StageModule, TestModule,
+};
+pub use spatial::{
+    ESTIMATE_REDUCTION, ESTIMATE_STORE_ENTRIES, Global, MAX_GLOBAL_BYTES, MAX_GLOBAL_VALUES,
+    MAX_REDUCTION_PIXELS, MAX_SPATIAL_HALO, MAX_SPATIAL_UNITS, Planes, PlanesMut, Reduction,
+    Region, SPATIAL_BUDGET_BYTES, SPATIAL_TILE, SpatialOperation, SpatialUnit,
 };
 pub use transform::TransformModule;
 pub use vignette::VignetteModule;

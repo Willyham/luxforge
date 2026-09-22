@@ -1,8 +1,7 @@
 use crate::{
-    EntryId, Error, HistoryEntry, LinearImage, LinearSettings, ModuleRegistry, Raster, Recipe,
-    SourceImage,
+    Cancel, EntryId, Error, HistoryEntry, LinearImage, LinearSettings, ModuleRegistry, Raster,
+    Recipe, SourceImage,
     analysis::{AnalysisIdentity, Report},
-    render, render_linear,
 };
 use serde::{Deserialize, Serialize};
 use std::sync::{
@@ -143,11 +142,30 @@ impl PreviewSource {
         snapshot_id: crate::SnapshotId,
         recipe: &Recipe,
     ) -> Result<Raster, Error> {
+        self.render_cancellable(registry, snapshot_id, recipe, &Cancel::new())
+    }
+
+    /// [`Self::render`] with a cancellation token, so a job whose result is already superseded can
+    /// stop instead of finishing work nobody will look at.
+    pub fn render_cancellable(
+        &self,
+        registry: &ModuleRegistry,
+        snapshot_id: crate::SnapshotId,
+        recipe: &Recipe,
+        cancel: &Cancel,
+    ) -> Result<Raster, Error> {
         match self {
-            Self::Jpeg(image) => render(registry, image, snapshot_id, recipe),
-            Self::Raw { image, settings } => {
-                render_linear(registry, image, snapshot_id, recipe, *settings)
+            Self::Jpeg(image) => {
+                crate::render_cancellable(registry, image, snapshot_id, recipe, cancel)
             }
+            Self::Raw { image, settings } => crate::render_linear_cancellable(
+                registry,
+                image,
+                snapshot_id,
+                recipe,
+                *settings,
+                cancel,
+            ),
         }
     }
 
@@ -213,6 +231,9 @@ pub struct PreviewResult {
 struct Active {
     generation: u64,
     receiver: Receiver<PreviewResult>,
+    /// Set when a newer job supersedes this one. The worker's result is discarded in that case
+    /// anyway, so stopping it early only saves work.
+    cancel: Cancel,
 }
 
 #[derive(Default)]
@@ -226,7 +247,10 @@ impl PreviewQueue {
     pub fn request(&mut self, job: PreviewJob) -> u64 {
         self.generation = self.generation.saturating_add(1);
         let generation = self.generation;
-        if self.active.is_some() {
+        if let Some(active) = self.active.as_ref() {
+            // This job supersedes the running one, whose result `poll` will discard, so the
+            // running one is told to stop.
+            active.cancel.cancel();
             self.pending = Some((generation, job));
         } else {
             self.start(generation, job);
@@ -237,11 +261,16 @@ impl PreviewQueue {
     pub fn cancel(&mut self) -> u64 {
         self.generation = self.generation.saturating_add(1);
         self.pending = None;
+        if let Some(active) = self.active.as_ref() {
+            active.cancel.cancel();
+        }
         self.generation
     }
 
     fn start(&mut self, generation: u64, job: PreviewJob) {
         let (sender, receiver) = sync_channel(1);
+        let cancel = Cancel::new();
+        let job_cancel = cancel.clone();
         std::thread::spawn(move || {
             let entry_id = job.entry.id.clone();
             let draft_revision = job.draft_revision;
@@ -251,9 +280,12 @@ impl PreviewQueue {
                 layers: job.recipe.layers.iter().take(count).cloned().collect(),
             });
             let recipe = prefix.as_ref().unwrap_or(&job.recipe);
-            let result = job
-                .source
-                .render(&job.registry, job.entry.snapshot.id.clone(), recipe);
+            let result = job.source.render_cancellable(
+                &job.registry,
+                job.entry.snapshot.id.clone(),
+                recipe,
+                &job_cancel,
+            );
             // The histogram is reduced from the frame this worker just produced, in place and
             // without a second render or a copy. A failed reduction leaves no report rather than
             // reporting zeroes.
@@ -273,6 +305,7 @@ impl PreviewQueue {
         self.active = Some(Active {
             generation,
             receiver,
+            cancel,
         });
     }
 

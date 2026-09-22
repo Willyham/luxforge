@@ -1,7 +1,8 @@
 use crate::{
     Error, ErrorKind, Layer, Recipe, SnapshotId, SourceImage,
     modules::{
-        ColorOperation, ExactGeometry, ModuleRegistry, PointwiseColor, Processing, Resample, Stage,
+        ColorOperation, ExactGeometry, ModuleRegistry, PointwiseColor, Processing, Resample,
+        SpatialOperation, Stage,
     },
 };
 use rayon::prelude::*;
@@ -15,7 +16,15 @@ use std::{
 };
 
 pub mod linear;
-pub use linear::{LinearImage, LinearSettings, render_linear, sample_linear};
+pub mod spatial;
+pub use linear::{
+    LinearImage, LinearSettings, render_linear, render_linear_cancellable, sample_linear,
+};
+pub use spatial::{Cancel, RENDER_CANCELLED, SpatialBudget, cached_estimates, clear_estimates};
+use spatial::{
+    PRODUCTION_TILE, SpatialPlan, build_reduction, fill_planes, resolve_globals, run_batches,
+    run_tile,
+};
 
 const PARALLEL_RENDER_PIXELS: u64 = 1_000_000;
 
@@ -225,7 +234,9 @@ impl<'a> Iterator for ColorRuns<'a> {
                 match operation {
                     Processing::Color(_) => last = index,
                     Processing::PointReplace { .. } => break,
-                    Processing::ExactGeometry(_) | Processing::Resample(_) => {}
+                    Processing::ExactGeometry(_)
+                    | Processing::Spatial(_)
+                    | Processing::Resample(_) => {}
                 }
             }
             self.position = last + 1;
@@ -634,11 +645,97 @@ fn resample_frame(
     Ok(output)
 }
 
+/// What produces one segment's input frame, and therefore what separates it from the segment
+/// before it. Both kinds are stage boundaries: the frame before them is finished, they read it and
+/// write the next one.
+pub(crate) enum Entry {
+    /// An interpolating boundary that also changes the stage.
+    Resample(Resample),
+    /// A neighbourhood boundary at the same dimensions as the stage it receives. `prefix_hash` is
+    /// the SHA-256 of the canonical JSON of the layers before this one, which together with the
+    /// source and the stage identifies what a global estimate was prepared from.
+    Spatial {
+        operation: SpatialOperation,
+        prefix_hash: String,
+    },
+}
+
+impl Entry {
+    /// The resample this entry is, if it is one. Point queries and the linear path walk a resample
+    /// by its inverse mapping; a spatial entry maps its input pixel to itself.
+    pub(crate) fn resample(&self) -> Option<Resample> {
+        match self {
+            Self::Resample(resample) => Some(*resample),
+            Self::Spatial { .. } => None,
+        }
+    }
+}
+
+/// One neighbourhood pass over a finished byte frame: the operation reads that frame through the
+/// existing sRGB table, runs its unit chain over stage-aligned tiles and quantizes each tile into a
+/// new frame of the same size with the existing exact-threshold quantizer. Alpha is copied from the
+/// input; no full-frame float buffer exists at any point, only one tile's working set per tile in
+/// flight, charged to the spatial budget before the first tile allocates.
+#[allow(clippy::too_many_arguments)]
+fn spatial_frame(
+    input: &[u8],
+    stage: Stage,
+    operation: &SpatialOperation,
+    prefix_hash: &str,
+    fingerprint: &str,
+    cancel: &Cancel,
+    tile_size: u32,
+) -> Result<Vec<u8>, Error> {
+    let plan = SpatialPlan::new(operation, stage, tile_size)?;
+    let read = |x: u32, y: u32| -> Result<[f32; 3], Error> {
+        let offset = ((u64::from(y) * u64::from(stage.width) + u64::from(x)) * 4) as usize;
+        Ok(decode_pixel([
+            input[offset],
+            input[offset + 1],
+            input[offset + 2],
+        ]))
+    };
+    let globals = resolve_globals(operation, stage, fingerprint, prefix_hash, || {
+        build_reduction(stage, read)
+    })?;
+    let mut output = vec![0; Raster::expected_len(stage.width, stage.height)?];
+    let _reservation = spatial::reserve_batch(&plan)?;
+    run_batches(
+        &plan,
+        cancel,
+        |tile| -> Result<Vec<u8>, Error> {
+            let (region, values) = run_tile(&plan, operation, &globals, tile, |region, planes| {
+                fill_planes(region, planes, read)
+            })?;
+            let mut bytes = Vec::with_capacity((tile.pixels() * 3) as usize);
+            for y in tile.y0..tile.y1() {
+                for x in tile.x0..tile.x1() {
+                    bytes.extend(quantize_pixel(spatial::plane_pixel(region, &values, x, y)));
+                }
+            }
+            Ok(bytes)
+        },
+        |tile, bytes| -> Result<(), Error> {
+            for (row, y) in (tile.y0..tile.y1()).enumerate() {
+                for (column, x) in (tile.x0..tile.x1()).enumerate() {
+                    let to = ((u64::from(y) * u64::from(stage.width) + u64::from(x)) * 4) as usize;
+                    let from = (row * tile.width as usize + column) * 3;
+                    output[to..to + 3].copy_from_slice(&bytes[from..from + 3]);
+                    output[to + 3] = input[to + 3];
+                }
+            }
+            Ok(())
+        },
+    )?;
+    Ok(output)
+}
+
 /// One rasterizing pass: the exact operations that share an input frame, their composed geometry and
-/// the stage they produce. `entry` is the resample that produces this segment's input frame, so
-/// consecutive segments are separated by exactly one resample and the first segment reads the source.
+/// the stage they produce. `entry` is what produces this segment's input frame, so consecutive
+/// segments are separated by exactly one resample or one spatial operation, and the first segment
+/// reads the source.
 pub(crate) struct Segment {
-    pub(crate) entry: Option<Resample>,
+    pub(crate) entry: Option<Entry>,
     pub(crate) operations: Vec<Processing>,
     pub(crate) geometry: ExactGeometry,
     pub(crate) width: u32,
@@ -648,7 +745,7 @@ pub(crate) struct Segment {
 }
 
 impl Segment {
-    pub(crate) fn new(entry: Option<Resample>, width: u32, height: u32) -> Self {
+    pub(crate) fn new(entry: Option<Entry>, width: u32, height: u32) -> Self {
         Self {
             entry,
             operations: Vec::new(),
@@ -722,8 +819,9 @@ impl Segment {
                 // A point replacement mapping outside this stage was cropped away.
                 Processing::PointReplace { .. } => {}
                 // Colour is applied to the resolved value, not to the coordinate walk, and a
-                // resample is the next segment's entry, never one of its operations.
-                Processing::Color(_) | Processing::Resample(_) => {}
+                // resample or spatial operation is the next segment's entry, never one of its
+                // operations.
+                Processing::Color(_) | Processing::Spatial(_) | Processing::Resample(_) => {}
             }
         }
         Some(Resolved {
@@ -753,7 +851,7 @@ fn mapped_replacements(segment: &Segment) -> Vec<(usize, u32, u32, [u8; 3])> {
                     mapped.push((index, x, y, *rgb));
                 }
             }
-            Processing::Color(_) | Processing::Resample(_) => {}
+            Processing::Color(_) | Processing::Spatial(_) | Processing::Resample(_) => {}
         }
     }
     mapped.reverse();
@@ -830,6 +928,9 @@ pub struct ContentPoint {
 pub(crate) struct Evaluation<'a> {
     source: &'a SourceImage,
     compiled: Compiled,
+    /// The output tile a spatial entry is evaluated in. It is [`PRODUCTION_TILE`] everywhere but
+    /// in the tests that prove the result does not depend on it.
+    tile: u32,
 }
 
 impl<'a> Evaluation<'a> {
@@ -842,7 +943,16 @@ impl<'a> Evaluation<'a> {
         Ok(Self {
             source,
             compiled: registry.compile(source.width, source.height, recipe)?,
+            tile: PRODUCTION_TILE,
         })
+    }
+
+    #[cfg(test)]
+    /// The same evaluation with another spatial tile size. A spatial unit's value at a pixel
+    /// depends on that pixel's neighbourhood only, so this changes nothing but the schedule.
+    pub(crate) fn with_tile(mut self, tile: u32) -> Self {
+        self.tile = tile;
+        self
     }
 
     /// One evaluation over an ordered prefix of a stack, for planning a layer against the stage it
@@ -857,6 +967,7 @@ impl<'a> Evaluation<'a> {
         Ok(Self {
             source,
             compiled: registry.compile_layers(source.width, source.height, layers)?,
+            tile: PRODUCTION_TILE,
         })
     }
 
@@ -873,6 +984,9 @@ impl<'a> Evaluation<'a> {
     /// blend of four pixels of the previous segment, so a point query costs `O(layers · 4^resamples)`
     /// and never allocates a frame; a stack holds at most one crop layer.
     ///
+    /// A spatial entry is the one exception to "a point query never rasterizes", declared in the
+    /// [performance rules](../../docs/engineering/performance-rules.md): see [`Self::spatial_pixel`].
+    ///
     /// The colour phases are the rasterizing pass's, applied to this one pixel: the replacement that
     /// wins here ends the runs before it, and every run after it is decoded, evaluated and quantized
     /// in turn, so the sampled byte is the byte the frame holds.
@@ -881,9 +995,20 @@ impl<'a> Evaluation<'a> {
         let Some(resolved) = segment.resolve(x, y) else {
             return Ok(None);
         };
-        let mut rgba = match segment.entry {
+        let mut rgba = match &segment.entry {
             None => source_pixel(self.source, resolved.input_x, resolved.input_y),
-            Some(resample) => {
+            Some(Entry::Spatial {
+                operation,
+                prefix_hash,
+            }) => self.spatial_pixel(
+                index,
+                operation,
+                prefix_hash,
+                resolved.input_x,
+                resolved.input_y,
+            )?,
+            Some(Entry::Resample(resample)) => {
+                let resample = *resample;
                 let previous = &self.compiled.segments[index - 1];
                 let (u, v) = resample.input_at(resolved.input_x, resolved.input_y);
                 // `bilinear` fetches four pixels and cannot itself fail, so a failure from the
@@ -918,6 +1043,60 @@ impl<'a> Evaluation<'a> {
         Ok(Some(rgba))
     }
 
+    /// One pixel of the frame a spatial entry produces.
+    ///
+    /// The value at a pixel depends on a bounded neighbourhood of it, so there is no way to answer
+    /// this in `O(layers)`: the sample evaluates the stage-aligned tile that contains the pixel,
+    /// reading that tile plus the operation's summed halo through the compiled prefix, with exactly
+    /// the tile function the render uses. The sampled byte is therefore the byte a render of that
+    /// tile produces, by construction rather than by agreement. Its cost is
+    /// `O((tile + halo)² × layers)`, plus one bounded reduction of the stage when a unit's global
+    /// estimate is not already cached, and it allocates one tile working set from the spatial
+    /// budget and no frame. This is the declared exception to performance rule 4.
+    fn spatial_pixel(
+        &self,
+        index: usize,
+        operation: &SpatialOperation,
+        prefix_hash: &str,
+        x: u32,
+        y: u32,
+    ) -> Result<[u8; 4], Error> {
+        let previous = &self.compiled.segments[index - 1];
+        let stage = Stage {
+            width: previous.width,
+            height: previous.height,
+        };
+        let read = |x: u32, y: u32| -> Result<[f32; 3], Error> {
+            let pixel = self.pixel_in(index - 1, x, y)?.ok_or_else(|| {
+                Error::new(
+                    ErrorKind::Render,
+                    "a spatial read was outside its input stage",
+                )
+            })?;
+            Ok(decode_pixel([pixel[0], pixel[1], pixel[2]]))
+        };
+        let plan = SpatialPlan::new(operation, stage, self.tile)?;
+        let globals = resolve_globals(
+            operation,
+            stage,
+            &self.source.fingerprint,
+            prefix_hash,
+            || build_reduction(stage, read),
+        )?;
+        let tile = plan.tile_containing(x, y);
+        let _reservation = spatial::reserve_one(&plan)?;
+        let (region, values) = run_tile(&plan, operation, &globals, tile, |region, planes| {
+            fill_planes(region, planes, read)
+        })?;
+        let rgb = quantize_pixel(spatial::plane_pixel(region, &values, x, y));
+        // Alpha is never touched by a unit; it is the input frame's, exactly as the render copies
+        // it.
+        let alpha = self
+            .pixel_in(index - 1, x, y)?
+            .map_or(255, |pixel| pixel[3]);
+        Ok([rgb[0], rgb[1], rgb[2], alpha])
+    }
+
     /// The content-stage pixel one output-stage pixel shows. `None` when the coordinate lies outside
     /// the output stage.
     pub(crate) fn locate(&self, x: u32, y: u32) -> Option<(u32, u32)> {
@@ -934,9 +1113,14 @@ impl<'a> Evaluation<'a> {
             return None;
         }
         let (input_x, input_y) = segment.geometry.unmap(x, y);
-        let Some(resample) = segment.entry else {
+        let Some(entry) = &segment.entry else {
             // The first segment reads the source, which is the content stage.
             return Some((input_x, input_y));
+        };
+        let Some(resample) = entry.resample() else {
+            // A spatial entry keeps the stage and every coordinate in it: the pixel a spatial
+            // output shows is the pixel of its input at the same place.
+            return self.locate_in(index - 1, input_x, input_y);
         };
         let previous = &self.compiled.segments[index - 1];
         let (u, v) = resample.input_at(input_x, input_y);
@@ -985,8 +1169,11 @@ pub(crate) fn locate_dimensions(
             return None;
         }
         let (input_x, input_y) = segment.geometry.unmap(x, y);
-        let Some(resample) = segment.entry else {
+        let Some(entry) = &segment.entry else {
             return Some((input_x, input_y));
+        };
+        let Some(resample) = entry.resample() else {
+            return walk(compiled, index - 1, input_x, input_y);
         };
         let previous = &compiled.segments[index - 1];
         let (u, v) = resample.input_at(input_x, input_y);
@@ -1065,6 +1252,40 @@ pub fn render(
     snapshot_id: SnapshotId,
     recipe: &Recipe,
 ) -> Result<Raster, Error> {
+    render_cancellable(registry, source, snapshot_id, recipe, &Cancel::new())
+}
+
+/// [`render`] with a token a caller can set from another thread to stop work it no longer wants.
+/// The token is checked between tile batches of a spatial operation, which is the only part of a
+/// render whose cost is not bounded by one pass over the frame; a cancelled render returns
+/// [`RENDER_CANCELLED`] and releases every reservation it held.
+pub fn render_cancellable(
+    registry: &ModuleRegistry,
+    source: &SourceImage,
+    snapshot_id: SnapshotId,
+    recipe: &Recipe,
+    cancel: &Cancel,
+) -> Result<Raster, Error> {
+    render_tiled(
+        registry,
+        source,
+        snapshot_id,
+        recipe,
+        cancel,
+        PRODUCTION_TILE,
+    )
+}
+
+/// [`render_cancellable`] with the spatial tile size as a parameter. Production always passes
+/// [`PRODUCTION_TILE`]; the tests pass other sizes to prove a rendered frame does not depend on it.
+pub(crate) fn render_tiled(
+    registry: &ModuleRegistry,
+    source: &SourceImage,
+    snapshot_id: SnapshotId,
+    recipe: &Recipe,
+    cancel: &Cancel,
+    tile: u32,
+) -> Result<Raster, Error> {
     check_source(source)?;
     let compiled = registry.compile(source.width, source.height, recipe)?;
     let first = &compiled.segments[0];
@@ -1085,16 +1306,34 @@ pub fn render(
     }
 
     for segment in &compiled.segments[1..] {
-        let resample = segment
+        let entry = segment
             .entry
-            .expect("every segment after the first enters through a resample");
+            .as_ref()
+            .expect("every segment after the first enters through a stage boundary");
         let previous = frame.take();
         let input = previous.as_deref().unwrap_or(source.rgba.as_ref());
-        let mut next = resample_frame(input, width, height, resample)?;
-        // The frame the resample read is released before the next pass, so two frames is the peak.
+        let mut next = match entry {
+            Entry::Resample(resample) => {
+                let frame = resample_frame(input, width, height, *resample)?;
+                width = resample.output_width;
+                height = resample.output_height;
+                frame
+            }
+            Entry::Spatial {
+                operation,
+                prefix_hash,
+            } => spatial_frame(
+                input,
+                Stage { width, height },
+                operation,
+                prefix_hash,
+                &source.fingerprint,
+                cancel,
+                tile,
+            )?,
+        };
+        // The frame the boundary read is released before the next pass, so two frames is the peak.
         drop(previous);
-        width = resample.output_width;
-        height = resample.output_height;
         if !segment.geometry.is_identity(width, height) {
             let transformed = copy_transformed(&next, width, segment.geometry)?;
             next = transformed;
@@ -1148,7 +1387,7 @@ mod tests {
     }
     /// One single-action orientation layer: what a transform commits when the stack does not end
     /// in an orientation layer. A sequence of these is the stepwise form every proof below uses.
-    fn turn(transform: Transform) -> Layer {
+    pub(crate) fn turn(transform: Transform) -> Layer {
         Layer::orientation(Orientation::of(transform))
     }
 
@@ -1397,7 +1636,7 @@ mod tests {
 
     /// The payload a crop draft would commit: the requested fraction of the rotated box, fitted onto
     /// the source and normalized, so every case in these tests is a rectangle the contract accepts.
-    fn fitted_crop(width: u32, height: u32, angle: f64, rect: [f64; 4]) -> CropPayload {
+    pub(crate) fn fitted_crop(width: u32, height: u32, angle: f64, rect: [f64; 4]) -> CropPayload {
         let stage = CropStage {
             width,
             height,
@@ -1413,7 +1652,7 @@ mod tests {
         fitted.normalized(&stage)
     }
 
-    fn crop_layer(crop: CropPayload) -> Layer {
+    pub(crate) fn crop_layer(crop: CropPayload) -> Layer {
         Layer {
             id: LayerId::new(),
             effect_id: TEST_CROP_EFFECT.into(),
@@ -1440,7 +1679,7 @@ mod tests {
         }
     }
 
-    fn geometry_registry() -> ModuleRegistry {
+    pub(crate) fn geometry_registry() -> ModuleRegistry {
         let mut registry = ModuleRegistry::builtin();
         registry.register(GeometryTestModule::shared()).unwrap();
         registry
@@ -1448,7 +1687,7 @@ mod tests {
 
     /// An asymmetric gradient with a varying alpha, so a wrong axis, a wrong weight or a dropped
     /// alpha channel all show up.
-    fn gradient(width: u32, height: u32) -> SourceImage {
+    pub(crate) fn gradient(width: u32, height: u32) -> SourceImage {
         let mut rgba = Vec::with_capacity((width * height * 4) as usize);
         for y in 0..height {
             for x in 0..width {
@@ -1471,7 +1710,7 @@ mod tests {
 
     /// An independent f64 evaluation of the crop contract: the rotated box, the rounded output
     /// rectangle and one bilinear sample in linear light. It shares no code with the renderer.
-    struct CropReference {
+    pub(crate) struct CropReference {
         box_width: f64,
         box_height: f64,
         cos: f64,
@@ -1482,7 +1721,7 @@ mod tests {
     }
 
     impl CropReference {
-        fn new(source: &SourceImage, crop: CropPayload) -> Self {
+        pub(crate) fn new(source: &SourceImage, crop: CropPayload) -> Self {
             let rect = [crop.x, crop.y, crop.width, crop.height];
             let radians = crop.angle * std::f64::consts::PI / 180.0;
             let (cos, sin) = (radians.cos(), radians.sin());
@@ -1514,7 +1753,7 @@ mod tests {
             )
         }
 
-        fn pixel(&self, source: &SourceImage, i: u32, j: u32) -> [u8; 4] {
+        pub(crate) fn pixel(&self, source: &SourceImage, i: u32, j: u32) -> [u8; 4] {
             let decode = |value: u8| -> f64 {
                 let encoded = f64::from(value) / 255.0;
                 if encoded <= 0.04045 {
