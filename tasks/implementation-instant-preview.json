@@ -8,7 +8,7 @@
     {
       "id": "TASK-001",
       "description": "Add the proxy source to the core: ProxyBounds, the separable area-average downscale of a SourceImage (linear light through the decode table, re-quantized through the threshold table) and of a LinearImage (planar f32 through its view), the proxy scale from the recipe's full-resolution output stage, the registry's proxy-eligibility rule (every layer at the source, colour or geometry stage), and the one-entry proxy cache keyed by source identity, proxy dimensions and bounds.",
-      "status": "pending",
+      "status": "completed",
       "dependencies": [],
       "extra_context": [
         "Bounds are clamped to 4096 px per side and 8 megapixels; the proxy is refused (None, exact path) when the scale is 1 or larger. Proxy dimensions are round(width \u00d7 s) \u00d7 round(height \u00d7 s) with a minimum of 1. The downscale runs on the shared Rayon pool above the one-megapixel threshold and serially below it, and never on the owner thread.",
@@ -78,7 +78,7 @@
     {
       "id": "TASK-002",
       "description": "Add cooperative cancellation to rendering: a shared cancellation token checked at chunk granularity by the exact transform pass, the resample pass, the streamed colour pass, the linear row pass and the histogram reducer, with a distinct cancelled error kind, so a superseded full-resolution render stops within about a millisecond without changing any pixel a completed render produces.",
-      "status": "pending",
+      "status": "completed",
       "dependencies": [],
       "extra_context": [
         "The existing render, render_linear and reduce_raster signatures stay for every current caller; the cancellable variants take the token. A token that is never cancelled must not change any output byte: the existing exact tests are the proof.",
@@ -141,7 +141,7 @@
     {
       "id": "TASK-003",
       "description": "Make the preview job two-phase: PreviewRequest and PreviewJob carry optional ProxyBounds, the worker renders the proxy phase from the cached proxy source and sends it, then renders the exact phase (with the report when asked) under a cancellation token, and PreviewQueue cancels the active job's exact phase whenever a newer request supersedes it, stores the proxy source back into its cache, tags every result with its phase and proxy dimensions, and wakes the desktop through an optional waker callback after each send.",
-      "status": "pending",
+      "status": "completed",
       "dependencies": [
         "TASK-001",
         "TASK-002"
@@ -203,7 +203,7 @@
     {
       "id": "TASK-004",
       "description": "Adopt the proxy in the desktop: derive ProxyBounds from the window, the open panels and the scale factor and send them with every preview request whose zoom fits them; upload and present the proxy phase; adopt the exact phase's report and retained raster without an upload at Fit; upload the retained exact raster on a zoom to 100% without re-rendering; derive the clipping overlay from the proxy raster while the exact phase is outstanding and mark it approximate; replace the 16 ms preview poll with the worker waker channel; send draft.set immediately when idle and remove the slider tick; extend the events, the state summary and the evidence settle rules.",
-      "status": "pending",
+      "status": "completed",
       "dependencies": [
         "TASK-003"
       ],
@@ -289,7 +289,7 @@
     {
       "id": "TASK-005",
       "description": "Extend the evidence harness for a wild drag: a paced slider step (interval_ms sends one value per interval through a gated timer that exists only while the step runs), an editor-latency burst mode (three seconds of exposure values at 120 per second sweeping -2 to +2 EV and back) reporting presented frames per second, the staleness of every presented frame and the largest gap between presented frames, proxy dimensions in every report and the new provisional targets in the verify timing summary.",
-      "status": "pending",
+      "status": "completed",
       "dependencies": [],
       "extra_context": [
         "Staleness of a presented frame is its input's slider_draft_set time to its preview_displayed time, correlated by generation as the drag mode already does; a coalesced value that never reached the owner is counted, not measured. The report keeps every sample.",
@@ -348,11 +348,74 @@
     },
     {
       "id": "TASK-006",
+      "description": "Draw the photograph through a photo-surface primitive that owns its wgpu texture: an iced shader program whose prepare writes the raster handed to the view into a texture the pipeline keeps (recreated only when the dimensions change) and whose draw maps it into the widget bounds with the Fit containment or the exact percentage box, so a proxy frame reaches the screen in the redraw that follows the worker's wake and no image allocation round trip remains on the input path.",
+      "status": "pending",
+      "dependencies": [
+        "TASK-004"
+      ],
+      "extra_context": [
+        "The primitive draws whatever raster the canvas holds: the proxy at Fit and zoomed-out percentages, the exact raster at 100% and above. The clipping overlay and the crop draft keep the toolkit image path and stack over it. Bytes are reproduced exactly: the texture and the surface format match what the toolkit's image pipeline uses (sRGB-typed when the toolkit gamma-corrects), and a smoke capture of a flat fixture colour proves it.",
+        "preview_displayed is emitted when the raster becomes the surface's source and a redraw is requested, with the same fields as today; the design records that presented means that update. Uploaded is no longer part of the photo path.",
+        "One texture per surface plus the retained rasters already held; the write is one queue.write_texture per changed frame, never per redraw."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Instant preview design",
+          "target": "docs/design/instant-preview.md",
+          "relevance": "The hop rule and the primitive's contract.",
+          "locator": "One frame per hop"
+        },
+        {
+          "kind": "file",
+          "label": "Canvas view",
+          "target": "crates/lightwell-app/src/view/canvas.rs",
+          "relevance": "Where the photo is drawn today from an allocation."
+        },
+        {
+          "kind": "file",
+          "label": "Desktop update loop",
+          "target": "crates/lightwell-app/src/app/mod.rs",
+          "relevance": "The Poll handler that uploads and presents."
+        },
+        {
+          "kind": "file",
+          "label": "Widget library",
+          "target": "crates/lightwell-ui/src/lib.rs",
+          "relevance": "Where a pure widget may live; it depends on iced only."
+        }
+      ],
+      "acceptance_criteria": [
+        "Every smoke scenario passes with unchanged fixture-colour checks, so the primitive reproduces bytes exactly at Fit and at 100%.",
+        "editor-latency drag mode shows no Uploaded message on the photo path and an input-to-presented p50 at 24 MP below 20 ms on a quiet host; burst mode presents at least 30 frames per second.",
+        "A zoom to 100% writes the exact raster to the texture once and pans without any write."
+      ],
+      "test_strategy": {
+        "approach": "mixed",
+        "steps": [
+          "Unit tests for the containment and percentage mapping.",
+          "Run every smoke scenario and editor-acceptance.",
+          "Run editor-latency drag and burst on 24 MP and 60 MP."
+        ],
+        "commands": [
+          "cargo build --release --locked",
+          "cargo test --locked --package lightwell-app",
+          "cargo run --release --locked --package xtask -- smoke --scenario large24",
+          "cargo run --release --locked --package xtask -- editor-latency --source fixtures/generated/24mp.jpg --output artifacts/latency-24-drag --samples 30 --mode drag"
+        ],
+        "expected_results": [
+          "Exact bytes, no upload hop, and the latency figures recorded with the host load."
+        ]
+      }
+    },
+    {
+      "id": "TASK-007",
       "description": "Qualify and document: add editor-performance rows for the proxy build and the proxy render on 24 and 60 MP, run the timing suite (editor-performance on 24 and 60 MP; editor-latency drag, commit and burst on 24 MP, 60 MP and the 24 MP crop stack; raw-editor on the manifest when available; measure for idle and memory) at the documented sample counts on the M4 Mac, record the figures against every target in the performance plan, update the performance rules (remove the full-resolution upload known cost, add the proxy and cancellation rules), the architecture limits, the Basic and histogram design's gesture bound wording, the feature status, the user guide's Fit and 100% description and the roadmap, and decide from the figures whether the GPU colour stage proposal is needed.",
       "status": "pending",
       "dependencies": [
         "TASK-004",
-        "TASK-005"
+        "TASK-005",
+        "TASK-006"
       ],
       "extra_context": [
         "Every figure states host, build hashes, load average, sample count and scope, and a target with a miss is reported as a miss. No approximate processing, cache or timer is added to pass a target.",
@@ -443,6 +506,12 @@
       "wave": 4,
       "task_ids": [
         "TASK-006"
+      ]
+    },
+    {
+      "wave": 5,
+      "task_ids": [
+        "TASK-007"
       ]
     }
   ]

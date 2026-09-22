@@ -62,6 +62,16 @@ During a gesture, before the exact phase of the newest frame has landed, the cli
 - The preview and overlay workers wake the desktop when a result is ready, through one channel subscription that yields the same `Poll` message the timer used to. The 16 ms preview poll is removed; nothing wakes when nothing has finished, which is also the idle rule.
 - The `draft.set` round trip is not changed. Its measured cost is CPU contention with the full-resolution render, which the proxy removes.
 
+### One frame per hop
+
+Measured on the M4 Mac with per-leg timings: the owner answers `draft.set` and plans the preview job in under 0.2 ms, the desktop's own update, model derivation and view take under 0.15 ms together, and every message handed back into the update loop through the runtime — a task result, a worker's wake, an image allocation's answer — arrives about 8 ms later, one frame of the 120 Hz display. A redraw is always in flight during a drag, the main thread waits on its present, and a message that arrives meanwhile waits with it. The per-input path therefore has as few runtime hops as its work allows:
+
+- The gesture's `draft.set` and preview-job requests are made synchronously on the desktop thread. They are two `O(layers)` owner requests; the owner does no frame work by rule, so the wait is bounded by catalog work alone.
+- The proxy frame is drawn by a photo-surface primitive that owns its texture: the raster handed to the view is written to that texture in the same frame that draws it, so no allocation round trip stands between the worker's result and the screen. The overlay and the crop draft keep the toolkit's image path.
+- The worker's wake is the one hop that remains, because the raster has to reach the thread that draws.
+
+"Presented" in the harness is the update in which the raster became the surface's source; it is drawn by the redraw that update requests, which is the next frame.
+
 ### The Fit view is the proxy
 
 At Fit, and at any zoom whose displayed size fits the bounds, the presented texture is the proxy render, for drafted and committed frames alike. The photograph therefore never changes appearance between the last drafted frame and the committed one: both are the same recipe at the same size through the same filter. This replaces the GPU's bilinear minification of a full-resolution texture with a box-filtered display-size render, which is a visible improvement in aliasing at Fit and a change to what a Fit capture contains. The exact render is still produced for every committed frame and stays the source of every number.
@@ -86,6 +96,7 @@ Zooming from Fit to 100% uploads the retained exact raster when the exact phase 
 
 Recorded here as proposals, not decisions.
 
+- **Coarser proxy while the pointer moves.** With every Basic unit active, the proxy render is the largest remaining cost per input (about 50 ms at 24 MP under a rotated crop on this host). Rendering at half the display size while inputs keep arriving, then at display size once they pause, would cut that fourfold at the cost of a softer picture during the movement itself; it is a measured proposal, taken only if the GPU stage below is not.
 - **GPU colour stage.** If the proxy render of the full Basic layer still misses the two-frame target at Fit, the next step is to draw the proxy of the drafted layer's input stage through an `iced` shader primitive and apply the colour units as a fragment program with the coefficients as uniforms, so a tick costs a uniform write. That needs a WGSL transcription of each unit, a headless readback test against the CPU path within one code, and a fallback to the CPU proxy whenever a unit has no GPU program. The proxy source and the two-phase job are the foundation it needs and are built so that it changes only the presentation of the proxy phase.
 - **Viewport tiles at 100%.** A drag at 100% still renders the whole exact frame. Rendering only the visible region plus a margin needs the inverse of the geometry tail over a rectangle, which the crop contract does not yet define.
 - **RAW white balance drag.** A matrix approximation on the developed planes during the gesture, with the mosaic redevelopment on release, would make temperature and tint drags as fast as exposure on RAW.
