@@ -238,7 +238,7 @@ One new parameter kind is needed, and only one: `points {points_min, points_max}
 Two new canvas interactions join `point-pick`, `sample-apply` and `crop-frame`:
 
 - `mask-shape {create_action, set_action, …}` — the host's handle editor for linear and radial components, editing a transient draft of the named parameters and committing once, exactly as `crop-frame` does for the crop rectangle.
-- `mask-brush {action, points, size, feather, flow, erase}` — the host's stroke capture: it accumulates the path, decimates it to the declared tolerance, and commits one stroke.
+- `brush-paint {action, points, size, feather, flow, erase}` — the host's stroke capture: it accumulates the path, decimates it to the declared tolerance, and commits one stroke. It is deliberately **not** mask-specific and is not named for masks: it fills the declared parameters of whatever action declares it, so the corrections proposal (`docs/design/corrections.md`, an unmerged owner-review proposal) declares the same interaction for Clone, Heal and AI Remove rather than a second brush. See [one brush system](#one-brush-system).
 
 ## The Develop workspace
 
@@ -288,6 +288,39 @@ Declared limits, each with a `resource-limit` error naming it — the [limits ta
 
 The last one is load-bearing. Every history entry stores a complete snapshot ([performance rule 10](../engineering/performance-rules.md#rules)), and a brush session appends an entry per stroke, so mask bytes are multiplied by the number of entries. Three things keep that bounded, and the plan measures the result rather than assuming it: the desktop decimates a captured path to a stated tolerance before it is ever sent; coordinates are stored at the precision a 16384 px side can resolve and no more; and the per-recipe bound above fails explicitly instead of growing. Sharing unchanged mask blobs between snapshots by content hash is [proposal P6](#proposals-with-recorded-defaults) and is a measurement, not a default.
 
+### Stroke storage
+
+Every history entry stores a complete recipe, not a delta ([history](../specs/edit-history.md), [persistence](architecture.md#persistence)). One stroke is one entry, so an entry embedding its component's whole stroke list copies every earlier stroke in that mask, and storage grows with the **square** of the stroke count. Measured on the shape the payload actually has — a 100-point stroke serializes to about 1.8 KiB — 200 strokes embed 20,100 stroke copies and cost about **37.5 MB** across history, against 364 KiB of distinct stroke data.
+
+The fix, decided by the owner on 2026-09-23, is a **content-addressed stroke store**: each stroke is stored once under a hash of its contents, and an entry's recipe lists its strokes' hashes instead of embedding their points.
+
+| 200 strokes of 100 points | Embedded | Content-addressed |
+| --- | --- | --- |
+| Distinct stroke data | 364 KiB | 364 KiB |
+| Stored across history | 37.5 MB | 1.08 MB |
+
+Why this shape and not another:
+
+- **Entries stay full snapshots.** One lookup previews, undoes or restores; nothing is replayed, and the history graph, its branches and named versions are untouched. Pure deltas were rejected for the opposite reason: they make every entry depend on all the entries before it and require a replay to rebuild one.
+- **A missing or corrupt stroke fails explicitly** and names the stroke and the entry, exactly as an unavailable effect and an unknown component kind do. It is never silently dropped and never rendered as an empty stroke.
+- **It is a host store for paths, not a mask table.** Corrections has the identical problem, so the store, the hash and the failure behaviour belong beside the recipe, not inside the mask model.
+
+It does **not** make storage linear, and the design does not claim that. An entry still holds one reference per stroke, so the growth stays quadratic; what changes is the constant, from about 1.8 KiB per stroke per entry to about 35 bytes, a factor of roughly 53. That is decisive at the sizes a person reaches — 200 strokes is 1 MB rather than 37 MB — and it returns at sizes they do not: about 19 MB at 1000 strokes and 105 MB at 2400. If that ever binds, the escape hatch is to content-address the *list* as a hash chain, one constant-size node per stroke, which is genuinely linear at the cost of an O(strokes) walk to rebuild a list; it is recorded here and not built.
+
+The store changes the catalog format again, to 6. Pre-release rules allow that: an unsupported format is refused explicitly without rewriting anything ([current shapes only](../../AGENTS.md)). It lands in phase C **before the first brush ships**, so no catalog ever holds embedded stroke points. Until it lands, the declared caps below are what bound the growth, and they refuse the excess with `resource-limit` rather than letting a catalog grow without limit.
+
+### One brush system
+
+A brush is a host primitive, not a feature of masking. Three things are defined in the core and shared:
+
+| Primitive | Shared by |
+| --- | --- |
+| The `points` parameter kind and its decimation contract | Any action taking a path |
+| The stroke — an ordered list of add and erase strokes with size, feather and flow, and the frozen accumulation rules | The brush mask component; the corrections repair operations |
+| The `brush-paint` canvas interaction and the content-addressed stroke store | Both, and anything later that paints |
+
+The corrections proposal (`docs/design/corrections.md`, an unmerged owner-review proposal) asks for a `brush-mask` interaction with content-space brush geometry for Clone, Heal and AI Remove. That is this interaction under another name. Masking is implementing it first, so masking names it generically and puts it in the host; corrections declares it for its own actions and adds no second brush. Neither design owns it.
+
 Responsiveness keeps the delivered targets and adds no new class of work: a mask evaluation is a handful of flops per pixel per masked layer, on top of the units it modulates, and the bounds rectangle removes it entirely outside the selection. The [provisional slider target](instant-preview.md#goal) — p95 under 16 ms, acceptable under 32 ms — applies unchanged to a masked slider drag and to a brush stroke's drafted frames, and a measured miss is reported with its figures.
 
 ## Non-AI detection: what is honest
@@ -315,7 +348,7 @@ Each phase ends with the evidence its claims need; a phase is not complete witho
 
 - **A — foundation and the linear gradient.** The model, persistence in catalog format 5, the `mask` target field, `CompiledMask`, the masked colour primitive, `render.transform`, the `mask.*` commands the gradient needs, the Mask mode and panel, the overlay, and the mask study that freezes the composition algebra and the gradient falloff. At the end of A a person can drag a gradient and lift the sky's exposure, from the panel or from JSON.
 - **B — radial and combination.** The radial component, Subtract and Intersect, inversion at both levels, amount, reorder and duplicate, the component-list UX, and the masked spatial primitive so Presence runs through a mask.
-- **C — brushes.** The `points` parameter kind, the `mask-brush` canvas interaction and its draft, the brush component with multiple strokes, erase strokes, size, feather and flow, the grid index and its cost contract, path decimation and the payload bounds, and brush-over-gradient combination.
+- **C — brushes.** The `points` parameter kind, the content-addressed stroke store in catalog format 6, the `brush-paint` canvas interaction and its draft, the brush component with multiple strokes, erase strokes, size, feather and flow, the grid index and its cost contract, path decimation and the payload bounds, and brush-over-gradient combination. The path kind, the stroke list and the interaction are host primitives the corrections design reuses rather than reimplements.
 - **D — range selections.** Luminance range, colour range and the colour-constrained brush, each with its own study, plus the honest statement in the user guide about what they do and do not select.
 
 ## Proposals with recorded defaults
@@ -329,7 +362,7 @@ Each is the owner's to decide. The default is what the work runs on if implement
 | P3 | Does a radial gradient select inside or outside by default? | Inside; the component's Invert gives the other reading |
 | P4 | Flow and Density, or one amount? | Flow only, with max along a stroke and screen union across strokes; Density named as not delivered, with its reason |
 | P5 | What happens to a brush stroke thinner than a proxy pixel? | The mask field is supersampled 2 × 2 and the frame is marked approximate |
-| P6 | Do snapshots share unchanged mask blobs by content hash? | Not in v0; measure the growth first and decide with the figures |
+| P6 | Do snapshots share unchanged mask blobs by content hash? | **Decided by the owner on 2026-09-23: yes, a content-addressed stroke store, in phase C before the first brush ships.** Embedded strokes grow quadratically at about 1.8 KiB per stroke per entry; see [stroke storage](#stroke-storage) |
 | P7 | Is an edge-aware refinement (guided filter) part of phase D? | No; it is a neighbourhood operation over a point function and needs its own design |
 | P8 | Should Mask mode replace the tools panel, or sit beside it? | Replace it while the mode is active, as the crop draft holds its own section open today |
 | P9 | Phase order | A, B, C, D as listed; brushes before range selections, because a brush is what makes a gradient usable |
@@ -338,4 +371,5 @@ Each is the owner's to decide. The default is what the work runs on if implement
 
 - [Tool modules and the shared core](modules-and-api.md) · [Content-space edits](content-space-edits.md) · [Instant previews](instant-preview.md) · [Presence, colour mixer and vignette](presence-mixer-vignette.md) · [Basic and histogram](basic-and-histogram.md)
 - [Develop workspace](develop-workspace.md) · [UI components](ui-components.md) · [Architecture](architecture.md) · [Performance rules](../engineering/performance-rules.md)
+- The corrections design (`docs/design/corrections.md`), an unmerged owner-review proposal and the other consumer of the shared brush
 - [Lightroom geometry, masking and retouching research](../research/lightroom/geometry-masks-and-retouching.md) · [darktable geometry, masks, blending and retouching research](../research/darktable/geometry-masks-and-retouching.md)

@@ -1330,15 +1330,17 @@
     },
     {
       "id": "TASK-017",
-      "description": "Add the points parameter kind and the path decimation contract, validated generically like every other parameter kind and bounded by the declared limits.",
+      "description": "Add the host path primitives and their storage: the points parameter kind with its decimation contract, and the content-addressed stroke store in catalog format 6, so no catalog ever holds embedded stroke points.",
       "status": "pending",
       "dependencies": [
         "TASK-008"
       ],
       "extra_context": [
         "Exactly one new parameter kind is needed for brushes, and it is a parameter kind rather than a control kind: the brush is a canvas interaction and no panel widget edits a path.",
-        "Decimation happens on the desktop before a stroke is ever sent, to a stated tolerance, because history stores a complete snapshot per entry and a brush session appends an entry per stroke.",
-        "Coordinates are stored at the precision a 16384 px side can resolve and no more; extra digits are storage multiplied by the number of history entries."
+        "These are host primitives, not mask-private ones. The points kind, the stroke list semantics and the brush-paint canvas interaction are shared with the corrections design (docs/design/corrections.md, an unmerged owner-review proposal for Clone, Heal and AI Remove), which asks for the same brush under the name brush-mask. Name and place them so that design declares them for its own actions rather than adding a second brush system.",
+        "The store exists because every history entry stores a complete recipe, not a delta, so embedding a component's stroke list copies every earlier stroke in that mask and storage grows with the square of the stroke count: about 37.5 MB across history for 200 strokes of 100 points, against 364 KiB of distinct stroke data. The owner decided the content-addressed store on 2026-09-23; see the design's stroke-storage section for the figures and for why pure deltas were rejected.",
+        "The store shrinks the quadratic constant by about 53 times, from roughly 1.8 KiB to 35 bytes per stroke per entry. It does not make storage linear and no claim that it does may be written anywhere. The hash-chain variant that would be linear is recorded in the design and is not built.",
+        "Decimation happens on the desktop before a stroke is ever sent, to a stated tolerance; coordinates are stored at the precision a 16384 px side can resolve and no more."
       ],
       "context_links": [
         {
@@ -1379,17 +1381,26 @@
         }
       ],
       "acceptance_criteria": [
-        "The points kind accepts an ordered list of normalized pairs with declared minimum and maximum counts, is validated by the same generic check every other kind uses, and rejects non-finite, out-of-range and over-count input with named errors.",
-        "The stored coordinate precision and the decimation tolerance are stated numbers in the design and are enforced, not conventions.",
-        "Decimation is deterministic: the same captured path produces the same stored points, and a decimated path stays within the stated tolerance of the captured one.",
+        "The points kind accepts an ordered list of normalized pairs with declared minimum and maximum counts, is validated by the same generic check every other parameter kind uses, and rejects non-finite, out-of-range and over-count input with named errors.",
+        "The points kind and the stroke list type live where a second consumer can declare them without depending on the mask model, and nothing about either names masks.",
+        "A stroke is stored once under a hash of its canonical contents; an entry's recipe references strokes by hash and embeds no points, so two entries sharing a stroke store its data once.",
+        "An entry is still a full snapshot: previewing, undoing, redoing or restoring it takes one lookup per referenced stroke and replays nothing, and the history graph, its branches and named versions are unchanged.",
+        "A referenced stroke that is missing, or whose stored bytes do not match its hash, fails rendering, sampling and export explicitly with an error naming the stroke and the entry, retains everything it has, and is never treated as an empty stroke.",
+        "The catalog marker is 6; a format 5 catalog is refused with the existing explicit message and its file is left byte-identical.",
+        "The stored coordinate precision and the decimation tolerance are stated numbers in the design and are enforced; decimation is deterministic, so the same captured path produces the same stored points and therefore the same hash, and a decimated path stays within the stated tolerance of the captured one.",
         "schema.list describes the kind so an agent can post a path without reading desktop code.",
-        "The declared point limits per stroke and per mask are enforced with resource-limit errors naming them."
+        "The declared point limits per stroke and per mask are enforced with resource-limit errors naming them.",
+        "Measured: the 200-stroke case stores close to the design's 1.08 MB figure rather than its 37.5 MB one, recorded with its scope; if it does not, the figure is reported and the design's table is corrected rather than the claim being kept."
       ],
       "test_strategy": {
-        "approach": "unit",
+        "approach": "mixed",
         "steps": [
           "Validate randomized paths through the generic check and assert every rejection message.",
-          "Decimate randomized captured paths and assert determinism and the tolerance bound.",
+          "Decimate randomized captured paths and assert determinism, the tolerance bound and hash stability.",
+          "Store the same stroke from two entries and assert one stored copy and two references.",
+          "Corrupt and remove a referenced stroke and assert the explicit failure on rendering, sampling and export, and that nothing was discarded.",
+          "Open a format 5 catalog and assert refusal with the file byte-identical afterwards.",
+          "Script a 200-stroke session and measure catalog growth against the design's figures.",
           "Drive both point limits one past their bound."
         ],
         "commands": [
@@ -1398,14 +1409,16 @@
           "cargo xtask verify quick"
         ],
         "expected_results": [
-          "One new kind, validated by the existing path.",
-          "Decimation is reproducible and bounded."
+          "One new parameter kind, validated by the existing path.",
+          "Decimation is reproducible and bounded, so a hash is stable.",
+          "A 200-stroke session stores about a megabyte, not about forty.",
+          "A missing or corrupt stroke is an explicit failure, never an empty stroke."
         ]
       }
     },
     {
       "id": "TASK-018",
-      "description": "Build the brush component: ordered strokes with their own size, feather, flow and erase flag, the capsule coverage field, the grid index over segments, and the accumulation rules.",
+      "description": "Build the brush component on the host stroke primitives: ordered strokes referenced from the content-addressed store, each with its own size, feather, flow and erase flag, the capsule coverage field, the grid index over segments, and the accumulation rules.",
       "status": "pending",
       "dependencies": [
         "TASK-001",
@@ -1416,7 +1429,8 @@
         "Maximum along a stroke and screen union across strokes is the frozen rule and the reason is worth keeping in the code: one pass of the brush has one density whatever the pointer's sampling rate, while a second pass is a second object and does build up.",
         "Density is not delivered; its Lightroom meaning depends on a build-up model along a single stroke that would make coverage depend on stamp spacing and therefore on resolution. Say so in the user guide rather than shipping a control that means something else.",
         "The grid index is what keeps a point query bounded: a pixel tests only the segments in the neighbouring cells, and the declared occupancy cap is checked when the mask compiles, before a pixel is read.",
-        "Strokes are objects inside the component, not history events. Add strokes combine by screen union and are therefore commutative, so removing one is well defined; an erase stroke does not commute with an add, which is why the component stores its strokes in order and the component list shows that order."
+        "Strokes are objects inside the component, not history events. Add strokes combine by screen union and are therefore commutative, so removing one is well defined; an erase stroke does not commute with an add, which is why the component stores its strokes in order and the component list shows that order.",
+        "The component references strokes in the host store rather than embedding their points, so this task never writes a payload holding coordinates. If you find yourself embedding points in a component payload, the store task did not land and you should stop."
       ],
       "context_links": [
         {
@@ -1458,6 +1472,7 @@
       ],
       "acceptance_criteria": [
         "A brush component holds an ordered list of strokes, each with its own size, feather, flow and erase flag, and each individually deletable.",
+        "A brush component references its strokes by hash from the host store and embeds no coordinates; the same stroke referenced by two components or two entries is stored once.",
         "The capsule coverage field is bit-identical to the frozen f64 reference across randomized strokes, sizes, feathers and positions, including a one-point stroke and a doubled-back path.",
         "Strokes accumulate by the frozen rules, proved idempotent where the design claims it and building up where it claims that, on randomized stroke sets.",
         "Add strokes are commutative under the frozen accumulation rule, proved numerically over randomized permutations; an erase stroke is order-dependent, and deleting or reordering across one changes coverage exactly as the stored order states.",
@@ -1490,7 +1505,7 @@
     },
     {
       "id": "TASK-019",
-      "description": "Build the mask-brush canvas interaction and its stroke draft: cursor feedback, size and feather keys, held-modifier erase, an immediately drawn path, and one history entry per stroke.",
+      "description": "Build the brush-paint canvas interaction and its stroke draft: cursor feedback, size and feather keys, held-modifier erase, an immediately drawn path, and one history entry per stroke.",
       "status": "pending",
       "dependencies": [
         "TASK-015",
@@ -1501,7 +1516,8 @@
         "Path feedback must never wait on a render: the desktop draws the in-progress stroke on the canvas as the pointer moves, and the drafted picture follows one frame behind it exactly as a slider's does.",
         "One stroke is one draft and therefore one history entry, with the delivered conflict, Discard and Reapply behaviour unchanged.",
         "Pointer positions map through the affine from render.transform, locally, with no hop per move.",
-        "The owner's requirement is Lightroom's granularity: the first stroke reads Add brush, every later stroke on the same component reads Update <component name>, undo walks back one stroke at a time, and rendering still sees one combined coverage field rather than one operation per stroke."
+        "The owner's requirement is Lightroom's granularity: the first stroke reads Add brush, every later stroke on the same component reads Update <component name>, undo walks back one stroke at a time, and rendering still sees one combined coverage field rather than one operation per stroke.",
+        "The interaction is brush-paint, not mask-brush: it fills the declared parameters of whatever action declares it, because the corrections design needs the same capture for Clone, Heal and AI Remove. Nothing in its name, its parameters or its implementation may assume a mask."
       ],
       "context_links": [
         {
@@ -1548,7 +1564,7 @@
         }
       ],
       "acceptance_criteria": [
-        "mask-brush is a declared canvas interaction: it accumulates the path, decimates it and commits one stroke through the draft lifecycle, and Escape cancels with nothing committed.",
+        "brush-paint is a declared canvas interaction: it accumulates the path, decimates it and commits one stroke through the draft lifecycle, and Escape cancels with nothing committed.",
         "The cursor draws its size and feather circles at the correct size through the geometry tail, at Fit and at 100%, including under a rotated crop.",
         "Bracket keys change size, shifted bracket keys change feather, and holding the erase modifier makes the stroke an erase stroke for its whole life; each is in the single keymap table.",
         "The in-progress path is drawn by the desktop as the pointer moves and never waits on a preview.",
@@ -1582,15 +1598,15 @@
     },
     {
       "id": "TASK-020",
-      "description": "Measure and bound the growth of brush-heavy recipes across history: snapshot size against stroke count, the per-recipe serialized bound, and a decision on content-hash sharing with figures.",
+      "description": "Verify and bound the growth of brush-heavy recipes across history against the content-addressed store's predicted figures, and enforce the per-recipe serialized bound.",
       "status": "pending",
       "dependencies": [
         "TASK-018"
       ],
       "extra_context": [
-        "Every history entry stores a complete snapshot, so mask bytes are multiplied by the number of entries. A hundred-stroke session is the realistic worst case and it has to be measured rather than assumed.",
-        "Proposal P6, sharing unchanged mask blobs by content hash, is decided here with figures. The recorded default is not to do it in v0; overturn that only with a measurement.",
-        "The per-recipe serialized bound fails explicitly rather than letting a catalog grow without limit."
+        "The store landed with the path primitives, so this task measures whether it delivered what the design claims rather than deciding whether to build it.",
+        "The realistic worst case is a long retouching session. Measure it; do not assume it. The design predicts about 1.08 MB across history for 200 strokes of 100 points and states that growth stays quadratic with a constant about 53 times smaller, reaching roughly 19 MB at 1000 strokes and 105 MB at 2400.",
+        "If the measured curve disagrees with the design's figures, the design is corrected to match the measurement. The figures are a prediction, not a result, until this task records one."
       ],
       "context_links": [
         {
@@ -1625,18 +1641,20 @@
         }
       ],
       "acceptance_criteria": [
-        "A hundred-stroke session's catalog growth, peak process memory and reopen time are measured on 24 MP and 60 MP and recorded with host, profile and cache state.",
+        "A 200-stroke and a 1000-stroke session's catalog growth, peak process memory and reopen time are measured on 24 MP and 60 MP and recorded with host, profile and cache state.",
+        "The measured curve is compared with the design's predicted figures; a disagreement corrects the design rather than being explained away.",
+        "Snapshot size against stroke count is reported as a curve, so the shape of the growth is visible and the quadratic term is evident rather than hidden.",
         "The per-recipe serialized mask bound is enforced with a resource-limit error naming it, and the failure leaves the prior durable state intact.",
-        "Snapshot size against stroke count is reported as a curve, not a single number, so the shape of the growth is visible.",
-        "Proposal P6 is answered with those figures: either it stays out of v0 with the measurement recorded, or it is scheduled with its own acceptance.",
+        "Whether the hash-chain variant is needed is answered with those figures: it stays recorded and unbuilt unless a measurement says otherwise.",
         "The performance plan records the result with its scope."
       ],
       "test_strategy": {
         "approach": "mixed",
         "steps": [
-          "Script a hundred-stroke session through the API and record catalog size, memory and reopen time at intervals.",
+          "Script 200-stroke and 1000-stroke sessions through the API and record catalog size, memory and reopen time at intervals.",
+          "Plot the curve against the design's prediction and reconcile any difference.",
           "Drive the serialized bound past its limit and assert the error and the intact durable state.",
-          "Record the curve and the decision in the performance plan."
+          "Record the curve, the comparison and the decision in the performance plan."
         ],
         "commands": [
           "cargo xtask verify timing",
@@ -1644,7 +1662,7 @@
           "cargo test --locked --package lightwell-core"
         ],
         "expected_results": [
-          "The growth is a recorded curve with a decision attached.",
+          "The growth is a recorded curve compared against a stated prediction.",
           "A refused write leaves the catalog exactly as it was."
         ]
       }
