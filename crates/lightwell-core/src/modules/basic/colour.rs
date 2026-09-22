@@ -86,10 +86,10 @@ const SKIN_PROTECTION: f32 = SKIN_PROTECTION_F64 as f32;
 const CHROMA_EPSILON: f32 = CHROMA_EPSILON_F64 as f32;
 
 #[derive(Clone, Copy, Debug)]
-struct Oklab {
-    l: f32,
-    a: f32,
-    b: f32,
+pub(crate) struct Oklab {
+    pub(crate) l: f32,
+    pub(crate) a: f32,
+    pub(crate) b: f32,
 }
 
 fn matvec(m: &[[f32; 3]; 3], v: [f32; 3]) -> [f32; 3] {
@@ -108,7 +108,7 @@ fn signed_cbrt(x: f32) -> f32 {
     x.signum() * x.abs().cbrt()
 }
 
-fn to_oklab(rgb: [f32; 3]) -> Oklab {
+pub(crate) fn to_oklab(rgb: [f32; 3]) -> Oklab {
     let lms = matvec(&M1, rgb);
     let lms_root = [
         signed_cbrt(lms[0]),
@@ -123,7 +123,7 @@ fn to_oklab(rgb: [f32; 3]) -> Oklab {
     }
 }
 
-fn from_oklab(lab: Oklab) -> [f32; 3] {
+pub(crate) fn from_oklab(lab: Oklab) -> [f32; 3] {
     let lms_root = matvec(&M2_INV, [lab.l, lab.a, lab.b]);
     let lms = [
         lms_root[0] * lms_root[0] * lms_root[0],
@@ -133,12 +133,12 @@ fn from_oklab(lab: Oklab) -> [f32; 3] {
     matvec(&M1_INV, lms)
 }
 
-fn chroma(lab: Oklab) -> f32 {
+pub(crate) fn chroma(lab: Oklab) -> f32 {
     lab.a.hypot(lab.b)
 }
 
 /// Oklab hue angle in degrees, `atan2(b, a)` mapped to `(-180, 180]` by `atan2` itself.
-fn hue_degrees(lab: Oklab) -> f32 {
+pub(crate) fn hue_degrees(lab: Oklab) -> f32 {
     lab.b.atan2(lab.a).to_degrees()
 }
 
