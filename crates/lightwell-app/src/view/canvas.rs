@@ -345,9 +345,14 @@ fn plain<'a>(
                 Length::Fixed(width as f32 * scale),
                 Length::Fixed(height as f32 * scale),
             );
+            // `Fill` rather than the default fit: the box is the exact stage's displayed size and
+            // the texture may be the display proxy, which is smaller. Filling stretches it to
+            // exactly that box, so the photograph and the overlay — which fills the same box —
+            // stay in the same rectangle whichever texture is on screen.
             let photo = image(allocation.handle().clone())
                 .width(box_width)
-                .height(box_height);
+                .height(box_height)
+                .content_fit(ContentFit::Fill);
             let layered: Element<'a, Message> = match &overlay {
                 Some(mask) => stack![
                     photo,

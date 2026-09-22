@@ -172,7 +172,21 @@ On macOS, `develop --background` builds the selected profile and runs a temporar
 
 ## Rendered evidence
 
-Smoke runs the built or packaged editor through a deterministic evidence sequence (repeated `--open`, evidence directory, fixed window size, bounded deadlines); there is no separate viewer, so the captured frame is the editor window with its sidebar. Scenarios: `empty`, `load`, `replacement`, `invalid`, `repeated`, `alternating`, `large24`, `large60`, `crop`, `crop-draft`, `workspace`, `basic`, `basic-panel`, `basic-crop`, `basic-restart`, `histogram`, `unavailable`; generate the large fixtures first. Each run writes `result.json`, `app/events.jsonl`, `app/state.json`, `app/frame-*.png` (window-renderer readbacks, not OS screenshots), `subprocess.log` and `reproduce.md`. Each frame records `surface_columns`, the physical x range of the photo surface derived from the editor's layout constants, and the runner verifies fixture colors, Fit geometry and centering within that range, generation and state, backend, exit status and unchanged source hashes before writing `passed`; blank, stale or missing frames fail. The `render_ready` event marks the upload of the open request's preview raster, which is when a frame becomes capturable. A 25-second application deadline and a 35-second process deadline bound hangs.
+Smoke runs the built or packaged editor through a deterministic evidence sequence (repeated `--open`, evidence directory, fixed window size, bounded deadlines); there is no separate viewer, so the captured frame is the editor window with its sidebar. Scenarios: `empty`, `load`, `replacement`, `invalid`, `repeated`, `alternating`, `large24`, `large60`, `crop`, `crop-draft`, `workspace`, `basic`, `basic-panel`, `basic-crop`, `basic-restart`, `histogram`, `unavailable`; generate the large fixtures first. Each run writes `result.json`, `app/events.jsonl`, `app/state.json`, `app/frame-*.png` (window-renderer readbacks, not OS screenshots), `subprocess.log` and `reproduce.md`. Each frame records `surface_columns`, the physical x range of the photo surface derived from the editor's layout constants, and the runner verifies fixture colors, Fit geometry and centering within that range, generation and state, backend, exit status and unchanged source hashes before writing `passed`; blank, stale or missing frames fail. The `render_ready` event marks the upload of the open request's preview raster, which is when a frame becomes capturable; when that raster is a display proxy it marks the adoption of the same job's exact phase instead, so a captured frame's histogram, clipping counters and overlay always describe the exact render of the picture on screen. A 25-second application deadline and a 35-second process deadline bound hangs.
+
+At Fit, and at any zoom that draws the stage smaller than itself, the frame a scenario captures is
+the **display proxy**: the whole recipe rendered against a source downscaled once to the photo area,
+which is the size the display was going to minify the exact render down to anyway. `preview_displayed`
+therefore carries `proxy`, `proxy_dimensions` (the proxy source's own size, null when there is none),
+`proxy_built` (the proxy source was built for this frame rather than taken from the queue's cache)
+and `reason` (`"zoom"` when the upload is a retained raster a zoom change needed rather than a
+render). Its `dimensions` stay the exact output stage's, which is what picks, the percent-zoom box
+and the overlay cell grid map through. `preview_exact_adopted` records the exact phase of such a job
+being taken up without an upload, `preview_exact_cancelled` records one a newer value superseded, and
+`clipping_overlay` carries `approximate` while the mask is derived from the proxy on screen rather
+than from that exact raster. `state.json` carries `proxy: {eligible, declined, dimensions, bounds,
+presented}`, so a stack that took the exact path — an ineligible layer, a stage already inside the
+bounds, a failed build — says so rather than being silently identical.
 
 ### The Basic and histogram acceptance chapter
 
@@ -248,8 +262,9 @@ Each step is an object with exactly one key.
   `reapply` wait for the crop layer's truncated input-stage preview, `apply` waits for its committed
   pixels, and the rest are captured on the next rendered frame.
 - `slider` drives one gesture on a generated control: `{"action": "set-basic", "parameter":
-  "exposure", "values": [0.25, 0.5, 0.75]}` sends one pointer move per value with the gated draft
-  tick between them, exactly as a drag and the subscription produce them. `"release": true` ends it
+  "exposure", "values": [0.25, 0.5, 0.75]}` sends one pointer move per value, exactly as a drag
+  produces them. Each move sends its `draft.set` and the one preview job for it as soon as nothing
+  is in flight; there is no tick to wait for. `"release": true` ends it
   with the control's release, which commits once; `"cancel": true` ends it with Escape; neither
   leaves the gesture open and captures the frame once the draft has drained, so the pixels belong to
   the newest value it sent. A second `slider` step naming the same control continues the same
@@ -428,9 +443,9 @@ over the run, drafted and committed alike, divided by the seconds from the first
 to the last of them), `staleness_ms` (each presented drafted frame's own `slider_draft_set` time to
 its `preview_displayed` time, paired by generation exactly as drag mode pairs them) and
 `frame_gap_ms` plus `max_gap_ms` (the intervals between consecutive presented drafted frames),
-`cancelled_exact` (`preview_exact_cancelled` events; the current binary emits none) and `proxy` (the
-last presented frame's `proxy`/`proxy_dimensions`, or null with a note against the current binary,
-which carries neither).
+`cancelled_exact` (`preview_exact_cancelled` events: full-resolution phases a newer value
+superseded, which carry no frame and are counted rather than delivered) and `proxy` (the last
+presented frame's `proxy`/`proxy_dimensions`).
 
 On macOS, smoke, hardening, measurement, latency, RAW editor and probe subprocesses always use the same background bundle as `develop --background`, and every one of them that launches the editor passes `--hidden-window`, so the run has neither an activated process nor a window on screen. Reports record `launch_mode`; reproduce through the harness to preserve focus protection. A native graphical session is still required. Windows and Linux retain direct launches; background behavior is not claimed there. Measurement launch times include the temporary bundle and executable copy, so they do not measure normal foreground activation, and with an invisible window they do not include the cost of compositing a visible one either.
 

@@ -226,8 +226,11 @@ pub(crate) enum Message {
         action: String,
         parameter: String,
     },
-    /// The 16 ms tick that drives an open slider draft. It is gated on that draft, so a desktop
-    /// with no gesture in progress runs no timer of its own.
+    /// Send an open slider draft's outstanding value, if a round trip is not already in flight.
+    ///
+    /// No timer produces this any more: a move sends its own `draft.set` the moment nothing is in
+    /// flight. It remains as the entry point the evidence driver and the paced step still use after
+    /// each move, where it finds the send already done and does nothing.
     SliderDraftTick,
     /// `draft.begin` answered.
     SliderDraftBegun(Result<Box<Draft>, String>),

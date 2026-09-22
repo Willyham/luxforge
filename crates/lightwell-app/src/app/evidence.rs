@@ -485,7 +485,8 @@ impl Editor {
     }
 
     /// One slider gesture, driven as the exact messages a pointer drag produces: one `SliderMoved`
-    /// per value with the gated tick between them, then the release, Escape or nothing at all.
+    /// per value, then the release, Escape or nothing at all. Each move sends its own `draft.set`
+    /// when nothing is in flight, so the `SliderDraftTick` after it normally finds nothing to do.
     /// Nothing here reaches the owner directly; the gesture's own driver does, under its own bound.
     ///
     /// A step with `interval_ms` sends nothing here: it hands its values to

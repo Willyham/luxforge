@@ -7,7 +7,7 @@ use lightwell_core::{
     ApiRequest, AssetId, ClientId, ClientSession, ContentPoint, Draft, DraftId, EditorState,
     EntryId, EventsResult, HistoryEntry, HistoryPage, HistorySelection, Lineage, ModuleDescriptor,
     Mutation, MutationOutcome, MutationResult, OwnerHandle, PreviewJob, PreviewRequest,
-    RecipeDescription, Version,
+    ProxyBounds, RecipeDescription, Version,
 };
 use serde_json::{Value, json};
 use std::{
@@ -59,12 +59,35 @@ pub(crate) struct Upload {
     pub(crate) snapshot_id: String,
     pub(crate) source_fingerprint: String,
     pub(crate) started: Instant,
+    /// These pixels are the display proxy of the frame, not its exact render. `width`/`height`
+    /// above are the texture's own size, which at a proxy is the proxy's; the exact stage the
+    /// picks, the percent box and the overlay grid map through stays on `Editor::dimensions`.
+    pub(crate) proxy: bool,
+    /// The proxy source dimensions this frame was rendered against, when it is one.
+    pub(crate) proxy_dimensions: Option<(u32, u32)>,
+    /// The proxy source was built for this frame rather than taken from the queue's cache.
+    pub(crate) proxy_built: bool,
+    /// Why these pixels are being uploaded when no render asked for it: `Some("zoom")` is the
+    /// retained raster a zoom change needed. `None` is the ordinary path, a rendered frame.
+    pub(crate) reason: Option<&'static str>,
 }
 
 #[derive(Clone, Debug)]
 pub(crate) enum SyncResult {
     Unchanged { sequence: u64 },
     Changed(Box<Refresh>),
+}
+
+/// Offer a job the display bounds the caller computed, when there are any.
+///
+/// The bounds are decided in `update`, on the thread that owns the window, and travel with the
+/// request: a task runs off-thread and must not read the editor. `None` asks for the exact path
+/// alone, which is what a zoom at or above 100% and a truncated crop-draft job take.
+fn proxied(request: PreviewRequest, proxy: Option<ProxyBounds>) -> PreviewRequest {
+    match proxy {
+        Some(bounds) => request.proxy(bounds),
+        None => request,
+    }
 }
 
 pub(crate) fn mutation(revision: u64) -> Mutation {
@@ -221,6 +244,7 @@ pub(crate) fn refresh(
     asset_id: AssetId,
     with_history: bool,
     mut sequence: u64,
+    proxy: Option<ProxyBounds>,
 ) -> Result<Refresh, String> {
     let mut fetch = |method: &str, params: Value| -> Result<Value, String> {
         let (value, seen) = call(owner, client, method, params)?;
@@ -270,9 +294,12 @@ pub(crate) fn refresh(
     // it, because its identity describes the whole stack rather than the prefix it renders.
     let job = ready_preview_job(
         owner,
-        PreviewRequest::new(client, asset_id)
-            .entry(selected)
-            .analyse(),
+        proxied(
+            PreviewRequest::new(client, asset_id)
+                .entry(selected)
+                .analyse(),
+            proxy,
+        ),
         &expected,
     )?;
     Ok(Refresh {
@@ -305,6 +332,7 @@ pub(crate) fn import_task(
     path: PathBuf,
     generation: u64,
     open_guard: Arc<AtomicU64>,
+    proxy: Option<ProxyBounds>,
 ) -> Task<Message> {
     Task::perform(
         async move {
@@ -331,6 +359,7 @@ pub(crate) fn import_task(
                 state.asset.id,
                 true,
                 sequence.max(adopted_sequence),
+                proxy,
             )?;
             if open_guard.load(Ordering::Acquire) != generation {
                 return Err("superseded open".into());
@@ -347,11 +376,12 @@ pub(crate) fn state_task(
     asset_id: AssetId,
     method: String,
     params: Value,
+    proxy: Option<ProxyBounds>,
 ) -> Task<Message> {
     Task::perform(
         async move {
             let (_, sequence) = call(&owner, client, &method, params)?;
-            refresh(&owner, client, asset_id, false, sequence)
+            refresh(&owner, client, asset_id, false, sequence, proxy)
         },
         |result| Message::Refreshed(result.map(Box::new)),
     )
@@ -364,6 +394,7 @@ pub(crate) fn preview_task(
     entry_id: Option<EntryId>,
     method: &'static str,
     params: Value,
+    proxy: Option<ProxyBounds>,
 ) -> Task<Message> {
     Task::perform(
         async move {
@@ -385,9 +416,12 @@ pub(crate) fn preview_task(
             };
             let job = ready_preview_job(
                 &owner,
-                PreviewRequest::new(client, asset_id)
-                    .entry(entry_id)
-                    .analyse(),
+                proxied(
+                    PreviewRequest::new(client, asset_id)
+                        .entry(entry_id)
+                        .analyse(),
+                    proxy,
+                ),
                 &expected,
             )?;
             Ok(PreviewPayload {
@@ -492,6 +526,7 @@ pub(crate) fn draft_set_task(
     draft_id: DraftId,
     asset_id: AssetId,
     fields: Value,
+    proxy: Option<ProxyBounds>,
 ) -> Task<Message> {
     Task::perform(
         async move {
@@ -503,11 +538,12 @@ pub(crate) fn draft_set_task(
             )?;
             let draft = parse::<Draft>(draft)?;
             let job = owner
-                .preview_job(
+                .preview_job(proxied(
                     PreviewRequest::new(client, asset_id)
                         .draft(draft_id)
                         .analyse(),
-                )
+                    proxy,
+                ))
                 .map_err(|error| error.to_string())?;
             Ok((draft, job))
         },
@@ -523,6 +559,7 @@ pub(crate) fn draft_commit_task(
     draft_id: DraftId,
     asset_id: AssetId,
     mutation: Mutation,
+    proxy: Option<ProxyBounds>,
 ) -> Task<Message> {
     Task::perform(
         async move {
@@ -536,7 +573,7 @@ pub(crate) fn draft_commit_task(
             if result.outcome == MutationOutcome::NoOp {
                 return Ok(None);
             }
-            refresh(&owner, client, asset_id, false, sequence).map(Some)
+            refresh(&owner, client, asset_id, false, sequence, proxy).map(Some)
         },
         |result| Message::SliderDraftCommitted(result.map(|refresh| refresh.map(Box::new))),
     )
@@ -581,15 +618,17 @@ pub(crate) fn current_preview_task(
     client: ClientId,
     asset_id: AssetId,
     entry_id: Option<EntryId>,
+    proxy: Option<ProxyBounds>,
 ) -> Task<Message> {
     Task::perform(
         async move {
             let job = owner
-                .preview_job(
+                .preview_job(proxied(
                     PreviewRequest::new(client, asset_id)
                         .entry(entry_id)
                         .analyse(),
-                )
+                    proxy,
+                ))
                 .map_err(|error| error.to_string())?;
             let (session, sequence) = call(&owner, client, "session.state", json!({}))?;
             Ok(PreviewPayload {
@@ -769,6 +808,7 @@ pub(crate) fn sync_task(
     client: ClientId,
     asset_id: AssetId,
     after: u64,
+    proxy: Option<ProxyBounds>,
 ) -> Task<Message> {
     Task::perform(
         async move {
@@ -777,7 +817,7 @@ pub(crate) fn sync_task(
             if events.events.is_empty() && !events.gap {
                 Ok(SyncResult::Unchanged { sequence })
             } else {
-                refresh(&owner, client, asset_id, true, sequence)
+                refresh(&owner, client, asset_id, true, sequence, proxy)
                     .map(Box::new)
                     .map(SyncResult::Changed)
             }

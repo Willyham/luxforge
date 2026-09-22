@@ -11,6 +11,7 @@ pub(crate) mod slider;
 pub(crate) mod tasks;
 #[cfg(test)]
 pub(crate) mod testing;
+pub(crate) mod waker;
 
 use crate::{
     Config,
@@ -31,8 +32,8 @@ use iced_runtime::image as image_memory;
 use lightwell_core::{
     ActionInput, ActionPlan, Availability, ClientId, ClientSession, CropStage, EditorState, Error,
     ErrorKind, HistoryPage, HistorySelection, LocalServer, ModuleDescriptor, ModuleRegistry,
-    OwnerHandle, POINTER_MODE, PreviewQueue, Processing, RecipeDescription, StageContext,
-    ToolModule, Version,
+    OwnerHandle, POINTER_MODE, PreviewPhase, PreviewQueue, Processing, ProxyBounds,
+    RecipeDescription, StageContext, ToolModule, Version, Zoom,
 };
 use message::{ClipEndpoint, CropMessage, MenuTarget, Message, PaletteAction, Panel};
 use overlay::{OverlayQueue, OverlayRequest};
@@ -228,6 +229,38 @@ pub(crate) fn run(config: Config, size: (f32, f32)) -> Result<(), String> {
     .map_err(|error| error.to_string())
 }
 
+/// The display-proxy frame of one generation, retained beside the exact raster.
+///
+/// It is what a zoom back to Fit re-uploads instead of rendering, and what the clipping overlay is
+/// derived from while the exact phase of that generation is still outstanding. Retaining it copies
+/// no pixels: it shares the render's own `Arc<[u8]>` with the texture uploaded from it.
+///
+/// Its generation is also the desktop's only record that the job of that generation *had* a proxy
+/// phase. The exact result cannot say so: `proxy_declined` is `None` both for a job that asked for
+/// no proxy and for one that got one.
+pub(crate) struct ProxyFrame {
+    pub(crate) generation: u64,
+    pub(crate) raster: Arc<lightwell_core::Raster>,
+    /// The proxy source dimensions the frame was rendered against.
+    pub(crate) dimensions: (u32, u32),
+    /// The proxy source was built for this frame rather than taken from the queue's cache.
+    pub(crate) built: bool,
+}
+
+/// What a presented proxy frame holds back until its generation's exact phase lands.
+///
+/// A proxy is the photograph, but every number a captured frame reports — the histogram, the
+/// clipping counters, the overlay it is checked against — comes from the exact render. So a
+/// scripted step's settle and an open request's outcome both wait for that phase rather than
+/// releasing on the proxy alone, which is what keeps every existing assertion about a drafted or
+/// selected frame meaning what it meant before.
+pub(crate) struct HeldByProxy {
+    pub(crate) generation: u64,
+    pub(crate) settle: Option<Settle>,
+    /// An open request completes when this lands; the figure its `render_ready` reports.
+    pub(crate) ready_upload_ms: Option<f64>,
+}
+
 pub(crate) struct Editor {
     pub(crate) owner: OwnerHandle,
     pub(crate) owner_join: Option<JoinHandle<()>>,
@@ -279,6 +312,27 @@ pub(crate) struct Editor {
     /// and the photograph are adopted together, so the plot never describes a frame that is not on
     /// screen.
     pub(crate) incoming: Option<(Analysis, Arc<lightwell_core::Raster>)>,
+    /// The generation whose pixels are on screen.
+    ///
+    /// The delivery rule is the queue's own, monotone rather than newest-only: a delivered result
+    /// is presented when it is not older than this. Under a sustained drag a render almost always
+    /// finishes after a newer job was requested, so rejecting everything but the newest generation
+    /// presents no frames at all. What makes work in flight stale is `preview_queue.cancel()`,
+    /// which an asset or selection change calls; nothing else has to.
+    pub(crate) presented_generation: u64,
+    /// The texture on screen is the display proxy rather than the exact render.
+    pub(crate) presented_proxy: bool,
+    /// The proxy frame of the newest job that had a proxy phase.
+    pub(crate) proxy_frame: Option<ProxyFrame>,
+    /// Why the newest job that offered bounds has no proxy phase, as the core reported it.
+    pub(crate) proxy_declined: Option<String>,
+    /// The generation of a delivered proxy whose exact phase has not arrived yet, so a cancelled
+    /// exact phase — which carries no frame at all — can be named.
+    pub(crate) awaiting_exact: Option<u64>,
+    /// Cancelled exact phases already reported, so each is announced exactly once.
+    pub(crate) cancelled_exact_seen: u64,
+    /// What the presented proxy is holding until its exact phase lands.
+    pub(crate) held_by_proxy: Option<HeldByProxy>,
     /// One active and one replaceable pending overlay derivation, off the UI thread.
     pub(crate) overlay_queue: OverlayQueue,
     /// The overlay currently on the GPU, with the request that produced it, so an unchanged view
@@ -437,6 +491,13 @@ impl Editor {
             raster: None,
             analysis: None,
             incoming: None,
+            presented_generation: 0,
+            presented_proxy: false,
+            proxy_frame: None,
+            proxy_declined: None,
+            awaiting_exact: None,
+            cancelled_exact_seen: 0,
+            held_by_proxy: None,
             overlay_queue: OverlayQueue::default(),
             overlay_photo: None,
             overlay_request: None,
@@ -485,6 +546,11 @@ impl Editor {
             mode_sync: None,
             workspace: Workspace::default(),
         };
+        // Both workers wake the event loop through one channel instead of a poll. The closure is
+        // installed once and stays valid for the life of the process; the subscription that carries
+        // its signals comes and goes with the queues' business.
+        editor.preview_queue.set_waker(waker::waker());
+        editor.overlay_queue.set_waker(waker::waker());
         if editor.live_server.is_none() {
             editor.status = "Editor ready; live API unavailable on this host".into();
         }
@@ -525,7 +591,7 @@ impl Editor {
 
     /// The state correlated with every event and captured frame; never includes source paths.
     pub(crate) fn snapshot(&self) -> Value {
-        json!({"run_id":self.run_id,"mode":if self.evidence.is_some() {"evidence"} else {"editor"},"selection":self.session.preview.selection,"orientation":self.activity.orientation,"phase":self.activity.phase,"requested_generation":self.activity.requested,"displayed_generation":self.activity.displayed,"displayed_draft_revision":self.displayed_draft_revision,"source_dimensions":self.activity.source_dimensions,"preview_dimensions":self.activity.preview_dimensions,"backend":self.activity.backend,"status":self.status,"error_code":self.activity.error_code,"modules":module_summary(&self.modules),"controls":self.fields.summary(),"crop":self.crop_summary(),"draft":self.draft_summary(),"stack":self.stack_summary(),"workspace":serde_json::to_value(&self.session.workspace).unwrap_or(Value::Null),"developer":self.developer,"expanded":self.workspace.expanded(),"pickers":self.workspace.pickers(),"notices":self.notice_titles(),"compare":self.compare_return.is_some(),"render_error":self.render_error_summary(),"palette":{"open":self.palette_open,"query":self.palette_query},"histogram":self.histogram_summary(),"readout":self.readout_summary(),"scratch":Self::scratch_summary()})
+        json!({"run_id":self.run_id,"mode":if self.evidence.is_some() {"evidence"} else {"editor"},"selection":self.session.preview.selection,"orientation":self.activity.orientation,"phase":self.activity.phase,"requested_generation":self.activity.requested,"displayed_generation":self.activity.displayed,"displayed_draft_revision":self.displayed_draft_revision,"source_dimensions":self.activity.source_dimensions,"preview_dimensions":self.activity.preview_dimensions,"backend":self.activity.backend,"status":self.status,"error_code":self.activity.error_code,"modules":module_summary(&self.modules),"controls":self.fields.summary(),"crop":self.crop_summary(),"draft":self.draft_summary(),"stack":self.stack_summary(),"workspace":serde_json::to_value(&self.session.workspace).unwrap_or(Value::Null),"developer":self.developer,"expanded":self.workspace.expanded(),"pickers":self.workspace.pickers(),"notices":self.notice_titles(),"compare":self.compare_return.is_some(),"render_error":self.render_error_summary(),"palette":{"open":self.palette_open,"query":self.palette_query},"histogram":self.histogram_summary(),"readout":self.readout_summary(),"proxy":self.proxy_summary(),"scratch":Self::scratch_summary()})
     }
 
     /// The process-wide colour scratch budget as it stands when the frame is captured, with the
@@ -577,10 +643,34 @@ impl Editor {
     fn overlay_summary(&self) -> Value {
         match &self.overlay_request {
             Some(request) => {
-                json!({"cells":[request.cells_w,request.cells_h],"shadows":request.shadows,"highlights":request.highlights,"generation":request.generation,"drawn":self.overlay_surface().is_some()})
+                json!({"cells":[request.cells_w,request.cells_h],"shadows":request.shadows,"highlights":request.highlights,"generation":request.generation,"approximate":request.approximate,"drawn":self.overlay_surface().is_some()})
             }
             None => Value::Null,
         }
+    }
+
+    /// The display proxy as a captured frame reports it: the bounds the next job will offer, what
+    /// the core did with the last one, and whether the texture on screen is a proxy.
+    ///
+    /// `eligible` is whether the newest job took the proxy path at all, and is `null` until one
+    /// has reported either way. `declined` names why it did not — an ineligible layer, a stage
+    /// already inside the bounds, or a failure building or rendering the proxy — so a stack that
+    /// took the exact path says so rather than being silently identical to one that did not.
+    fn proxy_summary(&self) -> Value {
+        let bounds = self.proxy_bounds();
+        json!({
+            "eligible": match (&self.proxy_declined, self.proxy_frame.is_some()) {
+                (Some(_), _) => Some(false),
+                (None, true) => Some(true),
+                (None, false) => None,
+            },
+            "declined": self.proxy_declined,
+            "dimensions": self
+                .presented_proxy_frame()
+                .map(|frame| json!([frame.dimensions.0, frame.dimensions.1])),
+            "bounds": bounds.map(|bounds| json!({"width":bounds.width,"height":bounds.height})),
+            "presented": self.presented_proxy,
+        })
     }
 
     /// The pointer readout, when one has been sampled: the three output codes and their pixel.
@@ -678,6 +768,66 @@ impl Editor {
     }
 
     /// Import a file through the same API call the Open button uses, tracked as one open request.
+    /// The physical pixels the photo area can show a frame in, when the view means a display-size
+    /// render is what should be presented — or `None` when only the exact render will do.
+    ///
+    /// At Fit that is the photo surface less the canvas padding, scaled by the display factor:
+    /// exactly the rectangle [`state::histogram::displayed_size`] fits an image into, so the proxy
+    /// is rendered at the size the display was going to minify the exact frame down to anyway. It
+    /// does not depend on the photograph, so the first job of an open already has it.
+    ///
+    /// At a percentage the bounds are the exact stage's own displayed size, and only while that is
+    /// smaller than the stage in both axes. At 100% and above one physical pixel shows one stage
+    /// pixel or more, so there is nothing to bound: `None`, which is what keeps the 100% view the
+    /// exact render of the exact recipe. `None` as well when nothing is known yet.
+    pub(crate) fn proxy_bounds(&self) -> Option<ProxyBounds> {
+        let workspace = &self.session.workspace;
+        let surface = state::histogram::photo_surface(
+            self.window,
+            workspace.state_panel,
+            workspace.tools_panel,
+        );
+        match self.session.preview.view.zoom {
+            Zoom::Fit => {
+                let padding = 2.0 * view::canvas::PHOTO_PADDING;
+                bounds_of((
+                    (surface.0 - padding).max(0.0) * self.scale_factor,
+                    (surface.1 - padding).max(0.0) * self.scale_factor,
+                ))
+            }
+            Zoom::Percent { value } => {
+                let stage = self.dimensions?;
+                let displayed = state::histogram::displayed_size(
+                    state::canvas::ZoomView::Percent(value),
+                    stage,
+                    surface,
+                    self.scale_factor,
+                    view::canvas::PHOTO_PADDING,
+                )?;
+                // Strictly smaller in both axes, so a proxy is never asked for a frame that would
+                // have to be magnified back up to show the detail the zoom asked for.
+                (displayed.0 < stage.0 as f32 && displayed.1 < stage.1 as f32)
+                    .then(|| bounds_of(displayed))
+                    .flatten()
+            }
+        }
+    }
+
+    /// The proxy frame retained for the generation on screen, when there is one.
+    fn presented_proxy_frame(&self) -> Option<&ProxyFrame> {
+        self.proxy_frame
+            .as_ref()
+            .filter(|frame| frame.generation == self.presented_generation)
+    }
+
+    /// The exact raster retained for the generation on screen, when its exact phase has landed.
+    fn presented_exact_raster(&self) -> Option<&Arc<lightwell_core::Raster>> {
+        self.raster
+            .as_ref()
+            .filter(|(generation, _)| *generation == self.presented_generation)
+            .map(|(_, raster)| raster)
+    }
+
     fn open(&mut self, path: PathBuf) -> Task<Message> {
         self.begin_request();
         let generation = self.activity.requested;
@@ -692,12 +842,14 @@ impl Editor {
             .map(|name| name.to_string_lossy().into_owned())
             .unwrap_or_default();
         self.event("open_requested", json!({"file":file}));
+        let proxy = self.proxy_bounds();
         import_task(
             self.owner.clone(),
             self.client,
             path,
             generation,
             self.open_generation.clone(),
+            proxy,
         )
     }
 
@@ -728,11 +880,24 @@ impl Editor {
     }
 
     pub(crate) fn update(&mut self, message: Message) -> Task<Message> {
+        let zoom = self.session.preview.view.zoom.clone();
+        let busy = self.preview_queue.is_busy() || self.overlay_queue.is_busy();
         let task = self.dispatch(message);
+        // Whatever route changed the zoom — the buttons, the field, a script or an API client's
+        // `view.set` reaching us through an adopted session — is answered in one place.
+        let zoomed = self.zoom_changed(&zoom);
         let task = self.sync_mode(task);
         self.refresh_overlay();
         self.rederive();
-        task
+        // A queue that went busy in this message may finish before the runtime has built the waker
+        // subscription for it. The signal is buffered rather than lost, so this is the second
+        // guarantee and it is free: `Poll` against an empty queue does nothing at all.
+        let woken = if !busy && (self.preview_queue.is_busy() || self.overlay_queue.is_busy()) {
+            Task::done(Message::Poll)
+        } else {
+            Task::none()
+        };
+        Task::batch([task, zoomed, woken])
     }
 
     /// A newer frame has been requested than the one the histogram describes, so the plotted counts
@@ -761,7 +926,8 @@ impl Editor {
             return;
         }
         let previous = self.overlay_request.take();
-        let Some((request, (_, raster))) = wanted.clone().zip(self.raster.clone()) else {
+        let source = self.overlay_source().map(|(_, raster, _)| raster.clone());
+        let Some((request, raster)) = wanted.clone().zip(source) else {
             // Both overlays are off, or there is nothing to derive one from.
             self.overlay_queue.cancel();
             self.overlay_photo = None;
@@ -774,6 +940,243 @@ impl Editor {
         }
         self.overlay_request = wanted;
         self.overlay_queue.request(raster, request);
+    }
+
+    /// One preview result, and the account of every exact phase the queue cancelled while producing
+    /// it.
+    ///
+    /// A superseded exact phase carries no frame at all — the queue drops it rather than delivering
+    /// it — so its count is the only record that a full-resolution render was abandoned. Reporting
+    /// it here means every path out of the `Poll` handler has already reported it.
+    fn poll_preview(&mut self) -> Option<lightwell_core::PreviewResult> {
+        let result = self.preview_queue.poll();
+        let counted = self.preview_queue.cancelled_exact();
+        while self.cancelled_exact_seen < counted {
+            self.cancelled_exact_seen = self.cancelled_exact_seen.saturating_add(1);
+            // The queue cancels the **active** job's exact phase, which is the job whose proxy was
+            // the last one delivered; that is the generation the desktop knows it by. A job that
+            // had no proxy delivered nothing, so there is nothing better than the newest request.
+            let generation = self
+                .awaiting_exact
+                .take()
+                .unwrap_or(self.preview_generation);
+            self.event(
+                "preview_exact_cancelled",
+                json!({ "generation": generation }),
+            );
+        }
+        result
+    }
+
+    /// The exact phase of a job whose proxy is already on screen.
+    ///
+    /// Nothing is uploaded: the frame the view wants is the proxy, and this raster's four-times
+    /// larger texture is exactly the upload this design exists to remove. Its report and its pixels
+    /// are taken up as an upload would take them up, so the histogram, the clipping counters and
+    /// the overlay describe the exact render of the picture on screen, and a later
+    /// `analysis.request` for this identity is a cache hit instead of a second render.
+    fn adopt_exact(
+        &mut self,
+        generation: u64,
+        identity: lightwell_core::analysis::AnalysisIdentity,
+        report: Option<lightwell_core::analysis::Report>,
+        raster: lightwell_core::Raster,
+    ) -> Task<Message> {
+        let dimensions = (identity.width, identity.height);
+        // Shares the render's own `Arc<[u8]>`: retaining it copies no pixels.
+        let retained = Arc::new(raster);
+        match report {
+            Some(report) => {
+                self.incoming = Some((
+                    Analysis {
+                        generation,
+                        identity,
+                        report,
+                    },
+                    retained,
+                ));
+                // The pixels of this generation are already on screen — the proxy of the same
+                // recipe — so the report is adopted now rather than waiting for an upload that
+                // will not happen.
+                self.adopt_analysis(generation);
+            }
+            None => {
+                self.incoming = None;
+                self.analysis = None;
+                self.raster = Some((generation, retained));
+            }
+        }
+        self.event(
+            "preview_exact_adopted",
+            json!({"generation":generation,"dimensions":[dimensions.0,dimensions.1]}),
+        );
+        self.release_held(generation);
+        // The queue held its next result behind the upload gate; nothing else would ask for it.
+        Task::done(Message::Poll)
+    }
+
+    /// Release what the presented proxy of this generation was holding back: the scripted step it
+    /// settles and the open request it completes. Both describe the exact render, which has landed.
+    fn release_held(&mut self, generation: u64) {
+        if self.held_by_proxy.as_ref().map(|held| held.generation) != Some(generation) {
+            return;
+        }
+        let Some(held) = self.held_by_proxy.take() else {
+            return;
+        };
+        if let Some(settle) = held.settle {
+            self.settle_step(settle);
+        }
+        if let Some(upload_ms) = held.ready_upload_ms
+            && self.activity.pending
+        {
+            self.activity.pending = false;
+            self.activity.displayed = self.activity.requested;
+            self.activity.phase = "ready";
+            self.event(
+                "render_ready",
+                json!({"upload_ms":upload_ms,"displayed_generation":self.activity.displayed}),
+            );
+            self.outcome_ready(false);
+        }
+    }
+
+    /// The zoom changed. This is the **one** place a view change can ask for a render, and it only
+    /// does so when the pixels it needs do not exist yet.
+    ///
+    /// Which texture the view wants is decided by [`Self::proxy_bounds`]: a display-size proxy when
+    /// the frame is drawn smaller than the exact stage, the exact render at 100% and above. While
+    /// that answer is unchanged there is nothing to do at all — a zoom from Fit to 50% keeps the
+    /// proxy it already has — so the rule "a view change re-renders nothing" survives every step
+    /// but the one crossing between the two.
+    ///
+    /// Crossing to the exact render uploads the retained exact raster of the frame on screen. When
+    /// its exact phase is still outstanding there is nothing to upload and nothing to ask for: that
+    /// phase is already running and will be uploaded when it arrives, because the zoom now needs
+    /// it, so the view waits with the ordinary loading state.
+    ///
+    /// Crossing back re-uploads the retained proxy of the frame on screen. Only when there is none
+    /// — the frame on screen was rendered exactly, at 100% — does this request one preview job.
+    fn zoom_changed(&mut self, previous: &Zoom) -> Task<Message> {
+        let zoom = self.session.preview.view.zoom.clone();
+        if zoom == *previous || self.state.is_none() {
+            return Task::none();
+        }
+        let wants_proxy = self.proxy_bounds().is_some();
+        // Nothing presented yet, or the texture on screen is already the one this zoom wants: a
+        // step from Fit to 50% keeps the proxy it has, and the rule that a view change re-renders
+        // nothing survives every zoom but the one crossing between proxy and exact.
+        if self.presented_generation == 0 || wants_proxy == self.presented_proxy {
+            return Task::none();
+        }
+        if wants_proxy && self.presented_proxy_frame().is_none() {
+            // Nothing to re-upload: the frame on screen is a full-resolution render with no proxy
+            // beside it. One preview job produces the display-size frame this zoom wants, and it is
+            // the only render any view change asks for.
+            self.event("preview_proxy_requested", json!({ "zoom": zoom }));
+            return self.request_current_preview();
+        }
+        if !wants_proxy && self.presented_exact_raster().is_none() {
+            // The exact phase of the frame on screen has not landed. It is already running, and
+            // the `Poll` handler uploads it when it arrives because the zoom now needs it.
+            self.status = "Rendering at full resolution…".into();
+            return Task::none();
+        }
+        self.present_retained()
+    }
+
+    /// Put the texture the view asks for on screen from pixels already in hand.
+    ///
+    /// It renders nothing and asks for nothing, so it is safe to call after every upload — which is
+    /// what it is for. One upload is in flight at a time, so a zoom that arrives during one cannot
+    /// start its own; this runs again when that upload lands and picks the change up then, rather
+    /// than leaving the wrong texture on screen until the next zoom.
+    fn present_retained(&mut self) -> Task<Message> {
+        if self.presented_generation == 0 || self.uploading {
+            return Task::none();
+        }
+        let wants_proxy = self.proxy_bounds().is_some();
+        if wants_proxy == self.presented_proxy {
+            return Task::none();
+        }
+        if wants_proxy {
+            let Some(frame) = self.presented_proxy_frame() else {
+                return Task::none();
+            };
+            let (generation, raster, dimensions, built) = (
+                frame.generation,
+                frame.raster.clone(),
+                frame.dimensions,
+                frame.built,
+            );
+            return self.upload_retained(generation, raster, Some(dimensions), built);
+        }
+        let Some(raster) = self.presented_exact_raster().cloned() else {
+            return Task::none();
+        };
+        let generation = self.presented_generation;
+        self.upload_retained(generation, raster, None, false)
+    }
+
+    /// One preview job for the entry on screen, at the bounds the view now asks for. The zoom rule
+    /// is the only caller, and only when the pixels it needs do not exist.
+    fn request_current_preview(&mut self) -> Task<Message> {
+        let Some(state) = &self.state else {
+            return Task::none();
+        };
+        let asset = state.asset.id.clone();
+        let entry = self.displayed_entry();
+        tasks::current_preview_task(
+            self.owner.clone(),
+            self.client,
+            asset,
+            entry,
+            self.proxy_bounds(),
+        )
+    }
+
+    /// Upload pixels that are already in hand, with no render behind them. The zoom rule is the
+    /// only caller: preferring a re-upload over a render whenever the pixels exist is what keeps a
+    /// view change free.
+    fn upload_retained(
+        &mut self,
+        generation: u64,
+        raster: Arc<lightwell_core::Raster>,
+        proxy_dimensions: Option<(u32, u32)>,
+        proxy_built: bool,
+    ) -> Task<Message> {
+        // The texture is a proxy exactly when there are proxy dimensions to describe it.
+        let proxy = proxy_dimensions.is_some();
+        // One upload in flight, as everywhere else. A caller that is turned away here is picked up
+        // by `present_retained` when that upload lands, so nothing is queued behind it and nothing
+        // can arrive out of order.
+        let Some((stage, entry)) = (!self.uploading)
+            .then(|| self.dimensions.zip(self.displayed_entry()))
+            .flatten()
+        else {
+            return Task::none();
+        };
+        self.uploading = true;
+        let upload = Upload {
+            generation,
+            draft_revision: self.displayed_draft_revision,
+            width: stage.0,
+            height: stage.1,
+            entry_id: entry,
+            snapshot_id: raster.snapshot_id.to_string(),
+            source_fingerprint: raster.source_fingerprint.clone(),
+            started: Instant::now(),
+            proxy,
+            proxy_dimensions,
+            proxy_built,
+            reason: Some("zoom"),
+        };
+        let handle = iced::widget::image::Handle::from_rgba(
+            raster.width,
+            raster.height,
+            iced_runtime::core::Bytes::from_owner(raster.rgba.clone()),
+        );
+        image_memory::allocate(handle).map(move |result| Message::Uploaded(upload.clone(), result))
     }
 
     /// Take up the report and the raster the preview worker produced for `generation`, now that its
@@ -818,7 +1221,7 @@ impl Editor {
                 self.status = format!("Clipping overlay unavailable: {error}");
                 self.event(
                     "clipping_overlay_failed",
-                    json!({"generation":generation,"error_code":error.kind.code()}),
+                    json!({"generation":generation,"error_code":error.kind.code(),"approximate":done.request.approximate}),
                 );
                 // The step is released even so; a refused overlay is visible in the evidence
                 // rather than leaving the run waiting for a frame nothing will arm.
@@ -835,7 +1238,10 @@ impl Editor {
         if !(shadows || highlights) {
             return None;
         }
-        let (generation, raster) = self.raster.as_ref()?;
+        // The mask describes the photograph on screen. That is the exact raster of the presented
+        // generation when its exact phase has landed, and the proxy of that generation while it has
+        // not — which is what lets the overlay follow a drag. A proxy-derived mask says so.
+        let (generation, raster, approximate) = self.overlay_source()?;
         let source = (raster.width, raster.height);
         let surface = state::histogram::photo_surface(
             self.window,
@@ -854,12 +1260,27 @@ impl Editor {
         )?;
         let (cells_w, cells_h) = state::histogram::overlay_cells(source, displayed)?;
         Some(OverlayRequest {
-            generation: *generation,
+            generation,
             cells_w,
             cells_h,
             shadows,
             highlights,
+            approximate,
         })
+    }
+
+    /// The raster a clipping overlay is derived from, with whether it is the display proxy.
+    ///
+    /// Only the frame on screen qualifies: a mask is never derived from an image the person is not
+    /// looking at. The exact raster is preferred, and the proxy stands in for it until that phase
+    /// lands, at which point the request changes and the mask is re-derived exactly.
+    fn overlay_source(&self) -> Option<(u64, &Arc<lightwell_core::Raster>, bool)> {
+        let generation = self.presented_generation;
+        if let Some(raster) = self.presented_exact_raster() {
+            return Some((generation, raster, false));
+        }
+        self.presented_proxy_frame()
+            .map(|frame| (generation, &frame.raster, true))
     }
 
     /// The overlay to draw over the photograph: the one on the GPU, when it belongs to the frame
@@ -867,7 +1288,7 @@ impl Editor {
     /// drawn over another image.
     pub(crate) fn overlay_surface(&self) -> Option<&image_memory::Allocation> {
         let request = self.overlay_request.as_ref()?;
-        (Some(request.generation) == self.raster.as_ref().map(|(generation, _)| *generation))
+        (request.generation == self.presented_generation)
             .then_some(self.overlay_photo.as_ref())
             .flatten()
     }
@@ -1256,11 +1677,13 @@ impl Editor {
                     return Task::none();
                 }
                 self.syncing = true;
+                let proxy = self.proxy_bounds();
                 return sync_task(
                     self.owner.clone(),
                     self.client,
                     self.state.as_ref().unwrap().asset.id.clone(),
                     self.api_sequence,
+                    proxy,
                 );
             }
             Message::Synced(result) => {
@@ -1284,13 +1707,20 @@ impl Editor {
                 }
             }
             Message::Poll => {
-                // The overlay worker shares the preview's own 16 ms poll rather than adding a
-                // timer of its own; the subscription below is gated on either queue being busy.
+                // Both workers wake the event loop through one channel; neither has a poll of its
+                // own, and the subscription that carries their signals exists only while one of
+                // them is busy. `Poll` is idempotent, so a signal that arrives late costs nothing.
                 if let Some(done) = self.overlay_queue.poll() {
-                    return self.overlay_ready(done);
+                    // One signal can stand for both workers: the channel holds one and coalesces,
+                    // which is what makes it free. So every path that consumes a result asks for
+                    // another poll rather than trusting a second signal to arrive.
+                    return Task::batch([self.overlay_ready(done), Task::done(Message::Poll)]);
                 }
+                // One upload is in flight at a time. Nothing is lost by not polling under that
+                // gate: the queue holds its results, and `Uploaded` asks for another poll as soon
+                // as the texture is on screen.
                 if !self.uploading
-                    && let Some(mut result) = self.preview_queue.poll()
+                    && let Some(mut result) = self.poll_preview()
                 {
                     // The crop draft's truncated preview shares the queue; its generation says
                     // which texture the pixels belong to. It is never analysed, because its
@@ -1298,19 +1728,68 @@ impl Editor {
                     // A slider gesture's drafted preview is not this: it renders the whole drafted
                     // stack into the ordinary photograph, and is adopted like any other frame.
                     let for_draft = Some(result.generation) == self.draft_generation;
-                    if !for_draft && result.generation != self.preview_generation {
-                        return Task::none();
+                    // The delivery rule, the same monotone one the queue itself applies: present
+                    // whatever is not older than what is on screen. Rejecting everything but the
+                    // newest generation presents no frames at all under a sustained drag, because
+                    // a render almost always finishes after a newer job has been asked for. A
+                    // job's exact phase carries its proxy's own generation, so equality is
+                    // delivered too. `preview_queue.cancel()` is what makes work in flight stale.
+                    if !for_draft && result.generation < self.presented_generation {
+                        return Task::done(Message::Poll);
+                    }
+                    let proxy = result.phase == PreviewPhase::Proxy;
+                    // Taken apart before the frame is matched out of it, so the report and the
+                    // identity are still in hand on both paths below.
+                    let generation = result.generation;
+                    let identity = result.identity.clone();
+                    let report = result.report.take();
+                    let entry_id = result.entry_id.clone();
+                    let proxy_dimensions = result.proxy_dimensions;
+                    let proxy_built = result.proxy_built;
+                    if !for_draft {
+                        if proxy {
+                            self.awaiting_exact = Some(generation);
+                        } else {
+                            if self.awaiting_exact == Some(generation) {
+                                self.awaiting_exact = None;
+                            }
+                            // Only an exact result can say why a job that offered bounds has no
+                            // proxy phase, and it says nothing when the job had one.
+                            self.proxy_declined = result.proxy_declined.clone();
+                        }
                     }
                     match result.result {
                         Ok(raster) => {
+                            // The exact phase of a job whose proxy is already on screen, while the
+                            // view still wants a display-size frame: its report and its raster are
+                            // taken up and nothing is uploaded. The proxy is the Fit view, so
+                            // uploading the same picture again at four times the pixels would cost
+                            // exactly the upload this design exists to remove.
+                            if !proxy
+                                && !for_draft
+                                && generation == self.presented_generation
+                                && self.presented_proxy
+                                && self.proxy_bounds().is_some()
+                            {
+                                return self.adopt_exact(generation, identity, report, raster);
+                            }
                             self.uploading = true;
                             self.status = "Preparing pixels for display…".into();
+                            // The dimensions every pick, every percent-zoom box and every overlay
+                            // cell maps through are the **exact stage's**, whatever size the
+                            // texture is; the identity already carries them. A truncated crop job
+                            // renders a layer prefix its identity does not describe, so that one
+                            // keeps its own raster's size, as it always has.
+                            let stage = if for_draft || !proxy {
+                                (raster.width, raster.height)
+                            } else {
+                                (identity.width, identity.height)
+                            };
                             if self.activity.pending && !for_draft {
-                                self.activity.preview_dimensions =
-                                    Some((raster.width, raster.height));
+                                self.activity.preview_dimensions = Some(stage);
                                 self.event(
                                     "decoded",
-                                    json!({"open_to_raster_ms":self.activity.request_started.elapsed().as_secs_f64()*1000.,"source_dimensions":self.activity.source_dimensions,"preview_dimensions":[raster.width,raster.height]}),
+                                    json!({"open_to_raster_ms":self.activity.request_started.elapsed().as_secs_f64()*1000.,"source_dimensions":self.activity.source_dimensions,"preview_dimensions":[stage.0,stage.1],"proxy":proxy}),
                                 );
                             }
                             if !for_draft {
@@ -1320,35 +1799,52 @@ impl Editor {
                                 // Retaining the raster copies nothing: it shares the render's own
                                 // `Arc<[u8]>` with the handle uploaded below.
                                 let retained = Arc::new(raster.clone());
-                                match result.report.take() {
-                                    Some(report) => {
-                                        self.incoming = Some((
-                                            Analysis {
-                                                generation: result.generation,
-                                                identity: result.identity.clone(),
-                                                report,
-                                            },
-                                            retained,
-                                        ));
-                                    }
-                                    // A frame with no reduction still replaces the retained raster
-                                    // now, so no overlay is ever derived from an older image.
-                                    None => {
-                                        self.incoming = None;
-                                        self.analysis = None;
-                                        self.raster = Some((result.generation, retained));
+                                if proxy {
+                                    // A proxy raster is never reduced, so it replaces no report
+                                    // and no exact raster. It is retained so a zoom back to Fit
+                                    // re-uploads it instead of rendering, and so the clipping
+                                    // overlay can follow the drag before the exact phase lands.
+                                    self.proxy_frame = Some(ProxyFrame {
+                                        generation,
+                                        raster: retained,
+                                        dimensions: proxy_dimensions.unwrap_or(stage),
+                                        built: proxy_built,
+                                    });
+                                } else {
+                                    match report {
+                                        Some(report) => {
+                                            self.incoming = Some((
+                                                Analysis {
+                                                    generation,
+                                                    identity,
+                                                    report,
+                                                },
+                                                retained,
+                                            ));
+                                        }
+                                        // A frame with no reduction still replaces the retained
+                                        // raster now, so no overlay is derived from an older image.
+                                        None => {
+                                            self.incoming = None;
+                                            self.analysis = None;
+                                            self.raster = Some((generation, retained));
+                                        }
                                     }
                                 }
                             }
                             let upload = Upload {
-                                generation: result.generation,
+                                generation,
                                 draft_revision: result.draft_revision,
-                                width: raster.width,
-                                height: raster.height,
-                                entry_id: result.entry_id,
+                                width: stage.0,
+                                height: stage.1,
+                                entry_id,
                                 snapshot_id: raster.snapshot_id.to_string(),
                                 source_fingerprint: raster.source_fingerprint,
                                 started: Instant::now(),
+                                proxy,
+                                proxy_dimensions,
+                                proxy_built,
+                                reason: None,
                             };
                             let handle = iced::widget::image::Handle::from_rgba(
                                 raster.width,
@@ -1368,6 +1864,12 @@ impl Editor {
                             // The canvas explains the failure: the kind and the detail are all the
                             // view model needs to name the cause and offer the allowed actions.
                             self.render_error = Some((error.kind, error.detail.clone()));
+                            // A failed exact phase releases whatever its proxy was holding, so a
+                            // scripted step ends on the failure rather than waiting for a frame
+                            // that will never arrive.
+                            if !proxy && !for_draft {
+                                self.release_held(generation);
+                            }
                             if self.activity.pending {
                                 self.activity.pending = false;
                                 self.activity.phase = "error";
@@ -1378,19 +1880,28 @@ impl Editor {
                                 );
                                 self.outcome_ready(true);
                             }
+                            return Task::done(Message::Poll);
                         }
                     }
                 }
             }
             Message::Uploaded(upload, result) => {
                 self.uploading = false;
-                if upload.generation != self.preview_generation {
-                    return Task::none();
+                // Monotone, exactly as in `Poll`: a texture older than what is on screen is
+                // dropped, and this generation's own second texture — the exact render a zoom
+                // asked for — is presented over its proxy.
+                if upload.generation < self.presented_generation {
+                    return Task::done(Message::Poll);
                 }
                 match result {
                     Ok(allocation) => {
                         self.photo = Some(allocation);
+                        // The exact stage, whatever size the texture is: a proxy is drawn into
+                        // this box, and every pick, percent-zoom box and overlay cell keeps
+                        // mapping to exact stage pixels.
                         self.dimensions = Some((upload.width, upload.height));
+                        self.presented_generation = upload.generation;
+                        self.presented_proxy = upload.proxy;
                         self.show_entry(upload.entry_id.clone());
                         self.displayed_draft_revision = upload.draft_revision;
                         self.adopt_analysis(upload.generation);
@@ -1414,26 +1925,50 @@ impl Editor {
                                 "draft_revision":upload.draft_revision,
                                 "dimensions":[upload.width,upload.height],
                                 "upload_ms":upload.started.elapsed().as_secs_f64()*1000.,
+                                "proxy":upload.proxy,
+                                "proxy_dimensions":upload.proxy_dimensions.map(|(width,height)| json!([width,height])),
+                                "proxy_built":upload.proxy_built,
+                                "reason":upload.reason,
                             }),
                         );
                         // A scripted preview selection settles on these same pixels, whether or not
                         // this upload also belongs to the one open request evidence tracks below.
                         // While a slider gesture is open the drafted previews replace one another,
                         // so a scripted gesture waits for the one whose settings are the newest.
-                        match &self.slider_draft {
-                            Some(draft) if draft.drained() => self.settle_step(Settle::SliderDraft),
-                            Some(_) => {}
-                            None => self.settle_step(Settle::Preview),
-                        }
-                        if self.activity.pending {
-                            self.activity.pending = false;
-                            self.activity.displayed = self.activity.requested;
-                            self.activity.phase = "ready";
-                            self.event(
-                                "render_ready",
-                                json!({"upload_ms":upload.started.elapsed().as_secs_f64()*1000.,"displayed_generation":self.activity.displayed}),
-                            );
-                            self.outcome_ready(false);
+                        let settle = match &self.slider_draft {
+                            Some(draft) if draft.drained() => Some(Settle::SliderDraft),
+                            Some(_) => None,
+                            None => Some(Settle::Preview),
+                        };
+                        let ready_upload_ms = self
+                            .activity
+                            .pending
+                            .then(|| upload.started.elapsed().as_secs_f64() * 1000.);
+                        if upload.proxy {
+                            // The photograph is on screen, but every number a captured frame
+                            // reports — the histogram, the clipping counters, the overlay it is
+                            // checked against — comes from the exact render. So the step and the
+                            // open request wait for this generation's exact phase.
+                            self.held_by_proxy = Some(HeldByProxy {
+                                generation: upload.generation,
+                                settle,
+                                ready_upload_ms,
+                            });
+                        } else {
+                            self.held_by_proxy = None;
+                            if let Some(settle) = settle {
+                                self.settle_step(settle);
+                            }
+                            if self.activity.pending {
+                                self.activity.pending = false;
+                                self.activity.displayed = self.activity.requested;
+                                self.activity.phase = "ready";
+                                self.event(
+                                    "render_ready",
+                                    json!({"upload_ms":upload.started.elapsed().as_secs_f64()*1000.,"displayed_generation":self.activity.displayed}),
+                                );
+                                self.outcome_ready(false);
+                            }
                         }
                         self.status = self.displayed_status(&upload);
                     }
@@ -1448,6 +1983,10 @@ impl Editor {
                         }
                     }
                 }
+                // The queue was not polled while this upload was in flight, so a newer result may
+                // already be waiting and nothing else would ask for it. The gate may also have
+                // turned a zoom's own re-upload away; this is where it is picked up.
+                return Task::batch([Task::done(Message::Poll), self.present_retained()]);
             }
             Message::DraftUploaded(upload, result) => {
                 self.uploading = false;
@@ -1470,6 +2009,8 @@ impl Editor {
                         self.settle_step(Settle::Draft);
                     }
                 }
+                // As above: the upload gate held the queue, so ask it for whatever it holds.
+                return Task::done(Message::Poll);
             }
             Message::OverlayUploaded(generation, dimensions, result) => {
                 if self
@@ -1483,10 +2024,14 @@ impl Editor {
                 }
                 match result {
                     Ok(allocation) => {
+                        let approximate = self
+                            .overlay_request
+                            .as_ref()
+                            .is_some_and(|request| request.approximate);
                         self.overlay_photo = Some(allocation);
                         self.event(
                             "clipping_overlay",
-                            json!({"generation":generation,"cells":[dimensions.0,dimensions.1]}),
+                            json!({"generation":generation,"cells":[dimensions.0,dimensions.1],"approximate":approximate}),
                         );
                     }
                     Err(_) => {
@@ -1748,6 +2293,7 @@ impl Editor {
                 self.compare_return = Some(self.session.preview.selection.clone());
                 let asset = state.asset.id.clone();
                 self.status = "Comparing with the original…".into();
+                let proxy = self.proxy_bounds();
                 return preview_task(
                     self.owner.clone(),
                     self.client,
@@ -1755,6 +2301,7 @@ impl Editor {
                     Some(original.clone()),
                     "preview.select",
                     json!({"asset_id":asset,"entry_id":original}),
+                    proxy,
                 );
             }
             Message::CompareEnd => {
@@ -1763,6 +2310,7 @@ impl Editor {
                     return Task::none();
                 };
                 let asset = state.asset.id.clone();
+                let proxy = self.proxy_bounds();
                 return match previous {
                     HistorySelection::Current => preview_task(
                         self.owner.clone(),
@@ -1771,6 +2319,7 @@ impl Editor {
                         None,
                         "preview.return-current",
                         json!({}),
+                        proxy,
                     ),
                     HistorySelection::Entry(entry_id) => preview_task(
                         self.owner.clone(),
@@ -1779,6 +2328,7 @@ impl Editor {
                         Some(entry_id.clone()),
                         "preview.select",
                         json!({"asset_id":asset,"entry_id":entry_id}),
+                        proxy,
                     ),
                 };
             }
@@ -2137,6 +2687,7 @@ impl Editor {
                 let asset = state.asset.id.clone();
                 self.busy = true;
                 self.status = "Selecting history state…".into();
+                let proxy = self.proxy_bounds();
                 return preview_task(
                     self.owner.clone(),
                     self.client,
@@ -2144,6 +2695,7 @@ impl Editor {
                     Some(entry_id),
                     "preview.select",
                     params,
+                    proxy,
                 );
             }
             Message::ReturnCurrent => {
@@ -2156,6 +2708,7 @@ impl Editor {
                 let asset = state.asset.id.clone();
                 self.busy = true;
                 self.status = "Returning to current state…".into();
+                let proxy = self.proxy_bounds();
                 return preview_task(
                     self.owner.clone(),
                     self.client,
@@ -2163,6 +2716,7 @@ impl Editor {
                     None,
                     "preview.return-current",
                     json!({}),
+                    proxy,
                 );
             }
             Message::Restore => {
@@ -2496,7 +3050,15 @@ impl Editor {
         let asset = state.asset.id.clone();
         self.busy = true;
         self.status = format!("Running {method}…");
-        state_task(self.owner.clone(), self.client, asset, method, params)
+        let proxy = self.proxy_bounds();
+        state_task(
+            self.owner.clone(),
+            self.client,
+            asset,
+            method,
+            params,
+            proxy,
+        )
     }
 
     fn session_command(&mut self, method: &'static str, params: Value) -> Task<Message> {
@@ -2620,18 +3182,16 @@ impl Editor {
 
     fn subscription(&self) -> Subscription<Message> {
         let mut subscriptions = vec![iced::event::listen_with(raw_event)];
-        // One 16 ms poll serves both workers, and only while one of them has something to
-        // deliver: the overlay adds no timer of its own and nothing wakes up when both are idle.
+        // One channel serves both workers: each posts a signal when it has a result, and this
+        // carries it in as the `Poll` the 16 ms timer used to produce. Nothing wakes when nothing
+        // has finished, and the subscription itself exists only while one of them is busy, so an
+        // idle desktop runs no timer and holds no stream. A signal posted while it is being built
+        // or after it is gone is buffered by the channel, which outlives it.
         if self.preview_queue.is_busy() || self.overlay_queue.is_busy() {
-            subscriptions.push(iced::time::every(Duration::from_millis(16)).map(|_| Message::Poll));
+            subscriptions.push(waker::subscription());
         }
-        // The gesture's one bound, gated exactly as the preview poll above is: a desktop with no
-        // open slider draft runs no timer for it at all.
-        if self.slider_draft.is_some() {
-            subscriptions.push(
-                iced::time::every(Duration::from_millis(16)).map(|_| Message::SliderDraftTick),
-            );
-        }
+        // The gesture needs no timer of its own: a slider move sends `draft.set` the moment
+        // nothing is in flight, and records only the newest value while one is.
         if self.state.is_some() && self.evidence.is_none() {
             subscriptions
                 .push(iced::time::every(Duration::from_millis(500)).map(|_| Message::Sync));
@@ -2642,8 +3202,9 @@ impl Editor {
             if evidence.capture_pending {
                 subscriptions.push(iced::window::frames().map(|_| Message::Capture));
             }
-            // A paced slider step's own timer: gated exactly as the gesture's 16 ms tick is on an
-            // open draft, so a script with no paced step in flight runs no timer for it at all.
+            // A paced slider step's own timer, which belongs to the evidence run rather than to
+            // the editor: it is gated on the step still having values left to send, so a script
+            // with no paced step in flight runs no timer for it at all.
             if let Some(paced) = &evidence.paced_slider {
                 subscriptions.push(
                     iced::time::every(Duration::from_millis(paced.interval_ms))
@@ -2653,6 +3214,18 @@ impl Editor {
         }
         Subscription::batch(subscriptions)
     }
+}
+
+/// One rectangle of physical pixels as bounds the core will accept, or `None` when the surface has
+/// no room at all. The core clamps them to its own limits; rounding here is the only conversion.
+fn bounds_of((width, height): (f32, f32)) -> Option<ProxyBounds> {
+    (width.is_finite() && height.is_finite() && width >= 1.0 && height >= 1.0).then(|| {
+        ProxyBounds {
+            width: width.round() as u32,
+            height: height.round() as u32,
+        }
+        .clamped()
+    })
 }
 
 /// The events the keyboard table can act on. Everything else never wakes the update function, so a
@@ -4454,6 +5027,9 @@ mod tests {
         editor.session.preview.view.zoom = Zoom::Fit;
         let (committed, raster) = analysed(&editor, 4, &[[9, 9, 9, 255]; 4], 2, 2);
         editor.preview_generation = 4;
+        // The pixels reach the screen first, exactly as `Message::Uploaded` presents them: the
+        // overlay describes the frame on screen, so nothing is derived until one is.
+        editor.presented_generation = 4;
         editor.incoming = Some((committed, raster));
         editor.adopt_analysis(4);
         let _ = editor.update(Message::Resized(1440.0, 900.0));
@@ -4475,6 +5051,7 @@ mod tests {
         let draft_id = lightwell_core::DraftId::new();
         let (analysis, drafted_raster) =
             drafted(&editor, 5, &draft_id, 2, &[[255, 255, 255, 255]; 4], 2, 2);
+        editor.presented_generation = 5;
         editor.incoming = Some((analysis, drafted_raster));
         editor.adopt_analysis(5);
         editor.refresh_overlay();
@@ -4649,6 +5226,7 @@ mod tests {
         let (mut editor, catalog, _, _) = opened(Vec::new(), 4);
         let (analysis, raster) = analysed(&editor, 3, &[[0, 0, 0, 255]; 4], 2, 2);
         editor.preview_generation = 3;
+        editor.presented_generation = 3;
         editor.incoming = Some((analysis, raster));
         editor.adopt_analysis(3);
         let before = (
@@ -4699,6 +5277,152 @@ mod tests {
         let repeated = editor.overlay_request.clone();
         let _ = editor.update(Message::Panned(10.0, 10.0));
         assert_eq!(editor.overlay_request, repeated, "a pan re-derives nothing");
+        finish(editor, catalog);
+    }
+
+    /// The Fit bounds are the photo surface less the canvas padding, in physical pixels: exactly
+    /// the rectangle a fitted photograph is drawn into, which is the whole point of the proxy.
+    #[test]
+    fn the_fit_bounds_are_the_padded_photo_surface_in_physical_pixels() {
+        let (mut editor, catalog, _, _) = opened(Vec::new(), 4);
+        editor.session.preview.view.zoom = Zoom::Fit;
+        editor.window = (1440.0, 900.0);
+        editor.scale_factor = 2.0;
+        editor.session.workspace.state_panel = true;
+        editor.session.workspace.tools_panel = true;
+        let surface = state::histogram::photo_surface(editor.window, true, true);
+        let padding = 2.0 * view::canvas::PHOTO_PADDING;
+        let bounds = editor
+            .proxy_bounds()
+            .expect("Fit is bounded by the display");
+        assert_eq!(
+            (bounds.width, bounds.height),
+            (
+                ((surface.0 - padding) * 2.0).round() as u32,
+                ((surface.1 - padding) * 2.0).round() as u32
+            ),
+        );
+        // Collapsing a panel widens the surface, so the next job's bounds widen with it.
+        editor.session.workspace.state_panel = false;
+        let wider = editor.proxy_bounds().expect("Fit is still bounded");
+        assert!(wider.width > bounds.width && wider.height == bounds.height);
+        // A window with no room at all offers nothing rather than a degenerate rectangle.
+        editor.window = (0.0, 0.0);
+        assert_eq!(editor.proxy_bounds(), None);
+        finish(editor, catalog);
+    }
+
+    /// The zoom rule: a percentage that draws the stage smaller than itself is bounded by that
+    /// drawn size, and 100% and above are not bounded at all, which is what keeps the 100% view the
+    /// exact render of the exact recipe.
+    #[test]
+    fn a_percentage_is_bounded_only_while_the_stage_is_drawn_smaller_than_itself() {
+        let (mut editor, catalog, _, _) = opened(Vec::new(), 4);
+        editor.window = (1440.0, 900.0);
+        editor.scale_factor = 1.0;
+        editor.dimensions = Some((6000, 4000));
+        editor.session.preview.view.zoom = Zoom::Percent { value: 50.0 };
+        let half = editor.proxy_bounds().expect("a zoomed-out view is bounded");
+        assert_eq!((half.width, half.height), (3000, 2000));
+        for value in [100.0, 200.0, 400.0] {
+            editor.session.preview.view.zoom = Zoom::Percent { value };
+            assert_eq!(
+                editor.proxy_bounds(),
+                None,
+                "{value}% shows a stage pixel in a display pixel or more"
+            );
+        }
+        // Nothing is known about the stage before a frame has arrived, so nothing is offered.
+        editor.dimensions = None;
+        editor.session.preview.view.zoom = Zoom::Percent { value: 50.0 };
+        assert_eq!(editor.proxy_bounds(), None);
+        finish(editor, catalog);
+    }
+
+    /// A zoom across the proxy boundary uploads pixels that already exist and renders nothing; a
+    /// zoom that stays on one side of it does not even upload.
+    #[test]
+    fn a_zoom_uploads_the_retained_raster_and_asks_for_no_preview() {
+        let (mut editor, catalog, _, _) = opened(Vec::new(), 4);
+        editor.window = (1440.0, 900.0);
+        editor.dimensions = Some((4000, 3000));
+        editor.session.preview.view.zoom = Zoom::Fit;
+        // A proxy of generation 7 is on screen, with its exact phase adopted beside it.
+        let pixels = |code: u8| {
+            Arc::new(lightwell_core::Raster {
+                width: 2,
+                height: 2,
+                rgba: vec![code; 16].into(),
+                source_fingerprint: "source-1".into(),
+                snapshot_id: lightwell_core::SnapshotId::new(),
+            })
+        };
+        editor.presented_generation = 7;
+        editor.presented_proxy = true;
+        editor.preview_generation = 7;
+        editor.proxy_frame = Some(ProxyFrame {
+            generation: 7,
+            raster: pixels(1),
+            dimensions: (1200, 900),
+            built: true,
+        });
+        editor.raster = Some((7, pixels(2)));
+
+        // Fit to 100%: the retained exact raster is uploaded and no job is queued.
+        editor.session.preview.view.zoom = Zoom::Percent { value: 100.0 };
+        let _ = editor.zoom_changed(&Zoom::Fit);
+        assert!(editor.uploading, "the exact raster was uploaded");
+        assert_eq!(
+            editor.preview_generation, 7,
+            "no preview job was requested: nothing was rendered for a view change"
+        );
+
+        // The upload lands, as `Message::Uploaded` reports it.
+        editor.uploading = false;
+        editor.presented_proxy = false;
+
+        // 100% to 200% stays on the exact side: nothing at all happens.
+        editor.session.preview.view.zoom = Zoom::Percent { value: 200.0 };
+        let _ = editor.zoom_changed(&Zoom::Percent { value: 100.0 });
+        assert!(
+            !editor.uploading,
+            "a zoom within the exact view uploaded again"
+        );
+        assert_eq!(editor.preview_generation, 7, "and asked for no preview");
+
+        // Back to Fit: the retained proxy is re-uploaded rather than rendered again.
+        editor.session.preview.view.zoom = Zoom::Fit;
+        let _ = editor.zoom_changed(&Zoom::Percent { value: 200.0 });
+        assert!(editor.uploading, "the retained proxy was uploaded");
+        assert_eq!(
+            editor.preview_generation, 7,
+            "no preview job was requested: nothing was rendered for a view change"
+        );
+        finish(editor, catalog);
+    }
+
+    /// With no proxy retained for the frame on screen — it was rendered exactly, at 100% — a zoom
+    /// back to Fit is the one view change that asks for a render.
+    #[test]
+    fn a_zoom_back_to_fit_with_no_retained_proxy_requests_one_preview() {
+        let (mut editor, catalog, _, _) = opened(Vec::new(), 4);
+        editor.window = (1440.0, 900.0);
+        editor.dimensions = Some((4000, 3000));
+        editor.presented_generation = 3;
+        editor.presented_proxy = false;
+        editor.session.preview.view.zoom = Zoom::Fit;
+        let path = crate::app::testing::attach_log(&mut editor);
+        // The returned task is the owner round trip that ends in one preview job. Nothing is
+        // uploaded, because there are no pixels of this frame at the size Fit now asks for.
+        let _ = editor.zoom_changed(&Zoom::Percent { value: 100.0 });
+        assert!(!editor.uploading, "there were no pixels to upload");
+        let records = crate::app::testing::logged(&mut editor, &path);
+        assert!(
+            records
+                .iter()
+                .any(|record| record["event"] == json!("preview_proxy_requested")),
+            "the one render a view change asks for is recorded"
+        );
         finish(editor, catalog);
     }
 
@@ -5484,6 +6208,10 @@ mod tests {
             snapshot_id: "snapshot-1".into(),
             source_fingerprint: "source-1".into(),
             started: Instant::now(),
+            proxy: false,
+            proxy_dimensions: None,
+            proxy_built: false,
+            reason: None,
         };
         assert!(
             editor.displayed_status(&upload).starts_with("Current · "),
