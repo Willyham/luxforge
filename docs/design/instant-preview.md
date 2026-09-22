@@ -29,7 +29,7 @@ A slider dragged back and forth wildly at Fit shows the value under the pointer 
 | Settled exact histogram after the last input, 24 MP | p95 < 200 ms (unchanged) |
 | Idle CPU and process memory | unchanged targets; the proxy adds at most one bounded buffer |
 
-"Presented" keeps its harness meaning: the desktop update in which the rendered raster became the photo surface's source, drawn by the redraw that update requests. It is not scanout.
+"Presented" keeps its harness meaning: the desktop update in which the rendered raster became the view's source, drawn by the redraw that update requests. It is not scanout.
 
 ## Design
 
@@ -67,10 +67,10 @@ During a gesture, before the exact phase of the newest frame has landed, the cli
 Measured on the M4 Mac with per-leg timings: the owner answers `draft.set` and plans the preview job in under 0.2 ms, the desktop's own update, model derivation and view take under 0.15 ms together, and every message handed back into the update loop through the runtime — a task result, a worker's wake, an image allocation's answer — arrives about 8 ms later, one frame of the 120 Hz display. A redraw is always in flight during a drag, the main thread waits on its present, and a message that arrives meanwhile waits with it. The per-input path therefore has as few runtime hops as its work allows:
 
 - The gesture's `draft.set` and preview-job requests are made synchronously on the desktop thread. They are two `O(layers)` owner requests; the owner does no frame work by rule, so the wait is bounded by catalog work alone.
-- The proxy frame is drawn by a photo-surface primitive that owns its texture: the raster handed to the view is written to that texture in the same frame that draws it, so no allocation round trip stands between the worker's result and the screen. The overlay and the crop draft keep the toolkit's image path.
+- At Fit, the proxy frame is drawn by a photo-surface primitive that owns its texture: the raster handed to the view is written to that texture in the same frame that draws it, so no allocation round trip stands between the worker's result and the screen. The overlay and the crop draft keep the toolkit's image path. Percentage zooms use the toolkit's image widget, whose viewport stays bounded by the window while the scrollable carries the full zoomed extent; this avoids GPU viewport limits on large photos.
 - The worker's wake is the one hop that remains, because the raster has to reach the thread that draws.
 
-"Presented" in the harness is the update in which the raster became the surface's source; it is drawn by the redraw that update requests, which is the next frame.
+"Presented" in the harness is the update in which the raster became the view's source; it is drawn by the redraw that update requests, which is the next frame.
 
 ### The Fit view is the proxy
 
