@@ -520,35 +520,76 @@ pub(crate) fn draft_begin_task(
 /// stack — so the worker that produced those pixels reduces them, exactly as it does for a
 /// committed frame. A gesture therefore still costs one `draft.set` and one preview job per tick:
 /// the analysis rides the job it already asked for and no second render happens.
-pub(crate) fn draft_set_task(
-    owner: OwnerHandle,
+///
+/// It runs on the calling thread, synchronously: the owner's share is two `O(layers)` requests
+/// that measure well under a millisecond, while handing the answer back through the runtime costs
+/// a whole display frame whenever a redraw is in flight, which during a drag is always. A gesture
+/// therefore pays the round trip where it is cheapest instead of waiting a frame for its result.
+pub(crate) fn draft_set_now(
+    owner: &OwnerHandle,
     client: ClientId,
     draft_id: DraftId,
     asset_id: AssetId,
     fields: Value,
     proxy: Option<ProxyBounds>,
-) -> Task<Message> {
-    Task::perform(
-        async move {
-            let (draft, _) = call(
-                &owner,
-                client,
-                "draft.set",
-                json!({"draft_id":draft_id,"fields":fields}),
-            )?;
-            let draft = parse::<Draft>(draft)?;
-            let job = owner
-                .preview_job(proxied(
-                    PreviewRequest::new(client, asset_id)
-                        .draft(draft_id)
-                        .analyse(),
-                    proxy,
-                ))
-                .map_err(|error| error.to_string())?;
-            Ok((draft, job))
+) -> Result<(Draft, PreviewJob, RoundTrip), String> {
+    let queued = Instant::now();
+    let started = queued;
+    let (draft, _) = call(
+        owner,
+        client,
+        "draft.set",
+        json!({"draft_id":draft_id,"fields":fields}),
+    )?;
+    let answered = Instant::now();
+    let draft = parse::<Draft>(draft)?;
+    let job = owner
+        .preview_job(proxied(
+            PreviewRequest::new(client, asset_id)
+                .draft(draft_id)
+                .analyse(),
+            proxy,
+        ))
+        .map_err(|error| error.to_string())?;
+    let planned = Instant::now();
+    Ok((
+        draft,
+        job,
+        RoundTrip {
+            queued,
+            started,
+            answered,
+            planned,
         },
-        |result| Message::SliderDraftSet(result.map(Box::new)),
-    )
+    ))
+}
+
+/// Where the time of one `draft.set` round trip went, so an evidence run can tell the executor's
+/// scheduling from the owner's own work.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct RoundTrip {
+    /// The task was created in `update`.
+    pub(crate) queued: Instant,
+    /// The task began running on the executor.
+    pub(crate) started: Instant,
+    /// The owner answered `draft.set`.
+    pub(crate) answered: Instant,
+    /// The owner returned the preview job.
+    pub(crate) planned: Instant,
+}
+
+impl RoundTrip {
+    /// The four legs in milliseconds: executor wait, `draft.set` on the owner, the preview job on
+    /// the owner, and the return to `update` measured against `now`.
+    pub(crate) fn legs_ms(&self, now: Instant) -> [f64; 4] {
+        let ms = |from: Instant, to: Instant| to.duration_since(from).as_secs_f64() * 1000.0;
+        [
+            ms(self.queued, self.started),
+            ms(self.started, self.answered),
+            ms(self.answered, self.planned),
+            ms(self.planned, now),
+        ]
+    }
 }
 
 /// Commit the draft once. A real outcome is read back exactly as any other command's is; a no-op

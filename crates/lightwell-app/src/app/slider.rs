@@ -19,7 +19,7 @@ use crate::{
         message::Message,
         tasks::{
             draft_begin_task, draft_cancel_task, draft_commit_task, draft_reapply_task,
-            draft_set_task, mutation,
+            draft_set_now, mutation,
         },
     },
     state::tools,
@@ -214,17 +214,11 @@ impl Editor {
             "slider_draft_set",
             json!({"draft_id":draft_id.as_str(),"fields":fields}),
         );
-        // The bounds are computed here, on the thread that owns the window; the task runs
-        // off-thread and must not read the editor.
         let proxy = self.proxy_bounds();
-        draft_set_task(
-            self.owner.clone(),
-            self.client,
-            draft_id,
-            asset,
-            fields,
-            proxy,
-        )
+        // Synchronous on purpose: see `draft_set_now`. The answer is handled exactly as a message
+        // would be, so nothing else about the gesture changes.
+        let result = draft_set_now(&self.owner, self.client, draft_id, asset, fields, proxy);
+        self.slider_set(result)
     }
 
     /// `draft.begin` answered: the draft exists, so the first value can go out.
@@ -252,14 +246,34 @@ impl Editor {
     /// One `draft.set` answered with the preview of the settings it accepted.
     pub(crate) fn slider_set(
         &mut self,
-        result: Result<(Draft, lightwell_core::PreviewJob), String>,
+        result: Result<
+            (
+                Draft,
+                lightwell_core::PreviewJob,
+                crate::app::tasks::RoundTrip,
+            ),
+            String,
+        >,
     ) -> Task<Message> {
         let Some(draft) = &mut self.slider_draft else {
             return Task::none();
         };
         draft.in_flight = false;
         match result {
-            Ok((set, job)) => {
+            Ok((set, job, round_trip)) => {
+                let now = std::time::Instant::now();
+                let legs = round_trip.legs_ms(now);
+                let timing = self.loop_timing.get();
+                let since = |at: Option<std::time::Instant>| {
+                    at.map(|at| now.duration_since(at).as_secs_f64() * 1000.0)
+                };
+                let loop_timing = json!({
+                    "last_update_ms": timing.last_update_ms,
+                    "last_rederive_ms": timing.last_rederive_ms,
+                    "last_view_ms": timing.last_view_ms,
+                    "since_view_end_ms": since(timing.last_view_end),
+                    "since_update_end_ms": since(timing.last_update_end),
+                });
                 draft.draft_revision = set.draft_revision;
                 draft.conflicted = set.conflicted;
                 let label = draft.label.clone();
@@ -273,7 +287,7 @@ impl Editor {
                 // it a measurement can only guess which frame belongs to which slider value.
                 self.event(
                     "slider_draft_preview",
-                    json!({"generation":self.preview_generation,"draft_revision":draft_revision,"value":sent}),
+                    json!({"generation":self.preview_generation,"draft_revision":draft_revision,"value":sent,"round_trip_ms":{"executor_wait":legs[0],"draft_set":legs[1],"preview_job":legs[2],"return":legs[3]},"loop":loop_timing}),
                 );
                 self.after_slider_round_trip()
             }

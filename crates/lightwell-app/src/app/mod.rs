@@ -261,6 +261,17 @@ pub(crate) struct HeldByProxy {
     pub(crate) ready_upload_ms: Option<f64>,
 }
 
+/// Where the main thread's time went in its last update and view, so an evidence event can say
+/// whether a message waited on the desktop's own work or on the runtime.
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct LoopTiming {
+    pub(crate) last_update_ms: f64,
+    pub(crate) last_rederive_ms: f64,
+    pub(crate) last_view_ms: f64,
+    pub(crate) last_view_end: Option<Instant>,
+    pub(crate) last_update_end: Option<Instant>,
+}
+
 pub(crate) struct Editor {
     pub(crate) owner: OwnerHandle,
     pub(crate) owner_join: Option<JoinHandle<()>>,
@@ -347,6 +358,8 @@ pub(crate) struct Editor {
     pub(crate) pending_sample: Option<(u32, u32)>,
     /// The window's logical size, from the launch size and every resize event since.
     pub(crate) window: (f32, f32),
+    /// Where the main thread's time goes, for the evidence events; never read by the view.
+    pub(crate) loop_timing: std::cell::Cell<LoopTiming>,
     /// Why the last preview failed, cleared by the next successful upload. The canvas turns this
     /// into the notice that names the cause; nothing here decides what it means.
     pub(crate) render_error: Option<(ErrorKind, String)>,
@@ -447,6 +460,7 @@ impl Editor {
         });
         let initial = config.files.pop_front();
         let mut editor = Self {
+            loop_timing: std::cell::Cell::new(LoopTiming::default()),
             owner: owner.clone(),
             owner_join: Some(join),
             live_server,
@@ -880,6 +894,16 @@ impl Editor {
     }
 
     pub(crate) fn update(&mut self, message: Message) -> Task<Message> {
+        let started = Instant::now();
+        let task = self.update_inner(message);
+        let mut timing = self.loop_timing.get();
+        timing.last_update_ms = started.elapsed().as_secs_f64() * 1000.0;
+        timing.last_update_end = Some(Instant::now());
+        self.loop_timing.set(timing);
+        task
+    }
+
+    fn update_inner(&mut self, message: Message) -> Task<Message> {
         let zoom = self.session.preview.view.zoom.clone();
         let busy = self.preview_queue.is_busy() || self.overlay_queue.is_busy();
         let task = self.dispatch(message);
@@ -888,7 +912,11 @@ impl Editor {
         let zoomed = self.zoom_changed(&zoom);
         let task = self.sync_mode(task);
         self.refresh_overlay();
+        let rederive_started = Instant::now();
         self.rederive();
+        let mut timing = self.loop_timing.get();
+        timing.last_rederive_ms = rederive_started.elapsed().as_secs_f64() * 1000.0;
+        self.loop_timing.set(timing);
         // A queue that went busy in this message may finish before the runtime has built the waker
         // subscription for it. The signal is buffered rather than lost, so this is the second
         // guarantee and it is free: `Poll` against an empty queue does nothing at all.
@@ -3144,7 +3172,8 @@ impl Editor {
     }
 
     fn view(&self) -> Element<'_, Message> {
-        view::workspace(
+        let started = Instant::now();
+        let element = view::workspace(
             &self.workspace,
             view::Surfaces {
                 photo: self.photo.as_ref(),
@@ -3152,7 +3181,12 @@ impl Editor {
                 overlay: self.overlay_surface(),
                 draft: self.crop.as_ref(),
             },
-        )
+        );
+        let mut timing = self.loop_timing.get();
+        timing.last_view_ms = started.elapsed().as_secs_f64() * 1000.0;
+        timing.last_view_end = Some(Instant::now());
+        self.loop_timing.set(timing);
+        element
     }
 
     /// What the keyboard table depends on right now.
@@ -3415,7 +3449,16 @@ mod tests {
             .expect("the draft was begun before it was set");
         draft.draft_revision += 1;
         let job = refresh_for(asset, current, Vec::new(), &[current], false).job;
-        let _ = editor.update(Message::SliderDraftSet(Ok(Box::new((draft, job)))));
+        let now = std::time::Instant::now();
+        let round_trip = crate::app::tasks::RoundTrip {
+            queued: now,
+            started: now,
+            answered: now,
+            planned: now,
+        };
+        let _ = editor.update(Message::SliderDraftSet(Ok(Box::new((
+            draft, job, round_trip,
+        )))));
     }
 
     /// Every `draft.*` request this run logged, by event name.

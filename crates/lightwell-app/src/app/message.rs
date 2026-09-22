@@ -235,7 +235,7 @@ pub(crate) enum Message {
     /// `draft.begin` answered.
     SliderDraftBegun(Result<Box<Draft>, String>),
     /// One `draft.set` and the preview job for the settings it accepted.
-    SliderDraftSet(Result<Box<(Draft, PreviewJob)>, String>),
+    SliderDraftSet(Result<Box<(Draft, PreviewJob, crate::app::tasks::RoundTrip)>, String>),
     /// End the open slider draft and commit it once.
     SliderDraftCommit,
     /// `draft.commit` answered. `None` is a no-op outcome: the gesture returned to its start, so
