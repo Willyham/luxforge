@@ -20,6 +20,13 @@ use crate::{
 };
 
 const VIGNETTE_MODULE: &str = "lightwell.vignette";
+/// The sections the registry lists above Vignette that declare a real toggleable section (Pixel
+/// does not) and are expanded by their own descriptor's default (Mixer is already collapsed by
+/// default, so it needs no explicit step): collapsed first, so the module's own sliders are on
+/// screen without scrolling.
+const BASIC_MODULE: &str = "lightwell.basic";
+const TRANSFORM_MODULE: &str = "lightwell.transform";
+const CROP_MODULE: &str = "lightwell.crop";
 const SET_VIGNETTE: &str = "set-vignette";
 const AMOUNT: &str = "amount";
 const ROUNDNESS: &str = "roundness";
@@ -54,7 +61,7 @@ const SAME: f64 = 10.0;
 
 /// One open frame plus one per script step.
 pub fn frames(scenario: &str) -> Option<usize> {
-    (scenario == "vignette").then_some(12)
+    (scenario == "vignette").then_some(15)
 }
 
 pub fn source(scenario: &str) -> Option<&'static str> {
@@ -66,28 +73,36 @@ pub fn source(scenario: &str) -> Option<&'static str> {
 pub fn script(scenario: &str) -> Option<Value> {
     (scenario == "vignette").then(|| {
         json!([
-            // 1: expand the section. Its one group starts expanded, so this alone exposes it.
+            // 1-3: collapse the sections the registry lists above Vignette that declare a real
+            // toggleable section, each expanded by its own default, so the module's own four
+            // sliders land on screen without scrolling once it expands. Pixel declares no
+            // expandable section, and Mixer is already collapsed by default, so neither needs a
+            // step.
+            {"section":{"module":BASIC_MODULE,"expanded":false}},
+            {"section":{"module":TRANSFORM_MODULE,"expanded":false}},
+            {"section":{"module":CROP_MODULE,"expanded":false}},
+            // 4: expand the section. Its one group starts expanded, so this alone exposes it.
             {"section":{"module":VIGNETTE_MODULE,"expanded":true}},
-            // 2: a drag on Amount, left open: the frame shows the drafted preview.
+            // 5: a drag on Amount, left open: the frame shows the drafted preview.
             {"slider":{"action":SET_VIGNETTE,"parameter":AMOUNT,"values":[-20.0,-40.0,-60.0]}},
-            // 3: the same gesture released: one entry, committed at Fit.
+            // 6: the same gesture released: one entry, committed at Fit.
             {"slider":{"action":SET_VIGNETTE,"parameter":AMOUNT,"values":[-60.0],"release":true}},
-            // 4: the same committed state at 100%.
+            // 7: the same committed state at 100%.
             {"view":{"zoom":"100"}},
-            // 5: back to Fit for the roundness and feather commits below.
+            // 8: back to Fit for the roundness and feather commits below.
             {"view":{"zoom":"fit"}},
-            // 6: Roundness -100, a rounded rectangle.
+            // 9: Roundness -100, a rounded rectangle.
             {"slider":{"action":SET_VIGNETTE,"parameter":ROUNDNESS,"values":[-100.0],"release":true}},
-            // 7: Roundness +100, a circle.
+            // 10: Roundness +100, a circle.
             {"slider":{"action":SET_VIGNETTE,"parameter":ROUNDNESS,"values":[100.0],"release":true}},
-            // 8: Feather 0, a hard step.
+            // 11: Feather 0, a hard step.
             {"slider":{"action":SET_VIGNETTE,"parameter":FEATHER,"values":[0.0],"release":true}},
-            // 9: Feather 100, the widest falloff.
+            // 12: Feather 100, the widest falloff.
             {"slider":{"action":SET_VIGNETTE,"parameter":FEATHER,"values":[100.0],"release":true}},
-            // 10: a crop applied after the vignette already exists; the host places the crop layer
+            // 13: a crop applied after the vignette already exists; the host places the crop layer
             // before it regardless, so the mask recentres on the cropped output stage.
             {"api":{"method":"edit.crop-fit","params":{"aspect":"1:1","angle":0}}},
-            // 11: the module's own header reset.
+            // 14: the module's own header reset.
             {"reset":{"module":VIGNETTE_MODULE}}
         ])
     })
@@ -122,8 +137,19 @@ fn expect_no_draft(frame: &Value, what: &str) -> Result {
     )
 }
 
-fn expanded(frame: &Value) -> bool {
-    frame["state"]["expanded"][VIGNETTE_MODULE] == json!(true)
+fn section_expanded(frame: &Value, module: &str) -> bool {
+    frame["state"]["expanded"][module] == json!(true)
+}
+
+/// The expanded state of every section this scenario toggles, for the correlation every recorded
+/// frame carries alongside its revision, entry and draft.
+fn expanded_sections(frame: &Value) -> Value {
+    json!({
+        BASIC_MODULE: section_expanded(frame, BASIC_MODULE),
+        TRANSFORM_MODULE: section_expanded(frame, TRANSFORM_MODULE),
+        CROP_MODULE: section_expanded(frame, CROP_MODULE),
+        VIGNETTE_MODULE: section_expanded(frame, VIGNETTE_MODULE),
+    })
 }
 
 fn vignette_payload(frame: &Value) -> Option<&Value> {
@@ -302,7 +328,7 @@ pub fn verify(evidence: &Path, app: &Value, _events: &[Value]) -> Result {
         "The Vignette module is not available",
     )?;
     ensure(
-        !expanded(&frames[0]),
+        !section_expanded(&frames[0], VIGNETTE_MODULE),
         "The Vignette section is not collapsed as launched",
     )?;
     ensure(
@@ -323,84 +349,110 @@ pub fn verify(evidence: &Path, app: &Value, _events: &[Value]) -> Result {
     record(
         &frames[0],
         "the collapsed Vignette section as launched",
-        json!({"corner_luminance": opened_corners, "centre_luminance": opened_centre}),
+        json!({"corner_luminance": opened_corners, "centre_luminance": opened_centre, "expanded": expanded_sections(&frames[0])}),
     );
 
-    // Frame 1: the section expanded. Its one group starts expanded, so its four sliders show.
+    // Frames 1-3: Basic, Transform and Crop collapsed in turn, each above Vignette in the
+    // registry order and declaring a real toggleable section (Pixel does not), each expanded by
+    // its own default, so none of them is still expanded once Vignette itself opens.
+    for (index, module) in [(1, BASIC_MODULE), (2, TRANSFORM_MODULE), (3, CROP_MODULE)] {
+        ensure(
+            !section_expanded(&frames[index], module),
+            format!("The section step did not collapse {module}"),
+        )?;
+        ensure(
+            revision(&frames[index])? == revision(&frames[0])?,
+            format!("Collapsing {module} committed something"),
+        )?;
+        record(
+            &frames[index],
+            "a section above Vignette collapsed, out of the way of its own sliders",
+            json!({"collapsed": module, "expanded": expanded_sections(&frames[index])}),
+        );
+    }
+
+    // Frame 4: the section expanded, with nothing above it still expanded. Its one group starts
+    // expanded, so its four sliders show without any further group step or scrolling.
     ensure(
-        expanded(&frames[1]),
-        "The section step did not expand the Vignette section",
+        section_expanded(&frames[4], VIGNETTE_MODULE)
+            && !section_expanded(&frames[4], BASIC_MODULE)
+            && !section_expanded(&frames[4], TRANSFORM_MODULE)
+            && !section_expanded(&frames[4], CROP_MODULE),
+        format!(
+            "The section step did not expand Vignette alone: {}",
+            expanded_sections(&frames[4])
+        ),
     )?;
     ensure(
-        revision(&frames[1])? == revision(&frames[0])?,
+        revision(&frames[4])? == revision(&frames[3])?,
         "Expanding the section committed something",
     )?;
     record(
-        &frames[1],
-        "the Vignette section expanded",
-        json!({"expanded": expanded(&frames[1])}),
+        &frames[4],
+        "the Vignette section expanded: its four sliders on screen with nothing above it expanded",
+        json!({"expanded": expanded_sections(&frames[4])}),
     );
 
-    // Frame 2: mid-gesture at Amount -60. The draft is open, nothing is committed.
-    let drafted = draft(&frames[2]);
+    // Frame 5: mid-gesture at Amount -60. The draft is open, nothing is committed.
+    let drafted = draft(&frames[5]);
     ensure(
         drafted["action"] == json!(SET_VIGNETTE)
             && drafted["fields"] == json!({ AMOUNT: -60.0 })
             && drafted["conflicted"] == json!(false),
-        format!("Frame 2's draft is not the open Amount gesture: {drafted}"),
+        format!("Frame 5's draft is not the open Amount gesture: {drafted}"),
     )?;
     ensure(
-        frames[2]["state"]["displayed_draft_revision"] == drafted["draft_revision"],
+        frames[5]["state"]["displayed_draft_revision"] == drafted["draft_revision"],
         format!(
-            "Frame 2 displays draft revision {} while the draft is at {}",
-            frames[2]["state"]["displayed_draft_revision"], drafted["draft_revision"]
+            "Frame 5 displays draft revision {} while the draft is at {}",
+            frames[5]["state"]["displayed_draft_revision"], drafted["draft_revision"]
         ),
     )?;
     ensure(
-        revision(&frames[2])? == revision(&frames[1])? && vignette_payload(&frames[2]).is_none(),
+        revision(&frames[5])? == revision(&frames[4])? && vignette_payload(&frames[5]).is_none(),
         "A drag committed something",
     )?;
     ensure(
-        vignette_field(&frames[2], AMOUNT)? == "-60",
+        vignette_field(&frames[5], AMOUNT)? == "-60",
         format!(
             "The slider does not show the drafted value: {}",
-            vignette_field(&frames[2], AMOUNT)?
+            vignette_field(&frames[5], AMOUNT)?
         ),
     )?;
     record(
-        &frames[2],
+        &frames[5],
         "a drag to Amount -60, mid-gesture: the drafted preview",
-        json!({"draft": drafted}),
+        json!({"draft": drafted, "expanded": expanded_sections(&frames[5])}),
     );
 
-    // Frame 3: the release. One entry, labelled by the module, at Fit; every corner is darker than
+    // Frame 6: the release. One entry, labelled by the module, at Fit; every corner is darker than
     // it was at the opened baseline, and the near-centre patch is unaffected.
-    expect_no_draft(&frames[3], "Frame 3")?;
+    expect_no_draft(&frames[6], "Frame 6")?;
     ensure(
-        revision(&frames[3])? == revision(&frames[2])? + 1,
+        revision(&frames[6])? == revision(&frames[5])? + 1,
         "The release did not advance the revision by one",
     )?;
     ensure(
-        entry(&frames[3])? != entry(&frames[1])?,
+        entry(&frames[6])? != entry(&frames[4])?,
         "The release created no new history entry",
     )?;
     ensure(
-        label(&frames[3])? == "Amount -60",
-        format!("The committed entry is labelled {:?}", label(&frames[3])?),
+        label(&frames[6])? == "Amount -60",
+        format!("The committed entry is labelled {:?}", label(&frames[6])?),
     )?;
     ensure(
-        vignette_payload(&frames[3]) == Some(&json!({ AMOUNT: -60.0 })),
+        vignette_payload(&frames[6]) == Some(&json!({ AMOUNT: -60.0 })),
         format!(
             "The committed Vignette layer holds {:?}",
-            vignette_payload(&frames[3])
+            vignette_payload(&frames[6])
         ),
     )?;
-    let layer = vignette_layer_id(&frames[3])
+    let layer = vignette_layer_id(&frames[6])
         .ok_or("The committed stack holds no Vignette layer")?
         .to_owned();
-    let fit_bounds = bright_bounds(&paths[3], &frames[3])?;
-    let fit_corners = corner_luminances(&paths[3], fit_bounds)?;
-    let fit_centre = centre_luminance(&paths[3], fit_bounds)?;
+    let fit_bounds = bright_bounds(&paths[6], &frames[6])?;
+    let fit_corners = corner_luminances(&paths[6], fit_bounds)?;
+    let fit_centre = centre_luminance(&paths[6], fit_bounds)?;
     for (index, (opened, darkened)) in opened_corners.iter().zip(fit_corners).enumerate() {
         ensure(
             *opened - darkened > DARKER,
@@ -412,27 +464,27 @@ pub fn verify(evidence: &Path, app: &Value, _events: &[Value]) -> Result {
         format!("Amount -60 moved the unaffected centre: {opened_centre} against {fit_centre}"),
     )?;
     record(
-        &frames[3],
+        &frames[6],
         "released: one entry \"Amount -60\" at Fit, every corner darker, the centre unaffected",
-        json!({"revision": revision(&frames[3])?, "label": label(&frames[3])?, "corner_luminance": fit_corners, "centre_luminance": fit_centre, "layer": layer}),
+        json!({"revision": revision(&frames[6])?, "label": label(&frames[6])?, "corner_luminance": fit_corners, "centre_luminance": fit_centre, "layer": layer, "expanded": expanded_sections(&frames[6])}),
     );
 
-    // Frame 4: the same committed state at 100%. Nothing changed but the zoom.
-    expect_no_draft(&frames[4], "Frame 4")?;
+    // Frame 7: the same committed state at 100%. Nothing changed but the zoom.
+    expect_no_draft(&frames[7], "Frame 7")?;
     ensure(
-        revision(&frames[4])? == revision(&frames[3])? && entry(&frames[4])? == entry(&frames[3])?,
+        revision(&frames[7])? == revision(&frames[6])? && entry(&frames[7])? == entry(&frames[6])?,
         "Changing zoom committed something",
     )?;
     ensure(
-        frames[4]["step"]["request"] == json!({"view":{"zoom":100.0}}),
+        frames[7]["step"]["request"] == json!({"view":{"zoom":100.0}}),
         format!(
-            "Frame 4 did not request 100%: {}",
-            frames[4]["step"]["request"]
+            "Frame 7 did not request 100%: {}",
+            frames[7]["step"]["request"]
         ),
     )?;
-    let percent_bounds = bright_bounds(&paths[4], &frames[4])?;
-    let percent_corners = corner_luminances(&paths[4], percent_bounds)?;
-    let percent_centre = centre_luminance(&paths[4], percent_bounds)?;
+    let percent_bounds = bright_bounds(&paths[7], &frames[7])?;
+    let percent_corners = corner_luminances(&paths[7], percent_bounds)?;
+    let percent_centre = centre_luminance(&paths[7], percent_bounds)?;
     // The near-centre patch is clear of the fixture's own quadrant labels at both zooms, so it
     // reads the same regardless of scale; a corner patch can sit close enough to a label at one
     // scale and not the other that resampling shifts its own reading, which is a rendering detail
@@ -444,78 +496,78 @@ pub fn verify(evidence: &Path, app: &Value, _events: &[Value]) -> Result {
         ),
     )?;
     record(
-        &frames[4],
+        &frames[7],
         "the same committed Amount -60, at 100%",
-        json!({"corner_luminance": percent_corners, "centre_luminance": percent_centre, "zoom_request": frames[4]["step"]["request"]}),
+        json!({"corner_luminance": percent_corners, "centre_luminance": percent_centre, "zoom_request": frames[7]["step"]["request"], "expanded": expanded_sections(&frames[7])}),
     );
 
-    // Frame 5: back to Fit, unchanged, ready for the roundness and feather commits.
-    expect_no_draft(&frames[5], "Frame 5")?;
+    // Frame 8: back to Fit, unchanged, ready for the roundness and feather commits.
+    expect_no_draft(&frames[8], "Frame 8")?;
     ensure(
-        revision(&frames[5])? == revision(&frames[4])?,
+        revision(&frames[8])? == revision(&frames[7])?,
         "Returning to Fit committed something",
     )?;
     ensure(
-        frames[5]["step"]["request"] == json!({"view":{"zoom":"fit"}}),
+        frames[8]["step"]["request"] == json!({"view":{"zoom":"fit"}}),
         format!(
-            "Frame 5 did not request Fit: {}",
-            frames[5]["step"]["request"]
+            "Frame 8 did not request Fit: {}",
+            frames[8]["step"]["request"]
         ),
     )?;
     record(
-        &frames[5],
+        &frames[8],
         "back to Fit",
-        json!({"zoom_request": frames[5]["step"]["request"]}),
+        json!({"zoom_request": frames[8]["step"]["request"]}),
     );
 
-    // Frame 6: Roundness -100, a rounded rectangle: at the default midpoint and feather, an edge
+    // Frame 9: Roundness -100, a rounded rectangle: at the default midpoint and feather, an edge
     // midpoint is beyond the falloff's outer bound and reads as darkened as a corner.
     ensure(
-        revision(&frames[6])? == revision(&frames[5])? + 1,
+        revision(&frames[9])? == revision(&frames[8])? + 1,
         "The Roundness -100 commit did not advance the revision by one",
     )?;
     ensure(
-        label(&frames[6])? == "Roundness -100",
-        format!("Frame 6 is labelled {:?}", label(&frames[6])?),
+        label(&frames[9])? == "Roundness -100",
+        format!("Frame 9 is labelled {:?}", label(&frames[9])?),
     )?;
     ensure(
-        vignette_payload(&frames[6]) == Some(&json!({ AMOUNT: -60.0, ROUNDNESS: -100.0 })),
+        vignette_payload(&frames[9]) == Some(&json!({ AMOUNT: -60.0, ROUNDNESS: -100.0 })),
         format!(
             "The Roundness -100 layer holds {:?}",
-            vignette_payload(&frames[6])
+            vignette_payload(&frames[9])
         ),
     )?;
     ensure(
-        vignette_layer_id(&frames[6]) == Some(layer.as_str()),
+        vignette_layer_id(&frames[9]) == Some(layer.as_str()),
         "Roundness replaced the Vignette layer instead of updating it",
     )?;
-    let rect_bounds = bright_bounds(&paths[6], &frames[6])?;
-    let rect_edge = edge_luminance(&paths[6], rect_bounds)?;
+    let rect_bounds = bright_bounds(&paths[9], &frames[9])?;
+    let rect_edge = edge_luminance(&paths[9], rect_bounds)?;
     record(
-        &frames[6],
+        &frames[9],
         "Roundness -100 (a rounded rectangle) at Fit",
-        json!({"label": label(&frames[6])?, "edge_luminance": rect_edge}),
+        json!({"label": label(&frames[9])?, "edge_luminance": rect_edge, "expanded": expanded_sections(&frames[9])}),
     );
 
-    // Frame 7: Roundness +100, a circle: the same edge midpoint is well inside the falloff's inner
+    // Frame 10: Roundness +100, a circle: the same edge midpoint is well inside the falloff's inner
     // bound and reads brighter than it did as a rounded rectangle.
     ensure(
-        revision(&frames[7])? == revision(&frames[6])? + 1,
+        revision(&frames[10])? == revision(&frames[9])? + 1,
         "The Roundness +100 commit did not advance the revision by one",
     )?;
     ensure(
-        label(&frames[7])? == "Roundness +100",
-        format!("Frame 7 is labelled {:?}", label(&frames[7])?),
+        label(&frames[10])? == "Roundness +100",
+        format!("Frame 10 is labelled {:?}", label(&frames[10])?),
     )?;
     ensure(
-        vignette_payload(&frames[7]) == Some(&json!({ AMOUNT: -60.0, ROUNDNESS: 100.0 })),
+        vignette_payload(&frames[10]) == Some(&json!({ AMOUNT: -60.0, ROUNDNESS: 100.0 })),
         format!(
             "The Roundness +100 layer holds {:?}",
-            vignette_payload(&frames[7])
+            vignette_payload(&frames[10])
         ),
     )?;
-    let circle_bounds = bright_bounds(&paths[7], &frames[7])?;
-    let circle_edge = edge_luminance(&paths[7], circle_bounds)?;
+    let circle_bounds = bright_bounds(&paths[10], &frames[10])?;
+    let circle_edge = edge_luminance(&paths[10], circle_bounds)?;
     ensure(
         circle_edge - rect_edge > DARKER,
         format!(
@@ -523,57 +575,57 @@ pub fn verify(evidence: &Path, app: &Value, _events: &[Value]) -> Result {
         ),
     )?;
     record(
-        &frames[7],
+        &frames[10],
         "Roundness +100 (a circle) at Fit: its edge midpoint reads brighter than the rectangle's did",
-        json!({"label": label(&frames[7])?, "edge_luminance": circle_edge}),
+        json!({"label": label(&frames[10])?, "edge_luminance": circle_edge}),
     );
 
-    // Frame 8: Feather 0, a hard step at the midpoint radius: the same edge midpoint, beyond that
+    // Frame 11: Feather 0, a hard step at the midpoint radius: the same edge midpoint, beyond that
     // radius, is fully darkened.
     ensure(
-        revision(&frames[8])? == revision(&frames[7])? + 1,
+        revision(&frames[11])? == revision(&frames[10])? + 1,
         "The Feather 0 commit did not advance the revision by one",
     )?;
     ensure(
-        label(&frames[8])? == "Feather 0",
-        format!("Frame 8 is labelled {:?}", label(&frames[8])?),
+        label(&frames[11])? == "Feather 0",
+        format!("Frame 11 is labelled {:?}", label(&frames[11])?),
     )?;
     ensure(
-        vignette_payload(&frames[8])
+        vignette_payload(&frames[11])
             == Some(&json!({ AMOUNT: -60.0, ROUNDNESS: 100.0, FEATHER: 0.0 })),
         format!(
             "The Feather 0 layer holds {:?}",
-            vignette_payload(&frames[8])
+            vignette_payload(&frames[11])
         ),
     )?;
-    let hard_bounds = bright_bounds(&paths[8], &frames[8])?;
-    let hard_edge = edge_luminance(&paths[8], hard_bounds)?;
+    let hard_bounds = bright_bounds(&paths[11], &frames[11])?;
+    let hard_edge = edge_luminance(&paths[11], hard_bounds)?;
     record(
-        &frames[8],
+        &frames[11],
         "Feather 0 (a hard step) at Fit",
-        json!({"label": label(&frames[8])?, "edge_luminance": hard_edge}),
+        json!({"label": label(&frames[11])?, "edge_luminance": hard_edge}),
     );
 
-    // Frame 9: Feather 100, the falloff spread from the centre to the corner: the same edge
+    // Frame 12: Feather 100, the falloff spread from the centre to the corner: the same edge
     // midpoint is only partway through it and reads brighter than the hard step did.
     ensure(
-        revision(&frames[9])? == revision(&frames[8])? + 1,
+        revision(&frames[12])? == revision(&frames[11])? + 1,
         "The Feather 100 commit did not advance the revision by one",
     )?;
     ensure(
-        label(&frames[9])? == "Feather 100",
-        format!("Frame 9 is labelled {:?}", label(&frames[9])?),
+        label(&frames[12])? == "Feather 100",
+        format!("Frame 12 is labelled {:?}", label(&frames[12])?),
     )?;
     ensure(
-        vignette_payload(&frames[9])
+        vignette_payload(&frames[12])
             == Some(&json!({ AMOUNT: -60.0, ROUNDNESS: 100.0, FEATHER: 100.0 })),
         format!(
             "The Feather 100 layer holds {:?}",
-            vignette_payload(&frames[9])
+            vignette_payload(&frames[12])
         ),
     )?;
-    let soft_bounds = bright_bounds(&paths[9], &frames[9])?;
-    let soft_edge = edge_luminance(&paths[9], soft_bounds)?;
+    let soft_bounds = bright_bounds(&paths[12], &frames[12])?;
+    let soft_edge = edge_luminance(&paths[12], soft_bounds)?;
     ensure(
         soft_edge - hard_edge > DARKER,
         format!(
@@ -581,20 +633,20 @@ pub fn verify(evidence: &Path, app: &Value, _events: &[Value]) -> Result {
         ),
     )?;
     record(
-        &frames[9],
+        &frames[12],
         "Feather 100 (the widest falloff) at Fit: its edge midpoint reads brighter than the hard step did",
-        json!({"label": label(&frames[9])?, "edge_luminance": soft_edge}),
+        json!({"label": label(&frames[12])?, "edge_luminance": soft_edge}),
     );
 
-    // Frame 10: a crop applied after the vignette already existed. The host still places the crop
+    // Frame 13: a crop applied after the vignette already existed. The host still places the crop
     // layer before it, so the mask recentres on the cropped output stage: the new frame's own
-    // corners read darker than its own near-centre patch, exactly as frame 3 did on the whole
+    // corners read darker than its own near-centre patch, exactly as frame 6 did on the whole
     // photograph.
     ensure(
-        revision(&frames[10])? == revision(&frames[9])? + 1,
+        revision(&frames[13])? == revision(&frames[12])? + 1,
         "The crop did not commit exactly one revision",
     )?;
-    let effects = layer_effects(&frames[10]);
+    let effects = layer_effects(&frames[13]);
     let crop_position = effects
         .iter()
         .position(|effect| effect == lightwell_core::CROP_EFFECT)
@@ -608,12 +660,12 @@ pub fn verify(evidence: &Path, app: &Value, _events: &[Value]) -> Result {
         format!("The crop layer does not precede the Vignette layer: {effects:?}"),
     )?;
     ensure(
-        vignette_layer_id(&frames[10]) == Some(layer.as_str()),
+        vignette_layer_id(&frames[13]) == Some(layer.as_str()),
         "The crop replaced the Vignette layer instead of leaving it in place",
     )?;
-    let cropped_bounds = bright_bounds(&paths[10], &frames[10])?;
-    let cropped_corners = corner_luminances(&paths[10], cropped_bounds)?;
-    let cropped_centre = centre_luminance(&paths[10], cropped_bounds)?;
+    let cropped_bounds = bright_bounds(&paths[13], &frames[13])?;
+    let cropped_corners = corner_luminances(&paths[13], cropped_bounds)?;
+    let cropped_centre = centre_luminance(&paths[13], cropped_bounds)?;
     // Each corner against its own un-vignetted baseline from frame 0 (same hue, same corner index),
     // not against a single shared centre reading: the fixture's four quadrant colours have very
     // different Rec. 709 luminance to begin with, so the same relative darkening moves each of them
@@ -629,41 +681,41 @@ pub fn verify(evidence: &Path, app: &Value, _events: &[Value]) -> Result {
         )?;
     }
     record(
-        &frames[10],
+        &frames[13],
         "a 1:1 crop applied after the vignette: the mask recentres on the cropped output stage",
         json!({"corner_luminance": cropped_corners, "centre_luminance": cropped_centre, "layers": effects}),
     );
 
-    // Frame 11: the module's own header reset. One entry labelled "Reset Vignette"; the layer is
+    // Frame 14: the module's own header reset. One entry labelled "Reset Vignette"; the layer is
     // kept at its all-default payload, and the crop from the previous step is untouched.
     ensure(
-        revision(&frames[11])? == revision(&frames[10])? + 1,
+        revision(&frames[14])? == revision(&frames[13])? + 1,
         "The module reset did not commit exactly one revision",
     )?;
     ensure(
-        label(&frames[11])? == "Reset Vignette",
-        format!("The module reset is labelled {:?}", label(&frames[11])?),
+        label(&frames[14])? == "Reset Vignette",
+        format!("The module reset is labelled {:?}", label(&frames[14])?),
     )?;
     ensure(
-        vignette_payload(&frames[11]) == Some(&json!({})),
+        vignette_payload(&frames[14]) == Some(&json!({})),
         format!(
             "The reset layer holds {:?}, expected the all-default payload",
-            vignette_payload(&frames[11])
+            vignette_payload(&frames[14])
         ),
     )?;
     ensure(
-        vignette_layer_id(&frames[11]) == Some(layer.as_str()),
+        vignette_layer_id(&frames[14]) == Some(layer.as_str()),
         "The module reset replaced the Vignette layer instead of keeping it",
     )?;
-    let reset_effects = layer_effects(&frames[11]);
+    let reset_effects = layer_effects(&frames[14]);
     ensure(
         reset_effects.contains(&lightwell_core::CROP_EFFECT.to_owned()),
         "The module reset lost the crop from the previous step",
     )?;
     record(
-        &frames[11],
+        &frames[14],
         "the module's own header reset: entry \"Reset Vignette\", the layer kept and neutral",
-        json!({"label": label(&frames[11])?, "payload": vignette_payload(&frames[11]), "layer": layer}),
+        json!({"label": label(&frames[14])?, "payload": vignette_payload(&frames[14]), "layer": layer, "expanded": expanded_sections(&frames[14])}),
     );
 
     write_json(
