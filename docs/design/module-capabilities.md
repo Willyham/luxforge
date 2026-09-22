@@ -6,7 +6,7 @@ Status: **proposal for owner review; no implementation is authorized by this pla
 
 A module can declare settings and required capabilities, but only the host can store settings or secrets, open user files, download resources, contact endpoints, schedule work or publish persistent assets. Descriptors remain cheap to register. Activation is an explicit, cancellable lifecycle request on a worker, never a side effect of `module.list`, catalog reopen, recipe compilation or tool-panel construction. The UI may request activation when a tool opens; the same request and status are available to JSON/MCP clients. There is no network request, file picker or model download merely because a module is listed.
 
-These capabilities apply first to **trusted linked modules**. A permission declaration is useful for consent, least privilege and auditing, but does not sandbox arbitrary code linked into the editor. Loading third-party executable modules remains the separate [extension path](../../tasks/implementation-extensions.json), which must add an actual process/ABI trust boundary before untrusted code is supported.
+These capabilities apply first to **trusted linked modules**. A permission declaration is useful for consent, least privilege and auditing, but does not sandbox arbitrary code linked into the editor. Loading third-party executable modules remains the separate external-module path on the [roadmap](../plan.md), which must add an actual process/ABI trust boundary before untrusted code is supported.
 
 ## Configuration contract
 

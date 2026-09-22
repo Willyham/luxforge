@@ -4,7 +4,7 @@ use time::{Date, OffsetDateTime, format_description::well_known::Iso8601};
 fn exceptions() -> Value {
     json!([
  {"id":"RUSTSEC-2024-0436","package":"paste","version":"1.0.15","reviewed":"2026-09-19","expires":"2026-12-18","task":"TASK-002","reason":"Build-time macro in pinned Metal dependency; no supported Iced upgrade removes it. Local S0 development only."},
- {"id":"RUSTSEC-2026-0192","package":"ttf-parser","version":"0.25.1","reviewed":"2026-09-19","expires":"2026-10-19","task":"TASK-003","reason":"Pinned Iced system/bundled-font stack; no application font import. Undisclosed upstream report requires short review window; no distribution approval."}])
+ {"id":"RUSTSEC-2026-0192","package":"ttf-parser","version":"0.25.1","reviewed":"2026-09-19","expires":"2026-10-19","task":"TASK-001","reason":"Pinned Iced system/bundled-font stack; no application font import. Undisclosed upstream report requires short review window; no distribution approval."}])
 }
 fn validate(
     ex: &Value,
@@ -90,7 +90,7 @@ pub fn checked(root: &Path) -> Result<(String, String)> {
         &["metadata", "--locked", "--format-version", "1"],
     )?;
     let data: Value = serde_json::from_str(&metadata)?;
-    let tasks = read_json(&root.join("tasks/implementation-s0.json"))?;
+    let tasks = read_json(&root.join("tasks/dependency-advisories.json"))?;
     let config = validate(
         &exceptions(),
         &data["packages"],

@@ -9,12 +9,12 @@ cargo xtask audit
 
 ## Expiring advisory exceptions
 
-`deny.toml` has no static ignores. The audit wrapper validates each exception below against its UTC expiry, the exact resolved version and registry source, and an open follow-up task in the [S0 follow-ups](../../tasks/implementation-s0.json), then runs cargo-deny with a temporary configuration containing only those IDs. Expired, changed or retired exceptions and any new advisory fail.
+`deny.toml` has no static ignores. The audit wrapper validates each exception below against its UTC expiry, the exact resolved version and registry source, and an open task in the [dependency advisories](../../tasks/dependency-advisories.json) plan, then runs cargo-deny with a temporary configuration containing only those IDs. Expired, changed or retired exceptions and any new advisory fail.
 
 | Advisory | Crate | Why it is tolerated | Expires (exclusive) | Task |
 | --- | --- | --- | --- | --- |
-| RUSTSEC-2024-0436 | paste 1.0.15 via metal and wgpu-hal | Build-time proc macro on dependency source, never on image data | 2026-12-18 | S0 TASK-002 |
-| RUSTSEC-2026-0192 | ttf-parser 0.25.1 via the Iced text stack | Parses installed system and bundled fonts only; Lightwell has no font import. Upstream mentions an undisclosed security report, so the window is short and must be re-reviewed before distribution or any font-input feature | 2026-10-19 | S0 TASK-003 |
+| RUSTSEC-2024-0436 | paste 1.0.15 via metal and wgpu-hal | Build-time proc macro on dependency source, never on image data | 2026-12-18 | TASK-002 |
+| RUSTSEC-2026-0192 | ttf-parser 0.25.1 via the Iced text stack | Parses installed system and bundled fonts only; Lightwell has no font import. Upstream mentions an undisclosed security report, so the window is short and must be re-reviewed before distribution or any font-input feature | 2026-10-19 | TASK-001 |
 
 Both were investigated in September 2026: no released Iced, wgpu, cosmic-text, metal or fontdb line removes either crate, so bumping transitive versions alone is not a supported fix. Do not replace the GUI stack or carry a private fork to clear a maintenance advisory.
 
