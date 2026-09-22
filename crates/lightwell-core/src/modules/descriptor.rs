@@ -371,6 +371,21 @@ impl CanvasInteraction {
     }
 }
 
+/// How a client lays out a module's top-level controls. A hint for clients: it changes only what
+/// a client draws, never what the host accepts, the vocabulary's rule for every hint.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ModuleLayout {
+    /// Each top-level group renders as its own stacked section. Right for a module whose groups
+    /// are different controls, such as Basic's white balance, tone and colour.
+    #[default]
+    Stacked,
+    /// The top-level groups render as one segmented row, one group visible at a time, for a
+    /// module whose groups are parallel views of the same controls, such as the colour mixer's
+    /// Hue, Saturation and Luminance over the same eight ranges.
+    Tabs,
+}
+
 /// An unavailable provider keeps its descriptor and effect identities so stored data stays readable.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "kebab-case")]
@@ -408,6 +423,10 @@ pub struct ModuleDescriptor {
     /// still wins. A hint for clients, never a rule for the API.
     #[serde(default)]
     pub collapsed: bool,
+    /// How a client arranges this module's top-level controls: stacked sections (the default) or
+    /// one tab row. Validated at registration; see [`ModuleLayout`].
+    #[serde(default)]
+    pub layout: ModuleLayout,
     pub availability: Availability,
 }
 
@@ -483,6 +502,18 @@ impl ModuleDescriptor {
             )));
         }
         self.check_reset(self.reset.as_ref())?;
+        if self.layout == ModuleLayout::Tabs {
+            let all_groups = self
+                .controls
+                .iter()
+                .all(|control| matches!(control, Control::Group { .. }));
+            if self.controls.len() < 2 || !all_groups {
+                return Err(validation(format!(
+                    "module {} declares layout: tabs but needs at least two top-level groups",
+                    self.id
+                )));
+            }
+        }
         match &self.canvas {
             Some(CanvasInteraction::PointPick {
                 action,
@@ -1598,6 +1629,7 @@ mod tests {
             canvas: None,
             developer: false,
             collapsed: false,
+            layout: ModuleLayout::Stacked,
             availability: Availability::Available,
         }
     }
@@ -3093,5 +3125,92 @@ mod tests {
                 "{case}: {error}"
             );
         }
+    }
+
+    /// A descriptor with two top-level groups, each one slider, over the base descriptor's own
+    /// declared action: the minimal shape `layout: tabs` accepts.
+    fn two_group_descriptor() -> ModuleDescriptor {
+        let group = |label: &str| Control::Group {
+            label: label.into(),
+            reset: None,
+            controls: vec![Control::Number {
+                action: "set-thing".into(),
+                parameter: "x".into(),
+                label: "X".into(),
+                style: crate::NumberStyle::Slider,
+                rail: None,
+            }],
+            collapsed: false,
+        };
+        ModuleDescriptor {
+            controls: vec![group("First"), group("Second")],
+            ..descriptor()
+        }
+    }
+
+    #[test]
+    fn layout_defaults_to_stacked_and_tabs_needs_at_least_two_top_level_groups() {
+        let stacked = descriptor();
+        assert_eq!(
+            stacked.layout,
+            ModuleLayout::Stacked,
+            "the default is stacked"
+        );
+        stacked.validate().expect("stacked is always accepted");
+
+        let tabs = ModuleDescriptor {
+            layout: ModuleLayout::Tabs,
+            ..two_group_descriptor()
+        };
+        tabs.validate()
+            .expect("tabs is accepted over at least two top-level groups");
+
+        let one_group = ModuleDescriptor {
+            layout: ModuleLayout::Tabs,
+            ..descriptor()
+        };
+        let error = one_group
+            .validate()
+            .expect_err("tabs needs at least two top-level groups");
+        assert!(error.detail.contains("layout: tabs"), "{error}");
+
+        let mut non_group = two_group_descriptor();
+        non_group.layout = ModuleLayout::Tabs;
+        non_group.controls.push(Control::Number {
+            action: "set-thing".into(),
+            parameter: "x".into(),
+            label: "X".into(),
+            style: crate::NumberStyle::Slider,
+            rail: None,
+        });
+        let error = non_group
+            .validate()
+            .expect_err("tabs needs every top-level control to be a group");
+        assert!(error.detail.contains("layout: tabs"), "{error}");
+    }
+
+    #[test]
+    fn layout_round_trips_through_json_and_rejects_an_unknown_value() {
+        let tabs = ModuleDescriptor {
+            layout: ModuleLayout::Tabs,
+            ..two_group_descriptor()
+        };
+        let serialized = serde_json::to_value(&tabs).unwrap();
+        assert_eq!(serialized["layout"], json!("tabs"));
+        assert_eq!(ModuleDescriptor::parse(&serialized).unwrap(), tabs);
+        assert_eq!(
+            serde_json::to_value(descriptor())
+                .unwrap()
+                .get("layout")
+                .cloned(),
+            Some(json!("stacked")),
+            "an absent layout serializes as stacked, never omitted"
+        );
+
+        let mut malformed = serialized.clone();
+        malformed["layout"] = json!("floating");
+        let error =
+            ModuleDescriptor::parse(&malformed).expect_err("an unknown layout value is rejected");
+        assert_eq!(error.kind, ErrorKind::Validation);
     }
 }

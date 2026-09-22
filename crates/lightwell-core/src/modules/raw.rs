@@ -308,14 +308,14 @@ impl RawModule {
                             parameter: "kelvin".into(),
                             label: "Custom temperature".into(),
                             style: crate::NumberStyle::Slider,
-                            rail: None,
+                            rail: Some(crate::RailDecoration::Temperature),
                         },
                         Control::Number {
                             action: SET_TINT.into(),
                             parameter: "tint".into(),
                             label: "Custom tint".into(),
                             style: crate::NumberStyle::Slider,
-                            rail: None,
+                            rail: Some(crate::RailDecoration::Tint),
                         },
                         // The sensor neutral pick, beside the temperature and tint it sets.
                         Control::Picker {
@@ -344,6 +344,7 @@ impl RawModule {
                 }),
                 developer: false,
                 collapsed: false,
+                layout: crate::ModuleLayout::Stacked,
                 availability: Availability::Available,
             },
         }
@@ -546,6 +547,54 @@ mod tests {
             ActionPlan::Update(next) => RawPayload::from_layer(&next),
             _ => Err(validation("expected RAW update")),
         }
+    }
+
+    /// The custom temperature and tint sliders declare the same rail hints as Basic's white
+    /// balance, so a client colours both consistently.
+    #[test]
+    fn custom_temperature_and_tint_declare_their_rail_hints() {
+        let module = RawModule::new();
+        let descriptor = module.descriptor();
+        descriptor.validate().expect("a valid descriptor");
+        let group = descriptor
+            .controls
+            .first()
+            .expect("the RAW development group");
+        let Control::Group { controls, .. } = group else {
+            panic!("expected a group");
+        };
+        let temperature = controls
+            .iter()
+            .find(
+                |control| matches!(control, Control::Number { parameter, .. } if parameter == "kelvin"),
+            )
+            .expect("custom temperature control");
+        assert_eq!(
+            temperature,
+            &Control::Number {
+                action: SET_TEMPERATURE.into(),
+                parameter: "kelvin".into(),
+                label: "Custom temperature".into(),
+                style: crate::NumberStyle::Slider,
+                rail: Some(crate::RailDecoration::Temperature),
+            }
+        );
+        let tint = controls
+            .iter()
+            .find(
+                |control| matches!(control, Control::Number { parameter, .. } if parameter == "tint"),
+            )
+            .expect("custom tint control");
+        assert_eq!(
+            tint,
+            &Control::Number {
+                action: SET_TINT.into(),
+                parameter: "tint".into(),
+                label: "Custom tint".into(),
+                style: crate::NumberStyle::Slider,
+                rail: Some(crate::RailDecoration::Tint),
+            }
+        );
     }
 
     #[test]

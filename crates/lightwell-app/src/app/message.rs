@@ -267,6 +267,12 @@ pub(crate) enum Message {
         module_id: String,
         path: Vec<usize>,
     },
+    /// Selects a tab in a module whose descriptor declares `layout: tabs`. Per-client view state
+    /// exactly like `ToggleGroup`: it changes no recipe and sends no request.
+    SelectTab {
+        module_id: String,
+        index: usize,
+    },
     ControlPicker {
         action: String,
         parameter: String,

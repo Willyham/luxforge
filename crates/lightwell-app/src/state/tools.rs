@@ -30,6 +30,9 @@ use std::{
 #[derive(Clone, Debug, Default, PartialEq)]
 pub(crate) struct ControlsUi {
     pub(crate) group_expanded: BTreeMap<String, bool>,
+    /// The tab selected in a module whose descriptor declares `layout: tabs`, keyed by module id.
+    /// Per-client view state exactly like `group_expanded`: it changes no recipe and is never sent.
+    pub(crate) selected_tab: BTreeMap<String, usize>,
     pub(crate) curve_channels: BTreeMap<(String, String), usize>,
     pub(crate) curve_points: BTreeMap<(String, String), usize>,
     pub(crate) curve_edits: BTreeMap<(String, String, usize, usize), String>,
@@ -135,6 +138,21 @@ impl ResetRef {
     }
 }
 
+/// How the view arranges a section's top-level groups, derived from the module's declared
+/// `layout` exactly like a group's `expanded` is derived from `collapsed`. The view draws the
+/// groups of a `Tabs` section as a segmented row, one group visible at a time, instead of the
+/// stacked sections a `Stacked` layout draws; that rendering is built elsewhere and this model
+/// only carries the selection.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum SectionLayout {
+    #[default]
+    Stacked,
+    Tabs {
+        /// The index into the section's top-level groups, clamped to the group count.
+        selected: usize,
+    },
+}
+
 /// One registered module's section. `version` increases only when the section's own inputs change.
 #[allow(dead_code)]
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -148,6 +166,7 @@ pub(crate) struct SectionModel {
     pub(crate) unavailable: Option<String>,
     pub(crate) reset: Option<ResetRef>,
     pub(crate) controls: Vec<ControlModel>,
+    pub(crate) layout: SectionLayout,
     pub(crate) version: u64,
     pub(crate) enabled: bool,
     /// Why editing is disabled, in the words the status bar would use.
@@ -504,7 +523,8 @@ fn section(
     let disabled_reason = disabled_reason(unavailable.as_deref(), inputs);
     let enabled = disabled_reason.is_none();
     let active = active(module, inputs);
-    let digest = digest(module, inputs, expanded, enabled, active);
+    let layout = section_layout(module, inputs);
+    let digest = digest(module, inputs, expanded, enabled, active, layout);
     if let Some(previous) = previous
         && previous.digest == digest
     {
@@ -534,6 +554,7 @@ fn section(
         // control under it moves on each commit round trip. The disabled header offers no press.
         reset: ResetRef::of(module.reset.as_ref()),
         controls,
+        layout,
         version: previous.map(|previous| previous.version + 1).unwrap_or(1),
         enabled,
         disabled_reason,
@@ -552,6 +573,30 @@ fn expanded(module: &ModuleDescriptor, inputs: &Inputs<'_>) -> bool {
         .get(&module.id)
         .copied()
         .unwrap_or(!(module.developer || module.collapsed))
+}
+
+/// A tabbed section's selected tab, per client and keyed by module id exactly like a group's
+/// expansion is keyed by its path: 0 unless a client chose otherwise, clamped to the section's
+/// top-level group count so a stale selection from a differently shaped descriptor cannot point
+/// past the end.
+fn section_layout(module: &ModuleDescriptor, inputs: &Inputs<'_>) -> SectionLayout {
+    if module.layout != lightwell_core::ModuleLayout::Tabs {
+        return SectionLayout::Stacked;
+    }
+    let groups = module.controls.len();
+    let selected = inputs
+        .control_ui
+        .selected_tab
+        .get(&module.id)
+        .copied()
+        .unwrap_or(0);
+    SectionLayout::Tabs {
+        selected: if groups == 0 {
+            0
+        } else {
+            selected.min(groups - 1)
+        },
+    }
 }
 
 /// This module owns the active canvas mode.
@@ -619,11 +664,16 @@ fn digest(
     expanded: bool,
     enabled: bool,
     active: bool,
+    layout: SectionLayout,
 ) -> u64 {
     let mut hasher = DefaultHasher::new();
     module.id.hash(&mut hasher);
     format!("{:?}", module.availability).hash(&mut hasher);
     (expanded, enabled, active, inputs.developer).hash(&mut hasher);
+    match layout {
+        SectionLayout::Stacked => 0u8.hash(&mut hasher),
+        SectionLayout::Tabs { selected } => (1u8, selected).hash(&mut hasher),
+    }
     // Sampled curves may depend on the query's entry context even when their point fields are
     // unchanged. Other modules retain their section version across an unrelated entry switch.
     if contains_curve(&module.controls) {

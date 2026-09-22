@@ -236,6 +236,7 @@ parameters: Vec::new(),
                 }),
                 developer: false,
                 collapsed: false,
+                layout: crate::ModuleLayout::Stacked,
                 availability: Availability::Available,
             },
         }

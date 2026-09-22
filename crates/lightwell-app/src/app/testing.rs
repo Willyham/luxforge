@@ -97,6 +97,31 @@ pub(crate) fn controls_descriptor() -> ModuleDescriptor {
     })).expect("the whole-vocabulary fixture is a valid descriptor")
 }
 
+/// A `layout: tabs` fixture with two top-level groups, each one slider over its own field of the
+/// same patch action: the minimal shape the colour mixer declares, used to test tab selection
+/// without depending on the mixer module being linked.
+pub(crate) fn tabs_descriptor() -> ModuleDescriptor {
+    ModuleDescriptor::parse(&json!({
+        "id":"fixture.tabs", "title":"Fixture tabs", "effects":[], "layout":"tabs",
+        "actions":[{"id":"fixture-set","title":"Set fixture","notes":"One field patch",
+            "patch":true,"parameters":[
+                {"name":"first","kind":"number","min":-10.0,"max":10.0,"default":0.0,
+                    "required":false,"notes":"test"},
+                {"name":"second","kind":"number","min":-10.0,"max":10.0,"default":0.0,
+                    "required":false,"notes":"test"}
+            ]}],
+        "controls":[
+            {"kind":"group","label":"First","collapsed":false,"controls":[
+                {"kind":"number","action":"fixture-set","parameter":"first","label":"First"}
+            ]},
+            {"kind":"group","label":"Second","collapsed":false,"controls":[
+                {"kind":"number","action":"fixture-set","parameter":"second","label":"Second"}
+            ]}
+        ], "availability":{"kind":"available"}
+    }))
+    .expect("a two-group layout: tabs fixture is a valid descriptor")
+}
+
 pub(crate) fn entry(asset: &AssetId, sequence: u64, parent: Option<&EntryId>) -> HistoryEntry {
     HistoryEntry {
         id: EntryId::new(),
@@ -237,6 +262,7 @@ pub(crate) fn crop_descriptor() -> ModuleDescriptor {
         }),
         developer: false,
         collapsed: false,
+        layout: lightwell_core::ModuleLayout::Stacked,
         availability: Availability::Available,
     }
 }

@@ -391,6 +391,9 @@ impl MixerModule {
                 developer: false,
                 // A Presence module will later be registered between Basic and the mixer.
                 collapsed: true,
+                // The three groups are parallel views of the same eight ranges, so the desktop
+                // draws them as one segmented row instead of stacked sections.
+                layout: crate::ModuleLayout::Tabs,
                 availability: Availability::Available,
             },
         }

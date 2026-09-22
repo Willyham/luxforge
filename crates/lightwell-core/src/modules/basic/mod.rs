@@ -563,14 +563,14 @@ impl BasicModule {
                                 parameter: TEMPERATURE.into(),
                                 label: TEMPERATURE_LABEL.into(),
                                 style: crate::NumberStyle::Slider,
-                                rail: None,
+                                rail: Some(crate::RailDecoration::Temperature),
                             },
                             Control::Number {
                                 action: SET_BASIC.into(),
                                 parameter: TINT.into(),
                                 label: TINT_LABEL.into(),
                                 style: crate::NumberStyle::Slider,
-                                rail: None,
+                                rail: Some(crate::RailDecoration::Tint),
                             },
                             // The neutral picker, beside the two fields a pick sets.
                             Control::Picker {
@@ -678,6 +678,7 @@ impl BasicModule {
                 }),
                 developer: false,
                 collapsed: false,
+                layout: crate::ModuleLayout::Stacked,
                 availability: Availability::Available,
             },
         }
@@ -1128,14 +1129,14 @@ mod tests {
                             parameter: "temperature".into(),
                             label: "Temperature".into(),
                             style: crate::NumberStyle::Slider,
-                            rail: None,
+                            rail: Some(crate::RailDecoration::Temperature),
                         },
                         Control::Number {
                             action: SET_BASIC.into(),
                             parameter: "tint".into(),
                             label: "Tint".into(),
                             style: crate::NumberStyle::Slider,
-                            rail: None,
+                            rail: Some(crate::RailDecoration::Tint),
                         },
                         Control::Picker {
                             label: "Neutral picker".into(),
@@ -1265,14 +1266,14 @@ mod tests {
                         parameter: "temperature".into(),
                         label: "Temperature".into(),
                         style: crate::NumberStyle::Slider,
-                        rail: None,
+                        rail: Some(crate::RailDecoration::Temperature),
                     },
                     Control::Number {
                         action: SET_BASIC.into(),
                         parameter: "tint".into(),
                         label: "Tint".into(),
                         style: crate::NumberStyle::Slider,
-                        rail: None,
+                        rail: Some(crate::RailDecoration::Tint),
                     },
                     Control::Picker {
                         label: "Neutral picker".into(),

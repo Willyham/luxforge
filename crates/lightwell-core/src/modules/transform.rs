@@ -194,6 +194,7 @@ notes: "the exact transform to compose into the stack's orientation".into(),
                 canvas: None,
                 developer: false,
                 collapsed: false,
+                layout: crate::ModuleLayout::Stacked,
                 availability: Availability::Available,
             },
         }

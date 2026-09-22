@@ -2454,6 +2454,9 @@ impl Editor {
                     .or_insert(initial);
                 *entry = !*entry;
             }
+            Message::SelectTab { module_id, index } => {
+                self.controls_ui.selected_tab.insert(module_id, index);
+            }
             Message::ControlPicker {
                 action,
                 parameter,
