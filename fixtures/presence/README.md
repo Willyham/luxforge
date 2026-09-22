@@ -1,7 +1,7 @@
 # Presence fixtures
 
 Synthetic-only, small and deterministic, prepared for the [frozen Presence
-study](../../docs/design/presence-study.md) ahead of any production implementation. Nothing
+study](../../docs/design/presence-study.md), which the production `lightwell.presence` module is checked against. Nothing
 here is generated from a real photograph and no private original is committed. As of this
 task no production code reads these files: they exist so the later `lightwell.presence`
 module has an oracle it cannot influence.
