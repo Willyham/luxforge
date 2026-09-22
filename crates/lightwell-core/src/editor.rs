@@ -1295,8 +1295,11 @@ impl EditorService {
                     "RAW source action does not sample pixels",
                 ))
             };
-            let insertion_index =
-                |effect_stage: EffectStage| registry.insertion_index(&recipe.layers, effect_stage);
+            let insertion_index = |effect_stage: EffectStage| {
+                registry.insertion_index(&recipe.layers, effect_stage, 0)
+            };
+            let insertion_index_for =
+                |effect_id: &str| registry.insertion_index_for(&recipe.layers, effect_id);
             let raw_source = if action_id == "pick-raw-neutral" {
                 Some(self.verified_prepared(&state.asset)?)
             } else {
@@ -1319,6 +1322,7 @@ impl EditorService {
                 sampler: &unavailable,
                 stage_before: &stage_before,
                 insertion_index: &insertion_index,
+                insertion_index_for: &insertion_index_for,
                 sample_before: &sample_before,
                 sensor_neutral: neutral_sampler
                     .as_ref()
@@ -1352,15 +1356,14 @@ impl EditorService {
             ActionPlan::NoOp => {
                 return self.persist_noop(asset_id, &mutation, &request, &state);
             }
-            // The host places the layer: a pixel-stage effect goes before the geometry tail, so a
-            // later crop change carries it instead of moving or invalidating it. An effect no
-            // provider declares is appended and rejected by the whole-stack compile below.
+            // The host places the layer by the effect's declared stage and order: a pixel-stage
+            // effect goes before the geometry tail, so a later crop change carries it instead of
+            // moving or invalidating it. An effect no provider declares is placed as a geometry one
+            // would be and rejected by the whole-stack compile below.
             ActionPlan::Commit(layer) => {
-                let index = registry.insertion_index(
+                let index = registry.insertion_index_for(
                     &state.current_entry.snapshot.recipe.layers,
-                    registry
-                        .effect_stage(&layer.effect_id)
-                        .unwrap_or(EffectStage::Geometry),
+                    &layer.effect_id,
                 );
                 state
                     .current_entry
@@ -1482,13 +1485,17 @@ impl EditorService {
                 }
             }
         };
-        let insertion_index = |stage: EffectStage| registry.insertion_index(&recipe.layers, stage);
+        let insertion_index =
+            |stage: EffectStage| registry.insertion_index(&recipe.layers, stage, 0);
+        let insertion_index_for =
+            |effect_id: &str| registry.insertion_index_for(&recipe.layers, effect_id);
         let context = StageContext {
             stage,
             layers: &recipe.layers,
             sampler: &sampler,
             stage_before: &stage_before,
             insertion_index: &insertion_index,
+            insertion_index_for: &insertion_index_for,
             sample_before: &sample_before,
             sensor_neutral: None,
         };
@@ -1563,11 +1570,9 @@ impl EditorService {
         let recipe = match self.plan_input(&state, &source, module, &input)? {
             ActionPlan::NoOp => state.current_entry.snapshot.recipe.clone(),
             ActionPlan::Commit(layer) => {
-                let index = registry.insertion_index(
+                let index = registry.insertion_index_for(
                     &state.current_entry.snapshot.recipe.layers,
-                    registry
-                        .effect_stage(&layer.effect_id)
-                        .unwrap_or(EffectStage::Geometry),
+                    &layer.effect_id,
                 );
                 state
                     .current_entry
@@ -3849,6 +3854,7 @@ mod tests {
                 id: id.into(),
                 format: EFFECT_FORMAT,
                 stage: EffectStage::Geometry,
+                order: 0,
             };
             Self(ModuleDescriptor {
                 id: "test.shrink".into(),
@@ -4120,6 +4126,87 @@ mod tests {
             requests,
             "no request result was recorded"
         );
+        drop(service);
+        std::fs::remove_file(catalog).unwrap();
+    }
+
+    /// A stored stack whose finish layer precedes a geometry layer is refused by planning exactly
+    /// as it is by compilation: the request fails with the named validation error, no history row
+    /// and no request result are written, and the stack stays readable through `state`.
+    ///
+    /// The host never builds that order, so the stack is planted the only way it can arise: a
+    /// registry in which the effect is a colour effect writes it, and a registry in which the same
+    /// effect is a finish effect reads it back.
+    #[test]
+    fn a_stored_finish_layer_before_geometry_is_refused_without_being_rewritten() {
+        use crate::modules::{STAGE_ACTION, STAGE_EFFECT, StageModule};
+        let registry = |stage: EffectStage| {
+            let mut registry = ModuleRegistry::builtin();
+            registry
+                .register(StageModule::shared(
+                    "test.stage",
+                    STAGE_EFFECT,
+                    STAGE_ACTION,
+                    stage,
+                    0,
+                ))
+                .unwrap();
+            Arc::new(registry)
+        };
+        let catalog = temp("finish-before-geometry.sqlite");
+        let mut service = EditorService::open_with(&catalog, registry(EffectStage::Color)).unwrap();
+        let asset = service.import(&fixture()).unwrap().asset.id;
+        service
+            .apply_action(&asset, mutation(0, "stage"), STAGE_ACTION, json!({}))
+            .unwrap();
+        service
+            .apply_action(
+                &asset,
+                mutation(1, "turn"),
+                "transform",
+                json!({"transform":"rotate-left"}),
+            )
+            .unwrap();
+        let written = service.state(&asset).unwrap();
+        assert_eq!(
+            written
+                .current_entry
+                .snapshot
+                .recipe
+                .layers
+                .iter()
+                .map(|layer| layer.effect_id.as_str())
+                .collect::<Vec<_>>(),
+            vec![STAGE_EFFECT, ORIENTATION_EFFECT],
+        );
+        drop(service);
+
+        let mut service =
+            EditorService::open_with(&catalog, registry(EffectStage::Finish)).unwrap();
+        let before = service.state(&asset).unwrap();
+        let (entries, requests) = (rows(&service, "entries"), rows(&service, "requests"));
+        let error = service
+            .apply_pixel(&asset, mutation(2, "pixel"), 0, 0, [1, 2, 3])
+            .expect_err("the stored order has no stage a new layer could address");
+        assert_eq!(error.kind, ErrorKind::Validation);
+        assert!(
+            error.detail.starts_with("finish layer precedes geometry"),
+            "{}",
+            error.detail
+        );
+        assert_eq!(
+            service.state(&asset).unwrap(),
+            before,
+            "the refused stack is left exactly as it stands"
+        );
+        assert_eq!(rows(&service, "entries"), entries, "no history row");
+        assert_eq!(rows(&service, "requests"), requests, "no request result");
+        assert_eq!(
+            before.current_entry.snapshot.recipe.layers.len(),
+            2,
+            "both layers stay readable"
+        );
+        assert_eq!(service.history(&asset, None, 10).unwrap().entries.len(), 3);
         drop(service);
         std::fs::remove_file(catalog).unwrap();
     }

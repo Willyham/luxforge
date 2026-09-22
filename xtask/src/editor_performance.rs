@@ -1,6 +1,6 @@
 use crate::*;
 use lightwell_core::{
-    BASIC_EFFECT, CROP_EFFECT, CropPayload, CropStage, EditorService, EffectStage, Layer, LayerId,
+    BASIC_EFFECT, CROP_EFFECT, CropPayload, CropStage, EditorService, Layer, LayerId,
     ModuleRegistry, Mutation, PreviewSource, Raster, Recipe, SnapshotId, Transform, analysis,
     render,
 };
@@ -240,7 +240,7 @@ pub fn run(root: &Path, source: &Path, out: &Path, samples: usize) -> Result {
         layers: Vec::new(),
     };
     let mut coloured = stack.clone();
-    let index = colour_registry.insertion_index(&coloured.layers, EffectStage::Color);
+    let index = colour_registry.insertion_index_for(&coloured.layers, BASIC_EFFECT);
     coloured.layers.insert(index, basic_exposure_layer(1.0));
     let mut toned = stack.clone();
     toned

@@ -533,8 +533,13 @@ fn transform_actions_controls_and_the_orientation_effect_stay_discoverable() {
         .clone();
     assert_eq!(
         transform["effects"],
-        json!([{"id":"lightwell.geometry.orientation","format":1,"stage":"geometry"}]),
-        "one geometry effect, holding the composed orientation"
+        json!([{
+            "id":"lightwell.geometry.orientation",
+            "format":1,
+            "stage":"geometry",
+            "order":0,
+        }]),
+        "one geometry effect at the default order, holding the composed orientation"
     );
     let grouped = transform["controls"].as_array().unwrap();
     assert_eq!(grouped.len(), 1);

@@ -267,16 +267,17 @@ fn quantize_pixel(rgb: [f32; 3]) -> [u8; 3] {
     })
 }
 
-/// Apply every unit of one run, in order, to already decoded linear pixels. Nothing is clamped or
-/// quantized between units, so an inverse pair returns its input exactly and a value outside
-/// `[0, 1]` survives to the next unit.
+/// Apply every unit of one run, in order, to one contiguous run of already decoded linear pixels of
+/// row `y` starting at column `x0`, in the coordinates of the stage its segment produces. Nothing
+/// is clamped or quantized between units, so an inverse pair returns its input exactly and a value
+/// outside `[0, 1]` survives to the next unit.
 ///
 /// The finite check runs over the whole slice after each unit rather than per pixel inside it, so
 /// the hot loop stays branch-free; the run fails as soon as any unit has produced a non-finite
-/// value, whether the slice is a row chunk of a frame or the single pixel of a point sample.
-fn apply_units(run: &ColorRun<'_>, pixels: &mut [[f32; 3]]) -> Result<(), Error> {
+/// value, whether the slice is one row of a frame or the single pixel of a point sample.
+fn apply_units(run: &ColorRun<'_>, y: u32, x0: u32, pixels: &mut [[f32; 3]]) -> Result<(), Error> {
     for unit in run.units() {
-        unit.apply_row(pixels);
+        unit.apply_row(y, x0, pixels);
         if !pixels.iter().flatten().all(|channel| channel.is_finite()) {
             return Err(Error::new(ErrorKind::ResourceLimit, NON_FINITE_COLOR));
         }
@@ -285,13 +286,13 @@ fn apply_units(run: &ColorRun<'_>, pixels: &mut [[f32; 3]]) -> Result<(), Error>
 }
 
 /// One pixel through one colour run: decode, every unit in order, clamp and quantize. The point
-/// sampler applies a run with this; the rasterizing pass applies the same three steps to a row
-/// chunk, calling `apply_row` once per chunk instead of once per pixel, which changes no
-/// arithmetic. Both paths share `decode_pixel`, `apply_units` and `quantize_pixel`, so a sample
-/// cannot disagree with the byte that was rendered.
-fn color_pixel(rgb: [u8; 3], run: &ColorRun<'_>) -> Result<[u8; 3], Error> {
+/// sampler applies a run with this; the rasterizing pass applies the same three steps to a row of a
+/// chunk, calling `apply_row` once per row instead of once per pixel, which changes no arithmetic
+/// and gives a position-dependent unit the same coordinates. Both paths share `decode_pixel`,
+/// `apply_units` and `quantize_pixel`, so a sample cannot disagree with the byte that was rendered.
+fn color_pixel(rgb: [u8; 3], run: &ColorRun<'_>, x: u32, y: u32) -> Result<[u8; 3], Error> {
     let mut pixel = [decode_pixel(rgb)];
-    apply_units(run, &mut pixel)?;
+    apply_units(run, y, x, &mut pixel)?;
     Ok(quantize_pixel(pixel[0]))
 }
 
@@ -307,8 +308,12 @@ fn apply_color_run(
     if pixels.is_empty() || width == 0 {
         return Ok(());
     }
-    let chunk_bytes = color_chunk_rows(width) * width as usize * 4;
-    let process = |chunk: &mut [u8]| -> Result<(), Error> {
+    let chunk_rows = color_chunk_rows(width);
+    let chunk_bytes = chunk_rows * width as usize * 4;
+    // A chunk is a whole number of rows, so the row a pixel belongs to is the chunk's first row
+    // plus its offset inside the chunk: every unit is handed one row at a time, at the coordinates
+    // of the stage this segment produces.
+    let process = |chunk_index: usize, chunk: &mut [u8]| -> Result<(), Error> {
         let count = chunk.len() / 4;
         let _reservation =
             ScratchBudget::default().reserve(count * std::mem::size_of::<[f32; 3]>())?;
@@ -316,16 +321,25 @@ fn apply_color_run(
             .chunks_exact(4)
             .map(|pixel| decode_pixel([pixel[0], pixel[1], pixel[2]]))
             .collect();
-        apply_units(run, &mut linear)?;
+        let first_row = (chunk_index * chunk_rows) as u32;
+        for (offset, row) in linear.chunks_mut(width as usize).enumerate() {
+            apply_units(run, first_row + offset as u32, 0, row)?;
+        }
         for (pixel, value) in chunk.chunks_exact_mut(4).zip(&linear) {
             pixel[..3].copy_from_slice(&quantize_pixel(*value));
         }
         Ok(())
     };
     if u64::from(width) * u64::from(height) >= PARALLEL_RENDER_PIXELS {
-        pixels.par_chunks_mut(chunk_bytes).try_for_each(process)
+        pixels
+            .par_chunks_mut(chunk_bytes)
+            .enumerate()
+            .try_for_each(|(index, chunk)| process(index, chunk))
     } else {
-        pixels.chunks_mut(chunk_bytes).try_for_each(process)
+        pixels
+            .chunks_mut(chunk_bytes)
+            .enumerate()
+            .try_for_each(|(index, chunk)| process(index, chunk))
     }
 }
 
@@ -897,7 +911,7 @@ impl<'a> Evaluation<'a> {
             let after = resolved.replacement.map_or(0, |(index, _)| index + 1);
             let mut rgb = [rgba[0], rgba[1], rgba[2]];
             for run in color_runs(&segment.operations).filter(|run| run.start >= after) {
-                rgb = color_pixel(rgb, &run)?;
+                rgb = color_pixel(rgb, &run, x, y)?;
             }
             rgba[..3].copy_from_slice(&rgb);
         }
@@ -1302,6 +1316,7 @@ mod tests {
                         id: id.into(),
                         format: EFFECT_FORMAT,
                         stage: EffectStage::Geometry,
+                        order: 0,
                     })
                     .collect(),
                 actions: Vec::new(),
@@ -2336,7 +2351,7 @@ mod tests {
     }
 
     impl PointwiseColor for Exposure {
-        fn apply_row(&self, rgb: &mut [[f32; 3]]) {
+        fn apply_row(&self, _y: u32, _x0: u32, rgb: &mut [[f32; 3]]) {
             for pixel in rgb {
                 for channel in pixel {
                     *channel *= self.gain;
@@ -2357,7 +2372,7 @@ mod tests {
     struct Overflow;
 
     impl PointwiseColor for Overflow {
-        fn apply_row(&self, rgb: &mut [[f32; 3]]) {
+        fn apply_row(&self, _y: u32, _x0: u32, rgb: &mut [[f32; 3]]) {
             for pixel in rgb {
                 for channel in pixel {
                     *channel *= f32::MAX;
@@ -2372,7 +2387,32 @@ mod tests {
         }
     }
 
-    const TEST_COLOR_EFFECT: &str = "test.colour";
+    /// A test-only colour unit whose result depends on where its pixel is: it adds `x / width` to
+    /// red and `y / height` to green of the stage its layer receives. A unit like this agrees
+    /// between a rendered raster and a point sample only when both paths hand it the same
+    /// coordinates, which is exactly what the positional contract promises a finish-stage effect.
+    #[derive(Debug)]
+    pub(crate) struct Positional {
+        width: f32,
+        height: f32,
+    }
+
+    impl PointwiseColor for Positional {
+        fn apply_row(&self, y: u32, x0: u32, rgb: &mut [[f32; 3]]) {
+            for (offset, pixel) in rgb.iter_mut().enumerate() {
+                pixel[0] += (x0 + offset as u32) as f32 / self.width;
+                pixel[1] += y as f32 / self.height;
+            }
+        }
+        fn is_finite(&self) -> bool {
+            self.width.is_finite() && self.height.is_finite()
+        }
+        fn describe(&self) -> String {
+            format!("positional {}x{}", self.width, self.height)
+        }
+    }
+
+    pub(crate) const TEST_COLOR_EFFECT: &str = "test.colour";
 
     /// A test-only module with one colour effect. The Basic module is a separate deliverable; this
     /// one exists so the host's colour stage can be tested without it.
@@ -2388,6 +2428,7 @@ mod tests {
                     id: TEST_COLOR_EFFECT.into(),
                     format: EFFECT_FORMAT,
                     stage: EffectStage::Color,
+                    order: 0,
                 }],
                 actions: Vec::new(),
                 queries: Vec::new(),
@@ -2416,7 +2457,13 @@ mod tests {
         fn describe_layer(&self, _: &str, _: u32, payload: &Value) -> Result<String, Error> {
             Ok(format!("test colour {payload}"))
         }
-        fn compile(&self, _: &str, _: u32, payload: &Value, _: Stage) -> Result<Processing, Error> {
+        fn compile(
+            &self,
+            _: &str,
+            _: u32,
+            payload: &Value,
+            stage: Stage,
+        ) -> Result<Processing, Error> {
             let mut units: Vec<Arc<dyn PointwiseColor>> = Vec::new();
             for ev in payload["exposure"]
                 .as_array()
@@ -2429,6 +2476,12 @@ mod tests {
             }
             for _ in 0..payload["overflow"].as_u64().unwrap_or(0) {
                 units.push(Arc::new(Overflow));
+            }
+            if payload["positional"] == json!(true) {
+                units.push(Arc::new(Positional {
+                    width: stage.width as f32,
+                    height: stage.height as f32,
+                }));
             }
             Ok(Processing::Color(ColorOperation::new(units)))
         }
@@ -2448,7 +2501,12 @@ mod tests {
         colour_layer(json!({ "exposure": evs }))
     }
 
-    fn colour_registry() -> ModuleRegistry {
+    /// One colour layer whose unit depends on its pixel position.
+    pub(crate) fn positional_layer() -> Layer {
+        colour_layer(json!({ "positional": true }))
+    }
+
+    pub(crate) fn colour_registry() -> ModuleRegistry {
         let mut registry = geometry_registry();
         registry.register(ColorTestModule::shared()).unwrap();
         registry
@@ -2873,6 +2931,80 @@ mod tests {
                     sample(&registry, &source, &after, x, y).unwrap().rgba,
                     raster.pixel(x, y),
                     "({x}, {y}) after the resample"
+                );
+            }
+        }
+    }
+
+    /// A unit that depends on its pixel position is handed the coordinates of the stage its
+    /// segment produces, by the rasterizing pass and by every point query alike: a rendered raster
+    /// and a sample of the same pixel agree everywhere, under an exact rotation in the same
+    /// segment and after a crop resample, where the coordinates are the output stage's.
+    #[test]
+    fn a_positional_colour_unit_samples_exactly_what_it_renders() {
+        let _scratch = scratch_guard();
+        let registry = colour_registry();
+        let source = gradient(11, 7);
+        for (case, layers) in [
+            ("a positional unit alone", vec![positional_layer()]),
+            (
+                "after an exact rotation in the same segment",
+                vec![turn(Transform::RotateLeft), positional_layer()],
+            ),
+            (
+                "after a crop resample, in output coordinates",
+                vec![
+                    crop_layer(fitted_crop(11, 7, 9.0, [0.15, 0.2, 0.6, 0.55])),
+                    positional_layer(),
+                ],
+            ),
+            (
+                "over the whole tail",
+                vec![
+                    exposure_layer(&[0.5]),
+                    turn(Transform::MirrorHorizontal),
+                    crop_layer(fitted_crop(11, 7, 0.0, [0.1, 0.1, 0.7, 0.7])),
+                    positional_layer(),
+                ],
+            ),
+        ] {
+            let recipe = colour_recipe(layers);
+            let raster = render(&registry, &source, SnapshotId::new(), &recipe).unwrap();
+            assert!(raster.width > 1 && raster.height > 1, "{case}");
+            for y in 0..raster.height {
+                for x in 0..raster.width {
+                    assert_eq!(
+                        sample(&registry, &source, &recipe, x, y).unwrap().rgba,
+                        raster.pixel(x, y),
+                        "{case}: ({x}, {y})"
+                    );
+                }
+            }
+            // The unit really does depend on the position, so the agreement above is not the
+            // accident of a constant result.
+            assert_ne!(
+                raster.pixel(0, 0),
+                raster.pixel(raster.width - 1, raster.height - 1),
+                "{case}: the unit varies across the frame"
+            );
+        }
+    }
+
+    /// The rasterizing pass hands a unit one row at a time whatever chunking it chose, so a frame
+    /// taller than one chunk is processed at the same coordinates as a frame that fits in one.
+    #[test]
+    fn a_positional_unit_sees_its_own_row_in_every_chunk() {
+        let _scratch = scratch_guard();
+        let registry = colour_registry();
+        let recipe = colour_recipe(vec![positional_layer()]);
+        let tall = gradient(3, COLOR_CHUNK_ROWS as u32 * 2 + 5);
+        let raster = render(&registry, &tall, SnapshotId::new(), &recipe).unwrap();
+        for y in 0..raster.height {
+            for x in 0..raster.width {
+                assert_eq!(
+                    sample(&registry, &tall, &recipe, x, y).unwrap().rgba,
+                    raster.pixel(x, y),
+                    "({x}, {y}) across chunk boundaries"
                 );
             }
         }

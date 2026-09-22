@@ -272,7 +272,7 @@ impl WhiteBalance {
 }
 
 impl PointwiseColor for WhiteBalance {
-    fn apply_row(&self, rgb: &mut [[f32; 3]]) {
+    fn apply_row(&self, _y: u32, _x0: u32, rgb: &mut [[f32; 3]]) {
         let m = &self.matrix;
         for pixel in rgb {
             let [r, g, b] = *pixel;
@@ -529,7 +529,7 @@ mod tests {
     /// One pixel through the production unit, as a colour run of one unit would apply it.
     fn applied(temperature: f64, tint: f64, rgb: [f64; 3]) -> [f64; 3] {
         let mut row = [[rgb[0] as f32, rgb[1] as f32, rgb[2] as f32]];
-        WhiteBalance::new(temperature, tint).apply_row(&mut row);
+        WhiteBalance::new(temperature, tint).apply_row(0, 0, &mut row);
         [
             f64::from(row[0][0]),
             f64::from(row[0][1]),
@@ -575,7 +575,7 @@ mod tests {
             [0.215_860_5, 1.0, 0.0],
         ];
         let input = row;
-        unit.apply_row(&mut row);
+        unit.apply_row(0, 0, &mut row);
         assert_eq!(row, input, "a neutral unit is bit-identical to no unit");
         assert_eq!(unit.describe(), "white-balance(+0, +0)");
     }

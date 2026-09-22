@@ -550,8 +550,10 @@ impl<'a> LinearEvaluation<'a> {
         if segment.has_color {
             let after = resolved.replacement.map_or(0, |(index, _)| index + 1);
             let mut linear = [pixel.map(|value| value as f32)];
+            // The same coordinates the 8-bit path hands its units, so a position-dependent unit
+            // makes `sample_linear` and `render_linear` agree pixel for pixel.
             for run in super::color_runs(&segment.operations).filter(|run| run.start >= after) {
-                super::apply_units(&run, &mut linear)?;
+                super::apply_units(&run, y, x, &mut linear)?;
             }
             pixel = linear[0].map(f64::from);
         }
@@ -958,6 +960,78 @@ mod tests {
             }
         }
         assert!(raster.width > 0 && raster.height > 0);
+    }
+
+    /// The linear path hands a positional unit the same coordinates the 8-bit path does, so
+    /// `sample_linear` equals `render_linear` pixel for pixel through an exact rotation in one
+    /// segment and after a crop resample, where the coordinates are the output stage's.
+    #[test]
+    fn a_positional_colour_unit_agrees_between_linear_render_and_sample() {
+        use crate::render::tests::{colour_registry, positional_layer};
+        let source = image(
+            5,
+            4,
+            &(0..20)
+                .map(|value| [value as f32 / 24.0, 0.25, 0.5 - value as f32 / 40.0])
+                .collect::<Vec<_>>(),
+        );
+        let registry = colour_registry();
+        for (case, layers) in [
+            ("a positional unit alone", vec![positional_layer()]),
+            (
+                "after an exact rotation in the same segment",
+                vec![
+                    Layer::orientation(crate::Orientation {
+                        mirror: false,
+                        turns: 1,
+                    }),
+                    positional_layer(),
+                ],
+            ),
+            (
+                "after a crop resample, in output coordinates",
+                vec![
+                    Layer::crop(CropPayload {
+                        angle: 0.0,
+                        x: 0.2,
+                        y: 0.2,
+                        width: 0.6,
+                        height: 0.6,
+                    }),
+                    positional_layer(),
+                ],
+            ),
+        ] {
+            let recipe = Recipe {
+                format: crate::RECIPE_FORMAT,
+                layers,
+            };
+            let raster = render_linear(
+                &registry,
+                &source,
+                SnapshotId::new(),
+                &recipe,
+                LinearSettings::default(),
+            )
+            .unwrap();
+            assert!(raster.width > 1 && raster.height > 1, "{case}");
+            for y in 0..raster.height {
+                for x in 0..raster.width {
+                    assert_eq!(
+                        sample_linear(&registry, &source, &recipe, LinearSettings::default(), x, y)
+                            .unwrap()
+                            .rgba,
+                        raster.pixel(x, y),
+                        "{case}: ({x}, {y})"
+                    );
+                }
+            }
+            assert_ne!(
+                raster.pixel(0, 0),
+                raster.pixel(raster.width - 1, raster.height - 1),
+                "{case}: the unit varies across the frame"
+            );
+        }
     }
 
     #[test]

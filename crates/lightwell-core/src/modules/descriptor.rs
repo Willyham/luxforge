@@ -39,11 +39,13 @@ pub fn valid_name(value: &str) -> bool {
     valid_segments(value, '-', false)
 }
 
-/// Where an effect acts, and so where the host puts a new layer: a geometry effect changes the
-/// stage and extends the tail at the end of the stack; a pixel effect addresses its input stage and
-/// joins the stack before that tail, so the geometry after it carries the edit. A colour effect is
-/// placed by the same rule as a pixel effect, because it addresses the content stage too and
-/// changes no dimension.
+/// Where an effect acts, and so where the host puts a new layer. The stages run in this order:
+/// a source effect prepares the content stage at index zero; pixel and colour effects address that
+/// content stage and join the stack before everything that follows; a spatial effect reads a
+/// bounded neighbourhood of the content stage, so it follows the pointwise work; a geometry effect
+/// changes the stage and extends the geometry tail; and a finish effect is evaluated last, in the
+/// output coordinates the tail produced. [`crate::ModuleRegistry::insertion_index`] states the
+/// placement rule each stage gets.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum EffectStage {
@@ -52,15 +54,26 @@ pub enum EffectStage {
     Pixel,
     /// Pointwise colour over the whole stage, compiled into [`crate::Processing::Color`].
     Color,
+    /// Depends on a bounded neighbourhood of its input stage, in content coordinates.
+    Spatial,
+    /// Pointwise but position-dependent, in the output coordinates after the geometry tail.
+    Finish,
 }
 
-/// A durable effect identity stored in every layer, with its internal payload format marker.
+/// A durable effect identity stored in every layer, with its internal payload format marker and the
+/// order it takes among layers of its own stage.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct EffectDescriptor {
     pub id: String,
     pub format: u32,
     pub stage: EffectStage,
+    /// Where a new layer of this effect goes among the layers of its own stage: after the last one
+    /// whose order is at most this and before the first whose order is greater. Every delivered
+    /// effect declares `0`, so an omitted order is the earliest position of its stage. It is a
+    /// placement rule only: a stored stack always renders in its stored order.
+    #[serde(default)]
+    pub order: u16,
 }
 
 /// The closed set of parameter types v0 modules may declare. `f64` bounds rule out `Eq` here and
@@ -1546,6 +1559,7 @@ mod tests {
                 id: "test.module.effect".into(),
                 format: 1,
                 stage: EffectStage::Pixel,
+                order: 0,
             }],
             actions: vec![action()],
             queries: Vec::new(),
@@ -1686,6 +1700,7 @@ mod tests {
                         id: "Test-Effect".into(),
                         format: 1,
                         stage: EffectStage::Pixel,
+                        order: 0,
                     }],
                     ..descriptor()
                 },
@@ -2421,24 +2436,42 @@ mod tests {
     }
 
     /// Every declared stage keeps its wire name and is accepted by descriptor validation, so a
-    /// colour-stage module declares itself exactly as a pixel or geometry one does.
+    /// colour-stage module declares itself exactly as a pixel or geometry one does, and the order a
+    /// module takes among the layers of its stage travels with the effect.
     #[test]
     fn effect_stages_keep_their_serialized_names_and_validate() {
-        for (stage, name) in [
-            (EffectStage::Geometry, "geometry"),
-            (EffectStage::Pixel, "pixel"),
-            (EffectStage::Color, "color"),
+        for (stage, name, order) in [
+            (EffectStage::Geometry, "geometry", 0),
+            (EffectStage::Pixel, "pixel", 0),
+            (EffectStage::Color, "color", 10),
+            (EffectStage::Spatial, "spatial", 0),
+            (EffectStage::Finish, "finish", 65535),
         ] {
             let effect = EffectDescriptor {
                 id: "test.module.effect".into(),
                 format: 1,
                 stage,
+                order,
             };
             assert_eq!(serde_json::to_value(stage).unwrap(), json!(name));
+            // `order` is always serialized, so `module.list` reports it for every effect.
+            assert_eq!(
+                serde_json::to_value(&effect).unwrap(),
+                json!({"id": "test.module.effect", "format": 1, "stage": name, "order": order})
+            );
             assert_eq!(
                 serde_json::from_value::<EffectDescriptor>(serde_json::to_value(&effect).unwrap())
                     .unwrap(),
                 effect
+            );
+            // An effect written without an order is the default earliest position of its stage.
+            assert_eq!(
+                serde_json::from_value::<EffectDescriptor>(
+                    json!({"id": "test.module.effect", "format": 1, "stage": name})
+                )
+                .unwrap()
+                .order,
+                0
             );
             let descriptor = ModuleDescriptor {
                 effects: vec![effect],

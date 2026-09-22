@@ -178,26 +178,90 @@ impl ModuleRegistry {
         self.effect(effect_id).map(|(_, effect)| effect.stage)
     }
 
-    /// Where a committed layer of this stage joins a stack. A pixel-stage or colour-stage layer is
-    /// inserted immediately before the first geometry-stage layer, so the quarter-turns, reflections
-    /// and crop that form the geometry tail carry it and no later geometry change moves or
-    /// invalidates it; a geometry-stage layer appends, extending that tail. A layer whose effect no provider
-    /// declares does not open the tail: such a stack cannot compile at all, and the host reports
-    /// that rather than guessing a position. Cost is `O(layers)` and reads no pixels.
-    pub fn insertion_index(&self, layers: &[Layer], stage: EffectStage) -> usize {
-        match stage {
-            EffectStage::Source => 0,
-            EffectStage::Geometry => layers.len(),
-            EffectStage::Pixel | EffectStage::Color => layers
-                .iter()
-                .position(|layer| {
-                    self.effect_stage(&layer.effect_id) == Some(EffectStage::Geometry)
-                })
-                .unwrap_or(layers.len())
-                .max(usize::from(layers.first().is_some_and(|layer| {
-                    self.effect_stage(&layer.effect_id) == Some(EffectStage::Source)
-                }))),
+    /// The stage and the within-stage order an effect declares, or `None` when no provider declares
+    /// the effect at all.
+    fn effect_placement(&self, effect_id: &str) -> Option<(EffectStage, u16)> {
+        self.effect(effect_id)
+            .map(|(_, effect)| (effect.stage, effect.order))
+    }
+
+    /// Where a committed layer of this effect joins a stack, by the stage and the order its
+    /// descriptor declares. A module names its own effect rather than repeating its placement.
+    /// An effect no provider declares is placed as a geometry effect would be and refused by the
+    /// whole-stack compile that follows; a *layer* whose effect no provider declares opens no
+    /// region either, because such a stack cannot compile at all and the host reports that rather
+    /// than guessing a position.
+    pub fn insertion_index_for(&self, layers: &[Layer], effect_id: &str) -> usize {
+        let (stage, order) = self
+            .effect_placement(effect_id)
+            .unwrap_or((EffectStage::Geometry, 0));
+        self.insertion_index(layers, stage, order)
+    }
+
+    /// Where a committed layer of this stage and order joins a stack:
+    ///
+    /// | Stage | Placement |
+    /// | --- | --- |
+    /// | `source` | index zero |
+    /// | `pixel`, `color` | before the first spatial, geometry or finish layer |
+    /// | `spatial` | before the first geometry or finish layer, after every pixel and colour layer |
+    /// | `geometry` | before the first finish layer |
+    /// | `finish` | at the end |
+    ///
+    /// so the geometry tail carries every content-stage edit, a neighbourhood operation reads the
+    /// finished pointwise colour, and a finish effect sees the output coordinates the tail
+    /// produced. A leading source layer keeps index zero whatever is inserted.
+    ///
+    /// Within the region its stage chooses, the new layer goes after the last layer of the *same*
+    /// stage whose order is at most `order` and before the first whose order is greater. Layers of
+    /// other stages inside the region keep their positions, and no existing layer ever moves, so a
+    /// stack stored in another order stays exactly as it is and renders in its stored order.
+    ///
+    /// Cost is `O(layers)` in descriptor lookups; it reads no pixels and allocates nothing.
+    pub fn insertion_index(&self, layers: &[Layer], stage: EffectStage, order: u16) -> usize {
+        if stage == EffectStage::Source {
+            return 0;
         }
+        // A source layer prepares the content stage and always stays at index zero.
+        let mut lower =
+            usize::from(layers.first().is_some_and(|layer| {
+                self.effect_stage(&layer.effect_id) == Some(EffectStage::Source)
+            }));
+        let opens_region = |candidate: EffectStage| match stage {
+            EffectStage::Pixel | EffectStage::Color => matches!(
+                candidate,
+                EffectStage::Spatial | EffectStage::Geometry | EffectStage::Finish
+            ),
+            EffectStage::Spatial => {
+                matches!(candidate, EffectStage::Geometry | EffectStage::Finish)
+            }
+            EffectStage::Geometry => candidate == EffectStage::Finish,
+            EffectStage::Source | EffectStage::Finish => false,
+        };
+        let mut upper = layers.len();
+        // The first layer of the same stage whose order is greater: the new layer goes before it.
+        let mut successor = None;
+        for (index, layer) in layers.iter().enumerate() {
+            let Some((layer_stage, layer_order)) = self.effect_placement(&layer.effect_id) else {
+                continue;
+            };
+            if opens_region(layer_stage) {
+                upper = index;
+                break;
+            }
+            // A spatial layer reads what the pointwise colour run produced, so it never lands
+            // before a pixel or colour layer a stored stack kept later than usual.
+            if stage == EffectStage::Spatial
+                && matches!(layer_stage, EffectStage::Pixel | EffectStage::Color)
+            {
+                lower = index + 1;
+            }
+            if layer_stage == stage && layer_order > order && successor.is_none() {
+                successor = Some(index);
+            }
+        }
+        let upper = upper.max(lower);
+        successor.unwrap_or(upper).clamp(lower, upper)
     }
 
     /// The provider that can evaluate this effect, or `None` when none is registered or the
@@ -272,9 +336,25 @@ impl ModuleRegistry {
         // stack here as well as when the module plans against it, and rewrites nothing.
         let mut single_effects: HashSet<&str> = HashSet::new();
         let mut segments = vec![Segment::new(None, source_width, source_height)];
+        // The one order the host cannot evaluate: a finish effect is defined in the output
+        // coordinates of the geometry tail, so a geometry layer after it has no stage to address.
+        // The stack is refused as it stands and nothing is rewritten or reordered.
+        let mut finish_layer: Option<&Layer> = None;
         for (index, layer) in layers.iter().enumerate() {
-            if self.effect_stage(&layer.effect_id) == Some(EffectStage::Source) && index != 0 {
-                return Err(validation("source-stage effect must be at index zero"));
+            match self.effect_stage(&layer.effect_id) {
+                Some(EffectStage::Source) if index != 0 => {
+                    return Err(validation("source-stage effect must be at index zero"));
+                }
+                Some(EffectStage::Finish) => finish_layer = finish_layer.or(Some(layer)),
+                Some(EffectStage::Geometry) => {
+                    if let Some(finish) = finish_layer {
+                        return Err(validation(format!(
+                            "finish layer precedes geometry (finish {}, geometry {})",
+                            finish.id, layer.id
+                        )));
+                    }
+                }
+                _ => {}
             }
             if !layer_ids.insert(&layer.id) {
                 return Err(validation("duplicate layer identity"));
@@ -391,6 +471,7 @@ pub(crate) mod tests {
                     id: effect.into(),
                     format: EFFECT_FORMAT,
                     stage: EffectStage::Pixel,
+                    order: 0,
                 }],
                 actions: vec![ActionDescriptor {
                     id: action.into(),
@@ -483,6 +564,7 @@ pub(crate) mod tests {
                     id: PATCH_EFFECT.into(),
                     format: EFFECT_FORMAT,
                     stage: EffectStage::Pixel,
+                    order: 0,
                 }],
                 actions: vec![ActionDescriptor {
                     id: PATCH_ACTION.into(),
@@ -609,6 +691,80 @@ pub(crate) mod tests {
                 y: 0,
                 rgb: [red as u8, green as u8, 0],
             })
+        }
+    }
+
+    pub(crate) const STAGE_EFFECT: &str = "test.stage.effect";
+    pub(crate) const STAGE_ACTION: &str = "set-stage";
+
+    /// A module whose one effect declares any stage and any order and compiles to an identity
+    /// colour operation. Placement, the order within a stage and the one refused order are
+    /// properties of the host, so they are proved with this rather than with a real tool: a spatial
+    /// or finish effect has no processing primitive of its own yet.
+    pub(crate) struct StageModule(ModuleDescriptor);
+
+    impl StageModule {
+        pub(crate) fn shared(
+            id: &str,
+            effect: &str,
+            action: &str,
+            stage: EffectStage,
+            order: u16,
+        ) -> Arc<dyn ToolModule> {
+            Arc::new(Self(ModuleDescriptor {
+                id: id.into(),
+                title: "Stage".into(),
+                hint: None,
+                effects: vec![EffectDescriptor {
+                    id: effect.into(),
+                    format: EFFECT_FORMAT,
+                    stage,
+                    order,
+                }],
+                actions: vec![ActionDescriptor {
+                    id: action.into(),
+                    title: "Set stage".into(),
+                    notes: "commits one layer of this module's effect".into(),
+                    summary: None,
+                    patch: false,
+                    parameters: Vec::new(),
+                }],
+                queries: Vec::new(),
+                controls: Vec::new(),
+                reset: None,
+                canvas: None,
+                developer: false,
+                availability: Availability::Available,
+            }))
+        }
+    }
+
+    impl ToolModule for StageModule {
+        fn descriptor(&self) -> &ModuleDescriptor {
+            &self.0
+        }
+        fn parse(&self, action_id: &str, _: &Map<String, Value>) -> Result<ActionInput, Error> {
+            Ok(ActionInput {
+                action_id: action_id.into(),
+                parameters: Map::new(),
+            })
+        }
+        fn plan(&self, _: &ActionInput, _: &StageContext<'_>) -> Result<ActionPlan, Error> {
+            Ok(ActionPlan::Commit(Layer {
+                id: LayerId::new(),
+                effect_id: self.0.effects[0].id.clone(),
+                effect_format: EFFECT_FORMAT,
+                payload: json!({}),
+            }))
+        }
+        fn validate_payload(&self, _: &str, _: u32, _: &Value) -> Result<(), Error> {
+            Ok(())
+        }
+        fn describe_layer(&self, effect_id: &str, _: u32, _: &Value) -> Result<String, Error> {
+            Ok(format!("stage layer of {effect_id}"))
+        }
+        fn compile(&self, _: &str, _: u32, _: &Value, _: Stage) -> Result<Processing, Error> {
+            Ok(Processing::Color(crate::ColorOperation::neutral()))
         }
     }
 
@@ -1194,21 +1350,27 @@ pub(crate) mod tests {
             ),
         ] {
             assert_eq!(
-                registry.insertion_index(&layers, EffectStage::Pixel),
+                registry.insertion_index(&layers, EffectStage::Pixel, 0),
                 expected,
                 "{case}"
             );
             // A colour-stage layer joins the stack by the same rule, so a Basic layer lands before
             // the quarter-turns, reflections and crop that carry it.
             assert_eq!(
-                registry.insertion_index(&layers, EffectStage::Color),
+                registry.insertion_index(&layers, EffectStage::Color, 0),
                 expected,
                 "{case}: colour joins where a pixel edit does"
             );
             assert_eq!(
-                registry.insertion_index(&layers, EffectStage::Geometry),
+                registry.insertion_index(&layers, EffectStage::Geometry, 0),
                 layers.len(),
                 "{case}: geometry extends the tail"
+            );
+            // The host reads the same rule from an effect's own descriptor.
+            assert_eq!(
+                registry.insertion_index_for(&layers, PIXEL_EFFECT),
+                expected,
+                "{case}: the pixel effect's own placement"
             );
         }
         assert_eq!(
@@ -1220,5 +1382,232 @@ pub(crate) mod tests {
             Some(EffectStage::Geometry)
         );
         assert_eq!(registry.effect_stage("test.absent"), None);
+    }
+
+    pub(crate) const MIXER_EFFECT: &str = "test.mixer.effect";
+    pub(crate) const SPATIAL_EFFECT: &str = "test.spatial.effect";
+    pub(crate) const FINISH_EFFECT: &str = "test.finish.effect";
+
+    /// The built-ins plus one colour effect of order 10, one spatial effect and one finish effect,
+    /// which is every stage and two orders within the colour stage.
+    pub(crate) fn staged_registry() -> ModuleRegistry {
+        let mut registry = ModuleRegistry::builtin();
+        for (id, effect, action, stage, order) in [
+            (
+                "test.mixer",
+                MIXER_EFFECT,
+                "set-mixer",
+                EffectStage::Color,
+                10,
+            ),
+            (
+                "test.spatial",
+                SPATIAL_EFFECT,
+                "set-spatial",
+                EffectStage::Spatial,
+                0,
+            ),
+            (
+                "test.finish",
+                FINISH_EFFECT,
+                "set-finish",
+                EffectStage::Finish,
+                0,
+            ),
+        ] {
+            registry
+                .register(StageModule::shared(id, effect, action, stage, order))
+                .expect("a valid test module");
+        }
+        registry
+    }
+
+    /// Every stage's region, over stacks that mix them all: a pixel or colour layer joins the
+    /// content region before the first spatial, geometry or finish layer, a spatial layer follows
+    /// the pointwise work and precedes the tail, a geometry layer precedes the first finish layer
+    /// and a finish layer goes last, with a leading source layer always keeping index zero.
+    #[test]
+    fn every_stage_joins_the_region_the_placement_table_names() {
+        let registry = staged_registry();
+        let source = || test_layer(RAW_EFFECT);
+        let pixel = || Layer::pixel(0, 0, [1, 2, 3]);
+        let basic = || test_layer(BASIC_EFFECT);
+        let mixer = || test_layer(MIXER_EFFECT);
+        let spatial = || test_layer(SPATIAL_EFFECT);
+        let turn = || {
+            Layer::orientation(Orientation {
+                mirror: false,
+                turns: 1,
+            })
+        };
+        let finish = || test_layer(FINISH_EFFECT);
+        // (case, stack, pixel, colour order 0, colour order 10, spatial, geometry, finish)
+        for (case, layers, expected) in [
+            ("an empty stack", vec![], [0, 0, 0, 0, 0, 0]),
+            (
+                "the canonical stack of every stage",
+                vec![
+                    source(),
+                    pixel(),
+                    basic(),
+                    mixer(),
+                    spatial(),
+                    turn(),
+                    finish(),
+                ],
+                [4, 3, 4, 5, 6, 7],
+            ),
+            ("a source layer alone", vec![source()], [1, 1, 1, 1, 1, 1]),
+            (
+                "the geometry tail only",
+                vec![turn(), turn()],
+                [0, 0, 0, 0, 2, 2],
+            ),
+            (
+                "a finish layer over the tail",
+                vec![turn(), finish()],
+                [0, 0, 0, 0, 1, 2],
+            ),
+            (
+                "a spatial layer before the tail",
+                vec![basic(), spatial(), turn()],
+                [1, 1, 1, 2, 3, 3],
+            ),
+            // The colour region is read in order: an order-0 layer goes before an order-10 one
+            // whichever was committed first, and neither existing layer moves.
+            (
+                "one colour layer of order 10",
+                vec![mixer()],
+                [1, 0, 1, 1, 1, 1],
+            ),
+            (
+                "one colour layer of order 0",
+                vec![basic()],
+                [1, 1, 1, 1, 1, 1],
+            ),
+            (
+                "both colour orders before the tail",
+                vec![basic(), mixer(), turn()],
+                [2, 1, 2, 2, 3, 3],
+            ),
+            (
+                // A stored stack the host did not build keeps every layer where it is; the region
+                // still ends at the first layer of a later stage.
+                "a pixel layer stored after the tail",
+                vec![turn(), pixel()],
+                [0, 0, 0, 0, 2, 2],
+            ),
+        ] {
+            let placement = [
+                registry.insertion_index(&layers, EffectStage::Pixel, 0),
+                registry.insertion_index(&layers, EffectStage::Color, 0),
+                registry.insertion_index(&layers, EffectStage::Color, 10),
+                registry.insertion_index(&layers, EffectStage::Spatial, 0),
+                registry.insertion_index(&layers, EffectStage::Geometry, 0),
+                registry.insertion_index(&layers, EffectStage::Finish, 0),
+            ];
+            assert_eq!(placement, expected, "{case}");
+            assert_eq!(
+                registry.insertion_index(&layers, EffectStage::Source, 0),
+                0,
+                "{case}: a source layer prepares the content stage"
+            );
+            // The same answers through the effects' own descriptors.
+            assert_eq!(
+                [
+                    registry.insertion_index_for(&layers, PIXEL_EFFECT),
+                    registry.insertion_index_for(&layers, BASIC_EFFECT),
+                    registry.insertion_index_for(&layers, MIXER_EFFECT),
+                    registry.insertion_index_for(&layers, SPATIAL_EFFECT),
+                    registry.insertion_index_for(&layers, CROP_EFFECT),
+                    registry.insertion_index_for(&layers, FINISH_EFFECT),
+                ],
+                expected,
+                "{case}: read from each effect's descriptor"
+            );
+        }
+
+        // Committing the two colour orders in either sequence leaves the same stack.
+        let mut committed_low_first = vec![basic()];
+        committed_low_first.insert(
+            registry.insertion_index_for(&committed_low_first, MIXER_EFFECT),
+            mixer(),
+        );
+        let mut committed_high_first = vec![mixer()];
+        committed_high_first.insert(
+            registry.insertion_index_for(&committed_high_first, BASIC_EFFECT),
+            basic(),
+        );
+        for (case, stack) in [
+            ("order 0 first", committed_low_first),
+            ("order 10 first", committed_high_first),
+        ] {
+            assert_eq!(
+                stack
+                    .iter()
+                    .map(|layer| layer.effect_id.as_str())
+                    .collect::<Vec<_>>(),
+                vec![BASIC_EFFECT, MIXER_EFFECT],
+                "{case}: the declared order decides, not the commit sequence"
+            );
+        }
+
+        // `module.list` reports the stage and the order of every effect.
+        let descriptors = serde_json::to_value(registry.descriptors()).expect("descriptor JSON");
+        let effect_of = |module: &str| {
+            descriptors
+                .as_array()
+                .expect("an array")
+                .iter()
+                .find(|descriptor| descriptor["id"] == json!(module))
+                .expect("a registered module")["effects"][0]
+                .clone()
+        };
+        assert_eq!(
+            effect_of("test.mixer"),
+            json!({"id": MIXER_EFFECT, "format": EFFECT_FORMAT, "stage": "color", "order": 10})
+        );
+        assert_eq!(
+            effect_of("test.spatial"),
+            json!({"id": SPATIAL_EFFECT, "format": EFFECT_FORMAT, "stage": "spatial", "order": 0})
+        );
+        assert_eq!(
+            effect_of("test.finish"),
+            json!({"id": FINISH_EFFECT, "format": EFFECT_FORMAT, "stage": "finish", "order": 0})
+        );
+    }
+
+    /// The one order the host cannot evaluate: a finish layer is defined in the output coordinates
+    /// the geometry tail produced, so a geometry layer after it has no stage to address. The stack
+    /// is refused as it stands, and nothing is rewritten, reordered or dropped.
+    #[test]
+    fn a_finish_layer_before_a_geometry_layer_is_refused_by_compilation() {
+        let registry = staged_registry();
+        let finish = test_layer(FINISH_EFFECT);
+        let turn = Layer::orientation(Orientation {
+            mirror: false,
+            turns: 1,
+        });
+        let refused = vec![finish.clone(), turn.clone()];
+        let error = registry
+            .compile_layers(2, 1, &refused)
+            .err()
+            .expect("a finish layer before geometry never compiles");
+        assert_eq!(error.kind, ErrorKind::Validation);
+        assert!(
+            error.detail.starts_with("finish layer precedes geometry"),
+            "{}",
+            error.detail
+        );
+        assert!(error.detail.contains(finish.id.as_str()));
+        assert!(error.detail.contains(turn.id.as_str()));
+        assert_eq!(refused.len(), 2, "the refused stack is kept as it stands");
+        // The order the host does build compiles, and so does a stack with no geometry at all.
+        assert!(
+            registry
+                .compile_layers(2, 1, &[turn, finish.clone()])
+                .is_ok()
+        );
+        assert!(registry.compile_layers(2, 1, &[finish]).is_ok());
     }
 }

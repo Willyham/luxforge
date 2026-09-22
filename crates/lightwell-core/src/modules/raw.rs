@@ -224,6 +224,7 @@ impl RawModule {
                     id: RAW_EFFECT.into(),
                     format: EFFECT_FORMAT,
                     stage: EffectStage::Source,
+                    order: 0,
                 }],
                 actions: vec![
                     action(
@@ -495,6 +496,7 @@ mod tests {
             })
         };
         let insertion_index = |_: EffectStage| 0;
+        let insertion_index_for = |_: &str| 0;
         let sample_before = |_: usize, _: u32, _: u32| Ok(None);
         let neutral = |_: u32, _: u32| Ok([1.4, 1.0, 1.6]);
         let context = StageContext {
@@ -506,6 +508,7 @@ mod tests {
             sampler: &unavailable,
             stage_before: &stage_before,
             insertion_index: &insertion_index,
+            insertion_index_for: &insertion_index_for,
             sample_before: &sample_before,
             sensor_neutral: Some(&neutral),
         };

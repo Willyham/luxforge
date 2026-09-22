@@ -35,7 +35,9 @@ pub use raw::white_balance::gains_from_temperature_tint;
 pub use raw::{RawModule, RawPayload, WhiteBalanceMode};
 pub use registry::ModuleRegistry;
 #[cfg(test)]
-pub(crate) use registry::tests::{PATCH_ACTION, PATCH_MODULE, PatchModule, TestModule};
+pub(crate) use registry::tests::{
+    PATCH_ACTION, PATCH_MODULE, PatchModule, STAGE_ACTION, STAGE_EFFECT, StageModule, TestModule,
+};
 pub use transform::TransformModule;
 
 use crate::{Error, Layer};
@@ -54,9 +56,10 @@ pub struct ActionInput {
 pub enum ActionPlan {
     NoOp,
     /// Add a new layer to the stack. The host, not the module, chooses its position from the
-    /// effect's declared stage: a pixel-stage or colour-stage layer joins the stack before the
-    /// geometry tail, a geometry-stage layer extends that tail.
-    /// [`StageContext::insertion_index`] answers where.
+    /// effect's declared stage and order: a pixel-stage or colour-stage layer joins the stack
+    /// before the geometry tail, a spatial layer after the pointwise work, a geometry layer before
+    /// any finish layer and a finish layer at the end.
+    /// [`StageContext::insertion_index_for`] answers where.
     Commit(Layer),
     /// Replace the layer with the same identity in place, keeping its position and every other
     /// layer. The host rejects an identity that is not in the stack.
@@ -80,13 +83,17 @@ pub struct StageContext<'a> {
     /// recipe prefix, so this costs `O(layers)` and rasterizes nothing.
     #[allow(clippy::type_complexity)]
     pub stage_before: &'a dyn Fn(usize) -> Result<Stage, Error>,
-    /// Where the host would put a [`ActionPlan::Commit`] of a layer with this effect stage: the
-    /// index of the first geometry-stage layer for a pixel-stage or colour-stage effect,
-    /// `layers.len()` for a geometry-stage one. A module plans against that position instead of
-    /// choosing one, so
-    /// `stage_before` of this index is the stage its coordinates address.
+    /// Where the host would put a [`ActionPlan::Commit`] of a layer of this effect stage that
+    /// declares the default order, by the placement rule in
+    /// [`crate::ModuleRegistry::insertion_index`]. A module plans against that position instead of
+    /// choosing one, so `stage_before` of this index is the stage its coordinates address.
     #[allow(clippy::type_complexity)]
     pub insertion_index: &'a dyn Fn(EffectStage) -> usize,
+    /// Where the host would put a [`ActionPlan::Commit`] of a layer of this effect: the same rule
+    /// read from the effect's own descriptor, so a module that declares an order among the layers
+    /// of its stage plans against the position its layer will actually take.
+    #[allow(clippy::type_complexity)]
+    pub insertion_index_for: &'a dyn Fn(&str) -> usize,
     /// One pixel of the stage the first `index` layers produce, or `None` outside that stage.
     /// Evaluated segment by segment like [`StageContext::sampler`], so a module that plans against
     /// an insertion stage still allocates no frame.

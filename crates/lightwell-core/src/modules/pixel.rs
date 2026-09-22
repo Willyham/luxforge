@@ -61,6 +61,7 @@ impl PixelModule {
                     id: PIXEL_EFFECT.into(),
                     format: EFFECT_FORMAT,
                     stage: EffectStage::Pixel,
+                    order: 0,
                 }],
                 actions: vec![ActionDescriptor {
                     id: SET_PIXEL.into(),

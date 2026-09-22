@@ -51,12 +51,17 @@ pub const MAX_COLOR_UNITS: usize = 8;
 /// one operation round-trips exactly. A unit reads and writes colour channels only; alpha is the
 /// host's and is never passed in.
 ///
-/// A unit is pure and pointwise: `apply_row` must depend on nothing but the values it is given and
-/// the unit's own coefficients, because the host chooses the row chunking, applies the same unit on
-/// the shared Rayon pool and evaluates single pixels through the same call for a point sample.
+/// A unit is pure and pointwise: `apply_row` must depend on nothing but the values it is given, the
+/// position it is given them at and the unit's own coefficients, because the host chooses the row
+/// chunking, applies the same unit on the shared Rayon pool and evaluates single pixels through the
+/// same call for a point sample.
 pub trait PointwiseColor: Send + Sync {
-    /// Transform one row of linear-sRGB pixels in place.
-    fn apply_row(&self, rgb: &mut [[f32; 3]]);
+    /// Transform one row of linear-sRGB pixels in place, at row `y` of the stage the unit's segment
+    /// produces, starting at column `x0`; the slice is always one contiguous run of that row, so
+    /// pixel `i` is at `(x0 + i, y)`. A unit that does not depend on position ignores both. The
+    /// rasterizing pass and every point query address the same coordinates, so a sample equals the
+    /// rendered byte for a position-dependent unit too.
+    fn apply_row(&self, y: u32, x0: u32, rgb: &mut [[f32; 3]]);
     /// Whether this unit's own coefficients are finite. Compilation refuses a unit that says no,
     /// so a non-finite parameter fails before a frame is touched.
     fn is_finite(&self) -> bool;

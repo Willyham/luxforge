@@ -241,7 +241,7 @@ impl ColourAdjust {
 }
 
 impl PointwiseColor for ColourAdjust {
-    fn apply_row(&self, rgb: &mut [[f32; 3]]) {
+    fn apply_row(&self, _y: u32, _x0: u32, rgb: &mut [[f32; 3]]) {
         // Vibrance's weight needs a chroma (`hypot`) and, past the epsilon, a hue (`atan2` and a
         // `cos`) per pixel. Skip all of it whenever it cannot change the result: when vibrance is
         // neutral, its gain multiplies the weight by exactly zero regardless of the weight's own
@@ -315,7 +315,7 @@ mod tests {
     /// `Saturation` units the frozen fixtures were originally checked against).
     fn apply_basic_colour(rgb: [f32; 3], vibrance: f64, saturation: f64) -> [f32; 3] {
         let mut row = row_of(rgb);
-        ColourAdjust::new(vibrance, saturation).apply_row(&mut row);
+        ColourAdjust::new(vibrance, saturation).apply_row(0, 0, &mut row);
         row[0]
     }
 
@@ -463,7 +463,7 @@ mod tests {
             assert_eq!(lab.b * combined_k, 0.0);
 
             let mut row = row_of(rgb);
-            unit.apply_row(&mut row);
+            unit.apply_row(0, 0, &mut row);
             let spread = (row[0][0] - row[0][1])
                 .abs()
                 .max((row[0][1] - row[0][2]).abs())
@@ -515,7 +515,7 @@ mod tests {
                     for zi in 0..STEPS {
                         let rgb = [component(xi), component(yi), component(zi)];
                         let mut fused = row_of(rgb);
-                        unit.apply_row(&mut fused);
+                        unit.apply_row(0, 0, &mut fused);
                         let sequential =
                             sequential_vibrance_then_saturation(rgb, vibrance, saturation);
                         for (&fused_channel, &sequential_channel) in
@@ -595,7 +595,7 @@ mod tests {
     #[test]
     fn zero_is_the_identity_gain() {
         let mut row = row_of([0.0, 0.25, 1.0]);
-        ColourAdjust::new(0.0, 0.0).apply_row(&mut row);
+        ColourAdjust::new(0.0, 0.0).apply_row(0, 0, &mut row);
         let tolerance = 1e-5_f32;
         for (actual, expected) in row[0].iter().zip([0.0, 0.25, 1.0]) {
             assert!(

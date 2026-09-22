@@ -501,6 +501,7 @@ impl BasicModule {
                     id: BASIC_EFFECT.into(),
                     format: EFFECT_FORMAT,
                     stage: EffectStage::Color,
+                    order: 0,
                 }],
                 actions: vec![
                     ActionDescriptor {
@@ -897,7 +898,9 @@ impl ToolModule for BasicModule {
 
         let index = match locate_index(context.layers)? {
             Some(index) => index,
-            None => (context.insertion_index)(EffectStage::Color),
+            // The stage this module's own layer would be committed at, by its declared stage and
+            // order, so the picker reads the pixels the layer it creates will receive.
+            None => (context.insertion_index_for)(BASIC_EFFECT),
         };
         let stage = (context.stage_before)(index)?;
         let outside = || {
@@ -983,6 +986,7 @@ mod tests {
         let sampler = |_: u32, _: u32| Ok(Some([0, 0, 0, 255]));
         let stage_before = |_: usize| Ok(STAGE);
         let insertion_index = |_: EffectStage| 0usize;
+        let insertion_index_for = |_: &str| 0usize;
         let sample_before = |_: usize, _: u32, _: u32| Ok(Some([0, 0, 0, 255]));
         module.plan(
             &input,
@@ -992,6 +996,7 @@ mod tests {
                 sampler: &sampler,
                 stage_before: &stage_before,
                 insertion_index: &insertion_index,
+                insertion_index_for: &insertion_index_for,
                 sample_before: &sample_before,
                 sensor_neutral: None,
             },
@@ -1974,6 +1979,7 @@ mod tests {
         // A colour layer joins the stack before the geometry tail; this stack has none, so a first
         // commit would land at the end.
         let insertion_index = |_: EffectStage| layers.len();
+        let insertion_index_for = |_: &str| layers.len();
         let sample_before = |index: usize, x: u32, y: u32| {
             probe.asked.borrow_mut().push((index, x, y));
             Ok((x < probe.width && y < probe.height).then(|| {
@@ -1990,6 +1996,7 @@ mod tests {
                 sampler: &sampler,
                 stage_before: &stage_before,
                 insertion_index: &insertion_index,
+                insertion_index_for: &insertion_index_for,
                 sample_before: &sample_before,
                 sensor_neutral: None,
             },
@@ -2234,6 +2241,7 @@ mod tests {
         let sampler = |_: u32, _: u32| Ok(None);
         let stage_before = |_: usize| Ok(STAGE);
         let insertion_index = |_: EffectStage| 0usize;
+        let insertion_index_for = |_: &str| 0usize;
         let sample_before = |_: usize, _: u32, _: u32| Ok(Some([128, 128, 128, 255]));
         let error = module
             .query(
@@ -2245,6 +2253,7 @@ mod tests {
                     sampler: &sampler,
                     stage_before: &stage_before,
                     insertion_index: &insertion_index,
+                    insertion_index_for: &insertion_index_for,
                     sample_before: &sample_before,
                     sensor_neutral: None,
                 },
@@ -2285,7 +2294,7 @@ mod tests {
                 mean[2].as_f64().unwrap() as f32,
             ]];
             for unit in operation.units() {
-                unit.apply_row(&mut row);
+                unit.apply_row(0, 0, &mut row);
             }
             let codes = row[0].map(|value| {
                 let clamped = f64::from(value).clamp(0.0, 1.0);
@@ -2313,6 +2322,7 @@ mod tests {
         let sampler = |_: u32, _: u32| Ok(None);
         let stage_before = |_: usize| Ok(STAGE);
         let insertion_index = |_: EffectStage| 0usize;
+        let insertion_index_for = |_: &str| 0usize;
         let sample_before = |_: usize, _: u32, _: u32| Ok(None);
         let error = module
             .query(
@@ -2324,6 +2334,7 @@ mod tests {
                     sampler: &sampler,
                     stage_before: &stage_before,
                     insertion_index: &insertion_index,
+                    insertion_index_for: &insertion_index_for,
                     sample_before: &sample_before,
                     sensor_neutral: None,
                 },

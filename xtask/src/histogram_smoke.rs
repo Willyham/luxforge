@@ -15,8 +15,8 @@ use crate::{
     *,
 };
 use lightwell_core::{
-    BASIC_EFFECT, EFFECT_FORMAT, EffectStage, Layer, LayerId, ModuleRegistry, RECIPE_FORMAT,
-    Recipe, SnapshotId, analysis, render as core_render,
+    BASIC_EFFECT, EFFECT_FORMAT, Layer, LayerId, ModuleRegistry, RECIPE_FORMAT, Recipe, SnapshotId,
+    analysis, render as core_render,
 };
 
 /// The fixture: 480x320, orientation 1, the quadrant pattern with the white centre line and the
@@ -170,7 +170,7 @@ fn drafted_recipe(frame: &Value) -> Result<Recipe> {
             .any(|layer| layer.effect_id == BASIC_EFFECT),
         "The displayed stack already holds a Basic layer, so the drafted payload is a merge",
     )?;
-    let index = ModuleRegistry::builtin().insertion_index(&recipe.layers, EffectStage::Color);
+    let index = ModuleRegistry::builtin().insertion_index_for(&recipe.layers, BASIC_EFFECT);
     recipe.layers.insert(
         index,
         Layer {

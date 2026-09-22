@@ -1647,6 +1647,7 @@ mod tests {
                     id: "test.angle.effect".into(),
                     format: EFFECT_FORMAT,
                     stage: EffectStage::Geometry,
+                    order: 0,
                 }],
                 actions: vec![ActionDescriptor {
                     id: "test-angle".into(),
@@ -1747,6 +1748,7 @@ mod tests {
                     id: MARK_EFFECT.into(),
                     format: EFFECT_FORMAT,
                     stage: EffectStage::Geometry,
+                    order: 0,
                 }],
                 actions: vec![ActionDescriptor {
                     id: MARK_ACTION.into(),

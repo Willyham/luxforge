@@ -148,6 +148,7 @@ impl CropModule {
                     id: CROP_EFFECT.into(),
                     format: EFFECT_FORMAT,
                     stage: EffectStage::Geometry,
+                    order: 0,
                 }],
                 actions: vec![
                     ActionDescriptor {
@@ -672,6 +673,7 @@ mod tests {
             Ok(INPUT)
         };
         let insertion_index = |_: EffectStage| layers.len();
+        let insertion_index_for = |_: &str| layers.len();
         let sample_before = |_: usize, _: u32, _: u32| -> Result<Option<[u8; 4]>, Error> {
             panic!("planning a crop never samples a pixel")
         };
@@ -683,6 +685,7 @@ mod tests {
                 sampler: &sampler,
                 stage_before: &stage_before,
                 insertion_index: &insertion_index,
+                insertion_index_for: &insertion_index_for,
                 sample_before: &sample_before,
                 sensor_neutral: None,
             },

@@ -24,7 +24,7 @@ impl Exposure {
 }
 
 impl PointwiseColor for Exposure {
-    fn apply_row(&self, rgb: &mut [[f32; 3]]) {
+    fn apply_row(&self, _y: u32, _x0: u32, rgb: &mut [[f32; 3]]) {
         for pixel in rgb {
             for channel in pixel {
                 *channel *= self.gain;
@@ -60,7 +60,7 @@ mod tests {
         for ev in [-5.0, -2.0, -0.5, 0.0, 0.5, 1.0, 2.0, 5.0] {
             let unit = Exposure::new(ev);
             let mut row = [[0.0, 0.25, 1.0], [0.5, -0.125, 2.0]];
-            unit.apply_row(&mut row);
+            unit.apply_row(0, 0, &mut row);
             for (pixel, input) in row.iter().zip([[0.0, 0.25, 1.0], [0.5, -0.125, 2.0]]) {
                 for (actual, input) in pixel.iter().zip(input) {
                     let expected = reference(input, ev);
@@ -80,8 +80,8 @@ mod tests {
     fn an_inverse_pair_returns_its_input_exactly() {
         let mut row = [[0.0, 0.051_269_46, 1.0], [-0.25, 2.5, 0.215_860_5]];
         let input = row;
-        Exposure::new(1.0).apply_row(&mut row);
-        Exposure::new(-1.0).apply_row(&mut row);
+        Exposure::new(1.0).apply_row(0, 0, &mut row);
+        Exposure::new(-1.0).apply_row(0, 0, &mut row);
         assert_eq!(row, input, "powers of two invert exactly in f32");
     }
 
@@ -89,7 +89,7 @@ mod tests {
     fn zero_ev_is_the_identity_gain() {
         let unit = Exposure::new(0.0);
         let mut row = [[0.0, 0.25, 1.0]];
-        unit.apply_row(&mut row);
+        unit.apply_row(0, 0, &mut row);
         assert_eq!(row, [[0.0, 0.25, 1.0]]);
         assert_eq!(unit.describe(), "exposure(+0.00)");
     }

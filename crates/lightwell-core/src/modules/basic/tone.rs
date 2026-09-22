@@ -205,7 +205,7 @@ fn decode_srgb_extended(e: f32) -> f32 {
 }
 
 impl PointwiseColor for Tone {
-    fn apply_row(&self, rgb: &mut [[f32; 3]]) {
+    fn apply_row(&self, _y: u32, _x0: u32, rgb: &mut [[f32; 3]]) {
         for pixel in rgb {
             let l_in = LUMA_R * pixel[0] + LUMA_G * pixel[1] + LUMA_B * pixel[2];
             let l_out = decode_srgb_extended(self.tone_curve(encode_srgb_extended(l_in)));
@@ -317,7 +317,7 @@ mod tests {
                 case.input_linear_rgb[1] as f32,
                 case.input_linear_rgb[2] as f32,
             ]];
-            unit.apply_row(&mut row);
+            unit.apply_row(0, 0, &mut row);
             for (channel, expected) in case.expected_linear_rgb.iter().enumerate() {
                 let actual = f64::from(row[0][channel]);
                 let expected = *expected;
@@ -366,7 +366,7 @@ mod tests {
         let unit = Tone::new(0.0, 0.0, 0.0, 0.0, 0.0);
         let input = [[0.0_f32, 0.25, 1.0], [0.5, 0.02, 0.9], [2.0, -0.1, 0.003]];
         let mut row = input;
-        unit.apply_row(&mut row);
+        unit.apply_row(0, 0, &mut row);
         for (actual, expected) in row.iter().zip(input.iter()) {
             for (a, e) in actual.iter().zip(expected.iter()) {
                 assert!((a - e).abs() < 1e-5, "actual {a} expected {e}");
@@ -386,7 +386,7 @@ mod tests {
                 [l, l, l]
             })
             .collect();
-        unit.apply_row(&mut row);
+        unit.apply_row(0, 0, &mut row);
         for pixel in &row {
             assert!(
                 (pixel[0] - pixel[1]).abs() < 1e-5 && (pixel[1] - pixel[2]).abs() < 1e-5,
