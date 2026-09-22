@@ -552,6 +552,7 @@ pub(crate) mod tests {
                     format: EFFECT_FORMAT,
                     stage: EffectStage::Pixel,
                     order: 0,
+                    artifacts: false,
                 }],
                 actions: vec![ActionDescriptor {
                     id: action.into(),
@@ -646,6 +647,7 @@ pub(crate) mod tests {
                     format: EFFECT_FORMAT,
                     stage: EffectStage::Pixel,
                     order: 0,
+                    artifacts: false,
                 }],
                 actions: vec![ActionDescriptor {
                     id: PATCH_ACTION.into(),
@@ -802,6 +804,7 @@ pub(crate) mod tests {
                     format: EFFECT_FORMAT,
                     stage,
                     order,
+                    artifacts: false,
                 }],
                 actions: vec![ActionDescriptor {
                     id: action.into(),

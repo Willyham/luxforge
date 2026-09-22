@@ -35,6 +35,9 @@ pub struct ApiFailure {
     pub message: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub job_id: Option<String>,
+    /// Structured context for the failure, e.g. `{consent: …}` or `{requirements: […]}`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub data: Option<Value>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -74,6 +77,7 @@ impl ApiResponse {
                 job_id: (error.kind == ErrorKind::PreparationRequired)
                     .then(|| error.detail.clone()),
                 message: error.detail,
+                data: error.data.map(|data| *data),
             }),
         }
     }

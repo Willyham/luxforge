@@ -236,6 +236,7 @@ impl PresenceModule {
                     format: EFFECT_FORMAT,
                     stage: EffectStage::Spatial,
                     order: 0,
+                    artifacts: false,
                 }],
                 actions: vec![
                     ActionDescriptor {

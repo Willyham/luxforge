@@ -1743,6 +1743,7 @@ mod tests {
                         format: EFFECT_FORMAT,
                         stage: EffectStage::Geometry,
                         order: 0,
+                        artifacts: false,
                     })
                     .collect(),
                 actions: Vec::new(),
@@ -2856,6 +2857,7 @@ mod tests {
                     format: EFFECT_FORMAT,
                     stage: EffectStage::Color,
                     order: 0,
+                    artifacts: false,
                 }],
                 actions: Vec::new(),
                 queries: Vec::new(),

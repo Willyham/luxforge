@@ -3869,6 +3869,7 @@ mod tests {
                 format: EFFECT_FORMAT,
                 stage: EffectStage::Geometry,
                 order: 0,
+                artifacts: false,
             };
             Self(ModuleDescriptor {
                 id: "test.shrink".into(),

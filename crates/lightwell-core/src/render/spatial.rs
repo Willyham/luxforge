@@ -851,6 +851,7 @@ pub(crate) mod tests {
                     format: EFFECT_FORMAT,
                     stage: EffectStage::Spatial,
                     order: 0,
+                    artifacts: false,
                 }],
                 actions: Vec::new(),
                 queries: Vec::new(),

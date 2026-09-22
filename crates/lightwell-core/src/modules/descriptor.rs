@@ -74,6 +74,10 @@ pub struct EffectDescriptor {
     /// placement rule only: a stored stack always renders in its stored order.
     #[serde(default)]
     pub order: u16,
+    /// Whether a layer of this effect may reference derived artifacts through its host-owned
+    /// `artifacts` list. A layer of an effect that does not declare it must list none.
+    #[serde(default, skip_serializing_if = "is_default")]
+    pub artifacts: bool,
 }
 
 /// The closed set of parameter types v0 modules may declare. `f64` bounds rule out `Eq` here and
@@ -96,6 +100,9 @@ pub enum ParameterKind {
     /// Three 8-bit sRGB channels as a JSON array.
     Color,
     Boolean,
+    /// One derived artifact published in this catalog, as its opaque `artifact-…` identity. The
+    /// generic check validates the identity's syntax; the commit checks that the artifact exists.
+    Artifact,
     /// Ordered [x, y] fractions. Interpolation belongs to the module.
     Curve {
         points_min: usize,
@@ -1213,6 +1220,16 @@ pub fn check_value(parameter: &ParameterDescriptor, value: &Value) -> Result<(),
                 return Err(validation(format!("parameter {name} must be a boolean")));
             }
         }
+        ParameterKind::Artifact => {
+            let valid = value
+                .as_str()
+                .is_some_and(|text| crate::ArtifactId::parse(text).is_ok());
+            if !valid {
+                return Err(validation(format!(
+                    "parameter {name} must be an artifact identity"
+                )));
+            }
+        }
         ParameterKind::Curve {
             points_min,
             points_max,
@@ -1564,6 +1581,7 @@ mod tests {
                 format: 1,
                 stage: EffectStage::Pixel,
                 order: 0,
+                artifacts: false,
             }],
             actions: vec![action()],
             queries: Vec::new(),
@@ -1706,6 +1724,7 @@ mod tests {
                         format: 1,
                         stage: EffectStage::Pixel,
                         order: 0,
+                        artifacts: false,
                     }],
                     ..descriptor()
                 },
@@ -2457,6 +2476,7 @@ mod tests {
                 format: 1,
                 stage,
                 order,
+                artifacts: false,
             };
             assert_eq!(serde_json::to_value(stage).unwrap(), json!(name));
             // `order` is always serialized, so `module.list` reports it for every effect.

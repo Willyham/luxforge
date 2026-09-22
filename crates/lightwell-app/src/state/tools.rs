@@ -1118,6 +1118,10 @@ fn value_model(
         ParameterKind::Curve { .. } => ControlModel::Unsupported(format!(
             "curve parameter {parameter} of action {action} needs a curve control"
         )),
+        // An artifact is published by a task and committed with its result, never typed.
+        ParameterKind::Artifact => ControlModel::Unsupported(format!(
+            "artifact parameter {parameter} of action {action} is filled by a task, not a control"
+        )),
     }
 }
 

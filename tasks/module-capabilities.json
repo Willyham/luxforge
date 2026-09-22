@@ -3,15 +3,15 @@
   "plan_id": "module-capabilities",
   "title": "Shared module settings, permissions and resources",
   "objective": "Give trusted modules host-owned settings, secure credentials, scoped consent, bounded activation/downloads and durable derived artifacts through the same discoverable service used by the desktop and API.",
-  "context_summary": "Proposed follow-up to the implemented linked-module contract. This plan supplies generic capabilities needed by Corrections and future modules, while leaving third-party executable loading to a separately measured extension. Owner decisions on consent and provider policy precede implementation.",
+  "context_summary": "Follow-up to the implemented linked-module contract, supplying generic capabilities needed by Corrections and future modules while leaving third-party executable loading to a separately measured extension. The contract was frozen on 2026-09-23 under the owner's delegation; implementation is in progress.",
   "tasks": [
     {
       "id": "TASK-001",
       "description": "Freeze the shared capability and consent contract with the owner.",
-      "status": "ready",
+      "status": "completed",
       "dependencies": [],
       "extra_context": [
-        "Planning only; implementation starts only after the owner accepts the proposed defaults. Keep unresolved provider and consent tradeoffs as proposals."
+        "The frozen contract and its decisions are in the capability design and the product decisions; each default can be revisited by the owner."
       ],
       "context_links": [
         {
@@ -46,7 +46,7 @@
     {
       "id": "TASK-002",
       "description": "Extend module descriptors and API discovery with typed settings, capability declarations and activation metadata.",
-      "status": "pending",
+      "status": "in_progress",
       "dependencies": [
         "TASK-001"
       ],
@@ -264,7 +264,7 @@
     {
       "id": "TASK-007",
       "description": "Build immutable derived-artifact storage with history reachability and crash recovery.",
-      "status": "pending",
+      "status": "in_progress",
       "dependencies": [
         "TASK-001"
       ],

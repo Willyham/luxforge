@@ -20,6 +20,15 @@ pub enum ErrorKind {
     Incompatible,
     SourceUnavailable,
     PreparationRequired,
+    /// A gated module operation has no matching grant. The error's data carries the exact scope and
+    /// the disclosure a person needs to decide, so a headless client can ask the same question the
+    /// desktop does.
+    ConsentRequired,
+    /// The client lacks the authority the method needs, such as granting a permission.
+    Forbidden,
+    /// A declared requirement is not met yet: a setting, a resource, an activation or the secure
+    /// store. The error's data lists what is missing; nothing was queued.
+    NotReady,
     Protocol,
     Internal,
 }
@@ -42,6 +51,9 @@ impl ErrorKind {
             Self::Incompatible => "incompatible",
             Self::SourceUnavailable => "source-unavailable",
             Self::PreparationRequired => "preparation-required",
+            Self::ConsentRequired => "consent-required",
+            Self::Forbidden => "forbidden",
+            Self::NotReady => "not-ready",
             Self::Protocol => "protocol",
             Self::Internal => "internal",
         }
@@ -51,13 +63,22 @@ impl ErrorKind {
 pub struct Error {
     pub kind: ErrorKind,
     pub detail: String,
+    /// Structured context a client acts on, such as a consent request's scope or the requirements a
+    /// module is missing. Never a secret. Boxed so a `Result` stays small on the common path.
+    pub data: Option<Box<serde_json::Value>>,
 }
 impl Error {
     pub fn new(kind: ErrorKind, detail: impl Into<String>) -> Self {
         Self {
             kind,
             detail: detail.into(),
+            data: None,
         }
+    }
+    /// The same error carrying structured data for the client.
+    pub fn with_data(mut self, data: serde_json::Value) -> Self {
+        self.data = Some(Box::new(data));
+        self
     }
 }
 impl std::fmt::Display for Error {
