@@ -531,10 +531,11 @@ impl ToolModule for Disabled {
 /// every chapter's unavailable-provider check so each one only names which module it disables.
 pub(crate) fn registry_without(module_id: &str) -> ModuleRegistry {
     let mut registry = ModuleRegistry::new();
-    let builtins: [Arc<dyn ToolModule>; 7] = [
+    let builtins: [Arc<dyn ToolModule>; 8] = [
         Arc::new(PixelModule::new()),
         Arc::new(RawModule::new()),
         Arc::new(BasicModule::new()),
+        Arc::new(lightwell_core::PresenceModule::new()),
         Arc::new(lightwell_core::MixerModule::new()),
         Arc::new(TransformModule::new()),
         Arc::new(CropModule::new()),

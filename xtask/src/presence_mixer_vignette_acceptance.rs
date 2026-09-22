@@ -1,24 +1,23 @@
 //! The Presence, colour mixer and vignette chapter of `cargo xtask editor-acceptance` (TASK-009).
 //!
 //! Everything here is driven through the JSON method table with [`OwnerHandle::call`], exactly as
-//! an independent client reaches it, against the delivered `lightwell.mixer` and `lightwell.vignette`
-//! modules — the same style [`basic_acceptance`] uses for Basic, and this file reuses that chapter's
-//! helpers (`call`, `refused`, `mutation`, `import`, `current_recipe`, `current_revision`, `field`,
-//! `render`, `analyse`, `ready_report`, `prepare_source`, `registry_without`) rather than duplicating
-//! them.
+//! an independent client reaches it, against the delivered `lightwell.presence`, `lightwell.mixer`
+//! and `lightwell.vignette` modules — the same style [`basic_acceptance`] uses for Basic, and this
+//! file reuses that chapter's helpers (`call`, `refused`, `mutation`, `import`, `current_recipe`,
+//! `current_revision`, `field`, `render`, `analyse`, `ready_report`, `prepare_source`,
+//! `registry_without`) rather than duplicating them.
 //!
-//! The Presence module (TASK-006) is being delivered separately; [`presence_slot`] is the function
-//! slot its own chapter joins at, recording an honest "pending" entry rather than a placeholder pass
-//! until that module lands. Every check below that runs is a real round trip against the background
-//! editor; nothing here is skipped silently — a check that cannot run fails the command, exactly as
-//! the M1-M4 and Basic chapters already do.
+//! Every check below is a real round trip against the background editor; nothing here is skipped
+//! silently — a check that cannot run fails the command, exactly as the M1-M4 and Basic chapters
+//! already do.
 use crate::basic_acceptance::{
     FIXTURE, analyse, as_str, as_u64, call, current_recipe, current_revision, field, import,
     mutation, prepare_source, ready_report, refused, registry_without, render,
 };
 use crate::*;
 use lightwell_core::{
-    BASIC_EFFECT, ClientId, EFFECT_FORMAT, MIXER_EFFECT, OwnerHandle, VIGNETTE_EFFECT,
+    BASIC_EFFECT, ClientId, EFFECT_FORMAT, MIXER_EFFECT, ORIENTATION_EFFECT, OwnerHandle,
+    PRESENCE_EFFECT, VIGNETTE_EFFECT,
 };
 use serde_json::Map;
 use std::{cell::RefCell, sync::Arc, time::Instant};
@@ -38,17 +37,33 @@ const QUADRANT_PROBES: [(u32, u32); 4] = [RED_PROBE, GREEN_PROBE, BLUE_PROBE, YE
 /// render.sample-versus-raster check, since a vignette's value is most distinctive at the corners.
 const CORNERS_AND_CENTRE: [(u32, u32); 5] = [(0, 0), (479, 0), (0, 319), (479, 319), (240, 160)];
 
+/// The quadrant centres plus every corner and the stage centre: Presence is a spatial layer, so a
+/// sample through it evaluates the stage-aligned tile that contains its pixel rather than a single
+/// point, and a tile's edge and the stage's own edge are exactly where a tiling bug would show.
+/// This chapter checks render.sample against the independently rendered raster at every one of
+/// these nine interior and edge/corner pixels, not only a convenient interior handful.
+const PRESENCE_PROBES: [(u32, u32); 9] = [
+    RED_PROBE,
+    GREEN_PROBE,
+    BLUE_PROBE,
+    YELLOW_PROBE,
+    (0, 0),
+    (479, 0),
+    (0, 319),
+    (479, 319),
+    (240, 160),
+];
+
 /// The chapter's entry point, wired into `editor-acceptance` after the Basic and histogram chapter.
-/// Runs the mixer and vignette journeys each against their own catalog in `out`, and records the
-/// Presence slot as pending rather than skipping it or reporting a pass it never earned.
+/// Runs the presence, mixer and vignette journeys each against their own catalog in `out`.
 pub fn run(root: &Path, out: &Path) -> Result<Value> {
     let fixture = root.join(FIXTURE);
     let fixture_hash = hash(&fixture)?;
     let total = Instant::now();
 
+    let presence = presence_journey(root, out)?;
     let mixer = mixer_journey(root, out)?;
     let vignette = vignette_journey(root, out)?;
-    let presence = presence_slot();
 
     ensure(
         hash(&fixture)? == fixture_hash,
@@ -58,23 +73,15 @@ pub fn run(root: &Path, out: &Path) -> Result<Value> {
         "status": "passed",
         "fixture": FIXTURE,
         "fixture_sha256": fixture_hash,
+        "presence": presence,
         "mixer": mixer,
         "vignette": vignette,
-        "presence": presence,
         "elapsed_ms": total.elapsed().as_secs_f64() * 1000.0,
     }))
 }
 
-/// The Presence module (TASK-006) is delivered separately from this chapter and is not yet
-/// registered in `ModuleRegistry::builtin()`. This is the join point its own acceptance journey
-/// joins at once it lands: a function slot, not a placeholder check, so `result.json` records an
-/// honest "pending" entry rather than a check that silently never ran.
-fn presence_slot() -> Value {
-    json!("pending: module not yet delivered")
-}
-
 // -------------------------------------------------------------------------------------------
-// Small helpers shared by both journeys below (module-specific, so kept local rather than
+// Small helpers shared by all three journeys below (module-specific, so kept local rather than
 // pushed into `basic_acceptance`, which owns only the helpers Basic and this chapter share).
 // -------------------------------------------------------------------------------------------
 
@@ -336,6 +343,808 @@ fn restore_to_original(
         current_recipe(owner, client, asset)?.layers.is_empty(),
         "Restoring the Original entry left layers behind",
     )
+}
+
+// -------------------------------------------------------------------------------------------
+// The Presence journey.
+// -------------------------------------------------------------------------------------------
+
+fn presence_journey(root: &Path, out: &Path) -> Result<Value> {
+    let fixture = root.join(FIXTURE);
+    let catalog = out.join("presence-catalog.sqlite");
+    let source = lightwell_core::open_source(&fixture)?;
+    let checks: RefCell<Vec<Value>> = RefCell::new(Vec::new());
+    let record = |shows: &str, detail: Value| {
+        checks
+            .borrow_mut()
+            .push(json!({"shows": shows, "detail": detail}))
+    };
+    let total = Instant::now();
+
+    let (owner, join) = OwnerHandle::start(&catalog)?;
+    let mut join = Some(join);
+    let outcome = (|| -> Result<Value> {
+        let editor = owner.register();
+        let agent = owner.register();
+
+        // 1. Discovery.
+        let modules = call(&owner, editor, "module.list", json!({}))?;
+        let listed = modules["modules"]
+            .as_array()
+            .ok_or("module.list answered no modules")?
+            .clone();
+        let descriptor = listed
+            .iter()
+            .find(|module| module["id"] == json!("lightwell.presence"))
+            .ok_or("lightwell.presence is not registered")?
+            .clone();
+        ensure(
+            descriptor["collapsed"] == json!(true),
+            "The presence section does not start collapsed",
+        )?;
+        ensure(
+            descriptor["effects"]
+                == json!([{"id": PRESENCE_EFFECT, "format": EFFECT_FORMAT, "stage": "spatial", "order": 0}]),
+            format!(
+                "The presence effect is described as {}",
+                descriptor["effects"]
+            ),
+        )?;
+        let positions: Vec<&str> = listed
+            .iter()
+            .map(|module| module["id"].as_str().unwrap_or(""))
+            .collect();
+        let basic_index = positions
+            .iter()
+            .position(|id| *id == "lightwell.basic")
+            .ok_or("lightwell.basic is not registered")?;
+        let presence_index = positions
+            .iter()
+            .position(|id| *id == "lightwell.presence")
+            .ok_or("lightwell.presence is not registered")?;
+        let mixer_index = positions
+            .iter()
+            .position(|id| *id == "lightwell.mixer")
+            .ok_or("lightwell.mixer is not registered")?;
+        ensure(
+            basic_index < presence_index && presence_index < mixer_index,
+            format!(
+                "module.list orders modules {positions:?}, expected presence after Basic and before the mixer"
+            ),
+        )?;
+        let groups = descriptor["controls"]
+            .as_array()
+            .ok_or("The presence module declares no controls")?;
+        ensure(
+            groups.len() == 1 && groups[0]["label"] == json!("Presence"),
+            format!("The presence module's groups are {groups:?}"),
+        )?;
+        ensure(
+            !groups[0]["collapsed"].as_bool().unwrap_or(false),
+            "The Presence group does not start expanded",
+        )?;
+        let sliders = groups[0]["controls"]
+            .as_array()
+            .ok_or("The Presence group declares no controls")?;
+        ensure(
+            sliders
+                .iter()
+                .map(|slider| slider["label"].clone())
+                .collect::<Vec<_>>()
+                == vec![json!("Texture"), json!("Clarity"), json!("Dehaze")],
+            format!("The Presence group's sliders are {sliders:?}"),
+        )?;
+        let set_action = descriptor["actions"]
+            .as_array()
+            .ok_or("The presence module declares no actions")?
+            .iter()
+            .find(|action| action["id"] == json!("set-presence"))
+            .ok_or("set-presence is not declared")?
+            .clone();
+        ensure(
+            set_action["patch"] == json!(true)
+                && set_action["parameters"].as_array().map(Vec::len) == Some(3),
+            format!("set-presence is described as {set_action}"),
+        )?;
+        let schema = call(&owner, editor, "schema.list", json!({}))?;
+        ensure(
+            schema["methods"].get("edit.set-presence").is_some()
+                && schema["methods"].get("edit.reset-presence").is_some(),
+            "edit.set-presence or edit.reset-presence is not discoverable",
+        )?;
+        record(
+            "module.list describes presence collapsed at spatial order 0, registered after Basic and before the mixer, with one expanded three-slider group; schema.list carries edit.set-presence (3 parameters) and edit.reset-presence",
+            json!({"effects": descriptor["effects"], "order": positions}),
+        );
+
+        // 2. The gesture/cancel/no-op/retry/reset journey. One asset carries the whole chapter:
+        //    importing the same fixture path again dedupes to this very asset by file identity
+        //    rather than creating a fresh one, so every later section that needs a clean slate
+        //    restores to this Original entry first instead of importing again.
+        let imported = import(&owner, editor, &fixture)?;
+        let asset = imported["asset"]["id"].clone();
+        let original = imported["current_entry"]["id"].clone();
+
+        // 2a. A slider gesture commits exactly one entry with the expected label.
+        let revision = current_revision(&owner, editor, &asset)?;
+        let draft = call(
+            &owner,
+            editor,
+            "draft.begin",
+            json!({"asset_id": asset, "action": "set-presence"}),
+        )?;
+        let draft_id = draft["draft_id"].clone();
+        call(
+            &owner,
+            editor,
+            "draft.set",
+            json!({"draft_id": draft_id, "fields": {"texture": 40.0}}),
+        )?;
+        let committed = call(
+            &owner,
+            editor,
+            "draft.commit",
+            json!({"draft_id": draft_id, "mutation": mutation(revision, "gesture-commit")}),
+        )?;
+        ensure(
+            committed["outcome"] == json!("applied"),
+            format!("The gesture commit answered {committed}"),
+        )?;
+        let entry = call(
+            &owner,
+            editor,
+            "history.inspect",
+            json!({"asset_id": asset, "entry_id": committed["current_entry_id"]}),
+        )?;
+        ensure(
+            entry["label"] == json!("Texture +40"),
+            format!("The gesture's label is {}", entry["label"]),
+        )?;
+        let described = call(
+            &owner,
+            editor,
+            "recipe.describe",
+            json!({"asset_id": asset}),
+        )?;
+        let (presence_layer, _, values) = described_layer(&described, PRESENCE_EFFECT)?;
+        ensure(
+            field(&values, "texture")? == 40.0,
+            format!("The committed layer reads {values}"),
+        )?;
+        record(
+            "a draft.begin/set/commit slider gesture on texture commits exactly one entry labelled Texture +40",
+            json!({"entry": entry["label"], "layer": presence_layer}),
+        );
+
+        // 2b. A cancelled draft commits nothing.
+        let revision = current_revision(&owner, editor, &asset)?;
+        let before_entry =
+            call(&owner, editor, "asset.state", json!({"asset_id": asset}))?["current_entry"]["id"]
+                .clone();
+        let draft = call(
+            &owner,
+            editor,
+            "draft.begin",
+            json!({"asset_id": asset, "action": "set-presence"}),
+        )?;
+        let draft_id = draft["draft_id"].clone();
+        call(
+            &owner,
+            editor,
+            "draft.set",
+            json!({"draft_id": draft_id, "fields": {"texture": -70.0}}),
+        )?;
+        let cancelled = call(
+            &owner,
+            editor,
+            "draft.cancel",
+            json!({"draft_id": draft_id}),
+        )?;
+        ensure(
+            cancelled["cancelled"] == json!(true),
+            format!("draft.cancel answered {cancelled}"),
+        )?;
+        ensure(
+            call(&owner, editor, "session.state", json!({}))?["draft"] == Value::Null,
+            "A cancelled draft outlived its cancel",
+        )?;
+        ensure(
+            current_revision(&owner, editor, &asset)? == revision
+                && call(&owner, editor, "asset.state", json!({"asset_id": asset}))?["current_entry"]
+                    ["id"]
+                    == before_entry,
+            "A cancelled draft changed the committed state",
+        )?;
+        record(
+            "a cancelled draft commits nothing: the revision and current entry are unchanged",
+            json!({"revision": revision}),
+        );
+
+        // 2c. A gesture that returns to its start is a no-op.
+        let revision = current_revision(&owner, editor, &asset)?;
+        let draft = call(
+            &owner,
+            editor,
+            "draft.begin",
+            json!({"asset_id": asset, "action": "set-presence"}),
+        )?;
+        let draft_id = draft["draft_id"].clone();
+        call(
+            &owner,
+            editor,
+            "draft.set",
+            json!({"draft_id": draft_id, "fields": {"texture": -70.0}}),
+        )?;
+        call(
+            &owner,
+            editor,
+            "draft.set",
+            json!({"draft_id": draft_id, "fields": {"texture": 40.0}}),
+        )?;
+        let no_op = call(
+            &owner,
+            editor,
+            "draft.commit",
+            json!({"draft_id": draft_id, "mutation": mutation(revision, "return-to-start")}),
+        )?;
+        ensure(
+            no_op["outcome"] == json!("no-op")
+                && no_op["revision"] == json!(revision)
+                && no_op["created_entry_id"] == Value::Null,
+            format!("A return-to-start gesture answered {no_op}"),
+        )?;
+        record(
+            "a gesture that returns to its start: a no-op outcome, no entry and no revision",
+            no_op,
+        );
+
+        // 2d. A retried request id is deduplicated.
+        let revision = current_revision(&owner, editor, &asset)?;
+        let retry = retry_dedup_check(
+            &owner,
+            editor,
+            &asset,
+            "edit.set-presence",
+            revision,
+            "retry-clarity",
+            json!({"clarity": -20.0}),
+        )?;
+        record(
+            "a retried request id on edit.set-presence is deduplicated: the original entry and revision, nothing new",
+            retry,
+        );
+
+        // 2e. The group's own reset (a three-field all-neutral patch) keeps the layer identity;
+        //     production labels it by its field count, not "Reset Presence" (that label belongs
+        //     only to the dedicated reset-presence action, checked next).
+        let revision = current_revision(&owner, editor, &asset)?;
+        let group_reset = call(
+            &owner,
+            editor,
+            "edit.set-presence",
+            json!({"asset_id": asset, "mutation": mutation(revision, "group-reset"), "texture": 0.0, "clarity": 0.0, "dehaze": 0.0}),
+        )?;
+        let inspected = call(
+            &owner,
+            editor,
+            "history.inspect",
+            json!({"asset_id": asset, "entry_id": group_reset["current_entry_id"]}),
+        )?;
+        ensure(
+            inspected["label"] == json!("Presence (3 fields)"),
+            format!("The group's own reset is labelled {}", inspected["label"]),
+        )?;
+        let described = call(
+            &owner,
+            editor,
+            "recipe.describe",
+            json!({"asset_id": asset}),
+        )?;
+        let (layer_after_group_reset, _, values) = described_layer(&described, PRESENCE_EFFECT)?;
+        ensure(
+            layer_after_group_reset == presence_layer,
+            "The group's own reset replaced the presence layer",
+        )?;
+        for name in ["texture", "clarity", "dehaze"] {
+            ensure(
+                field(&values, name)? == 0.0,
+                format!(
+                    "After the group reset the layer still reports {name} as {}",
+                    values[name]
+                ),
+            )?;
+        }
+
+        // The module reset keeps the same identity, is labelled Reset Presence, a neutral layer
+        // keeps the exact identity byte path, and a second reset is a no-op.
+        let revision = current_revision(&owner, editor, &asset)?;
+        call(
+            &owner,
+            editor,
+            "edit.set-presence",
+            json!({"asset_id": asset, "mutation": mutation(revision, "presence-before-module-reset"), "dehaze": -30.0}),
+        )?;
+        let revision = current_revision(&owner, editor, &asset)?;
+        let module_reset = call(
+            &owner,
+            editor,
+            "edit.reset-presence",
+            json!({"asset_id": asset, "mutation": mutation(revision, "reset-presence")}),
+        )?;
+        let inspected = call(
+            &owner,
+            editor,
+            "history.inspect",
+            json!({"asset_id": asset, "entry_id": module_reset["current_entry_id"]}),
+        )?;
+        ensure(
+            inspected["label"] == json!("Reset Presence"),
+            format!("The module reset is labelled {}", inspected["label"]),
+        )?;
+        let described = call(
+            &owner,
+            editor,
+            "recipe.describe",
+            json!({"asset_id": asset}),
+        )?;
+        let (layer_after_module_reset, _, values) = described_layer(&described, PRESENCE_EFFECT)?;
+        ensure(
+            layer_after_module_reset == presence_layer,
+            "The module reset replaced the presence layer",
+        )?;
+        for name in ["texture", "clarity", "dehaze"] {
+            ensure(
+                field(&values, name)? == 0.0,
+                format!("The reset layer still reports {name} as {}", values[name]),
+            )?;
+        }
+        let neutral_sample = call(
+            &owner,
+            editor,
+            "render.sample",
+            json!({"asset_id": asset, "x": RED_PROBE.0, "y": RED_PROBE.1}),
+        )?;
+        ensure(
+            neutral_sample["rgba"] == source_pixel(&source, RED_PROBE.0, RED_PROBE.1),
+            format!(
+                "A neutral presence layer changed the rendered byte: {} against the decoded source {}",
+                neutral_sample["rgba"],
+                source_pixel(&source, RED_PROBE.0, RED_PROBE.1)
+            ),
+        )?;
+        let repeated_reset = call(
+            &owner,
+            editor,
+            "edit.reset-presence",
+            json!({"asset_id": asset, "mutation": mutation(current_revision(&owner, editor, &asset)?, "reset-presence-again")}),
+        )?;
+        ensure(
+            repeated_reset["outcome"] == json!("no-op"),
+            format!("Resetting an already-neutral presence layer answered {repeated_reset}"),
+        )?;
+        record(
+            "the group's own three-field reset and the module reset both keep the presence layer's identity (labelled Presence (3 fields) and Reset Presence respectively); a neutral layer renders the decoded source byte and a second reset is a no-op",
+            json!({"layer": presence_layer, "group_label": "Presence (3 fields)", "module_label": "Reset Presence"}),
+        );
+
+        // 3. The undo/redo/preview/restore/reopen journey, render.sample against the raster (at
+        //    every quadrant, corner and the centre, since a spatial layer samples the stage-aligned
+        //    tile that contains its pixel rather than a single point), and analysis identities.
+        //    Dehaze is used because it is well-defined and visibly non-zero even over the fixture's
+        //    flat quadrant interiors, unlike texture/clarity, whose local edge-aware bands read as
+        //    zero far from any edge in this synthetic image.
+        restore_to_original(
+            &owner,
+            editor,
+            &asset,
+            &original,
+            "restore-before-undo-redo-journey",
+        )?;
+        let revision = current_revision(&owner, editor, &asset)?;
+        let commit_a = call(
+            &owner,
+            editor,
+            "edit.set-presence",
+            json!({"asset_id": asset, "mutation": mutation(revision, "commit-a-dehaze"), "dehaze": -40.0}),
+        )?;
+        let entry_a = commit_a["current_entry_id"].clone();
+        let samples_after_a = sample_probes(&owner, editor, &asset, &PRESENCE_PROBES)?;
+
+        let revision = current_revision(&owner, editor, &asset)?;
+        let commit_b = call(
+            &owner,
+            editor,
+            "edit.set-presence",
+            json!({"asset_id": asset, "mutation": mutation(revision, "commit-b-dehaze"), "dehaze": -80.0}),
+        )?;
+        let entry_b = commit_b["current_entry_id"].clone();
+        let samples_after_b = sample_probes(&owner, editor, &asset, &PRESENCE_PROBES)?;
+        ensure(
+            samples_after_a != samples_after_b,
+            "Strengthening dehaze left every quadrant, corner and centre probe unchanged",
+        )?;
+
+        let raster_check =
+            render_matches_raster(&owner, editor, &asset, &source, &PRESENCE_PROBES)?;
+        let analysis_check = distinct_analysis_identities(&owner, editor, &asset, &entry_a)?;
+
+        let undone = call(
+            &owner,
+            editor,
+            "history.undo",
+            json!({"asset_id": asset, "mutation": mutation(current_revision(&owner, editor, &asset)?, "undo-b")}),
+        )?;
+        ensure(
+            undone["outcome"] != json!("no-op"),
+            format!("Undo answered {undone}"),
+        )?;
+        expect_probes(
+            &owner,
+            editor,
+            &asset,
+            &PRESENCE_PROBES,
+            &samples_after_a,
+            "after undo",
+        )?;
+
+        call(
+            &owner,
+            editor,
+            "history.redo",
+            json!({"asset_id": asset, "mutation": mutation(current_revision(&owner, editor, &asset)?, "redo-b")}),
+        )?;
+        expect_probes(
+            &owner,
+            editor,
+            &asset,
+            &PRESENCE_PROBES,
+            &samples_after_b,
+            "after redo",
+        )?;
+
+        let revision_before_preview = current_revision(&owner, editor, &asset)?;
+        call(
+            &owner,
+            editor,
+            "preview.select",
+            json!({"asset_id": asset, "entry_id": entry_a}),
+        )?;
+        ensure(
+            current_revision(&owner, editor, &asset)? == revision_before_preview,
+            "Previewing an entry committed something",
+        )?;
+        expect_probes(
+            &owner,
+            editor,
+            &asset,
+            &PRESENCE_PROBES,
+            &samples_after_a,
+            "the preview of entry A",
+        )?;
+        call(&owner, editor, "preview.return-current", json!({}))?;
+
+        let restored_a = call(
+            &owner,
+            editor,
+            "history.restore",
+            json!({"asset_id": asset, "mutation": mutation(current_revision(&owner, editor, &asset)?, "restore-a"), "entry_id": entry_a}),
+        )?;
+        ensure(
+            restored_a["outcome"] == json!("applied") || restored_a["outcome"] == json!("no-op"),
+            format!("Restoring entry A answered {restored_a}"),
+        )?;
+        expect_probes(
+            &owner,
+            editor,
+            &asset,
+            &PRESENCE_PROBES,
+            &samples_after_a,
+            "after restoring A",
+        )?;
+
+        let restored_b = call(
+            &owner,
+            editor,
+            "history.restore",
+            json!({"asset_id": asset, "mutation": mutation(current_revision(&owner, editor, &asset)?, "restore-b"), "entry_id": entry_b}),
+        )?;
+        ensure(
+            restored_b["outcome"] == json!("applied") || restored_b["outcome"] == json!("no-op"),
+            format!("Restoring entry B answered {restored_b}"),
+        )?;
+        expect_probes(
+            &owner,
+            editor,
+            &asset,
+            &PRESENCE_PROBES,
+            &samples_after_b,
+            "after restoring B",
+        )?;
+        record(
+            "undo, redo, preview, restore and render.sample all evaluate byte-identically at every quadrant, corner and the centre against the values recorded at commit A and commit B, and render.sample equals an independently rendered raster through the spatial layer",
+            json!({"entry_a": entry_a, "entry_b": entry_b, "raster_check": raster_check, "analysis_identities": analysis_check}),
+        );
+
+        // 4. Placement: presence always follows the colour run (Basic, then the mixer) whichever
+        //    order the three actions are touched in, and a later rotate joins the geometry tail
+        //    after it.
+        let payload_for = |action: &str| -> Value {
+            match action {
+                "set-basic" => json!({"exposure": 0.3}),
+                "set-mixer" => json!({"red-hue": 10.0}),
+                _ => json!({"texture": 25.0}),
+            }
+        };
+        let mut placements = Vec::new();
+        for order in [
+            ["set-basic", "set-mixer", "set-presence"],
+            ["set-presence", "set-basic", "set-mixer"],
+            ["set-mixer", "set-presence", "set-basic"],
+            ["set-presence", "set-mixer", "set-basic"],
+        ] {
+            let tag = order.join("-");
+            restore_to_original(
+                &owner,
+                editor,
+                &asset,
+                &original,
+                &format!("placement-reset-{tag}"),
+            )?;
+            for action in order {
+                let revision = current_revision(&owner, editor, &asset)?;
+                let mut params = payload_for(action);
+                params["asset_id"] = asset.clone();
+                params["mutation"] = mutation(revision, &format!("placement-{tag}-{action}"));
+                call(&owner, editor, &format!("edit.{action}"), params)?;
+            }
+            let revision = current_revision(&owner, editor, &asset)?;
+            call(
+                &owner,
+                editor,
+                "edit.transform",
+                json!({"asset_id": asset, "mutation": mutation(revision, &format!("placement-rotate-{tag}")), "transform": "rotate-right"}),
+            )?;
+            let described = call(
+                &owner,
+                editor,
+                "recipe.describe",
+                json!({"asset_id": asset}),
+            )?;
+            let effects: Vec<Value> = described["layers"]
+                .as_array()
+                .ok_or("recipe.describe answered no layers")?
+                .iter()
+                .map(|layer| layer["effect"].clone())
+                .collect();
+            ensure(
+                effects
+                    == vec![
+                        json!(BASIC_EFFECT),
+                        json!(MIXER_EFFECT),
+                        json!(PRESENCE_EFFECT),
+                        json!(ORIENTATION_EFFECT),
+                    ],
+                format!("touch order {order:?}: the stack is ordered {effects:?}"),
+            )?;
+            placements.push(json!({"touch_order": order, "stack_order": effects}));
+        }
+        record(
+            "committing Basic, the mixer and presence in every touch order, then a rotate: recipe.describe always orders Basic, mixer, presence and finally the orientation layer",
+            json!({"placements": placements}),
+        );
+
+        // 5. Two-client races: a conflicted draft, a refused commit, a successful reapply, and a
+        //    historical selection that survives another client's commit.
+        restore_to_original(&owner, editor, &asset, &original, "restore-before-races")?;
+        let races_asset = asset.clone();
+        let races_original = original.clone();
+        let revision = current_revision(&owner, editor, &races_asset)?;
+        let draft = call(
+            &owner,
+            editor,
+            "draft.begin",
+            json!({"asset_id": races_asset, "action": "set-presence"}),
+        )?;
+        let draft_id = draft["draft_id"].clone();
+        call(
+            &owner,
+            editor,
+            "draft.set",
+            json!({"draft_id": draft_id, "fields": {"texture": 30.0}}),
+        )?;
+        call(
+            &owner,
+            agent,
+            "edit.set-basic",
+            json!({"asset_id": races_asset, "mutation": mutation(revision, "agent-temperature"), "temperature": 40.0}),
+        )?;
+        let conflicted = call(&owner, editor, "draft.read", json!({"draft_id": draft_id}))?;
+        ensure(
+            conflicted["conflicted"] == json!(true)
+                && conflicted["fields"] == json!({"texture": 30.0}),
+            format!("The drafted gesture answered {conflicted}"),
+        )?;
+        let (code, _) = refused(
+            &owner,
+            editor,
+            "draft.commit",
+            json!({"draft_id": draft_id, "mutation": mutation(revision, "editor-commit")}),
+        )?;
+        ensure(
+            code == "conflict",
+            format!("A conflicted commit was refused with {code}"),
+        )?;
+        let reapplied = call(
+            &owner,
+            editor,
+            "draft.reapply",
+            json!({"draft_id": draft_id}),
+        )?;
+        let rebased = current_revision(&owner, editor, &races_asset)?;
+        ensure(
+            reapplied["conflicted"] == json!(false) && reapplied["base_revision"] == json!(rebased),
+            format!("Reapply answered {reapplied}"),
+        )?;
+        let before_sequence = call(
+            &owner,
+            editor,
+            "history.list",
+            json!({"asset_id": races_asset, "limit": 1}),
+        )?["entries"][0]["sequence"]
+            .clone();
+        let committed = call(
+            &owner,
+            editor,
+            "draft.commit",
+            json!({"draft_id": draft_id, "mutation": mutation(rebased, "editor-commit-rebased")}),
+        )?;
+        ensure(
+            committed["outcome"] == json!("applied") && committed["revision"] == json!(rebased + 1),
+            format!("The reapplied commit answered {committed}"),
+        )?;
+        let after_sequence = call(
+            &owner,
+            editor,
+            "history.list",
+            json!({"asset_id": races_asset, "limit": 1}),
+        )?["entries"][0]["sequence"]
+            .clone();
+        ensure(
+            after_sequence.as_u64() == before_sequence.as_u64().map(|s| s + 1),
+            "The reapplied commit created more or fewer than one entry",
+        )?;
+        let described = call(
+            &owner,
+            editor,
+            "recipe.describe",
+            json!({"asset_id": races_asset}),
+        )?;
+        let (_, _, presence_values) = described_layer(&described, PRESENCE_EFFECT)?;
+        let (_, _, basic_values) = described_layer(&described, BASIC_EFFECT)?;
+        ensure(
+            field(&presence_values, "texture")? == 30.0
+                && field(&basic_values, "temperature")? == 40.0,
+            format!("Reapply lost a field: presence {presence_values}, basic {basic_values}"),
+        )?;
+
+        call(
+            &owner,
+            editor,
+            "preview.select",
+            json!({"asset_id": races_asset, "entry_id": races_original}),
+        )?;
+        let selected_report = ready_report(
+            &owner,
+            editor,
+            &races_asset,
+            json!({"kind": "entry", "entry_id": races_original}),
+            "the selected historical entry",
+        )?;
+        call(
+            &owner,
+            agent,
+            "edit.set-basic",
+            json!({"asset_id": races_asset, "mutation": mutation(current_revision(&owner, agent, &races_asset)?, "agent-during-preview"), "saturation": -60.0}),
+        )?;
+        let session = call(&owner, editor, "session.state", json!({}))?;
+        ensure(
+            session["preview"]["selection"] == json!({"entry": races_original}),
+            format!("The selection moved to {}", session["preview"]["selection"]),
+        )?;
+        let sample = call(
+            &owner,
+            editor,
+            "render.sample",
+            json!({"asset_id": races_asset, "x": 0, "y": 0}),
+        )?;
+        ensure(
+            sample["rgba"] == source_pixel(&source, 0, 0),
+            "The previewed sample moved to the newest stack instead of staying on the Original entry",
+        )?;
+        call(&owner, editor, "preview.return-current", json!({}))?;
+        record(
+            "client A drafts presence's texture while client B commits a Basic field: conflicted, commit refused, reapply keeps both fields and commits exactly one entry; a historical selection on B stays selected through A's commit",
+            json!({"reapplied": reapplied, "committed": committed, "presence_values": presence_values, "basic_values": basic_values, "selected_identity": selected_report["identity"]}),
+        );
+
+        // 6. Unavailable provider, and 7. catalog reopen, both against the asset's final committed
+        //    state (whatever the races section above left it at).
+        let final_recipe = current_recipe(&owner, editor, &asset)?;
+        let final_render = render(&source, &final_recipe)?;
+        let final_state = call(&owner, editor, "asset.state", json!({"asset_id": asset}))?;
+        let final_revision = as_u64(&final_state["revision"], "revision")?;
+        let final_entry = final_state["current_entry"]["id"].clone();
+        let final_probes = sample_probes(&owner, editor, &asset, &PRESENCE_PROBES)?;
+        owner.stop();
+        join.take()
+            .ok_or("The presence owner thread was already joined")?
+            .join()
+            .map_err(|_| "The presence owner thread panicked")?;
+
+        let unavailable = unavailable_provider_check(
+            &catalog,
+            "lightwell.presence",
+            PRESENCE_EFFECT,
+            &asset,
+            &final_entry,
+        )?;
+        record(
+            "the same catalog served with lightwell.presence disabled refuses to render or sample the stack naming it, keeps the layer and module readable, and reports the analysis failed with no counts",
+            unavailable,
+        );
+
+        let (reopened, reopened_join) = OwnerHandle::start(&catalog)?;
+        let restart = (|| -> Result<Value> {
+            let client = reopened.register();
+            prepare_source(&reopened, client, &asset)?;
+            let state = call(&reopened, client, "asset.state", json!({"asset_id": asset}))?;
+            ensure(
+                as_u64(&state["revision"], "revision")? == final_revision,
+                format!("The reopened revision is {}", state["revision"]),
+            )?;
+            ensure(
+                state["current_entry"]["id"] == final_entry,
+                "The reopened current entry changed",
+            )?;
+            let reopened_render = render(&source, &current_recipe(&reopened, client, &asset)?)?;
+            ensure(
+                reopened_render.rgba == final_render.rgba,
+                "The reopened render is not byte-identical",
+            )?;
+            expect_probes(
+                &reopened,
+                client,
+                &asset,
+                &PRESENCE_PROBES,
+                &final_probes,
+                "the reopened catalog",
+            )?;
+            Ok(json!({"revision": final_revision, "entry": final_entry}))
+        })();
+        reopened.stop();
+        reopened_join
+            .join()
+            .map_err(|_| "The reopened presence owner thread panicked")?;
+        let restart_detail = restart?;
+        record(
+            "the catalog reopened: the presence layer's values, the history and the render all reproduce byte-identically",
+            restart_detail,
+        );
+
+        Ok(json!({
+            "status": "passed",
+            "fixture": FIXTURE,
+            "asset_id": asset,
+            "presence_layer_id": presence_layer,
+            "checks": checks.borrow().clone(),
+            "elapsed_ms": total.elapsed().as_secs_f64() * 1000.0,
+        }))
+    })();
+    if let Some(join) = join.take() {
+        owner.stop();
+        let _ = join.join();
+    }
+    outcome
 }
 
 // -------------------------------------------------------------------------------------------
