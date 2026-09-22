@@ -4,16 +4,19 @@ Status: implemented and verified on the M4 Mac for the shell, the widget library
 
 ## Mockup
 
-Rendered at 1440 × 900 logical points, 2× scale, from the design artboards. The photograph is the owner's Sapa drone JPEG from the fixtures; the slider values, history and agent are illustrative. The delivered screen includes Basic and the same regions, strip, bars and notices. Rendered evidence of the built screen comes from `cargo xtask smoke --scenario workspace`, `--scenario histogram` and `--scenario unavailable` (see [verification](#verification)).
+Rendered at 1440 × 900 logical points, 2× scale, from the design artboards, rebased on 2026-09-22 to the modules the registry holds today (RAW, Basic, Presence, Colour mixer, Transforms, Crop and straighten, Vignette, and Pixel under Developer). The photograph is the owner's Sapa drone JPEG from the fixtures; the slider values, history and agent are illustrative. The boards draw the [tightened density and hierarchy](#module-panels) proposed below, which the built screen does not have yet; everything else they show is delivered. Rendered evidence of the built screen comes from `cargo xtask smoke --scenario workspace`, `--scenario histogram` and `--scenario unavailable` (see [verification](#verification)).
 
 | Board | Shows |
 | --- | --- |
-| [Default](develop-workspace/default.png) | The workspace with Basic expanded, history and recipe on the left, mode strip under the photo |
-| [Crop draft](develop-workspace/crop-draft.png) | Crop mode: dimmed overlay, thirds, handles, the draft bar and the Crop section with the exact values it would commit |
-| [Changed elsewhere](develop-workspace/changed-elsewhere.png) | An agent commits during a slider draft: the conflict notice, actor-attributed history and a control's Copy as JSON request menu |
-| [Components](develop-workspace/components.png) | Tokens, slider states, module headers, history rows, canvas modes, notices and the command palette |
+| [Default](develop-workspace/default.png) | The workspace with Basic expanded and the five other sections collapsed under it, history and recipe on the left, mode strip under the photo |
+| [Module panels](develop-workspace/module-panels.png) | Every registered module expanded, exactly as its descriptor declares it, at the proposed density, with the mixer's groups as tabs: the reference for each section's layout |
+| [Crop draft](develop-workspace/crop-draft.png) | Crop mode: dimmed overlay, thirds, handles, the draft bar and the Crop section held expanded with the exact values it would commit |
+| [Changed elsewhere](develop-workspace/changed-elsewhere.png) | An agent commits during a slider gesture: the conflict notice, actor-attributed history and a control's Copy as JSON request menu |
+| [Components](develop-workspace/components.png) | Slider states, the module and group hierarchy, history rows, canvas modes, notices and the command palette |
 
 ![Develop workspace, default state](develop-workspace/default.png)
+
+One render per module, cropped to its panel at 300 pt, is kept under [develop-workspace/modules](develop-workspace/modules): `raw`, `basic`, `presence`, `colour-mixer` (all three tabs), `transforms`, `crop-and-straighten` (idle and drafting), `vignette`, `developer-pixel` and `states` (collapsed, unavailable and later bands). They are the per-section references for the [Module panels](#module-panels) design.
 
 ## Principles
 
@@ -68,6 +71,56 @@ Where each tool lives, what kind of thing it is and whether it exists. Kinds: **
 | Pixel proof | Developer section, listed only with `--developer` | module | Implemented (M1) | `edit.set-pixel` |
 
 A build shows only the modules its registry contains. Sections for later modules exist in the mockup to settle their place in the panel, not as placeholders in code; the desktop never lists a module that is not registered. The pixel proof tool is a test module: its descriptor is marked `developer` and the desktop lists it under a Developer section only when launched with `--developer`, so the default workspace stays a photo editor. `--disable-module ID` registers a built-in as unavailable, which is how the unavailable-provider state is demonstrated.
+
+## Module panels
+
+Status: proposed on 2026-09-22, drawn in the [Module panels board](develop-workspace/module-panels.png); the built tools panel still uses the earlier spacing. This is the exact design of each section the tools panel generates, in registry order, from the descriptors `module.list` returns today. Nothing here changes a descriptor: the controls, ranges, steps, units, zero points, rails, groups and resets are the modules' own, and the desktop's job is to lay them out at one density with one hierarchy. Three things are proposals for the descriptors themselves and are marked as such: `temperature` and `tint` rail hints on the two white-balance sliders, which the [UI components](ui-components.md#parameter-kinds-and-hints) vocabulary already defines and no module declares yet, and a module-level `layout: tabs` hint that the colour mixer would declare so its three groups render as tabs. A layout hint changes only what a client draws, never what the host accepts, which is the vocabulary's rule for every hint.
+
+### Density
+
+With Basic open, the earlier spacing left only three collapsed sections visible under it at 900 pt; the mixer's eight-slider groups made it worse. The rows tighten so that a panel of many sliders stays scannable and every section header stays on screen at the reference size.
+
+| Element | Proposed | Today | Rule |
+| --- | --- | --- | --- |
+| Slider row | 28 pt on a 30 pt pitch: 14 pt label line, 2 pt gap, 12 pt rail line | 33 pt on a 37 pt pitch | The value sits on the label line, right-aligned in a 48 pt box, unit once; the rail line holds the 2 pt rail, the 6 pt zero tick and the 12 pt thumb |
+| Sub-group header | 24 pt, 4 pt above | 26 pt | 11 pt semibold secondary text, then a hairline rule to the Original or Custom caption and the group's reset |
+| Module header | 32 pt | 36 pt | 13 pt semibold on the Bar surface, disclosure, title, dot, hint or reset |
+| Section body | 4 pt top, 12 pt sides, 10 pt bottom | 12 pt | Sliders are separated only by their 2 pt gap; groups by their header's 4 pt margin |
+| Button rows | 26 pt buttons, 4 pt above | 28 pt | Picker and action buttons inside a group are a row under its sliders |
+| Tab row | 24 pt segmented control, 4 pt above and below | — | Replaces the group headers of a module that declares `layout: tabs`; one tab per group, the selected group's reset at the row's right |
+| History and recipe rows | 26 pt | 28 pt | Same text sizes; the label truncates with an ellipsis before the actor does |
+
+Resulting section heights at 300 pt wide: Basic 458 pt, Presence 164, Colour mixer 318 whichever tab is selected, Transforms 102, Crop and straighten 76 idle, Vignette 194, RAW 194, any collapsed section 33. With Basic open the default screen shows the histogram, Basic and all five other headers with 60 pt to spare, which is the acceptance for the density: at 1440 × 900 no registered section's header scrolls off while Basic is open.
+
+### Hierarchy
+
+Three levels, each with one visual device, so a person can tell a module from a group from a control without reading:
+
+- **Module = band.** The header row sits on the Bar surface (`#232326`) against the Panel body (`#202023`), with a 1 px border above. Expanded or collapsed, the band is the same height, so the panel does not jump. The band carries the disclosure, the title, the accent dot when the module has a non-neutral layer, and either the hint (collapsed) or the module reset (expanded). An unavailable module's band shows its reason in the clipping red and does not expand.
+- **Group = rule.** A sub-group header is 11 pt semibold secondary text followed by a hairline rule that runs to the caption. The rule is what separates groups from the sliders above them without a second background. The caption reads Original or Custom for a field-patch group, Custom in the accent, and the group's reset sits after it. A collapsed group keeps its header and drops the rule.
+- **Tabs = alternative groups.** A module whose groups are parallel views of one set of controls, such as the mixer's Hue, Saturation and Luminance over the same eight colours, declares `layout: tabs` and the desktop draws its groups as one segmented row instead of stacked headers: one group visible at a time, a dot on every tab whose group is Custom so a hidden group's edits stay visible, and the visible group's reset at the row's right. The selected tab is per-client view state, like a collapsed group; it changes no recipe, and every group's fields keep their API. Stacked groups remain the default and stay right for Basic, whose groups are different controls rather than views of the same ones.
+- **Control = row.** Sliders, fields and button rows sit flush inside the group with no indent; the group rule above and the module band around them are the only structure. A declared gradient rail replaces the fill on its slider, so a rail's colour is always the module's declared meaning and never a state.
+
+### Sections
+
+Order and content are the registry's. "Patch" means the group's sliders are fields of one field-patch action, so each drafts on the 16 ms tick and commits once on release; "single" means each slider is the only parameter of its own action and drafts the same way; "request" means the fields are inputs to an action run by a button.
+
+| Section | Shown | Groups and controls | Resets | Modes and buttons | History label · recipe row |
+| --- | --- | --- | --- | --- | --- |
+| **RAW** (`lightwell.raw`) | RAW sources only; omitted for a JPEG, not disabled | **RAW development** (single): Exposure −5.00..+5.00 EV step 0.01; Custom temperature 2000..12000 K step 10, default 6504, unipolar from the minimum, `temperature` rail proposed; Custom tint −100..+100, `tint` rail proposed | Group and module: `reset-raw` | Neutral WB picker (`N`, `pick-raw-neutral` at the located pixel) and As shot (`use-as-shot-wb`), as one button row under the sliders. Red and blue gain are API-only actions with no control | Action title · the development's values |
+| **Basic** (`lightwell.basic`) | Always; expanded by default | **White balance** (patch): Temperature −100..+100 with the `temperature` rail proposed, Tint −100..+100 with the `tint` rail proposed. **Tone** (patch): Exposure −5.00..+5.00 EV step 0.01, Contrast, Highlights, Shadows, Whites, Blacks −100..+100. **Colour** (patch): Vibrance, Saturation −100..+100. All bipolar from 0 | Each group its own preset reset; module `reset-basic` | Neutral picker (`W`, `sample-apply` through `neutral-sample`) as a button row under the White balance sliders; it reads selected while the mode is active | `Shadows +25` · `10 fields` or the non-neutral ones |
+| **Presence** (`lightwell.presence`) | Always; collapsed | **Presence** (patch): Texture, Clarity, Dehaze −100..+100, zero 0 | Group preset; module `reset-presence` | None. A Fit preview through the proxy is marked approximate in the status bar, as [instant preview](instant-preview.md) records | `Clarity +18` · `Clarity +18` |
+| **Colour mixer** (`lightwell.mixer`) | Always; collapsed | Three groups as **tabs** (`layout: tabs`, proposed), Hue selected by default: **Hue** (patch): eight sliders Red, Orange, Yellow, Green, Aqua, Blue, Purple, Magenta, −100..+100, each with its declared three-stop hue rail. **Saturation** (patch): the same eight with grey-to-colour rails. **Luminance** (patch): the same eight with dark-to-light rails. One group visible at a time; a dot on a tab whose group is Custom | The visible group's preset reset at the tab row's right; module `reset-mixer` | None | `Blue saturation −6` · `3 fields` |
+| **Transforms** (`lightwell.transform`) | Always; collapsed | **Exact transforms**: four `action` controls with presets, rendered as one row of four icon buttons (rotate left, rotate right, mirror, flip) with tooltips, since each is a single exact operation and the labels are their icons | None declared | None | `Rotate right` · `Rotate right` |
+| **Crop and straighten** (`lightwell.crop`) | Always; collapsed | Idle: one Crop button (`R`) that enters the takeover mode. Drafting: **Ratio** with the seven `aspect` chips, lock and swap, and the custom width and height fields; **Angle** with the −45..+45° stepper (±0.5 nudges), its rail and the Straighten guide toggle; the exact readout (input stage, rectangle, output, what Apply commits); Cancel and Apply | Module `crop-reset` from the header | The mode strip's Crop entry and the draft bar are the same draft | `Crop 4:5` or `Crop 2.4°` · `4:5 · 0.0°` |
+| **Vignette** (`lightwell.vignette`) | Always; collapsed | **Vignette** (patch): Amount −100..+100 zero 0; Midpoint 0..100 default 50, unipolar; Roundness −100..+100 zero 0; Feather 0..100 default 50, unipolar | Group preset; module `reset-vignette` | None | `Vignette amount −35` · `−35 · 50 · 0 · 50` |
+| **Developer · Pixel** (`lightwell.pixel`) | Only with `--developer` | **Pixel proof** (request): X and Y as labelled fields in px (no rail: a coordinate has no useful one), RGB as three fields with a swatch, Pick pixel (`point-pick`, fills X and Y) and Apply pixel | None | The picker sits beside the fields it fills | `Pixel 12, 34` · `Pixel 12, 34` |
+
+Sections for modules that do not exist (Tone curve, Detail, Lens profile, Heal, Mask) are not drawn in the default board. The Module panels board shows one unavailable band and one later band under Developer only to fix how those states look.
+
+### What the built screen changes
+
+The delivered generated panel already renders every control above; the proposal changes only the theme and the layout functions in `lightwell-ui` and `view/tools_panel`: the density constants (slider, group and module heights, body padding), the module band background, the group rule, the tab row for a module that declares `layout: tabs`, the icon-button row for `action` controls whose descriptor names an icon, and the two rail hints on the white-balance sliders once Basic and RAW declare them. The core change is one optional descriptor field, `layout` (`stacked`, the default, or `tabs`), validated at registration, listed by `module.list` and declared by the mixer; the view model gains the selected tab per tabbed module. No API method changes, and the smoke scenarios that check the panel by state need only their placement expectations updated.
 
 ## Panels
 

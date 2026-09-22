@@ -1,0 +1,90 @@
+{
+  "schema_version": "1.0",
+  "plan_id": "dependency-advisories",
+  "title": "Dependency advisory exceptions",
+  "objective": "Remove or re-review the two temporary advisory exceptions before they expire.",
+  "context_summary": "The dependency audit tolerates two maintenance advisories in the pinned Iced and Metal stacks, each with a UTC expiry and an open task here. The audit fails when an exception expires or its task is retired.",
+  "tasks": [
+    {
+      "id": "TASK-001",
+      "description": "Remove or re-review the temporary ttf-parser maintenance exception before 2026-10-19.",
+      "status": "ready",
+      "dependencies": [],
+      "extra_context": [
+        "Expires exclusively on 2026-10-19; UTC expiry is enforced by the audit wrapper. Review sooner for new security information, distribution or font-input scope changes."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Advisory review and enforcement",
+          "target": "docs/engineering/dependencies.md",
+          "relevance": "Records exposure, upstream constraints and expiry."
+        }
+      ],
+      "acceptance_criteria": [
+        "Check supported upstream releases and remove ttf-parser when a compatible migration is available.",
+        "Remove the exception when no longer needed; otherwise document a new bounded review with current evidence before expiry.",
+        "Run policy tests, dependency audit and relevant build/render checks after dependency changes."
+      ],
+      "test_strategy": {
+        "approach": "mixed",
+        "steps": [
+          "Inspect current upstream releases and exact configured dependency graph.",
+          "Verify expiry, audit and relevant runtime checks."
+        ],
+        "commands": [
+          "cargo xtask audit",
+          "cargo xtask check"
+        ],
+        "expected_results": [
+          "No stale, permanent or broad advisory suppression remains."
+        ]
+      }
+    },
+    {
+      "id": "TASK-002",
+      "description": "Remove or re-review the temporary paste maintenance exception before 2026-12-18.",
+      "status": "ready",
+      "dependencies": [],
+      "extra_context": [
+        "Expires exclusively on 2026-12-18; UTC expiry is enforced by the audit wrapper. Review sooner for new security information, distribution or font-input scope changes."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Advisory review and enforcement",
+          "target": "docs/engineering/dependencies.md",
+          "relevance": "Records exposure, upstream constraints and expiry."
+        }
+      ],
+      "acceptance_criteria": [
+        "Check supported upstream releases and remove paste when a compatible migration is available.",
+        "Remove the exception when no longer needed; otherwise document a new bounded review with current evidence before expiry.",
+        "Run policy tests, dependency audit and relevant build/render checks after dependency changes."
+      ],
+      "test_strategy": {
+        "approach": "mixed",
+        "steps": [
+          "Inspect current upstream releases and exact configured dependency graph.",
+          "Verify expiry, audit and relevant runtime checks."
+        ],
+        "commands": [
+          "cargo xtask audit",
+          "cargo xtask check"
+        ],
+        "expected_results": [
+          "No stale, permanent or broad advisory suppression remains."
+        ]
+      }
+    }
+  ],
+  "execution_waves": [
+    {
+      "wave": 1,
+      "task_ids": [
+        "TASK-001",
+        "TASK-002"
+      ]
+    }
+  ]
+}

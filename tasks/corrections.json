@@ -1,0 +1,686 @@
+{
+  "schema_version": "1.0",
+  "plan_id": "corrections",
+  "title": "Corrections module: Clone, Heal and AI Remove",
+  "objective": "Deliver an offline, non-destructive Clone/Heal baseline and an optional provider-agnostic AI Remove workflow with durable frozen results, user-controlled models and exact UI/API parity.",
+  "context_summary": "Planning proposal, not implementation authorization. The earlier roadmap excludes generative editing until the owner accepts the new scope. Clone/Heal can proceed independently. AI implementation requires the shared settings, permissions, resource and derived-artifact capabilities in docs/design/module-capabilities.md; no cross-file task IDs are used.",
+  "tasks": [
+    {
+      "id": "TASK-001",
+      "description": "Resolve corrections behavior, repair-stage ordering and the owner decision gates.",
+      "status": "ready",
+      "dependencies": [],
+      "extra_context": [
+        "The roadmap currently excludes generative editing; this is a proposal until the owner explicitly accepts the new scope.",
+        "Decide how RAW source-development changes invalidate a frozen AI result. The proposed policy fails render/sample/export explicitly until regeneration or removal."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Corrections proposal",
+          "target": "docs/design/corrections.md",
+          "relevance": "Full behavior, proposed stage and acceptance."
+        },
+        {
+          "kind": "file",
+          "label": "Roadmap",
+          "target": "docs/plan.md",
+          "relevance": "Prior scope and placement of clone/heal."
+        },
+        {
+          "kind": "file",
+          "label": "History contract",
+          "target": "docs/specs/edit-history.md",
+          "relevance": "Original preservation and snapshot semantics."
+        }
+      ],
+      "acceptance_criteria": [
+        "Record owner acceptance or rejection of AI scope, repair stage, stale-prefix policy, remote consent scope and first-provider qualification threshold.",
+        "Freeze operation ordering, content coordinates, mask blending, artifact dependency hash and history labels before implementation.",
+        "Keep any unanswered consequential question explicitly open and prevent dependent AI implementation from being reported as accepted."
+      ],
+      "test_strategy": {
+        "approach": "inspection",
+        "steps": [
+          "Review the proposed contract against current stage/recipe constraints and owner workflow.",
+          "Inspect a written decision record and update the design only for settled choices."
+        ],
+        "commands": [],
+        "expected_results": [
+          "One current design with explicit accepted decisions and remaining gates."
+        ]
+      }
+    },
+    {
+      "id": "TASK-002",
+      "description": "Select and freeze the Clone and Heal numerical contract against independent references.",
+      "status": "ready",
+      "dependencies": [],
+      "extra_context": [
+        "Clone and Heal should remain a useful offline baseline even if AI qualification fails."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Corrections proposal",
+          "target": "docs/design/corrections.md",
+          "relevance": "Clone/Heal algorithm and edge cases."
+        },
+        {
+          "kind": "file",
+          "label": "Darktable research",
+          "target": "docs/research/darktable/geometry-masks-and-retouching.md",
+          "relevance": "Boundary-matching heal research."
+        },
+        {
+          "kind": "file",
+          "label": "Performance rules",
+          "target": "docs/engineering/performance-rules.md",
+          "relevance": "Exact fixtures and resource limits."
+        }
+      ],
+      "acceptance_criteria": [
+        "Specify brush rasterization, subpixel path interpolation, feather/opacity, source offset, edge handling, overlap order and heal solver with bounded convergence.",
+        "Independent reference fixtures cover flat, gradient, texture, high-contrast boundary, tiny/large strokes, image edge and RAW float values.",
+        "Publish visual failure cases and performance bounds without claiming Lightroom pixel equivalence."
+      ],
+      "test_strategy": {
+        "approach": "mixed",
+        "steps": [
+          "Run a standalone numerical study using synthetic fixtures and compare candidate heal methods.",
+          "Inspect rendered photo-sized cases with recorded parameters."
+        ],
+        "commands": [],
+        "expected_results": [
+          "Frozen, independently checkable Clone/Heal equations and test fixtures."
+        ]
+      }
+    },
+    {
+      "id": "TASK-003",
+      "description": "Add the narrow repair stage and bounded regional processing primitive.",
+      "status": "pending",
+      "dependencies": [
+        "TASK-001",
+        "TASK-002"
+      ],
+      "extra_context": [
+        "Preserve stored layer order; no catalog migration or generalized graph. The owner thread plans but never rasterizes.",
+        "Answer every performance-rules checklist item for changes under crates."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Corrections proposal",
+          "target": "docs/design/corrections.md",
+          "relevance": "Repair stage and persistence."
+        },
+        {
+          "kind": "file",
+          "label": "Module stage contract",
+          "target": "docs/design/modules-and-api.md",
+          "relevance": "Current stage insertion and processing primitives."
+        },
+        {
+          "kind": "file",
+          "label": "Architecture",
+          "target": "docs/design/architecture.md",
+          "relevance": "Frame and scratch limits."
+        }
+      ],
+      "acceptance_criteria": [
+        "New repair effects insert after source development and before colour/spatial/geometry without moving older layers; unsupported stacks fail with named errors.",
+        "Regional clone/heal reads the exact prefix with bounded tiles/scratch and cancellation; JPEG and RAW paths preserve declared precision and sample/render agreement.",
+        "Exact-buffer fixtures cover overlapping operations, edges, orientation/crop, undo/redo/reopen, source preservation and frame-limit failure."
+      ],
+      "test_strategy": {
+        "approach": "mixed",
+        "steps": [
+          "Compare compiled output with independent stepwise reference on synthetic JPEG and float RAW inputs.",
+          "Measure photo-sized 24/60 MP output and point-query cost before integration."
+        ],
+        "commands": [
+          "cargo test --locked --package lightwell-core"
+        ],
+        "expected_results": [
+          "The host primitive is exact, bounded and stage-correct."
+        ]
+      }
+    },
+    {
+      "id": "TASK-004",
+      "description": "Add a semantic brush-mask descriptor, desktop canvas overlay and API path schema.",
+      "status": "pending",
+      "dependencies": [
+        "TASK-001"
+      ],
+      "extra_context": [
+        "Pointer events remain desktop-only; API clients submit bounded stroke geometry, source coordinates and add/subtract operations directly."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Corrections proposal",
+          "target": "docs/design/corrections.md",
+          "relevance": "Canvas interaction and draft lifecycle."
+        },
+        {
+          "kind": "file",
+          "label": "Module descriptor",
+          "target": "crates/lightwell-core/src/modules/descriptor.rs",
+          "relevance": "Current canvas interaction validation."
+        },
+        {
+          "kind": "file",
+          "label": "Develop workspace",
+          "target": "docs/design/develop-workspace.md",
+          "relevance": "Canvas modes and generated controls."
+        }
+      ],
+      "acceptance_criteria": [
+        "Descriptor registration validates brush binding, size, feather, opacity, path/mask limits and selection actions; schema.list and module.list expose them.",
+        "Desktop brush capture renders an immediate overlay, one commit on release/Apply and none on Cancel; stale revisions retain a recoverable draft.",
+        "The same stroke path, source handle and mask edits can be submitted as semantic JSON calls without pointer simulation."
+      ],
+      "test_strategy": {
+        "approach": "mixed",
+        "steps": [
+          "Test descriptor rejection and JSON shape, then exercise drawing, cancellation and conflict in a hidden-window native scenario.",
+          "Compare desktop-generated request with direct API request."
+        ],
+        "commands": [
+          "cargo test --locked --package lightwell-core"
+        ],
+        "expected_results": [
+          "Brush mode is discoverable and UI/API paths describe the same edit."
+        ]
+      }
+    },
+    {
+      "id": "TASK-005",
+      "description": "Implement the corrections module's ordered Clone/Heal operations and edit actions.",
+      "status": "pending",
+      "dependencies": [
+        "TASK-003"
+      ],
+      "extra_context": [
+        "One layer holds stable operation IDs; actions add, update, remove and reorder operations without module-owned catalog writes."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Corrections proposal",
+          "target": "docs/design/corrections.md",
+          "relevance": "Operation payload and Clone/Heal contract."
+        },
+        {
+          "kind": "file",
+          "label": "Module contract",
+          "target": "docs/design/modules-and-api.md",
+          "relevance": "ToolModule plan/compile and generated actions."
+        }
+      ],
+      "acceptance_criteria": [
+        "The module owns validated stroke/source payloads and compiles ordered Clone/Heal operations through the host primitive; all actions appear in schema.list.",
+        "Each successful operation changes one ordinary history entry; no-op, wrong operation ID, bad source and stale mutation have explicit outcomes.",
+        "Changing a crop or orientation carries corrections in content space; source development recomputes Clone/Heal rather than silently freezing pixels."
+      ],
+      "test_strategy": {
+        "approach": "integration",
+        "steps": [
+          "Drive add/update/delete/reorder through the shared service and inspect recipe/history.",
+          "Compare exact output and source hashes after reopen and restore."
+        ],
+        "commands": [
+          "cargo test --locked --package lightwell-core"
+        ],
+        "expected_results": [
+          "Clone and Heal have reproducible durable results and complete API coverage."
+        ]
+      }
+    },
+    {
+      "id": "TASK-006",
+      "description": "Deliver and verify the offline Clone/Heal desktop workflow.",
+      "status": "pending",
+      "dependencies": [
+        "TASK-004",
+        "TASK-005"
+      ],
+      "extra_context": [
+        "This is the first usable handoff and does not require settings, credentials or AI resources."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Corrections proposal",
+          "target": "docs/design/corrections.md",
+          "relevance": "Baseline user result and acceptance."
+        },
+        {
+          "kind": "file",
+          "label": "Development verification",
+          "target": "docs/engineering/development.md",
+          "relevance": "Rendered evidence and tiered verification."
+        }
+      ],
+      "acceptance_criteria": [
+        "The generated Corrections section selects Clone or Heal, paints/edit/selects operations, moves source handles and shows immediate overlay/preview without freezing the UI.",
+        "Native M4 captures correlate selected mode, operation IDs, exact pixels, history and logs; API performs the same journey and undo/redo/restore/reopen.",
+        "Document Clone/Heal quality limits and run quick, rendered and timing tiers at this integration point."
+      ],
+      "test_strategy": {
+        "approach": "end-to-end",
+        "steps": [
+          "Use a background-only editor launch with an isolated catalog and fixture; review captures as images.",
+          "Check API parity, source hashes and 24/60 MP timing."
+        ],
+        "commands": [
+          "cargo run --release --locked --package xtask -- verify --tier rendered --output NEW_DIR",
+          "cargo run --release --locked --package xtask -- verify --tier timing --output NEW_DIR"
+        ],
+        "expected_results": [
+          "A free offline correction workflow is usable and proven on the M4."
+        ]
+      }
+    },
+    {
+      "id": "TASK-007",
+      "description": "Qualify local and remote AI Remove candidates and select a provider set.",
+      "status": "ready",
+      "dependencies": [],
+      "extra_context": [
+        "LaMa is a non-generative inpainting baseline; PowerPaint and other candidates need independent weight/runtime terms. Do not claim Adobe quality from an architecture label.",
+        "Evaluate at equivalent mask/context sizes, including model-specific resizing and colour conversion."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Corrections proposal",
+          "target": "docs/design/corrections.md",
+          "relevance": "Local/remote candidate qualification."
+        },
+        {
+          "kind": "url",
+          "label": "LaMa project",
+          "target": "https://github.com/advimman/lama",
+          "relevance": "Published model and inpainting behavior."
+        },
+        {
+          "kind": "url",
+          "label": "PowerPaint project",
+          "target": "https://github.com/open-mmlab/PowerPaint",
+          "relevance": "Open source object-removal candidate."
+        }
+      ],
+      "acceptance_criteria": [
+        "Compare at least one local inpainting baseline, one local generative object-removal candidate and one hosted provider on a rights-cleared fixed image/mask corpus.",
+        "Record blind visual scores and failures, changed pixels outside mask, M4 cold/warm time, peak RSS/GPU memory, disk, backend portability, model/runtime/weight terms and provenance.",
+        "Select exact model versions and at least two distinct provider paths for implementation; if no local model clears explicit thresholds, record the reason and leave local delivery conditional."
+      ],
+      "test_strategy": {
+        "approach": "mixed",
+        "steps": [
+          "Run candidate adapters outside the app with pinned artifacts and repeatable inputs.",
+          "Inspect side-by-side outputs and measurements; record license sources separately from unverified conclusions."
+        ],
+        "commands": [],
+        "expected_results": [
+          "A reproducible selection report with a justified local yes/no decision and provider set."
+        ]
+      }
+    },
+    {
+      "id": "TASK-008",
+      "description": "Integrate immutable AI repair patches, mask composition and prefix invalidation.",
+      "status": "pending",
+      "dependencies": [
+        "TASK-001",
+        "TASK-003"
+      ],
+      "extra_context": [
+        "Requires the generic host artifact storage from the module-capabilities design before implementation; no cross-plan task IDs are encoded here.",
+        "Rendering uses a frozen host-owned patch and never invokes its generation provider."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Corrections proposal",
+          "target": "docs/design/corrections.md",
+          "relevance": "Frozen patch, mask and stale-prefix contract."
+        },
+        {
+          "kind": "file",
+          "label": "Generic artifacts",
+          "target": "docs/design/module-capabilities.md",
+          "relevance": "Content-addressed storage and history reachability."
+        },
+        {
+          "kind": "file",
+          "label": "History contract",
+          "target": "docs/specs/edit-history.md",
+          "relevance": "Immutable snapshots and missing-resource errors."
+        }
+      ],
+      "acceptance_criteria": [
+        "Accepted patch bytes, mask, transform, provider/model provenance and input-prefix hash persist atomically with the recipe reference.",
+        "Pixels outside the committed mask are exact-prefix pixels; output within it is validated/linearized, and saved RAW source data remain unchanged.",
+        "Model removal/offline reopen still renders and exports accepted corrections; missing/corrupt patch and stale prefix fail explicitly, with history intact.",
+        "Artifact reachability covers every retained branch/version, restore and catalog restart."
+      ],
+      "test_strategy": {
+        "approach": "mixed",
+        "steps": [
+          "Inject crash, corrupt/missing artifact and source-development change; compare exact prefix/outside-mask buffers.",
+          "Remove model and credentials and verify offline render, sample, export and history."
+        ],
+        "commands": [
+          "cargo test --locked --package lightwell-core"
+        ],
+        "expected_results": [
+          "Frozen AI edits remain non-destructive, durable and honest about missing or stale data."
+        ]
+      }
+    },
+    {
+      "id": "TASK-009",
+      "description": "Implement a qualified downloadable local inference adapter when its candidate passes.",
+      "status": "pending",
+      "dependencies": [
+        "TASK-007"
+      ],
+      "extra_context": [
+        "If qualification rejects all local models, complete this task only by recording a no-go with evidence and keep local AI unavailable; do not substitute an unreviewed model.",
+        "Generic download, settings, permissions, activation and bounded workers from module-capabilities are prerequisites."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Corrections proposal",
+          "target": "docs/design/corrections.md",
+          "relevance": "Local qualification and runtime."
+        },
+        {
+          "kind": "file",
+          "label": "Generic resources",
+          "target": "docs/design/module-capabilities.md",
+          "relevance": "Verified download, runtime trust and activation."
+        },
+        {
+          "kind": "file",
+          "label": "Performance rules",
+          "target": "docs/engineering/performance-rules.md",
+          "relevance": "Bounded model work and honest measurements."
+        }
+      ],
+      "acceptance_criteria": [
+        "When selected, exact model/runtime versions and hashes are downloadable on user request to app-managed storage, never bundled or silently fetched.",
+        "An installed model loads through a reviewed, bounded, cancellable worker and accepts the common image/mask job; removing it preserves accepted patches.",
+        "If no candidate passes the written license/quality/resource gate, document the rejection and expose a clear unavailable-local status without claiming implementation."
+      ],
+      "test_strategy": {
+        "approach": "mixed",
+        "steps": [
+          "Exercise install/load/generate/cancel/uninstall on M4 with hashes and an offline fixture.",
+          "Measure cold/warm latency, memory, disk and unchanged idle state."
+        ],
+        "commands": [],
+        "expected_results": [
+          "One qualified local adapter or an explicit evidence-backed no-go, with no silent fallback."
+        ]
+      }
+    },
+    {
+      "id": "TASK-010",
+      "description": "Implement typed remote AI adapters and provider selection.",
+      "status": "pending",
+      "dependencies": [
+        "TASK-007"
+      ],
+      "extra_context": [
+        "Requires generic settings, secret storage, network permission and jobs; first live providers are chosen in the qualification task.",
+        "Do not pass original paths, EXIF or extra image bytes by default."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Corrections proposal",
+          "target": "docs/design/corrections.md",
+          "relevance": "Remote provider contract and multiple paths."
+        },
+        {
+          "kind": "file",
+          "label": "Generic consent",
+          "target": "docs/design/module-capabilities.md",
+          "relevance": "Scoped photo transfer, credentials and endpoint validation."
+        }
+      ],
+      "acceptance_criteria": [
+        "At least two distinct real provider paths are available across local/remote options; if local is not qualified, use two remote adapters, with separately configurable model IDs.",
+        "Adapters declare request masks, dimensions, authentication, timeouts, cancellation, variations, cost/data disclosure and response validation.",
+        "No photograph leaves without the recorded scoped grant; denial, secret missing, endpoint edit, provider refusal, malformed output and disconnect leave the recipe unchanged.",
+        "Mock protocol tests and live small-case tests are labelled separately."
+      ],
+      "test_strategy": {
+        "approach": "mixed",
+        "steps": [
+          "Run fake servers for every malformed/error/cancel case and exact sent-byte inspection.",
+          "Exercise selected live providers on rights-cleared images with explicit consent and cost bounds."
+        ],
+        "commands": [],
+        "expected_results": [
+          "Provider choice works through one user-facing job/result contract with truthful privacy and failure behavior."
+        ]
+      }
+    },
+    {
+      "id": "TASK-011",
+      "description": "Add AI Remove mask refinement, candidate review and atomic acceptance to the Corrections UI/API.",
+      "status": "pending",
+      "dependencies": [
+        "TASK-006",
+        "TASK-008",
+        "TASK-009",
+        "TASK-010"
+      ],
+      "extra_context": [
+        "A local no-go in TASK-009 does not block an accepted remote AI delivery; candidate acceptance rechecks revision and prefix before commit."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Corrections proposal",
+          "target": "docs/design/corrections.md",
+          "relevance": "AI interaction and acceptance race rules."
+        },
+        {
+          "kind": "file",
+          "label": "Module draft contract",
+          "target": "docs/design/modules-and-api.md",
+          "relevance": "Session-only drafts and mutation envelope."
+        },
+        {
+          "kind": "file",
+          "label": "Generic jobs",
+          "target": "docs/design/module-capabilities.md",
+          "relevance": "Activation, cancellation and progress."
+        }
+      ],
+      "acceptance_criteria": [
+        "Paint/add/subtract mask, choose provider/model, Generate, inspect variations, Regenerate, Accept and Cancel are available via the same service used by the desktop.",
+        "Generation holds a frozen revision/prefix; stale, cancelled, late and failed results cannot alter the current recipe; Accept creates one history entry and durable patch.",
+        "Installed local model may pre-load on activation without blocking Clone/Heal; remote upload starts only after explicit Generate/consent.",
+        "UI shows model readiness, transfer scope, cost if known, job progress and actionable errors without leaking secrets."
+      ],
+      "test_strategy": {
+        "approach": "end-to-end",
+        "steps": [
+          "Drive full UI and JSON journeys against a deterministic fake model and an approved real adapter.",
+          "Race external edits, cancellation, model removal and late responses; inspect captures, state and logs."
+        ],
+        "commands": [
+          "cargo run --release --locked --package xtask -- verify --tier rendered --output NEW_DIR"
+        ],
+        "expected_results": [
+          "AI Remove commits only an explicitly chosen, revision-correct result and stays responsive."
+        ]
+      }
+    },
+    {
+      "id": "TASK-012",
+      "description": "Run correction quality, source-preservation, security and performance acceptance.",
+      "status": "pending",
+      "dependencies": [
+        "TASK-011"
+      ],
+      "extra_context": [
+        "Exactness and naturalness are separate evidence. A skipped native or unavailable provider test is not a pass.",
+        "JPEG export verification depends on the separately planned shared exporter. If it has not shipped, this milestone cannot be marked complete."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Corrections proposal",
+          "target": "docs/design/corrections.md",
+          "relevance": "Acceptance corpus and failure matrix."
+        },
+        {
+          "kind": "file",
+          "label": "Performance rules",
+          "target": "docs/engineering/performance-rules.md",
+          "relevance": "Photo-sized timing and bounded resources."
+        },
+        {
+          "kind": "file",
+          "label": "Development verification",
+          "target": "docs/engineering/development.md",
+          "relevance": "Tiered checks and native evidence."
+        }
+      ],
+      "acceptance_criteria": [
+        "Independent pixel tests cover Clone/Heal, AI outside-mask identity, linear/SDR conversion, geometry, overlap and sample/exact-export consistency.",
+        "History/reopen/undo/restore, source hash, offline accepted AI, corrupt artifact, stale prefix, permission revocation, malformed response and cancellation/races pass.",
+        "Record blinded visual outcomes and failures plus M4 24/60 MP JPEG and qualified RAW timings, peak CPU/GPU memory, first/warm load and disk with setup and sample counts.",
+        "Run full verification before a milestone claim and state every skipped/unsupported case."
+      ],
+      "test_strategy": {
+        "approach": "mixed",
+        "steps": [
+          "Execute exact fixtures, API/desktop acceptance, background rendered smoke and photo-sized timing.",
+          "Review image captures and blind quality scores independently of automated success."
+        ],
+        "commands": [
+          "cargo run --release --locked --package xtask -- verify --tier full --output NEW_DIR"
+        ],
+        "expected_results": [
+          "A bounded, reproducible M4 evidence package supports only the claims actually tested."
+        ]
+      }
+    },
+    {
+      "id": "TASK-013",
+      "description": "Update shipped contracts and user documentation after qualification.",
+      "status": "pending",
+      "dependencies": [
+        "TASK-012"
+      ],
+      "extra_context": [
+        "Only accepted and implemented behavior enters feature status; keep remaining local/provider/platform work explicit."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Corrections proposal",
+          "target": "docs/design/corrections.md",
+          "relevance": "Current intended contract."
+        },
+        {
+          "kind": "file",
+          "label": "Feature status",
+          "target": "docs/features.md",
+          "relevance": "Implemented versus proposed capability."
+        },
+        {
+          "kind": "file",
+          "label": "User guide",
+          "target": "docs/user-guide.md",
+          "relevance": "User-facing workflow and recovery."
+        },
+        {
+          "kind": "file",
+          "label": "Roadmap",
+          "target": "docs/plan.md",
+          "relevance": "Earlier exclusion that owner decision may revise."
+        }
+      ],
+      "acceptance_criteria": [
+        "Module/API design, roadmap, feature status and user guide describe the actual Clone/Heal and AI paths, their precision and persistence limits, privacy/consent, model download and recovery.",
+        "Unqualified local models, untested platforms, deferred license review and any measured target misses remain labelled as such.",
+        "Task statuses change only when their acceptance evidence exists; no proposed command or provider is documented as shipped."
+      ],
+      "test_strategy": {
+        "approach": "inspection",
+        "steps": [
+          "Compare documentation with schema.list, module.list, evidence summaries and packaged UI.",
+          "Run repository/plan validation and quick verification for the documentation change."
+        ],
+        "commands": [
+          "cargo run --release --locked --package xtask -- verify --tier quick --output NEW_DIR"
+        ],
+        "expected_results": [
+          "Current documentation matches shipped behavior and open limitations."
+        ]
+      }
+    }
+  ],
+  "execution_waves": [
+    {
+      "wave": 1,
+      "task_ids": [
+        "TASK-001",
+        "TASK-002",
+        "TASK-007"
+      ]
+    },
+    {
+      "wave": 2,
+      "task_ids": [
+        "TASK-003",
+        "TASK-004",
+        "TASK-009",
+        "TASK-010"
+      ]
+    },
+    {
+      "wave": 3,
+      "task_ids": [
+        "TASK-005",
+        "TASK-008"
+      ]
+    },
+    {
+      "wave": 4,
+      "task_ids": [
+        "TASK-006"
+      ]
+    },
+    {
+      "wave": 5,
+      "task_ids": [
+        "TASK-011"
+      ]
+    },
+    {
+      "wave": 6,
+      "task_ids": [
+        "TASK-012"
+      ]
+    },
+    {
+      "wave": 7,
+      "task_ids": [
+        "TASK-013"
+      ]
+    }
+  ]
+}

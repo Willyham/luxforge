@@ -286,10 +286,10 @@ fn empty(message: &str) -> Element<'_, Message> {
 
 /// The photograph, with the clipping overlay stacked over it when there is one.
 ///
-/// The photograph is drawn by the [photo surface](lightwell_ui::photo_surface), which owns its
-/// texture and writes the raster into it as it draws: no allocation round trip stands between a
-/// rendered frame and the screen. The overlay keeps the toolkit's image path, as a second image
-/// stacked over the first and never a change to it.
+/// Fit uses the [photo surface](lightwell_ui::photo_surface), which owns its texture and writes the
+/// raster into it as it draws. Percentage zooms use Iced's image widget: its renderer clips a
+/// large scrollable image to the window without making the GPU viewport as large as the zoomed
+/// photograph. The overlay is a second image, never a change to the photo.
 ///
 /// Alignment comes from giving both the same sizing rule — `Contain` inside the same box at Fit,
 /// the same fixed extent at a percentage — and from the overlay's cell grid keeping the source's
@@ -347,16 +347,18 @@ fn plain<'a>(
                 Length::Fixed(width as f32 * scale),
                 Length::Fixed(height as f32 * scale),
             );
-            // `Fill` rather than a fit: the box is the exact stage's displayed size and the texture
-            // may be the display proxy, which is smaller. Filling stretches it to exactly that box,
-            // so the photograph and the overlay — which fills the same box — stay in the same
-            // rectangle whichever texture is on screen.
-            let photo = lightwell_ui::photo_surface(
-                raster,
-                lightwell_ui::Placement::Fill,
-                box_width,
-                box_height,
+            // The image widget draws through the bounded window viewport while the scrollable
+            // retains the photograph's full zoomed extent. A shader primitive would set its GPU
+            // viewport to that entire extent and can exceed the device limit at high zoom.
+            let handle = image::Handle::from_rgba(
+                width,
+                height,
+                iced_runtime::core::Bytes::from_owner(raster.pixels().clone()),
             );
+            let photo = image(handle)
+                .width(box_width)
+                .height(box_height)
+                .content_fit(ContentFit::Fill);
             let layered: Element<'a, Message> = match &overlay {
                 Some(mask) => stack![
                     photo,
@@ -367,7 +369,7 @@ fn plain<'a>(
                         .filter_method(image::FilterMethod::Nearest)
                 ]
                 .into(),
-                None => photo,
+                None => photo.into(),
             };
             // Inside the scrollable the reported point is already content-space: the scrollable
             // translates the cursor by its offset before its content sees it.
