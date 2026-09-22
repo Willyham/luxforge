@@ -1,8 +1,8 @@
 use crate::*;
 use lightwell_core::{
     BASIC_EFFECT, CROP_EFFECT, CropPayload, CropStage, EditorService, EffectStage, Layer, LayerId,
-    ModuleRegistry, Mutation, PreviewSource, Raster, Recipe, SnapshotId, Transform, analysis,
-    render,
+    ModuleRegistry, Mutation, PreviewSource, ProxyBounds, Raster, Recipe, SnapshotId, Transform,
+    analysis, render,
 };
 use std::time::Instant;
 
@@ -58,6 +58,35 @@ fn basic_white_balance_layer(temperature: f64, tint: f64) -> Layer {
         payload: json!({ "temperature": temperature, "tint": tint }),
     }
 }
+
+/// The Basic layer the full-stack rows measure: every one of the ten fields non-neutral, so the
+/// compiled operation runs all four units (white balance, exposure, tone, colour) in one pass.
+fn basic_full_layer() -> Layer {
+    Layer {
+        id: LayerId::new(),
+        effect_id: BASIC_EFFECT.into(),
+        effect_format: 1,
+        payload: json!({
+            "exposure": 0.5,
+            "contrast": 25.0,
+            "highlights": -30.0,
+            "shadows": 30.0,
+            "whites": -15.0,
+            "blacks": 15.0,
+            "temperature": 20.0,
+            "tint": -10.0,
+            "vibrance": 30.0,
+            "saturation": 15.0,
+        }),
+    }
+}
+
+/// The display the proxy rows are sized for: the owner's 2880 × 1800 physical window, which is
+/// also the upper bound of what a Fit preview can show on it.
+const PROXY_DISPLAY: ProxyBounds = ProxyBounds {
+    width: 2880,
+    height: 1800,
+};
 
 /// Render one recipe repeatedly through a given registry, the way the preview worker does.
 fn recipe_render_samples(
@@ -282,6 +311,54 @@ pub fn run(root: &Path, source: &Path, out: &Path, samples: usize) -> Result {
     )?;
     let white_balance_render = distribution(white_balance_samples);
 
+    // The proxy rows: the same crop stack with every Basic field non-neutral, rendered at full
+    // resolution and against the display-bounded proxy the preview worker builds for a 2880 × 1800
+    // window. The proxy build is timed on its own (a cache miss, once per gesture or resize) and
+    // the proxy renders are what a slider tick costs at Fit.
+    let mut full_basic = stack.clone();
+    full_basic.layers.insert(index, basic_full_layer());
+    let (full_basic_samples, full_basic_stage) =
+        recipe_render_samples(&colour_registry, &colour_job.source, &full_basic, samples)?;
+    ensure(
+        stack_stage == full_basic_stage,
+        "The full Basic layer changed the output stage",
+    )?;
+    let full_basic_render = distribution(full_basic_samples);
+    let plan = colour_job
+        .source
+        .proxy_plan(&colour_registry, &full_basic, PROXY_DISPLAY)?
+        .ok_or("The photo-sized source needs no proxy for a 2880x1800 display")?;
+    let mut proxy_build = Vec::with_capacity(samples);
+    let mut proxy_source = None;
+    for _ in 0..samples {
+        let started = Instant::now();
+        let built = colour_job.source.proxy(plan)?;
+        proxy_build.push(milliseconds(started));
+        proxy_source = Some(built);
+    }
+    let proxy_source = proxy_source.ok_or("No proxy was built")?;
+    let proxy_build = distribution(proxy_build);
+    let (proxy_identity_samples, _) =
+        recipe_render_samples(&colour_registry, &proxy_source, &identity, samples)?;
+    let (proxy_stack_samples, proxy_stack_stage) =
+        recipe_render_samples(&colour_registry, &proxy_source, &stack, samples)?;
+    let (proxy_exposure_samples, proxy_exposure_stage) =
+        recipe_render_samples(&colour_registry, &proxy_source, &coloured, samples)?;
+    let (proxy_full_basic_samples, proxy_full_basic_stage) =
+        recipe_render_samples(&colour_registry, &proxy_source, &full_basic, samples)?;
+    ensure(
+        proxy_stack_stage == proxy_exposure_stage && proxy_stack_stage == proxy_full_basic_stage,
+        "A colour operation changed the proxy output stage",
+    )?;
+    ensure(
+        proxy_stack_stage.0 <= PROXY_DISPLAY.width && proxy_stack_stage.1 <= PROXY_DISPLAY.height,
+        "The proxy output stage does not fit the display",
+    )?;
+    let proxy_identity_render = distribution(proxy_identity_samples);
+    let proxy_stack_render = distribution(proxy_stack_samples);
+    let proxy_exposure_render = distribution(proxy_exposure_samples);
+    let proxy_full_basic_render = distribution(proxy_full_basic_samples);
+
     // The neutral picker: 25 point samples of the stage the Basic layer receives, each evaluated
     // through the compiled stack at O(layers). No frame is allocated and nothing is written, so
     // this is the whole cost of a pick on the catalog owner.
@@ -359,6 +436,11 @@ pub fn run(root: &Path, source: &Path, out: &Path, samples: usize) -> Result {
             "angle_deg":crop_payload.angle,
             "output":[crop_rect.width,crop_rect.height],
         },
+        "proxy":{
+            "bounds":[PROXY_DISPLAY.width,PROXY_DISPLAY.height],
+            "source":[plan.width,plan.height],
+            "output":[proxy_stack_stage.0,proxy_stack_stage.1],
+        },
         "samples_per_recipe":samples,
         "method":"Core request-to-render diagnostics with a warm filesystem cache; excludes desktop scheduling, GPU upload and presentation.",
         "timings_ms":{
@@ -376,6 +458,12 @@ pub fn run(root: &Path, source: &Path, out: &Path, samples: usize) -> Result {
             "colour_same_stack_with_exposure_and_five_tone_fields":toned_render,
             "colour_same_stack_with_vibrance_50_saturation_20_basic_layer":vibrance_saturation_render,
             "colour_same_stack_with_one_white_balance_basic_layer":white_balance_render,
+            "colour_same_stack_with_full_basic_layer":full_basic_render,
+            "proxy_build_for_2880x1800":proxy_build,
+            "proxy_identity_render":proxy_identity_render,
+            "proxy_same_stack_without_colour":proxy_stack_render,
+            "proxy_same_stack_with_one_1ev_basic_layer":proxy_exposure_render,
+            "proxy_same_stack_with_full_basic_layer":proxy_full_basic_render,
             "neutral_picker_query_25_point_samples":neutral_picker,
             "reopen_source_and_preview_job":cold_source_and_job_ms,
             "reopen_original_render":cold_original_render_ms,
@@ -391,6 +479,8 @@ pub fn run(root: &Path, source: &Path, out: &Path, samples: usize) -> Result {
             "One Basic layer with +1 EV exposure and all five Contrast/Highlights/Shadows/Whites/Blacks fields non-neutral, compiled into two real pointwise units by the real lightwell.basic module, renders the same stage as the stack without it",
             "One Basic layer with vibrance 50 and saturation 20, compiled to two real Oklab colour units, renders the same stage as the stack without it",
             "One temperature 30 / tint -10 Basic layer renders the same stage as the stack without it; its unit is one composite 3x3 linear-sRGB multiply per pixel",
+            "One Basic layer with all ten fields non-neutral renders the same stage as the stack without it, at full resolution and against the display-bounded proxy",
+            "The proxy source built for a 2880x1800 display renders the crop stack into an output stage that fits that display",
             "The neutral picker query evaluates 25 point samples of the stage the Basic layer receives at O(layers) each and allocates no frame",
             "Catalog reopen reconstructs the original historical state",
             "Source SHA-256 is unchanged"
