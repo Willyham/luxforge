@@ -629,6 +629,21 @@ The three units together cost about eight times the sum of the singles. That is 
 
 The mixer's per-pixel cost is the Oklab conversion (three cube roots each way) that Basic's saturation and vibrance units already pay, now paid a second time for a second unit; the vignette's is the extended encode and decode of every channel in its positive branch and the per-pixel mask. Neither exceeds the per-frame cost of the crop resample the earlier rows record, and both stay well under the 1.5 GiB RSS investigation target. The three Presence sliders missed as the design anticipated when each draft rendered the whole 24 MP stage through a tiled neighbourhood operation. These rows predate the instant-preview merge; since it, a Presence stack at Fit renders through the display-bounded proxy and is marked approximate, and the rows are re-measured below.
 
+### After the instant-preview merge
+
+The same harness on the same fixture after main's instant previews were merged (22 September 2026): at Fit every drafted frame is the display-bounded proxy render, so the input-to-presented figure is the proxy phase, and the exact phase runs behind it for the histogram, the overlays and the 100% view. The Presence frames carry `proxy_approximate: true` in the event log (a spatial layer's neighbourhoods scale with the stage); the mixer and vignette frames are proxy renders that equal the exact recipe at their own scale.
+
+| Slider (24 MP, p50 / p95 ms) | Input to presented proxy frame | Settled exact histogram | Peak RSS | p95 < 100 ms |
+| --- | --- | --- | --- | --- |
+| Presence, Clarity | 16.7 / 17.3 | 216.1 / 227.8 | 989 MiB | **Pass** |
+| Presence, Texture | 22.7 / 26.6 | 266.0 / 271.7 | 912 MiB | **Pass** |
+| Presence, Dehaze | 16.5 / 17.4 | 159.9 / 164.4 | 908 MiB | **Pass** |
+| Colour mixer, Red hue | 22.2 / 28.3 | 182.5 / 186.3 | 1267 MiB | **Pass** |
+| Vignette, Amount | 14.9 / 22.9 | 66.5 / 130.1 | 1261 MiB | **Pass** |
+
+The settled-histogram column is the exact phase's cost and stays where the full-resolution rows above put it, because that is the same 24 MP render; it no longer stands between an input and the frame on screen. Every slider of the three modules now meets the provisional p95 target, and the Presence sliders do so by about a factor of ten over their pre-merge rows.
+
+
 Rendered evidence is the `presence`, `mixer` and `vignette` smoke scenarios (15, 8 and 12 correlated frames at Fit and 100% with the module's own controls visible), and the acceptance chapter's ten checks per module through the JSON method table. A reviewer's render of the owner's 14 MP Sapa drone JPEG through the core alone (release, in memory: dehaze 65 ms, clarity 104 ms, texture 127 ms, all three at +50 672 ms) showed Dehaze +60 and +100 lifting the veil and deepening colour plausibly, Clarity +100 adding local contrast without visible halos at fit and at 100%, and Texture +100 sharpening fine detail with the expected crunch; it is a visual check, not a measurement. On a synthetic haze-free flat field Dehaze +100 drives the field toward black, because the dark-channel prior reads a uniform patch darker than the atmosphere as pure veil and the frozen `OMEGA_MAX = 1` removes all of it; the study records this and real photographs, whose windows contain dark pixels, do not show it.
 
 ## Method
