@@ -28,7 +28,7 @@ Doctor reports missing tools and the graphics environment without installing any
 | Run an agent's editor check without taking focus (macOS) | `cargo xtask develop --background --catalog FILE [--open PATH]` |
 | Exact current-editor journey, display-independent, including the Basic and histogram chapter | `cargo run --release --locked --package xtask -- editor-acceptance --output NEW_DIR` |
 | Core timing on a real-sized JPEG | `cargo run --release --locked --package xtask -- editor-performance --source JPEG --output NEW_DIR [--samples N]` |
-| Desktop slider-to-presented-frame and settled-histogram timing, peak RSS, scratch and idle CPU | `cargo run --release --locked --package xtask -- editor-latency --source JPEG --output NEW_DIR [--binary PATH] [--samples N] [--mode drag\|commit\|burst] [--crop DEGREES] [--idle]` |
+| Desktop slider-to-presented-frame and settled-histogram timing, peak RSS, scratch and idle CPU | `cargo run --release --locked --package xtask -- editor-latency --source JPEG --output NEW_DIR [--binary PATH] [--samples N] [--mode drag\|commit\|burst] [--crop DEGREES] [--basic] [--idle]` |
 | Verify golden fixtures; generate 24 and 60 MP workloads | `cargo xtask fixtures`, `cargo xtask generate-fixtures [--output NEW_DIR]` |
 | RAW corpus integrity; independent numerical stage references | `cargo xtask raw-corpus --manifest FILE --output NEW_DIR`, `cargo xtask raw-reference --output NEW_DIR` |
 | Authentic RAW editor journey, reopen and resource sampling; `--samples` defaults to 3 trials per source | `cargo run --release --locked --package xtask -- raw-editor --manifest FILE --output NEW_DIR [--samples N] [--binary PATH]` |
@@ -435,7 +435,8 @@ releases, so its drafted preview is superseded by the commit — that is the que
 report counts — and it is measured through to the `analysis_adopted` of the committed frame, which
 is the settled exact histogram. A final burst step sends every value between two ticks to show the
 driver's coalescing. `--crop DEGREES` commits a straightening 16:9 crop first, so the measured stack
-carries the crop resample as well as the colour pass. `--idle` adds a second workload: one evidence
+carries the crop resample as well as the colour pass. `--basic` commits a Basic layer with every
+field non-neutral first, so each measured frame runs every one of the module's colour units. `--idle` adds a second workload: one evidence
 run commits a Basic layer with all ten fields non-neutral into a catalog that outlives it, then an
 ordinary launch reopens the same file from that catalog and is left alone for thirty seconds, which
 is where peak RSS with a full stack and idle CPU come from. `latency.json` and `resources.json` keep

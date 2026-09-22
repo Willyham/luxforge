@@ -341,6 +341,14 @@ pub struct Options<'a> {
     pub crop: Option<f64>,
     /// Also hold a full Basic layer and measure idle CPU for 30 seconds after it settles.
     pub idle: bool,
+    /// Commit a Basic layer with every field non-neutral before the gesture, so the measured
+    /// exposure drag runs every one of the module's colour units on each frame.
+    pub basic: bool,
+}
+
+/// The step that commits the full Basic layer a `--basic` run drags over.
+fn basic_precondition() -> Value {
+    json!({"api":{"method":"edit.set-basic","params":full_basic()}})
 }
 
 pub fn run(root: &Path, out: &Path, bin: &Path, options: Options) -> Result {
@@ -370,6 +378,9 @@ pub fn run(root: &Path, out: &Path, bin: &Path, options: Options) -> Result {
         script.push(
             json!({"api":{"method":"edit.crop-fit","params":{"aspect":"16:9","angle":angle}}}),
         );
+    }
+    if options.basic {
+        script.push(basic_precondition());
     }
     if drag {
         script.extend(gesture_steps(&values));
@@ -533,6 +544,7 @@ pub fn run(root: &Path, out: &Path, bin: &Path, options: Options) -> Result {
         "physical_size":last["physical_size"],
         "scale":last["scale"],
         "crop_angle_deg":options.crop,
+        "full_basic_layer":options.basic,
         "mode":options.mode.name(),
         "samples":options.samples,
         "gesture_values":values,
@@ -745,6 +757,9 @@ fn run_burst(root: &Path, out: &Path, bin: &Path, options: &Options) -> Result {
             json!({"api":{"method":"edit.crop-fit","params":{"aspect":"16:9","angle":angle}}}),
         );
     }
+    if options.basic {
+        script.push(basic_precondition());
+    }
     script.push(burst_gesture_step(&values, interval_ms));
     let script_file = out.join("gesture-script.json");
     write_json(&script_file, &json!(script))?;
@@ -803,6 +818,7 @@ fn run_burst(root: &Path, out: &Path, bin: &Path, options: &Options) -> Result {
         "physical_size":last["physical_size"],
         "scale":last["scale"],
         "crop_angle_deg":options.crop,
+        "full_basic_layer":options.basic,
         "mode":"burst",
         "samples":Value::Null,
         "gesture_values":values,
