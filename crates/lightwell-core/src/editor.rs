@@ -25,8 +25,9 @@ use std::{
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
-/// Entries store their rendered label, so a catalog written before format 3 is refused by name.
-const CATALOG_FORMAT: i64 = 4;
+/// Recipes carry a mask table and layers carry a mask reference, so a catalog written before
+/// format 5 stores stacks in a shape whose masks are unknown and is refused by name.
+const CATALOG_FORMAT: i64 = 5;
 const MAX_HISTORY_PAGE: usize = 100;
 const MAX_VERSION_NAME: usize = 64;
 const ASSET_COLUMNS: &str =
@@ -1479,6 +1480,10 @@ impl EditorService {
                     let prefix_recipe = Recipe {
                         format: recipe.format,
                         layers: layers.to_vec(),
+                        // A prefix keeps the whole mask table: the masks a prefix layer references
+                        // are the recipe's, not the prefix's, and dropping them would make a valid
+                        // stack look as if it named a mask that does not exist.
+                        masks: recipe.masks.clone(),
                     };
                     Ok(sample_linear(
                         registry,
@@ -2537,10 +2542,10 @@ fn file_identity(_: &Metadata, canonical: &Path) -> String {
 mod tests {
     use super::*;
     use crate::{
-        ActionDescriptor, Availability, CROP_EFFECT, CropPayload, CropStage, EFFECT_FORMAT,
-        EffectDescriptor, EffectStage, ExactGeometry, Layer, LayerId, ModuleDescriptor,
-        ORIENTATION_EFFECT, PIXEL_EFFECT, ParameterDescriptor, ParameterKind, PreviewQueue,
-        Processing, Stage, ToolModule, open_source,
+        ActionDescriptor, Availability, CROP_EFFECT, Component, ComponentMode, CropPayload,
+        CropStage, EFFECT_FORMAT, EffectDescriptor, EffectStage, ExactGeometry, Layer, LayerId,
+        Mask, ModuleDescriptor, ORIENTATION_EFFECT, PIXEL_EFFECT, ParameterDescriptor,
+        ParameterKind, PreviewQueue, Processing, Stage, ToolModule, open_source,
     };
     use serde_json::Map;
     use std::{
@@ -3452,6 +3457,17 @@ mod tests {
             let error = EditorService::open(&catalog).unwrap_err();
             assert_eq!(error.kind, ErrorKind::Incompatible);
             assert!(error.detail.contains("choose a new catalog path"));
+            // The predecessor format is refused by name like any other: its stacks carry no mask
+            // table, and a marker that is only one behind is not a reason to guess at one.
+            if marker != 0 {
+                assert_eq!(
+                    error.detail,
+                    format!(
+                        "catalog format {marker} is not supported; expected {CATALOG_FORMAT}; \
+                         choose a new catalog path"
+                    )
+                );
+            }
             assert_eq!(std::fs::read(&catalog).unwrap(), before);
             std::fs::remove_file(catalog).unwrap();
         }
@@ -3472,12 +3488,269 @@ mod tests {
         assert_eq!(error.kind, ErrorKind::Incompatible);
         assert_eq!(
             error.detail,
-            "catalog format 2 is not supported; expected 4; choose a new catalog path"
+            "catalog format 2 is not supported; expected 5; choose a new catalog path"
         );
         assert_eq!(
             std::fs::read(&catalog).unwrap(),
             before,
             "a refused catalog is left byte for byte as it was"
+        );
+        std::fs::remove_file(catalog).unwrap();
+    }
+
+    /// One mask carrying a component of a kind this build knows nothing about: what the catalog has
+    /// to keep, since the table of known kinds and their payloads is the kind provider's.
+    fn stored_mask() -> Mask {
+        let mut mask = Mask::new("Mask 1");
+        let name = mask.next_component_name("future-kind");
+        mask.components.push(Component::new(
+            name,
+            ComponentMode::Add,
+            "future-kind",
+            json!({"nested": {"points": [[0.25, 0.5], [0.75, 0.5]]}, "flag": true}),
+        ));
+        mask
+    }
+
+    /// The entry a masked stack would commit, over the current one: the same layers, with the last
+    /// one bound to `mask`, and `masks` as given so a dangling reference can be planted too.
+    fn masked_entry(state: &EditorState, mask: &Mask, masks: Vec<Mask>) -> HistoryEntry {
+        let mut layers = state.current_entry.snapshot.recipe.layers.clone();
+        layers.last_mut().expect("a layer to mask").mask = Some(mask.id.clone());
+        HistoryEntry {
+            id: EntryId::new(),
+            sequence: state.current_entry.sequence + 1,
+            label: "Mask 1 exposure +0.50".into(),
+            undo_parent: Some(state.current_entry.id.clone()),
+            base_revision: state.revision,
+            result_revision: state.revision + 1,
+            snapshot: Snapshot {
+                id: SnapshotId::new(),
+                asset_id: state.asset.id.clone(),
+                recipe: Recipe {
+                    format: crate::RECIPE_FORMAT,
+                    layers,
+                    masks,
+                },
+            },
+            ..state.current_entry.clone()
+        }
+    }
+
+    /// Write one entry and make it current without going through a mutation. The `mask.*` commands
+    /// arrive later, so this is the only way to hold a stored masked stack against reopen now; a
+    /// dangling reference could not be written through [`insert_entry`] at all, which is its own
+    /// guarantee and is asserted below.
+    fn plant(catalog: &Path, entry: &HistoryEntry) {
+        let connection = Connection::open(catalog).unwrap();
+        connection
+            .execute(
+                "INSERT INTO entries (id,asset_id,sequence,action_id,undo_parent_id,entry_json)
+                 VALUES (?1,?2,?3,?4,?5,?6)",
+                params![
+                    entry.id.as_str(),
+                    entry.asset_id.as_str(),
+                    entry.sequence as i64,
+                    entry.action_id,
+                    entry.undo_parent.as_ref().map(EntryId::as_str),
+                    serde_json::to_string(entry).unwrap(),
+                ],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "UPDATE asset_state SET current_entry_id=?1, revision=?2 WHERE asset_id=?3",
+                params![
+                    entry.id.as_str(),
+                    entry.result_revision as i64,
+                    entry.asset_id.as_str()
+                ],
+            )
+            .unwrap();
+    }
+
+    fn stored_entry_json(catalog: &Path, entry: &EntryId) -> String {
+        Connection::open(catalog)
+            .unwrap()
+            .query_row(
+                "SELECT entry_json FROM entries WHERE id=?1",
+                params![entry.as_str()],
+                |row| row.get(0),
+            )
+            .unwrap()
+    }
+
+    /// Masks ride inside the snapshot every entry already stores, so reopen returns them unchanged
+    /// and an ordinary later edit carries them with no second persistence path.
+    #[test]
+    fn masks_ride_in_the_stored_snapshot_and_reopen_unchanged() {
+        let catalog = temp("masks.sqlite");
+        let mut service = EditorService::open(&catalog).unwrap();
+        let asset = service.import(&fixture()).unwrap().asset.id;
+        service
+            .apply_action(
+                &asset,
+                mutation(0, "basic"),
+                "set-basic",
+                json!({"exposure": 0.5}),
+            )
+            .unwrap();
+        let state = service.state(&asset).unwrap();
+        let mask = stored_mask();
+        let entry = masked_entry(&state, &mask, vec![mask.clone()]);
+        drop(service);
+        plant(&catalog, &entry);
+
+        let mut service = EditorService::open(&catalog).unwrap();
+        let reopened = service.state(&asset).unwrap();
+        assert_eq!(
+            reopened.current_entry, entry,
+            "every field of the entry, masks included, survives reopen"
+        );
+        let stored = &reopened.current_entry.snapshot.recipe.masks[0].components[0];
+        assert_eq!(
+            stored.kind, "future-kind",
+            "an unknown kind is kept as it is"
+        );
+        assert_eq!(
+            serde_json::to_string(&stored.payload).unwrap(),
+            serde_json::to_string(&mask.components[0].payload).unwrap(),
+            "its payload is retained byte for byte, unparsed"
+        );
+        assert_eq!(
+            reopened
+                .current_entry
+                .snapshot
+                .recipe
+                .layers
+                .last()
+                .unwrap()
+                .mask
+                .as_ref(),
+            Some(&mask.id)
+        );
+        assert_eq!(
+            service.entry(&asset, &entry.id).unwrap(),
+            entry,
+            "the same entry reads the same by identity"
+        );
+        // The recipe panel still lists every layer, so a masked stack is never hidden from it.
+        assert_eq!(
+            service.describe_entry(&asset, None).unwrap().layers.len(),
+            reopened.current_entry.snapshot.recipe.layers.len()
+        );
+        // A later mutation writes the mask table on in its own snapshot: one persistence path.
+        let next = service
+            .apply_pixel(
+                &asset,
+                mutation(reopened.revision, "pixel"),
+                1,
+                1,
+                [9, 9, 9],
+            )
+            .unwrap()
+            .current_entry_id;
+        let committed = service.entry(&asset, &next).unwrap().snapshot.recipe;
+        assert_eq!(committed.masks, vec![mask.clone()]);
+        assert!(
+            committed
+                .layers
+                .iter()
+                .any(|layer| layer.mask.as_ref() == Some(&mask.id)),
+            "the masked layer keeps its mask through an unrelated edit"
+        );
+        // History keeps the earlier unmasked snapshot as it was: nothing was rewritten.
+        assert!(
+            service
+                .entry(&asset, &state.current_entry.id)
+                .unwrap()
+                .snapshot
+                .recipe
+                .masks
+                .is_empty()
+        );
+        drop(service);
+        std::fs::remove_file(catalog).unwrap();
+    }
+
+    /// A stored layer naming a mask its own snapshot does not carry is incompatible data: every
+    /// evaluation path refuses it by name, the stack stays readable and its stored bytes do not
+    /// change. The host cannot write such a stack in the first place, which is asserted here too.
+    #[test]
+    fn a_stored_layer_naming_a_missing_mask_is_refused_on_every_path_and_left_as_it_is() {
+        let catalog = temp("dangling-mask.sqlite");
+        let mut service = EditorService::open(&catalog).unwrap();
+        let asset = service.import(&fixture()).unwrap().asset.id;
+        service
+            .apply_action(
+                &asset,
+                mutation(0, "basic"),
+                "set-basic",
+                json!({"exposure": 0.5}),
+            )
+            .unwrap();
+        let state = service.state(&asset).unwrap();
+        let mask = stored_mask();
+        let dangling = masked_entry(&state, &mask, Vec::new());
+        // Nothing valid can be written from it either: every write validates the whole recipe.
+        assert_eq!(
+            service
+                .registry()
+                .validate_recipe(&dangling.snapshot.recipe)
+                .unwrap_err()
+                .kind,
+            ErrorKind::Incompatible,
+            "insert_entry validates the same recipe before any row is written"
+        );
+        drop(service);
+        plant(&catalog, &dangling);
+        let before = stored_entry_json(&catalog, &dangling.id);
+
+        let mut service = EditorService::open(&catalog).unwrap();
+        let revision = service.state(&asset).unwrap().revision;
+        let expected = format!(
+            "layer {} references mask {}, which this recipe does not carry",
+            dangling.snapshot.recipe.layers.last().unwrap().id,
+            mask.id
+        );
+        let refusals = [
+            service.render_current(&asset).unwrap_err(),
+            service.render_entry(&asset, &dangling.id).unwrap_err(),
+            service
+                .sample_entry(&asset, &dangling.id, 0, 0)
+                .unwrap_err(),
+            service
+                .locate_entry(&asset, &dangling.id, 0, 0)
+                .unwrap_err(),
+            // The preview worker's own render of the job the owner built for it.
+            service
+                .preview_job(&asset, None, None, None, None)
+                .and_then(|job| {
+                    job.source
+                        .render(&job.registry, job.entry.snapshot.id.clone(), &job.recipe)
+                })
+                .unwrap_err(),
+            // Planning compiles the stored stack before it asks a module for a plan.
+            service
+                .apply_pixel(&asset, mutation(revision, "pixel"), 0, 0, [1, 2, 3])
+                .unwrap_err(),
+            service
+                .apply_transform(&asset, mutation(revision, "turn"), Transform::RotateLeft)
+                .unwrap_err(),
+        ];
+        for error in refusals {
+            assert_eq!(error.kind, ErrorKind::Incompatible);
+            assert_eq!(error.detail, expected);
+        }
+        // Readable, unchanged and still listed in history: refusing is not discarding.
+        let state = service.state(&asset).unwrap();
+        assert_eq!(state.current_entry, dangling);
+        assert_eq!(service.history(&asset, None, 10).unwrap().entries.len(), 3);
+        drop(service);
+        assert_eq!(
+            stored_entry_json(&catalog, &dangling.id),
+            before,
+            "the refused entry's stored JSON is untouched"
         );
         std::fs::remove_file(catalog).unwrap();
     }
@@ -3900,6 +4173,7 @@ mod tests {
                 effect_id: effect_id.into(),
                 effect_format: EFFECT_FORMAT,
                 payload: json!({"width": width, "height": height}),
+                mask: None,
             }
         }
 

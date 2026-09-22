@@ -532,6 +532,9 @@ fn run(
     let prefix = job.layer_count.map(|count| Recipe {
         format: job.recipe.format,
         layers: job.recipe.layers.iter().take(count).cloned().collect(),
+        // The mask table belongs to the recipe, not to the prefix: a truncated stack keeps it so a
+        // masked layer inside the prefix still finds the mask it names.
+        masks: job.recipe.masks.clone(),
     });
     let recipe = prefix.as_ref().unwrap_or(&job.recipe);
 
@@ -866,6 +869,7 @@ mod tests {
                 effect_id: BASIC_EFFECT.into(),
                 effect_format: EFFECT_FORMAT,
                 payload: json!({"exposure": 0.5, "contrast": 20.0}),
+                mask: None,
             },
             Layer::crop(fitted.normalized(&stage)),
         ]
@@ -887,6 +891,7 @@ mod tests {
         let recipe = Recipe {
             format: RECIPE_FORMAT,
             layers,
+            masks: Vec::new(),
         };
         let snapshot = Snapshot {
             id: SnapshotId::new(),

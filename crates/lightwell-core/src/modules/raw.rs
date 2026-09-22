@@ -144,6 +144,8 @@ impl RawPayload {
             effect_id: RAW_EFFECT.into(),
             effect_format: EFFECT_FORMAT,
             payload: serde_json::to_value(self).expect("validated RAW payload serializes"),
+            // Source development is the whole content stage: a mask has no stage to read here.
+            mask: None,
         }
     }
 }
@@ -470,6 +472,7 @@ impl ToolModule for RawModule {
             effect_id: effect_id.into(),
             effect_format: format,
             payload: value.clone(),
+            mask: None,
         })
         .map(|_| ())
     }
@@ -479,6 +482,7 @@ impl ToolModule for RawModule {
             effect_id: effect_id.into(),
             effect_format: format,
             payload: value.clone(),
+            mask: None,
         })?;
         Ok(format!(
             "Exposure {:+.2} EV · {} WB",

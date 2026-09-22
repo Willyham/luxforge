@@ -6,7 +6,7 @@ use super::{
     RawModule, SPATIAL_TILE, Stage, ToolModule, TransformModule, VignetteModule,
 };
 use crate::{
-    Error, ErrorKind, Layer, RECIPE_FORMAT, Recipe,
+    Error, ErrorKind, Layer, Recipe,
     render::{
         Compiled, Entry, Segment,
         spatial::{SpatialPlan, prefix_hash},
@@ -345,11 +345,37 @@ impl ModuleRegistry {
 
     pub fn validate_recipe(&self, recipe: &Recipe) -> Result<(), Error> {
         recipe.validate()?;
+        self.validate_masked_stages(recipe)?;
         for layer in &recipe.layers {
             let module = self
                 .provider(&layer.effect_id)
                 .ok_or_else(|| self.unavailable_in(&recipe.layers, &layer.effect_id))?;
             module.validate_payload(&layer.effect_id, layer.effect_format, &layer.payload)?;
+        }
+        Ok(())
+    }
+
+    /// A mask's geometry is stored in content-stage coordinates, so only a layer whose input is that
+    /// content stage may carry one: a geometry layer changes the stage and a finish layer is defined
+    /// in the output coordinates the geometry tail produced, and neither has a content stage to read
+    /// a mask in. The rule lives here rather than in the model because the stage is declared by the
+    /// effect's provider, not by the recipe. `O(layers)` descriptor lookups, no pixels. An effect no
+    /// provider declares is left to the unavailable report that follows, which names it already.
+    fn validate_masked_stages(&self, recipe: &Recipe) -> Result<(), Error> {
+        for layer in &recipe.layers {
+            if layer.mask.is_none() {
+                continue;
+            }
+            if let Some(stage @ (EffectStage::Geometry | EffectStage::Finish)) =
+                self.effect_stage(&layer.effect_id)
+            {
+                return Err(validation(format!(
+                    "layer {} carries a mask, which a {} effect cannot: a mask is stored in \
+                     content-stage coordinates",
+                    layer.id,
+                    stage.as_str()
+                )));
+            }
         }
         Ok(())
     }
@@ -374,12 +400,13 @@ impl ModuleRegistry {
         source_height: u32,
         recipe: &Recipe,
     ) -> Result<Compiled, Error> {
-        if recipe.format != RECIPE_FORMAT {
-            return Err(Error::new(
-                ErrorKind::Incompatible,
-                format!("unsupported recipe format {}", recipe.format),
-            ));
-        }
+        // The whole-recipe checks every evaluation path shares: the format marker, and the mask
+        // table with the references into it. They cost `O(layers + components)` and read no pixels,
+        // so compiling here is what makes a stack that names a mask it does not carry, or attaches
+        // one to the geometry tail, fail rendering, sampling, proxy planning and module planning
+        // alike rather than only at the catalog boundary.
+        recipe.validate()?;
+        self.validate_masked_stages(recipe)?;
         self.compile_layers(source_width, source_height, &recipe.layers)
     }
 
@@ -523,8 +550,9 @@ impl ModuleRegistry {
 pub(crate) mod tests {
     use super::*;
     use crate::{
-        AssetId, BASIC_EFFECT, CROP_EFFECT, EFFECT_FORMAT, LayerId, ORIENTATION_EFFECT,
-        Orientation, PIXEL_EFFECT, RAW_EFFECT, SnapshotId, SourceImage,
+        AssetId, BASIC_EFFECT, CROP_EFFECT, Component, ComponentMode, EFFECT_FORMAT, LayerId, Mask,
+        ORIENTATION_EFFECT, Orientation, PIXEL_EFFECT, RAW_EFFECT, RECIPE_FORMAT, SnapshotId,
+        SourceImage,
         modules::{
             ActionInput, ActionPlan, Availability, CropPayload, EffectStage, ModuleDescriptor,
             StageContext,
@@ -722,6 +750,7 @@ pub(crate) mod tests {
                     effect_id: PATCH_EFFECT.into(),
                     effect_format: EFFECT_FORMAT,
                     payload,
+                    mask: None,
                 })),
             }
         }
@@ -838,6 +867,7 @@ pub(crate) mod tests {
                 effect_id: self.0.effects[0].id.clone(),
                 effect_format: EFFECT_FORMAT,
                 payload: json!({}),
+                mask: None,
             }))
         }
         fn validate_payload(&self, _: &str, _: u32, _: &Value) -> Result<(), Error> {
@@ -857,6 +887,7 @@ pub(crate) mod tests {
             effect_id: effect.into(),
             effect_format: EFFECT_FORMAT,
             payload: json!({}),
+            mask: None,
         }
     }
 
@@ -1289,6 +1320,7 @@ pub(crate) mod tests {
                 }),
                 second.clone(),
             ],
+            masks: Vec::new(),
         };
         let expected = format!(
             "unavailable effect test.effect (layers {}, {})",
@@ -1315,6 +1347,7 @@ pub(crate) mod tests {
         let missing = Recipe {
             format: RECIPE_FORMAT,
             layers: vec![test_layer("test.absent")],
+            masks: Vec::new(),
         };
         assert_eq!(
             registry.validate_recipe(&missing).unwrap_err().detail,
@@ -1337,11 +1370,13 @@ pub(crate) mod tests {
             effect_id: "lightwell.geometry.transform".into(),
             effect_format: EFFECT_FORMAT,
             payload: json!("rotate-right"),
+            mask: None,
         };
         assert!(registry.effect("lightwell.geometry.transform").is_none());
         let recipe = Recipe {
             format: RECIPE_FORMAT,
             layers: vec![retired.clone()],
+            masks: Vec::new(),
         };
         let expected = format!(
             "unavailable effect lightwell.geometry.transform (layers {})",
@@ -1357,6 +1392,93 @@ pub(crate) mod tests {
             assert_eq!(error.detail, expected);
         }
         assert_eq!(recipe.layers, vec![retired], "the refused stack is kept");
+    }
+
+    /// A mask reaches a layer only where the layer's input is the content stage the mask is stored
+    /// in. The stage comes from the effect's provider, so the rule is the registry's and it holds
+    /// wherever a recipe is validated or compiled.
+    #[test]
+    fn a_mask_may_only_reach_a_layer_before_the_geometry_tail() {
+        let registry = staged_registry();
+        let mut mask = Mask::new("Mask 1");
+        let name = mask.next_component_name("linear");
+        mask.components.push(Component::new(
+            name,
+            ComponentMode::Add,
+            "linear",
+            json!({"x0": 0.0, "y0": 0.0, "x1": 1.0, "y1": 1.0}),
+        ));
+        let masked = |layer: Layer| Layer {
+            mask: Some(mask.id.clone()),
+            ..layer
+        };
+        let recipe = |layer: Layer| Recipe {
+            format: RECIPE_FORMAT,
+            layers: vec![layer],
+            masks: vec![mask.clone()],
+        };
+        // A colour-stage layer addresses the content stage, so it may carry one.
+        let colour = recipe(masked(test_layer(MIXER_EFFECT)));
+        registry.validate_recipe(&colour).unwrap();
+        registry.compile(2, 1, &colour).unwrap();
+        for (layer, stage) in [
+            (Layer::orientation(Orientation::NEUTRAL), "geometry"),
+            (test_layer(FINISH_EFFECT), "finish"),
+        ] {
+            let refused = recipe(masked(layer.clone()));
+            let expected = format!(
+                "layer {} carries a mask, which a {stage} effect cannot: a mask is stored in \
+                 content-stage coordinates",
+                refused.layers[0].id
+            );
+            for error in [
+                registry.validate_recipe(&refused).unwrap_err(),
+                registry
+                    .compile(2, 1, &refused)
+                    .err()
+                    .expect("a masked layer at the geometry tail never compiles"),
+            ] {
+                assert_eq!(error.kind, ErrorKind::Validation);
+                assert_eq!(error.detail, expected);
+            }
+            // Unmasked, the same layer is the ordinary stack it always was.
+            registry.validate_recipe(&recipe(layer)).unwrap();
+        }
+    }
+
+    /// The missing mask is refused wherever a recipe is evaluated, because compiling checks it and
+    /// every render, sample and plan compiles.
+    #[test]
+    fn a_layer_naming_a_mask_the_recipe_does_not_carry_is_refused_by_every_compile() {
+        let registry = ModuleRegistry::builtin();
+        let mask = Mask::new("Mask 1");
+        let layer = Layer {
+            mask: Some(mask.id.clone()),
+            ..Layer::pixel(0, 0, [1, 2, 3])
+        };
+        let recipe = Recipe {
+            format: RECIPE_FORMAT,
+            layers: vec![layer.clone()],
+            masks: Vec::new(),
+        };
+        let expected = format!(
+            "layer {} references mask {}, which this recipe does not carry",
+            layer.id, mask.id
+        );
+        for error in [
+            registry.validate_recipe(&recipe).unwrap_err(),
+            registry
+                .compile(2, 1, &recipe)
+                .err()
+                .expect("a missing mask never compiles"),
+            render(&registry, &source(), SnapshotId::new(), &recipe).unwrap_err(),
+            sample(&registry, &source(), &recipe, 0, 0).unwrap_err(),
+            crate::render::extents(&registry, &source(), &recipe).unwrap_err(),
+        ] {
+            assert_eq!(error.kind, ErrorKind::Incompatible);
+            assert_eq!(error.detail, expected);
+        }
+        assert_eq!(recipe.layers, vec![layer], "the refused stack is kept");
     }
 
     #[test]

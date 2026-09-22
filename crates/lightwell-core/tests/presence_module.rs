@@ -60,6 +60,7 @@ fn presence_layer(payload: Value) -> Layer {
         effect_id: PRESENCE_EFFECT.into(),
         effect_format: EFFECT_FORMAT,
         payload,
+        mask: None,
     }
 }
 
@@ -67,6 +68,7 @@ fn recipe(layers: Vec<Layer>) -> Recipe {
     Recipe {
         format: RECIPE_FORMAT,
         layers,
+        masks: Vec::new(),
     }
 }
 
@@ -881,6 +883,7 @@ fn a_crop_after_a_presence_layer_still_samples_the_rendered_byte() {
             payload: json!({
                 "x": 0.1, "y": 0.1, "width": 0.6, "height": 0.6, "angle": 0.0,
             }),
+            mask: None,
         },
     ]);
     let rendered = render(&registry, &source, SnapshotId::new(), &stack).expect("a cropped render");

@@ -1274,6 +1274,7 @@ pub fn run(root: &Path, out: &Path) -> Result<Value> {
             &Recipe {
                 format: RECIPE_FORMAT,
                 layers: Vec::new(),
+                masks: Vec::new(),
             },
         )?;
         ensure(
@@ -1604,14 +1605,17 @@ pub fn run(root: &Path, out: &Path) -> Result<Value> {
                     effect_id: BASIC_EFFECT.into(),
                     effect_format: EFFECT_FORMAT,
                     payload: json!({"exposure": 1.0}),
+                    mask: None,
                 },
                 Layer {
                     id: lightwell_core::LayerId::new(),
                     effect_id: BASIC_EFFECT.into(),
                     effect_format: EFFECT_FORMAT,
                     payload: json!({"exposure": -1.0}),
+                    mask: None,
                 },
             ],
+            masks: Vec::new(),
         };
         let error = render(&source, &ambiguous)
             .err()
@@ -1629,7 +1633,9 @@ pub fn run(root: &Path, out: &Path) -> Result<Value> {
                 effect_id: BASIC_EFFECT.into(),
                 effect_format: 2,
                 payload: json!({"exposure": 1.0}),
+                mask: None,
             }],
+            masks: Vec::new(),
         };
         let format_error = render(&source, &future_format)
             .err()
