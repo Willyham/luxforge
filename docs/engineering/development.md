@@ -36,7 +36,7 @@ Doctor reports missing tools and the graphics environment without installing any
 | Rendered crop workflow and overlay | `cargo xtask smoke --scenario crop --output NEW_DIR`, `--scenario crop-draft` |
 | Rendered workspace panels, mode, preview, conflict and palette; unavailable-provider notice | `cargo xtask smoke --scenario workspace --output NEW_DIR`, `--scenario unavailable` |
 | Rendered Basic slider gesture: draft, commit, typed value, undo, reset and conflict | `cargo xtask smoke --scenario basic --output NEW_DIR` |
-| Rendered Basic panel: all three groups, historical values, a group reset and the neutral picker | `cargo xtask smoke --scenario basic-panel --output NEW_DIR` |
+| Rendered Basic panel: all three groups, historical values, a group reset, the neutral picker, and the default screen with Basic expanded and every other section collapsed | `cargo xtask smoke --scenario basic-panel --output NEW_DIR` |
 | Rendered histogram, clipping overlays, pointer readout and a drafted frame | `cargo xtask smoke --scenario histogram --output NEW_DIR` |
 | Rendered Basic composed with crop and straighten | `cargo xtask smoke --scenario basic-crop --output NEW_DIR` |
 | Rendered restart: a Basic edit committed in one launch and reopened in the next | `cargo xtask smoke --scenario basic-restart --output NEW_DIR` |
@@ -177,7 +177,7 @@ On macOS, `develop --background` builds the selected profile and runs a temporar
 Debug builds expose the title-bar **Developer** button automatically. To inspect the gallery in
 an optimized build, run `cargo xtask develop --developer` (automated launches add `--background`).
 Its page chooser and Previous/Next controls browse ten pages; Back to editor or Escape returns.
-The `gallery` smoke covers all 63 reference states and the return to the unchanged editor via
+The `gallery` smoke covers all 68 reference states and the return to the unchanged editor via
 the same `workspace.set` path as the button.
 
 ## Rendered evidence
@@ -426,7 +426,7 @@ naming "Preview is stale", the crop module listed unavailable in `state.modules`
 drawn anywhere in the photo surface, and the source fixture's hash unchanged throughout. It writes
 `unavailable-checks.json` beside its own two launch directories rather than one `app/` directory.
 
-`cargo xtask smoke --scenario gallery --output NEW_DIR` captures all 63 named widget states across ten pages in the real background editor at 1440×1000 logical points. Each page has renderer readback, state metadata and a matching script event; the board includes every named vector icon at 12 and 16 points. `cargo xtask smoke --scenario controls --output NEW_DIR` enables the developer proof, scrolls its generated panel, and exercises slider/picker/curve drafts, cancellation, channel selection, point add/remove, discrete controls, group disclosure and reset. Its checks correlate history revisions and values with captures and verify that the identity proof preserves the displayed photograph. The gallery and generated panel have different widths; both require visual review alongside their automated checks.
+`cargo xtask smoke --scenario gallery --output NEW_DIR` captures all 68 named widget states across ten pages in the real background editor at 1440×1000 logical points. Each page has renderer readback, state metadata and a matching script event; the board includes every named vector icon at 12 and 16 points and, on its last page, module sections at the reference panel width: Basic expanded, collapsed and unavailable bands, a collapsed group, the tab row and the labelled buttons. `cargo xtask smoke --scenario controls --output NEW_DIR` enables the developer proof, scrolls its generated panel, and exercises slider/picker/curve drafts, cancellation, channel selection, point add/remove, discrete controls, group disclosure and reset. Its checks correlate history revisions and values with captures and verify that the identity proof preserves the displayed photograph. The gallery and generated panel have different widths; both require visual review alongside their automated checks.
 
 `editor-latency --control curve` measures the controls proof's middle-point drag with the curve editor visible. The proof's colour stage is identity; this measures the control, query, draft, preview and upload path, not a future Tone Curve image algorithm. Slider remains the default workload. Both use the same provisional 100 ms p95 interaction threshold and retain all samples.
 

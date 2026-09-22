@@ -172,6 +172,7 @@ The delivered generated panel already renders every control above; the proposal 
 | Clipping | `#e5534b` / `#4c8be0` | Highlight and shadow indicators and overlays only |
 | Clipping, both | `#e553e0` | A cell at both endpoints. Not a third invented colour: the highlight red's red and green with the shadow blue's blue, which is what "red and blue at once" means |
 | Histogram channels | `#ff4d4d` / `#4dff7a` / `#4d9aff` at 55% | The three overlapping channel fills; a full overlap reads as the grey the histogram contract describes |
+| Panel rows | label `#c9c9ce`; rail `#3a3a40`, fill `#a3a3aa`, zero tick `#5a5a62`; thumb `#ececee` in a `#111113` ring; group rule `#313134`; band border `#2f2f32` | The tools panel's slider rows, group rules and module bands, sampled from the module references. The rule and band border are opaque because Iced blends in linear light, which renders a small white alpha much brighter than the references |
 
 System UI face (SF Pro on macOS, the platform default elsewhere), 12 pt controls, 13 pt semibold titles, 11 pt captions, 10.5 pt capitalised section labels. Tabular numerals are not available through Iced, so values are right-aligned in a fixed-width box instead. 8 pt spacing grid, 6 pt radii, 1 px borders, no gradients or blur; a 30% white guide colour for the thirds overlay. Invalid values and unavailable reasons use the clipping red, as the components board draws them. Dark only; a light theme is not planned. The tokens live in `crates/lightwell-ui/src/theme.rs` with a test per value.
 

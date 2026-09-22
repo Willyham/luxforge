@@ -107,7 +107,7 @@ The components board gains a row per new widget and state, `gallery_states()` bu
 ## Developer gallery
 
 The title bar exposes **Developer** in debug builds and in optimized builds started with
-`--developer`. It opens the existing 64 reference states across ten component pages, using the
+`--developer`. It opens the existing 68 reference states across ten component pages, using the
 same widget constructors as the editor. A page menu and Previous/Next buttons browse the board;
 Back to editor or Escape restores the workspace. No photograph is required. The examples display
 reference states and do not edit the photograph; the Controls proof provides live editing tests.

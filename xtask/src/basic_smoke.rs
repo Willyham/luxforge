@@ -11,6 +11,8 @@ use crate::{
 };
 
 const BASIC_MODULE: &str = "lightwell.basic";
+const TRANSFORM_MODULE: &str = "lightwell.transform";
+const CROP_MODULE: &str = "lightwell.crop";
 const SET_BASIC: &str = "set-basic";
 const EXPOSURE: &str = "exposure";
 /// The group whose reset the scenario runs, as the Basic descriptor labels it.
@@ -28,7 +30,7 @@ const SAME: f64 = 2.0;
 pub fn frames(scenario: &str) -> Option<usize> {
     match scenario {
         "basic" => Some(11),
-        "basic-panel" => Some(9),
+        "basic-panel" => Some(11),
         _ => None,
     }
 }
@@ -933,7 +935,11 @@ pub fn panel_script(scenario: &str) -> Option<Value> {
             // A pick on a neutral grey patch: the picker answers 0 and 0 and commits that.
             {"pick":{"x":NEUTRAL_PICK[0],"y":NEUTRAL_PICK[1]}},
             // A pick on a clipped patch: refused with its reason, nothing committed.
-            {"pick":{"x":CLIPPED_PICK[0],"y":CLIPPED_PICK[1]}}
+            {"pick":{"x":CLIPPED_PICK[0],"y":CLIPPED_PICK[1]}},
+            // The default screen the Module panels density is accepted on: Basic expanded and every
+            // other section collapsed to its band (Transforms and Crop open by default today).
+            {"section":{"module":TRANSFORM_MODULE,"expanded":false}},
+            {"section":{"module":CROP_MODULE,"expanded":false}}
         ])),
         _ => None,
     }
@@ -1268,6 +1274,24 @@ pub fn verify_panel(evidence: &Path, app: &Value, _events: &[Value]) -> Result {
         &frames[8],
         "a pick on a clipped patch: refused with its reason, nothing committed",
         json!({"status": status(&frames[8])?, "revision": revision(&frames[8])?}),
+    );
+
+    // Frame 10: Basic expanded and every other section collapsed, the screen on which the Module
+    // panels density puts the histogram, Basic and every other section's band on screen at once.
+    let expanded = &frames[10]["state"]["expanded"];
+    let others_collapsed = expanded
+        .as_object()
+        .ok_or("Missing expanded sections")?
+        .iter()
+        .all(|(module, open)| (module == BASIC_MODULE) == (open == &json!(true)));
+    ensure(
+        others_collapsed && revision(&frames[10])? == revision(&frames[8])?,
+        format!("Only Basic should be expanded, with nothing committed: {expanded}"),
+    )?;
+    record(
+        &frames[10],
+        "Basic expanded and every other section collapsed to its band",
+        expanded.clone(),
     );
 
     write_json(
