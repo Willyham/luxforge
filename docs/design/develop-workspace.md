@@ -16,6 +16,8 @@ Rendered at 1440 × 900 logical points, 2× scale, from the design artboards, re
 
 ![Develop workspace, default state](develop-workspace/default.png)
 
+One render per module, cropped to its panel at 300 pt, is kept under [develop-workspace/modules](develop-workspace/modules): `raw`, `basic`, `presence`, `colour-mixer` (all three tabs), `transforms`, `crop-and-straighten` (idle and drafting), `vignette`, `developer-pixel` and `states` (collapsed, unavailable and later bands). They are the per-section references for the [Module panels](#module-panels) design.
+
 ## Principles
 
 - **The photograph is the only colour on screen.** Chrome is neutral grey in a few tonal steps; one warm accent marks the current state and the active mode; red and blue are reserved for clipping.
