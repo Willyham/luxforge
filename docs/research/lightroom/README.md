@@ -19,6 +19,7 @@ The [darktable companion](../darktable/README.md) examines corresponding behavio
 | How do crop, lens correction, masks and repair fit together? | [Geometry, masking and retouching](geometry-masks-and-retouching.md) |
 | What can plugins and programs actually control? | [SDK and interoperability](sdk-and-interoperability.md) |
 | Which facts changed recently? Which sources conflict? | [Version notes and evidence caveats](versions-and-caveats.md) |
+| Do Lightwell's implemented sliders cover Lightroom's values? | [Slider range and preset-readiness audit](slider-parity.md) |
 | What should Lightwell learn, and what needs experiments? | [Engineering implications and research gaps](lightwell-implications.md) |
 
 ## Main findings

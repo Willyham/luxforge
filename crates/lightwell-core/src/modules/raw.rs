@@ -19,6 +19,8 @@ const PICK_NEUTRAL: &str = "pick-raw-neutral";
 const AS_SHOT: &str = "use-as-shot-wb";
 const RESET: &str = "reset-raw";
 pub const MAX_RAW_GAIN: f64 = 32.0;
+const MIN_EXPOSURE_EV: f64 = -5.0;
+const MAX_EXPOSURE_EV: f64 = 5.0;
 
 fn validation(message: impl Into<String>) -> Error {
     Error::new(ErrorKind::Validation, message)
@@ -77,7 +79,9 @@ impl RawPayload {
     }
 
     pub fn validate(&self) -> Result<(), Error> {
-        if !self.exposure_ev.is_finite() || !(-5.0..=5.0).contains(&self.exposure_ev) {
+        if !self.exposure_ev.is_finite()
+            || !(MIN_EXPOSURE_EV..=MAX_EXPOSURE_EV).contains(&self.exposure_ev)
+        {
             return Err(validation("RAW exposure must be -5..=+5 EV"));
         }
         if self.gains[1] != 1.0
@@ -230,17 +234,41 @@ impl RawModule {
                     action(
                         SET_EXPOSURE,
                         "Exposure",
-                        vec![number("ev", -5.0, 5.0, 0.0, "EV", 0.01, 2)],
+                        vec![number(
+                            "ev",
+                            MIN_EXPOSURE_EV,
+                            MAX_EXPOSURE_EV,
+                            0.0,
+                            "EV",
+                            0.01,
+                            2,
+                        )],
                     ),
                     action(
                         SET_TEMPERATURE,
                         "Custom temperature",
-                        vec![number("kelvin", 2000.0, 12000.0, 6504.0, "K", 10.0, 0)],
+                        vec![number(
+                            "kelvin",
+                            white_balance::MIN_TEMPERATURE_K,
+                            white_balance::MAX_TEMPERATURE_K,
+                            6504.0,
+                            "K",
+                            10.0,
+                            0,
+                        )],
                     ),
                     action(
                         SET_TINT,
                         "Custom tint",
-                        vec![number("tint", -100.0, 100.0, 0.0, "Lightwell", 1.0, 0)],
+                        vec![number(
+                            "tint",
+                            white_balance::MIN_TINT,
+                            white_balance::MAX_TINT,
+                            0.0,
+                            "Lightwell",
+                            1.0,
+                            0,
+                        )],
                     ),
                     action(
                         SET_RED,
