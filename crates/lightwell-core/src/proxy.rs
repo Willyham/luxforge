@@ -93,9 +93,10 @@ pub enum ProxyIdentity {
     },
     Raw {
         fingerprint: String,
-        /// The address of the `Arc<Vec<f32>>` the developed planes live in. It is never
-        /// dereferenced; it is only ever compared, and it changes whenever the planes are rebuilt.
-        planes: usize,
+        /// The development the planes belong to ([`LinearImage::development`]): a process-unique
+        /// number, so a redevelopment misses even when its planes reuse the old allocation's
+        /// address.
+        development: u64,
         crop: [u32; 4],
         orientation: u8,
     },
@@ -150,7 +151,7 @@ impl PreviewSource {
                 let (crop, orientation) = image.view();
                 ProxyIdentity::Raw {
                     fingerprint: image.fingerprint().to_owned(),
-                    planes: image.storage_weak().as_ptr() as usize,
+                    development: image.development(),
                     crop,
                     orientation,
                 }

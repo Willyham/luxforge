@@ -170,7 +170,15 @@ pub struct LinearImage {
     planes: Arc<Vec<f32>>,
     fingerprint: String,
     view: View,
+    /// Which development these planes are: a process-unique number taken when the planes were
+    /// adopted, shared by every view over them and by nothing else. A redevelopment of the same
+    /// source is a new number even when the allocator hands its planes the address the old ones
+    /// had, which is why a cache keys on this and never on an address.
+    development: u64,
 }
+
+/// The source of every [`LinearImage::development`] number.
+static NEXT_DEVELOPMENT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
 
 impl LinearImage {
     /// Construct an identity-view image from contiguous planar R, G and B values.
@@ -223,6 +231,7 @@ impl LinearImage {
                 height,
                 orientation: 1,
             },
+            development: NEXT_DEVELOPMENT.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
         })
     }
 
@@ -265,6 +274,7 @@ impl LinearImage {
             planes: Arc::clone(&self.planes),
             fingerprint: self.fingerprint.clone(),
             view,
+            development: self.development,
         })
     }
 
@@ -285,6 +295,12 @@ impl LinearImage {
             [self.view.x, self.view.y, self.view.width, self.view.height],
             self.view.orientation,
         )
+    }
+
+    /// The development these planes belong to: equal for every view over the same adopted planes,
+    /// different for every redevelopment, and never reused within the process.
+    pub fn development(&self) -> u64 {
+        self.development
     }
 
     pub(crate) fn storage_weak(&self) -> Weak<Vec<f32>> {
