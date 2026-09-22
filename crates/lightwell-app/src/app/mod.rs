@@ -1135,7 +1135,13 @@ impl Editor {
                 return Task::perform(
                     async {
                         rfd::AsyncFileDialog::new()
-                            .add_filter("Photos", &["jpg", "jpeg", "nef", "raf", "dng"])
+                            .add_filter(
+                                "Photos",
+                                &[
+                                    "jpg", "jpeg", "nef", "raf", "dng", "arw", "cr2", "cr3", "nrw",
+                                    "rw2", "orf", "pef",
+                                ],
+                            )
                             .pick_file()
                             .await
                             .map(|file| file.path().to_path_buf())

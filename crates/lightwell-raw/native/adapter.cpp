@@ -15,6 +15,8 @@
 extern "C" {
 typedef int (*LwCancel)(void *);
 
+struct LwMosaicCorrection { uint32_t index; uint16_t value; };
+
 struct LwMetadata {
   char make[64], model[64], decoder[80];
   uint32_t width, height, raw_pitch, raw_bps, dng_version, decoder_flags;
@@ -22,6 +24,9 @@ struct LwMetadata {
   uint32_t inset_x, inset_y, inset_width, inset_height;
   uint32_t cfa_width, cfa_height, flip, raw_count;
   uint8_t cfa[36];
+  // LibRaw's four Bayer sites are retained for black calibration. The public
+  // CFA below merges both green sites to channel 1 for demosaicing.
+  uint8_t black_cfa[36];
   float black_base, black_channels[4];
   uint32_t black_repeat_width, black_repeat_height;
   float black_repeat[4096];
@@ -30,7 +35,22 @@ struct LwMetadata {
 }
 
 namespace {
-struct Handle { LibRaw decoder; };
+class CalibratingLibRaw final : public LibRaw {
+public:
+  bool apply_xyz_to_camera(const double configured[9]) {
+    if (imgdata.idata.colors != 3) return false;
+    double cam_xyz[4][3]{};
+    for (unsigned row = 0; row < 3; ++row)
+      for (unsigned column = 0; column < 3; ++column)
+        cam_xyz[row][column] = configured[row * 3 + column];
+    for (unsigned row = 0; row < 4; ++row)
+      for (unsigned column = 0; column < 3; ++column)
+        imgdata.color.cam_xyz[row][column] = static_cast<float>(cam_xyz[row][column]);
+    cam_xyz_coeff(imgdata.color.rgb_cam, cam_xyz);
+    return true;
+  }
+};
+struct Handle { CalibratingLibRaw decoder; };
 void error(char *dst, size_t len, const char *message) noexcept {
   if (!dst || !len) return;
   std::strncpy(dst, message, len - 1);
@@ -63,15 +83,18 @@ extern "C" int lw_raw_open(const uint8_t *bytes, size_t length,
     CancelData cd{cancel, cancel_context};
     std::unique_ptr<Handle> h(new Handle());
     h->decoder.imgdata.rawparams.max_raw_memory_mb = 512;
+    // Primary sensor image only. The exact frame count is also a profile mode
+    // selector; a second Dual Pixel image is never allocated or blended.
+    h->decoder.imgdata.rawparams.shot_select = 0;
     h->decoder.set_progress_handler(progress, &cd);
     int code=h->decoder.open_buffer(bytes, length);
     if (code != LIBRAW_SUCCESS) { error(err, err_len, libraw_strerror(code)); return code == LIBRAW_CANCELLED_BY_CALLBACK ? 2 : 3; }
     const auto &identity=h->decoder.imgdata.idata;
-    const bool supported=std::any_of(std::begin(lw_cameras),std::end(lw_cameras),[&](const auto &camera){
+    const auto *profile = std::find_if(std::begin(lw_cameras),std::end(lw_cameras),[&](const auto &camera){
       return std::strcmp(identity.make,camera.make)==0 && std::strcmp(identity.model,camera.model)==0;
     });
-    if(!supported){error(err,err_len,"camera model is outside the RAW catalog");return 7;}
-    if(identity.raw_count!=1){error(err,err_len,"multi-frame RAW containers are outside the supported mode");return 7;}
+    if(profile == std::end(lw_cameras)){error(err,err_len,"camera model is outside the RAW catalog");return 7;}
+    if(identity.raw_count<1||identity.raw_count>2){error(err,err_len,"RAW frame count exceeds primary-frame mode bounds");return 7;}
     const auto &s=h->decoder.imgdata.sizes;
     const uint64_t n=uint64_t(s.raw_width)*s.raw_height;
     if (!s.raw_width || !s.raw_height || s.raw_width>16384 || s.raw_height>16384 || n>64000000) {
@@ -92,6 +115,9 @@ extern "C" int lw_raw_open(const uint8_t *bytes, size_t length,
     if (!d.rawdata.raw_image || d.rawdata.float_image || d.rawdata.color4_image || d.rawdata.color3_image) {
       error(err, err_len, "decoder did not return a single-channel integer mosaic"); return 5;
     }
+    if (profile->calibrated && !h->decoder.apply_xyz_to_camera(profile->xyz_to_camera)) {
+      error(err, err_len, "configured calibration requires three camera colours"); return 5;
+    }
     libraw_decoder_info_t decoder_info{};
     code=h->decoder.get_decoder_info(&decoder_info);
     if (code != LIBRAW_SUCCESS) { error(err,err_len,libraw_strerror(code)); return 3; }
@@ -109,11 +135,16 @@ extern "C" int lw_raw_open(const uint8_t *bytes, size_t length,
     meta->flip=s.flip;
     if (d.idata.filters==9) {
       meta->cfa_width=6;meta->cfa_height=6;
-      for(unsigned y=0;y<6;++y)for(unsigned x=0;x<6;++x)meta->cfa[y*6+x]=d.idata.xtrans_abs[y][x];
+      for(unsigned y=0;y<6;++y)for(unsigned x=0;x<6;++x){
+        meta->cfa[y*6+x]=d.idata.xtrans_abs[y][x];
+        meta->black_cfa[y*6+x]=meta->cfa[y*6+x];
+      }
     } else {
       meta->cfa_width=2;meta->cfa_height=2;
       for(unsigned y=0;y<2;++y)for(unsigned x=0;x<2;++x){
         int col=h->decoder.COLOR(y,x);meta->cfa[y*2+x]=col==3?1:col;
+        if(col<0||col>3){error(err,err_len,"invalid Bayer CFA channel");return 5;}
+        meta->black_cfa[y*2+x]=static_cast<uint8_t>(col);
       }
     }
     meta->black_base=d.color.black;
@@ -151,7 +182,8 @@ extern "C" int lw_raw_copy(void *handle, uint16_t *dest, size_t length,
 extern "C" void lw_raw_close(void *handle) noexcept { delete static_cast<Handle*>(handle); }
 
 extern "C" int lw_raw_develop(const uint16_t *samples,size_t count,
-                               const LwMetadata *meta,const float gains[3],
+                               const LwMetadata *meta,const LwMosaicCorrection *patches,size_t patch_count,
+                               const float gains[3],
                                float *red,float *green,float *blue,
                                LwCancel cancel,void *cancel_context,
                                char *err,size_t err_len) noexcept {
@@ -159,6 +191,14 @@ extern "C" int lw_raw_develop(const uint16_t *samples,size_t count,
      count!=uint64_t(meta->width)*meta->height||count>64000000||
      count>512ull*1024*1024/(3*sizeof(float))) {
     error(err,err_len,"invalid or oversized develop buffers");return 1;
+  }
+  if (patch_count>65536 || (patch_count && !patches)) {
+    error(err,err_len,"invalid sparse mosaic corrections"); return 1;
+  }
+  for(size_t i=0;i<patch_count;++i) {
+    if(patches[i].index>=count || (i && patches[i-1].index>=patches[i].index)) {
+      error(err,err_len,"invalid sparse mosaic correction ordering"); return 1;
+    }
   }
   if(cancel&&cancel(cancel_context)){error(err,err_len,"cancelled");return 2;}
   try{
@@ -172,20 +212,27 @@ extern "C" int lw_raw_develop(const uint16_t *samples,size_t count,
     }else if(meta->cfa_width==6&&meta->cfa_height==6){
       for(size_t y=0;y<6;++y)for(size_t x=0;x<6;++x)xtrans[y][x]=meta->cfa[y*6+x];
     }else{error(err,err_len,"unsupported CFA");return 5;}
+    size_t patch_index=0;
     for(size_t y=0;y<h;++y){
       input_rows[y]=mosaic.data()+y*w;rrows[y]=red+y*w;grows[y]=green+y*w;brows[y]=blue+y*w;
       if(cancel&&y%128==0&&cancel(cancel_context)){error(err,err_len,"cancelled");return 2;}
       for(size_t x=0;x<w;++x){
         unsigned channel=meta->cfa_width==2?bayer[y%2][x%2]:xtrans[y%6][x%6];
+        unsigned black_channel=meta->cfa_width==2?meta->black_cfa[(y%2)*2+(x%2)]:meta->black_cfa[(y%6)*6+(x%6)];
         if(channel>2){error(err,err_len,"invalid CFA channel");return 5;}
-        float black=meta->black_base+meta->black_channels[channel];
+        if(black_channel>3){error(err,err_len,"invalid black CFA channel");return 5;}
+        float black=meta->black_base+meta->black_channels[black_channel];
         if(meta->black_repeat_width&&meta->black_repeat_height){
           size_t ix=(y%meta->black_repeat_height)*meta->black_repeat_width+(x%meta->black_repeat_width);
           black+=meta->black_repeat[ix];
         }
         // Sensor scale 65535 is the established library's numerical contract.
         // No pre-demosaic clamp: sampled under-black and over-white latitude is retained.
-        mosaic[y*w+x]=(float(samples[y*w+x])-black)*(65535.f/(meta->white-black))*gains[channel];
+        const float denominator=meta->white-black;
+        if(!std::isfinite(denominator)||denominator<=0.f){error(err,err_len,"invalid black/white denominator");return 5;}
+        uint16_t sample=samples[y*w+x];
+        if(patch_index<patch_count && patches[patch_index].index==y*w+x) sample=patches[patch_index++].value;
+        mosaic[y*w+x]=(float(sample)-black)*(65535.f/denominator)*gains[channel];
       }
     }
     auto no_cancel=[](double){return false;}; // librtprocess ignores this return.

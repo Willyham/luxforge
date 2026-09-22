@@ -1,0 +1,1705 @@
+{
+  "format": 1,
+  "selection": "Widely used cross-brand modern cameras and drones; not a sales ranking",
+  "models": [
+    {
+      "display_name": "Nikon D500",
+      "make": "Nikon",
+      "model": "D500",
+      "sample_id": "2514",
+      "source_url": "https://raw.pixls.us/getfile.php/2514/nice/Nikon - D500 - 14bit 14bit uncompressed (3:2).NEF",
+      "sha256": "9498d65c876d3d548c2361191ec0b64bc999abd78cea67f28e2a7c7d01890676",
+      "license": "CC0-1.0",
+      "status": "adapter_verified",
+      "native_make": "Nikon",
+      "native_model": "D500",
+      "sensor_size": [
+        5600,
+        3728
+      ],
+      "encoded_bytes": 44490752
+    },
+    {
+      "display_name": "Nikon D750",
+      "make": "Nikon",
+      "model": "D750",
+      "sample_id": "898",
+      "source_url": "https://raw.pixls.us/getfile.php/898/nice/Nikon - D750 - 14bit 14bit compressed (Lossless) (3:2).NEF",
+      "sha256": "f90deb2819863f5a6ca9913c255fdd83a94963f4284eb88df9d389da7a6c7665",
+      "license": "CC0-1.0",
+      "status": "adapter_verified",
+      "native_make": "Nikon",
+      "native_model": "D750",
+      "sensor_size": [
+        6032,
+        4032
+      ],
+      "encoded_bytes": 26336302
+    },
+    {
+      "display_name": "Nikon D780",
+      "make": "Nikon",
+      "model": "D780",
+      "sample_id": "3828",
+      "source_url": "https://raw.pixls.us/getfile.php/3828/nice/Nikon - D780 - 14bit 14bit compressed (Lossless) (3:2).NEF",
+      "sha256": "8b786e0ecfb4cca8d94af9b3a114e9e4cab429be251efb6bb06a11a98116d49b",
+      "license": "CC0-1.0",
+      "status": "adapter_verified",
+      "native_make": "Nikon",
+      "native_model": "D780",
+      "sensor_size": [
+        6064,
+        4040
+      ],
+      "encoded_bytes": 34251545
+    },
+    {
+      "display_name": "Nikon D850",
+      "make": "Nikon",
+      "model": "D850",
+      "sample_id": "1842",
+      "source_url": "https://raw.pixls.us/getfile.php/1842/nice/Nikon - D850 - 14bit 14bit uncompressed (3:2).NEF",
+      "sha256": "ce1fb927aca4f0ac3a1fa5caded0d7859560988e500f71177287310fd1a3d845",
+      "license": "CC0-1.0",
+      "status": "pending_raw_resource_decision",
+      "native_make": "Nikon",
+      "native_model": "D850",
+      "sensor_size": [
+        8288,
+        5520
+      ],
+      "encoded_bytes": 98180608
+    },
+    {
+      "display_name": "Nikon Z 5",
+      "make": "Nikon",
+      "model": "Z 5",
+      "sample_id": "4136",
+      "source_url": "https://raw.pixls.us/getfile.php/4136/nice/Nikon - Z 5 - 14bit 14bit compressed (Lossless) (3:2).NEF",
+      "sha256": "9870248c45532080c2459f3b52cdcc4a07bc8846ad50cbb81c7c1c6dc5e36d91",
+      "license": "CC0-1.0",
+      "status": "adapter_verified",
+      "native_make": "Nikon",
+      "native_model": "Z 5",
+      "sensor_size": [
+        6040,
+        4032
+      ],
+      "encoded_bytes": 30600734
+    },
+    {
+      "display_name": "Nikon Z 6",
+      "make": "Nikon",
+      "model": "Z 6",
+      "sample_id": "3580",
+      "source_url": "https://raw.pixls.us/getfile.php/3580/nice/Nikon - Z 6 - 14bit 14bit uncompressed (3:2).NEF",
+      "sha256": "b4cdb8ecf8a971ec023dd242251c6cbfb19966914e37c2311dc9813a7ab5e15f",
+      "license": "CC0-1.0",
+      "status": "adapter_verified",
+      "native_make": "Nikon",
+      "native_model": "Z 6",
+      "sensor_size": [
+        6064,
+        4040
+      ],
+      "encoded_bytes": 47494144
+    },
+    {
+      "display_name": "Nikon Z 7",
+      "make": "Nikon",
+      "model": "Z 7",
+      "sample_id": "2788",
+      "source_url": "https://raw.pixls.us/getfile.php/2788/nice/Nikon - Z 7 - 12bit 12bit compressed (3:2).NEF",
+      "sha256": "ef046d37ffb11807648dd0b55589c02825f98c2c99416f4a7a74ae965a8eeb72",
+      "license": "CC0-1.0",
+      "status": "pending_raw_resource_decision",
+      "native_make": "Nikon",
+      "native_model": "Z 7",
+      "sensor_size": [
+        8288,
+        5520
+      ],
+      "encoded_bytes": 89101056
+    },
+    {
+      "display_name": "Nikon Z 8",
+      "make": "Nikon",
+      "model": "Z 8",
+      "sample_id": "6617",
+      "source_url": "https://raw.pixls.us/getfile.php/6617/nice/Nikon - Z 8 - 8bit 8bit compressed (3:2).NEF",
+      "sha256": "c13a8675294456b9c979e6c1e556951654f35377b2870af2874bfb556f21ce40",
+      "license": "CC0-1.0",
+      "status": "pending_raw_resource_decision",
+      "native_make": "Nikon",
+      "native_model": "Z 8",
+      "sensor_size": [
+        8280,
+        5520
+      ],
+      "encoded_bytes": 60842580
+    },
+    {
+      "display_name": "Nikon Z 9",
+      "make": "Nikon",
+      "model": "Z 9",
+      "sample_id": "5146",
+      "source_url": "https://raw.pixls.us/getfile.php/5146/nice/Nikon - Z 9 - 8bit 8bit compressed (3:2).NEF",
+      "sha256": "99d0fe24a38f0f7623aeab21440d266a5ac09f9665cf5283f590337e84323c38",
+      "license": "CC0-1.0",
+      "status": "pending_raw_resource_decision",
+      "native_make": "Nikon",
+      "native_model": "Z 9",
+      "sensor_size": [
+        8280,
+        5520
+      ],
+      "encoded_bytes": 57580695
+    },
+    {
+      "display_name": "Nikon Z f",
+      "make": "Nikon",
+      "model": "Z f",
+      "sample_id": "6885",
+      "source_url": "https://raw.pixls.us/getfile.php/6885/nice/Nikon - Z f - 14bit 14bit compressed (3:2).NEF",
+      "sha256": "83c82be0be8865d796096dfbcc8ef2abf5af1bd37db44dfad6715070b0c99d15",
+      "license": "CC0-1.0",
+      "status": "adapter_verified",
+      "native_make": "Nikon",
+      "native_model": "Z f",
+      "sensor_size": [
+        6064,
+        4040
+      ],
+      "encoded_bytes": 31109991
+    },
+    {
+      "display_name": "Nikon Z 50",
+      "make": "Nikon",
+      "model": "Z 50",
+      "sample_id": "3647",
+      "source_url": "https://raw.pixls.us/getfile.php/3647/nice/Nikon - Z 50 - 14bit 14bit compressed (3:2).NEF",
+      "sha256": "5e93735923229117abee2779d81f114f180f361e8ae553c9dd9bdaaedb0d9e02",
+      "license": "CC0-1.0",
+      "status": "adapter_verified",
+      "native_make": "Nikon",
+      "native_model": "Z 50",
+      "sensor_size": [
+        5600,
+        3728
+      ],
+      "encoded_bytes": 31261568
+    },
+    {
+      "display_name": "Nikon Z fc",
+      "make": "Nikon",
+      "model": "Z fc",
+      "sample_id": "4812",
+      "source_url": "https://raw.pixls.us/getfile.php/4812/nice/Nikon - Z fc - 14bit 14bit compressed (Lossless) (3:2).nef",
+      "sha256": "4099ecc46ebaca26e2a66a96a8313fed5e8c707b3836ccf0e77a134844b041c1",
+      "license": "CC0-1.0",
+      "status": "adapter_verified",
+      "native_make": "Nikon",
+      "native_model": "Z fc",
+      "sensor_size": [
+        5600,
+        3728
+      ],
+      "encoded_bytes": 25565578
+    },
+    {
+      "display_name": "Nikon D7500",
+      "make": "Nikon",
+      "model": "D7500",
+      "sample_id": "1534",
+      "source_url": "https://raw.pixls.us/getfile.php/1534/nice/Nikon - D7500 - 14bit 14bit compressed (Lossless) (3:2).NEF",
+      "sha256": "430b4f1be4e53a011861b63294ad19fdc0353ec3ea62104f77d4c193e3dd3fc8",
+      "license": "CC0-1.0",
+      "status": "adapter_verified",
+      "native_make": "Nikon",
+      "native_model": "D7500",
+      "sensor_size": [
+        5600,
+        3728
+      ],
+      "encoded_bytes": 26775037
+    },
+    {
+      "display_name": "Nikon D5600",
+      "make": "Nikon",
+      "model": "D5600",
+      "sample_id": "1416",
+      "source_url": "https://raw.pixls.us/getfile.php/1416/nice/Nikon - D5600 - 14bit 14bit compressed (Lossy (type 2)) (3:2).NEF",
+      "sha256": "0917e0ffdd7aa648ed35d99d1858b5a4ab81f62d5a0418d4bcfe3799fc59a7a0",
+      "license": "CC0-1.0",
+      "status": "adapter_verified",
+      "native_make": "Nikon",
+      "native_model": "D5600",
+      "sensor_size": [
+        6016,
+        4016
+      ],
+      "encoded_bytes": 29531449
+    },
+    {
+      "display_name": "Nikon Z6 II",
+      "make": "Nikon",
+      "model": "Z 6_2",
+      "sample_id": "4160",
+      "source_url": "https://raw.pixls.us/getfile.php/4160/nice/Nikon - Z 6_2 - 14bit 14bit compressed (Lossless) (3:2).NEF",
+      "sha256": "1b67d15817dbd4143a1f1089e2f09e319a2a2327c124e2643284509dd7621030",
+      "license": "CC0-1.0",
+      "status": "adapter_verified",
+      "native_make": "Nikon",
+      "native_model": "Z 6_2",
+      "sensor_size": [
+        6064,
+        4040
+      ],
+      "encoded_bytes": 36988625
+    },
+    {
+      "display_name": "Nikon Z7 II",
+      "make": "Nikon",
+      "model": "Z 7_2",
+      "sample_id": "4217",
+      "source_url": "https://raw.pixls.us/getfile.php/4217/nice/Nikon - Z 7_2 - 14bit 14bit Uncompressed (3:2).NEF",
+      "sha256": "33a6a4838bc9d80fa1cb2e7c2011e52ca9f4965a26e67b604412c69928d37c45",
+      "license": "CC0-1.0",
+      "status": "pending_raw_resource_decision",
+      "native_make": "Nikon",
+      "native_model": "Z 7_2",
+      "sensor_size": [
+        8288,
+        5520
+      ],
+      "encoded_bytes": 85241088
+    },
+    {
+      "display_name": "Nikon D6",
+      "make": "Nikon",
+      "model": "D6",
+      "sample_id": "4717",
+      "source_url": "https://raw.pixls.us/getfile.php/4717/nice/Nikon - D6 - 14bit 14bit compressed ((10)) (3:2).NEF",
+      "sha256": "8c8cf431f5807e2d216318f8a42e30a4d4f8561e325eb6495d9aa0e466ef53fe",
+      "license": "CC0-1.0",
+      "status": "adapter_verified",
+      "native_make": "Nikon",
+      "native_model": "D6",
+      "sensor_size": [
+        5584,
+        3728
+      ],
+      "encoded_bytes": 37481216
+    },
+    {
+      "display_name": "Nikon Z 30",
+      "make": "Nikon",
+      "model": "Z 30",
+      "sample_id": "5813",
+      "source_url": "https://raw.pixls.us/getfile.php/5813/nice/Nikon - Z 30 - 14bit 14bit compressed (Lossless) (3:2).NEF",
+      "sha256": "03d94c1f184c4236ea8f890ab0fe30e91b65965e8b09cebecc397fba081a607f",
+      "license": "CC0-1.0",
+      "status": "adapter_verified",
+      "native_make": "Nikon",
+      "native_model": "Z 30",
+      "sensor_size": [
+        5600,
+        3728
+      ],
+      "encoded_bytes": 24635348
+    },
+    {
+      "display_name": "Sony ILCE-6000 (A6000)",
+      "make": "Sony",
+      "model": "ILCE-6000",
+      "sample_id": "1971",
+      "source_url": "https://raw.pixls.us/getfile.php/1971/nice/Sony - ILCE-6000 - 12bit 12bit compressed (3:2).ARW",
+      "sha256": "ce8b4957281a817d52a07a691e2468567b6c78223bd0b514ffc1c65b002b8d89",
+      "license": "CC0-1.0",
+      "status": "adapter_verified",
+      "native_make": "Sony",
+      "native_model": "ILCE-6000",
+      "sensor_size": [
+        6048,
+        4024
+      ],
+      "encoded_bytes": 25624576
+    },
+    {
+      "display_name": "Sony ILCE-6100 (A6100)",
+      "make": "Sony",
+      "model": "ILCE-6100",
+      "sample_id": "3837",
+      "source_url": "https://raw.pixls.us/getfile.php/3837/nice/Sony - ILCE-6100 - 14bit 14bit compressed (3:2).ARW",
+      "sha256": "0205f5086cc20a0e4aaf0f5468da26bdf0adba5c0b3a63d2c1930777d90b85fd",
+      "license": "CC0-1.0",
+      "status": "adapter_verified",
+      "native_make": "Sony",
+      "native_model": "ILCE-6100",
+      "sensor_size": [
+        6048,
+        4024
+      ],
+      "encoded_bytes": 25033472
+    },
+    {
+      "display_name": "Sony ILCE-6400 (A6400)",
+      "make": "Sony",
+      "model": "ILCE-6400",
+      "sample_id": "3151",
+      "source_url": "https://raw.pixls.us/getfile.php/3151/nice/Sony - ILCE-6400 - 14bit 14bit compressed (3:2).ARW",
+      "sha256": "339e7d83e030b31509ff201d4130a9bcede9945a12b07ec6a48a8b02cd499802",
+      "license": "CC0-1.0",
+      "status": "adapter_verified",
+      "native_make": "Sony",
+      "native_model": "ILCE-6400",
+      "sensor_size": [
+        6048,
+        4024
+      ],
+      "encoded_bytes": 25094912
+    },
+    {
+      "display_name": "Sony A7C II",
+      "make": "Sony",
+      "model": "ILCE-7CM2",
+      "sample_id": "6865",
+      "source_url": "https://raw.pixls.us/getfile.php/6865/nice/Sony - ILCE-7CM2 - 14bit 14bit uncompressed (3:2).ARW",
+      "sha256": "55de0ff9abbd11c2d166fdd8cfa99129ef8478f2895a65105253e6fcdfdba430",
+      "license": "CC0-1.0",
+      "status": "adapter_verified",
+      "native_make": "Sony",
+      "native_model": "ILCE-7CM2",
+      "sensor_size": [
+        7040,
+        4688
+      ],
+      "encoded_bytes": 73400320
+    },
+    {
+      "display_name": "Sony ILCE-6600 (A6600)",
+      "make": "Sony",
+      "model": "ILCE-6600",
+      "sample_id": "3590",
+      "source_url": "https://raw.pixls.us/getfile.php/3590/nice/Sony - ILCE-6600 - 14bit 14bit compressed (3:2).ARW",
+      "sha256": "041d71d70148ca77164f19d061e3582adb34399ea5a4baba32960f2956fb0362",
+      "license": "CC0-1.0",
+      "status": "adapter_verified",
+      "native_make": "Sony",
+      "native_model": "ILCE-6600",
+      "sensor_size": [
+        6048,
+        4024
+      ],
+      "encoded_bytes": 25008896
+    },
+    {
+      "display_name": "Sony ILCE-6700 (A6700)",
+      "make": "Sony",
+      "model": "ILCE-6700",
+      "sample_id": "6735",
+      "source_url": "https://raw.pixls.us/getfile.php/6735/nice/Sony - ILCE-6700 - 14bit (3:2).ARW",
+      "sha256": "501666fd94cbc28176e9c03a40c1d8121319df6542bfcbef0ffcfebeb04a32bf",
+      "license": "CC0-1.0",
+      "status": "adapter_verified",
+      "native_make": "Sony",
+      "native_model": "ILCE-6700",
+      "sensor_size": [
+        6272,
+        4168
+      ],
+      "encoded_bytes": 34148352
+    },
+    {
+      "display_name": "Sony A7C",
+      "make": "Sony",
+      "model": "ILCE-7C",
+      "sample_id": "4145",
+      "source_url": "https://raw.pixls.us/getfile.php/4145/nice/Sony - ILCE-7C - 14bit 14bit uncompressed (3:2).ARW",
+      "sha256": "386ce0122687b802e8e57151d36643b830f87e59eed15b65c690d1032eb3b763",
+      "license": "CC0-1.0",
+      "status": "adapter_verified",
+      "native_make": "Sony",
+      "native_model": "ILCE-7C",
+      "sensor_size": [
+        6048,
+        4024
+      ],
+      "encoded_bytes": 49260032
+    },
+    {
+      "display_name": "Sony ILCE-7M3 (A7 III)",
+      "make": "Sony",
+      "model": "ILCE-7M3",
+      "sample_id": "2418",
+      "source_url": "https://raw.pixls.us/getfile.php/2418/nice/Sony - ILCE-7M3 - 14bit 14bit uncompressed (3:2).ARW",
+      "sha256": "ece80551abf64949dbe826985a80f1d9b265401ee4ea6b989e1829549616fdcd",
+      "license": "CC0-1.0",
+      "status": "adapter_verified",
+      "native_make": "Sony",
+      "native_model": "ILCE-7M3",
+      "sensor_size": [
+        6048,
+        4024
+      ],
+      "encoded_bytes": 50009600
+    },
+    {
+      "display_name": "Sony ILCE-7M4 (A7 IV)",
+      "make": "Sony",
+      "model": "ILCE-7M4",
+      "sample_id": "6928",
+      "source_url": "https://raw.pixls.us/getfile.php/6928/nice/Sony - ILCE-7M4 - 14bit 14bit uncompressed (3:2).ARW",
+      "sha256": "626e1f3235e28f2c642814e0aefad404ea767c06943934db87d2b0072ba8e8b9",
+      "license": "CC0-1.0",
+      "status": "adapter_verified",
+      "native_make": "Sony",
+      "native_model": "ILCE-7M4",
+      "sensor_size": [
+        7040,
+        4688
+      ],
+      "encoded_bytes": 73457664
+    },
+    {
+      "display_name": "Sony ILCE-7RM2 (A7R II)",
+      "make": "Sony",
+      "model": "ILCE-7RM2",
+      "sample_id": "1313",
+      "source_url": "https://raw.pixls.us/getfile.php/1313/nice/Sony - ILCE-7RM2 - 14bit 14bit uncompressed (3:2).ARW",
+      "sha256": "fdf3e8deea4ca31c6ee905fe5226efab398ce630ec96e9013850b488ce0e6289",
+      "license": "CC0-1.0",
+      "status": "adapter_verified",
+      "native_make": "Sony",
+      "native_model": "ILCE-7RM2",
+      "sensor_size": [
+        8000,
+        5320
+      ],
+      "encoded_bytes": 85852160
+    },
+    {
+      "display_name": "Sony ILCE-7RM3 (A7R III)",
+      "make": "Sony",
+      "model": "ILCE-7RM3",
+      "sample_id": "2046",
+      "source_url": "https://raw.pixls.us/getfile.php/2046/nice/Sony - ILCE-7RM3 - 14bit 14bit uncompressed (3:2).ARW",
+      "sha256": "fd83cd96d22fd2fb5e060863e146ab2ade5c1d6957a195e64d37d3277467e2fd",
+      "license": "CC0-1.0",
+      "status": "adapter_verified",
+      "native_make": "Sony",
+      "native_model": "ILCE-7RM3",
+      "sensor_size": [
+        8000,
+        5320
+      ],
+      "encoded_bytes": 85562368
+    },
+    {
+      "display_name": "Sony ILCE-7RM4 (A7R IV)",
+      "make": "Sony",
+      "model": "ILCE-7RM4",
+      "sample_id": "3481",
+      "source_url": "https://raw.pixls.us/getfile.php/3481/nice/Sony - ILCE-7RM4 - 14bit 14bit uncompressed (3:2).ARW",
+      "sha256": "2c7d9ddce62bf197bc922e28b3eb93817ff723867dcc34bc3de0179fe12d6a13",
+      "license": "CC0-1.0",
+      "status": "pending_raw_resource_decision",
+      "native_make": "Sony",
+      "native_model": "ILCE-7RM4",
+      "sensor_size": [
+        9600,
+        6376
+      ],
+      "encoded_bytes": 123205632
+    },
+    {
+      "display_name": "Sony ILCE-7RM5 (A7R V)",
+      "make": "Sony",
+      "model": "ILCE-7RM5",
+      "sample_id": "6231",
+      "source_url": "https://raw.pixls.us/getfile.php/6231/nice/Sony - ILCE-7RM5 - 14bit 14bit uncompressed (3:2).ARW",
+      "sha256": "8918ba274f0919be4f9902f9eebcab4663445ebe441d22fb48f3f328198ac2ee",
+      "license": "CC0-1.0",
+      "status": "pending_raw_resource_decision",
+      "native_make": "Sony",
+      "native_model": "ILCE-7RM5",
+      "sensor_size": [
+        9600,
+        6376
+      ],
+      "encoded_bytes": 134701056
+    },
+    {
+      "display_name": "Sony ILCE-7SM3 (A7S III)",
+      "make": "Sony",
+      "model": "ILCE-7SM3",
+      "sample_id": "5417",
+      "source_url": "https://raw.pixls.us/getfile.php/5417/nice/Sony - ILCE-7SM3 - 14bit 14bit uncompressed (3:2).ARW",
+      "sha256": "876c7b74c957b6d8c7f9a1c285806d4a3f62269c1a3af070965bcc02fcf903f1",
+      "license": "CC0-1.0",
+      "status": "adapter_verified",
+      "native_make": "Sony",
+      "native_model": "ILCE-7SM3",
+      "sensor_size": [
+        4288,
+        2848
+      ],
+      "encoded_bytes": 26533888
+    },
+    {
+      "display_name": "Sony ILCE-9 (A9)",
+      "make": "Sony",
+      "model": "ILCE-9",
+      "sample_id": "1542",
+      "source_url": "https://raw.pixls.us/getfile.php/1542/nice/Sony - ILCE-9 - 14bit 14bit uncompressed (3:2).ARW",
+      "sha256": "22c2158c9796386dba28d7cf040a1ca70f4ec2c927ec50771b78bfb523e21c29",
+      "license": "CC0-1.0",
+      "status": "adapter_verified",
+      "native_make": "Sony",
+      "native_model": "ILCE-9",
+      "sensor_size": [
+        6048,
+        4024
+      ],
+      "encoded_bytes": 49223168
+    },
+    {
+      "display_name": "Sony ILCE-1 (A1)",
+      "make": "Sony",
+      "model": "ILCE-1",
+      "sample_id": "4467",
+      "source_url": "https://raw.pixls.us/getfile.php/4467/nice/Sony - ILCE-1 - 14bit 14bit uncompressed (3:2).ARW",
+      "sha256": "ebc775fd757a853d018c18664fda4258be87a9597af3f7a260182ddbcbec985e",
+      "license": "CC0-1.0",
+      "status": "pending_raw_resource_decision",
+      "native_make": "Sony",
+      "native_model": "ILCE-1",
+      "sensor_size": [
+        8672,
+        5784
+      ],
+      "encoded_bytes": 113224192
+    },
+    {
+      "display_name": "Sony ILCE-7CR (A7C R)",
+      "make": "Sony",
+      "model": "ILCE-7CR",
+      "sample_id": "7031",
+      "source_url": "https://raw.pixls.us/getfile.php/7031/nice/Sony - ILCE-7CR - 14bit 14bit uncompressed (3:2).ARW",
+      "sha256": "4cc138b310801ff528d5dcc0acfd0b8f58fb8aef7ae404f0f8fd3f32845783a4",
+      "license": "CC0-1.0",
+      "status": "pending_raw_resource_decision",
+      "native_make": "Sony",
+      "native_model": "ILCE-7CR",
+      "sensor_size": [
+        9600,
+        6376
+      ],
+      "encoded_bytes": 132517888
+    },
+    {
+      "display_name": "Canon EOS R",
+      "make": "Canon",
+      "model": "EOS R",
+      "sample_id": "4515",
+      "source_url": "https://raw.pixls.us/getfile.php/4515/nice/Canon - EOS R - 3:2.CR3",
+      "sha256": "89bd55532b0cceb5efa360e97827ba35c2076bce0de4675f3a4413a883dac880",
+      "license": "CC0-1.0",
+      "status": "adapter_verified",
+      "native_make": "Canon",
+      "native_model": "EOS R",
+      "sensor_size": [
+        6888,
+        4546
+      ],
+      "encoded_bytes": 31606200
+    },
+    {
+      "display_name": "Canon EOS R5",
+      "make": "Canon",
+      "model": "EOS R5",
+      "sample_id": "4694",
+      "source_url": "https://raw.pixls.us/getfile.php/4694/nice/Canon - EOS R5 - 3:2.CR3",
+      "sha256": "21430c36387efe65bd09ac0fcd724bfd959d93dd391ec811a1b741c8663becb5",
+      "license": "CC0-1.0",
+      "status": "pending_raw_resource_decision",
+      "native_make": "Canon",
+      "native_model": "EOS R5",
+      "sensor_size": [
+        8352,
+        5586
+      ],
+      "encoded_bytes": 40632406
+    },
+    {
+      "display_name": "Canon EOS R6",
+      "make": "Canon",
+      "model": "EOS R6",
+      "sample_id": "4662",
+      "source_url": "https://raw.pixls.us/getfile.php/4662/nice/Canon - EOS R6 - 3:2.CR3",
+      "sha256": "81fab349ae9080fd0172583b7fd5ea36806e95ffa434909d2ccc6527dde34ee6",
+      "license": "CC0-1.0",
+      "status": "adapter_verified",
+      "native_make": "Canon",
+      "native_model": "EOS R6",
+      "sensor_size": [
+        5568,
+        3708
+      ],
+      "encoded_bytes": 22899798
+    },
+    {
+      "display_name": "Canon EOS R6 Mark II",
+      "make": "Canon",
+      "model": "EOS R6 Mark II",
+      "sample_id": "6402",
+      "source_url": "https://raw.pixls.us/getfile.php/6402/nice/Canon - EOS R6 Mark II - 3:2.cr3",
+      "sha256": "1a93f96556aabbc4a7260750ab0a191ec7926bb978fe8428bf3465121da730d6",
+      "license": "CC0-1.0",
+      "status": "adapter_verified",
+      "native_make": "Canon",
+      "native_model": "EOS R6 Mark II",
+      "sensor_size": [
+        6188,
+        4120
+      ],
+      "encoded_bytes": 29395090
+    },
+    {
+      "display_name": "Canon EOS R7",
+      "make": "Canon",
+      "model": "EOS R7",
+      "sample_id": "5633",
+      "source_url": "https://raw.pixls.us/getfile.php/5633/nice/Canon - EOS R7 - 3:2.CR3",
+      "sha256": "887439cb1a45becd6a5c85fe75ae10e6c520a9f13a8b9ed077c6cf5d7c37700c",
+      "license": "CC0-1.0",
+      "status": "adapter_verified",
+      "native_make": "Canon",
+      "native_model": "EOS R7",
+      "sensor_size": [
+        7128,
+        4732
+      ],
+      "encoded_bytes": 32313690
+    },
+    {
+      "display_name": "Canon EOS R10",
+      "make": "Canon",
+      "model": "EOS R10",
+      "sample_id": "5871",
+      "source_url": "https://raw.pixls.us/getfile.php/5871/nice/Canon - EOS R10 - 3:2.CR3",
+      "sha256": "5d2e076d38e7835d4c4f13dc2030a913cc573a31d7199b60777d23a25ccc3ef9",
+      "license": "CC0-1.0",
+      "status": "adapter_verified",
+      "native_make": "Canon",
+      "native_model": "EOS R10",
+      "sensor_size": [
+        6192,
+        4060
+      ],
+      "encoded_bytes": 31010650
+    },
+    {
+      "display_name": "Canon EOS R50",
+      "make": "Canon",
+      "model": "EOS R50",
+      "sample_id": "6645",
+      "source_url": "https://raw.pixls.us/getfile.php/6645/nice/Canon - EOS R50 - CRAW (3:2).CR3",
+      "sha256": "38fc458f2f74d0cfa04afd0ce513b40797080079f0786bedbfc55c39cc28d7d8",
+      "license": "CC0-1.0",
+      "status": "adapter_verified",
+      "native_make": "Canon",
+      "native_model": "EOS R50",
+      "sensor_size": [
+        6192,
+        4060
+      ],
+      "encoded_bytes": 21818220
+    },
+    {
+      "display_name": "Canon EOS RP",
+      "make": "Canon",
+      "model": "EOS RP",
+      "sample_id": "4674",
+      "source_url": "https://raw.pixls.us/getfile.php/4674/nice/Canon - EOS RP - 3:2.CR3",
+      "sha256": "dcbd0f6f9929de2e2331b0fd10a9d01e7cfd04c5a5e4038456de1647d714cdf2",
+      "license": "CC0-1.0",
+      "status": "adapter_verified",
+      "native_make": "Canon",
+      "native_model": "EOS RP",
+      "sensor_size": [
+        6384,
+        4224
+      ],
+      "encoded_bytes": 27439993
+    },
+    {
+      "display_name": "Canon EOS R8",
+      "make": "Canon",
+      "model": "EOS R8",
+      "sample_id": "6585",
+      "source_url": "https://raw.pixls.us/getfile.php/6585/nice/Canon - EOS R8 - 3:2.CR3",
+      "sha256": "7d5c6dbb11ff7e6ee58715d90a20f5d801e8b103f4711ff6ea329ceafcef254c",
+      "license": "CC0-1.0",
+      "status": "adapter_verified",
+      "native_make": "Canon",
+      "native_model": "EOS R8",
+      "sensor_size": [
+        6188,
+        4120
+      ],
+      "encoded_bytes": 28784786
+    },
+    {
+      "display_name": "Canon EOS R3",
+      "make": "Canon",
+      "model": "EOS R3",
+      "sample_id": "5051",
+      "source_url": "https://raw.pixls.us/getfile.php/5051/nice/Canon - EOS R3 - 3:2.CR3",
+      "sha256": "295d46a4d5383895e63126f67000d4352a5bb425ee4d8b16eb6b6c284bdf7994",
+      "license": "CC0-1.0",
+      "status": "adapter_verified",
+      "native_make": "Canon",
+      "native_model": "EOS R3",
+      "sensor_size": [
+        6192,
+        4152
+      ],
+      "encoded_bytes": 32291078
+    },
+    {
+      "display_name": "Canon EOS R5 Mark II",
+      "make": "Canon",
+      "model": "EOS R5 Mark II",
+      "sample_id": "7881",
+      "source_url": "https://raw.pixls.us/getfile.php/7881/nice/Canon - EOS R5 Mark II - RAW (3:2).CR3",
+      "sha256": "d6e6aa3b493ea8936dff0efb0cc17c87471437e7317bce37c8c82ba08b9cab7b",
+      "license": "CC0-1.0",
+      "status": "pending_raw_resource_decision",
+      "native_make": "Canon",
+      "native_model": "EOS R5 Mark II",
+      "sensor_size": [
+        8480,
+        5650
+      ],
+      "encoded_bytes": 54439072
+    },
+    {
+      "display_name": "Canon EOS 5D Mark IV",
+      "make": "Canon",
+      "model": "EOS 5D Mark IV",
+      "sample_id": "980",
+      "source_url": "https://raw.pixls.us/getfile.php/980/nice/Canon - EOS 5D Mark IV - RAW (3:2).CR2",
+      "sha256": "85bfec149261ffbae90797e45caae5e204e1e61ac62b92783925b5ee0f267d76",
+      "license": "CC0-1.0",
+      "status": "adapter_verified",
+      "native_make": "Canon",
+      "native_model": "EOS 5D Mark IV",
+      "sensor_size": [
+        6880,
+        4544
+      ],
+      "encoded_bytes": 61514368
+    },
+    {
+      "display_name": "Canon EOS 6D Mark II",
+      "make": "Canon",
+      "model": "EOS 6D Mark II",
+      "sample_id": "1625",
+      "source_url": "https://raw.pixls.us/getfile.php/1625/nice/Canon - EOS 6D Mark II - RAW (3:2).CR2",
+      "sha256": "712815b910fa473f7aaeb97c0804292d996b16dd6b974a3ab9a7195a2e41d90c",
+      "license": "CC0-1.0",
+      "status": "adapter_verified",
+      "native_make": "Canon",
+      "native_model": "EOS 6D Mark II",
+      "sensor_size": [
+        6384,
+        4224
+      ],
+      "encoded_bytes": 37169152
+    },
+    {
+      "display_name": "Canon EOS 80D",
+      "make": "Canon",
+      "model": "EOS 80D",
+      "sample_id": "1294",
+      "source_url": "https://raw.pixls.us/getfile.php/1294/nice/Canon - EOS 80D - RAW (3:2).CR2",
+      "sha256": "8f28465cee09844ffad95dbd3ec91923717a329c5ec4f3f405f5b4fce83aaea3",
+      "license": "CC0-1.0",
+      "status": "adapter_verified",
+      "native_make": "Canon",
+      "native_model": "EOS 80D",
+      "sensor_size": [
+        6288,
+        4056
+      ],
+      "encoded_bytes": 36489482
+    },
+    {
+      "display_name": "Canon EOS 7D Mark II",
+      "make": "Canon",
+      "model": "EOS 7D Mark II",
+      "sample_id": "1064",
+      "source_url": "https://raw.pixls.us/getfile.php/1064/nice/Canon - EOS 7D Mark II - RAW (3:2).cr2",
+      "sha256": "b9f71c56adb6e2861e6653efb312fb5cc88ba4aa17fa809c6a18b8db044360c3",
+      "license": "CC0-1.0",
+      "status": "adapter_verified",
+      "native_make": "Canon",
+      "native_model": "EOS 7D Mark II",
+      "sensor_size": [
+        5568,
+        3708
+      ],
+      "encoded_bytes": 22079066
+    },
+    {
+      "display_name": "Canon EOS M6",
+      "make": "Canon",
+      "model": "EOS M6",
+      "sample_id": "1382",
+      "source_url": "https://raw.pixls.us/getfile.php/1382/nice/Canon - EOS M6 - RAW (3:2).CR2",
+      "sha256": "b3a7a0037600b61d4c26ad03d5cac1801e35fb43a55699db5b77708c96f7338a",
+      "license": "CC0-1.0",
+      "status": "adapter_verified",
+      "native_make": "Canon",
+      "native_model": "EOS M6",
+      "sensor_size": [
+        6288,
+        4056
+      ],
+      "encoded_bytes": 36522435
+    },
+    {
+      "display_name": "Canon EOS-1D X Mark III",
+      "make": "Canon",
+      "model": "EOS-1D X Mark III",
+      "sample_id": "4655",
+      "source_url": "https://raw.pixls.us/getfile.php/4655/nice/Canon - EOS-1D X Mark III - 3:2.CR3",
+      "sha256": "8f38b9de90eaebefcd54022fcbfdf38e05fb86831c4c976c8ac05c599e63535b",
+      "license": "CC0-1.0",
+      "status": "adapter_verified",
+      "native_make": "Canon",
+      "native_model": "EOS-1D X Mark III",
+      "sensor_size": [
+        5568,
+        3708
+      ],
+      "encoded_bytes": 21288536
+    },
+    {
+      "display_name": "Fujifilm X100VI",
+      "make": "Fujifilm",
+      "model": "X100VI",
+      "sample_id": "7300",
+      "source_url": "https://raw.pixls.us/getfile.php/7300/nice/Fujifilm - X100VI - 14bit 14bit uncompressed (3:2).RAF",
+      "sha256": "8e5e4d8d2e0a865ca79b3d40734b6abc2f4b00281afea8b9bd3d8c29808f2fb3",
+      "license": "CC0-1.0",
+      "status": "adapter_verified",
+      "native_make": "Fujifilm",
+      "native_model": "X100VI",
+      "sensor_size": [
+        7872,
+        5196
+      ],
+      "encoded_bytes": 87583744
+    },
+    {
+      "display_name": "Fujifilm X100V",
+      "make": "Fujifilm",
+      "model": "X100V",
+      "sample_id": "3812",
+      "source_url": "https://raw.pixls.us/getfile.php/3812/nice/Fujifilm - X100V - 14bit 14bit compressed (3:2).RAF",
+      "sha256": "48f2055ab497c687347eee84103d4f48deb016fff711d2810eaf1317e506f621",
+      "license": "CC0-1.0",
+      "status": "adapter_verified",
+      "native_make": "Fujifilm",
+      "native_model": "X100V",
+      "sensor_size": [
+        6384,
+        4182
+      ],
+      "encoded_bytes": 32295360
+    },
+    {
+      "display_name": "Fujifilm X-T5",
+      "make": "Fujifilm",
+      "model": "X-T5",
+      "sample_id": "6122",
+      "source_url": "https://raw.pixls.us/getfile.php/6122/nice/Fujifilm - X-T5 - 14bit 14bit compressed (3:2).RAF",
+      "sha256": "b2a067e7fda16338f15c2532caa12b238b2415dc1c75a96a6d24d3445cfd0ae3",
+      "license": "CC0-1.0",
+      "status": "adapter_verified",
+      "native_make": "Fujifilm",
+      "native_model": "X-T5",
+      "sensor_size": [
+        7872,
+        5196
+      ],
+      "encoded_bytes": 43113376
+    },
+    {
+      "display_name": "Fujifilm X-T4",
+      "make": "Fujifilm",
+      "model": "X-T4",
+      "sample_id": "3913",
+      "source_url": "https://raw.pixls.us/getfile.php/3913/nice/Fujifilm - X-T4 - 14bit 14bit uncompressed (3:2).RAF",
+      "sha256": "76f70724b58014fc1c45f6d6f5d0e0781bf08e9537b72de866446bda9a24bb0c",
+      "license": "CC0-1.0",
+      "status": "adapter_verified",
+      "native_make": "Fujifilm",
+      "native_model": "X-T4",
+      "sensor_size": [
+        6384,
+        4182
+      ],
+      "encoded_bytes": 57594176
+    },
+    {
+      "display_name": "Fujifilm X-T3",
+      "make": "Fujifilm",
+      "model": "X-T3",
+      "sample_id": "2783",
+      "source_url": "https://raw.pixls.us/getfile.php/2783/nice/Fujifilm - X-T3 - 14bit 14bit compressed (3:2).RAF",
+      "sha256": "95b33021160b239ceb1a09d46a1b29cb60cb7dd47581feb126b337c219091754",
+      "license": "CC0-1.0",
+      "status": "adapter_verified",
+      "native_make": "Fujifilm",
+      "native_model": "X-T3",
+      "sensor_size": [
+        6384,
+        4182
+      ],
+      "encoded_bytes": 27313968
+    },
+    {
+      "display_name": "Fujifilm X-T30",
+      "make": "Fujifilm",
+      "model": "X-T30",
+      "sample_id": "3068",
+      "source_url": "https://raw.pixls.us/getfile.php/3068/nice/Fujifilm - X-T30 - 14bit 14bit uncompressed (3:2).RAF",
+      "sha256": "f0353544bc62a6816385de0850e1d37e2f3383892a7eb3928c73e4517fe47ff5",
+      "license": "CC0-1.0",
+      "status": "adapter_verified",
+      "native_make": "Fujifilm",
+      "native_model": "X-T30",
+      "sensor_size": [
+        6384,
+        4182
+      ],
+      "encoded_bytes": 57007936
+    },
+    {
+      "display_name": "Fujifilm X-S10",
+      "make": "Fujifilm",
+      "model": "X-S10",
+      "sample_id": "4188",
+      "source_url": "https://raw.pixls.us/getfile.php/4188/nice/Fujifilm - X-S10 - 14bit 14bit uncompressed (3:2).RAF",
+      "sha256": "3d080f9ce8ac65c4beab1e9c0f49f7c72cdec71f31fe9e27dd1d88e551a1c262",
+      "license": "CC0-1.0",
+      "status": "adapter_verified",
+      "native_make": "Fujifilm",
+      "native_model": "X-S10",
+      "sensor_size": [
+        6384,
+        4182
+      ],
+      "encoded_bytes": 56230208
+    },
+    {
+      "display_name": "Fujifilm X-S20",
+      "make": "Fujifilm",
+      "model": "X-S20",
+      "sample_id": "6666",
+      "source_url": "https://raw.pixls.us/getfile.php/6666/nice/Fujifilm - X-S20 - 14bit 14bit compressed (3:2).RAF",
+      "sha256": "737c1551843282d4963ccb351a4d6409f3eaf172928d563bbaf72fe0f1f74fdd",
+      "license": "CC0-1.0",
+      "status": "adapter_verified",
+      "native_make": "Fujifilm",
+      "native_model": "X-S20",
+      "sensor_size": [
+        6336,
+        4182
+      ],
+      "encoded_bytes": 33868160
+    },
+    {
+      "display_name": "Fujifilm X-H2",
+      "make": "Fujifilm",
+      "model": "X-H2",
+      "sample_id": "6001",
+      "source_url": "https://raw.pixls.us/getfile.php/6001/nice/Fujifilm - X-H2 - 14bit 14bit compressed (3:2).RAF",
+      "sha256": "caeadb2666f6c5d9bbe32fbe692c2079b6a7e028f8514a13173f360656d08507",
+      "license": "CC0-1.0",
+      "status": "adapter_verified",
+      "native_make": "Fujifilm",
+      "native_model": "X-H2",
+      "sensor_size": [
+        7872,
+        5196
+      ],
+      "encoded_bytes": 28948064
+    },
+    {
+      "display_name": "Fujifilm X-H2S",
+      "make": "Fujifilm",
+      "model": "X-H2S",
+      "sample_id": "6007",
+      "source_url": "https://raw.pixls.us/getfile.php/6007/nice/Fujifilm - X-H2S - 14bit 14bit compressed (3:2).raf",
+      "sha256": "6738634a3d7256a9d05f943a78f4f0f1e08d8f1730d8964c7a9cfdbf113654f5",
+      "license": "CC0-1.0",
+      "status": "adapter_verified",
+      "native_make": "Fujifilm",
+      "native_model": "X-H2S",
+      "sensor_size": [
+        6336,
+        4188
+      ],
+      "encoded_bytes": 30812112
+    },
+    {
+      "display_name": "Fujifilm X-Pro3",
+      "make": "Fujifilm",
+      "model": "X-Pro3",
+      "sample_id": "3700",
+      "source_url": "https://raw.pixls.us/getfile.php/3700/nice/Fujifilm - X-Pro3 - 14bit 14bit uncompressed (3:2).RAF",
+      "sha256": "8c50e965d7627932414e8790a5ef1d673fcb44b548b64130df6b9be42c418554",
+      "license": "CC0-1.0",
+      "status": "adapter_verified",
+      "native_make": "Fujifilm",
+      "native_model": "X-Pro3",
+      "sensor_size": [
+        6384,
+        4182
+      ],
+      "encoded_bytes": 56568128
+    },
+    {
+      "display_name": "Fujifilm X-E4",
+      "make": "Fujifilm",
+      "model": "X-E4",
+      "sample_id": "4446",
+      "source_url": "https://raw.pixls.us/getfile.php/4446/nice/Fujifilm - X-E4 - 14bit 14bit compressed lossless (3:2).RAF",
+      "sha256": "ce4215079e4c6c8a86d493e15f6e574e4aa7684b346ef3439026c835ed2c8948",
+      "license": "CC0-1.0",
+      "status": "adapter_verified",
+      "native_make": "Fujifilm",
+      "native_model": "X-E4",
+      "sensor_size": [
+        6384,
+        4182
+      ],
+      "encoded_bytes": 30801968
+    },
+    {
+      "display_name": "Fujifilm GFX100 II",
+      "make": "Fujifilm",
+      "model": "GFX100 II",
+      "sample_id": "7174",
+      "source_url": "https://raw.pixls.us/getfile.php/7174/nice/Fujifilm - GFX100 II - 14bit 14bit uncompressed (4:3).RAF",
+      "sha256": "b7b329bcbfcc07c5523a2b172a5173f4de4b841c8315078a1b69150ddaa16f30",
+      "license": "CC0-1.0",
+      "status": "pending_raw_resource_decision",
+      "native_make": "Fujifilm",
+      "native_model": "GFX100 II",
+      "sensor_size": [
+        11808,
+        8754
+      ],
+      "encoded_bytes": 208086656
+    },
+    {
+      "display_name": "Fujifilm GFX100S",
+      "make": "Fujifilm",
+      "model": "GFX100S",
+      "sample_id": "4493",
+      "source_url": "https://raw.pixls.us/getfile.php/4493/nice/Fujifilm - GFX100S - 16bit 16bit uncompressed (4:3).RAF",
+      "sha256": "79bd20f5ed2fe5c0d1d0ff5b317dedb41f16feb55e693e5569e165fd1c7bcaa4",
+      "license": "CC0-1.0",
+      "status": "pending_raw_resource_decision",
+      "native_make": "Fujifilm",
+      "native_model": "GFX100S",
+      "sensor_size": [
+        11808,
+        8754
+      ],
+      "encoded_bytes": 210160256
+    },
+    {
+      "display_name": "Fujifilm GFX50S II",
+      "make": "Fujifilm",
+      "model": "GFX50S II",
+      "sample_id": "5002",
+      "source_url": "https://raw.pixls.us/getfile.php/5002/nice/Fujifilm - GFX50S II - 14bit 14bit uncompressed (4:3).RAF",
+      "sha256": "cf53a9018d5a77cd854ea0a91afee2a35ac8fab8f814020d79f728f99ba99892",
+      "license": "CC0-1.0",
+      "status": "pending_raw_resource_decision",
+      "native_make": "Fujifilm",
+      "native_model": "GFX50S II",
+      "sensor_size": [
+        8472,
+        6210
+      ],
+      "encoded_bytes": 108485728
+    },
+    {
+      "display_name": "Fujifilm X-T50",
+      "make": "Fujifilm",
+      "model": "X-T50",
+      "sample_id": "7805",
+      "source_url": "https://raw.pixls.us/getfile.php/7805/nice/Fujifilm - X-T50 - 14bit uncompressed (3:2).RAF",
+      "sha256": "65c7c0972a040ff0cda02f9307cc4ca9e015c18abbeb7a6b564e3a57b62e8800",
+      "license": "CC0-1.0",
+      "status": "adapter_verified",
+      "native_make": "Fujifilm",
+      "native_model": "X-T50",
+      "sensor_size": [
+        7872,
+        5196
+      ],
+      "encoded_bytes": 87559168
+    },
+    {
+      "display_name": "Fujifilm X100F",
+      "make": "Fujifilm",
+      "model": "X100F",
+      "sample_id": "1936",
+      "source_url": "https://raw.pixls.us/getfile.php/1936/nice/Fujifilm - X100F - 14bit 14bit compressed (3:2).RAF",
+      "sha256": "bca8ad027b0ee0038107c01792ccb5c6b776512b77b584c6f93c6f2ced5f15a3",
+      "license": "CC0-1.0",
+      "status": "adapter_verified",
+      "native_make": "Fujifilm",
+      "native_model": "X100F",
+      "sensor_size": [
+        6048,
+        4038
+      ],
+      "encoded_bytes": 26861536
+    },
+    {
+      "display_name": "Fujifilm X-T20",
+      "make": "Fujifilm",
+      "model": "X-T20",
+      "sample_id": "1177",
+      "source_url": "https://raw.pixls.us/getfile.php/1177/nice/Fujifilm - X-T20 - 14bit 14bit uncompressed (3:2).RAF",
+      "sha256": "afe552f4a2794c7aa2376dd826165354b243dcf6f2296b01505dded8c8e4be76",
+      "license": "CC0-1.0",
+      "status": "adapter_verified",
+      "native_make": "Fujifilm",
+      "native_model": "X-T20",
+      "sensor_size": [
+        6160,
+        4032
+      ],
+      "encoded_bytes": 50404864
+    },
+    {
+      "display_name": "Air 2S (existing qualified profile)",
+      "make": "DJI",
+      "model": "FC3411",
+      "sample_id": "owner-air2s",
+      "source_url": null,
+      "sha256": "aab79ce1795a7dd5f1c2e52ec7bd07345cb9bda0262d1d5aa3701db212b09e1d",
+      "license": "private-permission",
+      "status": "adapter_verified",
+      "native_make": "DJI",
+      "native_model": "FC3411",
+      "sensor_size": [
+        5568,
+        3648
+      ]
+    },
+    {
+      "display_name": "DC-S5M2",
+      "make": "Panasonic",
+      "model": "DC-S5M2",
+      "sample_id": "7790",
+      "source_url": "https://raw.pixls.us/getfile.php/7790/nice/Panasonic - DC-S5M2 - 14bit (3:2).RW2",
+      "sha256": "53a171521a7f9af6910b4ab61c5a4a42de0cceb24166e15b07eee1e00675028f",
+      "license": "CC0-1.0",
+      "status": "adapter_verified",
+      "native_make": "Panasonic",
+      "native_model": "DC-S5M2",
+      "sensor_size": [
+        6008,
+        4008
+      ],
+      "encoded_bytes": 37309952
+    },
+    {
+      "display_name": "DC-S5",
+      "make": "Panasonic",
+      "model": "DC-S5",
+      "sample_id": "4096",
+      "source_url": "https://raw.pixls.us/getfile.php/4096/nice/Panasonic - DC-S5 - 3:2.RW2",
+      "sha256": "350f4ad0839383b3e7bcb0feb2dda827fc81e97ab59917df2a1d824bb979234d",
+      "license": "CC0-1.0",
+      "status": "adapter_verified",
+      "native_make": "Panasonic",
+      "native_model": "DC-S5",
+      "sensor_size": [
+        6072,
+        4016
+      ],
+      "encoded_bytes": 35998720
+    },
+    {
+      "display_name": "DC-G9M2",
+      "make": "Panasonic",
+      "model": "DC-G9M2",
+      "sample_id": "6999",
+      "source_url": "https://raw.pixls.us/getfile.php/6999/nice/Panasonic - DC-G9M2 - 4:3.RW2",
+      "sha256": "dd4bc19ed6cf6625608a1ff14ce1a9d16692e1bf1d50993a3fc076e18905b662",
+      "license": "CC0-1.0",
+      "status": "adapter_verified",
+      "native_make": "Panasonic",
+      "native_model": "DC-G9M2",
+      "sensor_size": [
+        5784,
+        4344
+      ],
+      "encoded_bytes": 41250304
+    },
+    {
+      "display_name": "DC-GH7",
+      "make": "Panasonic",
+      "model": "DC-GH7",
+      "sample_id": "8062",
+      "source_url": "https://raw.pixls.us/getfile.php/8062/nice/Panasonic - DC-GH7 - 4:3.RW2",
+      "sha256": "d7d99d4702f1a28326e119e39d4c43dfb7ce16bbab1a3580e813191f0edbfd87",
+      "license": "CC0-1.0",
+      "status": "adapter_verified",
+      "native_make": "Panasonic",
+      "native_model": "DC-GH7",
+      "sensor_size": [
+        5792,
+        4352
+      ],
+      "encoded_bytes": 40815104
+    },
+    {
+      "display_name": "DC-GX7MK3",
+      "make": "Panasonic",
+      "model": "DC-GX7MK3",
+      "sample_id": "5967",
+      "source_url": "https://raw.pixls.us/getfile.php/5967/nice/Panasonic - DC-GX7MK3 - 4:3.RW2",
+      "sha256": "b801f4b12b18d7c01289a8be5555e753edd38f9c7ffbb8922eede2506d511c66",
+      "license": "CC0-1.0",
+      "status": "adapter_verified",
+      "native_make": "Panasonic",
+      "native_model": "DC-GX7MK3",
+      "sensor_size": [
+        5264,
+        3904
+      ],
+      "encoded_bytes": 24156672
+    },
+    {
+      "display_name": "OM-1",
+      "make": "OM System",
+      "model": "OM-1",
+      "sample_id": "5283",
+      "source_url": "https://raw.pixls.us/getfile.php/5283/nice/OM System - OM-1 - 16bit (4:3).ORF",
+      "sha256": "bf2eef6becc0851e48231617c3e2eac27a2cdb44c75b93035c561d837952c18b",
+      "license": "CC0-1.0",
+      "status": "adapter_verified",
+      "native_make": "OM Digital",
+      "native_model": "OM-1",
+      "sensor_size": [
+        5220,
+        3912
+      ],
+      "encoded_bytes": 21820729
+    },
+    {
+      "display_name": "OM-1 Mark II",
+      "make": "OM System",
+      "model": "OM-1 Mark II",
+      "sample_id": "7262",
+      "source_url": "https://raw.pixls.us/getfile.php/7262/nice/OM System - OM-1 Mark II - 16bit (4:3).orf",
+      "sha256": "d0fe58daf2f0bd749ecb18311e55408f0e7804de8e5e6580e815eae50d834cbd",
+      "license": "CC0-1.0",
+      "status": "adapter_verified",
+      "native_make": "OM Digital",
+      "native_model": "OM-1MarkII",
+      "sensor_size": [
+        5220,
+        3912
+      ],
+      "encoded_bytes": 22436792
+    },
+    {
+      "display_name": "OM-3",
+      "make": "OM System",
+      "model": "OM-3",
+      "sample_id": "7796",
+      "source_url": "https://raw.pixls.us/getfile.php/7796/nice/OM System - OM-3 - 16bit (4:3).ORF",
+      "sha256": "1cee7deb661e45101ab3ca6c4240d24ed949b167ed423703fca15c09dd8ec176",
+      "license": "CC0-1.0",
+      "status": "adapter_verified",
+      "native_make": "OM Digital",
+      "native_model": "OM-3",
+      "sensor_size": [
+        5220,
+        3912
+      ],
+      "encoded_bytes": 21636473
+    },
+    {
+      "display_name": "OM-5",
+      "make": "OM System",
+      "model": "OM-5",
+      "sample_id": "6343",
+      "source_url": "https://raw.pixls.us/getfile.php/6343/nice/OM System - OM-5 - 16bit (4:3).ORF",
+      "sha256": "ee0213ee4899d677d9bd538d8cfa4d0f69bdbacd462c1cf3ca3901036cf2fce7",
+      "license": "CC0-1.0",
+      "status": "adapter_verified",
+      "native_make": "OM Digital",
+      "native_model": "OM-5",
+      "sensor_size": [
+        5240,
+        3912
+      ],
+      "encoded_bytes": 19296199
+    },
+    {
+      "display_name": "E-M1MarkIII",
+      "make": "Olympus",
+      "model": "E-M1MarkIII",
+      "sample_id": "3800",
+      "source_url": "https://raw.pixls.us/getfile.php/3800/nice/Olympus - E-M1MarkIII - 16bit (4:3).ORF",
+      "sha256": "1e7a256eff14df75055dd7fe7a68aabefb4d8ed475317e80ebf7ff77d5bcfd3f",
+      "license": "CC0-1.0",
+      "status": "adapter_verified",
+      "native_make": "Olympus",
+      "native_model": "E-M1MarkIII",
+      "sensor_size": [
+        5240,
+        3912
+      ],
+      "encoded_bytes": 17985823
+    },
+    {
+      "display_name": "E-M1X",
+      "make": "Olympus",
+      "model": "E-M1X",
+      "sample_id": "3041",
+      "source_url": "https://raw.pixls.us/getfile.php/3041/nice/Olympus - E-M1X - 16bit (4:3).ORF",
+      "sha256": "ab171cedfe3a65438dd47c2df704a7d3001f45f5ab43e67b7f96cfe30b6ebbcf",
+      "license": "CC0-1.0",
+      "status": "adapter_verified",
+      "native_make": "Olympus",
+      "native_model": "E-M1X",
+      "sensor_size": [
+        5240,
+        3912
+      ],
+      "encoded_bytes": 19949258
+    },
+    {
+      "display_name": "E-M10 Mark IV",
+      "make": "Olympus",
+      "model": "E-M10 Mark IV",
+      "sample_id": "4126",
+      "source_url": "https://raw.pixls.us/getfile.php/4126/nice/Olympus - E-M10 Mark IV - 16bit (4:3).ORF",
+      "sha256": "ce03e936cb2e8131343e7045a3249f78477bd2ae944e121ace72058b89fef509",
+      "license": "CC0-1.0",
+      "status": "adapter_verified",
+      "native_make": "Olympus",
+      "native_model": "E-M10MarkIV",
+      "sensor_size": [
+        5200,
+        3904
+      ],
+      "encoded_bytes": 18759058
+    },
+    {
+      "display_name": "K-3 Mark III",
+      "make": "Pentax",
+      "model": "K-3 Mark III",
+      "sample_id": "4677",
+      "source_url": "https://raw.pixls.us/getfile.php/4677/nice/Pentax - K-3 Mark III - 14bit (3:2).PEF",
+      "sha256": "351be88038b2dd28af39e11dbece6de74efd71119a9ef667d35cdf02dcff919f",
+      "license": "CC0-1.0",
+      "status": "adapter_verified",
+      "native_make": "Pentax",
+      "native_model": "K-3 Mark III",
+      "sensor_size": [
+        6304,
+        4224
+      ],
+      "encoded_bytes": 32300671
+    },
+    {
+      "display_name": "K-1 Mark II",
+      "make": "Pentax",
+      "model": "K-1 Mark II",
+      "sample_id": "3345",
+      "source_url": "https://raw.pixls.us/getfile.php/3345/nice/Pentax - K-1 Mark II - 14bit (3:2).DNG",
+      "sha256": "190d5878675f4de07d246271ba411b152f3317b2d2a0e27b9c827fe7343b28ea",
+      "license": "CC0-1.0",
+      "status": "adapter_verified",
+      "native_make": "Pentax",
+      "native_model": "K-1 Mark II",
+      "sensor_size": [
+        7392,
+        4950
+      ],
+      "encoded_bytes": 46069312
+    },
+    {
+      "display_name": "K-70",
+      "make": "Pentax",
+      "model": "K-70",
+      "sample_id": "1141",
+      "source_url": "https://raw.pixls.us/getfile.php/1141/nice/Pentax - K-70 - 14bit (3:2).PEF",
+      "sha256": "1d64c6aa71680642ba8f00b6f6105df3e66a4534e631f422fbf3316273c4408c",
+      "license": "CC0-1.0",
+      "status": "adapter_verified",
+      "native_make": "Pentax",
+      "native_model": "K-70",
+      "sensor_size": [
+        6080,
+        4064
+      ],
+      "encoded_bytes": 28663115
+    },
+    {
+      "display_name": "KP",
+      "make": "Pentax",
+      "model": "KP",
+      "sample_id": "1824",
+      "source_url": "https://raw.pixls.us/getfile.php/1824/nice/Pentax - KP - 14bit (3:2).DNG",
+      "sha256": "16b09cb3032003989877659ae03cbb6985e3d7e84f1402863ccae8af10033c1c",
+      "license": "CC0-1.0",
+      "status": "adapter_verified",
+      "native_make": "Pentax",
+      "native_model": "KP",
+      "sensor_size": [
+        6112,
+        4060
+      ],
+      "encoded_bytes": 32655447
+    },
+    {
+      "display_name": "Panasonic Lumix GH6",
+      "make": "Panasonic",
+      "model": "DC-GH6",
+      "sample_id": "5876",
+      "source_url": "https://raw.pixls.us/getfile.php/5876/nice/Panasonic - DC-GH6 - 4:3.RW2",
+      "sha256": "07996bca904a178d02c5f56ee03a8dce775a0e1150c1beeaec51d72ff5e700d0",
+      "license": "CC0-1.0",
+      "status": "adapter_verified",
+      "native_make": "Panasonic",
+      "native_model": "DC-GH6",
+      "sensor_size": [
+        5792,
+        4352
+      ],
+      "encoded_bytes": 44727296
+    },
+    {
+      "display_name": "GR III",
+      "make": "Ricoh",
+      "model": "GR III",
+      "sample_id": "3115",
+      "source_url": "https://raw.pixls.us/getfile.php/3115/nice/Ricoh - GR III - 14bit (3:2).DNG",
+      "sha256": "05513ee72f7cac4165534c9f64995412084f414a033c80c473c79fd94154292e",
+      "license": "CC0-1.0",
+      "status": "adapter_verified",
+      "native_make": "Ricoh",
+      "native_model": "GR III",
+      "sensor_size": [
+        6112,
+        4064
+      ],
+      "encoded_bytes": 33374940
+    },
+    {
+      "display_name": "GR IIIx",
+      "make": "Ricoh",
+      "model": "GR IIIx",
+      "sample_id": "5818",
+      "source_url": "https://raw.pixls.us/getfile.php/5818/nice/Ricoh - GR IIIx - 14bit (3:2).DNG",
+      "sha256": "1e318af31be4baa9949f0ed4af5cfe8ffb2c180e2c12926cd75ac1d029bb0fae",
+      "license": "CC0-1.0",
+      "status": "adapter_verified",
+      "native_make": "Ricoh",
+      "native_model": "GR IIIx",
+      "sensor_size": [
+        6112,
+        4064
+      ],
+      "encoded_bytes": 31357843
+    },
+    {
+      "display_name": "Q2",
+      "make": "Leica",
+      "model": "Q2",
+      "sample_id": "3204",
+      "source_url": "https://raw.pixls.us/getfile.php/3204/nice/Leica - Q2 - 14bit 14bit uncompressed (3:2).DNG",
+      "sha256": "a71f98405e9e9c1e4ac0f2d2e6c52d65daae3234fc0a9f6eed2a84ee4ce794ad",
+      "license": "CC0-1.0",
+      "status": "pending_raw_resource_decision",
+      "native_make": "Leica",
+      "native_model": "Q2",
+      "sensor_size": [
+        8424,
+        5632
+      ],
+      "encoded_bytes": 87194624
+    },
+    {
+      "display_name": "SL2",
+      "make": "Leica",
+      "model": "SL2",
+      "sample_id": "7872",
+      "source_url": "https://raw.pixls.us/getfile.php/7872/nice/Leica - SL2 - 14bit uncompressed (3:2).DNG",
+      "sha256": "d00f05468793e4509b53230e90dcdc078e823b254eee95f1c68b29e217df99bf",
+      "license": "CC0-1.0",
+      "status": "pending_raw_resource_decision",
+      "native_make": "Leica",
+      "native_model": "SL2",
+      "sensor_size": [
+        8424,
+        5632
+      ],
+      "encoded_bytes": 88964096
+    },
+    {
+      "display_name": "M10-R",
+      "make": "Leica",
+      "model": "M10-R",
+      "sample_id": "7853",
+      "source_url": "https://raw.pixls.us/getfile.php/7853/nice/Leica - M10-R - 16bit compressed (3:2).DNG",
+      "sha256": "ba35d25d521c7ddbc4feca69c8cdbe071ac65dcd6cf2c93374391bf6f3662b8d",
+      "license": "CC0-1.0",
+      "status": "adapter_verified",
+      "native_make": "Leica",
+      "native_model": "M10-R",
+      "sensor_size": [
+        7872,
+        5208
+      ],
+      "encoded_bytes": 54857728
+    },
+    {
+      "display_name": "M10",
+      "make": "Leica",
+      "model": "M10",
+      "sample_id": "1603",
+      "source_url": "https://raw.pixls.us/getfile.php/1603/nice/Leica - M10 - 16bit 16bit uncompressed (3:2).dng",
+      "sha256": "26be5e06dfb53a2938dab3ca8f06024533a9c0dd0c652938f39eb48bc325f95e",
+      "license": "CC0-1.0",
+      "status": "adapter_verified",
+      "native_make": "Leica",
+      "native_model": "M10",
+      "sensor_size": [
+        5984,
+        3992
+      ],
+      "encoded_bytes": 34209792
+    },
+    {
+      "display_name": "CL",
+      "make": "Leica",
+      "model": "CL",
+      "sample_id": "2489",
+      "source_url": "https://raw.pixls.us/getfile.php/2489/nice/Leica - CL - 14bit 14bit uncompressed (3:2).DNG",
+      "sha256": "1f4cfa565d176d85838d96bd3eb598bbeed719cac8acb9999d5823c527635950",
+      "license": "CC0-1.0",
+      "status": "adapter_verified",
+      "native_make": "Leica",
+      "native_model": "CL",
+      "sensor_size": [
+        6120,
+        4016
+      ],
+      "encoded_bytes": 44546560
+    },
+    {
+      "display_name": "Panasonic Lumix GH5",
+      "make": "Panasonic",
+      "model": "DC-GH5",
+      "sample_id": "1516",
+      "source_url": "https://raw.pixls.us/getfile.php/1516/nice/Panasonic - DC-GH5 - 3:2.RW2",
+      "sha256": "56d0e3ad08c662c59763502c18fe9519918baae3a25f4d4242d09df7fa2db6a2",
+      "license": "CC0-1.0",
+      "status": "adapter_verified",
+      "native_make": "Panasonic",
+      "native_model": "DC-GH5",
+      "sensor_size": [
+        5264,
+        3904
+      ],
+      "encoded_bytes": 24204288
+    },
+    {
+      "display_name": "Mavic 3 Pro Cine (camera identity evidenced by repository remark)",
+      "make": "DJI",
+      "model": "FC4382",
+      "sample_id": "7823",
+      "source_url": "https://raw.pixls.us/getfile.php/7823/nice/DJI - FC4382 - 16bit (4:3).DNG",
+      "sha256": "f33ddaf2a7fa70b395abced251faccea11100d2ab7e54ae0a6adbff043d72027",
+      "license": "CC0-1.0",
+      "status": "adapter_verified",
+      "native_make": "DJI",
+      "native_model": "FC4382",
+      "sensor_size": [
+        4032,
+        3024
+      ],
+      "encoded_bytes": 14884352
+    },
+    {
+      "display_name": "Mini 2 (camera identity evidenced by repository remark)",
+      "make": "DJI",
+      "model": "FC7303",
+      "sample_id": "4785",
+      "source_url": "https://raw.pixls.us/getfile.php/4785/nice/DJI - FC7303 - 16bit (4:3).DNG",
+      "sha256": "21a49e63966f82391ca1188c7559c3acc01a35a89a70194fda4bf44cbd64a851",
+      "license": "CC0-1.0",
+      "status": "adapter_verified",
+      "native_make": "DJI",
+      "native_model": "FC7303",
+      "sensor_size": [
+        4000,
+        3000
+      ],
+      "encoded_bytes": 24524288
+    },
+    {
+      "display_name": "Phantom 4 Pro (camera identity evidenced by repository remark)",
+      "make": "DJI",
+      "model": "FC6310",
+      "sample_id": "2155",
+      "source_url": "https://raw.pixls.us/getfile.php/2155/nice/DJI - FC6310 - 16bit (3:2).DNG",
+      "sha256": "6d10b59405200c84d0a7f1e317bfc2ef5a592f042ba3072b7208dc10da611bda",
+      "license": "CC0-1.0",
+      "status": "adapter_verified",
+      "native_make": "DJI",
+      "native_model": "FC6310",
+      "sensor_size": [
+        5472,
+        3648
+      ],
+      "encoded_bytes": 40196555
+    },
+    {
+      "display_name": "Mavic Pro (camera identity evidenced by repository remark)",
+      "make": "DJI",
+      "model": "FC220",
+      "sample_id": "1052",
+      "source_url": "https://raw.pixls.us/getfile.php/1052/nice/DJI - FC220 - 16bit (4:3).DNG",
+      "sha256": "85a4fc27cca3c1358abd22898d6426dc3448060ca5143e7bd255cb5fff64392d",
+      "license": "CC0-1.0",
+      "status": "adapter_verified",
+      "native_make": "DJI",
+      "native_model": "FC220",
+      "sensor_size": [
+        4000,
+        3000
+      ],
+      "encoded_bytes": 24331468
+    }
+  ]
+}

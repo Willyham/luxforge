@@ -271,7 +271,7 @@ fn required_dji_opcodes_are_applied_to_fc3411() {
         }
     }
     assert!(corrections.skipped_optional.is_empty());
-    assert!(raw.gain_at_sensor(2840.0, 1800.0, 1).unwrap() > 0.0);
+    assert!(raw.gain_at_corrected_sensor(2840.0, 1800.0, 1).unwrap() > 0.0);
     let corrected = raw.corrected_sensor_sample_location(100, 4, 0).unwrap();
     assert!(corrected.0.is_finite() && corrected.1.is_finite());
     let rgb = raw

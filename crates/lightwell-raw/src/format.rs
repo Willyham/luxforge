@@ -231,6 +231,15 @@ pub(super) fn dng_opcodes(bytes: &[u8]) -> Result<Vec<DngOpcode>, RawError> {
                     queue.push(v);
                 }
             } else if matches!(entry.tag, 51008 | 51009 | 51022) {
+                if entry.kind != 7 {
+                    return Err(RawError::InvalidInput("DNG opcode list type"));
+                }
+                // An empty UNDEFINED field carries no operations (observed in
+                // native DNGs alongside a populated later-stage list). A
+                // nonempty truncated count still fails below.
+                if entry.count == 0 {
+                    continue;
+                }
                 let data = tiff
                     .payload(entry)
                     .ok_or(RawError::InvalidInput("DNG opcode list bounds"))?;
@@ -306,14 +315,20 @@ pub(super) struct DngSensorContainer {
 }
 
 fn rational_values(tiff: &Tiff<'_>, entry: Entry, count: usize) -> Option<Vec<(u32, u32)>> {
-    if entry.kind != 5 || entry.count as usize != count {
+    if !matches!(entry.kind, 3..=5) || entry.count as usize != count {
         return None;
     }
     let bytes = tiff.payload(entry)?;
     let mut values = Vec::with_capacity(count);
     for i in 0..count {
-        let n = u32_at(bytes, i * 8, tiff.endian)?;
-        let d = u32_at(bytes, i * 8 + 4, tiff.endian)?;
+        let (n, d) = match entry.kind {
+            3 => (u16_at(bytes, i * 2, tiff.endian)? as u32, 1),
+            4 => (u32_at(bytes, i * 4, tiff.endian)?, 1),
+            _ => (
+                u32_at(bytes, i * 8, tiff.endian)?,
+                u32_at(bytes, i * 8 + 4, tiff.endian)?,
+            ),
+        };
         if d == 0 {
             return None;
         }
@@ -332,33 +347,36 @@ pub(super) fn dng_container(
     native: &NativeMetadata,
     strategy: &DngContainer,
 ) -> Result<DngSensorContainer, RawError> {
-    let DngContainer::UncompressedU16SingleStrip = strategy;
     let (tiff, first) = Tiff::header(bytes, 0).ok_or(RawError::InvalidInput("DNG TIFF header"))?;
-    let (root, _) = tiff
-        .entries(first)
-        .ok_or(RawError::InvalidInput("DNG root IFD"))?;
-    let mut sub_tags = root.iter().copied().filter(|e| e.tag == 330);
-    let sub = sub_tags
-        .next()
-        .ok_or(RawError::InvalidInput("DNG raw SubIFD"))?;
-    if sub_tags.next().is_some() {
-        return Err(RawError::InvalidInput("duplicate DNG SubIFD tag"));
-    }
-    if sub.kind != 4 || sub.count == 0 || sub.count > 8 {
-        return Err(RawError::InvalidInput("DNG SubIFD count/type"));
-    }
-    let offsets = tiff
-        .payload(sub)
-        .ok_or(RawError::InvalidInput("DNG SubIFD offsets"))?;
+    let mut queue = vec![first];
+    let mut seen = Vec::new();
     let mut candidate = None;
-    for chunk in offsets.chunks_exact(4) {
-        let rel = match tiff.endian {
-            Endian::Little => u32::from_le_bytes(chunk.try_into().unwrap()),
-            Endian::Big => u32::from_be_bytes(chunk.try_into().unwrap()),
-        };
-        let (entries, _) = tiff
+    while let Some(rel) = queue.pop() {
+        if rel == 0 || seen.contains(&rel) {
+            continue;
+        }
+        if seen.len() >= 16 {
+            return Err(RawError::ResourceLimit("DNG sensor IFD count"));
+        }
+        seen.push(rel);
+        let (entries, next) = tiff
             .entries(rel)
-            .ok_or(RawError::InvalidInput("DNG SubIFD"))?;
+            .ok_or(RawError::InvalidInput("DNG sensor IFD"))?;
+        queue.push(next);
+        for entry in entries.iter().copied().filter(|e| e.tag == 330) {
+            if entry.kind != 4 || entry.count == 0 || entry.count > 8 {
+                return Err(RawError::InvalidInput("DNG SubIFD count/type"));
+            }
+            let offsets = tiff
+                .payload(entry)
+                .ok_or(RawError::InvalidInput("DNG SubIFD offsets"))?;
+            for i in 0..entry.count as usize {
+                queue.push(
+                    u32_at(offsets, i * 4, tiff.endian)
+                        .ok_or(RawError::InvalidInput("DNG SubIFD offset"))?,
+                );
+            }
+        }
         for (i, entry) in entries.iter().enumerate() {
             if entries[..i]
                 .iter()
@@ -371,39 +389,68 @@ pub(super) fn dng_container(
         let scalar = |tag| get(tag).and_then(|e| tiff.scalar(e));
         if scalar(256) != Some(native.width)
             || scalar(257) != Some(native.height)
-            || scalar(258) != Some(16)
-            || scalar(259) != Some(1)
+            || scalar(258) != Some(native.raw_bps)
+            || !matches!(scalar(259), Some(1 | 7))
             || scalar(262) != Some(32803)
             || scalar(277) != Some(1)
-            || scalar(278) != Some(native.height)
-            || scalar(284) != Some(1)
+            || scalar(284).unwrap_or(1) != 1
         {
             continue;
         }
-        let expected_bytes = native
-            .width
-            .checked_mul(native.height)
-            .and_then(|v| v.checked_mul(2))
+        if *strategy == DngContainer::UncompressedU16SingleStrip
+            && (native.raw_bps != 16 || scalar(259) != Some(1))
+        {
+            return Err(RawError::UnsupportedMode("DNG profile storage".into()));
+        }
+        let expected_bytes = (u64::from(native.width) * u64::from(native.raw_bps))
+            .div_ceil(8)
+            .checked_mul(u64::from(native.height))
             .ok_or(RawError::ResourceLimit("DNG strip size"))?;
-        let strip_offset = scalar(273).ok_or(RawError::InvalidInput("DNG strip offset"))?;
-        let strip_end = (strip_offset as usize).checked_add(expected_bytes as usize);
-        if scalar(279) != Some(expected_bytes)
-            || strip_end
-                .and_then(|end| bytes.get(strip_offset as usize..end))
+        let (offset_tag, count_tag) = if get(273).is_some() {
+            if scalar(278) != Some(native.height) || get(324).is_some() {
+                return Err(RawError::UnsupportedMode("DNG single-strip layout".into()));
+            }
+            (273, 279)
+        } else if *strategy == DngContainer::IntegerCfaSingleSegment
+            && scalar(322) == Some(native.width)
+            && scalar(323) == Some(native.height)
+        {
+            (324, 325)
+        } else {
+            return Err(RawError::UnsupportedMode(
+                "DNG single-segment layout".into(),
+            ));
+        };
+        let strip_offset =
+            scalar(offset_tag).ok_or(RawError::InvalidInput("DNG single segment offset"))? as usize;
+        let strip_bytes = scalar(count_tag)
+            .ok_or(RawError::InvalidInput("DNG single segment byte count"))?
+            as usize;
+        let uncompressed_size_invalid = scalar(259) == Some(1)
+            && if *strategy == DngContainer::UncompressedU16SingleStrip {
+                strip_bytes as u64 != expected_bytes
+            } else {
+                (strip_bytes as u64) < expected_bytes
+            };
+        if strip_bytes == 0
+            || uncompressed_size_invalid
+            || strip_offset
+                .checked_add(strip_bytes)
+                .and_then(|end| bytes.get(strip_offset..end))
                 .is_none()
         {
-            return Err(RawError::UnsupportedMode("DNG strip encoding".into()));
+            return Err(RawError::UnsupportedMode("DNG segment encoding".into()));
         }
-        let active_tag = get(50829).ok_or(RawError::InvalidInput("DNG ActiveArea"))?;
-        if active_tag.kind != 4 || active_tag.count != 4 {
-            return Err(RawError::InvalidInput("DNG ActiveArea type/count"));
-        }
-        let area = tiff
-            .payload(active_tag)
-            .ok_or(RawError::InvalidInput("DNG ActiveArea payload"))?;
-        let coord = |i: usize| {
-            u32_at(area, i * 4, tiff.endian)
-                .ok_or(RawError::InvalidInput("DNG ActiveArea coordinate"))
+        // DNG's absent ActiveArea defaults to the full sensor rectangle.
+        let area = if let Some(entry) = get(50829) {
+            let values =
+                rational_values(&tiff, entry, 4).ok_or(RawError::InvalidInput("DNG ActiveArea"))?;
+            if values.iter().any(|(_, d)| *d != 1) {
+                return Err(RawError::InvalidInput("DNG fractional ActiveArea"));
+            }
+            [values[0].0, values[1].0, values[2].0, values[3].0]
+        } else {
+            [0, 0, native.height, native.width]
         };
         let active_bottom = native
             .active_y
@@ -413,10 +460,10 @@ pub(super) fn dng_container(
             .active_x
             .checked_add(native.active_width)
             .ok_or(RawError::InvalidInput("DNG active bounds"))?;
-        if coord(0)? != native.active_y
-            || coord(1)? != native.active_x
-            || coord(2)? != active_bottom
-            || coord(3)? != active_right
+        if area[0] != native.active_y
+            || area[1] != native.active_x
+            || area[2] != active_bottom
+            || area[3] != active_right
         {
             return Err(RawError::InvalidInput(
                 "DNG ActiveArea differs from decoder",
@@ -512,7 +559,7 @@ pub(super) fn dng_color_calibration(
         }
     }
     let get = |tag| root.iter().copied().find(|e| e.tag == tag);
-    if [50723, 50724, 50729, 50964, 50965, 52525, 52526]
+    if [50729, 50964, 50965, 52525, 52526]
         .into_iter()
         .any(|tag| get(tag).is_some())
     {
@@ -520,19 +567,48 @@ pub(super) fn dng_color_calibration(
             "DNG camera calibration or forward profile".into(),
         ));
     }
+    // DNG defaults CameraCalibration to identity. Explicit identity matrices
+    // are equivalent, regardless of profile signature; nonidentity calibration
+    // needs a different implemented colour strategy and cannot be skipped.
+    for tag in [50723, 50724] {
+        if let Some(entry) = get(tag) {
+            if entry.kind != 10 || entry.count != 9 {
+                return Err(RawError::MissingCalibration("DNG CameraCalibration shape"));
+            }
+            let payload = tiff
+                .payload(entry)
+                .ok_or(RawError::InvalidInput("DNG CameraCalibration payload"))?;
+            for i in 0..9 {
+                let num = u32_at(payload, i * 8, tiff.endian)
+                    .ok_or(RawError::InvalidInput("DNG CameraCalibration numerator"))?
+                    as i32;
+                let den = u32_at(payload, i * 8 + 4, tiff.endian)
+                    .ok_or(RawError::InvalidInput("DNG CameraCalibration denominator"))?
+                    as i32;
+                if den == 0 || num != if i % 4 == 0 { den } else { 0 } {
+                    return Err(RawError::UnsupportedMode(
+                        "DNG nonidentity CameraCalibration".into(),
+                    ));
+                }
+            }
+        }
+    }
     // The root supplies this file's calibration. Do not combine it with a
     // second calibration attached to any preview, linked or sensor IFD.
-    let sub = get(330).ok_or(RawError::InvalidInput("DNG SubIFD offsets"))?;
-    let offsets = tiff
-        .payload(sub)
-        .ok_or(RawError::InvalidInput("DNG SubIFD offsets"))?;
     let mut queue = vec![root_next];
-    for chunk in offsets.chunks_exact(4) {
-        let rel = match tiff.endian {
-            Endian::Little => u32::from_le_bytes(chunk.try_into().unwrap()),
-            Endian::Big => u32::from_be_bytes(chunk.try_into().unwrap()),
-        };
-        queue.push(rel);
+    if let Some(sub) = get(330) {
+        if sub.kind != 4 || sub.count == 0 || sub.count > 8 {
+            return Err(RawError::InvalidInput("DNG SubIFD type/count"));
+        }
+        let offsets = tiff
+            .payload(sub)
+            .ok_or(RawError::InvalidInput("DNG SubIFD offsets"))?;
+        for i in 0..sub.count as usize {
+            queue.push(
+                u32_at(offsets, i * 4, tiff.endian)
+                    .ok_or(RawError::InvalidInput("DNG SubIFD offset"))?,
+            );
+        }
     }
     let mut seen = vec![first];
     while let Some(rel) = queue.pop() {
@@ -709,7 +785,7 @@ pub(super) fn classify_mode<'a>(
         .iter()
         .find(|camera| camera.make == make && camera.model == model)
         .ok_or_else(unsupported)?;
-    if native.raw_count != 1
+    if !matches!(native.raw_count, 1 | 2)
         || camera.sensor_size != [native.width, native.height]
         || camera.cfa_size != [native.cfa_width, native.cfa_height]
     {
@@ -720,8 +796,9 @@ pub(super) fn classify_mode<'a>(
         .iter()
         .find(|mode| {
             mode.bits == native.raw_bps
+                && mode.raw_count == native.raw_count
                 && mode.decoder == decoder
-                && mode.dng_version.is_none_or(|v| v == native.dng_version)
+                && mode.dng_version.unwrap_or(0) == native.dng_version
                 && mode.compression.as_ref().is_none_or(|compression| {
                     let value = match compression.probe {
                         CompressionProbe::NefMakerNote => nef_compression(bytes).map(u32::from),
@@ -737,6 +814,7 @@ pub(super) fn classify_mode<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{RawSource, profiles::DngCorrections};
     #[test]
     fn truncated_inputs_are_rejected() {
         assert_eq!(raf_default_crop(b"FUJIFILM"), None);
@@ -758,6 +836,20 @@ mod tests {
         b[42..46].copy_from_slice(&payload_size.to_be_bytes());
         b
     }
+    #[test]
+    fn empty_opcode_field_is_distinct_from_a_truncated_list() {
+        let mut bytes = opcode_tiff(0, 0);
+        bytes[14..18].copy_from_slice(&0_u32.to_le_bytes());
+        assert!(dng_opcodes(&bytes).unwrap().is_empty());
+        for len in 1_u32..4 {
+            bytes[14..18].copy_from_slice(&len.to_le_bytes());
+            assert!(matches!(
+                dng_opcodes(&bytes),
+                Err(RawError::InvalidInput("DNG opcode count"))
+            ));
+        }
+    }
+
     #[test]
     fn mandatory_optional_and_malformed_dng_opcodes() {
         assert_eq!(required_dng_opcodes(&opcode_tiff(0, 0)).unwrap(), vec![9]);
@@ -801,5 +893,251 @@ mod tests {
         );
         b[92..96].copy_from_slice(&u32::MAX.to_be_bytes());
         assert_eq!(raf_default_crop(&b), None);
+    }
+
+    fn put_entry(
+        bytes: &mut [u8],
+        ifd: usize,
+        index: usize,
+        tag: u16,
+        kind: u16,
+        count: u32,
+        value: u32,
+    ) {
+        let p = ifd + 2 + index * 12;
+        bytes[p..p + 2].copy_from_slice(&tag.to_le_bytes());
+        bytes[p + 2..p + 4].copy_from_slice(&kind.to_le_bytes());
+        bytes[p + 4..p + 8].copy_from_slice(&count.to_le_bytes());
+        bytes[p + 8..p + 12].copy_from_slice(&value.to_le_bytes());
+    }
+
+    fn long_array(bytes: &mut [u8], offset: usize, values: &[u32]) {
+        for (i, value) in values.iter().enumerate() {
+            bytes[offset + i * 4..offset + i * 4 + 4].copy_from_slice(&value.to_le_bytes());
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn dng_fixture(
+        bits: u32,
+        compression: u32,
+        active: Option<[u32; 4]>,
+        crop_origin: [u32; 2],
+        crop_size: [u32; 2],
+        strip_offset: u32,
+        strip_bytes: u32,
+        sub_ifds: &[(u32, u32)],
+    ) -> (Vec<u8>, NativeMetadata) {
+        let width = 8;
+        let height = 4;
+        let root = 8;
+        let mut bytes = vec![0_u8; 4096];
+        bytes[..8].copy_from_slice(b"II*\0\x08\0\0\0");
+        let root_count = if sub_ifds.is_empty() {
+            if active.is_some() { 13 } else { 12 }
+        } else {
+            1
+        };
+        bytes[root..root + 2].copy_from_slice(&(root_count as u16).to_le_bytes());
+        if sub_ifds.is_empty() {
+            let entries = [
+                (256, 4, 1, width),
+                (257, 4, 1, height),
+                (258, 3, 1, bits),
+                (259, 3, 1, compression),
+                (262, 3, 1, 32803),
+                (273, 4, 1, strip_offset),
+                (277, 3, 1, 1),
+                (278, 4, 1, height),
+                (279, 4, 1, strip_bytes),
+                (284, 3, 1, 1),
+            ];
+            for (index, (tag, kind, count, value)) in entries.into_iter().enumerate() {
+                put_entry(&mut bytes, root, index, tag, kind, count, value);
+            }
+        } else {
+            put_entry(&mut bytes, root, 0, 330, 4, sub_ifds.len() as u32, 256);
+            long_array(
+                &mut bytes,
+                256,
+                &sub_ifds
+                    .iter()
+                    .map(|(offset, _)| *offset)
+                    .collect::<Vec<_>>(),
+            );
+            for (offset, _) in sub_ifds {
+                let count = if active.is_some() { 13 } else { 12 };
+                bytes[*offset as usize..*offset as usize + 2]
+                    .copy_from_slice(&(count as u16).to_le_bytes());
+                let entries = [
+                    (256, 4, 1, width),
+                    (257, 4, 1, height),
+                    (258, 3, 1, bits),
+                    (259, 3, 1, compression),
+                    (262, 3, 1, 32803),
+                    (273, 4, 1, strip_offset),
+                    (277, 3, 1, 1),
+                    (278, 4, 1, height),
+                    (279, 4, 1, strip_bytes),
+                    (284, 3, 1, 1),
+                ];
+                for (index, (tag, kind, count, value)) in entries.into_iter().enumerate() {
+                    put_entry(&mut bytes, *offset as usize, index, tag, kind, count, value);
+                }
+            }
+        }
+        let raw_ifds: Vec<usize> = if sub_ifds.is_empty() {
+            vec![root]
+        } else {
+            sub_ifds
+                .iter()
+                .map(|(offset, _)| *offset as usize)
+                .collect()
+        };
+        for ifd in raw_ifds {
+            if let Some(area) = active {
+                put_entry(&mut bytes, ifd, 10, 50829, 4, 4, 300);
+                long_array(&mut bytes, 300, &area);
+            }
+            let base = if active.is_some() { 11 } else { 10 };
+            put_entry(&mut bytes, ifd, base, 50719, 4, 2, 320);
+            put_entry(&mut bytes, ifd, base + 1, 50720, 4, 2, 328);
+        }
+        long_array(&mut bytes, 320, &crop_origin);
+        long_array(&mut bytes, 328, &crop_size);
+        let mut native = RawSource::blank_native();
+        native.width = width;
+        native.height = height;
+        native.active_width = width;
+        native.active_height = height;
+        native.raw_bps = bits;
+        native.raw_count = 1;
+        (bytes, native)
+    }
+
+    #[test]
+    fn dng_container_root_ifd_defaults_active_area_to_full_sensor() {
+        let (bytes, native) = dng_fixture(16, 1, None, [0, 0], [8, 4], 512, 64, &[]);
+        let result =
+            dng_container(&bytes, &native, &DngContainer::IntegerCfaSingleSegment).unwrap();
+        assert_eq!(
+            result.default_crop,
+            RawRect {
+                x: 0,
+                y: 0,
+                width: 8,
+                height: 4
+            }
+        );
+    }
+
+    #[test]
+    fn dng_container_accepts_14bit_packed_and_compression_seven() {
+        let (bytes, native) = dng_fixture(14, 7, Some([0, 0, 4, 8]), [1, 1], [6, 2], 512, 7, &[]);
+        let result =
+            dng_container(&bytes, &native, &DngContainer::IntegerCfaSingleSegment).unwrap();
+        assert_eq!(
+            result.default_crop,
+            RawRect {
+                x: 1,
+                y: 1,
+                width: 6,
+                height: 2
+            }
+        );
+    }
+
+    #[test]
+    fn dng_container_accepts_padded_14bit_single_strip() {
+        let (bytes, native) = dng_fixture(14, 1, Some([0, 0, 4, 8]), [0, 0], [8, 4], 512, 64, &[]);
+        assert!(dng_container(&bytes, &native, &DngContainer::IntegerCfaSingleSegment).is_ok());
+    }
+
+    #[test]
+    fn dng_container_accepts_one_full_sensor_tile() {
+        let (mut bytes, native) = dng_fixture(14, 1, None, [0, 0], [8, 4], 512, 64, &[]);
+        // Turn the fixture's single strip into one full-sensor tile. Reuse
+        // the crop slots for TileWidth/TileLength and move the crop tags
+        // to new entries; crop defaults are independent of ActiveArea.
+        bytes[8..10].copy_from_slice(&14_u16.to_le_bytes());
+        put_entry(&mut bytes, 8, 5, 324, 4, 1, 2048);
+        put_entry(&mut bytes, 8, 8, 325, 4, 1, 64);
+        put_entry(&mut bytes, 8, 10, 322, 4, 1, 8);
+        put_entry(&mut bytes, 8, 11, 323, 4, 1, 4);
+        put_entry(&mut bytes, 8, 12, 50719, 4, 2, 320);
+        put_entry(&mut bytes, 8, 13, 50720, 4, 2, 328);
+        let result = dng_container(&bytes, &native, &DngContainer::IntegerCfaSingleSegment);
+        assert_eq!(
+            result.unwrap().default_crop,
+            RawRect {
+                x: 0,
+                y: 0,
+                width: 8,
+                height: 4
+            }
+        );
+    }
+
+    #[test]
+    fn dng_container_rejects_ambiguous_raw_subifds_and_bad_strip_bounds() {
+        let (bytes, native) = dng_fixture(
+            16,
+            1,
+            None,
+            [0, 0],
+            [8, 4],
+            2048,
+            64,
+            &[(512, 0), (1024, 0)],
+        );
+        let result = dng_container(&bytes, &native, &DngContainer::IntegerCfaSingleSegment);
+        assert!(matches!(
+            result,
+            Err(RawError::InvalidInput("ambiguous DNG raw SubIFD"))
+        ));
+        let (bytes, native) = dng_fixture(16, 1, Some([0, 0, 4, 8]), [0, 0], [8, 4], 4090, 64, &[]);
+        assert!(matches!(
+            dng_container(&bytes, &native, &DngContainer::IntegerCfaSingleSegment),
+            Err(RawError::UnsupportedMode(_))
+        ));
+    }
+
+    #[test]
+    fn dng_container_rejects_out_of_bounds_integer_crop() {
+        let (mut bytes, native) =
+            dng_fixture(16, 1, Some([0, 0, 4, 8]), [1, 1], [6, 2], 512, 64, &[]);
+        bytes[328..332].copy_from_slice(&9_u32.to_le_bytes());
+        let result = dng_container(&bytes, &native, &DngContainer::IntegerCfaSingleSegment);
+        assert!(matches!(
+            result,
+            Err(RawError::InvalidInput("DNG default crop bounds"))
+        ));
+    }
+
+    #[test]
+    fn dng_calibration_rejects_nonidentity_camera_calibration() {
+        let mut bytes = vec![0_u8; 1024];
+        bytes[..8].copy_from_slice(b"II*\0\x08\0\0\0");
+        bytes[8..10].copy_from_slice(&1_u16.to_le_bytes());
+        put_entry(&mut bytes, 8, 0, 50723, 10, 9, 128);
+        for i in 0..9 {
+            let value = if i == 1 || i % 4 == 0 { 1 } else { 0 };
+            bytes[128 + i * 8..132 + i * 8].copy_from_slice(&(value as u32).to_le_bytes());
+            bytes[132 + i * 8..136 + i * 8].copy_from_slice(&1_u32.to_le_bytes());
+        }
+        let native = RawSource::blank_native();
+        let settings = Dng {
+            container: DngContainer::IntegerCfaSingleSegment,
+            calibration: DngCalibration::RootFixedMatrix,
+            illuminants: [17, 21],
+            selected_matrix: 1,
+            calibration_identity: "test".into(),
+            corrections: DngCorrections::Stage3GainMapThenWarp,
+            interpretation: "test".into(),
+            required_opcodes: Vec::new(),
+        };
+        assert!(
+            matches!(dng_color_calibration(&bytes, &native, &settings), Err(RawError::UnsupportedMode(message)) if message == "DNG nonidentity CameraCalibration")
+        );
     }
 }

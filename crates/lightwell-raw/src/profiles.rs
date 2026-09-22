@@ -18,16 +18,33 @@ pub(crate) struct Camera {
     pub cfa_size: [u32; 2],
     pub crop: Crop,
     pub dng: Option<Dng>,
+    pub calibration: Option<Calibration>,
     pub modes: Vec<Mode>,
+}
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct Calibration {
+    pub xyz_to_camera: [[f64; 3]; 3],
+    pub source: String,
+    pub license: String,
 }
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct Mode {
     pub id: String,
     pub bits: u32,
+    pub raw_count: u32,
     pub decoder: String,
     pub dng_version: Option<u32>,
+    pub validation: ModeValidation,
     pub compression: Option<Compression>,
+}
+
+#[derive(Debug, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum ModeValidation {
+    ContainerCompression,
+    DecoderMetadata,
 }
 #[derive(Debug, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
@@ -46,12 +63,14 @@ pub(crate) enum CompressionProbe {
 pub(crate) enum Crop {
     LibrawInset,
     RafTags,
+    ActiveArea,
     DngTags,
 }
 #[derive(Debug, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum DngContainer {
     UncompressedU16SingleStrip,
+    IntegerCfaSingleSegment,
 }
 #[derive(Debug, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -62,6 +81,7 @@ pub(crate) enum DngCalibration {
 #[serde(rename_all = "snake_case")]
 pub(crate) enum DngCorrections {
     Stage3GainMapThenWarp,
+    StageOrdered,
 }
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -73,7 +93,7 @@ pub(crate) struct Dng {
     pub calibration_identity: String,
     pub corrections: DngCorrections,
     pub interpretation: String,
-    pub required_opcodes: [Opcode; 2],
+    pub required_opcodes: Vec<Opcode>,
 }
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -132,10 +152,54 @@ impl Catalog {
             if (camera.crop == Crop::DngTags) != camera.dng.is_some() {
                 return fail("DNG crop and processing settings must be enabled together");
             }
+            if camera.dng.is_some() && camera.calibration.is_some() {
+                return fail("DNG calibration must remain authoritative");
+            }
+            if let Some(calibration) = &camera.calibration {
+                let valid_source_host = calibration
+                    .source
+                    .strip_prefix("https://")
+                    .and_then(|rest| rest.split('/').next())
+                    .is_some_and(|host| {
+                        !host.is_empty()
+                            && host
+                                .bytes()
+                                .all(|byte| byte > b' ' && !b"?#".contains(&byte))
+                    });
+                if calibration.source.len() > 1024
+                    || !valid_source_host
+                    || calibration.license.is_empty()
+                    || calibration.license.len() > 80
+                    || calibration.source.chars().any(char::is_control)
+                    || calibration.license.chars().any(char::is_control)
+                    || calibration
+                        .xyz_to_camera
+                        .iter()
+                        .flatten()
+                        .any(|value| !value.is_finite() || value.abs() > 16.0)
+                {
+                    return fail(
+                        "invalid configured XYZ-to-camera calibration provenance or coefficient",
+                    );
+                }
+                let m = &calibration.xyz_to_camera;
+                let det = m[0][0] * (m[1][1] * m[2][2] - m[1][2] * m[2][1])
+                    - m[0][1] * (m[1][0] * m[2][2] - m[1][2] * m[2][0])
+                    + m[0][2] * (m[1][0] * m[2][1] - m[1][1] * m[2][0]);
+                if !det.is_finite() || det.abs() < 1e-8 {
+                    return fail("configured XYZ-to-camera calibration is singular");
+                }
+            }
             if let Some(dng) = &camera.dng {
-                if dng.container != DngContainer::UncompressedU16SingleStrip
-                    || dng.calibration != DngCalibration::RootFixedMatrix
-                    || dng.corrections != DngCorrections::Stage3GainMapThenWarp
+                if !matches!(
+                    dng.container,
+                    DngContainer::UncompressedU16SingleStrip
+                        | DngContainer::IntegerCfaSingleSegment
+                ) || dng.calibration != DngCalibration::RootFixedMatrix
+                    || !matches!(
+                        dng.corrections,
+                        DngCorrections::Stage3GainMapThenWarp | DngCorrections::StageOrdered
+                    )
                     || camera.cfa_size != [2, 2]
                     || !matches!(dng.selected_matrix, 1 | 2)
                     || dng.illuminants.contains(&0)
@@ -146,9 +210,33 @@ impl Catalog {
                 }
                 // This strategy implements exactly this operation order/domain.
                 // These are algorithm capabilities, not camera-specific policy.
-                if dng.required_opcodes.iter().zip([9, 1]).any(|(op, id)| {
-                    op.id != id || op.list != 51022 || op.flags != 0 || op.version != 0x0103_0000
-                }) {
+                if dng.required_opcodes.len() > 8
+                    || dng
+                        .required_opcodes
+                        .iter()
+                        .filter(|op| op.list == 51008)
+                        .count()
+                        > 1
+                    || dng.required_opcodes.iter().any(|op| {
+                        !matches!((op.list, op.id), (51022, 1 | 3 | 9) | (51008, 4 | 5))
+                            || op.flags != 0
+                            || op.version != 0x0103_0000
+                    })
+                    || dng
+                        .required_opcodes
+                        .windows(2)
+                        .any(|ops| ops[0].list > ops[1].list)
+                {
+                    return fail("unsupported DNG opcode recipe");
+                }
+                if dng.corrections == DngCorrections::Stage3GainMapThenWarp
+                    && (dng.required_opcodes.len() != 2
+                        || dng
+                            .required_opcodes
+                            .iter()
+                            .zip([9, 1])
+                            .any(|(op, id)| op.list != 51022 || op.id != id))
+                {
                     return fail("unsupported DNG opcode recipe");
                 }
             }
@@ -167,20 +255,31 @@ impl Catalog {
                     || !ids.insert(&mode.id)
                     || !name(&mode.decoder, 80)
                     || !(1..=16).contains(&mode.bits)
+                    || !matches!(mode.raw_count, 1 | 2)
                 {
                     return fail("invalid or duplicate mode identifier, decoder or bit depth");
                 }
-                if camera.dng.is_some() {
-                    if mode.bits != 16
+                if let Some(dng) = &camera.dng {
+                    if (dng.container == DngContainer::UncompressedU16SingleStrip
+                        && mode.bits != 16)
                         || mode.dng_version.is_none_or(|v| v == 0)
+                        || mode.validation != ModeValidation::DecoderMetadata
                         || mode.compression.is_some()
                     {
                         return fail(
                             "DNG strategy requires 16-bit storage and explicit DNG version",
                         );
                     }
-                } else if mode.dng_version.is_some() || mode.compression.is_none() {
-                    return fail("non-DNG mode requires a compression probe");
+                } else if mode.dng_version.is_some() {
+                    return fail("non-DNG mode cannot declare a DNG version");
+                } else if mode.validation == ModeValidation::ContainerCompression
+                    && mode.compression.is_none()
+                {
+                    return fail("container-compression mode requires a compression probe");
+                } else if mode.validation == ModeValidation::DecoderMetadata
+                    && mode.compression.is_some()
+                {
+                    return fail("decoder-metadata mode cannot declare a compression probe");
                 }
                 if let Some(compression) = &mode.compression {
                     if compression.probe == CompressionProbe::NefMakerNote
@@ -236,6 +335,8 @@ mod tests {
             ("/cameras/0/modes/0/compression/probe", json!("unknown")),
             ("/cameras/0/modes/0/compression/value", json!(65536)),
             ("/cameras/0/modes/0/compression", Value::Null),
+            ("/cameras/0/modes/0/validation", json!("decoder_metadata")),
+            ("/cameras/0/modes/0/validation", Value::Null),
             ("/cameras/0/crop", json!("dng_tags")),
             ("/cameras/1/crop", json!("libraw_inset")),
             ("/cameras/2/dng", Value::Null),
@@ -253,6 +354,44 @@ mod tests {
             *data.pointer_mut(pointer).unwrap() = replacement;
             assert!(parse(&data).is_err(), "accepted invalid {pointer}");
         }
+        for (pointer, replacement) in [
+            (
+                "/cameras/0/calibration/source",
+                json!("http://example.test/matrix"),
+            ),
+            ("/cameras/0/calibration/license", json!("x".repeat(81))),
+            (
+                "/cameras/0/calibration/xyz_to_camera",
+                json!([[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 17.0]]),
+            ),
+        ] {
+            let mut data = catalog();
+            data["cameras"][0]["calibration"] = json!({
+                "xyz_to_camera": [[1.0,0.0,0.0],[0.0,1.0,0.0],[0.0,0.0,1.0]],
+                "source": "https://example.test/matrix", "license": "CC0"
+            });
+            *data.pointer_mut(pointer).unwrap() = replacement;
+            assert!(parse(&data).is_err(), "accepted invalid {pointer}");
+        }
+        let mut missing_raw_count = catalog();
+        missing_raw_count["cameras"][0]["modes"][0]
+            .as_object_mut()
+            .unwrap()
+            .remove("raw_count");
+        assert!(
+            parse(&missing_raw_count).is_err(),
+            "accepted missing raw_count"
+        );
+        let mut multiple_repairs = catalog();
+        multiple_repairs["cameras"][2]["dng"]["corrections"] = json!("stage_ordered");
+        multiple_repairs["cameras"][2]["dng"]["required_opcodes"] = json!([
+            {"list":51008,"id":4,"version":0x0103_0000,"flags":0},
+            {"list":51008,"id":5,"version":0x0103_0000,"flags":0}
+        ]);
+        assert!(
+            parse(&multiple_repairs).is_err(),
+            "accepted unsupported sequential sensor repairs"
+        );
         for pointer in [
             "",
             "/cameras/0",
@@ -269,6 +408,22 @@ mod tests {
                 .insert("typo".into(), json!(true));
             assert!(parse(&data).is_err(), "accepted unknown field at {pointer}");
         }
+        let mut decoder_with_probe = catalog();
+        decoder_with_probe["cameras"][2]["modes"][0]["validation"] = json!("decoder_metadata");
+        decoder_with_probe["cameras"][2]["modes"][0]["compression"] = json!({
+            "probe": "nef_maker_note",
+            "value": 3
+        });
+        assert!(parse(&decoder_with_probe).is_err());
+        let mut container_without_probe = catalog();
+        container_without_probe["cameras"][0]["modes"][0]["compression"] = Value::Null;
+        assert!(parse(&container_without_probe).is_err());
+        let mut dng_calibration = catalog();
+        dng_calibration["cameras"][2]["calibration"] = json!({
+            "xyz_to_camera": [[1.0,0.0,0.0],[0.0,1.0,0.0],[0.0,0.0,1.0]],
+            "source": "https://example.test/matrix", "license": "CC0"
+        });
+        assert!(parse(&dng_calibration).is_err());
         let mut duplicate = catalog();
         let camera = duplicate["cameras"][0].clone();
         duplicate["cameras"].as_array_mut().unwrap().push(camera);
@@ -335,6 +490,45 @@ mod tests {
         native.raw_bps = 14;
         native.raw_count = 2;
         assert!(classify(&native, &bytes, "Example").is_err());
+    }
+
+    #[test]
+    fn raw_count_two_is_an_explicit_primary_frame_mode_selector() {
+        let mut data = catalog();
+        data["cameras"][1]["modes"][0]["raw_count"] = json!(2);
+        let profiles = parse(&data).unwrap();
+        let mut native = crate::RawSource::blank_native();
+        native.width = 7872;
+        native.height = 5196;
+        native.cfa_width = 6;
+        native.cfa_height = 6;
+        native.raw_count = 2;
+        native.raw_bps = 14;
+        let mut raf = vec![0_u8; 0x70];
+        raf[..8].copy_from_slice(b"FUJIFILM");
+        raf[0x6c..].copy_from_slice(&0_u32.to_be_bytes());
+        let (_, mode) = crate::format::classify_mode(
+            &profiles,
+            &native,
+            "Fujifilm",
+            "X100VI",
+            "unpacked_load_raw()",
+            &raf,
+        )
+        .unwrap();
+        assert_eq!(mode.raw_count, 2);
+        native.raw_count = 1;
+        assert!(
+            crate::format::classify_mode(
+                &profiles,
+                &native,
+                "Fujifilm",
+                "X100VI",
+                "unpacked_load_raw()",
+                &raf,
+            )
+            .is_err()
+        );
     }
 
     #[test]
