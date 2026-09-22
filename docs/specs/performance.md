@@ -501,6 +501,40 @@ the retained initial attempts. Gallery and controls smoke cover 63 states on 10 
 22 interactions respectively. Existing private RAW, manual visual/fixture-generation and explicit
 measurement tests remain skipped; this qualification makes no native Windows/Linux GPU claim.
 
+## Presence, colour mixer and vignette qualification
+
+Native Apple M4 Pro (14 cores, 48 GiB), macOS 26.5.2, Metal, release `--locked`, warm source cache, background bundle launches for every desktop figure; core figures are in-memory synthetic frames rendered by the core alone, warm, with the estimate store warm where a global estimate exists. Every desktop figure ends at the renderer's `Uploaded` callback, not display scanout. All three modules run the same full-resolution draft path Basic runs: nothing approximate, no extra cache and no timer was added to reach any figure, and each miss below is a finding for the owner's review.
+
+### Core cost of the units
+
+`cargo test --release -- --ignored presence_timing` and the spatial primitive's own timing test, p50 / p95 over 10 runs, one operation over a textured frame. Working set is one tile's reserved bytes; concurrency is how many tiles the 256 MiB spatial budget allowed in flight at once.
+
+| Stage | Operation | p50 / p95 ms | Summed halo | Working set | Concurrency | Budget peak |
+| --- | --- | --- | --- | --- | --- | --- |
+| 6000 × 4000 | Texture +100 | 212 / 225 | 8 px | 14.7 MiB | 14 | 205.8 MiB |
+| 6000 × 4000 | Clarity +100 | 191 / 202 | 199 px | 20.2 MiB | 12 | 242.5 MiB |
+| 6000 × 4000 | Dehaze +100 | 129 / 133 | 67 px | 11.0 MiB | 14 | 154.1 MiB |
+| 6000 × 4000 | All three +100 | 1670 / 1708 | 274 px | 61.3 MiB | 4 | 245.3 MiB |
+| 10000 × 6000 | Texture +100 | 588 / 609 | 14 px | 15.2 MiB | 14 | 213.3 MiB |
+| 10000 × 6000 | Clarity +100 | 690 / 731 | 327 px | 31.2 MiB | 8 | 249.9 MiB |
+| 10000 × 6000 | Dehaze +100 | 339 / 353 | 107 px | 13.1 MiB | 14 | 183.5 MiB |
+| 10000 × 6000 | All three +100 | 12447 / 12561 | 448 px | 101.1 MiB | 2 | 202.1 MiB |
+| 6000 × 4000 | Host box blur r = 137 (test unit, naive) | 2528 / 2694 | 137 px | 17.1 MiB | 14 | 240.0 MiB |
+| 10000 × 6000 | Host box blur r = 224 (test unit, naive) | 14970 / 15074 | 224 px | 24.1 MiB | 10 | 240.9 MiB |
+
+The three units together cost about eight times the sum of the singles. That is structural, not a hot loop: with a summed halo of 448 px a 512 px tile reads a 1408 px input region, dehaze fills 1194 px and texture 1166 px of it to deliver 512 px, and the 101 MiB working set cuts concurrency to two tiles. Larger tiles amortise the halo better but a 2048 px tile's input region does not fit the spatial budget with the frozen declarations; tiling each unit separately would need an intermediate frame between units. Both are open proposals for the owner, with these figures as the baseline. The vignette's unit alone, single-threaded over 6000 × 4000: 57 ms at amount −50, 505 ms at +50 (the positive branch encodes and decodes each channel), 164 ms at roundness −100.
+
+### Desktop slider-to-presented-frame
+
+`editor-latency --mode drag` on the generated 24 MP fixture, 30 drained inputs each, through the new `--action` and `--parameter` selector. The Basic exposure figure in the same harness is 74.8 / 83.4 ms.
+
+| Slider (24 MP, p50 / p95 ms) | Input to presented frame | Settled exact histogram | Peak RSS | p95 < 100 ms |
+| --- | --- | --- | --- | --- |
+| Colour mixer, Red hue | 157.1 / 216.1 (min 137.0, max 342.4) | 280.3 / 287.3 | 1357 MiB | **Miss** |
+| Vignette, Amount | 121.6 / 135.3 (min 112.0, max 147.9) | 125.0 / 201.4 | 1352 MiB | **Miss** |
+
+The mixer's per-pixel cost is the Oklab conversion (three cube roots each way) that Basic's saturation and vibrance units already pay, now paid a second time for a second unit; the vignette's is the extended encode and decode of every channel in its positive branch and the per-pixel mask. Neither exceeds the per-frame cost of the crop resample the earlier rows record, and both stay well under the 1.5 GiB RSS investigation target.
+
 ## Method
 
 Optimized builds only, with commit, lockfile, OS, CPU/GPU, RAM, display and storage recorded. Report cold and warm runs separately and say which cold is meant. Keep at least 30 samples and never drop failures or tails silently. Measure user event to presented frame, not shader time, and account CPU RSS, cache bytes, GPU allocations and transient copies without double-counting unified memory. Capture idle after all background work stops. No timing gates in CI; CI enforces exactness, deterministic bounds and coverage. VM checks record hypervisor, guest graphics path and software versus accelerated rendering, and never stand in for native timings.
