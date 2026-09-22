@@ -1,13 +1,13 @@
 use crate::{
     AssetId, ContentPoint, Draft, DraftId, EntryId, Error, ErrorKind, HistoryEntry, Layer, LayerId,
     ModuleRegistry, Mutation, PreviewJob, PreviewSource, ProxyBounds, Raster, Recipe, Snapshot,
-    SnapshotId, Transform,
+    SnapshotId, StageTransform, Transform,
     analysis::AnalysisIdentity,
     modules::{
         ActionInput, ActionPlan, EffectStage, Stage, StageContext, action_label, check_parameters,
     },
     open_source_bytes, read_bounded_file, render,
-    render::{Evaluation, locate_dimensions},
+    render::{Evaluation, locate_dimensions, stage_transform},
     render_linear, sample_linear,
     source::{PreparedSource, RawPrepared},
 };
@@ -1249,6 +1249,26 @@ impl EditorService {
             &entry.snapshot.recipe,
             x,
             y,
+        )
+    }
+
+    /// The content-to-output affine of a saved entry's geometry tail, both ways. `locate_entry`
+    /// answers one point; this answers all of them at once, so a gesture over the photograph maps
+    /// pointer positions itself instead of asking per move. Like `locate_entry` it reads the compiled
+    /// stack only and rasterizes nothing.
+    pub fn transform_entry(
+        &self,
+        asset_id: &AssetId,
+        entry_id: &EntryId,
+    ) -> Result<StageTransform, Error> {
+        let state = self.state(asset_id)?;
+        let entry = self.entry(asset_id, entry_id)?;
+        validate_source_recipe(&state.asset, &entry.snapshot.recipe)?;
+        stage_transform(
+            &self.registry,
+            state.asset.width,
+            state.asset.height,
+            &entry.snapshot.recipe,
         )
     }
 

@@ -189,7 +189,9 @@ A mask is edited in content coordinates while the person sees the cropped, strai
 render.transform {asset_id, entry_id?} -> {content: {width, height}, output: {width, height}, forward: [6], inverse: [6]}
 ```
 
-The desktop maps pointer positions and draws handles locally from that matrix, with no hop per move, and `render.locate` keeps its existing job for picks.
+Both matrices are `[m0, m1, m2, m3, m4, m5]`, meaning `x' = m0·x + m1·y + m2` and `y' = m3·x + m4·y + m5`, the coefficient order and the coordinate convention the host's resample primitive already fixes: coordinates are **continuous and pixel-center based**, so pixel index `n` has its center at `n + 0.5`, a coordinate `c` lies in pixel `floor(c)`, and a stage spans `0..width` by `0..height`. The [crop spec](../specs/single-image.md#sampling) states the same thing about the crop's own sampling. `forward` maps a content coordinate to an output coordinate, `inverse` is its exact inverse, and a coordinate outside the output stage was cropped away rather than clamped.
+
+The desktop maps pointer positions and draws handles locally from that matrix, with no hop per move, and `render.locate` keeps its existing job for picks. The two agree by construction: rounding the content coordinate `inverse` gives for an output pixel's center to the pixel that contains it is the pixel `render.locate` walks to, exactly, for every tail the delivered modules produce. The one position where the two roundings may differ by an index is a point that lands exactly on a content pixel boundary under a reflection, which is a tie in the rounding convention and not an error in either answer. A stack the host cannot compile has no output stage and therefore no mapping: the method returns that stack's own reason and never an identity matrix.
 
 ## Host commands
 
