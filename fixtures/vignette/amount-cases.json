@@ -1,0 +1,1442 @@
+[
+  {
+    "label": "flat/24x16/-100/corner-tl",
+    "width": 24,
+    "height": 16,
+    "x": 0,
+    "y": 0,
+    "input_linear_rgb": [
+      0.5,
+      0.3,
+      0.1
+    ],
+    "params": {
+      "amount": -100.0,
+      "midpoint": 50.0,
+      "roundness": 0.0,
+      "feather": 50.0
+    },
+    "expected_mask": 1.0,
+    "expected_linear_rgb": [
+      0.0,
+      0.0,
+      0.0
+    ]
+  },
+  {
+    "label": "gradient/24x16/-100/corner-tl",
+    "width": 24,
+    "height": 16,
+    "x": 0,
+    "y": 0,
+    "input_linear_rgb": [
+      0.0,
+      0.0,
+      0.0
+    ],
+    "params": {
+      "amount": -100.0,
+      "midpoint": 50.0,
+      "roundness": 0.0,
+      "feather": 50.0
+    },
+    "expected_mask": 1.0,
+    "expected_linear_rgb": [
+      0.0,
+      0.0,
+      0.0
+    ]
+  },
+  {
+    "label": "flat/24x16/-100/near-centre",
+    "width": 24,
+    "height": 16,
+    "x": 12,
+    "y": 8,
+    "input_linear_rgb": [
+      0.5,
+      0.3,
+      0.1
+    ],
+    "params": {
+      "amount": -100.0,
+      "midpoint": 50.0,
+      "roundness": 0.0,
+      "feather": 50.0
+    },
+    "expected_mask": 0.0,
+    "expected_linear_rgb": [
+      0.5,
+      0.3,
+      0.1
+    ]
+  },
+  {
+    "label": "gradient/24x16/-100/near-centre",
+    "width": 24,
+    "height": 16,
+    "x": 12,
+    "y": 8,
+    "input_linear_rgb": [
+      0.5217391304347826,
+      0.5333333333333333,
+      0.527536231884058
+    ],
+    "params": {
+      "amount": -100.0,
+      "midpoint": 50.0,
+      "roundness": 0.0,
+      "feather": 50.0
+    },
+    "expected_mask": 0.0,
+    "expected_linear_rgb": [
+      0.5217391304347826,
+      0.5333333333333333,
+      0.527536231884058
+    ]
+  },
+  {
+    "label": "flat/24x16/-50/corner-tl",
+    "width": 24,
+    "height": 16,
+    "x": 0,
+    "y": 0,
+    "input_linear_rgb": [
+      0.5,
+      0.3,
+      0.1
+    ],
+    "params": {
+      "amount": -50.0,
+      "midpoint": 50.0,
+      "roundness": 0.0,
+      "feather": 50.0
+    },
+    "expected_mask": 1.0,
+    "expected_linear_rgb": [
+      0.25,
+      0.15,
+      0.05
+    ]
+  },
+  {
+    "label": "gradient/24x16/-50/corner-tl",
+    "width": 24,
+    "height": 16,
+    "x": 0,
+    "y": 0,
+    "input_linear_rgb": [
+      0.0,
+      0.0,
+      0.0
+    ],
+    "params": {
+      "amount": -50.0,
+      "midpoint": 50.0,
+      "roundness": 0.0,
+      "feather": 50.0
+    },
+    "expected_mask": 1.0,
+    "expected_linear_rgb": [
+      0.0,
+      0.0,
+      0.0
+    ]
+  },
+  {
+    "label": "flat/24x16/-50/near-centre",
+    "width": 24,
+    "height": 16,
+    "x": 12,
+    "y": 8,
+    "input_linear_rgb": [
+      0.5,
+      0.3,
+      0.1
+    ],
+    "params": {
+      "amount": -50.0,
+      "midpoint": 50.0,
+      "roundness": 0.0,
+      "feather": 50.0
+    },
+    "expected_mask": 0.0,
+    "expected_linear_rgb": [
+      0.5,
+      0.3,
+      0.1
+    ]
+  },
+  {
+    "label": "gradient/24x16/-50/near-centre",
+    "width": 24,
+    "height": 16,
+    "x": 12,
+    "y": 8,
+    "input_linear_rgb": [
+      0.5217391304347826,
+      0.5333333333333333,
+      0.527536231884058
+    ],
+    "params": {
+      "amount": -50.0,
+      "midpoint": 50.0,
+      "roundness": 0.0,
+      "feather": 50.0
+    },
+    "expected_mask": 0.0,
+    "expected_linear_rgb": [
+      0.5217391304347826,
+      0.5333333333333333,
+      0.527536231884058
+    ]
+  },
+  {
+    "label": "flat/24x16/50/corner-tl",
+    "width": 24,
+    "height": 16,
+    "x": 0,
+    "y": 0,
+    "input_linear_rgb": [
+      0.5,
+      0.3,
+      0.1
+    ],
+    "params": {
+      "amount": 50.0,
+      "midpoint": 50.0,
+      "roundness": 0.0,
+      "feather": 50.0
+    },
+    "expected_mask": 1.0,
+    "expected_linear_rgb": [
+      0.7249616770908396,
+      0.5902154767726329,
+      0.4126583967200281
+    ]
+  },
+  {
+    "label": "gradient/24x16/50/corner-tl",
+    "width": 24,
+    "height": 16,
+    "x": 0,
+    "y": 0,
+    "input_linear_rgb": [
+      0.0,
+      0.0,
+      0.0
+    ],
+    "params": {
+      "amount": 50.0,
+      "midpoint": 50.0,
+      "roundness": 0.0,
+      "feather": 50.0
+    },
+    "expected_mask": 1.0,
+    "expected_linear_rgb": [
+      0.21404114048223255,
+      0.21404114048223255,
+      0.21404114048223255
+    ]
+  },
+  {
+    "label": "flat/24x16/50/near-centre",
+    "width": 24,
+    "height": 16,
+    "x": 12,
+    "y": 8,
+    "input_linear_rgb": [
+      0.5,
+      0.3,
+      0.1
+    ],
+    "params": {
+      "amount": 50.0,
+      "midpoint": 50.0,
+      "roundness": 0.0,
+      "feather": 50.0
+    },
+    "expected_mask": 0.0,
+    "expected_linear_rgb": [
+      0.5,
+      0.3,
+      0.1
+    ]
+  },
+  {
+    "label": "gradient/24x16/50/near-centre",
+    "width": 24,
+    "height": 16,
+    "x": 12,
+    "y": 8,
+    "input_linear_rgb": [
+      0.5217391304347826,
+      0.5333333333333333,
+      0.527536231884058
+    ],
+    "params": {
+      "amount": 50.0,
+      "midpoint": 50.0,
+      "roundness": 0.0,
+      "feather": 50.0
+    },
+    "expected_mask": 0.0,
+    "expected_linear_rgb": [
+      0.5217391304347825,
+      0.5333333333333332,
+      0.5275362318840578
+    ]
+  },
+  {
+    "label": "flat/24x16/100/corner-tl",
+    "width": 24,
+    "height": 16,
+    "x": 0,
+    "y": 0,
+    "input_linear_rgb": [
+      0.5,
+      0.3,
+      0.1
+    ],
+    "params": {
+      "amount": 100.0,
+      "midpoint": 50.0,
+      "roundness": 0.0,
+      "feather": 50.0
+    },
+    "expected_mask": 1.0,
+    "expected_linear_rgb": [
+      1.0,
+      1.0,
+      1.0
+    ]
+  },
+  {
+    "label": "gradient/24x16/100/corner-tl",
+    "width": 24,
+    "height": 16,
+    "x": 0,
+    "y": 0,
+    "input_linear_rgb": [
+      0.0,
+      0.0,
+      0.0
+    ],
+    "params": {
+      "amount": 100.0,
+      "midpoint": 50.0,
+      "roundness": 0.0,
+      "feather": 50.0
+    },
+    "expected_mask": 1.0,
+    "expected_linear_rgb": [
+      1.0,
+      1.0,
+      1.0
+    ]
+  },
+  {
+    "label": "flat/24x16/100/near-centre",
+    "width": 24,
+    "height": 16,
+    "x": 12,
+    "y": 8,
+    "input_linear_rgb": [
+      0.5,
+      0.3,
+      0.1
+    ],
+    "params": {
+      "amount": 100.0,
+      "midpoint": 50.0,
+      "roundness": 0.0,
+      "feather": 50.0
+    },
+    "expected_mask": 0.0,
+    "expected_linear_rgb": [
+      0.5,
+      0.3,
+      0.1
+    ]
+  },
+  {
+    "label": "gradient/24x16/100/near-centre",
+    "width": 24,
+    "height": 16,
+    "x": 12,
+    "y": 8,
+    "input_linear_rgb": [
+      0.5217391304347826,
+      0.5333333333333333,
+      0.527536231884058
+    ],
+    "params": {
+      "amount": 100.0,
+      "midpoint": 50.0,
+      "roundness": 0.0,
+      "feather": 50.0
+    },
+    "expected_mask": 0.0,
+    "expected_linear_rgb": [
+      0.5217391304347825,
+      0.5333333333333332,
+      0.5275362318840578
+    ]
+  },
+  {
+    "label": "flat/16x24/-100/corner-tl",
+    "width": 16,
+    "height": 24,
+    "x": 0,
+    "y": 0,
+    "input_linear_rgb": [
+      0.5,
+      0.3,
+      0.1
+    ],
+    "params": {
+      "amount": -100.0,
+      "midpoint": 50.0,
+      "roundness": 0.0,
+      "feather": 50.0
+    },
+    "expected_mask": 1.0,
+    "expected_linear_rgb": [
+      0.0,
+      0.0,
+      0.0
+    ]
+  },
+  {
+    "label": "gradient/16x24/-100/corner-tl",
+    "width": 16,
+    "height": 24,
+    "x": 0,
+    "y": 0,
+    "input_linear_rgb": [
+      0.0,
+      0.0,
+      0.0
+    ],
+    "params": {
+      "amount": -100.0,
+      "midpoint": 50.0,
+      "roundness": 0.0,
+      "feather": 50.0
+    },
+    "expected_mask": 1.0,
+    "expected_linear_rgb": [
+      0.0,
+      0.0,
+      0.0
+    ]
+  },
+  {
+    "label": "flat/16x24/-100/near-centre",
+    "width": 16,
+    "height": 24,
+    "x": 8,
+    "y": 12,
+    "input_linear_rgb": [
+      0.5,
+      0.3,
+      0.1
+    ],
+    "params": {
+      "amount": -100.0,
+      "midpoint": 50.0,
+      "roundness": 0.0,
+      "feather": 50.0
+    },
+    "expected_mask": 0.0,
+    "expected_linear_rgb": [
+      0.5,
+      0.3,
+      0.1
+    ]
+  },
+  {
+    "label": "gradient/16x24/-100/near-centre",
+    "width": 16,
+    "height": 24,
+    "x": 8,
+    "y": 12,
+    "input_linear_rgb": [
+      0.5333333333333333,
+      0.5217391304347826,
+      0.527536231884058
+    ],
+    "params": {
+      "amount": -100.0,
+      "midpoint": 50.0,
+      "roundness": 0.0,
+      "feather": 50.0
+    },
+    "expected_mask": 0.0,
+    "expected_linear_rgb": [
+      0.5333333333333333,
+      0.5217391304347826,
+      0.527536231884058
+    ]
+  },
+  {
+    "label": "flat/16x24/-50/corner-tl",
+    "width": 16,
+    "height": 24,
+    "x": 0,
+    "y": 0,
+    "input_linear_rgb": [
+      0.5,
+      0.3,
+      0.1
+    ],
+    "params": {
+      "amount": -50.0,
+      "midpoint": 50.0,
+      "roundness": 0.0,
+      "feather": 50.0
+    },
+    "expected_mask": 1.0,
+    "expected_linear_rgb": [
+      0.25,
+      0.15,
+      0.05
+    ]
+  },
+  {
+    "label": "gradient/16x24/-50/corner-tl",
+    "width": 16,
+    "height": 24,
+    "x": 0,
+    "y": 0,
+    "input_linear_rgb": [
+      0.0,
+      0.0,
+      0.0
+    ],
+    "params": {
+      "amount": -50.0,
+      "midpoint": 50.0,
+      "roundness": 0.0,
+      "feather": 50.0
+    },
+    "expected_mask": 1.0,
+    "expected_linear_rgb": [
+      0.0,
+      0.0,
+      0.0
+    ]
+  },
+  {
+    "label": "flat/16x24/-50/near-centre",
+    "width": 16,
+    "height": 24,
+    "x": 8,
+    "y": 12,
+    "input_linear_rgb": [
+      0.5,
+      0.3,
+      0.1
+    ],
+    "params": {
+      "amount": -50.0,
+      "midpoint": 50.0,
+      "roundness": 0.0,
+      "feather": 50.0
+    },
+    "expected_mask": 0.0,
+    "expected_linear_rgb": [
+      0.5,
+      0.3,
+      0.1
+    ]
+  },
+  {
+    "label": "gradient/16x24/-50/near-centre",
+    "width": 16,
+    "height": 24,
+    "x": 8,
+    "y": 12,
+    "input_linear_rgb": [
+      0.5333333333333333,
+      0.5217391304347826,
+      0.527536231884058
+    ],
+    "params": {
+      "amount": -50.0,
+      "midpoint": 50.0,
+      "roundness": 0.0,
+      "feather": 50.0
+    },
+    "expected_mask": 0.0,
+    "expected_linear_rgb": [
+      0.5333333333333333,
+      0.5217391304347826,
+      0.527536231884058
+    ]
+  },
+  {
+    "label": "flat/16x24/50/corner-tl",
+    "width": 16,
+    "height": 24,
+    "x": 0,
+    "y": 0,
+    "input_linear_rgb": [
+      0.5,
+      0.3,
+      0.1
+    ],
+    "params": {
+      "amount": 50.0,
+      "midpoint": 50.0,
+      "roundness": 0.0,
+      "feather": 50.0
+    },
+    "expected_mask": 1.0,
+    "expected_linear_rgb": [
+      0.7249616770908396,
+      0.5902154767726329,
+      0.4126583967200281
+    ]
+  },
+  {
+    "label": "gradient/16x24/50/corner-tl",
+    "width": 16,
+    "height": 24,
+    "x": 0,
+    "y": 0,
+    "input_linear_rgb": [
+      0.0,
+      0.0,
+      0.0
+    ],
+    "params": {
+      "amount": 50.0,
+      "midpoint": 50.0,
+      "roundness": 0.0,
+      "feather": 50.0
+    },
+    "expected_mask": 1.0,
+    "expected_linear_rgb": [
+      0.21404114048223255,
+      0.21404114048223255,
+      0.21404114048223255
+    ]
+  },
+  {
+    "label": "flat/16x24/50/near-centre",
+    "width": 16,
+    "height": 24,
+    "x": 8,
+    "y": 12,
+    "input_linear_rgb": [
+      0.5,
+      0.3,
+      0.1
+    ],
+    "params": {
+      "amount": 50.0,
+      "midpoint": 50.0,
+      "roundness": 0.0,
+      "feather": 50.0
+    },
+    "expected_mask": 0.0,
+    "expected_linear_rgb": [
+      0.5,
+      0.3,
+      0.1
+    ]
+  },
+  {
+    "label": "gradient/16x24/50/near-centre",
+    "width": 16,
+    "height": 24,
+    "x": 8,
+    "y": 12,
+    "input_linear_rgb": [
+      0.5333333333333333,
+      0.5217391304347826,
+      0.527536231884058
+    ],
+    "params": {
+      "amount": 50.0,
+      "midpoint": 50.0,
+      "roundness": 0.0,
+      "feather": 50.0
+    },
+    "expected_mask": 0.0,
+    "expected_linear_rgb": [
+      0.5333333333333332,
+      0.5217391304347825,
+      0.5275362318840578
+    ]
+  },
+  {
+    "label": "flat/16x24/100/corner-tl",
+    "width": 16,
+    "height": 24,
+    "x": 0,
+    "y": 0,
+    "input_linear_rgb": [
+      0.5,
+      0.3,
+      0.1
+    ],
+    "params": {
+      "amount": 100.0,
+      "midpoint": 50.0,
+      "roundness": 0.0,
+      "feather": 50.0
+    },
+    "expected_mask": 1.0,
+    "expected_linear_rgb": [
+      1.0,
+      1.0,
+      1.0
+    ]
+  },
+  {
+    "label": "gradient/16x24/100/corner-tl",
+    "width": 16,
+    "height": 24,
+    "x": 0,
+    "y": 0,
+    "input_linear_rgb": [
+      0.0,
+      0.0,
+      0.0
+    ],
+    "params": {
+      "amount": 100.0,
+      "midpoint": 50.0,
+      "roundness": 0.0,
+      "feather": 50.0
+    },
+    "expected_mask": 1.0,
+    "expected_linear_rgb": [
+      1.0,
+      1.0,
+      1.0
+    ]
+  },
+  {
+    "label": "flat/16x24/100/near-centre",
+    "width": 16,
+    "height": 24,
+    "x": 8,
+    "y": 12,
+    "input_linear_rgb": [
+      0.5,
+      0.3,
+      0.1
+    ],
+    "params": {
+      "amount": 100.0,
+      "midpoint": 50.0,
+      "roundness": 0.0,
+      "feather": 50.0
+    },
+    "expected_mask": 0.0,
+    "expected_linear_rgb": [
+      0.5,
+      0.3,
+      0.1
+    ]
+  },
+  {
+    "label": "gradient/16x24/100/near-centre",
+    "width": 16,
+    "height": 24,
+    "x": 8,
+    "y": 12,
+    "input_linear_rgb": [
+      0.5333333333333333,
+      0.5217391304347826,
+      0.527536231884058
+    ],
+    "params": {
+      "amount": 100.0,
+      "midpoint": 50.0,
+      "roundness": 0.0,
+      "feather": 50.0
+    },
+    "expected_mask": 0.0,
+    "expected_linear_rgb": [
+      0.5333333333333332,
+      0.5217391304347825,
+      0.5275362318840578
+    ]
+  },
+  {
+    "label": "flat/20x20/-100/corner-tl",
+    "width": 20,
+    "height": 20,
+    "x": 0,
+    "y": 0,
+    "input_linear_rgb": [
+      0.5,
+      0.3,
+      0.1
+    ],
+    "params": {
+      "amount": -100.0,
+      "midpoint": 50.0,
+      "roundness": 0.0,
+      "feather": 50.0
+    },
+    "expected_mask": 1.0,
+    "expected_linear_rgb": [
+      0.0,
+      0.0,
+      0.0
+    ]
+  },
+  {
+    "label": "gradient/20x20/-100/corner-tl",
+    "width": 20,
+    "height": 20,
+    "x": 0,
+    "y": 0,
+    "input_linear_rgb": [
+      0.0,
+      0.0,
+      0.0
+    ],
+    "params": {
+      "amount": -100.0,
+      "midpoint": 50.0,
+      "roundness": 0.0,
+      "feather": 50.0
+    },
+    "expected_mask": 1.0,
+    "expected_linear_rgb": [
+      0.0,
+      0.0,
+      0.0
+    ]
+  },
+  {
+    "label": "flat/20x20/-100/near-centre",
+    "width": 20,
+    "height": 20,
+    "x": 10,
+    "y": 10,
+    "input_linear_rgb": [
+      0.5,
+      0.3,
+      0.1
+    ],
+    "params": {
+      "amount": -100.0,
+      "midpoint": 50.0,
+      "roundness": 0.0,
+      "feather": 50.0
+    },
+    "expected_mask": 0.0,
+    "expected_linear_rgb": [
+      0.5,
+      0.3,
+      0.1
+    ]
+  },
+  {
+    "label": "gradient/20x20/-100/near-centre",
+    "width": 20,
+    "height": 20,
+    "x": 10,
+    "y": 10,
+    "input_linear_rgb": [
+      0.5263157894736842,
+      0.5263157894736842,
+      0.5263157894736842
+    ],
+    "params": {
+      "amount": -100.0,
+      "midpoint": 50.0,
+      "roundness": 0.0,
+      "feather": 50.0
+    },
+    "expected_mask": 0.0,
+    "expected_linear_rgb": [
+      0.5263157894736842,
+      0.5263157894736842,
+      0.5263157894736842
+    ]
+  },
+  {
+    "label": "flat/20x20/-50/corner-tl",
+    "width": 20,
+    "height": 20,
+    "x": 0,
+    "y": 0,
+    "input_linear_rgb": [
+      0.5,
+      0.3,
+      0.1
+    ],
+    "params": {
+      "amount": -50.0,
+      "midpoint": 50.0,
+      "roundness": 0.0,
+      "feather": 50.0
+    },
+    "expected_mask": 1.0,
+    "expected_linear_rgb": [
+      0.25,
+      0.15,
+      0.05
+    ]
+  },
+  {
+    "label": "gradient/20x20/-50/corner-tl",
+    "width": 20,
+    "height": 20,
+    "x": 0,
+    "y": 0,
+    "input_linear_rgb": [
+      0.0,
+      0.0,
+      0.0
+    ],
+    "params": {
+      "amount": -50.0,
+      "midpoint": 50.0,
+      "roundness": 0.0,
+      "feather": 50.0
+    },
+    "expected_mask": 1.0,
+    "expected_linear_rgb": [
+      0.0,
+      0.0,
+      0.0
+    ]
+  },
+  {
+    "label": "flat/20x20/-50/near-centre",
+    "width": 20,
+    "height": 20,
+    "x": 10,
+    "y": 10,
+    "input_linear_rgb": [
+      0.5,
+      0.3,
+      0.1
+    ],
+    "params": {
+      "amount": -50.0,
+      "midpoint": 50.0,
+      "roundness": 0.0,
+      "feather": 50.0
+    },
+    "expected_mask": 0.0,
+    "expected_linear_rgb": [
+      0.5,
+      0.3,
+      0.1
+    ]
+  },
+  {
+    "label": "gradient/20x20/-50/near-centre",
+    "width": 20,
+    "height": 20,
+    "x": 10,
+    "y": 10,
+    "input_linear_rgb": [
+      0.5263157894736842,
+      0.5263157894736842,
+      0.5263157894736842
+    ],
+    "params": {
+      "amount": -50.0,
+      "midpoint": 50.0,
+      "roundness": 0.0,
+      "feather": 50.0
+    },
+    "expected_mask": 0.0,
+    "expected_linear_rgb": [
+      0.5263157894736842,
+      0.5263157894736842,
+      0.5263157894736842
+    ]
+  },
+  {
+    "label": "flat/20x20/50/corner-tl",
+    "width": 20,
+    "height": 20,
+    "x": 0,
+    "y": 0,
+    "input_linear_rgb": [
+      0.5,
+      0.3,
+      0.1
+    ],
+    "params": {
+      "amount": 50.0,
+      "midpoint": 50.0,
+      "roundness": 0.0,
+      "feather": 50.0
+    },
+    "expected_mask": 1.0,
+    "expected_linear_rgb": [
+      0.7249616770908396,
+      0.5902154767726329,
+      0.4126583967200281
+    ]
+  },
+  {
+    "label": "gradient/20x20/50/corner-tl",
+    "width": 20,
+    "height": 20,
+    "x": 0,
+    "y": 0,
+    "input_linear_rgb": [
+      0.0,
+      0.0,
+      0.0
+    ],
+    "params": {
+      "amount": 50.0,
+      "midpoint": 50.0,
+      "roundness": 0.0,
+      "feather": 50.0
+    },
+    "expected_mask": 1.0,
+    "expected_linear_rgb": [
+      0.21404114048223255,
+      0.21404114048223255,
+      0.21404114048223255
+    ]
+  },
+  {
+    "label": "flat/20x20/50/near-centre",
+    "width": 20,
+    "height": 20,
+    "x": 10,
+    "y": 10,
+    "input_linear_rgb": [
+      0.5,
+      0.3,
+      0.1
+    ],
+    "params": {
+      "amount": 50.0,
+      "midpoint": 50.0,
+      "roundness": 0.0,
+      "feather": 50.0
+    },
+    "expected_mask": 0.0,
+    "expected_linear_rgb": [
+      0.5,
+      0.3,
+      0.1
+    ]
+  },
+  {
+    "label": "gradient/20x20/50/near-centre",
+    "width": 20,
+    "height": 20,
+    "x": 10,
+    "y": 10,
+    "input_linear_rgb": [
+      0.5263157894736842,
+      0.5263157894736842,
+      0.5263157894736842
+    ],
+    "params": {
+      "amount": 50.0,
+      "midpoint": 50.0,
+      "roundness": 0.0,
+      "feather": 50.0
+    },
+    "expected_mask": 0.0,
+    "expected_linear_rgb": [
+      0.5263157894736841,
+      0.5263157894736841,
+      0.5263157894736841
+    ]
+  },
+  {
+    "label": "flat/20x20/100/corner-tl",
+    "width": 20,
+    "height": 20,
+    "x": 0,
+    "y": 0,
+    "input_linear_rgb": [
+      0.5,
+      0.3,
+      0.1
+    ],
+    "params": {
+      "amount": 100.0,
+      "midpoint": 50.0,
+      "roundness": 0.0,
+      "feather": 50.0
+    },
+    "expected_mask": 1.0,
+    "expected_linear_rgb": [
+      1.0,
+      1.0,
+      1.0
+    ]
+  },
+  {
+    "label": "gradient/20x20/100/corner-tl",
+    "width": 20,
+    "height": 20,
+    "x": 0,
+    "y": 0,
+    "input_linear_rgb": [
+      0.0,
+      0.0,
+      0.0
+    ],
+    "params": {
+      "amount": 100.0,
+      "midpoint": 50.0,
+      "roundness": 0.0,
+      "feather": 50.0
+    },
+    "expected_mask": 1.0,
+    "expected_linear_rgb": [
+      1.0,
+      1.0,
+      1.0
+    ]
+  },
+  {
+    "label": "flat/20x20/100/near-centre",
+    "width": 20,
+    "height": 20,
+    "x": 10,
+    "y": 10,
+    "input_linear_rgb": [
+      0.5,
+      0.3,
+      0.1
+    ],
+    "params": {
+      "amount": 100.0,
+      "midpoint": 50.0,
+      "roundness": 0.0,
+      "feather": 50.0
+    },
+    "expected_mask": 0.0,
+    "expected_linear_rgb": [
+      0.5,
+      0.3,
+      0.1
+    ]
+  },
+  {
+    "label": "gradient/20x20/100/near-centre",
+    "width": 20,
+    "height": 20,
+    "x": 10,
+    "y": 10,
+    "input_linear_rgb": [
+      0.5263157894736842,
+      0.5263157894736842,
+      0.5263157894736842
+    ],
+    "params": {
+      "amount": 100.0,
+      "midpoint": 50.0,
+      "roundness": 0.0,
+      "feather": 50.0
+    },
+    "expected_mask": 0.0,
+    "expected_linear_rgb": [
+      0.5263157894736841,
+      0.5263157894736841,
+      0.5263157894736841
+    ]
+  },
+  {
+    "label": "black-corners/24x16/corner-tl",
+    "width": 24,
+    "height": 16,
+    "x": 0,
+    "y": 0,
+    "input_linear_rgb": [
+      0.5,
+      0.3,
+      0.1
+    ],
+    "params": {
+      "amount": -100.0,
+      "midpoint": 50.0,
+      "roundness": 0.0,
+      "feather": 50.0
+    },
+    "expected_mask": 1.0,
+    "expected_linear_rgb": [
+      0.0,
+      0.0,
+      0.0
+    ]
+  },
+  {
+    "label": "black-corners/24x16/corner-tr",
+    "width": 24,
+    "height": 16,
+    "x": 23,
+    "y": 0,
+    "input_linear_rgb": [
+      0.5,
+      0.3,
+      0.1
+    ],
+    "params": {
+      "amount": -100.0,
+      "midpoint": 50.0,
+      "roundness": 0.0,
+      "feather": 50.0
+    },
+    "expected_mask": 1.0,
+    "expected_linear_rgb": [
+      0.0,
+      0.0,
+      0.0
+    ]
+  },
+  {
+    "label": "black-corners/24x16/corner-bl",
+    "width": 24,
+    "height": 16,
+    "x": 0,
+    "y": 15,
+    "input_linear_rgb": [
+      0.5,
+      0.3,
+      0.1
+    ],
+    "params": {
+      "amount": -100.0,
+      "midpoint": 50.0,
+      "roundness": 0.0,
+      "feather": 50.0
+    },
+    "expected_mask": 1.0,
+    "expected_linear_rgb": [
+      0.0,
+      0.0,
+      0.0
+    ]
+  },
+  {
+    "label": "black-corners/24x16/corner-br",
+    "width": 24,
+    "height": 16,
+    "x": 23,
+    "y": 15,
+    "input_linear_rgb": [
+      0.5,
+      0.3,
+      0.1
+    ],
+    "params": {
+      "amount": -100.0,
+      "midpoint": 50.0,
+      "roundness": 0.0,
+      "feather": 50.0
+    },
+    "expected_mask": 1.0,
+    "expected_linear_rgb": [
+      0.0,
+      0.0,
+      0.0
+    ]
+  },
+  {
+    "label": "black-corners/16x24/corner-tl",
+    "width": 16,
+    "height": 24,
+    "x": 0,
+    "y": 0,
+    "input_linear_rgb": [
+      0.5,
+      0.3,
+      0.1
+    ],
+    "params": {
+      "amount": -100.0,
+      "midpoint": 50.0,
+      "roundness": 0.0,
+      "feather": 50.0
+    },
+    "expected_mask": 1.0,
+    "expected_linear_rgb": [
+      0.0,
+      0.0,
+      0.0
+    ]
+  },
+  {
+    "label": "black-corners/16x24/corner-tr",
+    "width": 16,
+    "height": 24,
+    "x": 15,
+    "y": 0,
+    "input_linear_rgb": [
+      0.5,
+      0.3,
+      0.1
+    ],
+    "params": {
+      "amount": -100.0,
+      "midpoint": 50.0,
+      "roundness": 0.0,
+      "feather": 50.0
+    },
+    "expected_mask": 1.0,
+    "expected_linear_rgb": [
+      0.0,
+      0.0,
+      0.0
+    ]
+  },
+  {
+    "label": "black-corners/16x24/corner-bl",
+    "width": 16,
+    "height": 24,
+    "x": 0,
+    "y": 23,
+    "input_linear_rgb": [
+      0.5,
+      0.3,
+      0.1
+    ],
+    "params": {
+      "amount": -100.0,
+      "midpoint": 50.0,
+      "roundness": 0.0,
+      "feather": 50.0
+    },
+    "expected_mask": 1.0,
+    "expected_linear_rgb": [
+      0.0,
+      0.0,
+      0.0
+    ]
+  },
+  {
+    "label": "black-corners/16x24/corner-br",
+    "width": 16,
+    "height": 24,
+    "x": 15,
+    "y": 23,
+    "input_linear_rgb": [
+      0.5,
+      0.3,
+      0.1
+    ],
+    "params": {
+      "amount": -100.0,
+      "midpoint": 50.0,
+      "roundness": 0.0,
+      "feather": 50.0
+    },
+    "expected_mask": 1.0,
+    "expected_linear_rgb": [
+      0.0,
+      0.0,
+      0.0
+    ]
+  },
+  {
+    "label": "black-corners/20x20/corner-tl",
+    "width": 20,
+    "height": 20,
+    "x": 0,
+    "y": 0,
+    "input_linear_rgb": [
+      0.5,
+      0.3,
+      0.1
+    ],
+    "params": {
+      "amount": -100.0,
+      "midpoint": 50.0,
+      "roundness": 0.0,
+      "feather": 50.0
+    },
+    "expected_mask": 1.0,
+    "expected_linear_rgb": [
+      0.0,
+      0.0,
+      0.0
+    ]
+  },
+  {
+    "label": "black-corners/20x20/corner-tr",
+    "width": 20,
+    "height": 20,
+    "x": 19,
+    "y": 0,
+    "input_linear_rgb": [
+      0.5,
+      0.3,
+      0.1
+    ],
+    "params": {
+      "amount": -100.0,
+      "midpoint": 50.0,
+      "roundness": 0.0,
+      "feather": 50.0
+    },
+    "expected_mask": 1.0,
+    "expected_linear_rgb": [
+      0.0,
+      0.0,
+      0.0
+    ]
+  },
+  {
+    "label": "black-corners/20x20/corner-bl",
+    "width": 20,
+    "height": 20,
+    "x": 0,
+    "y": 19,
+    "input_linear_rgb": [
+      0.5,
+      0.3,
+      0.1
+    ],
+    "params": {
+      "amount": -100.0,
+      "midpoint": 50.0,
+      "roundness": 0.0,
+      "feather": 50.0
+    },
+    "expected_mask": 1.0,
+    "expected_linear_rgb": [
+      0.0,
+      0.0,
+      0.0
+    ]
+  },
+  {
+    "label": "black-corners/20x20/corner-br",
+    "width": 20,
+    "height": 20,
+    "x": 19,
+    "y": 19,
+    "input_linear_rgb": [
+      0.5,
+      0.3,
+      0.1
+    ],
+    "params": {
+      "amount": -100.0,
+      "midpoint": 50.0,
+      "roundness": 0.0,
+      "feather": 50.0
+    },
+    "expected_mask": 1.0,
+    "expected_linear_rgb": [
+      0.0,
+      0.0,
+      0.0
+    ]
+  }
+]

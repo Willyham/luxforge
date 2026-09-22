@@ -134,4 +134,5 @@ Recommendations for the owner, recorded as proposals until decided. The plan run
 ## References
 
 - Repository contracts: [modules](modules-and-api.md), [Basic and histogram](basic-and-histogram.md), [UI components](ui-components.md), [workspace](develop-workspace.md), [architecture](architecture.md), [performance rules](../engineering/performance-rules.md), [RAW integration](raw-integration.md).
+- Frozen numerical study: [vignette mask and amount equations](vignette-study.md), TASK-004's frozen equations, worked examples and tolerance for the "Vignette: one positional unit" section above.
 - Local research: [Lightroom detail and dehaze](../research/lightroom/detail-and-local-contrast.md), [Lightroom tone and colour](../research/lightroom/tone-and-color-tools.md), [darktable detail and haze](../research/darktable/detail-and-local-contrast.md), [darktable previews and tiling](../research/darktable/previews-and-performance.md). These supply context and candidate mechanisms, not accepted Lightwell behaviour.

@@ -1,0 +1,2830 @@
+[
+  {
+    "label": "defaults/24x16/corner-tl",
+    "width": 24,
+    "height": 16,
+    "x": 0,
+    "y": 0,
+    "params": {
+      "amount": 0.0,
+      "midpoint": 50.0,
+      "roundness": 0.0,
+      "feather": 50.0
+    },
+    "expected_mask": 1.0
+  },
+  {
+    "label": "defaults/24x16/corner-tr",
+    "width": 24,
+    "height": 16,
+    "x": 23,
+    "y": 0,
+    "params": {
+      "amount": 0.0,
+      "midpoint": 50.0,
+      "roundness": 0.0,
+      "feather": 50.0
+    },
+    "expected_mask": 1.0
+  },
+  {
+    "label": "defaults/24x16/corner-bl",
+    "width": 24,
+    "height": 16,
+    "x": 0,
+    "y": 15,
+    "params": {
+      "amount": 0.0,
+      "midpoint": 50.0,
+      "roundness": 0.0,
+      "feather": 50.0
+    },
+    "expected_mask": 1.0
+  },
+  {
+    "label": "defaults/24x16/corner-br",
+    "width": 24,
+    "height": 16,
+    "x": 23,
+    "y": 15,
+    "params": {
+      "amount": 0.0,
+      "midpoint": 50.0,
+      "roundness": 0.0,
+      "feather": 50.0
+    },
+    "expected_mask": 1.0
+  },
+  {
+    "label": "defaults/24x16/near-centre",
+    "width": 24,
+    "height": 16,
+    "x": 12,
+    "y": 8,
+    "params": {
+      "amount": 0.0,
+      "midpoint": 50.0,
+      "roundness": 0.0,
+      "feather": 50.0
+    },
+    "expected_mask": 0.0
+  },
+  {
+    "label": "defaults/16x24/corner-tl",
+    "width": 16,
+    "height": 24,
+    "x": 0,
+    "y": 0,
+    "params": {
+      "amount": 0.0,
+      "midpoint": 50.0,
+      "roundness": 0.0,
+      "feather": 50.0
+    },
+    "expected_mask": 1.0
+  },
+  {
+    "label": "defaults/16x24/corner-tr",
+    "width": 16,
+    "height": 24,
+    "x": 15,
+    "y": 0,
+    "params": {
+      "amount": 0.0,
+      "midpoint": 50.0,
+      "roundness": 0.0,
+      "feather": 50.0
+    },
+    "expected_mask": 1.0
+  },
+  {
+    "label": "defaults/16x24/corner-bl",
+    "width": 16,
+    "height": 24,
+    "x": 0,
+    "y": 23,
+    "params": {
+      "amount": 0.0,
+      "midpoint": 50.0,
+      "roundness": 0.0,
+      "feather": 50.0
+    },
+    "expected_mask": 1.0
+  },
+  {
+    "label": "defaults/16x24/corner-br",
+    "width": 16,
+    "height": 24,
+    "x": 15,
+    "y": 23,
+    "params": {
+      "amount": 0.0,
+      "midpoint": 50.0,
+      "roundness": 0.0,
+      "feather": 50.0
+    },
+    "expected_mask": 1.0
+  },
+  {
+    "label": "defaults/16x24/near-centre",
+    "width": 16,
+    "height": 24,
+    "x": 8,
+    "y": 12,
+    "params": {
+      "amount": 0.0,
+      "midpoint": 50.0,
+      "roundness": 0.0,
+      "feather": 50.0
+    },
+    "expected_mask": 0.0
+  },
+  {
+    "label": "defaults/20x20/corner-tl",
+    "width": 20,
+    "height": 20,
+    "x": 0,
+    "y": 0,
+    "params": {
+      "amount": 0.0,
+      "midpoint": 50.0,
+      "roundness": 0.0,
+      "feather": 50.0
+    },
+    "expected_mask": 1.0
+  },
+  {
+    "label": "defaults/20x20/corner-tr",
+    "width": 20,
+    "height": 20,
+    "x": 19,
+    "y": 0,
+    "params": {
+      "amount": 0.0,
+      "midpoint": 50.0,
+      "roundness": 0.0,
+      "feather": 50.0
+    },
+    "expected_mask": 1.0
+  },
+  {
+    "label": "defaults/20x20/corner-bl",
+    "width": 20,
+    "height": 20,
+    "x": 0,
+    "y": 19,
+    "params": {
+      "amount": 0.0,
+      "midpoint": 50.0,
+      "roundness": 0.0,
+      "feather": 50.0
+    },
+    "expected_mask": 1.0
+  },
+  {
+    "label": "defaults/20x20/corner-br",
+    "width": 20,
+    "height": 20,
+    "x": 19,
+    "y": 19,
+    "params": {
+      "amount": 0.0,
+      "midpoint": 50.0,
+      "roundness": 0.0,
+      "feather": 50.0
+    },
+    "expected_mask": 1.0
+  },
+  {
+    "label": "defaults/20x20/near-centre",
+    "width": 20,
+    "height": 20,
+    "x": 10,
+    "y": 10,
+    "params": {
+      "amount": 0.0,
+      "midpoint": 50.0,
+      "roundness": 0.0,
+      "feather": 50.0
+    },
+    "expected_mask": 0.0
+  },
+  {
+    "label": "roundness/24x16/-100/corner-tl",
+    "width": 24,
+    "height": 16,
+    "x": 0,
+    "y": 0,
+    "params": {
+      "amount": 0.0,
+      "midpoint": 50.0,
+      "roundness": -100.0,
+      "feather": 50.0
+    },
+    "expected_mask": 1.0
+  },
+  {
+    "label": "roundness/24x16/-100/near-centre",
+    "width": 24,
+    "height": 16,
+    "x": 12,
+    "y": 8,
+    "params": {
+      "amount": 0.0,
+      "midpoint": 50.0,
+      "roundness": -100.0,
+      "feather": 50.0
+    },
+    "expected_mask": 0.0
+  },
+  {
+    "label": "roundness/24x16/-50/corner-tl",
+    "width": 24,
+    "height": 16,
+    "x": 0,
+    "y": 0,
+    "params": {
+      "amount": 0.0,
+      "midpoint": 50.0,
+      "roundness": -50.0,
+      "feather": 50.0
+    },
+    "expected_mask": 1.0
+  },
+  {
+    "label": "roundness/24x16/-50/near-centre",
+    "width": 24,
+    "height": 16,
+    "x": 12,
+    "y": 8,
+    "params": {
+      "amount": 0.0,
+      "midpoint": 50.0,
+      "roundness": -50.0,
+      "feather": 50.0
+    },
+    "expected_mask": 0.0
+  },
+  {
+    "label": "roundness/24x16/0/corner-tl",
+    "width": 24,
+    "height": 16,
+    "x": 0,
+    "y": 0,
+    "params": {
+      "amount": 0.0,
+      "midpoint": 50.0,
+      "roundness": 0.0,
+      "feather": 50.0
+    },
+    "expected_mask": 1.0
+  },
+  {
+    "label": "roundness/24x16/0/near-centre",
+    "width": 24,
+    "height": 16,
+    "x": 12,
+    "y": 8,
+    "params": {
+      "amount": 0.0,
+      "midpoint": 50.0,
+      "roundness": 0.0,
+      "feather": 50.0
+    },
+    "expected_mask": 0.0
+  },
+  {
+    "label": "roundness/24x16/50/corner-tl",
+    "width": 24,
+    "height": 16,
+    "x": 0,
+    "y": 0,
+    "params": {
+      "amount": 0.0,
+      "midpoint": 50.0,
+      "roundness": 50.0,
+      "feather": 50.0
+    },
+    "expected_mask": 1.0
+  },
+  {
+    "label": "roundness/24x16/50/near-centre",
+    "width": 24,
+    "height": 16,
+    "x": 12,
+    "y": 8,
+    "params": {
+      "amount": 0.0,
+      "midpoint": 50.0,
+      "roundness": 50.0,
+      "feather": 50.0
+    },
+    "expected_mask": 0.0
+  },
+  {
+    "label": "roundness/24x16/100/corner-tl",
+    "width": 24,
+    "height": 16,
+    "x": 0,
+    "y": 0,
+    "params": {
+      "amount": 0.0,
+      "midpoint": 50.0,
+      "roundness": 100.0,
+      "feather": 50.0
+    },
+    "expected_mask": 1.0
+  },
+  {
+    "label": "roundness/24x16/100/near-centre",
+    "width": 24,
+    "height": 16,
+    "x": 12,
+    "y": 8,
+    "params": {
+      "amount": 0.0,
+      "midpoint": 50.0,
+      "roundness": 100.0,
+      "feather": 50.0
+    },
+    "expected_mask": 0.0
+  },
+  {
+    "label": "roundness/16x24/-100/corner-tl",
+    "width": 16,
+    "height": 24,
+    "x": 0,
+    "y": 0,
+    "params": {
+      "amount": 0.0,
+      "midpoint": 50.0,
+      "roundness": -100.0,
+      "feather": 50.0
+    },
+    "expected_mask": 1.0
+  },
+  {
+    "label": "roundness/16x24/-100/near-centre",
+    "width": 16,
+    "height": 24,
+    "x": 8,
+    "y": 12,
+    "params": {
+      "amount": 0.0,
+      "midpoint": 50.0,
+      "roundness": -100.0,
+      "feather": 50.0
+    },
+    "expected_mask": 0.0
+  },
+  {
+    "label": "roundness/16x24/-50/corner-tl",
+    "width": 16,
+    "height": 24,
+    "x": 0,
+    "y": 0,
+    "params": {
+      "amount": 0.0,
+      "midpoint": 50.0,
+      "roundness": -50.0,
+      "feather": 50.0
+    },
+    "expected_mask": 1.0
+  },
+  {
+    "label": "roundness/16x24/-50/near-centre",
+    "width": 16,
+    "height": 24,
+    "x": 8,
+    "y": 12,
+    "params": {
+      "amount": 0.0,
+      "midpoint": 50.0,
+      "roundness": -50.0,
+      "feather": 50.0
+    },
+    "expected_mask": 0.0
+  },
+  {
+    "label": "roundness/16x24/0/corner-tl",
+    "width": 16,
+    "height": 24,
+    "x": 0,
+    "y": 0,
+    "params": {
+      "amount": 0.0,
+      "midpoint": 50.0,
+      "roundness": 0.0,
+      "feather": 50.0
+    },
+    "expected_mask": 1.0
+  },
+  {
+    "label": "roundness/16x24/0/near-centre",
+    "width": 16,
+    "height": 24,
+    "x": 8,
+    "y": 12,
+    "params": {
+      "amount": 0.0,
+      "midpoint": 50.0,
+      "roundness": 0.0,
+      "feather": 50.0
+    },
+    "expected_mask": 0.0
+  },
+  {
+    "label": "roundness/16x24/50/corner-tl",
+    "width": 16,
+    "height": 24,
+    "x": 0,
+    "y": 0,
+    "params": {
+      "amount": 0.0,
+      "midpoint": 50.0,
+      "roundness": 50.0,
+      "feather": 50.0
+    },
+    "expected_mask": 1.0
+  },
+  {
+    "label": "roundness/16x24/50/near-centre",
+    "width": 16,
+    "height": 24,
+    "x": 8,
+    "y": 12,
+    "params": {
+      "amount": 0.0,
+      "midpoint": 50.0,
+      "roundness": 50.0,
+      "feather": 50.0
+    },
+    "expected_mask": 0.0
+  },
+  {
+    "label": "roundness/16x24/100/corner-tl",
+    "width": 16,
+    "height": 24,
+    "x": 0,
+    "y": 0,
+    "params": {
+      "amount": 0.0,
+      "midpoint": 50.0,
+      "roundness": 100.0,
+      "feather": 50.0
+    },
+    "expected_mask": 1.0
+  },
+  {
+    "label": "roundness/16x24/100/near-centre",
+    "width": 16,
+    "height": 24,
+    "x": 8,
+    "y": 12,
+    "params": {
+      "amount": 0.0,
+      "midpoint": 50.0,
+      "roundness": 100.0,
+      "feather": 50.0
+    },
+    "expected_mask": 0.0
+  },
+  {
+    "label": "roundness/20x20/-100/corner-tl",
+    "width": 20,
+    "height": 20,
+    "x": 0,
+    "y": 0,
+    "params": {
+      "amount": 0.0,
+      "midpoint": 50.0,
+      "roundness": -100.0,
+      "feather": 50.0
+    },
+    "expected_mask": 1.0
+  },
+  {
+    "label": "roundness/20x20/-100/near-centre",
+    "width": 20,
+    "height": 20,
+    "x": 10,
+    "y": 10,
+    "params": {
+      "amount": 0.0,
+      "midpoint": 50.0,
+      "roundness": -100.0,
+      "feather": 50.0
+    },
+    "expected_mask": 0.0
+  },
+  {
+    "label": "roundness/20x20/-50/corner-tl",
+    "width": 20,
+    "height": 20,
+    "x": 0,
+    "y": 0,
+    "params": {
+      "amount": 0.0,
+      "midpoint": 50.0,
+      "roundness": -50.0,
+      "feather": 50.0
+    },
+    "expected_mask": 1.0
+  },
+  {
+    "label": "roundness/20x20/-50/near-centre",
+    "width": 20,
+    "height": 20,
+    "x": 10,
+    "y": 10,
+    "params": {
+      "amount": 0.0,
+      "midpoint": 50.0,
+      "roundness": -50.0,
+      "feather": 50.0
+    },
+    "expected_mask": 0.0
+  },
+  {
+    "label": "roundness/20x20/0/corner-tl",
+    "width": 20,
+    "height": 20,
+    "x": 0,
+    "y": 0,
+    "params": {
+      "amount": 0.0,
+      "midpoint": 50.0,
+      "roundness": 0.0,
+      "feather": 50.0
+    },
+    "expected_mask": 1.0
+  },
+  {
+    "label": "roundness/20x20/0/near-centre",
+    "width": 20,
+    "height": 20,
+    "x": 10,
+    "y": 10,
+    "params": {
+      "amount": 0.0,
+      "midpoint": 50.0,
+      "roundness": 0.0,
+      "feather": 50.0
+    },
+    "expected_mask": 0.0
+  },
+  {
+    "label": "roundness/20x20/50/corner-tl",
+    "width": 20,
+    "height": 20,
+    "x": 0,
+    "y": 0,
+    "params": {
+      "amount": 0.0,
+      "midpoint": 50.0,
+      "roundness": 50.0,
+      "feather": 50.0
+    },
+    "expected_mask": 1.0
+  },
+  {
+    "label": "roundness/20x20/50/near-centre",
+    "width": 20,
+    "height": 20,
+    "x": 10,
+    "y": 10,
+    "params": {
+      "amount": 0.0,
+      "midpoint": 50.0,
+      "roundness": 50.0,
+      "feather": 50.0
+    },
+    "expected_mask": 0.0
+  },
+  {
+    "label": "roundness/20x20/100/corner-tl",
+    "width": 20,
+    "height": 20,
+    "x": 0,
+    "y": 0,
+    "params": {
+      "amount": 0.0,
+      "midpoint": 50.0,
+      "roundness": 100.0,
+      "feather": 50.0
+    },
+    "expected_mask": 1.0
+  },
+  {
+    "label": "roundness/20x20/100/near-centre",
+    "width": 20,
+    "height": 20,
+    "x": 10,
+    "y": 10,
+    "params": {
+      "amount": 0.0,
+      "midpoint": 50.0,
+      "roundness": 100.0,
+      "feather": 50.0
+    },
+    "expected_mask": 0.0
+  },
+  {
+    "label": "midpoint-feather/24x16/0/0/corner-tl",
+    "width": 24,
+    "height": 16,
+    "x": 0,
+    "y": 0,
+    "params": {
+      "amount": 0.0,
+      "midpoint": 0.0,
+      "roundness": 0.0,
+      "feather": 0.0
+    },
+    "expected_mask": 1.0
+  },
+  {
+    "label": "midpoint-feather/24x16/0/25/corner-tl",
+    "width": 24,
+    "height": 16,
+    "x": 0,
+    "y": 0,
+    "params": {
+      "amount": 0.0,
+      "midpoint": 0.0,
+      "roundness": 0.0,
+      "feather": 25.0
+    },
+    "expected_mask": 1.0
+  },
+  {
+    "label": "midpoint-feather/24x16/0/50/corner-tl",
+    "width": 24,
+    "height": 16,
+    "x": 0,
+    "y": 0,
+    "params": {
+      "amount": 0.0,
+      "midpoint": 0.0,
+      "roundness": 0.0,
+      "feather": 50.0
+    },
+    "expected_mask": 1.0
+  },
+  {
+    "label": "midpoint-feather/24x16/0/75/corner-tl",
+    "width": 24,
+    "height": 16,
+    "x": 0,
+    "y": 0,
+    "params": {
+      "amount": 0.0,
+      "midpoint": 0.0,
+      "roundness": 0.0,
+      "feather": 75.0
+    },
+    "expected_mask": 1.0
+  },
+  {
+    "label": "midpoint-feather/24x16/0/90/corner-tl",
+    "width": 24,
+    "height": 16,
+    "x": 0,
+    "y": 0,
+    "params": {
+      "amount": 0.0,
+      "midpoint": 0.0,
+      "roundness": 0.0,
+      "feather": 90.0
+    },
+    "expected_mask": 1.0
+  },
+  {
+    "label": "midpoint-feather/24x16/0/99/corner-tl",
+    "width": 24,
+    "height": 16,
+    "x": 0,
+    "y": 0,
+    "params": {
+      "amount": 0.0,
+      "midpoint": 0.0,
+      "roundness": 0.0,
+      "feather": 99.0
+    },
+    "expected_mask": 0.9947468345454143
+  },
+  {
+    "label": "midpoint-feather/24x16/0/100/corner-tl",
+    "width": 24,
+    "height": 16,
+    "x": 0,
+    "y": 0,
+    "params": {
+      "amount": 0.0,
+      "midpoint": 0.0,
+      "roundness": 0.0,
+      "feather": 100.0
+    },
+    "expected_mask": 0.9921614942292477
+  },
+  {
+    "label": "midpoint-feather/24x16/25/0/corner-tl",
+    "width": 24,
+    "height": 16,
+    "x": 0,
+    "y": 0,
+    "params": {
+      "amount": 0.0,
+      "midpoint": 25.0,
+      "roundness": 0.0,
+      "feather": 0.0
+    },
+    "expected_mask": 1.0
+  },
+  {
+    "label": "midpoint-feather/24x16/25/25/corner-tl",
+    "width": 24,
+    "height": 16,
+    "x": 0,
+    "y": 0,
+    "params": {
+      "amount": 0.0,
+      "midpoint": 25.0,
+      "roundness": 0.0,
+      "feather": 25.0
+    },
+    "expected_mask": 1.0
+  },
+  {
+    "label": "midpoint-feather/24x16/25/50/corner-tl",
+    "width": 24,
+    "height": 16,
+    "x": 0,
+    "y": 0,
+    "params": {
+      "amount": 0.0,
+      "midpoint": 25.0,
+      "roundness": 0.0,
+      "feather": 50.0
+    },
+    "expected_mask": 1.0
+  },
+  {
+    "label": "midpoint-feather/24x16/25/75/corner-tl",
+    "width": 24,
+    "height": 16,
+    "x": 0,
+    "y": 0,
+    "params": {
+      "amount": 0.0,
+      "midpoint": 25.0,
+      "roundness": 0.0,
+      "feather": 75.0
+    },
+    "expected_mask": 1.0
+  },
+  {
+    "label": "midpoint-feather/24x16/25/90/corner-tl",
+    "width": 24,
+    "height": 16,
+    "x": 0,
+    "y": 0,
+    "params": {
+      "amount": 0.0,
+      "midpoint": 25.0,
+      "roundness": 0.0,
+      "feather": 90.0
+    },
+    "expected_mask": 1.0
+  },
+  {
+    "label": "midpoint-feather/24x16/25/99/corner-tl",
+    "width": 24,
+    "height": 16,
+    "x": 0,
+    "y": 0,
+    "params": {
+      "amount": 0.0,
+      "midpoint": 25.0,
+      "roundness": 0.0,
+      "feather": 99.0
+    },
+    "expected_mask": 0.9941134731088321
+  },
+  {
+    "label": "midpoint-feather/24x16/25/100/corner-tl",
+    "width": 24,
+    "height": 16,
+    "x": 0,
+    "y": 0,
+    "params": {
+      "amount": 0.0,
+      "midpoint": 25.0,
+      "roundness": 0.0,
+      "feather": 100.0
+    },
+    "expected_mask": 0.9921614942292477
+  },
+  {
+    "label": "midpoint-feather/24x16/50/0/corner-tl",
+    "width": 24,
+    "height": 16,
+    "x": 0,
+    "y": 0,
+    "params": {
+      "amount": 0.0,
+      "midpoint": 50.0,
+      "roundness": 0.0,
+      "feather": 0.0
+    },
+    "expected_mask": 1.0
+  },
+  {
+    "label": "midpoint-feather/24x16/50/25/corner-tl",
+    "width": 24,
+    "height": 16,
+    "x": 0,
+    "y": 0,
+    "params": {
+      "amount": 0.0,
+      "midpoint": 50.0,
+      "roundness": 0.0,
+      "feather": 25.0
+    },
+    "expected_mask": 1.0
+  },
+  {
+    "label": "midpoint-feather/24x16/50/50/corner-tl",
+    "width": 24,
+    "height": 16,
+    "x": 0,
+    "y": 0,
+    "params": {
+      "amount": 0.0,
+      "midpoint": 50.0,
+      "roundness": 0.0,
+      "feather": 50.0
+    },
+    "expected_mask": 1.0
+  },
+  {
+    "label": "midpoint-feather/24x16/50/75/corner-tl",
+    "width": 24,
+    "height": 16,
+    "x": 0,
+    "y": 0,
+    "params": {
+      "amount": 0.0,
+      "midpoint": 50.0,
+      "roundness": 0.0,
+      "feather": 75.0
+    },
+    "expected_mask": 1.0
+  },
+  {
+    "label": "midpoint-feather/24x16/50/90/corner-tl",
+    "width": 24,
+    "height": 16,
+    "x": 0,
+    "y": 0,
+    "params": {
+      "amount": 0.0,
+      "midpoint": 50.0,
+      "roundness": 0.0,
+      "feather": 90.0
+    },
+    "expected_mask": 0.9999848188044966
+  },
+  {
+    "label": "midpoint-feather/24x16/50/99/corner-tl",
+    "width": 24,
+    "height": 16,
+    "x": 0,
+    "y": 0,
+    "params": {
+      "amount": 0.0,
+      "midpoint": 50.0,
+      "roundness": 0.0,
+      "feather": 99.0
+    },
+    "expected_mask": 0.993445291949203
+  },
+  {
+    "label": "midpoint-feather/24x16/50/100/corner-tl",
+    "width": 24,
+    "height": 16,
+    "x": 0,
+    "y": 0,
+    "params": {
+      "amount": 0.0,
+      "midpoint": 50.0,
+      "roundness": 0.0,
+      "feather": 100.0
+    },
+    "expected_mask": 0.9921614942292477
+  },
+  {
+    "label": "midpoint-feather/24x16/75/0/corner-tl",
+    "width": 24,
+    "height": 16,
+    "x": 0,
+    "y": 0,
+    "params": {
+      "amount": 0.0,
+      "midpoint": 75.0,
+      "roundness": 0.0,
+      "feather": 0.0
+    },
+    "expected_mask": 1.0
+  },
+  {
+    "label": "midpoint-feather/24x16/75/25/corner-tl",
+    "width": 24,
+    "height": 16,
+    "x": 0,
+    "y": 0,
+    "params": {
+      "amount": 0.0,
+      "midpoint": 75.0,
+      "roundness": 0.0,
+      "feather": 25.0
+    },
+    "expected_mask": 1.0
+  },
+  {
+    "label": "midpoint-feather/24x16/75/50/corner-tl",
+    "width": 24,
+    "height": 16,
+    "x": 0,
+    "y": 0,
+    "params": {
+      "amount": 0.0,
+      "midpoint": 75.0,
+      "roundness": 0.0,
+      "feather": 50.0
+    },
+    "expected_mask": 1.0
+  },
+  {
+    "label": "midpoint-feather/24x16/75/75/corner-tl",
+    "width": 24,
+    "height": 16,
+    "x": 0,
+    "y": 0,
+    "params": {
+      "amount": 0.0,
+      "midpoint": 75.0,
+      "roundness": 0.0,
+      "feather": 75.0
+    },
+    "expected_mask": 1.0
+  },
+  {
+    "label": "midpoint-feather/24x16/75/90/corner-tl",
+    "width": 24,
+    "height": 16,
+    "x": 0,
+    "y": 0,
+    "params": {
+      "amount": 0.0,
+      "midpoint": 75.0,
+      "roundness": 0.0,
+      "feather": 90.0
+    },
+    "expected_mask": 0.9973489341063121
+  },
+  {
+    "label": "midpoint-feather/24x16/75/99/corner-tl",
+    "width": 24,
+    "height": 16,
+    "x": 0,
+    "y": 0,
+    "params": {
+      "amount": 0.0,
+      "midpoint": 75.0,
+      "roundness": 0.0,
+      "feather": 99.0
+    },
+    "expected_mask": 0.9927424843059303
+  },
+  {
+    "label": "midpoint-feather/24x16/75/100/corner-tl",
+    "width": 24,
+    "height": 16,
+    "x": 0,
+    "y": 0,
+    "params": {
+      "amount": 0.0,
+      "midpoint": 75.0,
+      "roundness": 0.0,
+      "feather": 100.0
+    },
+    "expected_mask": 0.9921614942292477
+  },
+  {
+    "label": "midpoint-feather/24x16/90/0/corner-tl",
+    "width": 24,
+    "height": 16,
+    "x": 0,
+    "y": 0,
+    "params": {
+      "amount": 0.0,
+      "midpoint": 90.0,
+      "roundness": 0.0,
+      "feather": 0.0
+    },
+    "expected_mask": 1.0
+  },
+  {
+    "label": "midpoint-feather/24x16/90/25/corner-tl",
+    "width": 24,
+    "height": 16,
+    "x": 0,
+    "y": 0,
+    "params": {
+      "amount": 0.0,
+      "midpoint": 90.0,
+      "roundness": 0.0,
+      "feather": 25.0
+    },
+    "expected_mask": 1.0
+  },
+  {
+    "label": "midpoint-feather/24x16/90/50/corner-tl",
+    "width": 24,
+    "height": 16,
+    "x": 0,
+    "y": 0,
+    "params": {
+      "amount": 0.0,
+      "midpoint": 90.0,
+      "roundness": 0.0,
+      "feather": 50.0
+    },
+    "expected_mask": 0.9999508720719045
+  },
+  {
+    "label": "midpoint-feather/24x16/90/75/corner-tl",
+    "width": 24,
+    "height": 16,
+    "x": 0,
+    "y": 0,
+    "params": {
+      "amount": 0.0,
+      "midpoint": 90.0,
+      "roundness": 0.0,
+      "feather": 75.0
+    },
+    "expected_mask": 0.9961980622585896
+  },
+  {
+    "label": "midpoint-feather/24x16/90/90/corner-tl",
+    "width": 24,
+    "height": 16,
+    "x": 0,
+    "y": 0,
+    "params": {
+      "amount": 0.0,
+      "midpoint": 90.0,
+      "roundness": 0.0,
+      "feather": 90.0
+    },
+    "expected_mask": 0.9936621823851571
+  },
+  {
+    "label": "midpoint-feather/24x16/90/99/corner-tl",
+    "width": 24,
+    "height": 16,
+    "x": 0,
+    "y": 0,
+    "params": {
+      "amount": 0.0,
+      "midpoint": 90.0,
+      "roundness": 0.0,
+      "feather": 99.0
+    },
+    "expected_mask": 0.9923042593954094
+  },
+  {
+    "label": "midpoint-feather/24x16/90/100/corner-tl",
+    "width": 24,
+    "height": 16,
+    "x": 0,
+    "y": 0,
+    "params": {
+      "amount": 0.0,
+      "midpoint": 90.0,
+      "roundness": 0.0,
+      "feather": 100.0
+    },
+    "expected_mask": 0.9921614942292477
+  },
+  {
+    "label": "midpoint-feather/24x16/99/0/corner-tl",
+    "width": 24,
+    "height": 16,
+    "x": 0,
+    "y": 0,
+    "params": {
+      "amount": 0.0,
+      "midpoint": 99.0,
+      "roundness": 0.0,
+      "feather": 0.0
+    },
+    "expected_mask": 0.0
+  },
+  {
+    "label": "midpoint-feather/24x16/99/25/corner-tl",
+    "width": 24,
+    "height": 16,
+    "x": 0,
+    "y": 0,
+    "params": {
+      "amount": 0.0,
+      "midpoint": 99.0,
+      "roundness": 0.0,
+      "feather": 25.0
+    },
+    "expected_mask": 0.9161358283929378
+  },
+  {
+    "label": "midpoint-feather/24x16/99/50/corner-tl",
+    "width": 24,
+    "height": 16,
+    "x": 0,
+    "y": 0,
+    "params": {
+      "amount": 0.0,
+      "midpoint": 99.0,
+      "roundness": 0.0,
+      "feather": 50.0
+    },
+    "expected_mask": 0.9751264873547606
+  },
+  {
+    "label": "midpoint-feather/24x16/99/75/corner-tl",
+    "width": 24,
+    "height": 16,
+    "x": 0,
+    "y": 0,
+    "params": {
+      "amount": 0.0,
+      "midpoint": 99.0,
+      "roundness": 0.0,
+      "feather": 75.0
+    },
+    "expected_mask": 0.9874941172690515
+  },
+  {
+    "label": "midpoint-feather/24x16/99/90/corner-tl",
+    "width": 24,
+    "height": 16,
+    "x": 0,
+    "y": 0,
+    "params": {
+      "amount": 0.0,
+      "midpoint": 99.0,
+      "roundness": 0.0,
+      "feather": 90.0
+    },
+    "expected_mask": 0.9907212888646932
+  },
+  {
+    "label": "midpoint-feather/24x16/99/99/corner-tl",
+    "width": 24,
+    "height": 16,
+    "x": 0,
+    "y": 0,
+    "params": {
+      "amount": 0.0,
+      "midpoint": 99.0,
+      "roundness": 0.0,
+      "feather": 99.0
+    },
+    "expected_mask": 0.9920353917482122
+  },
+  {
+    "label": "midpoint-feather/24x16/99/100/corner-tl",
+    "width": 24,
+    "height": 16,
+    "x": 0,
+    "y": 0,
+    "params": {
+      "amount": 0.0,
+      "midpoint": 99.0,
+      "roundness": 0.0,
+      "feather": 100.0
+    },
+    "expected_mask": 0.9921614942292477
+  },
+  {
+    "label": "midpoint-feather/24x16/100/0/corner-tl",
+    "width": 24,
+    "height": 16,
+    "x": 0,
+    "y": 0,
+    "params": {
+      "amount": 0.0,
+      "midpoint": 100.0,
+      "roundness": 0.0,
+      "feather": 0.0
+    },
+    "expected_mask": 0.0
+  },
+  {
+    "label": "midpoint-feather/24x16/100/25/corner-tl",
+    "width": 24,
+    "height": 16,
+    "x": 0,
+    "y": 0,
+    "params": {
+      "amount": 0.0,
+      "midpoint": 100.0,
+      "roundness": 0.0,
+      "feather": 25.0
+    },
+    "expected_mask": 0.8881026117889024
+  },
+  {
+    "label": "midpoint-feather/24x16/100/50/corner-tl",
+    "width": 24,
+    "height": 16,
+    "x": 0,
+    "y": 0,
+    "params": {
+      "amount": 0.0,
+      "midpoint": 100.0,
+      "roundness": 0.0,
+      "feather": 50.0
+    },
+    "expected_mask": 0.9697725355937356
+  },
+  {
+    "label": "midpoint-feather/24x16/100/75/corner-tl",
+    "width": 24,
+    "height": 16,
+    "x": 0,
+    "y": 0,
+    "params": {
+      "amount": 0.0,
+      "midpoint": 100.0,
+      "roundness": 0.0,
+      "feather": 75.0
+    },
+    "expected_mask": 0.9862317762115136
+  },
+  {
+    "label": "midpoint-feather/24x16/100/90/corner-tl",
+    "width": 24,
+    "height": 16,
+    "x": 0,
+    "y": 0,
+    "params": {
+      "amount": 0.0,
+      "midpoint": 100.0,
+      "roundness": 0.0,
+      "feather": 90.0
+    },
+    "expected_mask": 0.9903614660812642
+  },
+  {
+    "label": "midpoint-feather/24x16/100/99/corner-tl",
+    "width": 24,
+    "height": 16,
+    "x": 0,
+    "y": 0,
+    "params": {
+      "amount": 0.0,
+      "midpoint": 100.0,
+      "roundness": 0.0,
+      "feather": 99.0
+    },
+    "expected_mask": 0.9920052434184174
+  },
+  {
+    "label": "midpoint-feather/24x16/100/100/corner-tl",
+    "width": 24,
+    "height": 16,
+    "x": 0,
+    "y": 0,
+    "params": {
+      "amount": 0.0,
+      "midpoint": 100.0,
+      "roundness": 0.0,
+      "feather": 100.0
+    },
+    "expected_mask": 0.9921614942292477
+  },
+  {
+    "label": "midpoint-feather/16x24/0/0/corner-tl",
+    "width": 16,
+    "height": 24,
+    "x": 0,
+    "y": 0,
+    "params": {
+      "amount": 0.0,
+      "midpoint": 0.0,
+      "roundness": 0.0,
+      "feather": 0.0
+    },
+    "expected_mask": 1.0
+  },
+  {
+    "label": "midpoint-feather/16x24/0/25/corner-tl",
+    "width": 16,
+    "height": 24,
+    "x": 0,
+    "y": 0,
+    "params": {
+      "amount": 0.0,
+      "midpoint": 0.0,
+      "roundness": 0.0,
+      "feather": 25.0
+    },
+    "expected_mask": 1.0
+  },
+  {
+    "label": "midpoint-feather/16x24/0/50/corner-tl",
+    "width": 16,
+    "height": 24,
+    "x": 0,
+    "y": 0,
+    "params": {
+      "amount": 0.0,
+      "midpoint": 0.0,
+      "roundness": 0.0,
+      "feather": 50.0
+    },
+    "expected_mask": 1.0
+  },
+  {
+    "label": "midpoint-feather/16x24/0/75/corner-tl",
+    "width": 16,
+    "height": 24,
+    "x": 0,
+    "y": 0,
+    "params": {
+      "amount": 0.0,
+      "midpoint": 0.0,
+      "roundness": 0.0,
+      "feather": 75.0
+    },
+    "expected_mask": 1.0
+  },
+  {
+    "label": "midpoint-feather/16x24/0/90/corner-tl",
+    "width": 16,
+    "height": 24,
+    "x": 0,
+    "y": 0,
+    "params": {
+      "amount": 0.0,
+      "midpoint": 0.0,
+      "roundness": 0.0,
+      "feather": 90.0
+    },
+    "expected_mask": 1.0
+  },
+  {
+    "label": "midpoint-feather/16x24/0/99/corner-tl",
+    "width": 16,
+    "height": 24,
+    "x": 0,
+    "y": 0,
+    "params": {
+      "amount": 0.0,
+      "midpoint": 0.0,
+      "roundness": 0.0,
+      "feather": 99.0
+    },
+    "expected_mask": 0.9947468345454143
+  },
+  {
+    "label": "midpoint-feather/16x24/0/100/corner-tl",
+    "width": 16,
+    "height": 24,
+    "x": 0,
+    "y": 0,
+    "params": {
+      "amount": 0.0,
+      "midpoint": 0.0,
+      "roundness": 0.0,
+      "feather": 100.0
+    },
+    "expected_mask": 0.9921614942292477
+  },
+  {
+    "label": "midpoint-feather/16x24/25/0/corner-tl",
+    "width": 16,
+    "height": 24,
+    "x": 0,
+    "y": 0,
+    "params": {
+      "amount": 0.0,
+      "midpoint": 25.0,
+      "roundness": 0.0,
+      "feather": 0.0
+    },
+    "expected_mask": 1.0
+  },
+  {
+    "label": "midpoint-feather/16x24/25/25/corner-tl",
+    "width": 16,
+    "height": 24,
+    "x": 0,
+    "y": 0,
+    "params": {
+      "amount": 0.0,
+      "midpoint": 25.0,
+      "roundness": 0.0,
+      "feather": 25.0
+    },
+    "expected_mask": 1.0
+  },
+  {
+    "label": "midpoint-feather/16x24/25/50/corner-tl",
+    "width": 16,
+    "height": 24,
+    "x": 0,
+    "y": 0,
+    "params": {
+      "amount": 0.0,
+      "midpoint": 25.0,
+      "roundness": 0.0,
+      "feather": 50.0
+    },
+    "expected_mask": 1.0
+  },
+  {
+    "label": "midpoint-feather/16x24/25/75/corner-tl",
+    "width": 16,
+    "height": 24,
+    "x": 0,
+    "y": 0,
+    "params": {
+      "amount": 0.0,
+      "midpoint": 25.0,
+      "roundness": 0.0,
+      "feather": 75.0
+    },
+    "expected_mask": 1.0
+  },
+  {
+    "label": "midpoint-feather/16x24/25/90/corner-tl",
+    "width": 16,
+    "height": 24,
+    "x": 0,
+    "y": 0,
+    "params": {
+      "amount": 0.0,
+      "midpoint": 25.0,
+      "roundness": 0.0,
+      "feather": 90.0
+    },
+    "expected_mask": 1.0
+  },
+  {
+    "label": "midpoint-feather/16x24/25/99/corner-tl",
+    "width": 16,
+    "height": 24,
+    "x": 0,
+    "y": 0,
+    "params": {
+      "amount": 0.0,
+      "midpoint": 25.0,
+      "roundness": 0.0,
+      "feather": 99.0
+    },
+    "expected_mask": 0.9941134731088321
+  },
+  {
+    "label": "midpoint-feather/16x24/25/100/corner-tl",
+    "width": 16,
+    "height": 24,
+    "x": 0,
+    "y": 0,
+    "params": {
+      "amount": 0.0,
+      "midpoint": 25.0,
+      "roundness": 0.0,
+      "feather": 100.0
+    },
+    "expected_mask": 0.9921614942292477
+  },
+  {
+    "label": "midpoint-feather/16x24/50/0/corner-tl",
+    "width": 16,
+    "height": 24,
+    "x": 0,
+    "y": 0,
+    "params": {
+      "amount": 0.0,
+      "midpoint": 50.0,
+      "roundness": 0.0,
+      "feather": 0.0
+    },
+    "expected_mask": 1.0
+  },
+  {
+    "label": "midpoint-feather/16x24/50/25/corner-tl",
+    "width": 16,
+    "height": 24,
+    "x": 0,
+    "y": 0,
+    "params": {
+      "amount": 0.0,
+      "midpoint": 50.0,
+      "roundness": 0.0,
+      "feather": 25.0
+    },
+    "expected_mask": 1.0
+  },
+  {
+    "label": "midpoint-feather/16x24/50/50/corner-tl",
+    "width": 16,
+    "height": 24,
+    "x": 0,
+    "y": 0,
+    "params": {
+      "amount": 0.0,
+      "midpoint": 50.0,
+      "roundness": 0.0,
+      "feather": 50.0
+    },
+    "expected_mask": 1.0
+  },
+  {
+    "label": "midpoint-feather/16x24/50/75/corner-tl",
+    "width": 16,
+    "height": 24,
+    "x": 0,
+    "y": 0,
+    "params": {
+      "amount": 0.0,
+      "midpoint": 50.0,
+      "roundness": 0.0,
+      "feather": 75.0
+    },
+    "expected_mask": 1.0
+  },
+  {
+    "label": "midpoint-feather/16x24/50/90/corner-tl",
+    "width": 16,
+    "height": 24,
+    "x": 0,
+    "y": 0,
+    "params": {
+      "amount": 0.0,
+      "midpoint": 50.0,
+      "roundness": 0.0,
+      "feather": 90.0
+    },
+    "expected_mask": 0.9999848188044966
+  },
+  {
+    "label": "midpoint-feather/16x24/50/99/corner-tl",
+    "width": 16,
+    "height": 24,
+    "x": 0,
+    "y": 0,
+    "params": {
+      "amount": 0.0,
+      "midpoint": 50.0,
+      "roundness": 0.0,
+      "feather": 99.0
+    },
+    "expected_mask": 0.993445291949203
+  },
+  {
+    "label": "midpoint-feather/16x24/50/100/corner-tl",
+    "width": 16,
+    "height": 24,
+    "x": 0,
+    "y": 0,
+    "params": {
+      "amount": 0.0,
+      "midpoint": 50.0,
+      "roundness": 0.0,
+      "feather": 100.0
+    },
+    "expected_mask": 0.9921614942292477
+  },
+  {
+    "label": "midpoint-feather/16x24/75/0/corner-tl",
+    "width": 16,
+    "height": 24,
+    "x": 0,
+    "y": 0,
+    "params": {
+      "amount": 0.0,
+      "midpoint": 75.0,
+      "roundness": 0.0,
+      "feather": 0.0
+    },
+    "expected_mask": 1.0
+  },
+  {
+    "label": "midpoint-feather/16x24/75/25/corner-tl",
+    "width": 16,
+    "height": 24,
+    "x": 0,
+    "y": 0,
+    "params": {
+      "amount": 0.0,
+      "midpoint": 75.0,
+      "roundness": 0.0,
+      "feather": 25.0
+    },
+    "expected_mask": 1.0
+  },
+  {
+    "label": "midpoint-feather/16x24/75/50/corner-tl",
+    "width": 16,
+    "height": 24,
+    "x": 0,
+    "y": 0,
+    "params": {
+      "amount": 0.0,
+      "midpoint": 75.0,
+      "roundness": 0.0,
+      "feather": 50.0
+    },
+    "expected_mask": 1.0
+  },
+  {
+    "label": "midpoint-feather/16x24/75/75/corner-tl",
+    "width": 16,
+    "height": 24,
+    "x": 0,
+    "y": 0,
+    "params": {
+      "amount": 0.0,
+      "midpoint": 75.0,
+      "roundness": 0.0,
+      "feather": 75.0
+    },
+    "expected_mask": 1.0
+  },
+  {
+    "label": "midpoint-feather/16x24/75/90/corner-tl",
+    "width": 16,
+    "height": 24,
+    "x": 0,
+    "y": 0,
+    "params": {
+      "amount": 0.0,
+      "midpoint": 75.0,
+      "roundness": 0.0,
+      "feather": 90.0
+    },
+    "expected_mask": 0.9973489341063121
+  },
+  {
+    "label": "midpoint-feather/16x24/75/99/corner-tl",
+    "width": 16,
+    "height": 24,
+    "x": 0,
+    "y": 0,
+    "params": {
+      "amount": 0.0,
+      "midpoint": 75.0,
+      "roundness": 0.0,
+      "feather": 99.0
+    },
+    "expected_mask": 0.9927424843059303
+  },
+  {
+    "label": "midpoint-feather/16x24/75/100/corner-tl",
+    "width": 16,
+    "height": 24,
+    "x": 0,
+    "y": 0,
+    "params": {
+      "amount": 0.0,
+      "midpoint": 75.0,
+      "roundness": 0.0,
+      "feather": 100.0
+    },
+    "expected_mask": 0.9921614942292477
+  },
+  {
+    "label": "midpoint-feather/16x24/90/0/corner-tl",
+    "width": 16,
+    "height": 24,
+    "x": 0,
+    "y": 0,
+    "params": {
+      "amount": 0.0,
+      "midpoint": 90.0,
+      "roundness": 0.0,
+      "feather": 0.0
+    },
+    "expected_mask": 1.0
+  },
+  {
+    "label": "midpoint-feather/16x24/90/25/corner-tl",
+    "width": 16,
+    "height": 24,
+    "x": 0,
+    "y": 0,
+    "params": {
+      "amount": 0.0,
+      "midpoint": 90.0,
+      "roundness": 0.0,
+      "feather": 25.0
+    },
+    "expected_mask": 1.0
+  },
+  {
+    "label": "midpoint-feather/16x24/90/50/corner-tl",
+    "width": 16,
+    "height": 24,
+    "x": 0,
+    "y": 0,
+    "params": {
+      "amount": 0.0,
+      "midpoint": 90.0,
+      "roundness": 0.0,
+      "feather": 50.0
+    },
+    "expected_mask": 0.9999508720719045
+  },
+  {
+    "label": "midpoint-feather/16x24/90/75/corner-tl",
+    "width": 16,
+    "height": 24,
+    "x": 0,
+    "y": 0,
+    "params": {
+      "amount": 0.0,
+      "midpoint": 90.0,
+      "roundness": 0.0,
+      "feather": 75.0
+    },
+    "expected_mask": 0.9961980622585896
+  },
+  {
+    "label": "midpoint-feather/16x24/90/90/corner-tl",
+    "width": 16,
+    "height": 24,
+    "x": 0,
+    "y": 0,
+    "params": {
+      "amount": 0.0,
+      "midpoint": 90.0,
+      "roundness": 0.0,
+      "feather": 90.0
+    },
+    "expected_mask": 0.9936621823851571
+  },
+  {
+    "label": "midpoint-feather/16x24/90/99/corner-tl",
+    "width": 16,
+    "height": 24,
+    "x": 0,
+    "y": 0,
+    "params": {
+      "amount": 0.0,
+      "midpoint": 90.0,
+      "roundness": 0.0,
+      "feather": 99.0
+    },
+    "expected_mask": 0.9923042593954094
+  },
+  {
+    "label": "midpoint-feather/16x24/90/100/corner-tl",
+    "width": 16,
+    "height": 24,
+    "x": 0,
+    "y": 0,
+    "params": {
+      "amount": 0.0,
+      "midpoint": 90.0,
+      "roundness": 0.0,
+      "feather": 100.0
+    },
+    "expected_mask": 0.9921614942292477
+  },
+  {
+    "label": "midpoint-feather/16x24/99/0/corner-tl",
+    "width": 16,
+    "height": 24,
+    "x": 0,
+    "y": 0,
+    "params": {
+      "amount": 0.0,
+      "midpoint": 99.0,
+      "roundness": 0.0,
+      "feather": 0.0
+    },
+    "expected_mask": 0.0
+  },
+  {
+    "label": "midpoint-feather/16x24/99/25/corner-tl",
+    "width": 16,
+    "height": 24,
+    "x": 0,
+    "y": 0,
+    "params": {
+      "amount": 0.0,
+      "midpoint": 99.0,
+      "roundness": 0.0,
+      "feather": 25.0
+    },
+    "expected_mask": 0.9161358283929378
+  },
+  {
+    "label": "midpoint-feather/16x24/99/50/corner-tl",
+    "width": 16,
+    "height": 24,
+    "x": 0,
+    "y": 0,
+    "params": {
+      "amount": 0.0,
+      "midpoint": 99.0,
+      "roundness": 0.0,
+      "feather": 50.0
+    },
+    "expected_mask": 0.9751264873547606
+  },
+  {
+    "label": "midpoint-feather/16x24/99/75/corner-tl",
+    "width": 16,
+    "height": 24,
+    "x": 0,
+    "y": 0,
+    "params": {
+      "amount": 0.0,
+      "midpoint": 99.0,
+      "roundness": 0.0,
+      "feather": 75.0
+    },
+    "expected_mask": 0.9874941172690515
+  },
+  {
+    "label": "midpoint-feather/16x24/99/90/corner-tl",
+    "width": 16,
+    "height": 24,
+    "x": 0,
+    "y": 0,
+    "params": {
+      "amount": 0.0,
+      "midpoint": 99.0,
+      "roundness": 0.0,
+      "feather": 90.0
+    },
+    "expected_mask": 0.9907212888646932
+  },
+  {
+    "label": "midpoint-feather/16x24/99/99/corner-tl",
+    "width": 16,
+    "height": 24,
+    "x": 0,
+    "y": 0,
+    "params": {
+      "amount": 0.0,
+      "midpoint": 99.0,
+      "roundness": 0.0,
+      "feather": 99.0
+    },
+    "expected_mask": 0.9920353917482122
+  },
+  {
+    "label": "midpoint-feather/16x24/99/100/corner-tl",
+    "width": 16,
+    "height": 24,
+    "x": 0,
+    "y": 0,
+    "params": {
+      "amount": 0.0,
+      "midpoint": 99.0,
+      "roundness": 0.0,
+      "feather": 100.0
+    },
+    "expected_mask": 0.9921614942292477
+  },
+  {
+    "label": "midpoint-feather/16x24/100/0/corner-tl",
+    "width": 16,
+    "height": 24,
+    "x": 0,
+    "y": 0,
+    "params": {
+      "amount": 0.0,
+      "midpoint": 100.0,
+      "roundness": 0.0,
+      "feather": 0.0
+    },
+    "expected_mask": 0.0
+  },
+  {
+    "label": "midpoint-feather/16x24/100/25/corner-tl",
+    "width": 16,
+    "height": 24,
+    "x": 0,
+    "y": 0,
+    "params": {
+      "amount": 0.0,
+      "midpoint": 100.0,
+      "roundness": 0.0,
+      "feather": 25.0
+    },
+    "expected_mask": 0.8881026117889024
+  },
+  {
+    "label": "midpoint-feather/16x24/100/50/corner-tl",
+    "width": 16,
+    "height": 24,
+    "x": 0,
+    "y": 0,
+    "params": {
+      "amount": 0.0,
+      "midpoint": 100.0,
+      "roundness": 0.0,
+      "feather": 50.0
+    },
+    "expected_mask": 0.9697725355937356
+  },
+  {
+    "label": "midpoint-feather/16x24/100/75/corner-tl",
+    "width": 16,
+    "height": 24,
+    "x": 0,
+    "y": 0,
+    "params": {
+      "amount": 0.0,
+      "midpoint": 100.0,
+      "roundness": 0.0,
+      "feather": 75.0
+    },
+    "expected_mask": 0.9862317762115136
+  },
+  {
+    "label": "midpoint-feather/16x24/100/90/corner-tl",
+    "width": 16,
+    "height": 24,
+    "x": 0,
+    "y": 0,
+    "params": {
+      "amount": 0.0,
+      "midpoint": 100.0,
+      "roundness": 0.0,
+      "feather": 90.0
+    },
+    "expected_mask": 0.9903614660812642
+  },
+  {
+    "label": "midpoint-feather/16x24/100/99/corner-tl",
+    "width": 16,
+    "height": 24,
+    "x": 0,
+    "y": 0,
+    "params": {
+      "amount": 0.0,
+      "midpoint": 100.0,
+      "roundness": 0.0,
+      "feather": 99.0
+    },
+    "expected_mask": 0.9920052434184174
+  },
+  {
+    "label": "midpoint-feather/16x24/100/100/corner-tl",
+    "width": 16,
+    "height": 24,
+    "x": 0,
+    "y": 0,
+    "params": {
+      "amount": 0.0,
+      "midpoint": 100.0,
+      "roundness": 0.0,
+      "feather": 100.0
+    },
+    "expected_mask": 0.9921614942292477
+  },
+  {
+    "label": "midpoint-feather/20x20/0/0/corner-tl",
+    "width": 20,
+    "height": 20,
+    "x": 0,
+    "y": 0,
+    "params": {
+      "amount": 0.0,
+      "midpoint": 0.0,
+      "roundness": 0.0,
+      "feather": 0.0
+    },
+    "expected_mask": 1.0
+  },
+  {
+    "label": "midpoint-feather/20x20/0/25/corner-tl",
+    "width": 20,
+    "height": 20,
+    "x": 0,
+    "y": 0,
+    "params": {
+      "amount": 0.0,
+      "midpoint": 0.0,
+      "roundness": 0.0,
+      "feather": 25.0
+    },
+    "expected_mask": 1.0
+  },
+  {
+    "label": "midpoint-feather/20x20/0/50/corner-tl",
+    "width": 20,
+    "height": 20,
+    "x": 0,
+    "y": 0,
+    "params": {
+      "amount": 0.0,
+      "midpoint": 0.0,
+      "roundness": 0.0,
+      "feather": 50.0
+    },
+    "expected_mask": 1.0
+  },
+  {
+    "label": "midpoint-feather/20x20/0/75/corner-tl",
+    "width": 20,
+    "height": 20,
+    "x": 0,
+    "y": 0,
+    "params": {
+      "amount": 0.0,
+      "midpoint": 0.0,
+      "roundness": 0.0,
+      "feather": 75.0
+    },
+    "expected_mask": 1.0
+  },
+  {
+    "label": "midpoint-feather/20x20/0/90/corner-tl",
+    "width": 20,
+    "height": 20,
+    "x": 0,
+    "y": 0,
+    "params": {
+      "amount": 0.0,
+      "midpoint": 0.0,
+      "roundness": 0.0,
+      "feather": 90.0
+    },
+    "expected_mask": 1.0
+  },
+  {
+    "label": "midpoint-feather/20x20/0/99/corner-tl",
+    "width": 20,
+    "height": 20,
+    "x": 0,
+    "y": 0,
+    "params": {
+      "amount": 0.0,
+      "midpoint": 0.0,
+      "roundness": 0.0,
+      "feather": 99.0
+    },
+    "expected_mask": 0.9952344586565585
+  },
+  {
+    "label": "midpoint-feather/20x20/0/100/corner-tl",
+    "width": 20,
+    "height": 20,
+    "x": 0,
+    "y": 0,
+    "params": {
+      "amount": 0.0,
+      "midpoint": 0.0,
+      "roundness": 0.0,
+      "feather": 100.0
+    },
+    "expected_mask": 0.99275
+  },
+  {
+    "label": "midpoint-feather/20x20/25/0/corner-tl",
+    "width": 20,
+    "height": 20,
+    "x": 0,
+    "y": 0,
+    "params": {
+      "amount": 0.0,
+      "midpoint": 25.0,
+      "roundness": 0.0,
+      "feather": 0.0
+    },
+    "expected_mask": 1.0
+  },
+  {
+    "label": "midpoint-feather/20x20/25/25/corner-tl",
+    "width": 20,
+    "height": 20,
+    "x": 0,
+    "y": 0,
+    "params": {
+      "amount": 0.0,
+      "midpoint": 25.0,
+      "roundness": 0.0,
+      "feather": 25.0
+    },
+    "expected_mask": 1.0
+  },
+  {
+    "label": "midpoint-feather/20x20/25/50/corner-tl",
+    "width": 20,
+    "height": 20,
+    "x": 0,
+    "y": 0,
+    "params": {
+      "amount": 0.0,
+      "midpoint": 25.0,
+      "roundness": 0.0,
+      "feather": 50.0
+    },
+    "expected_mask": 1.0
+  },
+  {
+    "label": "midpoint-feather/20x20/25/75/corner-tl",
+    "width": 20,
+    "height": 20,
+    "x": 0,
+    "y": 0,
+    "params": {
+      "amount": 0.0,
+      "midpoint": 25.0,
+      "roundness": 0.0,
+      "feather": 75.0
+    },
+    "expected_mask": 1.0
+  },
+  {
+    "label": "midpoint-feather/20x20/25/90/corner-tl",
+    "width": 20,
+    "height": 20,
+    "x": 0,
+    "y": 0,
+    "params": {
+      "amount": 0.0,
+      "midpoint": 25.0,
+      "roundness": 0.0,
+      "feather": 90.0
+    },
+    "expected_mask": 1.0
+  },
+  {
+    "label": "midpoint-feather/20x20/25/99/corner-tl",
+    "width": 20,
+    "height": 20,
+    "x": 0,
+    "y": 0,
+    "params": {
+      "amount": 0.0,
+      "midpoint": 25.0,
+      "roundness": 0.0,
+      "feather": 99.0
+    },
+    "expected_mask": 0.9946294582906918
+  },
+  {
+    "label": "midpoint-feather/20x20/25/100/corner-tl",
+    "width": 20,
+    "height": 20,
+    "x": 0,
+    "y": 0,
+    "params": {
+      "amount": 0.0,
+      "midpoint": 25.0,
+      "roundness": 0.0,
+      "feather": 100.0
+    },
+    "expected_mask": 0.99275
+  },
+  {
+    "label": "midpoint-feather/20x20/50/0/corner-tl",
+    "width": 20,
+    "height": 20,
+    "x": 0,
+    "y": 0,
+    "params": {
+      "amount": 0.0,
+      "midpoint": 50.0,
+      "roundness": 0.0,
+      "feather": 0.0
+    },
+    "expected_mask": 1.0
+  },
+  {
+    "label": "midpoint-feather/20x20/50/25/corner-tl",
+    "width": 20,
+    "height": 20,
+    "x": 0,
+    "y": 0,
+    "params": {
+      "amount": 0.0,
+      "midpoint": 50.0,
+      "roundness": 0.0,
+      "feather": 25.0
+    },
+    "expected_mask": 1.0
+  },
+  {
+    "label": "midpoint-feather/20x20/50/50/corner-tl",
+    "width": 20,
+    "height": 20,
+    "x": 0,
+    "y": 0,
+    "params": {
+      "amount": 0.0,
+      "midpoint": 50.0,
+      "roundness": 0.0,
+      "feather": 50.0
+    },
+    "expected_mask": 1.0
+  },
+  {
+    "label": "midpoint-feather/20x20/50/75/corner-tl",
+    "width": 20,
+    "height": 20,
+    "x": 0,
+    "y": 0,
+    "params": {
+      "amount": 0.0,
+      "midpoint": 50.0,
+      "roundness": 0.0,
+      "feather": 75.0
+    },
+    "expected_mask": 1.0
+  },
+  {
+    "label": "midpoint-feather/20x20/50/90/corner-tl",
+    "width": 20,
+    "height": 20,
+    "x": 0,
+    "y": 0,
+    "params": {
+      "amount": 0.0,
+      "midpoint": 50.0,
+      "roundness": 0.0,
+      "feather": 90.0
+    },
+    "expected_mask": 1.0
+  },
+  {
+    "label": "midpoint-feather/20x20/50/99/corner-tl",
+    "width": 20,
+    "height": 20,
+    "x": 0,
+    "y": 0,
+    "params": {
+      "amount": 0.0,
+      "midpoint": 50.0,
+      "roundness": 0.0,
+      "feather": 99.0
+    },
+    "expected_mask": 0.9939894815927874
+  },
+  {
+    "label": "midpoint-feather/20x20/50/100/corner-tl",
+    "width": 20,
+    "height": 20,
+    "x": 0,
+    "y": 0,
+    "params": {
+      "amount": 0.0,
+      "midpoint": 50.0,
+      "roundness": 0.0,
+      "feather": 100.0
+    },
+    "expected_mask": 0.99275
+  },
+  {
+    "label": "midpoint-feather/20x20/75/0/corner-tl",
+    "width": 20,
+    "height": 20,
+    "x": 0,
+    "y": 0,
+    "params": {
+      "amount": 0.0,
+      "midpoint": 75.0,
+      "roundness": 0.0,
+      "feather": 0.0
+    },
+    "expected_mask": 1.0
+  },
+  {
+    "label": "midpoint-feather/20x20/75/25/corner-tl",
+    "width": 20,
+    "height": 20,
+    "x": 0,
+    "y": 0,
+    "params": {
+      "amount": 0.0,
+      "midpoint": 75.0,
+      "roundness": 0.0,
+      "feather": 25.0
+    },
+    "expected_mask": 1.0
+  },
+  {
+    "label": "midpoint-feather/20x20/75/50/corner-tl",
+    "width": 20,
+    "height": 20,
+    "x": 0,
+    "y": 0,
+    "params": {
+      "amount": 0.0,
+      "midpoint": 75.0,
+      "roundness": 0.0,
+      "feather": 50.0
+    },
+    "expected_mask": 1.0
+  },
+  {
+    "label": "midpoint-feather/20x20/75/75/corner-tl",
+    "width": 20,
+    "height": 20,
+    "x": 0,
+    "y": 0,
+    "params": {
+      "amount": 0.0,
+      "midpoint": 75.0,
+      "roundness": 0.0,
+      "feather": 75.0
+    },
+    "expected_mask": 1.0
+  },
+  {
+    "label": "midpoint-feather/20x20/75/90/corner-tl",
+    "width": 20,
+    "height": 20,
+    "x": 0,
+    "y": 0,
+    "params": {
+      "amount": 0.0,
+      "midpoint": 75.0,
+      "roundness": 0.0,
+      "feather": 90.0
+    },
+    "expected_mask": 0.9977280521262002
+  },
+  {
+    "label": "midpoint-feather/20x20/75/99/corner-tl",
+    "width": 20,
+    "height": 20,
+    "x": 0,
+    "y": 0,
+    "params": {
+      "amount": 0.0,
+      "midpoint": 75.0,
+      "roundness": 0.0,
+      "feather": 99.0
+    },
+    "expected_mask": 0.9933147218022486
+  },
+  {
+    "label": "midpoint-feather/20x20/75/100/corner-tl",
+    "width": 20,
+    "height": 20,
+    "x": 0,
+    "y": 0,
+    "params": {
+      "amount": 0.0,
+      "midpoint": 75.0,
+      "roundness": 0.0,
+      "feather": 100.0
+    },
+    "expected_mask": 0.99275
+  },
+  {
+    "label": "midpoint-feather/20x20/90/0/corner-tl",
+    "width": 20,
+    "height": 20,
+    "x": 0,
+    "y": 0,
+    "params": {
+      "amount": 0.0,
+      "midpoint": 90.0,
+      "roundness": 0.0,
+      "feather": 0.0
+    },
+    "expected_mask": 1.0
+  },
+  {
+    "label": "midpoint-feather/20x20/90/25/corner-tl",
+    "width": 20,
+    "height": 20,
+    "x": 0,
+    "y": 0,
+    "params": {
+      "amount": 0.0,
+      "midpoint": 90.0,
+      "roundness": 0.0,
+      "feather": 25.0
+    },
+    "expected_mask": 1.0
+  },
+  {
+    "label": "midpoint-feather/20x20/90/50/corner-tl",
+    "width": 20,
+    "height": 20,
+    "x": 0,
+    "y": 0,
+    "params": {
+      "amount": 0.0,
+      "midpoint": 90.0,
+      "roundness": 0.0,
+      "feather": 50.0
+    },
+    "expected_mask": 1.0
+  },
+  {
+    "label": "midpoint-feather/20x20/90/75/corner-tl",
+    "width": 20,
+    "height": 20,
+    "x": 0,
+    "y": 0,
+    "params": {
+      "amount": 0.0,
+      "midpoint": 90.0,
+      "roundness": 0.0,
+      "feather": 75.0
+    },
+    "expected_mask": 0.9967407407407407
+  },
+  {
+    "label": "midpoint-feather/20x20/90/90/corner-tl",
+    "width": 20,
+    "height": 20,
+    "x": 0,
+    "y": 0,
+    "params": {
+      "amount": 0.0,
+      "midpoint": 90.0,
+      "roundness": 0.0,
+      "feather": 90.0
+    },
+    "expected_mask": 0.9942496570644718
+  },
+  {
+    "label": "midpoint-feather/20x20/90/99/corner-tl",
+    "width": 20,
+    "height": 20,
+    "x": 0,
+    "y": 0,
+    "params": {
+      "amount": 0.0,
+      "midpoint": 90.0,
+      "roundness": 0.0,
+      "feather": 99.0
+    },
+    "expected_mask": 0.9928932504310527
+  },
+  {
+    "label": "midpoint-feather/20x20/90/100/corner-tl",
+    "width": 20,
+    "height": 20,
+    "x": 0,
+    "y": 0,
+    "params": {
+      "amount": 0.0,
+      "midpoint": 90.0,
+      "roundness": 0.0,
+      "feather": 100.0
+    },
+    "expected_mask": 0.99275
+  },
+  {
+    "label": "midpoint-feather/20x20/99/0/corner-tl",
+    "width": 20,
+    "height": 20,
+    "x": 0,
+    "y": 0,
+    "params": {
+      "amount": 0.0,
+      "midpoint": 99.0,
+      "roundness": 0.0,
+      "feather": 0.0
+    },
+    "expected_mask": 0.0
+  },
+  {
+    "label": "midpoint-feather/20x20/99/25/corner-tl",
+    "width": 20,
+    "height": 20,
+    "x": 0,
+    "y": 0,
+    "params": {
+      "amount": 0.0,
+      "midpoint": 99.0,
+      "roundness": 0.0,
+      "feather": 25.0
+    },
+    "expected_mask": 0.923126
+  },
+  {
+    "label": "midpoint-feather/20x20/99/50/corner-tl",
+    "width": 20,
+    "height": 20,
+    "x": 0,
+    "y": 0,
+    "params": {
+      "amount": 0.0,
+      "midpoint": 99.0,
+      "roundness": 0.0,
+      "feather": 50.0
+    },
+    "expected_mask": 0.977158
+  },
+  {
+    "label": "midpoint-feather/20x20/99/75/corner-tl",
+    "width": 20,
+    "height": 20,
+    "x": 0,
+    "y": 0,
+    "params": {
+      "amount": 0.0,
+      "midpoint": 99.0,
+      "roundness": 0.0,
+      "feather": 75.0
+    },
+    "expected_mask": 0.9884747407407406
+  },
+  {
+    "label": "midpoint-feather/20x20/99/90/corner-tl",
+    "width": 20,
+    "height": 20,
+    "x": 0,
+    "y": 0,
+    "params": {
+      "amount": 0.0,
+      "midpoint": 99.0,
+      "roundness": 0.0,
+      "feather": 90.0
+    },
+    "expected_mask": 0.9914301755829904
+  },
+  {
+    "label": "midpoint-feather/20x20/99/99/corner-tl",
+    "width": 20,
+    "height": 20,
+    "x": 0,
+    "y": 0,
+    "params": {
+      "amount": 0.0,
+      "midpoint": 99.0,
+      "roundness": 0.0,
+      "feather": 99.0
+    },
+    "expected_mask": 0.9926344078454168
+  },
+  {
+    "label": "midpoint-feather/20x20/99/100/corner-tl",
+    "width": 20,
+    "height": 20,
+    "x": 0,
+    "y": 0,
+    "params": {
+      "amount": 0.0,
+      "midpoint": 99.0,
+      "roundness": 0.0,
+      "feather": 100.0
+    },
+    "expected_mask": 0.99275
+  },
+  {
+    "label": "midpoint-feather/20x20/100/0/corner-tl",
+    "width": 20,
+    "height": 20,
+    "x": 0,
+    "y": 0,
+    "params": {
+      "amount": 0.0,
+      "midpoint": 100.0,
+      "roundness": 0.0,
+      "feather": 0.0
+    },
+    "expected_mask": 0.0
+  },
+  {
+    "label": "midpoint-feather/20x20/100/25/corner-tl",
+    "width": 20,
+    "height": 20,
+    "x": 0,
+    "y": 0,
+    "params": {
+      "amount": 0.0,
+      "midpoint": 100.0,
+      "roundness": 0.0,
+      "feather": 25.0
+    },
+    "expected_mask": 0.8959999999999998
+  },
+  {
+    "label": "midpoint-feather/20x20/100/50/corner-tl",
+    "width": 20,
+    "height": 20,
+    "x": 0,
+    "y": 0,
+    "params": {
+      "amount": 0.0,
+      "midpoint": 100.0,
+      "roundness": 0.0,
+      "feather": 50.0
+    },
+    "expected_mask": 0.972
+  },
+  {
+    "label": "midpoint-feather/20x20/100/75/corner-tl",
+    "width": 20,
+    "height": 20,
+    "x": 0,
+    "y": 0,
+    "params": {
+      "amount": 0.0,
+      "midpoint": 100.0,
+      "roundness": 0.0,
+      "feather": 75.0
+    },
+    "expected_mask": 0.9872592592592593
+  },
+  {
+    "label": "midpoint-feather/20x20/100/90/corner-tl",
+    "width": 20,
+    "height": 20,
+    "x": 0,
+    "y": 0,
+    "params": {
+      "amount": 0.0,
+      "midpoint": 100.0,
+      "roundness": 0.0,
+      "feather": 90.0
+    },
+    "expected_mask": 0.9910836762688615
+  },
+  {
+    "label": "midpoint-feather/20x20/100/99/corner-tl",
+    "width": 20,
+    "height": 20,
+    "x": 0,
+    "y": 0,
+    "params": {
+      "amount": 0.0,
+      "midpoint": 100.0,
+      "roundness": 0.0,
+      "feather": 99.0
+    },
+    "expected_mask": 0.992605372158479
+  },
+  {
+    "label": "midpoint-feather/20x20/100/100/corner-tl",
+    "width": 20,
+    "height": 20,
+    "x": 0,
+    "y": 0,
+    "params": {
+      "amount": 0.0,
+      "midpoint": 100.0,
+      "roundness": 0.0,
+      "feather": 100.0
+    },
+    "expected_mask": 0.99275
+  },
+  {
+    "label": "boundary/20x20/midpoint90-feather90/corner-tl",
+    "width": 20,
+    "height": 20,
+    "x": 0,
+    "y": 0,
+    "params": {
+      "amount": 0.0,
+      "midpoint": 90.0,
+      "roundness": 0.0,
+      "feather": 90.0
+    },
+    "expected_mask": 0.9942496570644718
+  },
+  {
+    "label": "midpoint100/24x16/feather0/corner-tl",
+    "width": 24,
+    "height": 16,
+    "x": 0,
+    "y": 0,
+    "params": {
+      "amount": 0.0,
+      "midpoint": 100.0,
+      "roundness": 0.0,
+      "feather": 0.0
+    },
+    "expected_mask": 0.0
+  },
+  {
+    "label": "midpoint100/24x16/feather50/corner-tl",
+    "width": 24,
+    "height": 16,
+    "x": 0,
+    "y": 0,
+    "params": {
+      "amount": 0.0,
+      "midpoint": 100.0,
+      "roundness": 0.0,
+      "feather": 50.0
+    },
+    "expected_mask": 0.9697725355937356
+  },
+  {
+    "label": "midpoint100/24x16/feather100/corner-tl",
+    "width": 24,
+    "height": 16,
+    "x": 0,
+    "y": 0,
+    "params": {
+      "amount": 0.0,
+      "midpoint": 100.0,
+      "roundness": 0.0,
+      "feather": 100.0
+    },
+    "expected_mask": 0.9921614942292477
+  },
+  {
+    "label": "midpoint100/16x24/feather0/corner-tl",
+    "width": 16,
+    "height": 24,
+    "x": 0,
+    "y": 0,
+    "params": {
+      "amount": 0.0,
+      "midpoint": 100.0,
+      "roundness": 0.0,
+      "feather": 0.0
+    },
+    "expected_mask": 0.0
+  },
+  {
+    "label": "midpoint100/16x24/feather50/corner-tl",
+    "width": 16,
+    "height": 24,
+    "x": 0,
+    "y": 0,
+    "params": {
+      "amount": 0.0,
+      "midpoint": 100.0,
+      "roundness": 0.0,
+      "feather": 50.0
+    },
+    "expected_mask": 0.9697725355937356
+  },
+  {
+    "label": "midpoint100/16x24/feather100/corner-tl",
+    "width": 16,
+    "height": 24,
+    "x": 0,
+    "y": 0,
+    "params": {
+      "amount": 0.0,
+      "midpoint": 100.0,
+      "roundness": 0.0,
+      "feather": 100.0
+    },
+    "expected_mask": 0.9921614942292477
+  },
+  {
+    "label": "midpoint100/20x20/feather0/corner-tl",
+    "width": 20,
+    "height": 20,
+    "x": 0,
+    "y": 0,
+    "params": {
+      "amount": 0.0,
+      "midpoint": 100.0,
+      "roundness": 0.0,
+      "feather": 0.0
+    },
+    "expected_mask": 0.0
+  },
+  {
+    "label": "midpoint100/20x20/feather50/corner-tl",
+    "width": 20,
+    "height": 20,
+    "x": 0,
+    "y": 0,
+    "params": {
+      "amount": 0.0,
+      "midpoint": 100.0,
+      "roundness": 0.0,
+      "feather": 50.0
+    },
+    "expected_mask": 0.972
+  },
+  {
+    "label": "midpoint100/20x20/feather100/corner-tl",
+    "width": 20,
+    "height": 20,
+    "x": 0,
+    "y": 0,
+    "params": {
+      "amount": 0.0,
+      "midpoint": 100.0,
+      "roundness": 0.0,
+      "feather": 100.0
+    },
+    "expected_mask": 0.99275
+  }
+]

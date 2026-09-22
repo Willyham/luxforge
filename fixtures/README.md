@@ -28,6 +28,8 @@ Private originals for local diagnostics go in ignored `fixtures/jpg/`, `fixtures
 
 `basic/tone-cases.json` is the frozen global Tone algorithm's oracle: input/parameter/expected-output cases computed by the independent `f64` reference in `crates/lightwell-core/tests/reference/tone.rs`, reloaded and checked against a fresh computation by `crates/lightwell-core/tests/basic_tone_reference.rs`. See [docs/design/basic-tone.md](../docs/design/basic-tone.md) for the frozen equations this fixture proves.
 
+[`vignette/`](vignette/README.md) holds the frozen post-crop vignette mask and amount equations' oracle: discrete `(pixel, parameters)` mask samples and full `apply` output cases, computed by the independent `f64` reference in `crates/lightwell-core/tests/reference/vignette.rs` and reloaded and checked against a fresh computation by `crates/lightwell-core/tests/vignette_reference.rs`. See [docs/design/vignette-study.md](../docs/design/vignette-study.md) for the frozen equations, worked examples and tolerance this fixture proves.
+
 ## RAW preparation fixtures
 
 [Public provenance](raw-public.json) identifies four CC0 files from raw.pixls.us covering Z6 12/14-bit lossless and X100VI uncompressed/lossless capture. No photograph bytes are checked in. Paths resolve from the manifest directory; obtain the individual files from their recorded URLs and verify hashes before decoder experiments. The owner originals have a separate ignored local manifest with explicit permission for local testing only.

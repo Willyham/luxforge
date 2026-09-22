@@ -96,7 +96,12 @@ pub fn luminance(rgb: [f64; 3]) -> f64 {
 /// (`l > 0.0031308`). No clamping is applied, so this is monotone increasing
 /// and continuous (though not C1 at the breakpoint) on the whole real line.
 /// This is the "working tone domain" the curve stages below operate in.
-fn encode_srgb_extended(l: f64) -> f64 {
+///
+/// `pub` (not private) so the vignette reference (TASK-004) can reuse the same
+/// analytically-continued sRGB OETF for its positive-amount mapping instead of
+/// duplicating it; see `docs/design/presence-mixer-vignette.md`'s "Vignette:
+/// one positional unit" and `tests/reference/vignette.rs`.
+pub fn encode_srgb_extended(l: f64) -> f64 {
     if l <= 0.003_130_8 {
         12.92 * l
     } else {
@@ -107,8 +112,9 @@ fn encode_srgb_extended(l: f64) -> f64 {
 /// The inverse of `encode_srgb_extended`, equally extended: the linear branch
 /// (`e / 12.92`) is defined for every real `e`, and the power branch
 /// (`((e + 0.055) / 1.055).powf(2.4)`) is defined for every `e > -0.055`, which
-/// holds everywhere the branch is used (`e > 0.04045`). No clamping.
-fn decode_srgb_extended(e: f64) -> f64 {
+/// holds everywhere the branch is used (`e > 0.04045`). No clamping. `pub` for
+/// the same cross-reference reason as `encode_srgb_extended` above.
+pub fn decode_srgb_extended(e: f64) -> f64 {
     if e <= 0.040_45 {
         e / 12.92
     } else {
