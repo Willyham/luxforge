@@ -14,9 +14,16 @@
 
 use super::{PRESENCE_EFFECT, PresenceModule, presence_halo};
 use crate::{
-    Error,
+    EFFECT_FORMAT, Error, Layer, LayerId, ModuleRegistry, RECIPE_FORMAT, Recipe, SnapshotId,
+    SourceImage,
     modules::{Global, Region, SpatialOperation, Stage, ToolModule},
-    render::spatial::{SpatialBudget, SpatialPlan, build_reduction, fill_planes, run_tile},
+    render::{
+        render_tiled,
+        spatial::{
+            Cancel, SpatialBudget, SpatialPlan, build_reduction, fill_planes, run_tile,
+            tests::spatial_guard,
+        },
+    },
 };
 use serde_json::{Value, json};
 use std::path::PathBuf;
@@ -212,6 +219,7 @@ fn compiled(case: &Value) -> SpatialOperation {
 
 #[test]
 fn production_matches_every_oracle_case_within_the_frozen_tolerance() {
+    let _guard = spatial_guard();
     let cases = fixture_cases();
     assert_eq!(cases.len(), 10, "every committed case is checked");
     let mut worst = 0.0_f64;
@@ -254,6 +262,7 @@ fn production_matches_every_oracle_case_within_the_frozen_tolerance() {
 /// this is a tolerance check rather than a bit-exact one; the observed figure is far below it.
 #[test]
 fn a_tiled_evaluation_agrees_with_the_whole_frame_at_every_tile_size() {
+    let _guard = spatial_guard();
     let mut worst = 0.0_f64;
     for case in &fixture_cases() {
         let name = case["name"].as_str().expect("a name");
@@ -317,6 +326,7 @@ fn every_unit_at_zero_is_omitted_and_the_neutral_payload_compiles_to_nothing() {
 /// somebody else's memory, and no case here does.
 #[test]
 fn one_tile_of_a_large_stage_fits_the_spatial_budget() {
+    let _guard = spatial_guard();
     let module = PresenceModule::new();
     for (width, height) in [(6000_u32, 4000_u32), (10_000, 6000)] {
         let stage = Stage { width, height };
@@ -350,6 +360,7 @@ fn one_tile_of_a_large_stage_fits_the_spatial_budget() {
 /// the host's shrink rule says: the one arithmetic the units and the host must agree on.
 #[test]
 fn a_tiles_rectangles_follow_the_declared_halos() {
+    let _guard = spatial_guard();
     let module = PresenceModule::new();
     let stage = Stage {
         width: 2000,
@@ -387,4 +398,154 @@ fn a_tiles_rectangles_follow_the_declared_halos() {
             && last.y1() >= tile.y1(),
         "the last unit's rectangle {last:?} must contain the tile"
     );
+}
+
+/// A textured, non-flat frame: a broad gradient with fine structure over it, so every unit has
+/// something to work on at every scale.
+#[cfg(test)]
+fn textured_source(width: u32, height: u32) -> SourceImage {
+    let mut rgba = Vec::with_capacity((width as usize) * (height as usize) * 4);
+    for y in 0..height {
+        for x in 0..width {
+            let broad = (x as f32 / width as f32) * 0.6 + (y as f32 / height as f32) * 0.25;
+            let fine = 0.08
+                * ((x as f32 * 0.7).sin() * (y as f32 * 0.9).cos()
+                    + 0.5 * (x as f32 * 0.13 + y as f32 * 0.07).sin());
+            let value = (broad + fine + 0.1).clamp(0.0, 1.0);
+            let code = (value * 255.0) as u8;
+            rgba.extend_from_slice(&[code, code.saturating_add(9), code.saturating_sub(7), 255]);
+        }
+    }
+    SourceImage {
+        width,
+        height,
+        rgba: rgba.into(),
+        fingerprint: "sha256:presence-textured".into(),
+        orientation: 1,
+    }
+}
+
+#[cfg(test)]
+fn presence_recipe(payload: Value) -> Recipe {
+    Recipe {
+        format: RECIPE_FORMAT,
+        layers: vec![Layer {
+            id: LayerId::new(),
+            effect_id: PRESENCE_EFFECT.into(),
+            effect_format: EFFECT_FORMAT,
+            payload,
+        }],
+    }
+}
+
+/// The host's tile size changes no pixel of a rendered frame. The public render API always uses the
+/// production tile, so this goes through `render_tiled`, the same entry point the host's own spatial
+/// tests use to prove tile invariance.
+#[test]
+fn a_render_at_tile_128_and_at_tile_512_agree_on_every_code() {
+    let _guard = spatial_guard();
+    crate::render::clear_estimates();
+    let registry = ModuleRegistry::builtin();
+    // Larger than one production tile on both sides of the 512 grid, so both tile sizes exercise
+    // partial edge tiles and more than one batch.
+    let source = textured_source(600, 400);
+    let stack = presence_recipe(json!({"texture": 60.0, "clarity": -40.0, "dehaze": 35.0}));
+    let mut frames = Vec::new();
+    for tile in [128_u32, 512] {
+        let raster = render_tiled(
+            &registry,
+            &source,
+            SnapshotId::new(),
+            &stack,
+            &Cancel::new(),
+            tile,
+        )
+        .unwrap_or_else(|error| panic!("tile {tile}: {error}"));
+        frames.push(raster.rgba.as_ref().to_vec());
+    }
+    let mut worst = 0_i32;
+    let mut differing = 0_usize;
+    for (index, (small, large)) in frames[0].iter().zip(&frames[1]).enumerate() {
+        let deviation = (i32::from(*small) - i32::from(*large)).abs();
+        if deviation != 0 {
+            differing += 1;
+        }
+        assert!(
+            deviation <= 1,
+            "byte {index}: tile 128 gave {small}, tile 512 gave {large}"
+        );
+        worst = worst.max(deviation);
+    }
+    println!(
+        "tile 128 against tile 512: {differing} of {} bytes differ, worst {worst} code",
+        frames[0].len()
+    );
+    assert_eq!(worst, 0, "the tile size changed a code");
+}
+
+/// Release-only measurement, run explicitly:
+///
+/// ```sh
+/// cargo test --release --locked --package lightwell-core -- --ignored presence_timing --nocapture
+/// ```
+///
+/// Each unit alone at `+100` and all three together, on in-memory 24 MP and 60 MP frames with a
+/// warm source, p50 and p95 over ten runs, with the plan's working set and concurrency and the
+/// spatial budget's high-water mark.
+#[test]
+#[ignore = "measurement, run explicitly in release"]
+fn presence_timing() {
+    let _guard = spatial_guard();
+    let registry = ModuleRegistry::builtin();
+    let module = PresenceModule::new();
+    let mib = (1024 * 1024) as f64;
+    for (width, height) in [(6000_u32, 4000_u32), (10_000, 6000)] {
+        let source = textured_source(width, height);
+        let stage = Stage { width, height };
+        for (name, payload) in [
+            ("texture +100", json!({"texture": 100.0})),
+            ("clarity +100", json!({"clarity": 100.0})),
+            ("dehaze +100", json!({"dehaze": 100.0})),
+            (
+                "all three +100",
+                json!({"texture": 100.0, "clarity": 100.0, "dehaze": 100.0}),
+            ),
+        ] {
+            let stack = presence_recipe(payload.clone());
+            let crate::modules::Processing::Spatial(operation) = module
+                .compile(PRESENCE_EFFECT, 1, &payload, stage)
+                .expect("a compiled operation")
+            else {
+                panic!("a spatial operation");
+            };
+            let plan =
+                SpatialPlan::new(&operation, stage, crate::modules::SPATIAL_TILE).expect("a plan");
+            // Warm the source and the estimate store, then measure.
+            crate::render(&registry, &source, SnapshotId::new(), &stack).expect("a warm render");
+            SpatialBudget::default().reset_peak();
+            let mut samples = Vec::new();
+            for _ in 0..10 {
+                let started = std::time::Instant::now();
+                let raster =
+                    crate::render(&registry, &source, SnapshotId::new(), &stack).expect("a render");
+                samples.push(started.elapsed().as_secs_f64() * 1000.0);
+                assert_eq!((raster.width, raster.height), (width, height));
+            }
+            samples.sort_by(f64::total_cmp);
+            let p50 = samples[samples.len() / 2];
+            let p95 = samples[(samples.len() as f64 * 0.95).ceil() as usize - 1];
+            println!(
+                "{width}x{height} presence {name}: p50 {p50:.0} ms, p95 {p95:.0} ms over {} runs; \
+                 halo {} px, tiles {}, working set {:.1} MiB, concurrency {}, budget peak \
+                 {:.1} MiB of {:.1} MiB",
+                samples.len(),
+                operation.summed_halo(stage),
+                plan.tiles().len(),
+                plan.working_set() as f64 / mib,
+                plan.concurrency(),
+                SpatialBudget::default().peak() as f64 / mib,
+                SpatialBudget::default().limit() as f64 / mib,
+            );
+        }
+    }
 }

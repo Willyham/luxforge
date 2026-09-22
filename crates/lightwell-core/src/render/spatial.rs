@@ -434,6 +434,16 @@ pub(crate) fn reserve_one(plan: &SpatialPlan) -> Result<SpatialReservation<'stat
 /// What one cached global estimate belongs to. The stage is part of the key because a unit's
 /// estimate is computed from a reduction of that stage, and the prefix hash because the layers
 /// before the operation decide what the stage holds.
+///
+/// The unit's own description is part of it too, not just its position. A module compiles its
+/// payload into whichever units that payload needs, so the same position of the same stack can hold
+/// a different unit from one evaluation to the next — the Presence module omits a unit whose amount
+/// is zero, which moves the others up — and a position alone would hand one unit the estimate
+/// another prepared, including the answer "this unit wants none". Two units that describe themselves
+/// identically process identically, which is the trait's own rule, so the description is exactly the
+/// identity this store needs. The cost is that a unit whose coefficients changed prepares again; for
+/// the one estimate in this design, an atmospheric light that does not depend on the amount, that is
+/// one bounded reduction of the stage per changed amount.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct EstimateKey {
     pub(crate) fingerprint: String,
@@ -441,6 +451,7 @@ pub(crate) struct EstimateKey {
     pub(crate) width: u32,
     pub(crate) height: u32,
     pub(crate) unit: usize,
+    pub(crate) describe: String,
 }
 
 /// The bounded store of prepared estimates: [`ESTIMATE_STORE_ENTRIES`] entries, oldest first, each
@@ -494,13 +505,17 @@ pub(crate) fn resolve_globals(
     prefix_hash: &str,
     reduce: impl FnOnce() -> Result<Reduction, Error>,
 ) -> Result<Vec<Option<Global>>, Error> {
-    let keys: Vec<EstimateKey> = (0..operation.len())
-        .map(|unit| EstimateKey {
+    let keys: Vec<EstimateKey> = operation
+        .units()
+        .iter()
+        .enumerate()
+        .map(|(unit, declared)| EstimateKey {
             fingerprint: fingerprint.to_owned(),
             prefix_hash: prefix_hash.to_owned(),
             width: stage.width,
             height: stage.height,
             unit,
+            describe: declared.describe(),
         })
         .collect();
     let hits: Vec<Option<Option<Global>>> = keys.iter().map(cached).collect();
@@ -631,7 +646,7 @@ pub(crate) fn plane_pixel(region: Region, values: &[f32], x: u32, y: u32) -> [f3
 pub(crate) const PRODUCTION_TILE: u32 = SPATIAL_TILE;
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::{
         EFFECT_FORMAT, Layer, LayerId, LinearImage, LinearSettings, ModuleRegistry, Raster, Recipe,
@@ -657,7 +672,9 @@ mod tests {
     /// no global estimate reads and writes the store.
     static SPATIAL_TESTS: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
-    fn spatial_guard() -> std::sync::MutexGuard<'static, ()> {
+    /// Held by every test that reads or writes either piece of process-wide state, including the
+    /// Presence module's own tests in `modules::presence::oracle`.
+    pub(crate) fn spatial_guard() -> std::sync::MutexGuard<'static, ()> {
         SPATIAL_TESTS
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -1678,6 +1695,43 @@ mod tests {
             before + 1,
             "the oldest entry was evicted and is prepared again"
         );
+    }
+
+    /// A stored estimate belongs to the unit that prepared it, not to its position alone. A module
+    /// compiles whichever units its payload needs — the Presence module leaves out a unit whose
+    /// amount is zero, which moves the others up — so the same position of the same source, prefix
+    /// and stage can hold a different unit from one render to the next, and the cached answer "this
+    /// unit wants none" must not be handed to a unit that wants one.
+    #[test]
+    fn an_estimate_belongs_to_its_unit_and_not_to_its_position_alone() {
+        let _guard = spatial_guard();
+        clear_estimates();
+        let registry = spatial_registry();
+        let source = gradient(64, 48);
+        // A unit that wants no estimate at position 0, cached as such.
+        crate::render(
+            &registry,
+            &source,
+            SnapshotId::new(),
+            &recipe(vec![spatial_layer(&["blur:2"])]),
+        )
+        .unwrap();
+        // The same source, the same (empty) prefix and the same stage, with a unit that does want
+        // one at that position.
+        let shifted = crate::render(
+            &registry,
+            &source,
+            SnapshotId::new(),
+            &recipe(vec![spatial_layer(&["shift"])]),
+        )
+        .unwrap();
+        let expected = reference_chain(
+            64,
+            48,
+            decode_frame(source.rgba.as_ref()),
+            &[RefUnit::Shift],
+        );
+        assert_frame(&shifted, &expected, "a shift after a blur at position 0");
     }
 
     // -----------------------------------------------------------------------------------------
