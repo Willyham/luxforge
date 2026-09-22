@@ -14,8 +14,15 @@
 //! cannot observe; every figure is therefore an upper bound on the editor's own work and a lower
 //! bound on what an eye sees.
 //!
+//! `--action <id> --parameter <name>` drives any other field-patch slider through the same
+//! draft.begin/set/commit path, in place of the default Basic exposure: [`FieldTarget::lookup`]
+//! reads the parameter's declared range and step from the module registry (what `module.list`
+//! answers), so every generated gesture value the harness sends is one that action would actually
+//! accept.
+//!
 //! [design]: ../../../docs/design/basic-and-histogram.md
 use crate::*;
+use lightwell_core::{ModuleRegistry, ParameterKind};
 use std::time::{Duration, Instant};
 
 /// The Basic module's patch action and the field the gesture drags, named as the module declares
@@ -39,12 +46,119 @@ impl Control {
             Self::Curve => "curve",
         }
     }
+}
 
-    fn parameter(self) -> &'static str {
-        match self {
-            Self::Slider => EXPOSURE,
-            Self::Curve => MASTER,
+/// The field-patch action and parameter a slider gesture measures, with the range and step
+/// [`FieldTarget::lookup`] reads from the module registry so every generated gesture value is one
+/// the action would actually accept. `--control curve` never uses this: the proof curve is its own
+/// fraction-based gesture, unrelated to any field's declared range.
+struct FieldTarget {
+    action: String,
+    parameter: String,
+    min: f64,
+    max: f64,
+    step: f64,
+}
+
+impl FieldTarget {
+    /// The default this harness has always measured, `--action`/`--parameter` absent: Basic's
+    /// exposure slider, -5..5 EV in steps of 0.01, mirroring
+    /// `lightwell_core::modules::basic::EXPOSURE_MIN/MAX/STEP`, which are not exported.
+    fn basic_exposure() -> Self {
+        Self {
+            action: SET_BASIC.into(),
+            parameter: EXPOSURE.into(),
+            min: -5.0,
+            max: 5.0,
+            step: 0.01,
         }
+    }
+
+    /// Resolve `--action <id> --parameter <name>` against the built-in module registry: the
+    /// action must be a field-patch action, which drafts through draft.begin/set/commit exactly as
+    /// set-basic does, and the parameter must be integer or number, so it declares a range and an
+    /// optional step (defaulting to 1, as an undeclared step means for every other client) this
+    /// harness can generate valid gesture values from.
+    fn lookup(action: &str, parameter: &str) -> Result<Self> {
+        let registry = ModuleRegistry::builtin();
+        let (_, declared) = registry
+            .action(action)
+            .ok_or_else(|| format!("No module declares the action {action}"))?;
+        ensure(
+            declared.patch,
+            format!(
+                "Action {action} is not a field-patch action; editor-latency drives a field-patch slider exactly as it drives set-basic"
+            ),
+        )?;
+        let parameter_descriptor = declared
+            .parameter(parameter)
+            .ok_or_else(|| format!("Action {action} declares no parameter {parameter}"))?;
+        let (min, max) = match &parameter_descriptor.kind {
+            ParameterKind::Integer { min, max } => (*min as f64, *max as f64),
+            ParameterKind::Number { min, max } => (*min, *max),
+            other => {
+                return Err(format!(
+                    "Parameter {parameter} of {action} is {other:?}, not an integer or a number"
+                )
+                .into());
+            }
+        };
+        let step = parameter_descriptor.step.unwrap_or(1.0);
+        ensure(
+            step.is_finite() && step > 0.0 && min < max,
+            format!("Parameter {parameter} of {action} declares no usable range or step"),
+        )?;
+        Ok(Self {
+            action: action.to_owned(),
+            parameter: parameter.to_owned(),
+            min,
+            max,
+            step,
+        })
+    }
+
+    /// `count` distinct, non-zero, ascending multiples of a spacing derived from the parameter's
+    /// own declared step: the largest multiple of the step at or under `3 * step`, unless that
+    /// would carry the last of `count` values (a drag's trailing release included) past the
+    /// parameter's own bound, in which case the largest multiple of the step that keeps it inside.
+    /// For the default Basic exposure target (-5..5, step 0.01) this reproduces the fixed 0.03 EV
+    /// spacing this harness has always used.
+    fn gesture_values(&self, count: usize) -> Vec<f64> {
+        let preferred = 3.0 * self.step;
+        let headroom = self.max / (count as f64 + 1.0);
+        let spacing_steps = if preferred <= headroom {
+            (preferred / self.step).round().max(1.0)
+        } else {
+            (headroom / self.step).floor().max(1.0)
+        };
+        let spacing = spacing_steps * self.step;
+        (0..count)
+            .map(|index| {
+                let raw = (index + 1) as f64 * spacing;
+                ((raw / self.step).round() * self.step).clamp(self.min, self.max)
+            })
+            .collect()
+    }
+}
+
+/// What `--action`/`--parameter` resolve to: absent, the default Basic exposure slider, unchanged
+/// from before this option existed; present, both are required together and name a field-patch
+/// slider, which only the (default) slider control measures.
+fn resolve_field(
+    control: Control,
+    action: Option<&str>,
+    parameter: Option<&str>,
+) -> Result<FieldTarget> {
+    match (action, parameter) {
+        (None, None) => Ok(FieldTarget::basic_exposure()),
+        (Some(action), Some(parameter)) => {
+            ensure(
+                control == Control::Slider,
+                "--action/--parameter measure a field-patch slider; pass no --control or --control slider",
+            )?;
+            FieldTarget::lookup(action, parameter)
+        }
+        _ => Err("--action and --parameter must be given together".into()),
     }
 }
 
@@ -66,24 +180,25 @@ fn full_basic() -> Value {
     })
 }
 
-/// The exposure values one gesture visits: `samples` distinct steps, none of them zero, all inside
-/// the declared -5..5 EV range. Distinctness matters because a repeated value is not an input at
-/// all: `draft.set` is only sent for a value that differs from the one already accepted.
-fn gesture_values(samples: usize, control: Control) -> Vec<f64> {
-    let curve_denominator = samples.next_power_of_two() as f64;
-    (0..samples)
-        .map(|index| {
-            if control == Control::Curve {
+/// The values one gesture visits: `samples` distinct steps, none of them zero. A slider's values
+/// are all inside the measured field's declared range and step ([`FieldTarget::gesture_values`]);
+/// distinctness matters because a repeated value is not an input at all: `draft.set` is only sent
+/// for a value that differs from the one already accepted.
+fn gesture_values(samples: usize, control: Control, field: &FieldTarget) -> Vec<f64> {
+    if control == Control::Curve {
+        let curve_denominator = samples.next_power_of_two() as f64;
+        (0..samples)
+            .map(|index| {
                 // The widget publishes f32 fractions, and the host sends those fractions back
                 // through JSON. Binary-exact steps survive both conversions, allowing strict
                 // equality against the draft.set payload without a tolerance that could mask a
                 // different point or an out-of-order input.
                 (index + 1) as f64 / curve_denominator
-            } else {
-                ((index + 1) as f64 * 0.03 * 100.0).round() / 100.0
-            }
-        })
-        .collect()
+            })
+            .collect()
+    } else {
+        field.gesture_values(samples)
+    }
 }
 
 fn percentile(sorted: &[f64], percent: usize) -> Option<f64> {
@@ -192,13 +307,18 @@ fn event_value(value: &Value, control: Control) -> Option<f64> {
     }
 }
 
-fn inputs(events: &[Value], control: Control) -> Result<Vec<Input>> {
+fn inputs(events: &[Value], control: Control, field: &FieldTarget) -> Result<Vec<Input>> {
+    let key = if control == Control::Curve {
+        MASTER
+    } else {
+        field.parameter.as_str()
+    };
     let mut inputs = Vec::new();
     let mut pending: Option<(f64, f64)> = None;
     for event in events {
         match event["event"].as_str() {
             Some("slider_draft_set") => {
-                let value = event_value(&event["detail"]["fields"][control.parameter()], control)
+                let value = event_value(&event["detail"]["fields"][key], control)
                     .ok_or("A draft.set carried no measured control value")?;
                 ensure(
                     pending.is_none(),
@@ -264,7 +384,7 @@ fn curve_step(points: Vec<f64>, finish: &str) -> Value {
         "finish":finish}})
 }
 
-fn gesture_steps(values: &[f64], control: Control) -> Vec<Value> {
+fn gesture_steps(values: &[f64], control: Control, field: &FieldTarget) -> Vec<Value> {
     if control == Control::Curve {
         let mut steps: Vec<Value> = values
             .iter()
@@ -277,7 +397,7 @@ fn gesture_steps(values: &[f64], control: Control) -> Vec<Value> {
     }
     let mut steps: Vec<Value> = values
         .iter()
-        .map(|value| json!({"slider":{"action":SET_BASIC,"parameter":EXPOSURE,"values":[value]}}))
+        .map(|value| json!({"slider":{"action":field.action,"parameter":field.parameter,"values":[value]}}))
         .collect();
     if let Some(last) = steps.last_mut() {
         last["slider"]["release"] = json!(true);
@@ -287,9 +407,12 @@ fn gesture_steps(values: &[f64], control: Control) -> Vec<Value> {
 
 /// One gesture that sends every value at once, as a fast drag does between two ticks. The driver
 /// keeps at most one round trip in flight and only the newest value waiting, so this step's
-/// `draft.set` count against its value count is the coalescing the design specifies. The values are
-/// negated so the gesture commits a real change rather than the value already current.
-fn burst_step(values: &[f64], control: Control) -> Value {
+/// `draft.set` count against its value count is the coalescing the design specifies. Each value is
+/// reflected to the opposite end of the measured field's own declared range
+/// (`min + max - value`), which is exactly negation on Basic exposure's symmetric -5..5 and stays
+/// inside an asymmetric range like a mixer or vignette field's too, so the gesture commits a real
+/// change rather than the value already current.
+fn burst_step(values: &[f64], control: Control, field: &FieldTarget) -> Value {
     if control == Control::Curve {
         // Reverse the middle point's vertical journey while remaining in the declared [0,1]
         // range. The burst measures one replaceable pending draft value, not visible frames.
@@ -301,8 +424,11 @@ fn burst_step(values: &[f64], control: Control) -> Value {
             "release",
         );
     }
-    let negated: Vec<f64> = values.iter().map(|value| -value).collect();
-    json!({"slider":{"action":SET_BASIC,"parameter":EXPOSURE,"values":negated,"release":true}})
+    let reflected: Vec<f64> = values
+        .iter()
+        .map(|value| field.min + field.max - value)
+        .collect();
+    json!({"slider":{"action":field.action,"parameter":field.parameter,"values":reflected,"release":true}})
 }
 
 /// One step per commit: each value is its own complete gesture, moved and released at once, so the
@@ -312,7 +438,7 @@ fn burst_step(values: &[f64], control: Control) -> Value {
 /// one value, commits it, and the commit's own refresh renders and reduces the committed frame; the
 /// drafted preview requested in between is superseded before it can be displayed, so this mode also
 /// counts one cancelled preview job per commit.
-fn commit_steps(values: &[f64], control: Control) -> Vec<Value> {
+fn commit_steps(values: &[f64], control: Control, field: &FieldTarget) -> Vec<Value> {
     if control == Control::Curve {
         return values
             .iter()
@@ -322,7 +448,7 @@ fn commit_steps(values: &[f64], control: Control) -> Vec<Value> {
     values
         .iter()
         .map(
-            |value| json!({"slider":{"action":SET_BASIC,"parameter":EXPOSURE,"values":[value],"release":true}}),
+            |value| json!({"slider":{"action":field.action,"parameter":field.parameter,"values":[value],"release":true}}),
         )
         .collect()
 }
@@ -371,6 +497,11 @@ pub struct Options<'a> {
     pub samples: usize,
     pub mode: Mode,
     pub control: Control,
+    /// `--action`/`--parameter`, resolved by [`resolve_field`]: the default Basic exposure slider
+    /// when absent, or the named field-patch slider `--control slider` (the default) measures.
+    /// Unused when `control` is `Curve`.
+    pub action: Option<&'a str>,
+    pub parameter: Option<&'a str>,
     /// Commit a straightening crop before the gesture, so the measured stack carries the crop
     /// resample as well as the colour pass.
     pub crop: Option<f64>,
@@ -392,6 +523,7 @@ pub fn run(root: &Path, out: &Path, bin: &Path, options: Options) -> Result {
         options.control != Control::Curve || options.samples <= 32,
         "Curve samples must be 1..32 so every middle-point fraction stays in range",
     )?;
+    let field = resolve_field(options.control, options.action, options.parameter)?;
     fs::create_dir_all(out)?;
     let source = options.source.canonicalize()?;
     let source_hash = hash(&source)?;
@@ -399,7 +531,24 @@ pub fn run(root: &Path, out: &Path, bin: &Path, options: Options) -> Result {
     // whose own drafted preview the commit supersedes, so it is measured to the settled histogram
     // instead. A commit run measures every value it sends.
     let drag = options.mode == Mode::Drag;
-    let values = gesture_values(options.samples + usize::from(drag), options.control);
+    let values = gesture_values(options.samples + usize::from(drag), options.control, &field);
+    if options.control == Control::Slider {
+        ensure(
+            values
+                .iter()
+                .all(|value| (field.min..=field.max).contains(value) && *value != 0.0),
+            format!(
+                "A generated gesture value leaves {}'s declared range {}..{} or is zero",
+                field.parameter, field.min, field.max
+            ),
+        )?;
+        let mut distinct = values.clone();
+        distinct.dedup_by(|a, b| a == b);
+        ensure(
+            distinct.len() == values.len(),
+            "Generated gesture values are not distinct",
+        )?;
+    }
 
     let mut script = Vec::new();
     if let Some(angle) = options.crop {
@@ -411,10 +560,10 @@ pub fn run(root: &Path, out: &Path, bin: &Path, options: Options) -> Result {
         script.extend(curve_view_steps());
     }
     if drag {
-        script.extend(gesture_steps(&values, options.control));
-        script.push(burst_step(&values, options.control));
+        script.extend(gesture_steps(&values, options.control, &field));
+        script.push(burst_step(&values, options.control, &field));
     } else {
-        script.extend(commit_steps(&values, options.control));
+        script.extend(commit_steps(&values, options.control, &field));
     }
     ensure(
         script.len() <= 64,
@@ -485,7 +634,7 @@ pub fn run(root: &Path, out: &Path, bin: &Path, options: Options) -> Result {
         )?;
     }
 
-    let measured = inputs(&events, options.control)?;
+    let measured = inputs(&events, options.control, &field)?;
     ensure(
         measured.len() >= values.len(),
         format!(
@@ -608,12 +757,13 @@ pub fn run(root: &Path, out: &Path, bin: &Path, options: Options) -> Result {
         "crop_angle_deg":options.crop,
         "mode":options.mode.name(),
         "control":options.control.name(),
-        "control_action":if options.control == Control::Curve { SET_CONTROLS } else { SET_BASIC },
-        "control_parameter":options.control.parameter(),
-        "effect_scope":if options.control == Control::Curve {
-            "Developer proof curve: identity colour operation. Draft/preview scheduling and GPU upload are timed while the curve canvas is visible; the curve does not alter photo pixels."
-        } else {
-            "Basic exposure: the photograph's colour pass is measured with the generated slider."
+        "control_action":if options.control == Control::Curve { SET_CONTROLS } else { field.action.as_str() },
+        "control_parameter":if options.control == Control::Curve { MASTER } else { field.parameter.as_str() },
+        "field_range":if options.control == Control::Curve { Value::Null } else { json!({"min":field.min,"max":field.max,"step":field.step}) },
+        "effect_scope":match (options.control, field.action.as_str(), field.parameter.as_str()) {
+            (Control::Curve, ..) => "Developer proof curve: identity colour operation. Draft/preview scheduling and GPU upload are timed while the curve canvas is visible; the curve does not alter photo pixels.".to_owned(),
+            (Control::Slider, SET_BASIC, EXPOSURE) => "Basic exposure: the photograph's colour pass is measured with the generated slider.".to_owned(),
+            (Control::Slider, action, parameter) => format!("{action} {parameter}: the field-patch slider is measured through draft.begin/set/commit exactly as Basic exposure is."),
         },
         "view_setup":if options.control == Control::Curve {
             json!({"developer":true,"proof_section":CONTROLS_MODULE,
@@ -802,17 +952,24 @@ fn hold_and_idle(root: &Path, out: &Path, bin: &Path, source: &Path) -> Result {
 mod tests {
     use super::*;
 
+    /// The curve control ignores its `field` argument entirely, so every curve test passes the
+    /// default Basic exposure target as an unused placeholder.
+    fn unused_field() -> FieldTarget {
+        FieldTarget::basic_exposure()
+    }
+
     #[test]
     fn curve_script_keeps_every_point_in_range_and_below_the_evidence_bound() {
-        let values = gesture_values(31, Control::Curve);
-        let steps = gesture_steps(&values, Control::Curve);
+        let field = unused_field();
+        let values = gesture_values(31, Control::Curve, &field);
+        let steps = gesture_steps(&values, Control::Curve, &field);
         assert_eq!(steps.len(), 31);
         assert_eq!(steps[0]["curve"]["finish"], "open");
         assert_eq!(steps[30]["curve"]["finish"], "release");
         assert_eq!(steps[0]["curve"]["points"][0][0], 0.5);
         assert_eq!(values[0], 1.0 / 32.0);
         assert_eq!(values[30], 31.0 / 32.0);
-        assert_eq!(gesture_values(33, Control::Curve)[32], 33.0 / 64.0);
+        assert_eq!(gesture_values(33, Control::Curve, &field)[32], 33.0 / 64.0);
         let wire: Vec<Value> =
             serde_json::from_str(&serde_json::to_string(&steps).unwrap()).unwrap();
         for (step, expected) in wire.iter().zip(&values) {
@@ -823,7 +980,7 @@ mod tests {
         let setup = curve_view_steps();
         assert_eq!(setup.len(), 6);
         assert_eq!(setup.last().unwrap(), &json!({"tools_scroll":1.0}));
-        let burst = burst_step(&values, Control::Curve);
+        let burst = burst_step(&values, Control::Curve, &field);
         assert_eq!(burst["curve"]["points"].as_array().unwrap().len(), 31);
         for point in burst["curve"]["points"].as_array().unwrap() {
             assert!((0.0..=1.0).contains(&point[1].as_f64().unwrap()));
@@ -842,13 +999,82 @@ mod tests {
             json!({"event":"preview_displayed","elapsed_ms":35.0,
                 "detail":{"generation":7,"draft_revision":2,"upload_ms":3.0}}),
         ];
-        let paired = inputs(&events, Control::Curve).unwrap();
+        let paired = inputs(&events, Control::Curve, &unused_field()).unwrap();
         assert_eq!(paired.len(), 1);
         assert_eq!(paired[0].value, 0.375);
         assert_eq!(paired[0].displayed_ms - paired[0].sent_ms, 25.0);
         assert_eq!(paired[0].upload_ms, 3.0);
         let mut wrong = events;
         wrong[2]["detail"]["draft_revision"] = json!(3);
-        assert!(inputs(&wrong, Control::Curve).is_err());
+        assert!(inputs(&wrong, Control::Curve, &unused_field()).is_err());
+    }
+
+    #[test]
+    fn resolve_field_accepts_the_default_and_a_declared_field_patch_slider_and_rejects_the_rest() {
+        // Absent, the default Basic exposure target, unchanged from before the option existed.
+        let default = resolve_field(Control::Slider, None, None).unwrap();
+        assert_eq!(default.action, SET_BASIC);
+        assert_eq!(default.parameter, EXPOSURE);
+        assert_eq!((default.min, default.max, default.step), (-5.0, 5.0, 0.01));
+
+        // A declared field-patch parameter of the mixer resolves to its own registry range/step.
+        let mixer = resolve_field(Control::Slider, Some("set-mixer"), Some("red-hue")).unwrap();
+        assert_eq!(mixer.action, "set-mixer");
+        assert_eq!(mixer.parameter, "red-hue");
+        assert_eq!((mixer.min, mixer.max, mixer.step), (-100.0, 100.0, 1.0));
+
+        // One of the pair without the other is refused rather than silently defaulting.
+        assert!(resolve_field(Control::Slider, Some("set-mixer"), None).is_err());
+        assert!(resolve_field(Control::Slider, None, Some("red-hue")).is_err());
+        // An override with the curve control is refused: the curve is its own fraction gesture.
+        assert!(resolve_field(Control::Curve, Some("set-mixer"), Some("red-hue")).is_err());
+        // An undeclared action, an undeclared parameter, and a non-patch action are each refused.
+        assert!(resolve_field(Control::Slider, Some("edit.nothing"), Some("x")).is_err());
+        assert!(resolve_field(Control::Slider, Some("set-mixer"), Some("hue")).is_err());
+        assert!(resolve_field(Control::Slider, Some("reset-mixer"), Some("red-hue")).is_err());
+    }
+
+    #[test]
+    fn gesture_values_for_an_integer_step_parameter_stay_distinct_nonzero_and_in_range() {
+        // The mixer's own declared shape: -100..100 in steps of 1, exactly what `resolve_field`
+        // reads off `set-mixer`'s `red-hue` parameter.
+        let field = FieldTarget {
+            action: "set-mixer".into(),
+            parameter: "red-hue".into(),
+            min: -100.0,
+            max: 100.0,
+            step: 1.0,
+        };
+        let values = field.gesture_values(31);
+        assert_eq!(values.len(), 31);
+        // Every value is a whole number (the declared step), ascending, distinct and nonzero.
+        for value in &values {
+            assert_eq!(value.fract(), 0.0, "{value} is not a whole step");
+            assert!(
+                (field.min..=field.max).contains(value),
+                "{value} out of range"
+            );
+            assert_ne!(*value, 0.0);
+        }
+        assert!(values.windows(2).all(|pair| pair[0] < pair[1]));
+        // 30 default samples plus the drag's trailing release value: 3, 6, .., 93, comfortably
+        // inside -100..100 with headroom for the reflected burst step that follows.
+        assert_eq!(values[0], 3.0);
+        assert_eq!(values[30], 93.0);
+
+        // A far larger sample count still keeps every value inside the declared range, never
+        // silently overflowing it the way a fixed spacing would.
+        let many = field.gesture_values(61);
+        assert!(
+            many.iter()
+                .all(|value| (field.min..=field.max).contains(value))
+        );
+        let mut distinct = many.clone();
+        distinct.dedup_by(|a, b| a == b);
+        assert_eq!(
+            distinct.len(),
+            many.len(),
+            "61 generated values are not all distinct"
+        );
     }
 }
