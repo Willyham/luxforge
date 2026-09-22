@@ -51,8 +51,10 @@ pub fn run(root: &Path, out: &Path) -> Result {
                     "lightwell.pixel",
                     "lightwell.raw",
                     "lightwell.basic",
+                    "lightwell.mixer",
                     "lightwell.transform",
                     "lightwell.crop",
+                    "lightwell.vignette",
                 ]
                 && actions
                     == [
@@ -67,10 +69,14 @@ pub fn run(root: &Path, out: &Path) -> Result {
                         "reset-raw",
                         "set-basic",
                         "reset-basic",
+                        "set-mixer",
+                        "reset-mixer",
                         "transform",
                         "crop",
                         "crop-fit",
                         "crop-reset",
+                        "set-vignette",
+                        "reset-vignette",
                     ],
             "Built-in module discovery changed",
         )?;
@@ -409,8 +415,16 @@ pub fn run(root: &Path, out: &Path) -> Result {
         let basic = basic_acceptance::run(root, out)?;
         let basic_ms = basic_started.elapsed().as_secs_f64() * 1000.0;
 
+        // The presence/mixer/vignette chapter runs as its own independent JSON client against its
+        // own catalogs in the same output directory, so the Basic chapter's and this journey's
+        // state are both untouched by it.
+        let pmv_started = Instant::now();
+        let presence_mixer_vignette = presence_mixer_vignette_acceptance::run(root, out)?;
+        let pmv_ms = pmv_started.elapsed().as_secs_f64() * 1000.0;
+
         ensure(hash(&fixture)? == fixture_hash, "Original source changed")?;
         result["basic_and_histogram"] = basic;
+        result["presence_mixer_vignette"] = presence_mixer_vignette;
         result["status"] = json!("passed");
         result["asset_id"] = json!(asset);
         result["original_entry_id"] = json!(original);
@@ -456,6 +470,7 @@ pub fn run(root: &Path, out: &Path) -> Result {
             "catalog_reopen":reopen_ms,
             "current_render_full_stack":current_render_ms,
             "basic_and_histogram_chapter":basic_ms,
+            "presence_mixer_vignette_chapter":pmv_ms,
             "total":total.elapsed().as_secs_f64()*1000.0,
         });
         result["catalog_bytes"] = json!(fs::metadata(&catalog)?.len());
@@ -470,6 +485,7 @@ pub fn run(root: &Path, out: &Path) -> Result {
             "Catalog reopen retains revision, identities, snapshots, the crop layer and dimensions",
             "Module registry and descriptor discovery",
             "Basic and histogram: the whole chapter under basic_and_histogram, driven through the JSON method table",
+            "Presence, mixer and vignette: the whole chapter under presence_mixer_vignette, driven through the JSON method table (Presence itself recorded as pending)",
             "Source SHA-256 unchanged"
         ]);
         Ok(())

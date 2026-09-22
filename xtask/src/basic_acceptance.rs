@@ -33,7 +33,7 @@ use std::{
 /// The fixture this chapter runs on: the 480x320 synthetic quadrant pattern with a white centre
 /// line at code 255 and a band of black dashes at code 0, so clipped and unclipped populations are
 /// both present before any edit.
-const FIXTURE: &str = "fixtures/s0/orientation-1.jpg";
+pub(crate) const FIXTURE: &str = "fixtures/s0/orientation-1.jpg";
 
 /// Output codes may differ from the f64 reference by at most one, the tolerance frozen by the
 /// numerical tasks for every Basic unit (`docs/design/basic-and-histogram.md`, "Numerical and
@@ -56,7 +56,12 @@ fn next_id(method: &str) -> String {
 }
 
 /// One JSON call that must succeed.
-fn call(owner: &OwnerHandle, client: ClientId, method: &str, params: Value) -> Result<Value> {
+pub(crate) fn call(
+    owner: &OwnerHandle,
+    client: ClientId,
+    method: &str,
+    params: Value,
+) -> Result<Value> {
     let response = owner.call(
         client,
         ApiRequest {
@@ -75,7 +80,7 @@ fn call(owner: &OwnerHandle, client: ClientId, method: &str, params: Value) -> R
 }
 
 /// One JSON call that must be refused, answering `(code, message)`.
-fn refused(
+pub(crate) fn refused(
     owner: &OwnerHandle,
     client: ClientId,
     method: &str,
@@ -97,17 +102,17 @@ fn refused(
 }
 
 /// The mutation envelope every asset change carries.
-fn mutation(revision: u64, request: &str) -> Value {
+pub(crate) fn mutation(revision: u64, request: &str) -> Value {
     json!({"expected_revision": revision, "request_id": request, "actor": "xtask-basic-acceptance"})
 }
 
-fn as_u64(value: &Value, what: &str) -> Result<u64> {
+pub(crate) fn as_u64(value: &Value, what: &str) -> Result<u64> {
     value
         .as_u64()
         .ok_or_else(|| format!("{what} is not a number: {value}").into())
 }
 
-fn as_str(value: &Value, what: &str) -> Result<String> {
+pub(crate) fn as_str(value: &Value, what: &str) -> Result<String> {
     value
         .as_str()
         .map(str::to_owned)
@@ -116,7 +121,7 @@ fn as_str(value: &Value, what: &str) -> Result<String> {
 
 /// Import one file and wait for the asset. The import is a source job, so this is the same
 /// `catalog.import` then `job.status` loop any independent client runs.
-fn import(owner: &OwnerHandle, client: ClientId, path: &Path) -> Result<Value> {
+pub(crate) fn import(owner: &OwnerHandle, client: ClientId, path: &Path) -> Result<Value> {
     let queued = call(owner, client, "catalog.import", json!({"path": path}))?;
     let job_id = queued["job_id"].clone();
     let deadline = Instant::now() + Duration::from_secs(30);
@@ -475,7 +480,7 @@ impl Counts {
 // A built-in registered as unavailable, exactly as the desktop's `--disable-module` does.
 // ---------------------------------------------------------------------------------------------
 
-struct Disabled {
+pub(crate) struct Disabled {
     inner: Arc<dyn ToolModule>,
     descriptor: ModuleDescriptor,
 }
@@ -483,7 +488,7 @@ struct Disabled {
 impl Disabled {
     const REASON: &'static str = "disabled by the acceptance journey";
 
-    fn new(inner: Arc<dyn ToolModule>) -> Self {
+    pub(crate) fn new(inner: Arc<dyn ToolModule>) -> Self {
         let descriptor = ModuleDescriptor {
             availability: Availability::Unavailable {
                 reason: Self::REASON.into(),
@@ -521,16 +526,26 @@ impl ToolModule for Disabled {
     }
 }
 
-/// The built-ins with `lightwell.basic` wrapped unavailable.
-fn registry_without_basic() -> ModuleRegistry {
+/// The full built-in registry (the same set `ModuleRegistry::builtin()` registers, in the same
+/// order) with the one module whose descriptor id is `module_id` wrapped [`Disabled`]. Shared by
+/// every chapter's unavailable-provider check so each one only names which module it disables.
+pub(crate) fn registry_without(module_id: &str) -> ModuleRegistry {
     let mut registry = ModuleRegistry::new();
-    for module in [
-        Arc::new(PixelModule::new()) as Arc<dyn ToolModule>,
+    let builtins: [Arc<dyn ToolModule>; 7] = [
+        Arc::new(PixelModule::new()),
         Arc::new(RawModule::new()),
-        Arc::new(Disabled::new(Arc::new(BasicModule::new()))) as Arc<dyn ToolModule>,
+        Arc::new(BasicModule::new()),
+        Arc::new(lightwell_core::MixerModule::new()),
         Arc::new(TransformModule::new()),
         Arc::new(CropModule::new()),
-    ] {
+        Arc::new(lightwell_core::VignetteModule::new()),
+    ];
+    for module in builtins {
+        let module: Arc<dyn ToolModule> = if module.descriptor().id == module_id {
+            Arc::new(Disabled::new(module))
+        } else {
+            module
+        };
         registry
             .register(module)
             .expect("built-in module descriptors are valid");
@@ -538,19 +553,32 @@ fn registry_without_basic() -> ModuleRegistry {
     registry
 }
 
+/// The built-ins with `lightwell.basic` wrapped unavailable.
+fn registry_without_basic() -> ModuleRegistry {
+    registry_without("lightwell.basic")
+}
+
 // ---------------------------------------------------------------------------------------------
 // Small journey helpers.
 // ---------------------------------------------------------------------------------------------
 
 /// The committed recipe of the asset's current entry, as the API reports it.
-fn current_recipe(owner: &OwnerHandle, client: ClientId, asset: &Value) -> Result<Recipe> {
+pub(crate) fn current_recipe(
+    owner: &OwnerHandle,
+    client: ClientId,
+    asset: &Value,
+) -> Result<Recipe> {
     let state = call(owner, client, "asset.state", json!({"asset_id": asset}))?;
     Ok(serde_json::from_value(
         state["current_entry"]["snapshot"]["recipe"].clone(),
     )?)
 }
 
-fn current_revision(owner: &OwnerHandle, client: ClientId, asset: &Value) -> Result<u64> {
+pub(crate) fn current_revision(
+    owner: &OwnerHandle,
+    client: ClientId,
+    asset: &Value,
+) -> Result<u64> {
     let state = call(owner, client, "asset.state", json!({"asset_id": asset}))?;
     as_u64(&state["revision"], "revision")
 }
@@ -577,7 +605,7 @@ fn expect_values(values: &Value, expected: &Basic, what: &str) -> Result {
 }
 
 /// One reported effective value as a number.
-fn field(values: &Value, name: &str) -> Result<f64> {
+pub(crate) fn field(values: &Value, name: &str) -> Result<f64> {
     values
         .get(name)
         .and_then(Value::as_f64)
@@ -602,14 +630,14 @@ fn described_basic(described: &Value) -> Result<(String, usize, Value)> {
 
 /// Render one recipe in this process. The raster is the subject of the checks below, never the
 /// oracle: every expected value comes from the f64 reference above.
-fn render(source: &SourceImage, recipe: &Recipe) -> Result<lightwell_core::Raster> {
+pub(crate) fn render(source: &SourceImage, recipe: &Recipe) -> Result<lightwell_core::Raster> {
     let registry = ModuleRegistry::builtin();
     Ok(core_render(&registry, source, SnapshotId::new(), recipe)?)
 }
 
 /// Wait for a source job to leave the queue. A freshly opened catalog has no verified source in
 /// its cache, so the first evaluating call answers `preparation-required` with a job to wait on.
-fn settle_source(owner: &OwnerHandle, client: ClientId, job_id: &str) -> Result<Value> {
+pub(crate) fn settle_source(owner: &OwnerHandle, client: ClientId, job_id: &str) -> Result<Value> {
     let deadline = Instant::now() + Duration::from_secs(30);
     loop {
         let status = call(owner, client, "job.status", json!({"job_id": job_id}))?;
@@ -624,7 +652,7 @@ fn settle_source(owner: &OwnerHandle, client: ClientId, job_id: &str) -> Result<
 }
 
 /// Prepare the verified source so an evaluating call is answered rather than deferred.
-fn prepare_source(owner: &OwnerHandle, client: ClientId, asset: &Value) -> Result {
+pub(crate) fn prepare_source(owner: &OwnerHandle, client: ClientId, asset: &Value) -> Result {
     let prepared = call(owner, client, "source.prepare", json!({"asset_id": asset}))?;
     if let Some(job_id) = prepared["job_id"].as_str() {
         settle_source(owner, client, job_id)?;
@@ -647,7 +675,12 @@ fn reduce_render(
 }
 
 /// One `analysis.request` followed by `analysis.read` until it settles.
-fn analyse(owner: &OwnerHandle, client: ClientId, asset: &Value, target: Value) -> Result<Value> {
+pub(crate) fn analyse(
+    owner: &OwnerHandle,
+    client: ClientId,
+    asset: &Value,
+    target: Value,
+) -> Result<Value> {
     let requested = call(
         owner,
         client,
@@ -674,7 +707,7 @@ fn analyse(owner: &OwnerHandle, client: ClientId, asset: &Value, target: Value) 
 }
 
 /// A settled analysis that must be `ready`, answering its report.
-fn ready_report(
+pub(crate) fn ready_report(
     owner: &OwnerHandle,
     client: ClientId,
     asset: &Value,

@@ -12,6 +12,7 @@ mod histogram_smoke;
 mod launch;
 mod package;
 mod policy;
+mod presence_mixer_vignette_acceptance;
 mod raw;
 mod raw_editor;
 /// The independent f64 colour reference the core's own numerical tests use, compiled in rather
