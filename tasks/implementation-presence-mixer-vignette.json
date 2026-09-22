@@ -70,12 +70,13 @@
     {
       "id": "TASK-002",
       "description": "Numerical study for Presence: select and freeze the texture band, the clarity base and compressive curve, and the dehaze atmospheric model (global estimate, transmission, floor and negative strength) against independent f64 references, fixing each unit's scales, halos at 24 MP and 60 MP, tiled-versus-whole-frame tolerance, halo bound on edge fixtures and production tolerance, and record them in a presence study note.",
-      "status": "pending",
+      "status": "completed",
       "dependencies": [],
       "extra_context": [
         "Candidates come from the darktable and Lightroom research: guided-filter and downsampled-base decompositions are preferred because they tile; a local-Laplacian candidate is rejected unless it tiles within the 512 pixel summed halo.",
         "Fixtures: step edges, sinusoidal frequency sweeps, textured patches, smooth 8-bit gradients (to record the extra quantization boundary's effect), noise at several amplitudes, and a synthetic hazed image built from the forward model with known transmission and atmospheric light so recovery is measurable.",
-        "The note follows the tone study's form: equations, monotonicity or boundedness proofs where claimed, limitations, the frozen tolerance and the fixture files. It documents current behaviour to build, not history."
+        "The note follows the tone study's form: equations, monotonicity or boundedness proofs where claimed, limitations, the frozen tolerance and the fixture files. It documents current behaviour to build, not history.",
+        "Evidence: docs/design/presence-study.md freezes dehaze then texture then clarity: finite-support box, min and box-guided filters evaluated in a fixed order, Clarity and Dehaze on a 4x reduced base anchored at the frame origin, radii quoted at a 6000 px long side and scaled with a cap at 10000, a tanh compressive gain in the encoded domain that never creates clipping, dark-channel dehaze with a guided transmission, a 0.1 floor and an atmospheric light from the 1/16 reduction (24 bytes), a uniform veil for negative amounts, summed halos 46/274/448 px at 480/6000/10000 (bound 512), and a 2e-4 + 2e-4|ref| production tolerance derived from measured f32 filter error through the dehaze path; tests/reference/presence.rs, tests/presence_reference.rs (43 tests, including bit-identical tiled evaluation at three tile sizes) and fixtures/presence/ (10 oracle cases, 76 measurements) are checked in. The note records that a single 512 px tile needs about 57 MiB of scratch at 60 MP, which the design answers with a separate 256 MiB spatial budget and batch-limited concurrency."
       ],
       "context_links": [
         {
@@ -219,7 +220,7 @@
     },
     {
       "id": "TASK-005",
-      "description": "Implement the spatial primitive in the host: Processing::Spatial with at most four SpatialUnit units, the stage boundary in compile and segment evaluation on the JPEG and RAW paths, tiled 512 \u00d7 512 halo-bounded execution on the shared Rayon pool with per-tile scratch from the existing budget, cancellation between tiles, compile-time refusal of an over-bound halo, the 1/16-scale global-estimate reduction with its eight-entry cache, and the bounded point-sample path through a spatial layer.",
+      "description": "Implement the spatial primitive in the host: Processing::Spatial with at most four SpatialUnit units, the stage boundary in compile and segment evaluation on the JPEG and RAW paths, tiled 512 \u00d7 512 halo-bounded execution on the shared Rayon pool with a separate 256 MiB spatial budget and batch-limited concurrency, cancellation between tiles, compile-time refusal of an over-bound halo or an over-budget tile, the 1/16-scale global-estimate reduction with its eight-entry cache, and the bounded point-sample path through a spatial layer.",
       "status": "pending",
       "dependencies": [
         "TASK-001",
