@@ -2,7 +2,7 @@
 
 [Knowledge base index](README.md)
 
-All sources below were checked online on **2026-09-20**. Dates describe the source, not the retrieval. This register is an annotated bibliography, not a claim that every linked API or feature was tested. Adobe pages often combine new sections with older text; the chapters record material conflicts. Summaries are deliberately concise; follow the original for figures, demonstrations and full procedures.
+Sources S01–S44 were checked online on **2026-09-20**; S45–S48 and relevant existing sources were checked on **2026-09-22**. Dates in the entries describe the source, not the retrieval. This register is an annotated bibliography, not a claim that every linked API or feature was tested. Adobe pages often combine new sections with older text; the chapters record material conflicts. Summaries are deliberately concise; follow the original for figures, demonstrations and full procedures.
 
 Evidence labels: **D** = documented product behavior; **H** = historical engineering evidence; **C** = conceptual explanation; **P** = Lightwell proposal; **U** = unknown. Mirrored SDK documentation is identified explicitly; no forum speculation is used as algorithm evidence.
 
@@ -48,10 +48,14 @@ Evidence labels: **D** = documented product behavior; **H** = historical enginee
 | S38 | [Removing window reflections](https://blog.adobe.com/en/publish/2024/12/12/removing-window-reflections-adobe-camera-raw) | Marc Levoy, Eric Kee and Adam Pikielny, Adobe; 2024-12-12 | ACR launch engineering account; uncropped input, synthesis/training and limitations. Classic arrival is S36. |
 | S39 | [Basic editing techniques](https://www.adobe.com/learn/lightroom-classic/web/basic-photography-editing-techniques) | Adobe Learn, Ben Willmore; retrieved current page | Basic Contrast/Exposure behavior and practical editing intent. |
 | S40 | [SQLite users](https://www.sqlite.org/famous.html) | SQLite project; retrieved current page | Primary database-vendor confirmation of Lightroom SQLite use; no Adobe schema contract. |
-| S41 | [LrDevelopController reference](https://lrc.mcor.dev/modules/LrDevelopController.html) | Adobe SDK reference, third-party mirror; retrieved 2026-09-20 | Primary-authored documentation reproduced by a mirror; pin official SDK before implementation. |
+| S41 | [LrDevelopController reference](https://lrc.mcor.dev/modules/LrDevelopController.html) | Adobe SDK reference, third-party mirror; checked again 2026-09-22 | Documents tracking's faster, lower-quality redraw and history coalescing; pin official SDK before implementation. |
 | S42 | [LrPhoto reference](https://lrc.mcor.dev/modules/LrPhoto.html) | Adobe SDK reference, third-party mirror; retrieved 2026-09-20 | Photo develop settings, presets and metadata APIs; mirror freshness not independently established. |
 | S43 | [LrCatalog reference](https://lrc.mcor.dev/modules/LrCatalog.html) | Adobe SDK reference, third-party mirror; retrieved 2026-09-20 | Catalog access and transaction contexts; not direct SQL permission. |
 | S44 | [Color Mixer](https://helpx.adobe.com/lightroom-classic/desktop/process-and-develop-photos/color-mixer.html) | Adobe Help; 2025-10-27 | HSL, targeted adjustment and Point Color range controls. |
+| S45 | [Set Lightroom Classic preferences](https://helpx.adobe.com/lightroom-classic/desktop/introduction-to-lightroom-classic/setting-preferences-lightroom.html) | Adobe Help; retrieved current page | Optional Smart Preview editing path and concurrent batch preview generation; neither specifies live slider scheduling. |
+| S46 | [October 2020 photography release](https://blog.adobe.com/en/publish/2020/10/20/lightroom-max-release-more-power-editing-precision-growing-photography-community) | Adobe Blog; 2020-10-20 | Release-era claim of up to 2× faster GPU rendering for local corrections and their sliders; no absolute timing. |
+| S47 | [February 2018 Lightroom Classic update](https://blog.adobe.com/en/publish/2018/02/13/announcing-february-update-lightroom-classic) | Adobe Blog; 2018-02-13 | Multicore CPU/memory optimization and faster Develop adjustment rendering in that release; no current thread model. |
+| S48 | [Adobe MAX 2024 Lightroom update](https://blog.adobe.com/en/publish/2024/10/14/more-power-photographers-explore-latest-from-lightroom-adobe-max-2024) | Adobe Blog; 2024-10-14 | Develop image-navigation speed claim and memory/cache changes; not slider latency evidence. |
 
 ## Retrieval limits and excluded evidence
 
