@@ -112,12 +112,14 @@ fn signed(name: &str) -> bool {
     matches!(name, AMOUNT | ROUNDNESS)
 }
 
+/// A history label names the module and the field, `Vignette amount -35`, because `Amount` alone
+/// says nothing in a history list shared with every other module.
 fn field_label(name: &str, value: f64) -> String {
-    let label = label_of(name);
+    let label = label_of(name).to_ascii_lowercase();
     if signed(name) {
-        format!("{label} {value:+.0}")
+        format!("{GROUP_LABEL} {label} {value:+.0}")
     } else {
-        format!("{label} {value:.0}")
+        format!("{GROUP_LABEL} {label} {value:.0}")
     }
 }
 
@@ -886,19 +888,19 @@ mod tests {
         };
         assert_eq!(
             label(SET_VIGNETTE, json!({"amount": -35.0})),
-            Some("Amount -35".into())
+            Some("Vignette amount -35".into())
         );
         assert_eq!(
             label(SET_VIGNETTE, json!({"midpoint": 60.0})),
-            Some("Midpoint 60".into())
+            Some("Vignette midpoint 60".into())
         );
         assert_eq!(
             label(SET_VIGNETTE, json!({"roundness": 20.0})),
-            Some("Roundness +20".into())
+            Some("Vignette roundness +20".into())
         );
         assert_eq!(
             label(SET_VIGNETTE, json!({"feather": 40.0})),
-            Some("Feather 40".into())
+            Some("Vignette feather 40".into())
         );
         assert_eq!(
             label(RESET_VIGNETTE, json!({})),
@@ -967,7 +969,7 @@ mod tests {
             module
                 .describe_layer(VIGNETTE_EFFECT, EFFECT_FORMAT, &json!({"amount": -35.0}))
                 .unwrap(),
-            "Amount -35"
+            "Vignette amount -35"
         );
     }
 

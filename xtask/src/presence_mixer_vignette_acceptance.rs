@@ -1223,8 +1223,8 @@ fn vignette_journey(root: &Path, out: &Path) -> Result<Value> {
         let asset = imported["asset"]["id"].clone();
         let original = imported["current_entry"]["id"].clone();
 
-        // 2a. A slider gesture commits exactly one entry with the expected label (the production
-        //     label is the field's own name, e.g. "Amount -35", not a "Vignette <field>" form).
+        // 2a. A slider gesture commits exactly one entry with the expected label, which names the
+        //     module and the field so it reads unambiguously in a shared history list.
         let revision = current_revision(&owner, editor, &asset)?;
         let draft = call(
             &owner,
@@ -1256,7 +1256,7 @@ fn vignette_journey(root: &Path, out: &Path) -> Result<Value> {
             json!({"asset_id": asset, "entry_id": committed["current_entry_id"]}),
         )?;
         ensure(
-            entry["label"] == json!("Amount -35"),
+            entry["label"] == json!("Vignette amount -35"),
             format!("The gesture's label is {}", entry["label"]),
         )?;
         let described = call(
@@ -1275,7 +1275,7 @@ fn vignette_journey(root: &Path, out: &Path) -> Result<Value> {
             format!("The committed layer reads {values}"),
         )?;
         record(
-            "a draft.begin/set/commit slider gesture on amount commits exactly one entry labelled Amount -35, at the end of the stack",
+            "a draft.begin/set/commit slider gesture on amount commits exactly one entry labelled Vignette amount -35, at the end of the stack",
             json!({"entry": entry["label"], "layer": vignette_layer}),
         );
 
