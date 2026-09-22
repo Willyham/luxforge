@@ -24,7 +24,7 @@ pub use crate::widgets::number_field::ValueEdit;
 pub enum RailDecoration {
     #[default]
     Plain,
-    /// Already chosen colours, ordered from left to right. At most eight are drawn by Iced.
+    /// Already chosen colours, evenly spaced from left to right and mixed in sRGB.
     Colors(Vec<Color>),
 }
 
@@ -202,18 +202,30 @@ fn draw_rail(frame: &mut canvas::Frame, rail: &RailDrawing) {
     };
     match &rail.rail {
         RailDecoration::Colors(colors) if !colors.is_empty() => {
-            // A declared colour rail replaces the fill: its colour is the module's meaning.
-            let (origin, size) = band(theme::DECORATED_RAIL_WIDTH, 0.0, width);
-            let mut linear =
-                gradient::Linear::new(Point::new(0.0, middle), Point::new(width, middle));
-            for (position, color) in geometry::rail_stop_positions(colors.len())
-                .into_iter()
-                .zip(colors)
-                .take(8)
-            {
-                linear = linear.add_stop(position, *color);
+            // A declared colour rail replaces the fill: its colour is the module's meaning. The
+            // stops are mixed in sRGB and laid over the panel at the rail's opacity, as the module
+            // references draw them; Iced's gradients mix in linear light, so the rail is drawn as
+            // short two-stop pieces between exactly computed colours.
+            let stops: Vec<[f32; 3]> = colors.iter().map(|c| [c.r, c.g, c.b]).collect();
+            let panel = [theme::PANEL.r, theme::PANEL.g, theme::PANEL.b];
+            let at = |t: f32| {
+                let [r, g, b] = geometry::over(
+                    geometry::rail_colour_at(&stops, t),
+                    panel,
+                    theme::DECORATED_RAIL_OPACITY,
+                );
+                Color::from_rgb(r, g, b)
+            };
+            let pieces = geometry::rail_pieces(width, theme::RAIL_PIECE_LENGTH);
+            for pair in pieces.windows(2) {
+                let (from, to) = (pair[0] * width, pair[1] * width);
+                let (origin, size) = band(theme::DECORATED_RAIL_WIDTH, from, to);
+                let linear =
+                    gradient::Linear::new(Point::new(from, middle), Point::new(to, middle))
+                        .add_stop(0.0, at(pair[0]))
+                        .add_stop(1.0, at(pair[1]));
+                frame.fill_rectangle(origin, size, canvas::Fill::from(linear));
             }
-            frame.fill_rectangle(origin, size, canvas::Fill::from(linear));
         }
         _ => {
             let (origin, size) = band(theme::RAIL_WIDTH, 0.0, width);

@@ -34,13 +34,44 @@ pub fn fraction_from_value(min: f64, max: f64, value: f64) -> f64 {
     ((value - min) / (max - min)).clamp(0.0, 1.0)
 }
 
-/// Evenly spaced colour-stop positions, including both endpoints.
-pub fn rail_stop_positions(count: usize) -> Vec<f32> {
-    match count {
-        0 => Vec::new(),
-        1 => vec![0.0],
-        count => (0..count).map(|i| i as f32 / (count - 1) as f32).collect(),
+/// The colour a declared colour rail shows at `t` of its length: the stops evenly spaced along it
+/// and mixed in sRGB, as the module references draw a gradient, rather than in the linear light
+/// Iced's own gradient interpolates in (which lightens every midpoint). Channels are sRGB values
+/// in `0.0..=1.0`.
+pub fn rail_colour_at(stops: &[[f32; 3]], t: f32) -> [f32; 3] {
+    match stops {
+        [] => [0.0; 3],
+        [only] => *only,
+        _ => {
+            let span = (stops.len() - 1) as f32;
+            let position = t.clamp(0.0, 1.0) * span;
+            let index = (position.floor() as usize).min(stops.len() - 2);
+            let local = position - index as f32;
+            let (from, to) = (stops[index], stops[index + 1]);
+            std::array::from_fn(|channel| from[channel] + (to[channel] - from[channel]) * local)
+        }
     }
+}
+
+/// `colour` laid over `background` at `opacity`, mixed in sRGB as the references composite it.
+/// Iced would blend a translucent fill in linear light, which renders it brighter, so a widget
+/// that needs the reference's result draws this opaque colour instead.
+pub fn over(colour: [f32; 3], background: [f32; 3], opacity: f32) -> [f32; 3] {
+    std::array::from_fn(|channel| {
+        background[channel] + (colour[channel] - background[channel]) * opacity
+    })
+}
+
+/// The fractions at which a colour rail `width` points long is cut into pieces no longer than
+/// `piece` points, both ends included. Each piece is drawn as a two-stop gradient between the
+/// exact colours at its ends, so the rail follows [`rail_colour_at`] to well under one 8-bit code
+/// while Iced draws only a handful of gradients.
+pub fn rail_pieces(width: f32, piece: f32) -> Vec<f32> {
+    if width <= 0.0 || piece <= 0.0 {
+        return vec![0.0, 1.0];
+    }
+    let count = (width / piece).ceil().max(1.0) as usize;
+    (0..=count).map(|i| i as f32 / count as f32).collect()
 }
 
 /// Where Iced draws a slider handle's centre, in points from the rail's left edge, for a rail
@@ -224,11 +255,54 @@ mod tests {
         assert_eq!(fraction_from_value(-2.0, 2.0, 3.0), 1.0);
     }
 
+    fn codes(colour: [f32; 3]) -> [u8; 3] {
+        colour.map(|channel| (channel * 255.0).round() as u8)
+    }
+
+    fn unit(colour: [u8; 3]) -> [f32; 3] {
+        colour.map(|channel| f32::from(channel) / 255.0)
+    }
+
     #[test]
-    fn rail_stops_span_the_full_rail() {
-        assert_eq!(rail_stop_positions(0), Vec::<f32>::new());
-        assert_eq!(rail_stop_positions(1), vec![0.0]);
-        assert_eq!(rail_stop_positions(4), vec![0.0, 1.0 / 3.0, 2.0 / 3.0, 1.0]);
+    fn a_colour_rail_mixes_its_evenly_spaced_stops_in_srgb() {
+        let stops = [unit([255, 0, 255]), unit([255, 0, 0]), unit([255, 128, 0])];
+        assert_eq!(codes(rail_colour_at(&stops, 0.0)), [255, 0, 255]);
+        assert_eq!(codes(rail_colour_at(&stops, 0.5)), [255, 0, 0]);
+        assert_eq!(codes(rail_colour_at(&stops, 1.0)), [255, 128, 0]);
+        // A fifth of the way along the second half: sRGB 0.4 × 128, not linear light's 83.
+        assert_eq!(codes(rail_colour_at(&stops, 0.7)), [255, 51, 0]);
+        assert_eq!(codes(rail_colour_at(&[], 0.3)), [0, 0, 0]);
+        assert_eq!(codes(rail_colour_at(&stops[..1], 0.3)), [255, 0, 255]);
+    }
+
+    /// Sampled from colour-mixer.png's Red hue, Red saturation and Red luminance rails: the declared
+    /// stops mixed in sRGB and laid over the panel at 85%, to within two 8-bit codes.
+    #[test]
+    fn colour_rails_match_the_mixer_reference_samples() {
+        let panel = unit([0x20, 0x20, 0x23]);
+        let drawn = |stops: &[[u8; 3]], t: f32| {
+            let stops: Vec<[f32; 3]> = stops.iter().copied().map(unit).collect();
+            codes(over(rail_colour_at(&stops, t), panel, 0.85))
+        };
+        let close = |a: [u8; 3], b: [u8; 3]| a.iter().zip(b).all(|(a, b)| a.abs_diff(b) <= 2);
+        let hue = [[255, 0, 255], [255, 0, 0], [255, 128, 0]];
+        assert!(close(drawn(&hue, 0.2), [221, 5, 134]));
+        assert!(close(drawn(&hue, 0.8), [222, 69, 5]));
+        let saturation = [[128, 128, 128], [255, 0, 0]];
+        assert!(close(drawn(&saturation, 0.0), [114, 113, 114]));
+        assert!(close(drawn(&saturation, 0.3), [146, 81, 81]));
+        let luminance = [[63, 0, 0], [255, 0, 0], [255, 153, 153]];
+        assert!(close(drawn(&luminance, 0.2), [125, 5, 5]));
+        assert!(close(drawn(&luminance, 0.8), [222, 82, 83]));
+    }
+
+    #[test]
+    fn a_rail_is_cut_into_pieces_no_longer_than_asked() {
+        assert_eq!(rail_pieces(16.0, 8.0), vec![0.0, 0.5, 1.0]);
+        let pieces = rail_pieces(276.0, 8.0);
+        assert_eq!(pieces.len(), 36);
+        assert_eq!((pieces[0], pieces[35]), (0.0, 1.0));
+        assert_eq!(rail_pieces(0.0, 8.0), vec![0.0, 1.0]);
     }
 
     /// The exact complaint this exists for: iced's own snapping to a 0.01 step lands next to the

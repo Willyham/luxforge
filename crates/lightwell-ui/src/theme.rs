@@ -48,18 +48,19 @@ pub const ZERO_TICK: Color = Color::from_rgb8(0x5a, 0x5a, 0x62);
 pub const THUMB: Color = Color::from_rgb8(0xec, 0xec, 0xee);
 /// The dark ring around the handle that separates it from a light or colour rail.
 pub const THUMB_OUTLINE: Color = Color::from_rgb8(0x11, 0x11, 0x13);
-/// The `temperature` rail hint's stops, blue through a neutral grey to amber, as the module
-/// references draw them: muted, so the thumb stays the brightest mark on the row.
+/// The `temperature` rail hint's stops, blue through a neutral grey to amber. A colour rail is
+/// drawn at [`DECORATED_RAIL_OPACITY`] over the panel, so these are the colours that composite to
+/// the module references' samples (asserted in the tests below).
 pub const TEMPERATURE_RAIL: [Color; 3] = [
-    Color::from_rgb8(0x46, 0x7b, 0xc3),
-    Color::from_rgb8(0x7e, 0x7e, 0x83),
-    Color::from_rgb8(0xc5, 0x9d, 0x60),
+    Color::from_rgb8(77, 139, 223),
+    Color::from_rgb8(143, 143, 148),
+    Color::from_rgb8(226, 179, 107),
 ];
 /// The `tint` rail hint's stops, green through a neutral grey to magenta.
 pub const TINT_RAIL: [Color; 3] = [
-    Color::from_rgb8(0x4f, 0x9f, 0x60),
-    Color::from_rgb8(0x7d, 0x7f, 0x82),
-    Color::from_rgb8(0xbd, 0x56, 0xb6),
+    Color::from_rgb8(87, 181, 107),
+    Color::from_rgb8(141, 144, 147),
+    Color::from_rgb8(217, 95, 208),
 ];
 /// A group header's hairline rule. Opaque rather than a white alpha like [`BORDER`]: Iced blends
 /// in linear light, which renders a small white alpha far brighter than the references do.
@@ -203,6 +204,12 @@ pub const SLIDER_ROW_HEIGHT: f32 = SLIDER_LABEL_HEIGHT + SLIDER_GAP + SLIDER_RAI
 pub const RAIL_WIDTH: f32 = 2.0;
 /// A colour rail's thickness, a little heavier so its colours read.
 pub const DECORATED_RAIL_WIDTH: f32 = 3.0;
+/// How strongly a colour rail's declared colours sit over the panel: muted a little, so the thumb
+/// stays the brightest mark on the row, as the module references draw every colour rail.
+pub const DECORATED_RAIL_OPACITY: f32 = 0.85;
+/// The longest piece a colour rail is drawn in, each a two-stop gradient between exactly mixed
+/// colours (see [`crate::geometry::rail_pieces`]).
+pub const RAIL_PIECE_LENGTH: f32 = 8.0;
 /// The handle's radius including its outline ring: a 12 pt handle inside a 1 pt ring.
 pub const THUMB_RADIUS: f32 = 7.0;
 /// The ring around the handle.
@@ -657,15 +664,28 @@ mod tests {
         assert_eq!(ZERO_TICK, Color::from_rgb8(0x5a, 0x5a, 0x62));
         assert_eq!(THUMB_OUTLINE, Color::from_rgb8(0x11, 0x11, 0x13));
         assert_eq!(TEXT_LABEL, Color::from_rgb8(0xc9, 0xc9, 0xce));
+    }
+
+    /// The white-balance rails, drawn at the colour-rail opacity over the panel, land on the
+    /// colours sampled from basic.png at their start, middle and end.
+    #[test]
+    fn white_balance_rails_composite_to_the_basic_reference() {
+        let drawn = |colour: Color| {
+            let [r, g, b] = crate::geometry::over(
+                [colour.r, colour.g, colour.b],
+                [PANEL.r, PANEL.g, PANEL.b],
+                DECORATED_RAIL_OPACITY,
+            );
+            [r, g, b].map(|channel| (channel * 255.0).round() as u8)
+        };
         assert_eq!(
-            TEMPERATURE_RAIL[1],
-            Color::from_rgb8(0x7e, 0x7e, 0x83),
-            "a grey midpoint"
+            TEMPERATURE_RAIL.map(drawn),
+            [[0x46, 0x7b, 0xc3], [0x7e, 0x7e, 0x83], [0xc5, 0x9d, 0x60]]
         );
         assert_eq!(
-            TINT_RAIL[1],
-            Color::from_rgb8(0x7d, 0x7f, 0x82),
-            "a grey midpoint"
+            TINT_RAIL.map(drawn),
+            [[0x4f, 0x9f, 0x60], [0x7d, 0x7f, 0x82], [0xbd, 0x56, 0xb6]]
         );
+        assert_eq!(DECORATED_RAIL_OPACITY, 0.85);
     }
 }
