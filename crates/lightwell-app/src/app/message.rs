@@ -366,6 +366,9 @@ pub(crate) enum Message {
     Info(iced::system::Information),
     /// The evidence deadline check.
     EvidenceTick,
+    /// One tick of a paced evidence slider step: send its next value. Exists only while a paced
+    /// step has values left to send, which is also when the subscription that produces it exists.
+    PacedSliderTick,
     /// Capture the frame the next redraw presents.
     Capture,
     Captured(iced::window::Screenshot),

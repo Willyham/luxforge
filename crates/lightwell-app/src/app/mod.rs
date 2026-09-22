@@ -388,6 +388,7 @@ impl Editor {
                 capture_pending: false,
                 saving: false,
                 had_errors: false,
+                paced_slider: None,
             }
         });
         let initial = config.files.pop_front();
@@ -1066,6 +1067,7 @@ impl Editor {
                     std::process::exit(3);
                 }
             }
+            Message::PacedSliderTick => return self.slider_paced_tick(),
             Message::Capture => {
                 let Some(evidence) = &mut self.evidence else {
                     return Task::none();
@@ -2639,6 +2641,14 @@ impl Editor {
                 .push(iced::time::every(Duration::from_millis(250)).map(|_| Message::EvidenceTick));
             if evidence.capture_pending {
                 subscriptions.push(iced::window::frames().map(|_| Message::Capture));
+            }
+            // A paced slider step's own timer: gated exactly as the gesture's 16 ms tick is on an
+            // open draft, so a script with no paced step in flight runs no timer for it at all.
+            if let Some(paced) = &evidence.paced_slider {
+                subscriptions.push(
+                    iced::time::every(Duration::from_millis(paced.interval_ms))
+                        .map(|_| Message::PacedSliderTick),
+                );
             }
         }
         Subscription::batch(subscriptions)

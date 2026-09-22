@@ -41,6 +41,25 @@ pub(crate) struct Evidence {
     pub(crate) capture_pending: bool,
     pub(crate) saving: bool,
     pub(crate) had_errors: bool,
+    /// A paced slider step's values still to send, one per tick of its own gated timer. `None` when
+    /// no paced step is running, which is also when the timer that drives it does not exist.
+    pub(crate) paced_slider: Option<PacedSlider>,
+}
+
+/// The state of a slider step sent by a timer rather than all at once. Each tick sends the next
+/// value through the same messages [`Editor::slider_step`] sends synchronously, then advances or,
+/// on the last value, ends the gesture the way the step said to.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct PacedSlider {
+    pub(crate) action: String,
+    pub(crate) parameter: String,
+    /// Values still to send, in order; the front is sent by the next tick.
+    pub(crate) remaining: VecDeque<f64>,
+    /// How many of the step's values have already been sent, which is the index the next one
+    /// records.
+    pub(crate) sent: usize,
+    pub(crate) interval_ms: u64,
+    pub(crate) end: SliderEnd,
 }
 
 /// One step of an evidence script. Steps run in order after the last `--open` outcome, each followed
@@ -80,12 +99,18 @@ pub(crate) enum Step {
 /// One slider gesture. Every value becomes one `SliderMoved` with a tick between them, exactly as
 /// a pointer drag and the gated subscription produce them; the gesture then ends the way `end`
 /// says, or stays open when it says nothing.
+///
+/// Without `interval_ms` every value is sent at once, as a fast drag would coalesce between ticks.
+/// With it, one value is sent per tick of its own gated timer instead, which is how a wild,
+/// undrained drag is scripted: `interval_ms` paces the values in real time so the driver's own
+/// coalescing runs on them, rather than the harness deciding what reaches the owner.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct SliderStep {
     pub(crate) action: String,
     pub(crate) parameter: String,
     pub(crate) values: Vec<f64>,
     pub(crate) end: SliderEnd,
+    pub(crate) interval_ms: Option<u64>,
 }
 
 /// How a scripted gesture ends: released (committed), Escape (cancelled), or left open so the
@@ -185,13 +210,19 @@ impl Step {
         match self {
             Self::Api { method, params } => json!({"api":{"method":method,"params":params}}),
             Self::Draft(draft) => json!({"draft":draft.record()}),
-            Self::Slider(slider) => json!({"slider":{
-                "action": slider.action,
-                "parameter": slider.parameter,
-                "values": slider.values,
-                "release": slider.end == SliderEnd::Release,
-                "cancel": slider.end == SliderEnd::Cancel,
-            }}),
+            Self::Slider(slider) => {
+                let mut object = json!({
+                    "action": slider.action,
+                    "parameter": slider.parameter,
+                    "values": slider.values,
+                    "release": slider.end == SliderEnd::Release,
+                    "cancel": slider.end == SliderEnd::Cancel,
+                });
+                if let Some(interval_ms) = slider.interval_ms {
+                    object["interval_ms"] = json!(interval_ms);
+                }
+                json!({"slider": object})
+            }
             Self::Field(field) => json!({"field":{
                 "action": field.action,
                 "parameter": field.parameter,
@@ -456,6 +487,10 @@ impl Editor {
     /// One slider gesture, driven as the exact messages a pointer drag produces: one `SliderMoved`
     /// per value with the gated tick between them, then the release, Escape or nothing at all.
     /// Nothing here reaches the owner directly; the gesture's own driver does, under its own bound.
+    ///
+    /// A step with `interval_ms` sends nothing here: it hands its values to
+    /// [`Editor::slider_paced_tick`] instead, one per tick of the timer the subscription starts
+    /// while `paced_slider` holds them, so this function's own frame is never captured for it.
     fn slider_step(&mut self, step: SliderStep) -> Task<Message> {
         if self.state.is_none() {
             return self.fail_step("no photograph is open");
@@ -465,6 +500,19 @@ impl Editor {
         }
         if step.values.is_empty() {
             return self.fail_step("a slider step needs at least one value");
+        }
+        if let Some(interval_ms) = step.interval_ms {
+            if let Some(evidence) = &mut self.evidence {
+                evidence.paced_slider = Some(PacedSlider {
+                    action: step.action,
+                    parameter: step.parameter,
+                    remaining: step.values.into(),
+                    sent: 0,
+                    interval_ms,
+                    end: step.end,
+                });
+            }
+            return Task::none();
         }
         let mut tasks = Vec::new();
         for value in &step.values {
@@ -481,26 +529,85 @@ impl Editor {
                 step.action, self.status
             ));
         }
-        match step.end {
+        tasks.push(self.end_slider_gesture(step.action, step.parameter, step.end));
+        Task::batch(tasks)
+    }
+
+    /// One tick of a paced slider step: send its next value through the same messages a fast
+    /// pointer drag sends, record it as its own event so the harness can time an input that never
+    /// reaches the owner, and, on the last value, end the gesture exactly as the unpaced step does.
+    /// A tick with nothing left to send, because no paced step is running or its last tick has
+    /// already ended it, does nothing: the subscription that calls this exists only while
+    /// `paced_slider` holds values, so that should not happen, but the message is harmless either
+    /// way.
+    pub(crate) fn slider_paced_tick(&mut self) -> Task<Message> {
+        let Some(paced) = self
+            .evidence
+            .as_mut()
+            .and_then(|evidence| evidence.paced_slider.as_mut())
+        else {
+            return Task::none();
+        };
+        let Some(value) = paced.remaining.pop_front() else {
+            return Task::none();
+        };
+        let index = paced.sent;
+        paced.sent += 1;
+        let action = paced.action.clone();
+        let parameter = paced.parameter.clone();
+        let end = paced.end;
+        let done = paced.remaining.is_empty();
+        if done && let Some(evidence) = &mut self.evidence {
+            evidence.paced_slider = None;
+        }
+        self.event("slider_step_value", json!({"value": value, "index": index}));
+        let mut tasks = vec![
+            self.update(Message::SliderMoved {
+                action: action.clone(),
+                parameter: parameter.clone(),
+                value,
+            }),
+            self.update(Message::SliderDraftTick),
+        ];
+        if done {
+            if self.slider_draft.is_none() && end != SliderEnd::Cancel {
+                return self.fail_step(format!(
+                    "the {action} draft could not be opened: {}",
+                    self.status
+                ));
+            }
+            tasks.push(self.end_slider_gesture(action, parameter, end));
+        }
+        Task::batch(tasks)
+    }
+
+    /// End a slider gesture the way a step says to: released, cancelled, or left open. Shared by
+    /// the unpaced and paced drivers so both settle exactly the same way.
+    fn end_slider_gesture(
+        &mut self,
+        action: String,
+        parameter: String,
+        end: SliderEnd,
+    ) -> Task<Message> {
+        match end {
             // The committed pixels are the evidence, so this waits for the render the commit
             // produces; a return-to-start gesture settles the same step with no entry at all.
             SliderEnd::Release => {
                 self.await_step(Settle::Preview);
-                tasks.push(self.update(Message::SliderReleased {
-                    action: step.action.clone(),
-                    parameter: step.parameter.clone(),
-                }));
+                self.update(Message::SliderReleased { action, parameter })
             }
             // Escape, through the same message the keyboard table produces.
             SliderEnd::Cancel => {
                 self.await_step(Settle::Preview);
-                tasks.push(self.update(Message::SliderDraftCancel));
+                self.update(Message::SliderDraftCancel)
             }
             // Left open: the frame shows the drafted preview, captured once the gesture has
             // drained, so the pixels belong to the newest value it sent.
-            SliderEnd::Open => self.await_step(Settle::SliderDraft),
+            SliderEnd::Open => {
+                self.await_step(Settle::SliderDraft);
+                Task::none()
+            }
         }
-        Task::batch(tasks)
     }
 
     /// Type into one generated field and, when the step says so, press Enter in it, which commits
@@ -979,7 +1086,14 @@ fn parse_slider(value: &Value) -> Result<SliderStep, String> {
         .ok_or("slider takes an object with an action, a parameter and values")?;
     known_fields(
         object,
-        &["action", "parameter", "values", "release", "cancel"],
+        &[
+            "action",
+            "parameter",
+            "values",
+            "release",
+            "cancel",
+            "interval_ms",
+        ],
         "slider",
     )?;
     let values: Vec<f64> = object
@@ -1004,6 +1118,15 @@ fn parse_slider(value: &Value) -> Result<SliderStep, String> {
     if release && cancel {
         return Err("a slider step either releases or cancels, not both".into());
     }
+    let interval_ms = match object.get("interval_ms") {
+        None | Some(Value::Null) => None,
+        Some(value) => Some(
+            value
+                .as_u64()
+                .filter(|value| *value > 0)
+                .ok_or("slider interval_ms is a positive integer")?,
+        ),
+    };
     Ok(SliderStep {
         action: required_text(object, "action", "slider")?,
         parameter: required_text(object, "parameter", "slider")?,
@@ -1013,6 +1136,7 @@ fn parse_slider(value: &Value) -> Result<SliderStep, String> {
             (_, true) => SliderEnd::Cancel,
             _ => SliderEnd::Open,
         },
+        interval_ms,
     })
 }
 
@@ -1455,6 +1579,18 @@ mod tests {
                 r#"[{"slider":{"action":"a","parameter":"b","values":[1],"nowhere":true}}]"#,
                 "unknown slider field",
             ),
+            (
+                r#"[{"slider":{"action":"a","parameter":"b","values":[1],"interval_ms":0}}]"#,
+                "positive integer",
+            ),
+            (
+                r#"[{"slider":{"action":"a","parameter":"b","values":[1],"interval_ms":-8}}]"#,
+                "positive integer",
+            ),
+            (
+                r#"[{"slider":{"action":"a","parameter":"b","values":[1],"interval_ms":8.5}}]"#,
+                "positive integer",
+            ),
             (r#"[{"slider_draft":"apply"}]"#, "discard"),
             (
                 r#"[{"field":{"action":"a","parameter":"b"}}]"#,
@@ -1506,6 +1642,7 @@ mod tests {
                 parameter: "exposure".into(),
                 values: vec![0.25, 0.5, 0.75],
                 end: SliderEnd::Release,
+                interval_ms: None,
             })
         );
         assert_eq!(
@@ -1551,6 +1688,122 @@ mod tests {
         assert_eq!(group_path(&basic.controls, "Tone"), Some(vec![1]));
         assert_eq!(group_path(&basic.controls, "White balance"), Some(vec![0]));
         assert_eq!(group_path(&basic.controls, "Nowhere"), None);
+    }
+
+    /// A slider step's `interval_ms` parses into the paced step, records itself back beside the
+    /// fields the unpaced step already writes, and is refused when it is not a positive integer.
+    #[test]
+    fn slider_interval_ms_paces_the_step_and_is_recorded_when_present() {
+        let steps = parse_script(
+            r#"[{"slider":{"action":"set-basic","parameter":"exposure","values":[0.1,0.2],"interval_ms":8,"release":true}}]"#,
+        )
+        .expect("a valid script");
+        assert_eq!(
+            steps[0],
+            Step::Slider(SliderStep {
+                action: "set-basic".into(),
+                parameter: "exposure".into(),
+                values: vec![0.1, 0.2],
+                end: SliderEnd::Release,
+                interval_ms: Some(8),
+            })
+        );
+        assert_eq!(
+            steps[0].record(),
+            json!({"slider":{"action":"set-basic","parameter":"exposure","values":[0.1,0.2],"release":true,"cancel":false,"interval_ms":8}})
+        );
+    }
+
+    /// A paced step sends nothing when it starts: its values wait in `paced_slider` for the timer
+    /// that is gated on them, and each tick sends exactly one, in order, recording it as its own
+    /// event and leaving the field showing the value it just sent. The last tick ends the gesture
+    /// the way the step said to and clears `paced_slider`, which is also what stops the timer.
+    #[test]
+    fn a_paced_slider_step_sends_one_value_per_tick() {
+        let (mut editor, catalog, _, _) = crate::app::testing::opened(Vec::new(), 4);
+        let _ = editor.update(Message::ModulesLoaded(Ok(
+            crate::app::testing::descriptors(),
+        )));
+        editor.evidence = Some(Evidence {
+            dir: std::env::temp_dir().join("lightwell-paced-slider-test"),
+            queue: VecDeque::new(),
+            opens: 1,
+            script: parse_script(
+                r#"[{"slider":{"action":"set-basic","parameter":"exposure","values":[0.1,0.2,0.3],"interval_ms":8,"release":true}}]"#,
+            )
+            .expect("a valid script"),
+            step: 0,
+            awaiting: None,
+            current: None,
+            steps: Vec::new(),
+            frames: Vec::new(),
+            capture_pending: false,
+            saving: false,
+            had_errors: false,
+            paced_slider: None,
+        });
+        editor.activity.requested = 1;
+
+        let _ = editor.next_step();
+        // Nothing is sent yet: the step only queued its values for the timer, so the field still
+        // shows the neutral default rather than any of them.
+        assert_eq!(editor.fields.get("set-basic", "exposure"), Some("0.00"));
+        assert_eq!(
+            evidence(&editor)
+                .paced_slider
+                .as_ref()
+                .map(|paced| (paced.remaining.len(), paced.sent)),
+            Some((3, 0)),
+            "the step queues every value for its own timer to send"
+        );
+
+        let _ = editor.update(Message::PacedSliderTick);
+        assert_eq!(
+            editor.fields.get("set-basic", "exposure"),
+            Some("0.10"),
+            "one tick sends the first value"
+        );
+        assert_eq!(
+            evidence(&editor)
+                .paced_slider
+                .as_ref()
+                .map(|paced| (paced.remaining.len(), paced.sent)),
+            Some((2, 1))
+        );
+        assert!(
+            evidence(&editor).awaiting.is_none(),
+            "the step has not settled while values remain"
+        );
+
+        let _ = editor.update(Message::PacedSliderTick);
+        assert_eq!(editor.fields.get("set-basic", "exposure"), Some("0.20"));
+        assert_eq!(
+            evidence(&editor)
+                .paced_slider
+                .as_ref()
+                .map(|paced| (paced.remaining.len(), paced.sent)),
+            Some((1, 2))
+        );
+
+        let _ = editor.update(Message::PacedSliderTick);
+        assert_eq!(
+            editor.fields.get("set-basic", "exposure"),
+            Some("0.30"),
+            "the last tick sends the last value"
+        );
+        assert!(
+            evidence(&editor).paced_slider.is_none(),
+            "the last tick clears the paced state, which also stops its timer"
+        );
+        assert_eq!(
+            evidence(&editor).awaiting,
+            Some(Settle::Preview),
+            "a released step ends exactly as the unpaced step does"
+        );
+
+        // A tick with nothing left to send is harmless.
+        let _ = editor.update(Message::PacedSliderTick);
+        finish(editor, catalog);
     }
 
     /// A pick step carries the two rendered coordinates a click publishes and nothing else: which

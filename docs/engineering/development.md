@@ -28,7 +28,7 @@ Doctor reports missing tools and the graphics environment without installing any
 | Run an agent's editor check without taking focus (macOS) | `cargo xtask develop --background --catalog FILE [--open PATH]` |
 | Exact current-editor journey, display-independent, including the Basic and histogram chapter | `cargo run --release --locked --package xtask -- editor-acceptance --output NEW_DIR` |
 | Core timing on a real-sized JPEG | `cargo run --release --locked --package xtask -- editor-performance --source JPEG --output NEW_DIR [--samples N]` |
-| Desktop slider-to-presented-frame and settled-histogram timing, peak RSS, scratch and idle CPU | `cargo run --release --locked --package xtask -- editor-latency --source JPEG --output NEW_DIR [--binary PATH] [--samples N] [--crop DEGREES] [--idle]` |
+| Desktop slider-to-presented-frame and settled-histogram timing, peak RSS, scratch and idle CPU | `cargo run --release --locked --package xtask -- editor-latency --source JPEG --output NEW_DIR [--binary PATH] [--samples N] [--mode drag\|commit\|burst] [--crop DEGREES] [--idle]` |
 | Verify golden fixtures; generate 24 and 60 MP workloads | `cargo xtask fixtures`, `cargo xtask generate-fixtures [--output NEW_DIR]` |
 | RAW corpus integrity; independent numerical stage references | `cargo xtask raw-corpus --manifest FILE --output NEW_DIR`, `cargo xtask raw-reference --output NEW_DIR` |
 | Authentic RAW editor journey, reopen and resource sampling; `--samples` defaults to 3 trials per source | `cargo run --release --locked --package xtask -- raw-editor --manifest FILE --output NEW_DIR [--samples N] [--binary PATH]` |
@@ -253,7 +253,12 @@ Each step is an object with exactly one key.
   with the control's release, which commits once; `"cancel": true` ends it with Escape; neither
   leaves the gesture open and captures the frame once the draft has drained, so the pixels belong to
   the newest value it sent. A second `slider` step naming the same control continues the same
-  gesture.
+  gesture. An `"interval_ms": 8` field paces the values instead of sending them all at once: one
+  value is sent per tick of a timer gated on the step still having values left to send, so a wild
+  drag can be scripted without the harness deciding what reaches the owner. Each paced value is
+  recorded as its own `slider_step_value` event (`{"value", "index"}`), even one the core's own
+  gesture round trip coalesces away, so the harness can time an input that never reached the owner.
+  Without `interval_ms` every value is sent at once, as before.
 - `slider_draft` answers an open gesture's Changed elsewhere notice: `"discard"` or `"reapply"`.
 - `field` types into one generated field: `{"action": "set-basic", "parameter": "exposure", "text":
   "1.5"}`, with `"submit": true` for Enter, which commits that one field without a draft.
@@ -408,6 +413,24 @@ run commits a Basic layer with all ten fields non-neutral into a catalog that ou
 ordinary launch reopens the same file from that catalog and is left alone for thirty seconds, which
 is where peak RSS with a full stack and idle CPU come from. `latency.json` and `resources.json` keep
 every sample, the scratch budget's high-water mark and the correlated state.
+
+`--mode burst` is a wild, undrained drag rather than the drained gesture drag and commit mode
+measure: one scripted `slider` step of exposure values, paced through `interval_ms` at 120 values a
+second for 3 seconds (360 values, a triangle wave from 0 to +2 EV, down to -2 EV and back to 0,
+released at the end) instead of sent all at once, so the desktop's own gesture round trip decides
+what reaches the owner exactly as a real fast drag would. `--samples` is ignored: every burst run
+sends the same fixed values. Its `latency.json` keeps the same header fields as drag and commit
+(host, binary hashes, launch mode, method, queue counts) and adds a `burst` object: `scripted_values`
+and `sent_values` (the paced driver's own `slider_step_value` events, which count a value the core
+coalesces away as scripted rather than measured), `draft_sets` and `preview_jobs` (the core's own
+real-time coalescing of that pace), `presented_frames` and `presented_fps` (every `preview_displayed`
+over the run, drafted and committed alike, divided by the seconds from the first `slider_step_value`
+to the last of them), `staleness_ms` (each presented drafted frame's own `slider_draft_set` time to
+its `preview_displayed` time, paired by generation exactly as drag mode pairs them) and
+`frame_gap_ms` plus `max_gap_ms` (the intervals between consecutive presented drafted frames),
+`cancelled_exact` (`preview_exact_cancelled` events; the current binary emits none) and `proxy` (the
+last presented frame's `proxy`/`proxy_dimensions`, or null with a note against the current binary,
+which carries neither).
 
 On macOS, smoke, hardening, measurement, latency, RAW editor and probe subprocesses always use the same background bundle as `develop --background`, and every one of them that launches the editor passes `--hidden-window`, so the run has neither an activated process nor a window on screen. Reports record `launch_mode`; reproduce through the harness to preserve focus protection. A native graphical session is still required. Windows and Linux retain direct launches; background behavior is not claimed there. Measurement launch times include the temporary bundle and executable copy, so they do not measure normal foreground activation, and with an invisible window they do not include the cost of compositing a visible one either.
 

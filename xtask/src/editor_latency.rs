@@ -252,8 +252,8 @@ fn commit_steps(values: &[f64]) -> Vec<Value> {
         .collect()
 }
 
-/// Which distribution a run gathers. Both drive the same messages; they differ in where the gesture
-/// ends, and therefore in which interval the run can sample thirty times.
+/// Which distribution a run gathers. Drag and commit drive the same messages and differ in where
+/// the gesture ends; burst drives a wild, undrained drag through the paced slider step instead.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Mode {
     /// An open drag: every input is drained and displayed, so input-to-presented-frame is sampled
@@ -262,6 +262,11 @@ pub enum Mode {
     /// One complete gesture per input: the settled exact histogram is sampled once per input, and
     /// no drafted preview survives its own commit, so there is no input-to-presented distribution.
     Commit,
+    /// A wild drag, undrained: [`BURST_SECONDS`] of exposure values at [`BURST_RATE_PER_SEC`] each,
+    /// paced by the desktop's own timer rather than sent all at once, so the driver's real
+    /// coalescing runs on them instead of the harness deciding what reaches the owner. `--samples`
+    /// is ignored; the run is always the same fixed number of values.
+    Burst,
 }
 
 impl Mode {
@@ -269,8 +274,57 @@ impl Mode {
         match self {
             Self::Drag => "drag",
             Self::Commit => "commit",
+            Self::Burst => "burst",
         }
     }
+}
+
+/// How long the burst gesture lasts and how many exposure values it sends per second. Both are
+/// named constants because the report and its target both quote them.
+const BURST_SECONDS: f64 = 3.0;
+const BURST_RATE_PER_SEC: f64 = 120.0;
+/// The triangle wave's peak, in EV, on either side of zero.
+const BURST_PEAK_EV: f64 = 2.0;
+
+/// One value per tick, in milliseconds, at [`BURST_RATE_PER_SEC`].
+fn burst_interval_ms() -> u64 {
+    (1000.0 / BURST_RATE_PER_SEC).round() as u64
+}
+
+/// The burst gesture's own values: a triangle wave from 0 to +[`BURST_PEAK_EV`], down to
+/// -[`BURST_PEAK_EV`] and back to 0, over [`BURST_SECONDS`] at [`BURST_RATE_PER_SEC`] values a
+/// second, each rounded to two decimals. Consecutive values may repeat once rounded; the paced
+/// driver sends every one of them regardless, and the core's own gesture round trip is what
+/// coalesces a run the driver could not keep up with.
+fn burst_values() -> Vec<f64> {
+    let count = (BURST_SECONDS * BURST_RATE_PER_SEC).round() as usize;
+    (0..count.max(2))
+        .map(|index| {
+            // Four quarters of one triangle period: 0..1 rises to the peak, 1..3 falls through
+            // zero to the trough, 3..4 rises back to zero.
+            let phase = index as f64 / (count.max(2) - 1) as f64 * 4.0;
+            let unit = if phase <= 1.0 {
+                phase
+            } else if phase <= 3.0 {
+                2.0 - phase
+            } else {
+                phase - 4.0
+            };
+            ((unit * BURST_PEAK_EV) * 100.0).round() / 100.0
+        })
+        .collect()
+}
+
+/// The one scripted step a burst run sends: every value paced by its own timer, released at the
+/// end exactly as a real drag's release ends it.
+fn burst_gesture_step(values: &[f64], interval_ms: u64) -> Value {
+    json!({"slider":{
+        "action":SET_BASIC,
+        "parameter":EXPOSURE,
+        "values":values,
+        "interval_ms":interval_ms,
+        "release":true,
+    }})
 }
 
 pub struct Options<'a> {
@@ -289,6 +343,9 @@ pub fn run(root: &Path, out: &Path, bin: &Path, options: Options) -> Result {
         cfg!(target_os = "macos"),
         "Editor latency measurement currently reads native macOS ps only",
     )?;
+    if options.mode == Mode::Burst {
+        return run_burst(root, out, bin, &options);
+    }
     ensure(!out.exists(), "Editor latency output must be new")?;
     ensure(
         (1..=60).contains(&options.samples),
@@ -522,6 +579,276 @@ pub fn run(root: &Path, out: &Path, bin: &Path, options: Options) -> Result {
     Ok(())
 }
 
+/// Everything the burst report's own figures come from, computed purely from one run's
+/// `events.jsonl`. Pulling this out of [`run_burst`] is what lets it be proven against a synthetic
+/// event list rather than only against a real launch.
+struct BurstAnalysis {
+    /// `slider_step_value` events: every value the paced driver actually handed to the owner,
+    /// independent of what the core's own gesture round trip did with it. A coalesced value the
+    /// core never turned into a `draft.set` still counts here, as scripted.
+    sent_values: usize,
+    /// `preview_displayed` events from the first `slider_step_value` onward, drafted and committed
+    /// alike: the count `presented_fps` divides by the same window's seconds. A frame presented
+    /// before the gesture started (the initial open) is not one of these.
+    presented_frames: usize,
+    presented_fps: f64,
+    /// One sample per drafted generation that reached the screen: its own `slider_draft_set` time
+    /// to its `preview_displayed` time, paired by generation exactly as [`inputs`] pairs them for
+    /// drag mode. The final value's drafted preview is superseded by the release's commit and so is
+    /// never displayed, which is why this can be shorter than `sent_values`. It can be empty: a
+    /// pipeline that cannot keep up with the input rate at all can drop every drafted frame and
+    /// present only the frames either side of the gesture, which is a real measurement, not a
+    /// broken run.
+    staleness_ms: Vec<f64>,
+    /// The intervals between consecutive presented **drafted** frames, in display order; excludes
+    /// the final committed frame, which is not a drafted generation.
+    frame_gap_ms: Vec<f64>,
+    max_gap_ms: f64,
+    draft_sets: usize,
+    preview_jobs: usize,
+    commits: usize,
+    adopted: usize,
+    /// `preview_exact_cancelled` events. The current binary emits none; a later phase's cancellable
+    /// exact phase is what this will start counting.
+    cancelled_exact: usize,
+    /// Generations whose preview job never reached a `preview_displayed`.
+    superseded: Vec<u64>,
+    /// The last presented frame's own `proxy`/`proxy_dimensions`, or null with a note when the
+    /// binary's `preview_displayed` carries neither, which is true of the current binary.
+    proxy: Value,
+}
+
+/// Read [`BurstAnalysis`] out of one run's events, in the order described on the struct's fields.
+fn analyze_burst(events: &[Value]) -> Result<BurstAnalysis> {
+    let value_events: Vec<f64> = events
+        .iter()
+        .filter(|event| event["event"] == "slider_step_value")
+        .map(elapsed)
+        .collect::<Result<Vec<_>>>()?;
+    ensure(
+        !value_events.is_empty(),
+        "no paced slider value reached the owner",
+    )?;
+    let displayed_events: Vec<f64> = events
+        .iter()
+        .filter(|event| event["event"] == "preview_displayed")
+        .map(elapsed)
+        .collect::<Result<Vec<_>>>()?;
+    ensure(
+        !displayed_events.is_empty(),
+        "no frame was presented during the whole run",
+    )?;
+    // Scoped to the gesture's own window: a frame presented before the first input (the initial
+    // open) is not part of what the gesture achieved, so it is excluded from both the count and the
+    // window presented_fps divides by.
+    let first_value_ms = value_events.first().copied().unwrap_or(0.0);
+    let gesture_displayed: Vec<f64> = displayed_events
+        .iter()
+        .copied()
+        .filter(|displayed_ms| *displayed_ms >= first_value_ms)
+        .collect();
+    let presented_frames = gesture_displayed.len();
+    let presented_fps = match gesture_displayed.last() {
+        Some(last) => {
+            presented_frames as f64 / ((last - first_value_ms) / 1000.0).max(f64::EPSILON)
+        }
+        None => 0.0,
+    };
+
+    // Every drafted generation the gesture produced, paired with the frame that displayed it
+    // exactly as drag mode pairs them; the final value's own drafted preview is superseded by the
+    // release's commit, so it never appears here, which is the one cancellation this gesture always
+    // produces. A pipeline overwhelmed by the input rate can drop every one of them, which is a real
+    // measurement of that pipeline, not a broken run, so an empty list is not refused.
+    let measured = inputs(events)?;
+    let drafted: Vec<&Input> = measured
+        .iter()
+        .filter(|input| input.displayed_ms.is_finite())
+        .collect();
+    let staleness_ms: Vec<f64> = drafted
+        .iter()
+        .map(|input| input.displayed_ms - input.sent_ms)
+        .collect();
+    let mut drafted_displayed: Vec<f64> = drafted.iter().map(|input| input.displayed_ms).collect();
+    drafted_displayed.sort_by(f64::total_cmp);
+    let frame_gap_ms: Vec<f64> = drafted_displayed
+        .windows(2)
+        .map(|pair| pair[1] - pair[0])
+        .collect();
+    let max_gap_ms = frame_gap_ms.iter().copied().fold(0.0, f64::max);
+
+    let counted = |name: &str| events.iter().filter(|e| e["event"] == name).count();
+    let superseded: Vec<u64> = measured
+        .iter()
+        .filter(|input| !input.displayed_ms.is_finite())
+        .map(|input| input.generation)
+        .collect();
+
+    // The proxy fields arrive with the desktop change this harness anticipates; against the current
+    // binary, which carries neither, this reports them as null rather than failing the run.
+    let proxy_detail = events
+        .iter()
+        .rev()
+        .find(|event| event["event"] == "preview_displayed")
+        .map(|event| &event["detail"]);
+    let proxy = match proxy_detail {
+        Some(detail) if !detail["proxy"].is_null() => json!({
+            "proxy":detail["proxy"],
+            "proxy_dimensions":detail["proxy_dimensions"],
+        }),
+        _ => json!({
+            "proxy":Value::Null,
+            "proxy_dimensions":Value::Null,
+            "note":"the current binary's preview_displayed carries no proxy fields; a later phase adds them",
+        }),
+    };
+
+    Ok(BurstAnalysis {
+        sent_values: value_events.len(),
+        presented_frames,
+        presented_fps,
+        staleness_ms,
+        frame_gap_ms,
+        max_gap_ms,
+        draft_sets: counted("slider_draft_set"),
+        preview_jobs: counted("slider_draft_preview"),
+        commits: counted("slider_draft_commit"),
+        adopted: counted("analysis_adopted"),
+        cancelled_exact: counted("preview_exact_cancelled"),
+        superseded,
+        proxy,
+    })
+}
+
+/// A wild, undrained drag: [`burst_values`] paced through the paced slider step at
+/// [`burst_interval_ms`], released at the end. Unlike [`run`]'s drag mode, nothing here waits for a
+/// value to be drained before the next one is sent; the desktop's own gesture round trip decides
+/// what reaches the owner, exactly as a real fast drag would, and this reads that behaviour back out
+/// of the run's own `events.jsonl`.
+fn run_burst(root: &Path, out: &Path, bin: &Path, options: &Options) -> Result {
+    ensure(!out.exists(), "Editor latency output must be new")?;
+    fs::create_dir_all(out)?;
+    let source = options.source.canonicalize()?;
+    let source_hash = hash(&source)?;
+    let values = burst_values();
+    let interval_ms = burst_interval_ms();
+
+    let mut script = Vec::new();
+    if let Some(angle) = options.crop {
+        script.push(
+            json!({"api":{"method":"edit.crop-fit","params":{"aspect":"16:9","angle":angle}}}),
+        );
+    }
+    script.push(burst_gesture_step(&values, interval_ms));
+    let script_file = out.join("gesture-script.json");
+    write_json(&script_file, &json!(script))?;
+
+    let evidence = out.join("app");
+    let args: Vec<OsString> = vec![
+        "--evidence-dir".into(),
+        evidence.clone().into_os_string(),
+        "--evidence-script".into(),
+        script_file.clone().into_os_string(),
+        "--open".into(),
+        source.clone().into_os_string(),
+    ];
+    let (rss, peak_rss) = evidence_run(
+        root,
+        bin,
+        out,
+        "gesture",
+        &args,
+        // The editor's own evidence deadline is 25 s; the burst itself paces BURST_SECONDS of
+        // values through real round trips, so this allows generously for both plus the launch
+        // wrapper around them.
+        Duration::from_secs(60),
+    )?;
+
+    let app = read_json(&evidence.join("result.json"))?;
+    ensure(
+        app["status"] == "captured",
+        "The burst run captured nothing",
+    )?;
+    let events = smoke::events(&evidence.join("events.jsonl"))?;
+    ensure(
+        app["had_input_errors"] == json!(false)
+            && app["script"]
+                .as_array()
+                .is_some_and(|steps| steps.len() == script.len()),
+        format!("The burst step failed or never ran: {}", app["script"]),
+    )?;
+    let frames = app["frames"].as_array().ok_or("Missing frames")?;
+    let last = frames.last().ok_or("No frame was captured")?;
+
+    let analysis = analyze_burst(&events)?;
+
+    let result = json!({
+        "status":"passed",
+        "launch_mode":launch::MODE,
+        "platform":host(root)?,
+        "profile":"release",
+        "binary_sha256":hash(bin)?,
+        "lockfile_sha256":hash(&root.join("Cargo.lock"))?,
+        "source":source,
+        "source_sha256":source_hash,
+        "source_dimensions":last["state"]["source_dimensions"],
+        "preview_dimensions":last["state"]["preview_dimensions"],
+        "backend":last["state"]["backend"],
+        "physical_size":last["physical_size"],
+        "scale":last["scale"],
+        "crop_angle_deg":options.crop,
+        "mode":"burst",
+        "samples":Value::Null,
+        "gesture_values":values,
+        "method":format!("Background evidence launch of the release binary, warm filesystem cache. --samples is ignored: every burst run sends the same fixed {} values over {} s at {} values/s, paced one per tick of the desktop's own paced slider step rather than sent all at once, so the driver's real coalescing runs on them. Presented means the desktop's Uploaded message (preview_displayed), when the rendered pixels have become a renderer texture; it is not display scanout.", values.len(), BURST_SECONDS, BURST_RATE_PER_SEC),
+        "queue":{
+            "scripted_slider_values":values.len(),
+            "draft_set_requests":analysis.draft_sets,
+            "preview_jobs_requested":analysis.preview_jobs,
+            "preview_jobs_superseded":analysis.superseded.len(),
+            "superseded_generations":analysis.superseded,
+            "commits":analysis.commits,
+            "analysis_reports_adopted":analysis.adopted,
+            "note":"scripted_slider_values against draft_set_requests is the driver's own real-time coalescing of the paced values, exactly as a fast drag between two ticks coalesces. A requested preview job whose generation never reaches a preview_displayed was superseded; the final value's own drafted preview is superseded by the release's commit.",
+        },
+        "burst":{
+            "seconds":BURST_SECONDS,
+            "rate_per_second":BURST_RATE_PER_SEC,
+            "interval_ms":interval_ms,
+            "scripted_values":values.len(),
+            "sent_values":analysis.sent_values,
+            "draft_sets":analysis.draft_sets,
+            "preview_jobs":analysis.preview_jobs,
+            "presented_frames":analysis.presented_frames,
+            "presented_fps":analysis.presented_fps,
+            "staleness_ms":distribution(analysis.staleness_ms),
+            "frame_gap_ms":distribution(analysis.frame_gap_ms),
+            "max_gap_ms":analysis.max_gap_ms,
+            "cancelled_exact":analysis.cancelled_exact,
+            "cancelled_exact_note":(analysis.cancelled_exact == 0).then_some("the current binary emits no preview_exact_cancelled events; a later phase adds the cancellable exact render this would count"),
+            "proxy":analysis.proxy,
+        },
+        "resources":{
+            "sampled_peak_rss_mib":peak_rss,
+            "scratch":last["state"]["scratch"],
+            "rss_samples":rss,
+            "note":"RSS is sampled about every 50 ms by ps and includes captures, GPU resources and allocator retention; it is not a CPU-heap figure. The scratch object is the process-wide colour budget at the last captured frame, with peak_bytes its high-water mark over the whole run.",
+        },
+        "workspace":last["state"]["workspace"],
+        "histogram":last["state"]["histogram"],
+        "checks":[
+            "Every scripted value reached a captured tick and its own slider_step_value event",
+            "Presented frames are counted from preview_displayed, and drafted staleness is paired with its own slider_draft_set by generation, exactly as drag mode pairs them",
+            "Source SHA-256 is unchanged"
+        ],
+    });
+    write_json(&out.join("latency.json"), &result)?;
+    ensure(hash(&source)? == source_hash, "The source changed")?;
+
+    println!("PASS editor latency (burst): {}", out.display());
+    Ok(())
+}
+
 /// The resource workload: a 24 MP image holding a full Basic layer with the histogram on, reopened
 /// in a second process that is then left alone for 30 seconds.
 ///
@@ -640,4 +967,185 @@ fn hold_and_idle(root: &Path, out: &Path, bin: &Path, source: &Path) -> Result {
         }),
     )?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// One `slider_draft_set`/`slider_draft_preview`/`preview_displayed` triple, the same shape
+    /// `inputs` and [`analyze_burst`] read out of a real `events.jsonl`.
+    fn drafted(
+        set_ms: f64,
+        preview_ms: f64,
+        displayed_ms: Option<f64>,
+        value: f64,
+        generation: u64,
+        revision: u64,
+    ) -> Vec<Value> {
+        let mut events = vec![
+            json!({"event":"slider_draft_set","elapsed_ms":set_ms,"detail":{"draft_id":"d","fields":{EXPOSURE:value}}}),
+            json!({"event":"slider_draft_preview","elapsed_ms":preview_ms,"detail":{"value":value,"generation":generation,"draft_revision":revision}}),
+        ];
+        if let Some(displayed_ms) = displayed_ms {
+            events.push(
+                json!({"event":"preview_displayed","elapsed_ms":displayed_ms,"detail":{"generation":generation,"draft_revision":revision}}),
+            );
+        }
+        events
+    }
+
+    /// A four-value burst, paced 8 ms apart, that the core's own round trip coalesces into three
+    /// `draft.set`s: the first two paced values land inside the first round trip, so only the
+    /// newest of them (1.0) is ever sent. The third round trip carries the release value and is
+    /// superseded by the commit that follows it, so it is never displayed. The commit's own frame
+    /// is presented too, one generation the drafted pairing never matches.
+    fn synthetic_events() -> Vec<Value> {
+        let mut events = vec![
+            json!({"event":"slider_step_value","elapsed_ms":0.0,"detail":{"value":0.5,"index":0}}),
+            json!({"event":"slider_step_value","elapsed_ms":8.0,"detail":{"value":1.0,"index":1}}),
+            json!({"event":"slider_step_value","elapsed_ms":16.0,"detail":{"value":1.5,"index":2}}),
+            json!({"event":"slider_step_value","elapsed_ms":24.0,"detail":{"value":2.0,"index":3}}),
+        ];
+        events.extend(drafted(5.0, 10.0, Some(20.0), 1.0, 101, 1));
+        events.extend(drafted(22.0, 28.0, Some(40.0), 1.5, 102, 2));
+        events.extend(drafted(32.0, 38.0, None, 2.0, 103, 3));
+        events.push(json!({"event":"slider_draft_commit","elapsed_ms":39.0,"detail":{}}));
+        events.push(json!({"event":"analysis_adopted","elapsed_ms":45.0,"detail":{}}));
+        // The committed frame's own presented generation, which pairs with none of the drafted
+        // inputs above and so must be excluded from staleness and the frame gap, but still counts
+        // toward presented_frames and is where presented_fps's own window ends.
+        events.push(
+            json!({"event":"preview_displayed","elapsed_ms":50.0,"detail":{"generation":104,"draft_revision":3}}),
+        );
+        events
+    }
+
+    #[test]
+    fn burst_analysis_reads_fps_staleness_gaps_and_counts_from_synthetic_events() {
+        let analysis = analyze_burst(&synthetic_events()).expect("a well-formed burst run");
+        assert_eq!(analysis.sent_values, 4, "every slider_step_value counts");
+        assert_eq!(
+            analysis.presented_frames, 3,
+            "two drafted frames plus the committed frame"
+        );
+        // 3 frames over the 50 ms from the first input to the last presented frame.
+        assert!(
+            (analysis.presented_fps - 60.0).abs() < 1e-9,
+            "{}",
+            analysis.presented_fps
+        );
+        assert_eq!(analysis.staleness_ms, vec![15.0, 18.0]);
+        assert_eq!(
+            analysis.frame_gap_ms,
+            vec![20.0],
+            "one gap between the two drafted frames' own displayed times, 20 and 40 ms"
+        );
+        assert_eq!(analysis.max_gap_ms, 20.0);
+        assert_eq!(analysis.draft_sets, 3);
+        assert_eq!(analysis.preview_jobs, 3);
+        assert_eq!(analysis.commits, 1);
+        assert_eq!(analysis.adopted, 1);
+        assert_eq!(
+            analysis.cancelled_exact, 0,
+            "the current binary emits no preview_exact_cancelled events"
+        );
+        assert_eq!(
+            analysis.superseded,
+            vec![103],
+            "the release value's own drafted preview, superseded by the commit"
+        );
+        // The synthetic events carry no proxy fields, as the current binary's own events do not;
+        // the analysis reports that as null rather than failing.
+        assert_eq!(analysis.proxy["proxy"], Value::Null);
+        assert_eq!(analysis.proxy["proxy_dimensions"], Value::Null);
+        assert!(analysis.proxy["note"].is_string());
+    }
+
+    #[test]
+    fn burst_analysis_reads_the_proxy_fields_when_the_binary_carries_them() {
+        let mut events = synthetic_events();
+        let last = events
+            .iter_mut()
+            .rev()
+            .find(|event| event["event"] == "preview_displayed")
+            .expect("the committed frame's own preview_displayed");
+        last["detail"]["proxy"] = json!(true);
+        last["detail"]["proxy_dimensions"] = json!([960, 640]);
+        let analysis = analyze_burst(&events).expect("a well-formed burst run");
+        assert_eq!(analysis.proxy["proxy"], json!(true));
+        assert_eq!(analysis.proxy["proxy_dimensions"], json!([960, 640]));
+        assert!(analysis.proxy.get("note").is_none());
+    }
+
+    #[test]
+    fn burst_analysis_refuses_a_run_with_no_presented_frame() {
+        let events = vec![
+            json!({"event":"slider_step_value","elapsed_ms":0.0,"detail":{"value":0.5,"index":0}}),
+        ];
+        assert!(analyze_burst(&events).is_err());
+    }
+
+    /// A pipeline overwhelmed by the input rate can drop every drafted frame: the render queue
+    /// never keeps up, so nothing between the gesture's start and its commit is ever displayed.
+    /// That is a real, if grim, measurement — the pre-instant-preview baseline this mode exists to
+    /// show — and must not be refused. The frame the initial open presented, before the gesture's
+    /// first input, is excluded from presented_frames and the fps window it divides.
+    #[test]
+    fn burst_analysis_reports_zero_drafted_frames_rather_than_failing() {
+        let mut events = vec![
+            // The initial open's own frame, well before the gesture starts.
+            json!({"event":"preview_displayed","elapsed_ms":1.0,"detail":{"generation":2}}),
+            json!({"event":"slider_step_value","elapsed_ms":10.0,"detail":{"value":0.5,"index":0}}),
+            json!({"event":"slider_step_value","elapsed_ms":18.0,"detail":{"value":1.0,"index":1}}),
+        ];
+        // One drafted round trip that never reaches the screen: superseded before it renders.
+        events.extend(drafted(12.0, 16.0, None, 1.0, 101, 1));
+        events.push(json!({"event":"slider_draft_commit","elapsed_ms":20.0,"detail":{}}));
+        events.push(json!({"event":"analysis_adopted","elapsed_ms":30.0,"detail":{}}));
+        events.push(
+            json!({"event":"preview_displayed","elapsed_ms":30.0,"detail":{"generation":102,"draft_revision":1}}),
+        );
+
+        let analysis = analyze_burst(&events).expect("an empty drafted set is still a valid run");
+        assert_eq!(analysis.sent_values, 2);
+        assert_eq!(
+            analysis.presented_frames, 1,
+            "the initial open's frame precedes the gesture and is excluded"
+        );
+        // One frame at 30 ms, 20 ms after the first input at 10 ms: 1 / 0.02 s.
+        assert_eq!(analysis.presented_fps, 50.0);
+        assert!(analysis.staleness_ms.is_empty());
+        assert!(analysis.frame_gap_ms.is_empty());
+        assert_eq!(analysis.max_gap_ms, 0.0);
+        assert_eq!(analysis.superseded, vec![101]);
+    }
+
+    /// The triangle wave starts and ends at zero, reaches [`BURST_PEAK_EV`] and its negation, is
+    /// exactly [`BURST_SECONDS`] times [`BURST_RATE_PER_SEC`] values long and every value is
+    /// rounded to two decimals.
+    #[test]
+    fn the_burst_values_are_a_two_decimal_triangle_wave_of_the_declared_length() {
+        let values = burst_values();
+        assert_eq!(
+            values.len(),
+            (BURST_SECONDS * BURST_RATE_PER_SEC).round() as usize
+        );
+        assert_eq!(*values.first().unwrap(), 0.0);
+        assert_eq!(*values.last().unwrap(), 0.0);
+        let max = values.iter().copied().fold(f64::MIN, f64::max);
+        let min = values.iter().copied().fold(f64::MAX, f64::min);
+        // The discrete sample nearest each turning point need not land exactly on it; it must land
+        // within one rounded step of it.
+        assert!((max - BURST_PEAK_EV).abs() <= 0.02, "{max}");
+        assert!((min + BURST_PEAK_EV).abs() <= 0.02, "{min}");
+        for value in &values {
+            assert_eq!(
+                *value,
+                (value * 100.0).round() / 100.0,
+                "{value} has more than two decimals"
+            );
+        }
+        assert_eq!(burst_interval_ms(), 8);
+    }
 }
