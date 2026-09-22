@@ -340,6 +340,16 @@ pub(crate) struct Editor {
     pub(crate) presented_generation: u64,
     /// The texture on screen is the display proxy rather than the exact render.
     pub(crate) presented_proxy: bool,
+    /// The bounds each requested job was given, by generation, until its frame is presented. The
+    /// bounds are decided when the job is requested, on this thread, so the frame reflects the
+    /// window, the panels and the display scale of that moment rather than of the moment its
+    /// owner task was created.
+    pub(crate) pending_bounds: BTreeMap<u64, Option<ProxyBounds>>,
+    /// The bounds the frame on screen was rendered for, when it was requested through
+    /// [`Self::request_preview`].
+    pub(crate) presented_bounds: Option<ProxyBounds>,
+    /// A refit of the proxy to new bounds has been asked for and has not been presented yet.
+    pub(crate) refit_pending: bool,
     /// The proxy frame of the newest job that had a proxy phase.
     pub(crate) proxy_frame: Option<ProxyFrame>,
     /// Why the newest job that offered bounds has no proxy phase, as the core reported it.
@@ -517,6 +527,9 @@ impl Editor {
             incoming: None,
             presented_generation: 0,
             presented_proxy: false,
+            pending_bounds: BTreeMap::new(),
+            presented_bounds: None,
+            refit_pending: false,
             proxy_frame: None,
             proxy_declined: None,
             awaiting_exact: None,
@@ -920,6 +933,7 @@ impl Editor {
         // Whatever route changed the zoom — the buttons, the field, a script or an API client's
         // `view.set` reaching us through an adopted session — is answered in one place.
         let zoomed = self.zoom_changed(&zoom);
+        let refit = self.refit_proxy();
         let task = self.sync_mode(task);
         self.refresh_overlay();
         let rederive_started = Instant::now();
@@ -935,7 +949,7 @@ impl Editor {
         } else {
             Task::none()
         };
-        Task::batch([task, zoomed, woken])
+        Task::batch([task, zoomed, refit, woken])
     }
 
     /// A newer frame has been requested than the one the histogram describes, so the plotted counts
@@ -1157,6 +1171,59 @@ impl Editor {
 
     /// One preview job for the entry on screen, at the bounds the view now asks for. The zoom rule
     /// is the only caller, and only when the pixels it needs do not exist.
+    /// Queue one preview job with the bounds of this moment. Every job goes through here: the
+    /// bounds a task carried from the owner are replaced by what the window, the panels and the
+    /// display scale ask for now, so the first frame after launch is already at the display's
+    /// scale and a job requested during a resize is sized for the window it will be shown in. A
+    /// truncated job never gets a proxy.
+    pub(crate) fn request_preview(&mut self, mut job: lightwell_core::PreviewJob) -> u64 {
+        job.proxy = if job.layer_count.is_some() {
+            None
+        } else {
+            self.proxy_bounds()
+        };
+        let bounds = job.proxy;
+        let generation = self.preview_queue.request(job);
+        self.pending_bounds.insert(generation, bounds);
+        generation
+    }
+
+    /// Re-render the proxy on screen once when the bounds it was made for no longer match the
+    /// window: a resize, a panel toggle or the display scale arriving. The queue coalesces a
+    /// storm of these into one active and one pending job, and nothing is asked for while a
+    /// gesture or a crop draft owns the preview, or while a refit is already on its way.
+    fn refit_proxy(&mut self) -> Task<Message> {
+        if self.state.is_none()
+            || self.slider_draft.is_some()
+            || self.crop.is_some()
+            || self.crop_pending.is_some()
+            || self.presented_generation == 0
+            || !self.presented_proxy
+            || self.refit_pending
+        {
+            return Task::none();
+        }
+        let Some(bounds) = self.proxy_bounds() else {
+            return Task::none();
+        };
+        if self.presented_bounds == Some(bounds) {
+            return Task::none();
+        }
+        self.refit_pending = true;
+        self.event(
+            "preview_proxy_requested",
+            json!({"reason":"bounds","bounds":{"width":bounds.width,"height":bounds.height}}),
+        );
+        // A scripted step waiting on the session round trip now waits for the refitted frame, so
+        // the capture never shows a proxy of the previous bounds.
+        if let Some(evidence) = &mut self.evidence
+            && evidence.awaiting == Some(Settle::Session)
+        {
+            evidence.awaiting = Some(Settle::Preview);
+        }
+        self.request_current_preview()
+    }
+
     fn request_current_preview(&mut self) -> Task<Message> {
         let Some(state) = &self.state else {
             return Task::none();
@@ -1229,6 +1296,12 @@ impl Editor {
         self.dimensions = Some((upload.width, upload.height));
         self.presented_generation = upload.generation;
         self.presented_proxy = upload.proxy;
+        if let Some(bounds) = self.pending_bounds.remove(&upload.generation) {
+            self.presented_bounds = bounds;
+        }
+        self.pending_bounds
+            .retain(|generation, _| *generation > upload.generation);
+        self.refit_pending = false;
         self.show_entry(upload.entry_id.clone());
         self.displayed_draft_revision = upload.draft_revision;
         self.adopt_analysis(upload.generation);
@@ -1716,7 +1789,7 @@ impl Editor {
                         let entry = payload.job.entry.id.clone();
                         self.requested_render_entry = Some(payload.job.entry.clone());
                         self.show_entry(entry.clone());
-                        self.preview_generation = self.preview_queue.request(payload.job);
+                        self.preview_generation = self.request_preview(payload.job);
                         self.status = "Rendering selected history state…".into();
                         // The recipe rows follow the displayed entry: one payload read, no render.
                         if let Some(state) = &self.state {
@@ -1993,6 +2066,7 @@ impl Editor {
                             ]);
                         }
                         Err(error) => {
+                            self.refit_pending = false;
                             self.status = error.to_string();
                             // The canvas explains the failure: the kind and the detail are all the
                             // view model needs to name the cause and offer the allowed actions.
@@ -2956,7 +3030,7 @@ impl Editor {
         self.state = Some(refresh.state);
         self.show_entry(refresh.job.entry.id.clone());
         self.requested_render_entry = Some(refresh.job.entry.clone());
-        self.preview_generation = self.preview_queue.request(refresh.job);
+        self.preview_generation = self.request_preview(refresh.job);
         self.status = "Rendering selected history state…".into();
         // Generated fields follow the displayed entry, so a slider shows the authoritative current
         // or historical value of the module's one layer. This reads the values already fetched with
@@ -6485,6 +6559,100 @@ mod tests {
             Some(false),
             "below a truncated lineage nothing is marked as a branch"
         );
+        finish(editor, catalog);
+    }
+
+    /// A one-pixel whole-stack preview job of a fresh entry: enough for the queue to plan and
+    /// nothing more, as the other queue tests build theirs.
+    fn preview_job_for(_editor: &Editor) -> PreviewJob {
+        let asset = AssetId::new();
+        let entry = entry(&asset, 1, None);
+        PreviewJob {
+            source: PreviewSource::Jpeg(SourceImage {
+                width: 1,
+                height: 1,
+                rgba: vec![0, 0, 0, 255].into(),
+                fingerprint: "test".into(),
+                orientation: 1,
+            }),
+            registry: Arc::new(ModuleRegistry::builtin()),
+            recipe: entry.snapshot.recipe.clone(),
+            layer_count: None,
+            draft_revision: None,
+            identity: lightwell_core::analysis::AnalysisIdentity::of(
+                &entry.asset_id,
+                "test",
+                &entry,
+                &entry.snapshot.recipe,
+                None,
+                Some((1, 1)),
+            )
+            .expect("a test analysis identity"),
+            analyse: false,
+            proxy: None,
+            entry,
+        }
+    }
+
+    /// The bounds a job renders for are the window, the panels and the display scale of the
+    /// moment it is requested, not of the moment its owner task was created: the display scale
+    /// arrives after launch, and the first frame must already be at it.
+    #[test]
+    fn a_preview_job_takes_the_bounds_of_the_moment_it_is_requested() {
+        let (mut editor, catalog, _, _) = opened(Vec::new(), 4);
+        editor.window = (1440.0, 900.0);
+        editor.session.preview.view.zoom = Zoom::Fit;
+        editor.scale_factor = 1.0;
+        let at_one = editor.proxy_bounds().expect("Fit asks for a proxy");
+        editor.scale_factor = 2.0;
+        let at_two = editor.proxy_bounds().expect("Fit asks for a proxy");
+        assert_eq!(
+            at_two.width,
+            at_one.width * 2,
+            "the bounds follow the scale"
+        );
+        let mut job = preview_job_for(&editor);
+        // Whatever the task carried is replaced: a job made for the wrong scale is corrected here.
+        job.proxy = Some(at_one);
+        let generation = editor.request_preview(job);
+        assert_eq!(
+            editor.pending_bounds.get(&generation).copied().flatten(),
+            Some(at_two),
+            "the job was given the bounds of the request"
+        );
+        finish(editor, catalog);
+    }
+
+    /// A proxy on screen whose bounds no longer match the window is re-rendered once, and not
+    /// again while that refit is on its way.
+    #[test]
+    fn a_bounds_change_refits_the_presented_proxy_once() {
+        let (mut editor, catalog, _, _) = opened(Vec::new(), 4);
+        editor.window = (1440.0, 900.0);
+        editor.dimensions = Some((4000, 3000));
+        editor.session.preview.view.zoom = Zoom::Fit;
+        editor.scale_factor = 1.0;
+        editor.presented_generation = 7;
+        editor.presented_proxy = true;
+        editor.preview_generation = 7;
+        editor.presented_bounds = editor.proxy_bounds();
+        let path = crate::app::testing::attach_log(&mut editor);
+        // Same bounds: nothing is asked for.
+        let _ = editor.update(Message::ScaleFactor(1.0));
+        assert!(!editor.refit_pending);
+        // The display scale arrives: the proxy on screen was made for half the pixels.
+        let _ = editor.update(Message::ScaleFactor(2.0));
+        assert!(editor.refit_pending, "one refit is on its way");
+        let _ = editor.update(Message::ScaleFactor(2.0));
+        let records = crate::app::testing::logged(&mut editor, &path);
+        let refits = records
+            .iter()
+            .filter(|record| {
+                record["event"] == json!("preview_proxy_requested")
+                    && record["detail"]["reason"] == json!("bounds")
+            })
+            .count();
+        assert_eq!(refits, 1, "a refit is asked for once, not per event");
         finish(editor, catalog);
     }
 }

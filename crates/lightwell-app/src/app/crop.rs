@@ -45,7 +45,7 @@ impl Editor {
             CropMessage::Reapply => return self.crop_start(true),
             CropMessage::PreviewReady(result) => match result {
                 Ok(job) => {
-                    self.draft_generation = Some(self.preview_queue.request(*job));
+                    self.draft_generation = Some(self.request_preview(*job));
                     self.status = "Rendering the crop's input stage…".into();
                 }
                 Err(error) => {

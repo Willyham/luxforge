@@ -279,7 +279,7 @@ impl Editor {
                 let label = draft.label.clone();
                 let (draft_revision, sent) = (set.draft_revision, draft.sent);
                 self.session.draft = Some(set);
-                self.preview_generation = self.preview_queue.request(job);
+                self.preview_generation = self.request_preview(job);
                 self.status = format!("Drafting {label}…");
                 // The one record that ties an input to the frame it will produce: the `draft.set`
                 // this answers carried `value`, and the preview job just queued for it is
