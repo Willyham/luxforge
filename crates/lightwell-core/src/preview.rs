@@ -838,19 +838,16 @@ mod tests {
             height: width,
             angle: 7.0,
         };
-        // The whole rotated box fitted about the centre, then shrunk a tenth. The fitted rectangle
-        // touches the rotated stage exactly, and rounding the stage to a proxy size can put a
-        // touching corner a fraction of a pixel outside it, which the crop contract refuses; the
-        // margin keeps this stack about the queue rather than about that rounding.
+        // The whole rotated box fitted about the centre: what a crop-fit commits. It touches the
+        // rotated stage exactly, and re-rounding it at the proxy size is what the crop module's
+        // covered rectangle exists for, so this stack proves the proxy phase on a real fitted crop.
         let (box_width, box_height) = stage.bounding_box();
-        let fitted = stage
-            .fit_about_center(BoxRect {
-                x: 0.0,
-                y: 0.0,
-                width: box_width,
-                height: box_height,
-            })
-            .scaled_about_center(0.9);
+        let fitted = stage.fit_about_center(BoxRect {
+            x: 0.0,
+            y: 0.0,
+            width: box_width,
+            height: box_height,
+        });
         vec![
             Layer::orientation(Orientation::of(Transform::RotateRight)),
             Layer {
