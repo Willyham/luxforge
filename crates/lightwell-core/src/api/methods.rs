@@ -320,6 +320,17 @@ pub(super) const METHODS: &[MethodSpec] = &[
         handler: Some(render_locate),
     },
     MethodSpec {
+        name: "render.transform",
+        mutates: false,
+        required: &["asset_id"],
+        optional: &[(
+            "entry_id",
+            "entry to answer for; default the session's selection",
+        )],
+        notes: "the geometry tail as one affine map, {content, output, forward, inverse}, in continuous pixel-center coordinates, so a gesture maps pointer positions between the content stage and the rendered image without asking per move",
+        handler: Some(render_transform),
+    },
+    MethodSpec {
         name: "events.since",
         mutates: false,
         required: &["after"],
@@ -1194,14 +1205,46 @@ fn render_locate(
         y: u32,
     }
     let p = parse::<P>(params)?;
-    let entry_id = match p.entry_id {
-        Some(entry_id) => entry_id,
-        None => match &session.preview.selection {
-            HistorySelection::Current => service.state(&p.asset_id)?.current_entry.id,
-            HistorySelection::Entry(id) => id.clone(),
-        },
-    };
+    let entry_id = selected_entry(service, session, &p.asset_id, p.entry_id)?;
     value(service.locate_entry(&p.asset_id, &entry_id, p.x, p.y)?)
+}
+
+/// The geometry tail of one entry as a single affine map. Read-only in every sense: it resolves the
+/// entry exactly as `render.locate` does, compiles the stack, composes the tail and touches nothing —
+/// no history entry, no event, no session state. A gesture asks once and maps pointer positions
+/// itself, which is the whole reason it is a matrix and not a point query.
+fn render_transform(
+    service: &mut EditorService,
+    session: &mut ClientSession,
+    params: &Value,
+) -> Result<Value, Error> {
+    #[derive(Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct P {
+        asset_id: AssetId,
+        entry_id: Option<EntryId>,
+    }
+    let p = parse::<P>(params)?;
+    let entry_id = selected_entry(service, session, &p.asset_id, p.entry_id)?;
+    value(service.transform_entry(&p.asset_id, &entry_id)?)
+}
+
+/// The entry a read-only question is answered against: the one the caller named, or the session's
+/// selection, which is the rule `render.sample` follows and the only rule there is. A client
+/// previewing a historical entry therefore asks about the stack it is looking at.
+fn selected_entry(
+    service: &EditorService,
+    session: &ClientSession,
+    asset_id: &AssetId,
+    named: Option<EntryId>,
+) -> Result<EntryId, Error> {
+    match named {
+        Some(entry_id) => Ok(entry_id),
+        None => match &session.preview.selection {
+            HistorySelection::Current => Ok(service.state(asset_id)?.current_entry.id),
+            HistorySelection::Entry(id) => Ok(id.clone()),
+        },
+    }
 }
 
 fn require_current(session: &ClientSession) -> Result<(), Error> {
@@ -1601,6 +1644,110 @@ mod tests {
         .expect("a point outside the rendered image");
         assert_eq!(error.code, "validation");
         assert!(error.message.contains("320x480"), "{}", error.message);
+
+        drop(service);
+        std::fs::remove_file(catalog).unwrap();
+    }
+
+    /// The same geometry `render.locate` walks a point through, as one matrix, because a gesture
+    /// cannot ask per pointer move.
+    #[test]
+    fn render_transform_answers_the_geometry_tail_as_one_affine() {
+        let catalog =
+            std::env::temp_dir().join(format!("lightwell-transform-{}.sqlite", std::process::id()));
+        let mut service = EditorService::open(&catalog).unwrap();
+        let asset = service
+            .import(
+                &Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/s0/orientation-1.jpg"),
+            )
+            .unwrap()
+            .asset
+            .id;
+        let mut session = ClientSession::default();
+        let original = service.state(&asset).unwrap().current_entry.id;
+
+        // Discovery lists the method beside its neighbours before anyone calls it.
+        let schema = call(&mut service, &mut session, "schema.list", json!({}))
+            .result
+            .expect("the schema");
+        let listed = &schema["methods"]["render.transform"];
+        assert_eq!(listed["mutates"], json!(false));
+        assert_eq!(listed["required"], json!(["asset_id"]));
+        assert!(
+            listed["optional"]["entry_id"]
+                .as_str()
+                .expect("the optional entry")
+                .contains("default"),
+            "{listed}"
+        );
+        assert!(!listed["notes"].as_str().unwrap().is_empty());
+
+        let turned = call(
+            &mut service,
+            &mut session,
+            "edit.transform",
+            json!({
+                "asset_id": asset,
+                "mutation": {"expected_revision": 0, "request_id": "turn", "actor": "test"},
+                "transform": "rotate-right",
+            }),
+        );
+        assert!(turned.error.is_none(), "{:?}", turned.error);
+        let revision = session.revision;
+
+        // A quarter turn right lays the content stage's y axis along the output's x axis, reversed:
+        // content (0.5, 0.5), the first pixel's center, lands at output (319.5, 0.5).
+        let mapped = call(
+            &mut service,
+            &mut session,
+            "render.transform",
+            json!({"asset_id": asset}),
+        )
+        .result
+        .expect("the geometry tail as a matrix");
+        assert_eq!(
+            mapped,
+            json!({
+                "content": {"width": 480, "height": 320},
+                "output": {"width": 320, "height": 480},
+                "forward": [0.0, -1.0, 320.0, 1.0, 0.0, 0.0],
+                "inverse": [0.0, 1.0, 0.0, -1.0, 0.0, 320.0],
+            })
+        );
+        assert_eq!(
+            session.revision, revision,
+            "reading the transform changes no session state"
+        );
+
+        // A named entry answers for its own stack, which here is the untransformed original.
+        let untouched = call(
+            &mut service,
+            &mut session,
+            "render.transform",
+            json!({"asset_id": asset, "entry_id": original}),
+        )
+        .result
+        .expect("the original entry's matrix");
+        assert_eq!(
+            untouched,
+            json!({
+                "content": {"width": 480, "height": 320},
+                "output": {"width": 480, "height": 320},
+                "forward": [1.0, 0.0, 0.0, 0.0, 1.0, 0.0],
+                "inverse": [1.0, 0.0, 0.0, 0.0, 1.0, 0.0],
+            })
+        );
+
+        // An entry that is not this asset's fails structurally, exactly as the neighbours do.
+        let error = call(
+            &mut service,
+            &mut session,
+            "render.transform",
+            json!({"asset_id": asset, "entry_id": "entry-absent"}),
+        )
+        .error
+        .expect("an unknown entry");
+        assert_eq!(error.code, "validation");
 
         drop(service);
         std::fs::remove_file(catalog).unwrap();

@@ -1036,6 +1036,110 @@ pub struct ContentPoint {
     pub height: u32,
 }
 
+/// One stage's dimensions, as a mapping result names them.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct StageSize {
+    pub width: u32,
+    pub height: u32,
+}
+
+/// The whole geometry tail of one recipe as a single affine map, both ways, between the content
+/// stage and the output stage.
+///
+/// [`ContentPoint`] answers one pixel at a time, which is what a pick needs. A gesture that must
+/// follow the pointer cannot pay that call per move ([performance rule
+/// 12](../../docs/engineering/performance-rules.md#rules)), and it does not have to: the tail is
+/// exact integer transforms plus at most one crop resample, so the map is affine and one matrix
+/// answers every position a gesture will ask about.
+///
+/// **Coordinates are continuous and pixel-center based, the convention [`Resample`] already fixes:**
+/// pixel index `n` has its center at `n + 0.5`, so a coordinate `c` lies in pixel `c.floor()` and
+/// the content stage spans `0.0..width` by `0.0..height`. The
+/// [crop spec](../../docs/specs/single-image.md#sampling) states the same thing about the crop's own
+/// sampling, and [`Resample::inverse`] maps output pixel centers to exactly these input
+/// coordinates, so nothing here introduces a second convention.
+///
+/// Both matrices are `[m0, m1, m2, m3, m4, m5]`, again the coefficient order of
+/// [`Resample::inverse`]: `x' = m0·x + m1·y + m2` and `y' = m3·x + m4·y + m5`. `forward` maps a
+/// content coordinate to an output coordinate and `inverse` is its exact inverse; a coordinate that
+/// lands outside the output stage was cropped away, which the caller sees from `output` and this
+/// type does not hide by clamping.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct StageTransform {
+    pub content: StageSize,
+    pub output: StageSize,
+    pub forward: [f64; 6],
+    pub inverse: [f64; 6],
+}
+
+/// One affine map in the continuous, pixel-center coordinates [`StageTransform`] documents, in the
+/// coefficient order [`Resample::inverse`] fixes.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Affine([f64; 6]);
+
+impl Affine {
+    const IDENTITY: Self = Self([1.0, 0.0, 0.0, 0.0, 1.0, 0.0]);
+
+    /// The continuous form of one exact step. [`ExactGeometry`] maps pixel *indices*; this is the
+    /// same mapping over pixel *centers*, so the half-pixel of the convention is conjugated in on
+    /// both sides: `out = A·(in − ½) + t + ½`. An exact step is a signed permutation with an integer
+    /// translation, so every coefficient stays exact in `f64` and the center of an input pixel lands
+    /// exactly on the center of an output pixel.
+    fn from_exact(step: ExactGeometry) -> Self {
+        let (a, b, c, d) = (step.a as f64, step.b as f64, step.c as f64, step.d as f64);
+        Self([
+            a,
+            b,
+            step.tx as f64 + 0.5 - 0.5 * (a + b),
+            c,
+            d,
+            step.ty as f64 + 0.5 - 0.5 * (c + d),
+        ])
+    }
+
+    /// `self` followed by `next`. Composing the tail this way is what keeps the cost `O(layers)`:
+    /// one matrix multiply per layer, and no walk per point afterwards.
+    fn then(self, next: Self) -> Self {
+        let [a0, a1, a2, a3, a4, a5] = self.0;
+        let [b0, b1, b2, b3, b4, b5] = next.0;
+        Self([
+            b0 * a0 + b1 * a3,
+            b0 * a1 + b1 * a4,
+            b0 * a2 + b1 * a5 + b2,
+            b3 * a0 + b4 * a3,
+            b3 * a1 + b4 * a4,
+            b3 * a2 + b4 * a5 + b5,
+        ])
+    }
+
+    /// The exact inverse map, or a refusal. A step that does not invert collapses its stage onto a
+    /// line or a point, so there is no mapping to report and reporting the identity instead would
+    /// put a gesture's pointer somewhere the recipe never puts it. The compiler already refuses a
+    /// resample whose mapping is not finite or whose output stage is empty; this is the remaining
+    /// degenerate case, refused in the same voice.
+    fn invert(self) -> Result<Self, Error> {
+        let [m0, m1, m2, m3, m4, m5] = self.0;
+        let determinant = m0 * m4 - m1 * m3;
+        let inverted = Self([
+            m4 / determinant,
+            -m1 / determinant,
+            (m1 * m5 - m4 * m2) / determinant,
+            -m3 / determinant,
+            m0 / determinant,
+            (m3 * m2 - m0 * m5) / determinant,
+        ]);
+        if determinant == 0.0 || !inverted.0.iter().all(|value| value.is_finite()) {
+            return Err(Error::new(
+                ErrorKind::Validation,
+                "a geometry layer declares a mapping that cannot be inverted",
+            ));
+        }
+        Ok(inverted)
+    }
+}
+
 /// One compiled recipe bound to its source: the stage it produces and point queries that never
 /// allocate a frame. Compiling once serves any number of sampled pixels.
 pub(crate) struct Evaluation<'a> {
@@ -1357,6 +1461,54 @@ pub fn extents(
         .compile(source.width, source.height, recipe)?
         .stage();
     Ok((stage.width, stage.height))
+}
+
+/// The whole geometry tail of one recipe as one affine map between the content stage and the output
+/// stage, in both directions.
+///
+/// This is `locate` in closed form. `locate` walks a point back through the compiled segments, which
+/// is right for a pick and wrong for a gesture that follows the pointer, so the composition happens
+/// once here and the caller maps positions itself. Every step of the tail composes: an exact step is
+/// an integer signed permutation with an integer translation, a spatial boundary keeps every
+/// coordinate of the stage it receives, and the one crop resample declares its output-to-input
+/// mapping, which inverts. Nothing else can appear in the tail.
+///
+/// The dimensions are the whole input, not a source: no pixel is read on any path here, so there is
+/// none to pass. Cost is one matrix multiply per layer on top of compiling the stack, and like
+/// [`extents`] it allocates no frame, which is what lets the catalog owner answer it
+/// ([rules 4 and 5](../../docs/engineering/performance-rules.md#rules)).
+///
+/// A stack the compiler refuses has no output stage to map, and its reason is returned unchanged —
+/// an unavailable effect is `Incompatible`, a stack the host cannot evaluate is `Validation`. There
+/// is no identity fallback on any path.
+pub fn stage_transform(
+    registry: &ModuleRegistry,
+    width: u32,
+    height: u32,
+    recipe: &Recipe,
+) -> Result<StageTransform, Error> {
+    let compiled = registry.compile(width, height, recipe)?;
+    let mut forward = Affine::IDENTITY;
+    for segment in &compiled.segments {
+        // A resample declares the map from its output back to its input, which is the direction a
+        // sampler reads; the forward direction is that map inverted. A spatial boundary is at the
+        // dimensions of the stage it receives and moves no coordinate, so it contributes nothing.
+        if let Some(resample) = segment.entry.as_ref().and_then(Entry::resample) {
+            forward = forward.then(Affine(resample.inverse).invert()?);
+        }
+        forward = forward.then(Affine::from_exact(segment.geometry));
+    }
+    let inverse = forward.invert()?;
+    let stage = compiled.stage();
+    Ok(StageTransform {
+        content: StageSize { width, height },
+        output: StageSize {
+            width: stage.width,
+            height: stage.height,
+        },
+        forward: forward.0,
+        inverse: inverse.0,
+    })
 }
 
 pub fn render(
@@ -1729,6 +1881,10 @@ mod tests {
     const TEST_CROP_EFFECT: &str = "test.crop";
     const TEST_SCALE_EFFECT: &str = "test.scale";
     const TEST_OFFSET_EFFECT: &str = "test.offset";
+    /// A resample that is finite and has a non-empty output stage, so compilation accepts it, and
+    /// whose mapping collapses its stage onto a line. No delivered module can declare one; it exists
+    /// so the host's refusal to invent a mapping for it can be proved.
+    const TEST_DEGENERATE_EFFECT: &str = "test.degenerate";
 
     impl GeometryTestModule {
         fn shared() -> Arc<dyn ToolModule> {
@@ -1736,15 +1892,20 @@ mod tests {
                 id: "test.geometry".into(),
                 title: "Test geometry".into(),
                 hint: None,
-                effects: [TEST_CROP_EFFECT, TEST_SCALE_EFFECT, TEST_OFFSET_EFFECT]
-                    .into_iter()
-                    .map(|id| EffectDescriptor {
-                        id: id.into(),
-                        format: EFFECT_FORMAT,
-                        stage: EffectStage::Geometry,
-                        order: 0,
-                    })
-                    .collect(),
+                effects: [
+                    TEST_CROP_EFFECT,
+                    TEST_SCALE_EFFECT,
+                    TEST_OFFSET_EFFECT,
+                    TEST_DEGENERATE_EFFECT,
+                ]
+                .into_iter()
+                .map(|id| EffectDescriptor {
+                    id: id.into(),
+                    format: EFFECT_FORMAT,
+                    stage: EffectStage::Geometry,
+                    order: 0,
+                })
+                .collect(),
                 actions: Vec::new(),
                 queries: Vec::new(),
                 controls: Vec::new(),
@@ -1788,6 +1949,15 @@ mod tests {
                     payload["width"].as_u64().expect("test offset") as u32,
                     payload["height"].as_u64().expect("test offset") as u32,
                 )));
+            }
+            if effect_id == TEST_DEGENERATE_EFFECT {
+                // Both axes read the same line of the input stage: finite, non-empty, and not a
+                // mapping anything can be projected back through.
+                return Ok(Processing::Resample(Resample {
+                    inverse: [1.0, 1.0, 0.0, 1.0, 1.0, 0.0],
+                    output_width: stage.width,
+                    output_height: stage.height,
+                }));
             }
             if effect_id == TEST_SCALE_EFFECT {
                 let scale = payload["scale"].as_f64().expect("test scale");
@@ -1854,6 +2024,15 @@ mod tests {
             effect_id: TEST_OFFSET_EFFECT.into(),
             effect_format: EFFECT_FORMAT,
             payload: json!({"x": x, "y": y, "width": width, "height": height}),
+        }
+    }
+
+    fn degenerate_layer() -> Layer {
+        Layer {
+            id: LayerId::new(),
+            effect_id: TEST_DEGENERATE_EFFECT.into(),
+            effect_format: EFFECT_FORMAT,
+            payload: json!({}),
         }
     }
 
@@ -2327,6 +2506,316 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// The 64-bit LCG the randomized geometry points draw from. Fixed seeds, so a disagreement is
+    /// the same disagreement on every host and run.
+    struct Lcg(u64);
+
+    impl Lcg {
+        fn next_unit(&mut self) -> f64 {
+            self.0 = self
+                .0
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1_442_695_040_888_963_407);
+            ((self.0 >> 11) as f64) / ((1u64 << 53) as f64)
+        }
+    }
+
+    /// One affine map applied to a continuous coordinate, written out here rather than shared with
+    /// the composition under test.
+    fn at(matrix: [f64; 6], x: f64, y: f64) -> (f64, f64) {
+        (
+            matrix[0] * x + matrix[1] * y + matrix[2],
+            matrix[3] * x + matrix[4] * y + matrix[5],
+        )
+    }
+
+    /// The stage a tail's transforms hand the crop after them.
+    fn turned_stage(width: u32, height: u32, transforms: &[Transform]) -> (u32, u32) {
+        let (mut width, mut height) = (width, height);
+        for transform in transforms {
+            if matches!(transform, Transform::RotateLeft | Transform::RotateRight) {
+                (width, height) = (height, width);
+            }
+        }
+        (width, height)
+    }
+
+    /// Every geometry tail the delivered modules produce: nothing, each of the eight orientations, a
+    /// crop at zero degrees, a straightened crop, and crops with transforms on both sides. A pixel,
+    /// a colour and a spatial layer ride along in one case each, because they move no coordinate and
+    /// the composition must ignore them while still walking the segments they open.
+    ///
+    /// The flag is whether the tail resamples, which is the only thing that costs the mapping its
+    /// exactness: a straightened crop, and nothing else.
+    fn geometry_tails(width: u32, height: u32) -> Vec<(String, Vec<Layer>, bool)> {
+        let mut tails = vec![("no transform".to_owned(), Vec::new(), false)];
+        for turns in 0..4u8 {
+            for mirror in [false, true] {
+                tails.push((
+                    format!("orientation mirror={mirror} turns={turns}"),
+                    vec![Layer::orientation(Orientation { mirror, turns })],
+                    false,
+                ));
+            }
+        }
+        let crops: [(f64, [f64; 4]); 3] = [
+            (0.0, [0.15, 0.2, 0.6, 0.55]),
+            (11.0, [0.2, 0.15, 0.6, 0.65]),
+            (-37.5, [0.25, 0.2, 0.5, 0.5]),
+        ];
+        let arrangements: [(&[Transform], &[Transform]); 4] = [
+            (&[], &[]),
+            (&[Transform::RotateRight], &[]),
+            (&[], &[Transform::MirrorHorizontal, Transform::RotateLeft]),
+            (
+                &[Transform::MirrorHorizontal, Transform::RotateLeft],
+                &[Transform::FlipVertical],
+            ),
+        ];
+        for (angle, rect) in crops {
+            for (before, after) in arrangements {
+                let (crop_width, crop_height) = turned_stage(width, height, before);
+                let mut layers: Vec<Layer> = before.iter().copied().map(turn).collect();
+                layers.push(Layer::crop(fitted_crop(
+                    crop_width,
+                    crop_height,
+                    angle,
+                    rect,
+                )));
+                layers.extend(after.iter().copied().map(turn));
+                tails.push((
+                    format!("crop at {angle} with {before:?} before and {after:?} after"),
+                    layers,
+                    angle != 0.0,
+                ));
+            }
+        }
+        // A pixel edit, a colour layer and a spatial layer before a straightened crop: three more
+        // operations and one more segment, and not one of them moves a coordinate.
+        tails.push((
+            "pixel, colour and spatial layers before a straightened crop".to_owned(),
+            vec![
+                Layer::pixel(3, 4, [250, 1, 2]),
+                Layer {
+                    id: LayerId::new(),
+                    effect_id: crate::BASIC_EFFECT.into(),
+                    effect_format: EFFECT_FORMAT,
+                    payload: json!({"exposure": 0.4, "contrast": 20.0}),
+                },
+                Layer {
+                    id: LayerId::new(),
+                    effect_id: crate::PRESENCE_EFFECT.into(),
+                    effect_format: EFFECT_FORMAT,
+                    payload: json!({"texture": 35.0}),
+                },
+                Layer::crop(fitted_crop(width, height, 6.0, [0.2, 0.2, 0.55, 0.55])),
+            ],
+            true,
+        ));
+        tails
+    }
+
+    /// `stage_transform` is `locate` in closed form, so the two must name the same content pixel.
+    ///
+    /// The strong direction is `inverse`: rounding the continuous content coordinate it gives for an
+    /// output pixel center to the pixel that contains it must be, exactly, the pixel `locate` walks
+    /// to. That is not the same arithmetic — `locate` rounds at the resample and then applies the
+    /// exact steps before it as integers, while this composes everything continuously and rounds
+    /// once at the end — so the agreement is a real check on the half-pixel convention and on the
+    /// composition order, not a re-run of the walk.
+    ///
+    /// The two orders can disagree in exactly one place: a position that lands *on* a content pixel
+    /// boundary, where `nearest_index`'s floor takes the lower index in the resample's own frame and
+    /// a reflection after it turns that into the higher index in the content stage. The seeded points
+    /// below never land on one, and this asserts that rather than allowing a pixel of slack.
+    #[test]
+    fn the_stage_transform_and_locate_name_the_same_content_pixel() {
+        let registry = registry();
+        let (width, height) = (40, 28);
+        let source = gradient(width, height);
+        for (case, layers, _) in geometry_tails(width, height) {
+            let recipe = Recipe { format: 1, layers };
+            let transform = stage_transform(&registry, width, height, &recipe).unwrap();
+            let (stage_width, stage_height) = extents(&registry, &source, &recipe).unwrap();
+            assert_eq!(
+                (transform.content.width, transform.content.height),
+                (width, height),
+                "{case}: the content stage"
+            );
+            assert_eq!(
+                (transform.output.width, transform.output.height),
+                (stage_width, stage_height),
+                "{case}: the output stage"
+            );
+            let mut rng = Lcg(0x5EED_0007);
+            for _ in 0..400 {
+                let x = (rng.next_unit() * f64::from(stage_width)).floor() as u32;
+                let y = (rng.next_unit() * f64::from(stage_height)).floor() as u32;
+                let (x, y) = (x.min(stage_width - 1), y.min(stage_height - 1));
+                let (u, v) = at(transform.inverse, f64::from(x) + 0.5, f64::from(y) + 0.5);
+                assert!(
+                    u.fract() != 0.0 && v.fract() != 0.0,
+                    "{case}: ({x}, {y}) maps onto a content pixel boundary at ({u}, {v}), \
+                     where the two rounding orders are allowed to differ"
+                );
+                let located = locate(&registry, &source, &recipe, x, y).unwrap();
+                assert_eq!(
+                    (located.content_x, located.content_y),
+                    (nearest_index(u, width), nearest_index(v, height)),
+                    "{case}: ({x}, {y}) maps to ({u}, {v})"
+                );
+                assert_eq!(
+                    (located.width, located.height),
+                    (width, height),
+                    "{case}: the content stage"
+                );
+            }
+        }
+    }
+
+    /// The acceptance direction: project a content point through `forward` and locate the rendered
+    /// pixel it lands in.
+    ///
+    /// For every exact tail this is exact. `forward` is then a signed permutation of continuous
+    /// coordinates, so it carries the pixel containing the content point onto the pixel containing
+    /// its image, and `locate` walks straight back to it.
+    ///
+    /// A straightened crop cannot be exact in the index domain, and the reason is arithmetic rather
+    /// than approximate: taking the output *pixel* the projection lands in discards up to half a
+    /// pixel in each axis, and `inverse` carries that back into the content stage scaled by its own
+    /// coefficients, `½(|m0| + |m1|)` in x and `½(|m3| + |m4|)` in y — about 0.71 content pixels for
+    /// the rotation a crop applies. A displacement that large can cross one content pixel boundary
+    /// and no more, so the located pixel is within one index, and the continuous displacement is
+    /// asserted against that derived budget rather than against a chosen number.
+    #[test]
+    fn projecting_a_content_point_forward_locates_the_pixel_it_came_from() {
+        let registry = registry();
+        let (width, height) = (40, 28);
+        let source = gradient(width, height);
+        for (case, layers, resamples) in geometry_tails(width, height) {
+            let recipe = Recipe { format: 1, layers };
+            let transform = stage_transform(&registry, width, height, &recipe).unwrap();
+            let budget_x = 0.5 * (transform.inverse[0].abs() + transform.inverse[1].abs());
+            let budget_y = 0.5 * (transform.inverse[3].abs() + transform.inverse[4].abs());
+            let mut rng = Lcg(0x5EED_0070);
+            let mut located_points = 0;
+            for _ in 0..1000 {
+                let px = rng.next_unit() * f64::from(width);
+                let py = rng.next_unit() * f64::from(height);
+                let (qx, qy) = at(transform.forward, px, py);
+                // A content point the crop discarded has no rendered pixel to locate.
+                if qx < 0.0
+                    || qy < 0.0
+                    || qx >= f64::from(transform.output.width)
+                    || qy >= f64::from(transform.output.height)
+                {
+                    continue;
+                }
+                located_points += 1;
+                let (x, y) = (qx.floor() as u32, qy.floor() as u32);
+                let located = locate(&registry, &source, &recipe, x, y).unwrap();
+                let (content_x, content_y) = (px.floor() as u32, py.floor() as u32);
+                if !resamples {
+                    assert_eq!(
+                        (located.content_x, located.content_y),
+                        (content_x, content_y),
+                        "{case}: ({px}, {py}) projects to ({qx}, {qy})"
+                    );
+                    continue;
+                }
+                // The centre of the pixel the projection landed in, carried back: within the budget
+                // of the content point it started from, and therefore within one content pixel.
+                let (u, v) = at(transform.inverse, f64::from(x) + 0.5, f64::from(y) + 0.5);
+                assert!(
+                    (u - px).abs() <= budget_x + 1e-9 && (v - py).abs() <= budget_y + 1e-9,
+                    "{case}: ({px}, {py}) came back as ({u}, {v}), outside \
+                     ({budget_x}, {budget_y})"
+                );
+                assert!(
+                    located.content_x.abs_diff(content_x) <= 1
+                        && located.content_y.abs_diff(content_y) <= 1,
+                    "{case}: ({px}, {py}) located ({}, {}) instead of ({content_x}, {content_y})",
+                    located.content_x,
+                    located.content_y,
+                );
+            }
+            // The narrowest tail here, a half-frame crop at −37.5°, keeps about a fifth of the
+            // content stage; this only proves no case tested nothing.
+            assert!(
+                located_points > 100,
+                "{case}: only {located_points} of the points landed in the output stage"
+            );
+        }
+    }
+
+    /// `forward` and `inverse` are one mapping stated twice. The tolerance is `f64` round-off over a
+    /// handful of multiplies at coordinates of a few thousand — the last bits of the mantissa, some
+    /// three orders of magnitude under the 1e-9 asserted here — and nothing else: every exact tail
+    /// composes integers and half-integers, and the crop's rotation is the only inexact step.
+    #[test]
+    fn the_stage_transform_and_its_inverse_are_mutual_inverses() {
+        let registry = registry();
+        let (width, height) = (40, 28);
+        for (case, layers, _) in geometry_tails(width, height) {
+            let recipe = Recipe { format: 1, layers };
+            let transform = stage_transform(&registry, width, height, &recipe).unwrap();
+            let mut rng = Lcg(0x5EED_0700);
+            for _ in 0..400 {
+                let px = rng.next_unit() * f64::from(width);
+                let py = rng.next_unit() * f64::from(height);
+                let (qx, qy) = at(transform.forward, px, py);
+                let (rx, ry) = at(transform.inverse, qx, qy);
+                assert!(
+                    (rx - px).abs() < 1e-9 && (ry - py).abs() < 1e-9,
+                    "{case}: ({px}, {py}) round-tripped to ({rx}, {ry})"
+                );
+                let ox = rng.next_unit() * f64::from(transform.output.width);
+                let oy = rng.next_unit() * f64::from(transform.output.height);
+                let (cx, cy) = at(transform.inverse, ox, oy);
+                let (bx, by) = at(transform.forward, cx, cy);
+                assert!(
+                    (bx - ox).abs() < 1e-9 && (by - oy).abs() < 1e-9,
+                    "{case}: output ({ox}, {oy}) round-tripped to ({bx}, {by})"
+                );
+            }
+        }
+    }
+
+    /// A stack with no output stage has no mapping, and says so in the voice the neighbouring
+    /// methods use. An identity matrix would put a gesture's pointer where the recipe never puts it,
+    /// so no path here returns one.
+    #[test]
+    fn a_stack_without_a_renderable_output_stage_has_no_transform() {
+        let registry = geometry_registry();
+        let (width, height) = (32, 24);
+
+        // An effect no module provides: `extents` and `locate` report it this way too.
+        let recipe = Recipe {
+            format: 1,
+            layers: vec![Layer {
+                id: LayerId::new(),
+                effect_id: "test.absent".into(),
+                effect_format: EFFECT_FORMAT,
+                payload: json!({}),
+            }],
+        };
+        let error = stage_transform(&registry, width, height, &recipe)
+            .expect_err("an unavailable effect has no output stage");
+        assert_eq!(error.kind, ErrorKind::Incompatible);
+        assert!(error.detail.contains("unavailable effect"), "{error}");
+
+        // A finite, non-empty resample that still collapses its stage onto a line. The compiler's
+        // own checks pass it, so this is the one degenerate mapping that reaches the composition.
+        let recipe = Recipe {
+            format: 1,
+            layers: vec![degenerate_layer()],
+        };
+        let error = stage_transform(&registry, width, height, &recipe)
+            .expect_err("a collapsed stage has no mapping");
+        assert_eq!(error.kind, ErrorKind::Validation);
+        assert!(error.detail.contains("cannot be inverted"), "{error}");
     }
 
     #[test]
