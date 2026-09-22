@@ -8,12 +8,13 @@
     {
       "id": "TASK-001",
       "description": "Add the spatial and finish effect stages, the per-effect order within a stage, the new placement rules (pixel and colour before the first spatial or geometry layer; spatial before the first geometry layer; geometry before the first finish layer; finish at the end; order-aware insertion within a stage), position-aware PointwiseColor rows, and compile-time refusal of a finish layer followed by a geometry layer, with no module yet using them.",
-      "status": "pending",
+      "status": "completed",
       "dependencies": [],
       "extra_context": [
         "Existing layers never move; every delivered module keeps its stage, order 0 and its current stack positions, so the M1 to M4, Basic and RAW fixtures must still evaluate byte-identically.",
         "apply_row gains the row's y and starting x; every delivered unit ignores them. The RAW linear path passes the same coordinates for its terminal per-pixel evaluation so sample_linear and render_linear stay in agreement.",
-        "Performance checklist: registration and placement stay descriptor-only hash work; no new allocation, frame work, owner-thread image work or timer."
+        "Performance checklist: registration and placement stay descriptor-only hash work; no new allocation, frame work, owner-thread image work or timer.",
+        "Evidence: EffectStage spatial and finish, EffectDescriptor.order (serialized, default 0), insertion_index(layers, stage, order) with the full placement table and insertion_index_for(effect), apply_row(y, x0, rgb) on the byte and linear paths, and the finish-before-geometry compile refusal are implemented with placement tests over every stage and both orders, the refused-order tests through the registry and EditorService, positional render/sample parity tests on both paths, and module.list round trips; the module design's tables list them. Workspace suites pass unchanged (core 254 unit tests plus integration suites, app 188). check-repository passes. No allocation, owner frame work or timer added; apply_row is called once per row inside the existing chunk scratch."
       ],
       "context_links": [
         {
@@ -126,11 +127,12 @@
     {
       "id": "TASK-003",
       "description": "Numerical study for the colour mixer: freeze the eight Oklab hue-range basis functions (centres, overlap, partition of unity, chroma ramp), the hue rotation, chroma scaling and luminance response for the \u2212100..+100 ranges, the gamut policy and the production tolerance against an independent f64 reference, and record them in a mixer study note.",
-      "status": "pending",
+      "status": "completed",
       "dependencies": [],
       "extra_context": [
         "Reuse the colour study's Oklab conversion, achromatic-axis rule and near-black handling. Required properties: every slider at 0 is the exact identity; achromatic pixels are invariant under every slider; a range's slider changes no pixel with zero weight for that range; hue is continuous around the wheel; luminance response is monotone.",
-        "Fixtures: the eight sRGB reference colours, an achromatic ramp, near-black chroma, a hue wheel at several chroma levels and portrait-like skin tones."
+        "Fixtures: the eight sRGB reference colours, an achromatic ramp, near-black chroma, a hue wheel at several chroma levels and portrait-like skin tones.",
+        "Evidence: docs/design/mixer-study.md freezes the Oklab basis (eight centre hues, raised-cosine partition of unity, chroma ramp C0 = 0.02), per-direction half-gap hue travel, saturation gain 1 with a non-negative factor, the gamma luminance response 2^(-m) with pass-through above white, hue then chroma then luminance from input weights, and the 1e-5 + 1e-5|ref| tolerance; tests/reference/mixer.rs, tests/mixer_reference.rs (43 tests) and fixtures/mixer/mixer-cases.json (414 cases) are checked in; measured figures (exact partition of unity, identity residual 3.9e-7, grey deviation 2.6e-7, minimum single-slider hue slope 1 - pi/4, the one documented opposing-slider fold) are recorded in the note."
       ],
       "context_links": [
         {
@@ -174,11 +176,12 @@
     {
       "id": "TASK-004",
       "description": "Numerical study for the vignette: freeze the mask (midpoint, roundness and feather geometry over the output stage), the negative and positive amount equations in linear light, symmetry and centre-invariance properties and the production tolerance against an independent f64 reference, and record them in a vignette study note.",
-      "status": "pending",
+      "status": "completed",
       "dependencies": [],
       "extra_context": [
         "Required properties: amount 0 is the exact identity for every mask; the centre pixel is unchanged for every parameter combination; the mask is symmetric under mirror and flip and depends only on the stage size and parameters; negative amount at \u2212100 reaches black at the corners; positive amount never exceeds the display white in encoded terms.",
-        "Fixtures: flat fields and gradients at several aspect ratios with parameters at their extremes and defaults; corner and centre samples hand-computed."
+        "Fixtures: flat fields and gradients at several aspect ratios with parameters at their extremes and defaults; corner and centre samples hand-computed.",
+        "Evidence: docs/design/vignette-study.md freezes pixel-centre coordinates, the roundness shape radius (quadratic blend for s >= 0, p-norm with p = 2 + 6(-s) for s < 0), the smoothstep falloff between r0 = m(1 - f) and r1 = m + (1 - m)f with a hard step at zero width, the linear darken and encoded lighten amount branches, the 1e-6 + 1e-6|ref| tolerance, and the corner-saturation condition (corner mask = 1 iff r1 <= r_corner) that replaces the design's unconditional corner claim; tests/reference/vignette.rs, tests/vignette_reference.rs (41 tests) and fixtures/vignette/ (202 mask and 60 amount cases) are checked in."
       ],
       "context_links": [
         {
