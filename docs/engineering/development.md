@@ -41,7 +41,7 @@ Doctor reports missing tools and the graphics environment without installing any
 | Rendered Basic composed with crop and straighten | `cargo xtask smoke --scenario basic-crop --output NEW_DIR` |
 | Rendered restart: a Basic edit committed in one launch and reopened in the next | `cargo xtask smoke --scenario basic-restart --output NEW_DIR` |
 | Rendered Presence: section expand, a Clarity drag and cancel, Texture and Clarity each committed at Fit and 100%, Dehaze at both signs, all three fields at once through the raw API and the module reset, over a generated gradient/edge/texture/flat fixture | `cargo xtask smoke --scenario presence --output NEW_DIR` |
-| Rendered Colour mixer: section expand, a Red hue drag and commit at Fit and 100%, a Saturation group reset and a stronger hue shift, over a generated hue wheel | `cargo xtask smoke --scenario mixer --output NEW_DIR` |
+| Rendered Colour mixer: section expand, a Red hue drag and commit at Fit and 100%, a Saturation group reset, a stronger hue shift and the Saturation tab, over a generated hue wheel | `cargo xtask smoke --scenario mixer --output NEW_DIR` |
 | Rendered Vignette: section expand, an Amount drag and commit at Fit and 100%, roundness and feather extremes, a post-crop recentre and the module reset | `cargo xtask smoke --scenario vignette --output NEW_DIR` |
 | Inspect a capture | `cargo xtask check-capture --image PNG [--orientation N]` |
 | Process failure checks; macOS measurement, `--samples` defaults to 5 launches per workload | `cargo xtask hardening --binary PATH --output NEW_DIR`, `cargo xtask measure --binary PATH --output NEW_DIR [--samples N]` |

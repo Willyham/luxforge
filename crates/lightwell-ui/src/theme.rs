@@ -48,6 +48,19 @@ pub const ZERO_TICK: Color = Color::from_rgb8(0x5a, 0x5a, 0x62);
 pub const THUMB: Color = Color::from_rgb8(0xec, 0xec, 0xee);
 /// The dark ring around the handle that separates it from a light or colour rail.
 pub const THUMB_OUTLINE: Color = Color::from_rgb8(0x11, 0x11, 0x13);
+/// The `temperature` rail hint's stops, blue through a neutral grey to amber, as the module
+/// references draw them: muted, so the thumb stays the brightest mark on the row.
+pub const TEMPERATURE_RAIL: [Color; 3] = [
+    Color::from_rgb8(0x46, 0x7b, 0xc3),
+    Color::from_rgb8(0x7e, 0x7e, 0x83),
+    Color::from_rgb8(0xc5, 0x9d, 0x60),
+];
+/// The `tint` rail hint's stops, green through a neutral grey to magenta.
+pub const TINT_RAIL: [Color; 3] = [
+    Color::from_rgb8(0x4f, 0x9f, 0x60),
+    Color::from_rgb8(0x7d, 0x7f, 0x82),
+    Color::from_rgb8(0xbd, 0x56, 0xb6),
+];
 /// A group header's hairline rule. Opaque rather than a white alpha like [`BORDER`]: Iced blends
 /// in linear light, which renders a small white alpha far brighter than the references do.
 pub const RULE: Color = Color::from_rgb8(0x31, 0x31, 0x34);
@@ -628,5 +641,15 @@ mod tests {
         assert_eq!(ZERO_TICK, Color::from_rgb8(0x5a, 0x5a, 0x62));
         assert_eq!(THUMB_OUTLINE, Color::from_rgb8(0x11, 0x11, 0x13));
         assert_eq!(TEXT_LABEL, Color::from_rgb8(0xc9, 0xc9, 0xce));
+        assert_eq!(
+            TEMPERATURE_RAIL[1],
+            Color::from_rgb8(0x7e, 0x7e, 0x83),
+            "a grey midpoint"
+        );
+        assert_eq!(
+            TINT_RAIL[1],
+            Color::from_rgb8(0x7d, 0x7f, 0x82),
+            "a grey midpoint"
+        );
     }
 }

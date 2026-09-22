@@ -8,7 +8,7 @@ use crate::{
     section_header, slider, sub_group_header, tab_row, theme,
 };
 use iced::widget::{Column, Row, column, container};
-use iced::{Color, Element, Length};
+use iced::{Element, Length};
 
 /// The width of the module references' panels. This frames the examples only; the desktop's own
 /// tools panel width is the app's layout constant.
@@ -92,19 +92,11 @@ fn row_slider(
 }
 
 fn temperature() -> RailDecoration {
-    RailDecoration::Colors(vec![
-        Color::from_rgb8(72, 132, 235),
-        Color::from_rgb8(225, 225, 225),
-        Color::from_rgb8(236, 163, 70),
-    ])
+    RailDecoration::Colors(theme::TEMPERATURE_RAIL.to_vec())
 }
 
 fn tint() -> RailDecoration {
-    RailDecoration::Colors(vec![
-        Color::from_rgb8(87, 168, 96),
-        Color::from_rgb8(225, 225, 225),
-        Color::from_rgb8(207, 99, 168),
-    ])
+    RailDecoration::Colors(theme::TINT_RAIL.to_vec())
 }
 
 fn picker(tone: ButtonTone, enabled: bool) -> Element<'static, ()> {

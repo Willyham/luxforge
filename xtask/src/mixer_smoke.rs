@@ -44,7 +44,7 @@ const UNCHANGED: f64 = 10.0;
 
 /// One open frame plus one per script step.
 pub fn frames(scenario: &str) -> Option<usize> {
-    (scenario == "mixer").then_some(9)
+    (scenario == "mixer").then_some(10)
 }
 
 pub fn source(scenario: &str) -> Option<&'static str> {
@@ -74,7 +74,9 @@ pub fn script(scenario: &str) -> Option<Value> {
             // 7: the Saturation group's own reset, leaving the Hue field alone.
             {"reset":{"module":MIXER_MODULE,"group":SATURATION_GROUP}},
             // 8: a stronger hue shift, still at 100%, where continuity across the wheel shows.
-            {"slider":{"action":SET_MIXER,"parameter":RED_HUE,"values":[100.0],"release":true}}
+            {"slider":{"action":SET_MIXER,"parameter":RED_HUE,"values":[100.0],"release":true}},
+            // 9: the Saturation tab: the mixer's groups are tabs, and choosing one is view state.
+            {"tab":{"module":MIXER_MODULE,"index":1}}
         ])
     })
 }
@@ -538,6 +540,18 @@ pub fn verify(evidence: &Path, app: &Value, _events: &[Value]) -> Result {
         &frames[8],
         "a strong hue shift to Red hue +100 at 100%: hue continuity across the wheel is inspected here, with the Colour mixer sliders and rails still on screen",
         json!({"red_patch": final_red, "opposite_patch": final_opposite, "expanded": expanded_sections(&frames[8])}),
+    );
+
+    // Frame 9: the Saturation tab selected. It is per-client view state: no entry, no revision.
+    let selected = &frames[9]["state"]["control_ui"]["selected_tab"][MIXER_MODULE];
+    ensure(
+        selected == &json!(1) && revision(&frames[9])? == revision(&frames[8])?,
+        format!("The Saturation tab was not selected as view state alone: {selected}"),
+    )?;
+    record(
+        &frames[9],
+        "the Saturation tab selected: its eight rails shown under the tab row, nothing committed",
+        json!({"selected_tab": selected}),
     );
 
     write_json(

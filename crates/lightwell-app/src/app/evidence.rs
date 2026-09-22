@@ -87,6 +87,8 @@ pub(crate) enum Step {
     Picker(PickerStep),
     Curve(CurveStep),
     Group(GroupStep),
+    /// The tab a tabbed section shows, as its tab row selects it.
+    Tab(TabStep),
     Section(SectionStep),
     Gallery(Option<usize>),
     ToolsScroll(f64),
@@ -190,6 +192,12 @@ pub(crate) struct GroupStep {
     pub(crate) module: String,
     pub(crate) path: Vec<usize>,
     pub(crate) expanded: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct TabStep {
+    pub(crate) module: String,
+    pub(crate) index: usize,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -355,6 +363,7 @@ impl Step {
             }
             Self::Group(step) => json!({"group":{"module":step.module,"path":step.path,
                 "expanded":step.expanded}}),
+            Self::Tab(step) => json!({"tab":{"module":step.module,"index":step.index}}),
             Self::Section(step) => json!({"section":{"module":step.module,
                 "expanded":step.expanded}}),
             Self::Gallery(page) => json!({"gallery":{"page":page}}),
@@ -493,6 +502,7 @@ impl Editor {
             Step::Picker(picker) => self.picker_step(picker),
             Step::Curve(curve) => self.curve_step(curve),
             Step::Group(group) => self.group_step(group),
+            Step::Tab(tab) => self.tab_step(tab),
             Step::Section(section) => self.section_step(section),
             Step::Gallery(page) => self.gallery_step(page),
             Step::ToolsScroll(fraction) => self.tools_scroll_step(fraction),
@@ -996,6 +1006,21 @@ impl Editor {
         task
     }
 
+    fn tab_step(&mut self, step: TabStep) -> Task<Message> {
+        let tabbed = self.modules.iter().any(|module| {
+            module.id == step.module && module.layout == lightwell_core::ModuleLayout::Tabs
+        });
+        if !tabbed {
+            return self.fail_step("the module declares no tabbed layout");
+        }
+        let task = self.update(Message::SelectTab {
+            module_id: step.module,
+            index: step.index,
+        });
+        self.capture_next_frame();
+        task
+    }
+
     fn section_step(&mut self, step: SectionStep) -> Task<Message> {
         let Some(section) = self
             .workspace
@@ -1473,6 +1498,7 @@ fn parse_step(step: &Value) -> Result<Step, String> {
         "picker" => Ok(Step::Picker(parse_picker(value)?)),
         "curve" => Ok(Step::Curve(parse_curve(value)?)),
         "group" => Ok(Step::Group(parse_group(value)?)),
+        "tab" => Ok(Step::Tab(parse_tab(value)?)),
         "section" => Ok(Step::Section(parse_section(value)?)),
         "gallery" => Ok(Step::Gallery(parse_gallery(value)?)),
         "tools_scroll" => Ok(Step::ToolsScroll(unit_number(value, "tools_scroll")?)),
@@ -1486,7 +1512,7 @@ fn parse_step(step: &Value) -> Result<Step, String> {
         "palette" => Ok(Step::Palette(parse_palette(value)?)),
         "hover" => parse_hover(value),
         other => Err(format!(
-            "unknown step kind {other}; expected api, draft, slider, controls, picker, curve, group, section, gallery, tools_scroll, slider_draft, field, reset, pick, view, workspace, preview, palette or hover"
+            "unknown step kind {other}; expected api, draft, slider, controls, picker, curve, group, tab, section, gallery, tools_scroll, slider_draft, field, reset, pick, view, workspace, preview, palette or hover"
         )),
     }
 }
@@ -1723,6 +1749,20 @@ fn parse_group(value: &Value) -> Result<GroupStep, String> {
         module: required_text(object, "module", "group")?,
         path,
         expanded,
+    })
+}
+
+fn parse_tab(value: &Value) -> Result<TabStep, String> {
+    let object = value.as_object().ok_or("tab takes an object")?;
+    known_fields(object, &["module", "index"], "tab")?;
+    let index = object
+        .get("index")
+        .and_then(Value::as_u64)
+        .and_then(|index| usize::try_from(index).ok())
+        .ok_or("tab index takes a non-negative whole number")?;
+    Ok(TabStep {
+        module: required_text(object, "module", "tab")?,
+        index,
     })
 }
 

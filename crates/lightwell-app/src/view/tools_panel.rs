@@ -12,8 +12,8 @@ use crate::{
         tools::{
             ActionControl, ActionControlStyle, ChoiceControlStyle, ColorControl, ColorControlStyle,
             ControlModel, CropSectionModel, CurveControl, EnumControl, GroupControl, GroupState,
-            NumberControlStyle, PickerControl, RailStyle, SectionModel, SliderControl,
-            ToggleControl, ToolsModel, ValueEdit,
+            NumberControlStyle, PickerControl, RailStyle, SectionLayout, SectionModel,
+            SliderControl, ToggleControl, ToolsModel, ValueEdit,
         },
     },
 };
@@ -25,11 +25,11 @@ use lightwell_ui::{
     BINS, ButtonTone, ChipModel, ClipTriangleModel, ColorPickerModel, ColorSwatchModel, ControlKey,
     ControlKeyEvent, CurveEditorModel, CurvePointRow, HistogramChannel, Icon, IconButtonModel,
     LabelledButtonModel, MenuChoiceModel, NumberFieldModel, RailDecoration, SectionHeaderModel,
-    SegmentedModel, SliderModel, StepperModel, SubGroupHeaderModel, ToggleModel, button_row,
-    caption, chip, clip_triangle, color_picker, color_swatch, curve_editor, error_caption,
-    focus_control, histogram, icon_button, inline_menu, labelled_button, menu_choice,
-    module_section, number_field, section_label, segmented, slider, stepper, sub_group_header,
-    theme, toggle, value_input,
+    SegmentedModel, SliderModel, StepperModel, SubGroupHeaderModel, Tab, TabRowModel, ToggleModel,
+    button_row, caption, chip, clip_triangle, color_picker, color_swatch, curve_editor,
+    error_caption, focus_control, histogram, icon_button, inline_menu, labelled_button,
+    menu_choice, module_section, number_field, section_label, segmented, slider, stepper,
+    sub_group_header, tab_row, theme, toggle, value_input,
 };
 use serde_json::{Map, Value};
 
@@ -192,14 +192,15 @@ fn section_view<'a>(
 ) -> Element<'a, Message> {
     // An unavailable module cannot expand, per the design; nothing under it is drawn. Otherwise a
     // disabled section (busy, a historical preview) still shows its values, just not interactive.
-    let body = (section.expanded && section.unavailable.is_none()).then(|| {
-        control_rows(
+    let body = (section.expanded && section.unavailable.is_none()).then(|| match section.layout {
+        SectionLayout::Stacked => control_rows(
             &section.module_id,
             section.enabled,
             &section.controls,
             menu,
             plot,
-        )
+        ),
+        SectionLayout::Tabs { selected } => tabbed_rows(section, selected, menu, plot),
     });
     module_section(
         &SectionHeaderModel {
@@ -215,6 +216,78 @@ fn section_view<'a>(
         Message::ResetModule(section.module_id.clone()),
         body,
     )
+}
+
+/// The rows of a section whose module declares `layout: tabs`: one tab per top-level group, a dot
+/// on each Custom group, the visible group's reset at the row's right, then only that group's
+/// controls. Any top-level control that is not a group follows as usual.
+fn tabbed_rows<'a>(
+    section: &'a SectionModel,
+    selected: usize,
+    menu: Option<&'a MenuTarget>,
+    plot: &HistogramModel,
+) -> Vec<Element<'a, Message>> {
+    let module_id = section.module_id.as_str();
+    let enabled = section.enabled;
+    let groups: Vec<&GroupControl> = section
+        .controls
+        .iter()
+        .filter_map(|control| match control {
+            ControlModel::Group(group) => Some(group),
+            _ => None,
+        })
+        .collect();
+    let Some(visible) = groups.get(selected).or_else(|| groups.first()).copied() else {
+        return control_rows(module_id, enabled, &section.controls, menu, plot);
+    };
+    let tabs = tab_row(
+        &TabRowModel {
+            tabs: groups
+                .iter()
+                .map(|group| Tab {
+                    label: group.label.clone(),
+                    custom: group.state == Some(GroupState::Custom),
+                })
+                .collect(),
+            selected: groups
+                .iter()
+                .position(|group| std::ptr::eq(*group, visible))
+                .unwrap_or(0),
+            reset: visible.reset.is_some(),
+            enabled,
+        },
+        {
+            let module_id = module_id.to_owned();
+            move |index| Message::SelectTab {
+                module_id: module_id.clone(),
+                index,
+            }
+        },
+        Message::ResetGroup {
+            module_id: module_id.to_owned(),
+            path: visible.path.clone(),
+        },
+    );
+    let tabs = match &visible.reset {
+        Some(reset) => {
+            with_control_menu_preset(tabs, &reset.action, None, Some(&reset.preset), menu)
+        }
+        None => tabs,
+    };
+    let mut rows = vec![tabs];
+    rows.extend(control_rows(
+        module_id,
+        enabled,
+        &visible.controls,
+        menu,
+        plot,
+    ));
+    for control in &section.controls {
+        if !matches!(control, ControlModel::Group(_)) {
+            rows.push(control_view(module_id, enabled, control, menu, plot));
+        }
+    }
+    rows
 }
 
 /// A button-like control: a picker, or an action drawn as a button.
@@ -383,8 +456,8 @@ fn rail_decoration(rail: &RailStyle) -> RailDecoration {
         RailStyle::Hue => (0..=6)
             .map(|index| lightwell_ui::hsv_to_rgb([index as f64 / 6.0, 1.0, 1.0]))
             .collect(),
-        RailStyle::Temperature => vec![[72, 132, 235], [225, 225, 225], [236, 163, 70]],
-        RailStyle::Tint => vec![[87, 168, 96], [225, 225, 225], [207, 99, 168]],
+        RailStyle::Temperature => return RailDecoration::Colors(theme::TEMPERATURE_RAIL.to_vec()),
+        RailStyle::Tint => return RailDecoration::Colors(theme::TINT_RAIL.to_vec()),
         RailStyle::Gradient(stops) => stops.clone(),
     };
     RailDecoration::Colors(
