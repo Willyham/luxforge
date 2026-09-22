@@ -9,9 +9,13 @@ Each JSON file is an independent plan. IDs start at `TASK-001` inside every file
 | [Initial RAW editing](implementation-initial-raw.json) | Continuous high-precision RAW recipes for the original Nikon Z6, Fujifilm X100VI and supplied DJI Air 2S DNG: mode qualification, decoder/development evidence, bounded preparation, neutral rendering, exposure/WB, history and UI/API parity |
 | [UI components](implementation-ui-components.json) | The closed control vocabulary for modules: new parameter and control kinds, pure widgets, desktop gesture rules, a controls proof module and rendered evidence, per the accepted [design](../docs/design/ui-components.md); completed with native M4 captures and scoped before/after timing evidence |
 | [Later extensions](implementation-extensions.json) | External-loader measurements and proof planning after a selected use case |
+| [Shared module capabilities](module-capabilities.json) | Proposed host-owned settings, permissions, secure credentials, resource jobs and durable derived artifacts for modules |
+| [Corrections](corrections.json) | Proposed offline Clone/Heal and optional provider-agnostic AI Remove, with a qualified local-model path and explicit owner decisions |
 | [Product decisions](product-decisions.json) | Open product questions |
 
 Editor follow-ups and later work wait until the owner asks for them.
+
+The shared capabilities and Corrections plans are planning proposals. AI implementation depends on the shared capability outcome and on owner acceptance of the scope and consequential product choices in the [Corrections design](../docs/design/corrections.md).
 
 RAW editing is implemented with initial native M4 verification. Its [design](../docs/design/initial-raw.md) records the owner's continuous RAW editing requirement, the pinned processing path, and outstanding controlled quality, resource and platform qualification. The supplied FC3411 DNG has required gain/warp corrections and continuous editor support; its [contract](../docs/design/air2s-dng.md) records the qualified encoding, numerical interpretation and limits. RAW JPEG-export integration requires the separately delivered shared exporter and does not block the RAW editing checkpoint.
 

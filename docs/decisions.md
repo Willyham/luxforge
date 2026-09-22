@@ -101,6 +101,7 @@ Tracked in [product decisions](../tasks/product-decisions.json).
 - How should catalog backup, portability, sidecars, folder relinking and external-drive sync work?
 - Beyond the supplied files, which RAW recording modes/firmware and controlled quality scenes should be prioritized? The implemented decoder/developer and neutral defaults are explicit; broad visual acceptance, the measured resource target and additional DJI modes/scenes remain in [RAW qualification](design/initial-raw.md#remaining-qualification-and-decisions).
 - What is the first external module the owner would use, and what enablement and recovery behavior does it need?
+- For the proposed [Corrections module](design/corrections.md), should AI Remove enter the accepted scope, should a changed RAW source-development prefix require regeneration of a saved AI patch, and should remote-photo consent be per asset or remembered?
 - Which measured workloads and responsiveness budgets become acceptance requirements?
 - Which of the [Presence, colour mixer and vignette proposals](design/presence-mixer-vignette.md#proposals-with-recorded-defaults) (section names, stage order, mixer layout, vignette style, JPEG spatial precision, spatial gesture latency, sample cost) stand? Implementation was authorized on 2026-09-22 on the recorded defaults and is delivered; the owner refines the defaults after review, including whether spatial sliders should draft at a bounded resolution now that the measured misses are recorded.
 
