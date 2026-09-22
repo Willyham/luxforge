@@ -631,7 +631,7 @@ fn presence_journey(root: &Path, out: &Path) -> Result<Value> {
             json!({"asset_id": asset, "entry_id": group_reset["current_entry_id"]}),
         )?;
         ensure(
-            inspected["label"] == json!("Presence (3 fields)"),
+            inspected["label"] == json!("Reset Presence"),
             format!("The group's own reset is labelled {}", inspected["label"]),
         )?;
         let described = call(
@@ -723,8 +723,8 @@ fn presence_journey(root: &Path, out: &Path) -> Result<Value> {
             format!("Resetting an already-neutral presence layer answered {repeated_reset}"),
         )?;
         record(
-            "the group's own three-field reset and the module reset both keep the presence layer's identity (labelled Presence (3 fields) and Reset Presence respectively); a neutral layer renders the decoded source byte and a second reset is a no-op",
-            json!({"layer": presence_layer, "group_label": "Presence (3 fields)", "module_label": "Reset Presence"}),
+            "the group's own three-field reset and the module reset both keep the presence layer's identity (both labelled Reset Presence); a neutral layer renders the decoded source byte and a second reset is a no-op",
+            json!({"layer": presence_layer, "group_label": "Reset Presence", "module_label": "Reset Presence"}),
         );
 
         // 3. The undo/redo/preview/restore/reopen journey, render.sample against the raster (at

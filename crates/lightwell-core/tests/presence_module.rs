@@ -512,7 +512,7 @@ fn plan_labels_and_values_through_the_editor_service() {
         .expect("the group reset");
     assert_eq!(
         label_of(&service, &asset, group_reset.created_entry_id.clone()),
-        "Presence (3 fields)"
+        "Reset Presence"
     );
 
     // `reset-presence` labels itself, keeps the layer and is a no-op on an already-neutral one.

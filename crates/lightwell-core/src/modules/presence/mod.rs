@@ -391,6 +391,14 @@ impl ToolModule for PresenceModule {
                     // An empty patch changes nothing and commits no entry; the host falls back to
                     // the action's own title if it ever asks.
                     [] => None,
+                    // The group's reset preset sends every field at neutral: name it as Basic and
+                    // the vignette name theirs, not by its field count.
+                    fields
+                        if fields.len() == FIELDS.len()
+                            && fields.iter().all(|(_, value)| *value == NEUTRAL) =>
+                    {
+                        Some("Reset Presence".into())
+                    }
                     fields => Some(format!("Presence ({} fields)", fields.len())),
                 }
             }
@@ -785,8 +793,8 @@ mod tests {
                 SET_PRESENCE,
                 json!({"texture": 0.0, "clarity": 0.0, "dehaze": 0.0})
             ),
-            "Presence (3 fields)",
-            "a group reset is a three-field patch, not a named group like the mixer's"
+            "Reset Presence",
+            "the group's reset sends every field at neutral and is named as the module reset is"
         );
         assert_eq!(
             module.label(&ActionInput {
