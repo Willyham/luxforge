@@ -287,14 +287,15 @@
     {
       "id": "TASK-006",
       "description": "Implement the Presence module: descriptor (spatial effect, Texture, Clarity and Dehaze number parameters, one group with sliders and a module reset, collapsed section after Basic), the set-presence field patch and reset-presence, labels and values, the three frozen units as SpatialUnit implementations with their halos and the dehaze global estimate, and compile of a neutral payload to nothing.",
-      "status": "pending",
+      "status": "completed",
       "dependencies": [
         "TASK-005"
       ],
       "extra_context": [
         "Production matches the presence study's f64 references within the frozen tolerances on every fixture; the tiled path equals the whole-frame reference; halos on the edge fixtures stay under the study's bound; the hazed-image recovery figure reproduces.",
         "Unit order inside the layer is dehaze, texture, clarity; the study may reorder it before this task starts, and the order is then frozen there.",
-        "Performance checklist: no allocation beyond the primitive's tiles and estimates; plan compares payloads only; slider latency and settled histogram at 24 MP and 60 MP recorded per slider."
+        "Performance checklist: no allocation beyond the primitive's tiles and estimates; plan compares payloads only; slider latency and settled histogram at 24 MP and 60 MP recorded per slider.",
+        "Evidence: lightwell.presence (collapsed, spatial stage, effect lightwell.presence.adjust, single layer) with texture, clarity and dehaze, set-presence patch and reset-presence, labels and values, one group with three sliders, units in the frozen order dehaze, texture, clarity with amount-0 units omitted, neutral compiled to an empty spatial operation that the host drops so the source stays shared; production matches the ten oracle cases to 1.3e-6 in linear light against a 2e-4 tolerance, tiled and whole-frame evaluation agree exactly at tile sizes 4, 7, 16, 128 and 512, rendered codes are within one code of the reference on the byte and RAW paths, halos equal the study table, samples equal rendered bytes, greys stay grey. A host defect was found and fixed: the estimate store keyed entries by unit position, so omitting a neutral unit handed dehaze another unit's cached answer; the key now carries the unit's description. Release timing on the M4 Pro (14 workers, in-memory, warm): 24 MP texture 212 ms, clarity 191 ms, dehaze 129 ms, all three 1.67 s p50; 60 MP 588 / 690 / 339 ms and 12.4 s; the all-three case reads 1408 px input for each 512 px tile and drops concurrency to 4 and 2, a structural cost of the summed halo the study anticipated. Workspace suites, clippy and check-repository pass."
       ],
       "context_links": [
         {
