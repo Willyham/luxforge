@@ -215,7 +215,7 @@ pub(crate) fn run(config: Config, size: (f32, f32)) -> Result<(), String> {
         config,
         window: size,
     }));
-    iced::application(
+    let application = iced::application(
         move || {
             Editor::new(
                 boot.lock()
@@ -237,9 +237,15 @@ pub(crate) fn run(config: Config, size: (f32, f32)) -> Result<(), String> {
         ..iced::window::Settings::default()
     })
     .theme(lightwell_ui::theme::theme())
-    .subscription(Editor::subscription)
-    .run()
-    .map_err(|error| error.to_string())
+    .subscription(Editor::subscription);
+    // The bundled typeface is registered once, before the first frame, from bytes compiled into
+    // the binary; every text run after that resolves it from the renderer's font database.
+    lightwell_ui::theme::FONT_FILES
+        .into_iter()
+        .fold(application, |application, file| application.font(file))
+        .default_font(lightwell_ui::theme::FONT)
+        .run()
+        .map_err(|error| error.to_string())
 }
 
 /// The display-proxy frame of one generation, retained beside the exact raster.

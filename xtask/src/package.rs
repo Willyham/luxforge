@@ -36,6 +36,29 @@ fn native_raw_notices(root: &Path, out: &Path) -> Result {
     Ok(())
 }
 
+/// Copies the bundled UI font's provenance and its SIL Open Font License beside the other notices.
+fn bundled_font_notices(root: &Path, out: &Path) -> Result {
+    let source = root.join("crates/lightwell-ui");
+    let notices = [
+        ("THIRD_PARTY.md", "lightwell-ui/THIRD_PARTY.md"),
+        (
+            "assets/fonts/inter-4.1/LICENSE.txt",
+            "inter-4.1/LICENSE.txt",
+        ),
+    ];
+    for (from, to) in notices {
+        let input = source.join(from);
+        ensure(
+            input.is_file(),
+            format!("Missing bundled font notice: {}", input.display()),
+        )?;
+        let destination = out.join("fonts").join(to);
+        fs::create_dir_all(destination.parent().ok_or("Notice parent")?)?;
+        fs::copy(input, destination)?;
+    }
+    Ok(())
+}
+
 pub fn inventory(root: &Path, out: &Path) -> Result {
     let target = host(root)?;
     let data: Value = serde_json::from_str(&output(
@@ -85,6 +108,7 @@ pub fn inventory(root: &Path, out: &Path) -> Result {
         }
     }
     native_raw_notices(root, out)?;
+    bundled_font_notices(root, out)?;
     write_json(
         &out.join("dependencies.json"),
         &json!({
@@ -109,6 +133,17 @@ pub fn inventory(root: &Path, out: &Path) -> Result {
                 }
             ],
             "native_provenance":"native/lightwell-raw/THIRD_PARTY.md",
+            "bundled_fonts":[
+                {
+                    "name":"Inter",
+                    "version":"4.1",
+                    "revision":"e3a3d4c57d5ecc01453a575621882a384c1995a3",
+                    "files":["Inter-Regular.ttf","Inter-SemiBold.ttf"],
+                    "license":"OFL-1.1",
+                    "notices":"fonts/inter-4.1",
+                    "provenance":"fonts/lightwell-ui/THIRD_PARTY.md"
+                }
+            ],
             "review_status":"Inventory only; manual license, native and asset reviews deferred"
         }),
     )?;
@@ -208,6 +243,19 @@ mod tests {
         assert!(
             tmp.path()
                 .join("native/lightwell-raw/THIRD_PARTY.md")
+                .is_file()
+        );
+    }
+    #[test]
+    fn copies_the_bundled_font_licence() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        bundled_font_notices(root, tmp.path()).unwrap();
+        let licence = fs::read_to_string(tmp.path().join("fonts/inter-4.1/LICENSE.txt")).unwrap();
+        assert!(licence.contains("SIL OPEN FONT LICENSE Version 1.1"));
+        assert!(
+            tmp.path()
+                .join("fonts/lightwell-ui/THIRD_PARTY.md")
                 .is_file()
         );
     }

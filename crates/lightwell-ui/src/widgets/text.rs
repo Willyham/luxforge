@@ -4,16 +4,13 @@ use crate::theme;
 use iced::alignment::Horizontal;
 use iced::widget::text::{LineHeight, Wrapping};
 use iced::widget::{container, text};
-use iced::{Element, Font, Length, font::Weight};
+use iced::{Element, Length};
 
 /// 13 pt semibold text: module and section titles.
 pub fn title<'a, M: Clone + 'a>(content: impl Into<String>) -> Element<'a, M> {
     text(content.into())
         .size(theme::SIZE_TITLE)
-        .font(Font {
-            weight: Weight::Semibold,
-            ..Font::DEFAULT
-        })
+        .font(theme::FONT_SEMIBOLD)
         .color(theme::TEXT_PRIMARY)
         .into()
 }
@@ -93,10 +90,7 @@ pub fn control_label<'a>(content: impl Into<String>, enabled: bool) -> iced::wid
 pub fn group_label<'a, M: Clone + 'a>(content: impl Into<String>) -> Element<'a, M> {
     text(content.into())
         .size(theme::SIZE_CAPTION)
-        .font(Font {
-            weight: Weight::Semibold,
-            ..Font::DEFAULT
-        })
+        .font(theme::FONT_SEMIBOLD)
         .color(theme::TEXT_SECONDARY)
         .wrapping(Wrapping::None)
         .into()

@@ -4,8 +4,9 @@
 //! writes an ad hoc colour or size. Values are copied from the visual language table in
 //! `docs/design/develop-workspace.md`; the unit tests in this module assert the copy is exact.
 
+use iced::font::Weight;
 use iced::widget::{button, container, slider, text_input};
-use iced::{Background, Border, Color, Padding, Shadow, Theme};
+use iced::{Background, Border, Color, Font, Padding, Shadow, Theme};
 
 // -- Surfaces ---------------------------------------------------------------------------------
 
@@ -112,6 +113,26 @@ pub const GUIDE: Color = Color {
     b: 1.0,
     a: 0.30,
 };
+
+// -- Typeface -------------------------------------------------------------------------------
+
+/// The one family every piece of workspace text is set in: Inter, bundled so a real semibold
+/// instance exists on every platform. Iced's text engine cannot pick a semibold instance out of
+/// the macOS variable system font, so a `Font::DEFAULT` weight request rendered regular.
+pub const FONT_FAMILY: &str = "Inter";
+/// Regular text; also the application's default font, so a widget that names no font uses it.
+pub const FONT: Font = Font::with_name(FONT_FAMILY);
+/// Semibold text: module and section titles and sub-group labels.
+pub const FONT_SEMIBOLD: Font = Font {
+    weight: Weight::Semibold,
+    ..FONT
+};
+/// The bundled static instances of [`FONT_FAMILY`] (Inter 4.1, SIL Open Font License 1.1; see
+/// `crates/lightwell-ui/THIRD_PARTY.md`). The application registers them once at startup.
+pub const FONT_FILES: [&[u8]; 2] = [
+    include_bytes!("../assets/fonts/inter-4.1/Inter-Regular.ttf"),
+    include_bytes!("../assets/fonts/inter-4.1/Inter-SemiBold.ttf"),
+];
 
 // -- Type sizes -----------------------------------------------------------------------------
 
@@ -595,6 +616,36 @@ mod tests {
         assert_eq!(SIZE_TITLE, 13.0);
         assert_eq!(SIZE_CAPTION, 11.0);
         assert_eq!(SIZE_SECTION_LABEL, 10.5);
+    }
+
+    /// The `OS/2` weight class of a TrueType file and whether it carries an `fvar` table, read
+    /// straight from the table directory.
+    fn weight_class_and_variation(file: &[u8]) -> (u16, bool) {
+        let be16 = |at: usize| u16::from_be_bytes([file[at], file[at + 1]]);
+        let be32 = |at: usize| u32::from_be_bytes(file[at..at + 4].try_into().unwrap()) as usize;
+        assert_eq!(be32(0), 0x0001_0000, "a TrueType outline file");
+        let mut weight = None;
+        let mut variable = false;
+        for table in 0..usize::from(be16(4)) {
+            let record = 12 + table * 16;
+            match &file[record..record + 4] {
+                b"OS/2" => weight = Some(be16(be32(record + 8) + 4)),
+                b"fvar" => variable = true,
+                _ => {}
+            }
+        }
+        (weight.expect("an OS/2 table"), variable)
+    }
+
+    #[test]
+    fn the_bundled_family_is_static_regular_and_semibold_inter() {
+        assert_eq!(FONT, Font::with_name("Inter"));
+        assert_eq!(FONT_SEMIBOLD.family, FONT.family);
+        assert_eq!(FONT_SEMIBOLD.weight, Weight::Semibold);
+        assert_eq!(
+            FONT_FILES.map(weight_class_and_variation),
+            [(400, false), (600, false)]
+        );
     }
 
     #[test]

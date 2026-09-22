@@ -12,7 +12,7 @@ use crate::theme;
 use iced::alignment::Horizontal;
 use iced::widget::text::Wrapping;
 use iced::widget::{Column, Space, button, column, container, row, text};
-use iced::{Alignment, Border, Color, Element, Font, Length, Padding, Theme, font::Weight};
+use iced::{Alignment, Border, Color, Element, Length, Padding, Theme};
 
 /// Plain data for one module section header.
 #[derive(Debug, Clone, PartialEq)]
@@ -66,10 +66,7 @@ pub fn section_header<'a, M: Clone + 'a>(
         icon(chevron, theme::DISCLOSURE_SIZE, theme::TEXT_SECONDARY),
         text(model.title.clone())
             .size(theme::SIZE_TITLE)
-            .font(Font {
-                weight: Weight::Semibold,
-                ..Font::DEFAULT
-            })
+            .font(theme::FONT_SEMIBOLD)
             .wrapping(Wrapping::None)
             .color(title_color),
     ]
