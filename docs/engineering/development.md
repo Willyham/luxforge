@@ -172,16 +172,26 @@ On macOS, `develop --background` builds the selected profile and runs a temporar
 
 ## Rendered evidence
 
-Smoke runs the built or packaged editor through a deterministic evidence sequence (repeated `--open`, evidence directory, fixed window size, bounded deadlines); there is no separate viewer, so the captured frame is the editor window with its sidebar. Scenarios: `empty`, `load`, `replacement`, `invalid`, `repeated`, `alternating`, `large24`, `large60`, `crop`, `crop-draft`, `workspace`, `basic`, `basic-panel`, `basic-crop`, `basic-restart`, `histogram`, `unavailable`; generate the large fixtures first. Each run writes `result.json`, `app/events.jsonl`, `app/state.json`, `app/frame-*.png` (window-renderer readbacks, not OS screenshots), `subprocess.log` and `reproduce.md`. Each frame records `surface_columns`, the physical x range of the photo surface derived from the editor's layout constants, and the runner verifies fixture colors, Fit geometry and centering within that range, generation and state, backend, exit status and unchanged source hashes before writing `passed`; blank, stale or missing frames fail. The `render_ready` event marks the upload of the open request's preview raster, which is when a frame becomes capturable; when that raster is a display proxy it marks the adoption of the same job's exact phase instead, so a captured frame's histogram, clipping counters and overlay always describe the exact render of the picture on screen. A 25-second application deadline and a 35-second process deadline bound hangs.
+Smoke runs the built or packaged editor through a deterministic evidence sequence (repeated `--open`, evidence directory, fixed window size, bounded deadlines); there is no separate viewer, so the captured frame is the editor window with its sidebar. Scenarios: `empty`, `load`, `replacement`, `invalid`, `repeated`, `alternating`, `large24`, `large60`, `crop`, `crop-draft`, `workspace`, `basic`, `basic-panel`, `basic-crop`, `basic-restart`, `histogram`, `unavailable`; generate the large fixtures first. Each run writes `result.json`, `app/events.jsonl`, `app/state.json`, `app/frame-*.png` (window-renderer readbacks, not OS screenshots), `subprocess.log` and `reproduce.md`. Each frame records `surface_columns`, the physical x range of the photo surface derived from the editor's layout constants, and the runner verifies fixture colors, Fit geometry and centering within that range, generation and state, backend, exit status and unchanged source hashes before writing `passed`; blank, stale or missing frames fail. The `render_ready` event marks the open request's preview raster becoming the photo surface's source, which is when a frame becomes capturable; when that raster is a display proxy it marks the adoption of the same job's exact phase instead, so a captured frame's histogram, clipping counters and overlay always describe the exact render of the picture on screen. A 25-second application deadline and a 35-second process deadline bound hangs.
 
 At Fit, and at any zoom that draws the stage smaller than itself, the frame a scenario captures is
 the **display proxy**: the whole recipe rendered against a source downscaled once to the photo area,
 which is the size the display was going to minify the exact render down to anyway. `preview_displayed`
 therefore carries `proxy`, `proxy_dimensions` (the proxy source's own size, null when there is none),
 `proxy_built` (the proxy source was built for this frame rather than taken from the queue's cache)
-and `reason` (`"zoom"` when the upload is a retained raster a zoom change needed rather than a
+and `reason` (`"zoom"` when the frame is a retained raster a zoom change needed rather than a
 render). Its `dimensions` stay the exact output stage's, which is what picks, the percent-zoom box
-and the overlay cell grid map through. `preview_exact_adopted` records the exact phase of such a job
+and the overlay cell grid map through.
+
+The photograph is drawn by a **photo surface**: a shader primitive that owns one wgpu texture,
+writes the raster it is given into that texture during the frame that draws it, and recreates the
+texture only when the raster's dimensions change. So `preview_displayed` is emitted in the update
+that makes a raster the surface's source, and carries `"path": "surface"` to say so; the pixels are
+on screen in the redraw that update requests, with no image-allocation round trip on the input path
+and no upload message to wait for. It therefore carries no `upload_ms`, and neither does
+`render_ready`: there is no upload step to time. The clipping overlay and the crop draft's input
+stage keep the toolkit's image widget and still upload, which is what `clipping_overlay` and the
+draft's own settle report. `preview_exact_adopted` records the exact phase of such a job
 being taken up without an upload, `preview_exact_cancelled` records one a newer value superseded, and
 `clipping_overlay` carries `approximate` while the mask is derived from the proxy on screen rather
 than from that exact raster. `state.json` carries `proxy: {eligible, declined, dimensions, bounds,
@@ -411,11 +421,13 @@ catalog owner's thread and so cannot see scheduling, GPU upload or presentation.
 evidence script, drives the release binary through a background evidence launch, and reads the
 timings out of that run's `events.jsonl`. Each measured input is one scripted `slider` step left
 open, so the step settles only once the gesture has drained: one input, one `draft.set`, one preview
-job, one upload, with nothing from the previous input still in flight. `slider_draft_set` gives the
+job, one frame, with nothing from the previous input still in flight. `slider_draft_set` gives the
 input's time, `slider_draft_preview` names the preview generation that `draft.set` produced, and the
-`preview_displayed` of that generation is when the pixels became a renderer texture. Presented
-therefore means the desktop's `Uploaded` message, not display scanout: the figures are an upper
-bound on the editor's own work and a lower bound on what an eye sees. The measured window is
+`preview_displayed` of that generation is when that raster became the photo surface's source.
+Presented therefore means that update, whose redraw draws the frame, not display scanout: the
+figures are an upper bound on the editor's own work and a lower bound on what an eye sees. The
+report's `gpu_upload` is null with a note for the same reason `preview_displayed` carries no
+`upload_ms`, and `render_and_upload` covers the render and the hand-over together. The measured window is
 invisible, so nothing in these runs is composited or scanned out at all; the figures cover the
 editor's own path to the texture and say nothing about the cost of putting that texture on a
 screen. The last scripted value also

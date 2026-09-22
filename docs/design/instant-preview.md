@@ -29,7 +29,7 @@ A slider dragged back and forth wildly at Fit shows the value under the pointer 
 | Settled exact histogram after the last input, 24 MP | p95 < 200 ms (unchanged) |
 | Idle CPU and process memory | unchanged targets; the proxy adds at most one bounded buffer |
 
-"Presented" keeps its harness meaning: the desktop's `Uploaded` message, when the pixels have become a renderer texture. It is not scanout.
+"Presented" keeps its harness meaning: the desktop update in which the rendered raster became the photo surface's source, drawn by the redraw that update requests. It is not scanout.
 
 ## Design
 

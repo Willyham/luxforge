@@ -169,11 +169,6 @@ pub(crate) enum Message {
     Sync,
     /// Poll the preview queue while a job is in flight.
     Poll,
-    /// The displayed preview's pixels reached the GPU.
-    Uploaded(
-        Upload,
-        Result<image_memory::Allocation, image_memory::Error>,
-    ),
     /// One derived clipping overlay reached the GPU. The generation says which photograph it
     /// belongs to, so an overlay for a replaced frame is dropped instead of drawn over the new one.
     OverlayUploaded(

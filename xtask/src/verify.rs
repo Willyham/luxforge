@@ -736,7 +736,6 @@ fn collect(out: &Path, tier: Tier, entries: &[Entry]) -> (Vec<Value>, Vec<Value>
                 "launch_to_observed_frame_ms",
                 "sampled_peak_rss_mib",
                 "open_to_raster_ms",
-                "upload_ms",
                 "request_to_capture_ms",
             ] {
                 let stat = &result["summary"][workload][metric];

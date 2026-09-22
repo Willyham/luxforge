@@ -58,7 +58,6 @@ pub(crate) struct Upload {
     pub(crate) entry_id: EntryId,
     pub(crate) snapshot_id: String,
     pub(crate) source_fingerprint: String,
-    pub(crate) started: Instant,
     /// These pixels are the display proxy of the frame, not its exact render. `width`/`height`
     /// above are the texture's own size, which at a proxy is the proxy's; the exact stage the
     /// picks, the percent box and the overlay grid map through stays on `Editor::dimensions`.

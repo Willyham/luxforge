@@ -31,10 +31,13 @@ pub(crate) const TOOLS_PANEL_WIDTH: f32 = 300.0;
 /// The status bar's fixed height.
 pub(crate) const STATUS_BAR_HEIGHT: f32 = 26.0;
 
-/// The GPU-resident pixels and the transient draft the canvas borrows for one frame. They are not
-/// view-model data: the model says what to draw, these are what it is drawn from.
+/// The pixels and the transient draft the canvas borrows for one frame. They are not view-model
+/// data: the model says what to draw, these are what it is drawn from.
 pub(crate) struct Surfaces<'a> {
-    pub(crate) photo: Option<&'a image_memory::Allocation>,
+    /// The photograph's own raster. It is plain data rather than an allocation: the photo surface
+    /// owns its texture and writes this into it while it draws, so no round trip stands between a
+    /// rendered frame and the screen.
+    pub(crate) photo: Option<&'a lightwell_ui::PhotoRaster>,
     pub(crate) draft_photo: Option<&'a image_memory::Allocation>,
     /// The clipping overlay's own bounded texture, present only when it belongs to the photograph
     /// on screen. It is a second image laid over the first, never a change to the first.

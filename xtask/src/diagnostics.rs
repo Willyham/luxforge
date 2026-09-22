@@ -308,9 +308,10 @@ pub fn measure(root: &Path, out: &Path, bin: &Path, samples: usize) -> Result {
                     row[k] = last[k].clone();
                 }
                 row["backend"] = last["state"]["backend"].clone();
+                // No upload figure: the photograph is drawn by a surface that writes its own
+                // texture during the frame that draws it, so `render_ready` times no upload step.
                 for (key, event) in [
                     ("open_to_raster_ms", "decoded"),
-                    ("upload_ms", "render_ready"),
                     ("request_to_capture_ms", "frame_captured"),
                 ] {
                     row[key] = json!(
@@ -367,7 +368,6 @@ pub fn measure(root: &Path, out: &Path, bin: &Path, samples: usize) -> Result {
                 "launch_to_observed_frame_ms",
                 "sampled_peak_rss_mib",
                 "open_to_raster_ms",
-                "upload_ms",
                 "request_to_capture_ms",
             ] {
                 let data = rows

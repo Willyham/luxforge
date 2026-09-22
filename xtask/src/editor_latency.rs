@@ -8,7 +8,9 @@
 //! evidence launch, with one `slider` script step per input, and reading the timestamps out of the
 //! run's own `events.jsonl`.
 //!
-//! What "presented" means here: the desktop's `Uploaded` message, recorded as `preview_displayed`.
+//! What "presented" means here: the update in which the rendered raster became the photo surface's
+//! source, recorded as `preview_displayed`. The photograph is drawn by a primitive that owns its
+//! texture, so there is no upload message to wait for and no separate upload figure to report.
 //! That is the moment the rendered pixels have been handed to the renderer as a texture and the
 //! canvas draws them from the next frame on. It is **not** display scanout, which this harness
 //! cannot observe; every figure is therefore an upper bound on the editor's own work and a lower
@@ -135,11 +137,14 @@ struct Input {
     sent_ms: f64,
     /// `slider_draft_preview`: `draft.set` answered and the preview job for it was queued.
     queued_ms: f64,
-    /// `preview_displayed` for that job's generation: its texture is allocated and on screen.
+    /// `preview_displayed` for that job's generation: its raster became the surface's source and
+    /// the redraw that draws it was requested.
     displayed_ms: f64,
     generation: u64,
     draft_revision: u64,
-    /// The desktop's own measurement of the GPU upload inside the interval above.
+    /// The desktop's own measurement of the GPU upload inside the interval above, when the binary
+    /// reports one. The photo surface writes its texture during the frame that draws it, so the
+    /// current binary reports none and this stays `NaN`.
     upload_ms: f64,
 }
 
@@ -207,7 +212,7 @@ fn inputs(events: &[Value]) -> Result<Vec<Input>> {
 /// rendered from that value, then a last value that also releases, which is how a drag ends.
 ///
 /// One value per step is deliberate. An open step settles only when the gesture has drained, so
-/// every measured interval is exactly one input, one `draft.set`, one preview job and one upload,
+/// every measured interval is exactly one input, one `draft.set`, one preview job and one frame,
 /// with nothing from the previous input still in flight. A multi-value step measures the driver's
 /// coalescing instead, which [`burst_step`] does separately.
 ///
@@ -531,12 +536,13 @@ pub fn run(root: &Path, out: &Path, bin: &Path, options: Options) -> Result {
         "mode":options.mode.name(),
         "samples":options.samples,
         "gesture_values":values,
-        "method":"Background evidence launch of the release binary, warm filesystem cache. In drag mode one scripted slider step per input is left open, so the step settles only when the gesture has drained: every interval is one input, one draft.set, one preview job and one upload. In commit mode each step is a whole gesture, moved and released at once, so each sample is one committed frame and its exact histogram. Presented means the desktop's Uploaded message (preview_displayed), when the rendered pixels have become a renderer texture; it is not display scanout.",
+        "method":"Background evidence launch of the release binary, warm filesystem cache. In drag mode one scripted slider step per input is left open, so the step settles only when the gesture has drained: every interval is one input, one draft.set, one preview job and one frame. In commit mode each step is a whole gesture, moved and released at once, so each sample is one committed frame and its exact histogram. Presented means preview_displayed: the update in which the rendered raster became the photo surface's source, drawn by the redraw that update requests; it is not display scanout.",
         "timings_ms":{
             "input_to_presented_frame":distribution(input_to_frame),
             "draft_set_round_trip":distribution(set_round_trip),
             "render_and_upload":distribution(render_and_upload),
-            "gpu_upload":distribution(upload),
+            "gpu_upload":if upload.is_empty() { Value::Null } else { distribution(upload) },
+            "gpu_upload_note":"null when the binary's preview_displayed carries no upload_ms, which is true of the photo surface: the raster is written into the surface's own texture during the frame that draws it, so there is no upload step to time. render_and_upload then covers the render and the hand-over together.",
             "final_input_to_settled_histogram":distribution(settled_from_input),
             "commit_to_settled_histogram":distribution(settled_from_commit),
         },
@@ -800,7 +806,7 @@ fn run_burst(root: &Path, out: &Path, bin: &Path, options: &Options) -> Result {
         "mode":"burst",
         "samples":Value::Null,
         "gesture_values":values,
-        "method":format!("Background evidence launch of the release binary, warm filesystem cache. --samples is ignored: every burst run sends the same fixed {} values over {} s at {} values/s, paced one per tick of the desktop's own paced slider step rather than sent all at once, so the driver's real coalescing runs on them. Presented means the desktop's Uploaded message (preview_displayed), when the rendered pixels have become a renderer texture; it is not display scanout.", values.len(), BURST_SECONDS, BURST_RATE_PER_SEC),
+        "method":format!("Background evidence launch of the release binary, warm filesystem cache. --samples is ignored: every burst run sends the same fixed {} values over {} s at {} values/s, paced one per tick of the desktop's own paced slider step rather than sent all at once, so the driver's real coalescing runs on them. Presented means preview_displayed: the update in which the rendered raster became the photo surface's source, drawn by the redraw that update requests; it is not display scanout.", values.len(), BURST_SECONDS, BURST_RATE_PER_SEC),
         "queue":{
             "scripted_slider_values":values.len(),
             "draft_set_requests":analysis.draft_sets,

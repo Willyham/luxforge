@@ -1905,6 +1905,7 @@ name = "lightwell-ui"
 version = "0.0.0"
 dependencies = [
  "iced",
+ "wgpu",
 ]
 
 [[package]]
