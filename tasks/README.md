@@ -8,6 +8,7 @@ Each JSON file is an independent plan. IDs start at `TASK-001` inside every file
 | [UI components](implementation-ui-components.json) | The closed control vocabulary for modules: new parameter and control kinds, pure widgets, desktop gesture rules, a controls proof module and rendered evidence, per the accepted [design](../docs/design/ui-components.md); completed with native M4 captures and scoped before/after timing evidence |
 | [Shared module capabilities](module-capabilities.json) | Proposed host-owned settings, permissions, secure credentials, resource jobs and durable derived artifacts for modules |
 | [Corrections](corrections.json) | Proposed offline Clone/Heal and optional provider-agnostic AI Remove, with a qualified local-model path and explicit owner decisions |
+| [Presets](presets.json) | Settings sets applied as one history entry by the presets module, a catalog preset library and Lightroom XMP and .lrtemplate import with a per-setting report, per the [design](../docs/design/presets.md) |
 | [Dependency advisories](dependency-advisories.json) | Remove or re-review the two expiring advisory exceptions the dependency audit enforces |
 | [Product decisions](product-decisions.json) | Open product questions |
 
