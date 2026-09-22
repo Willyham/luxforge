@@ -221,7 +221,7 @@
     {
       "id": "TASK-005",
       "description": "Implement the spatial primitive in the host: Processing::Spatial with at most four SpatialUnit units, the stage boundary in compile and segment evaluation on the JPEG and RAW paths, tiled 512 \u00d7 512 halo-bounded execution on the shared Rayon pool with a separate 256 MiB spatial budget and batch-limited concurrency, cancellation between tiles, compile-time refusal of an over-bound halo or an over-budget tile, the 1/16-scale global-estimate reduction with its eight-entry cache, and the bounded point-sample path through a spatial layer.",
-      "status": "pending",
+      "status": "completed",
       "dependencies": [
         "TASK-001",
         "TASK-002"
@@ -229,7 +229,8 @@
       "extra_context": [
         "Proved with a test unit (a box blur with a declared halo and a global mean estimate), not with the presence units: tiled output agrees with a whole-frame reference within the frozen tolerance for tile sizes 128 and 512 and is deterministic across runs; render.sample through the unit equals the rendered byte because it evaluates the stage-aligned tile that contains the point; a sample allocates at most one tile and, on an estimate cache miss, one 1/16-scale reduction. On the RAW linear path the operation pulls its input tiles through the compiled prefix and writes one float frame the rest of the evaluation pulls from.",
         "At most two full frames exist at once; the frame limit, scratch budget and one-megapixel threshold are unchanged. No full-frame float buffer on the JPEG path. Nothing runs on the owner thread. Neutral operations compile to nothing and keep source sharing.",
-        "Performance checklist: new allocations are the tile planes (bounded by the scratch budget), the reduction (at most 0.25 MP) and the estimate store (at most 32 KiB); measured 24 MP and 60 MP before/after render figures recorded with scope."
+        "Performance checklist: new allocations are the tile planes (bounded by the scratch budget), the reduction (at most 0.25 MP) and the estimate store (at most 32 KiB); measured 24 MP and 60 MP before/after render figures recorded with scope.",
+        "Evidence: Processing::Spatial over SpatialUnit (halo, scratch_bytes, prepare, apply on planar f32 Region rectangles with the shrink-by-own-halo output rule), Entry::Spatial segments on the byte path (a new u8 frame from 512 px stage-aligned tiles, previous frame dropped) and the RAW linear path (one f32 output frame pulled per tile through the prefix), a 256 MiB SpatialBudget with the working set computed up front and batch-limited concurrency, refusals for halo above 512 px, more than four units, non-finite units and an over-budget tile, the 1/16 reduction and an eight-entry estimate store keyed by source, prefix hash, stage and unit, a Cancel token checked between batches and wired into the preview worker, and point samples that evaluate the stage-aligned tile through the same run_tile function. Tests: tiled renders match an f64 reference within 1e-5 at tile sizes 128 and 512 (JPEG) and 64 and 512 (RAW), byte-identical across tile sizes and runs, under a rotate, around replacements and past a crop resample; sample equals every rendered byte on both paths; cache hit, miss and eviction; cancellation; refusals. Release timing of the naive box-blur test unit on the M4 Pro (14 workers): 24 MP r=137 p50 2.5 s, 60 MP r=224 p50 15.0 s, budget peak 240 MiB; a host-mechanism figure, not a Presence prediction. Workspace suites, clippy and check-repository pass."
       ],
       "context_links": [
         {
