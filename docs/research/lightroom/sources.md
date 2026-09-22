@@ -2,7 +2,7 @@
 
 [Knowledge base index](README.md)
 
-Sources S01–S44 were checked online on **2026-09-20**; S45–S48 and relevant existing sources were checked on **2026-09-22**. Dates in the entries describe the source, not the retrieval. This register is an annotated bibliography, not a claim that every linked API or feature was tested. Adobe pages often combine new sections with older text; the chapters record material conflicts. Summaries are deliberately concise; follow the original for figures, demonstrations and full procedures.
+Sources S01–S44 were checked online on **2026-09-20**; S45–S48 and relevant existing sources were checked on **2026-09-22**; S49–S58 on **2026-09-23**. Dates in the entries describe the source, not the retrieval. This register is an annotated bibliography, not a claim that every linked API or feature was tested. Adobe pages often combine new sections with older text; the chapters record material conflicts. Summaries are deliberately concise; follow the original for figures, demonstrations and full procedures.
 
 Evidence labels: **D** = documented product behavior; **H** = historical engineering evidence; **C** = conceptual explanation; **P** = Lightwell proposal; **U** = unknown. Mirrored SDK documentation is identified explicitly; no forum speculation is used as algorithm evidence.
 
@@ -56,6 +56,16 @@ Evidence labels: **D** = documented product behavior; **H** = historical enginee
 | S46 | [October 2020 photography release](https://blog.adobe.com/en/publish/2020/10/20/lightroom-max-release-more-power-editing-precision-growing-photography-community) | Adobe Blog; 2020-10-20 | Release-era claim of up to 2× faster GPU rendering for local corrections and their sliders; no absolute timing. |
 | S47 | [February 2018 Lightroom Classic update](https://blog.adobe.com/en/publish/2018/02/13/announcing-february-update-lightroom-classic) | Adobe Blog; 2018-02-13 | Multicore CPU/memory optimization and faster Develop adjustment rendering in that release; no current thread model. |
 | S48 | [Adobe MAX 2024 Lightroom update](https://blog.adobe.com/en/publish/2024/10/14/more-power-photographers-explore-latest-from-lightroom-adobe-max-2024) | Adobe Blog; 2024-10-14 | Develop image-navigation speed claim and memory/cache changes; not slider latency evidence. |
+| S49 | [clebert/lightroom-preset `example.xmp`](https://github.com/clebert/lightroom-preset/blob/main/example.xmp) | Open-source preset generator; real XMP develop preset, retrieved 2026-09-23 | Attribute and child-element layout, lang-alt `Name`, nested `crs:Look` reference, `rdf:Seq` tone curves, `ProcessVersion="11.0"`, `0`/`1` flag encoding. One generator's output, not Adobe's writer. |
+| S50 | [fmeyer/lightroom-plugins `Portrait.lrtemplate`](https://github.com/fmeyer/lightroom-plugins/blob/master/Portrait.lrtemplate) | Real legacy template; retrieved 2026-09-23 | `.lrtemplate` table shape, earlier-process fields with no `ProcessVersion`, `Enable*` panel switches, flat curve arrays. |
+| S51 | [karaage0703/lightroom-presets `NightFactory.lrtemplate`](https://github.com/karaage0703/lightroom-presets/blob/master/NightFactory.lrtemplate) | Real legacy template; retrieved 2026-09-23 | Optional `id`, `*2012` fields with `ProcessVersion = "6.7"`. |
+| S52 | [ExifTool XMP tags, `crs` table](https://exiftool.org/TagNames/XMP.html) | ExifTool reference; retrieved 2026-09-23 | Current `crs` field list, types and several choice tables. A widely used third-party parser, not an Adobe specification. |
+| S53 | [Camera Raw namespace](https://developer.adobe.com/xmp/docs/xmp-namespaces/crs/) | Adobe Developer; page stamped 2026-03-02 | Namespace URI and pre-2012 fields with their ranges, including RAW `Temperature` and `Tint`. Omits every field added since Process 2012. |
+| S54 | [Presets FAQ](https://helpx.adobe.com/lightroom-classic/desktop/kb/presets-faq.html) | Adobe Help; retrieved 2026-09-23 (refuses some automated fetchers) | Settings folder paths, partial compatibility, RAW-only profiles on JPEGs. |
+| S55 | [Apply presets](https://helpx.adobe.com/lightroom-classic/help/apply-presets.html) | Adobe Help; retrieved 2026-09-23 | Choosing included settings, Support Amount Slider, faded partially compatible presets, User Presets group on import. |
+| S56 | [Why can't crop be saved as a preset](https://community.adobe.com/t5/lightroom-classic-discussions/why-can-t-crop-be-saved-as-a-preset/td-p/15396607) | Adobe Community; retrieved 2026-09-23 | User feature request confirming develop presets exclude crop. Forum evidence of product behavior only. |
+| S57 | [Presets that include masks](https://scottdavenportphoto.com/blog/make-powerful-lightroom-presets-by-including-masks-in-them) | Photographer's tutorial; retrieved 2026-09-23 | The preset dialog's Masking section. Third-party. |
+| S58 | [Import a DNG preset](https://helpx.adobe.com/lightroom/mobile/work-with-presets/import-dng-preset.html) | Adobe Help (Lightroom mobile); retrieved 2026-09-23 | DNG presets as photographs turned into presets; Masking excluded from default preset categories. |
 
 ## Retrieval limits and excluded evidence
 

@@ -28,7 +28,7 @@ A settings set is a JSON object whose keys are field-patch action identities and
 }
 ```
 
-**Presettable actions.** Any action a registered module declares with `patch: true` can be named. Today that is `set-basic`, `set-presence`, `set-mixer` and `set-vignette`, plus `set-controls` in developer mode. A field patch updates one module's single layer, which is exactly a portable setting. Everything else is excluded: RAW source development (`set-raw-*`, `pick-raw-neutral`, `use-as-shot-wb`) is per-capture interpretation with no field patch, transforms and crop are per-photo geometry, and the pixel proof is a test tool. Lightroom Classic excludes crop from develop presets for the same reason.
+**Presettable actions.** Any action a registered module declares with `patch: true` can be named. Today that is `set-basic`, `set-presence`, `set-mixer` and `set-vignette`, plus `set-controls` in developer mode. A field patch updates one module's single layer, which is exactly a portable setting. Everything else is excluded: RAW source development (`set-raw-*`, `pick-raw-neutral`, `use-as-shot-wb`) is per-capture interpretation with no field patch, transforms and crop are per-photo geometry, and the pixel proof is a test tool. Lightroom Classic excludes crop from develop presets for the same reason ([preset formats](../research/lightroom/presets.md#what-a-preset-can-contain)).
 
 **Bounds.** At most 16 actions and 64 fields per action. Each value is checked against the named action's own parameter descriptors when the set is stored and again when it is applied.
 
@@ -146,9 +146,27 @@ Every method is a host method listed by `schema.list`. Mutating methods take `ac
 
 **Lightwell preset document.** `{"format": "lightwell.preset", "version": 1, "name", "group"?, "settings"}`, with no other keys. Any other version is refused explicitly. `preset.export` writes this document with the file name `<name>.lwpreset`. Its report maps every field one to one.
 
-**Lightroom XMP.** The document is parsed with `roxmltree` (already in the lockfile through the Iced text stack, pinned at 0.20.0) under the `http://ns.adobe.com/camera-raw-settings/1.0/` namespace, whatever prefix the file uses. Settings are read from the `rdf:Description` element's attributes and from its simple child elements. `rdf:Alt` values take the `x-default` item and `rdf:Seq` values take their items in order. A file with no Camera Raw settings is refused. A file that declares itself a profile or a look (`crs:PresetType` other than `Normal`, or a `crs:Look` or camera-profile payload with no develop settings) is refused with `unsupported-input: Lightroom profiles are not presets`. A photo's XMP sidecar holds the same settings and imports the same way; its crop and other per-photo settings appear in the report as unsupported.
+The [preset file formats](../research/lightroom/presets.md) chapter of the Lightroom knowledge base is the evidence for everything below.
 
-**Legacy `.lrtemplate`.** The file is a Lua table assignment, `s = { … }`. A small bounded parser reads exactly the subset Lightroom writes: tables with `key = value` and positional entries, double-quoted strings with escapes, long strings, numbers, `true` and `false`, and `ZSTR "…"` localized strings. It keeps the default text after `=` in a `$$$/Key=Text` string. Nesting deeper than 16 levels or more than 100,000 values is a `resource-limit` error, and anything outside the subset is `unsupported-input` with the byte offset. The name comes from `title` and the settings from `value.settings`. A template whose `type` is not `Develop` is refused.
+**Lightroom XMP.** The document is parsed with `roxmltree` under the `http://ns.adobe.com/camera-raw-settings/1.0/` namespace, whatever prefix the file uses. `roxmltree` is already in the lockfile through the Iced text stack and is pinned at 0.20.0. Settings come from the attributes of the `rdf:Description` elements that carry Camera Raw fields, and from their child elements:
+
+- `rdf:Alt` takes its `x-default` item.
+- `rdf:Seq` takes its items in order.
+- A nested `rdf:Description`, such as `crs:Look` or a mask container, is one structured setting whose report value summarizes it.
+- Attributes in other namespaces, such as a sidecar's `exif:` and `tiff:` fields, are not settings.
+
+A file with no Camera Raw fields is refused. A file whose `crs:PresetType` is present and is not `Normal` is a profile or a look, and is refused with `unsupported-input: Lightroom profiles are not presets`. A nested `crs:Look` inside a develop preset is only a reference to the profile that was active when it was saved, and is reported as a setting. A photo's XMP sidecar holds the same settings and imports the same way; its crop and other per-photo settings appear in the report as unsupported.
+
+**Legacy `.lrtemplate`.** The file is a Lua table assignment, `s = { … }`. A small bounded parser reads exactly the subset Lightroom writes:
+
+- tables with `key = value` and positional entries, including trailing commas
+- double-quoted strings with escapes, and long strings
+- numbers, `true` and `false`
+- `ZSTR "…"` localized strings, keeping the default text after `=` in a `$$$/Key=Text` string
+
+Nesting deeper than 16 levels or more than 100,000 values is a `resource-limit` error. Anything outside the subset is `unsupported-input`, with the byte offset. The name comes from `title`, then `internalName`, and the settings come from `value.settings`. A flat curve array `{x1, y1, x2, y2, …}` is read as that curve's points. A template whose `type` is not `Develop` is refused.
+
+**Values.** Numbers are accepted with or without a leading `+`. Booleans are accepted as `True` and `False` in any case, as `0` and `1`, and as Lua `true` and `false`.
 
 **Name and group.** The name comes from `crs:Name`, then the template's `title`, then the file name without its extension, then the literal `Imported preset`. The group comes from `crs:Group`, then the request's `group`, then `Imported`. The request's `name` and `group` override both, which is how a client resolves a duplicate.
 
@@ -167,14 +185,19 @@ A mapped value is a **value transfer**: the same number on a control with the sa
 | `Texture`, `Clarity2012`, `Dehaze` | `set-presence.texture`, `clarity`, `dehaze` | Value transfer, −100..+100 |
 | `HueAdjustment<Range>`, `SaturationAdjustment<Range>`, `LuminanceAdjustment<Range>` for Red, Orange, Yellow, Green, Aqua, Blue, Purple and Magenta | `set-mixer.<range>-hue`, `-saturation`, `-luminance` | Value transfer, −100..+100 |
 | `PostCropVignetteAmount`, `PostCropVignetteMidpoint`, `PostCropVignetteRoundness`, `PostCropVignetteFeather` | `set-vignette.amount`, `midpoint`, `roundness`, `feather` | Value transfer |
-| `WhiteBalance`, `Temperature`, `Tint` | none | **Refused.** Lightroom's RAW Kelvin and tint scale is not Lightwell's RAW tint unit, and the owner kept Lightwell's validated RAW range. Converting them needs a calibrated conversion. `As Shot` and named modes have no field-patch equivalent |
-| Earlier process-version names: `Exposure`, `Contrast`, `Brightness`, `Shadows`, `FillLight`, `HighlightRecovery`, `Clarity` and the like | none | **Refused** when non-neutral, with the reason that their meaning belongs to an earlier process version. Listed as neutral when at their defaults |
-| Tone curves, colour grading and split toning, sharpening, noise reduction, grain, lens and chromatic-aberration corrections, transform and upright, calibration, black-and-white mix, profiles, masks and local corrections, spot removal, crop | none | **Unsupported**: Lightwell has no such tool. Listed as neutral when the setting or the amount that controls it is at its neutral value |
-| `PostCropVignetteStyle`, `PostCropVignetteHighlightContrast` | none | Lightwell draws one vignette style. Neutral when the vignette amount is 0 or the setting is at its default, otherwise unsupported |
-| Preset metadata: `PresetType`, `UUID`, `Cluster`, `Supports*`, `Version`, `ProcessVersion`, `HasSettings`, `Name`, `Group` and the like | none | Recorded in `origin` where useful and never reported as settings |
+| `Temperature`, `Tint` | none | **Refused.** These are RAW-only Kelvin and tint values, on a scale that is not Lightwell's RAW tint unit, and the owner kept Lightwell's validated RAW range. Carrying them needs a calibrated conversion |
+| `WhiteBalance` | none | Neutral when the preset carries `IncrementalTemperature` or `IncrementalTint` and no `Temperature` or `Tint`, because the incremental values then carry the white balance. Otherwise **refused**: `As Shot`, `Auto` and the named modes set RAW white balance, which no field patch can do |
+| `CameraProfile` and a nested `Look` | none | Neutral when they name Lightroom's default profile (`Adobe Standard` or `Adobe Color`), because Lightwell keeps its own neutral rendering. Any other profile is unsupported, because Lightwell has no profiles |
+| Earlier process-version fields: `Exposure`, `Contrast`, `Brightness`, `Shadows`, `FillLight`, `HighlightRecovery`, `Clarity`, `ToneCurve`, `ToneCurveName` and the `Auto*` switches of those versions | none | Neutral in a Process 2012 or later preset, because Lightroom does not render them there. In an earlier-process preset they are **refused**, because their meaning and domains differ from the 2012 fields |
+| Tone curves, parametric curve, colour grading and split toning, sharpening, noise reduction, grain, lens and chromatic-aberration corrections, lens vignetting, defringe, transform and upright, calibration, black-and-white conversion and mix, Auto Tone, masks and local corrections, spot removal, red eye, crop | none | **Unsupported**: Lightwell has no such tool. Neutral when the setting is at its neutral value, or when it only qualifies an amount that is itself neutral: a sharpening radius when `Sharpness` is 0, a grain size when `GrainAmount` is 0, a hue when its saturation is 0, a mix when `ConvertToGrayscale` is false, a crop rectangle when `HasCrop` is false, and an identity curve |
+| `PostCropVignetteStyle`, `PostCropVignetteHighlightContrast` | none | Lightwell draws one vignette style. Neutral when the vignette amount is 0 or the setting is at its default (style 1, contrast 0), otherwise unsupported |
+| Panel switches: `Enable*` in templates | none | Never settings themselves. When one is `false`, the settings of that panel are not in effect in the preset. Mapped settings of that panel are **refused** (`disabled in the preset`), and unsupported ones are neutral |
+| Preset metadata: `PresetType`, `UUID`, `Cluster`, `Supports*`, `Version`, `ProcessVersion`, `HasSettings`, `RequiresRGBTables`, `CameraModelRestriction`, `Copyright`, `ContactInfo`, `Name`, `ShortName`, `SortName`, `Group`, `Description`, and sidecar bookkeeping such as `RawFileName` and `AlreadyApplied` | none | Recorded in `origin` where useful and never reported as settings |
 | Anything else | none | Unsupported: `not recognised` |
 
-A value is parsed as Lightroom writes it (`+0.50`, `-12`, `True`). A value that does not parse, or lies outside the target's hard range, is **refused** with its reason. It is never clamped. When the preset carries a `ProcessVersion` earlier than 6.7 (Process 2012), every mapped setting is refused, because the 2012 names are then not what that process version renders.
+A value is parsed as Lightroom writes it (`0.5`, `+0.50`, `-12`, `True`). A value that does not parse, or lies outside the target's hard range, is **refused** with its reason. It is never clamped.
+
+**Process version.** A preset is *modern* when its `ProcessVersion` is 6.7 (Process 2012) or later, or when it has no `ProcessVersion` and does not use the earlier-process tone fields as its tone controls. A preset with an earlier `ProcessVersion`, or with none and only earlier-process tone fields, is *legacy*. In a legacy preset every mapped setting is refused, because Lightwell's controls follow the 2012 names and not what that process version renders.
 
 ### Report
 
@@ -212,7 +235,7 @@ The library refreshes at startup, after the desktop's own preset calls and when 
 ## Verification
 
 - **Core unit and integration tests.** They cover the kinds' generic checks, registry validation of the `presets` control and composite plans, and one entry per apply with the exact stack and label. They also cover no-op, partial fields keeping untouched values, undo and restore, unknown, non-patch, unavailable and nested steps, duplicate names, bounds and format 4 refusal.
-- **Importer tests.** They run on checked-in fixture presets: an XMP with attributes and child elements, a non-`crs` prefix, a profile, an earlier process version, an out-of-range value, a sidecar and a `.lrtemplate` with `ZSTR` and nested tables. Each asserts the exact settings and report.
+- **Importer tests.** They run on checked-in fixture presets: an XMP with attributes and child elements, a nested default `crs:Look`, a non-`crs` prefix, a profile, an earlier process version, an out-of-range value, a sidecar with crop, a `.lrtemplate` with `ZSTR`, flat curve arrays and a `false` panel switch, and a Lightwell document. Each asserts the exact settings and report.
 - **JSON CLI parity.** A test imports, lists, applies, undoes, captures, creates, exports, re-imports and deletes through `lightwell-json`. It asserts that the resulting stacks and pixels equal the same edits made with `edit.set-*`.
 - **Rendered check.** A `presets` smoke scenario imports a fixture preset, applies it from the section, captures the frame with the correlated history and recipe, and checks the rendered pixels against the equivalent `edit.set-*` stack.
 - **Performance.** No render or source access on any preset path except the apply's ordinary preview. Import parse time for a 1 MiB document is measured on the M4.

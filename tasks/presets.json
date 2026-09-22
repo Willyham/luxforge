@@ -72,6 +72,12 @@
         },
         {
           "kind": "file",
+          "label": "Lightroom preset formats",
+          "target": "docs/research/lightroom/presets.md",
+          "relevance": "XMP and .lrtemplate structure, value encoding, field inventory, process versions and panel switches."
+        },
+        {
+          "kind": "file",
           "label": "Slider range audit",
           "target": "docs/research/lightroom/slider-parity.md",
           "relevance": "Importer constraints and the RAW white-balance mismatch."
