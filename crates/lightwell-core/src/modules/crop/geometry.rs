@@ -141,6 +141,83 @@ impl CropPayload {
             height: height as u32,
         })
     }
+
+    /// [`Self::output_rect`] for rendering at a stage other than the one the payload was fitted
+    /// on, such as a display proxy: a re-rounding of the whole-pixel rectangle at another scale can
+    /// put a corner less than one source pixel outside the input stage, and that corner is shrunk
+    /// back in by whole pixels rather than refused. At the fitted stage the rectangle passes
+    /// [`Self::output_rect`] unchanged, so a payload the desktop or the fitting functions produced
+    /// never changes here; a payload that is genuinely outside by a pixel or more still fails with
+    /// the same error, so an empty corner can never reach a render.
+    pub fn output_rect_covered(&self, stage: &CropStage) -> Result<OutputRect, Error> {
+        self.validate()?;
+        let (box_width, box_height) = stage.bounding_box();
+        let mut x = (self.x * box_width).round();
+        let mut y = (self.y * box_height).round();
+        let mut width = (self.width * box_width).round().max(1.0);
+        let mut height = (self.height * box_height).round().max(1.0);
+        let input_width = f64::from(stage.width);
+        let input_height = f64::from(stage.height);
+        // Rounding the origin and the extent each move a corner by at most half a pixel, so one
+        // pixel per side covers every re-rounding; a second pass settles the corner the first one
+        // shares with another side.
+        for _ in 0..=2 {
+            let mut shrink_left = false;
+            let mut shrink_right = false;
+            let mut shrink_top = false;
+            let mut shrink_bottom = false;
+            let mut worst = f64::NEG_INFINITY;
+            for (left, top) in [(true, true), (false, true), (true, false), (false, false)] {
+                let corner = (
+                    if left { x } else { x + width },
+                    if top { y } else { y + height },
+                );
+                let (u, v) = stage.to_input(corner.0, corner.1);
+                let outside = [-u, u - input_width, -v, v - input_height]
+                    .into_iter()
+                    .fold(f64::NEG_INFINITY, f64::max);
+                if outside > COVERAGE_TOLERANCE {
+                    worst = worst.max(outside);
+                    shrink_left |= left;
+                    shrink_right |= !left;
+                    shrink_top |= top;
+                    shrink_bottom |= !top;
+                }
+            }
+            if worst <= COVERAGE_TOLERANCE {
+                return Ok(OutputRect {
+                    x: x as i64,
+                    y: y as i64,
+                    width: width as u32,
+                    height: height as u32,
+                });
+            }
+            if worst >= 1.0 + COVERAGE_TOLERANCE || width <= 2.0 || height <= 2.0 {
+                break;
+            }
+            // Only a side whose corners are all outside is moved; a corner outside on one side
+            // and inside on the other is the other side's rounding.
+            if shrink_left && !shrink_right {
+                x += 1.0;
+                width -= 1.0;
+            } else if shrink_right && !shrink_left {
+                width -= 1.0;
+            } else if shrink_left && shrink_right {
+                x += 1.0;
+                width -= 2.0;
+            }
+            if shrink_top && !shrink_bottom {
+                y += 1.0;
+                height -= 1.0;
+            } else if shrink_bottom && !shrink_top {
+                height -= 1.0;
+            } else if shrink_top && shrink_bottom {
+                y += 1.0;
+                height -= 2.0;
+            }
+        }
+        self.output_rect(stage)
+    }
 }
 
 /// The whole-pixel rectangle a crop payload addresses in box space, and therefore the stage the
@@ -577,6 +654,102 @@ mod tests {
                 ..rect
             },
         }
+    }
+
+    /// A whole-box rectangle fitted at full resolution is exact there, and re-rounded at a display
+    /// proxy's scale it may put a corner a fraction of a pixel outside the smaller stage. The
+    /// covered rectangle shrinks that side by whole pixels and stays within a few pixels of the
+    /// scaled rectangle; a payload a whole pixel or more outside still fails as before.
+    #[test]
+    fn a_fitted_rectangle_stays_covered_when_re_rounded_at_a_proxy_scale() {
+        let mut covered_by_shrinking = 0;
+        for &angle in &ANGLES {
+            for (width, height) in [(6000_u32, 4000_u32), (4000, 6000), (4032, 3024)] {
+                let full = stage(width, height, angle);
+                let (box_width, box_height) = full.bounding_box();
+                let fitted = full.fit_about_center(BoxRect {
+                    x: 0.0,
+                    y: 0.0,
+                    width: box_width,
+                    height: box_height,
+                });
+                let payload = fitted.normalized(&full);
+                let exact = payload.output_rect(&full).expect("fitted at its own stage");
+                assert_eq!(
+                    payload.output_rect_covered(&full).unwrap(),
+                    exact,
+                    "{angle}"
+                );
+                for scale in [0.45_f64, 0.3, 0.2727, 0.1] {
+                    let proxy = stage(
+                        ((f64::from(width) * scale).round() as u32).max(1),
+                        ((f64::from(height) * scale).round() as u32).max(1),
+                        angle,
+                    );
+                    let strict = payload.output_rect(&proxy);
+                    let covered = payload
+                        .output_rect_covered(&proxy)
+                        .unwrap_or_else(|error| panic!("{angle} at {scale}: {error}"));
+                    if strict.is_err() {
+                        covered_by_shrinking += 1;
+                    }
+                    let (proxy_box_width, proxy_box_height) = proxy.bounding_box();
+                    close(
+                        covered.width as f64,
+                        payload.width * proxy_box_width,
+                        4.0,
+                        "covered width",
+                    );
+                    close(
+                        covered.height as f64,
+                        payload.height * proxy_box_height,
+                        4.0,
+                        "covered height",
+                    );
+                    // Every corner of the covered rectangle samples real content.
+                    for corner in [
+                        (covered.x, covered.y),
+                        (covered.x + i64::from(covered.width), covered.y),
+                        (covered.x, covered.y + i64::from(covered.height)),
+                        (
+                            covered.x + i64::from(covered.width),
+                            covered.y + i64::from(covered.height),
+                        ),
+                    ] {
+                        let (u, v) = proxy.to_input(corner.0 as f64, corner.1 as f64);
+                        assert!(
+                            u >= -COVERAGE_TOLERANCE
+                                && v >= -COVERAGE_TOLERANCE
+                                && u <= f64::from(proxy.width) + COVERAGE_TOLERANCE
+                                && v <= f64::from(proxy.height) + COVERAGE_TOLERANCE,
+                            "{angle} at {scale}: corner maps to ({u}, {v})"
+                        );
+                    }
+                }
+            }
+        }
+        assert!(
+            covered_by_shrinking > 0,
+            "no re-rounding ever needed shrinking, so the test proves nothing"
+        );
+        // A rectangle a whole pixel outside is refused by both.
+        let full = stage(480, 320, 0.0);
+        let outside = CropPayload {
+            x: 0.0,
+            y: 0.0,
+            width: 1.0,
+            height: 1.0,
+            ..CropPayload::NEUTRAL
+        };
+        let wide = stage(482, 320, 0.0);
+        let _ = full;
+        // At an angle of zero the box is the stage, so a full rectangle re-rounded onto a wider
+        // stage maps exactly onto it; to land a pixel outside, shift the origin below zero.
+        let shifted = CropPayload {
+            x: -2.0 / 482.0,
+            ..outside
+        };
+        assert!(shifted.validate().is_err() || shifted.output_rect_covered(&wide).is_err());
     }
 
     #[test]

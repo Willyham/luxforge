@@ -600,8 +600,10 @@ impl ToolModule for CropModule {
         let payload = payload(effect_id, format, value)?;
         let crop_stage = input_stage(stage, payload.angle);
         // Coverage is validated again here, so a payload saved against a different stage fails
-        // explicitly instead of rendering empty corners.
-        let rect = payload.output_rect(&crop_stage)?;
+        // explicitly instead of rendering empty corners. A sub-pixel miss is the re-rounding of a
+        // fitted rectangle at another scale, which is what a display proxy asks for, and is
+        // shrunk back in rather than refused.
+        let rect = payload.output_rect_covered(&crop_stage)?;
         if payload.angle == 0.0 {
             // The box is the input stage and the mapping is an integer translation.
             return Ok(Processing::ExactGeometry(ExactGeometry::crop(
