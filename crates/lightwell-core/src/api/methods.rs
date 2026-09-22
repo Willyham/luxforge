@@ -1332,7 +1332,9 @@ mod tests {
                 "edit.transform",
                 "edit.crop",
                 "edit.crop-fit",
-                "edit.crop-reset"
+                "edit.crop-reset",
+                "edit.set-vignette",
+                "edit.reset-vignette"
             ]
         );
         // A read-only module query generates a method of its own, in its own `query.` namespace.

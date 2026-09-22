@@ -187,7 +187,10 @@ impl Tone {
 
 /// The sRGB OETF (linear -> encoded), analytically continued to every finite value, not clamped to
 /// `[0, 1]`. See "Working tone domain" in the design doc.
-fn encode_srgb_extended(l: f32) -> f32 {
+///
+/// `pub(crate)`: the vignette module's positive-amount branch reuses this exact function (see the
+/// `mod tone` doc comment in `basic/mod.rs`); the formula is unchanged for that reuse.
+pub(crate) fn encode_srgb_extended(l: f32) -> f32 {
     if l <= 0.003_130_8 {
         12.92 * l
     } else {
@@ -196,7 +199,7 @@ fn encode_srgb_extended(l: f32) -> f32 {
 }
 
 /// The inverse of `encode_srgb_extended`, equally extended.
-fn decode_srgb_extended(e: f32) -> f32 {
+pub(crate) fn decode_srgb_extended(e: f32) -> f32 {
     if e <= 0.040_45 {
         e / 12.92
     } else {

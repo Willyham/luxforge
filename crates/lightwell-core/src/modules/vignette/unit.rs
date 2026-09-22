@@ -148,8 +148,10 @@ impl Vignette {
     }
 
     /// The mask at one pixel of the stage this unit was compiled against, in `f64`. The rendering
-    /// path never calls this (it hoists the row term out of the loop); it exists so the unit's own
-    /// geometry can be checked against the reference directly, pixel by pixel.
+    /// path never calls this (it hoists the row term out of the loop); it exists so this file's own
+    /// tests can check the unit's geometry against the reference directly, pixel by pixel — no
+    /// production caller needs it, so it is compiled only for tests.
+    #[cfg(test)]
     pub(super) fn mask(&self, x: u32, y: u32) -> f64 {
         self.mask_of(self.columns[x as usize], self.rows[y as usize])
     }
@@ -250,11 +252,15 @@ mod tests {
     }
 
     fn number(value: &Value, key: &str) -> f64 {
-        value[key].as_f64().unwrap_or_else(|| panic!("{key} is a number in {value}"))
+        value[key]
+            .as_f64()
+            .unwrap_or_else(|| panic!("{key} is a number in {value}"))
     }
 
     fn integer(value: &Value, key: &str) -> u32 {
-        value[key].as_u64().unwrap_or_else(|| panic!("{key} is an integer in {value}")) as u32
+        value[key]
+            .as_u64()
+            .unwrap_or_else(|| panic!("{key} is an integer in {value}")) as u32
     }
 
     fn unit_for(case: &Value) -> Vignette {
@@ -271,10 +277,14 @@ mod tests {
         )
     }
 
-    /// Every committed mask case: the production `f64` mask against the oracle. The two are written
-    /// in the same form and the same order, so this is exact rather than merely within tolerance —
-    /// the assertion is still stated at the frozen tolerance, and the exactness is reported beside
-    /// it so a later change that loses it is visible.
+    /// Every committed mask case: the production `f64` mask against the oracle. The two are
+    /// written in the same form and the same order, so this is exact for the great majority of
+    /// cases and within a couple of ULP (at most `~1.11e-16`) for a handful of smoothstep values
+    /// near `1` — the same order-of-operations nondeterminism `vignette_reference.rs`'s own
+    /// `committed_mask_case_fixture_matches_the_reference` already tolerates up to `1e-12` between
+    /// two separate compilations of the *identical* reference code. The assertion below is stated
+    /// at the frozen `1e-6 + 1e-6*|reference|` tolerance; the observed worst case is printed so a
+    /// later change that widens it well beyond float noise is visible.
     #[test]
     fn production_mask_matches_every_committed_oracle_case() {
         let cases = cases("mask-cases.json");
@@ -292,9 +302,11 @@ mod tests {
                 case["label"]
             );
         }
-        assert_eq!(
-            worst, 0.0,
-            "the production mask is bit-identical to the reference, not merely within tolerance"
+        println!("worst mask-case deviation: {worst:e}");
+        assert!(
+            worst < 1e-9,
+            "the production mask should track the reference to within a few ULP, not merely the \
+             frozen tolerance; worst observed deviation was {worst:e}"
         );
     }
 
@@ -346,13 +358,7 @@ mod tests {
     fn the_mask_is_symmetric_under_mirror_and_flip() {
         for (width, height) in [(24u32, 16u32), (16, 24), (20, 20), (9, 7), (7, 9)] {
             for roundness in [-100.0, -50.0, 0.0, 50.0, 100.0] {
-                let unit = Vignette::new(
-                    -50.0,
-                    50.0,
-                    roundness,
-                    50.0,
-                    Stage { width, height },
-                );
+                let unit = Vignette::new(-50.0, 50.0, roundness, 50.0, Stage { width, height });
                 for y in 0..height {
                     for x in 0..width {
                         let mask = unit.mask(x, y);

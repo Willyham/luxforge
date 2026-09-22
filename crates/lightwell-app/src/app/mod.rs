@@ -157,6 +157,7 @@ fn registry(disabled: &[String], developer: bool) -> Result<ModuleRegistry, Stri
         Arc::new(lightwell_core::MixerModule::new()),
         Arc::new(lightwell_core::TransformModule::new()),
         Arc::new(lightwell_core::CropModule::new()),
+        Arc::new(lightwell_core::VignetteModule::new()),
     ];
     if developer {
         modules.push(Arc::new(lightwell_core::ControlsModule::new()));

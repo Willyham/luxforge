@@ -720,7 +720,11 @@ mod tests {
                 "set-pixel.y",
                 "set-raw-exposure.ev",
                 "set-raw-temperature.kelvin",
-                "set-raw-tint.tint"
+                "set-raw-tint.tint",
+                "set-vignette.amount",
+                "set-vignette.feather",
+                "set-vignette.midpoint",
+                "set-vignette.roundness"
             ],
             "{}",
             fields.summary()

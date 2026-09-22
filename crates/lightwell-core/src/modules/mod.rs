@@ -11,6 +11,7 @@ mod processing;
 mod raw;
 mod registry;
 mod transform;
+mod vignette;
 
 pub use basic::BasicModule;
 pub use controls::{
@@ -41,6 +42,7 @@ pub(crate) use registry::tests::{
     PATCH_ACTION, PATCH_MODULE, PatchModule, STAGE_ACTION, STAGE_EFFECT, StageModule, TestModule,
 };
 pub use transform::TransformModule;
+pub use vignette::VignetteModule;
 
 use crate::{Error, Layer};
 use serde_json::{Map, Value};

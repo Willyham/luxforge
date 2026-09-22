@@ -14,6 +14,14 @@ pub const BASIC_EFFECT: &str = "lightwell.basic.adjust";
 /// The colour mixer's one pointwise unit: hue, saturation and luminance for the eight colour
 /// ranges, declared order 10 so a mixer layer always follows the Basic layer in the colour run.
 pub const MIXER_EFFECT: &str = "lightwell.mixer.hsl";
+
+/// The one finish-stage effect of the Vignette module: every implemented Vignette parameter of a
+/// stack lives in one layer of this effect, evaluated after the geometry tail in output-stage
+/// pixel coordinates. Named `postcrop` rather than `post-crop`: `valid_identity` forbids a hyphen
+/// inside a dot-separated identity segment (every other built-in effect follows the same rule,
+/// e.g. `lightwell.basic.adjust`), so the closest one-word form of the design's "post-crop
+/// vignette" name is used instead of a literal hyphen.
+pub const VIGNETTE_EFFECT: &str = "lightwell.vignette.postcrop";
 pub const EFFECT_FORMAT: u32 = 1;
 
 fn valid_id(value: &str, prefix: &str) -> bool {

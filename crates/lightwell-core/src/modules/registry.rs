@@ -3,7 +3,7 @@
 use super::{
     ActionDescriptor, BasicModule, CanvasInteraction, CropModule, EffectDescriptor, EffectStage,
     MAX_COLOR_UNITS, MixerModule, ModuleDescriptor, PixelModule, Processing, RawModule, Stage,
-    ToolModule, TransformModule,
+    ToolModule, TransformModule, VignetteModule,
 };
 use crate::{
     Error, ErrorKind, Layer, RECIPE_FORMAT, Recipe,
@@ -74,6 +74,7 @@ impl ModuleRegistry {
             Arc::new(MixerModule::new()),
             Arc::new(TransformModule::new()),
             Arc::new(CropModule::new()),
+            Arc::new(VignetteModule::new()),
         ] {
             registry
                 .register(module)
@@ -810,6 +811,9 @@ pub(crate) mod tests {
         assert!(registry.action("set-raw-exposure").is_some());
         assert!(registry.action("reset-raw").is_some());
         assert!(registry.effect(RAW_EFFECT).is_some());
+        assert!(registry.action("set-vignette").is_some());
+        assert!(registry.action("reset-vignette").is_some());
+        assert!(registry.effect(crate::VIGNETTE_EFFECT).is_some());
         assert_eq!(registry.descriptors().len(), 6);
         assert!(registry.action("edit.set-pixel").is_none());
 
