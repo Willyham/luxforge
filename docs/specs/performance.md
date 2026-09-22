@@ -266,6 +266,93 @@ polygons twice a second could not plausibly account for the whole 0.3–0.5 poin
 own. That path is outside this change's scope and is being addressed separately. This is a
 measurement to attribute, not a resolved regression, and it is reported as a miss below.
 
+### Instant previews: proxy phase, hop rule and the surface primitive
+
+Native Apple M4 Pro, macOS 26.5.2, Metal, a 2880 × 1800 physical window at 2× scale, release
+builds, background hidden-window launches, warm filesystem cache, one-minute load averages between
+4 and 7.5 on a shared host. Application SHA-256 `16423973…`. These rows supersede the
+slider-to-presented-frame and queue-cancellation tables above, which measured the full-resolution
+render-and-upload path that no longer exists at Fit; the histogram, memory and launch rows above
+still describe the current build unless restated here. Presented now means the update in which the
+frame became the photo surface's source; it is drawn by the redraw that update requests, the next
+frame, and it is still not scanout. The exposure gesture is the same drained drag as above; a full
+Basic layer means `--basic`, which commits all ten fields non-neutral first so every frame runs
+every colour unit of the module.
+
+| Drained drag, input to presented frame (p50 / p95 ms, 30 samples) | Fit |
+| --- | --- |
+| 24 MP, exposure only | 9.5 / 29.0 |
+| 24 MP, full Basic layer | 18.1 / 24.8 |
+| 60 MP, exposure only | 10.1 / 19.1 |
+| 60 MP, full Basic layer | 17.2 / 28.9 |
+| 24 MP, 7° crop-fit and full Basic layer | 16.1 / 28.7 |
+
+The figures no longer depend on the source size, because every frame in a drag is the proxy phase:
+a 1716 × 1144 render of the whole recipe against the cached display-bounded proxy of the source
+(the photo area of this window at 2×), presented through the surface primitive with no allocation
+round trip. Before this work the same 24 MP drag measured 71.8 / 83.2 ms on this host, 60 MP
+132.5 / 151.2 and the crop stack 116.0 / 127.6, all exposure only.
+
+| Wild drag, 120 inputs per second for 3 s alternating direction (`--mode burst`) | Presented fps | Staleness p50 / p95 ms | Largest gap ms |
+| --- | --- | --- | --- |
+| 24 MP, exposure only | 53.7 | 18.1 / 32.9 | 41.8 |
+| 24 MP, full Basic layer | 41.7 | 32.9 / 34.1 | 36.1 |
+| 60 MP, full Basic layer | 42.5 | 32.7 / 34.1 | 32.4 |
+
+Every one of the 360 scripted values reaches the owner as its own `draft.set` (the gesture's
+round trip is synchronous and takes 0.18 / 0.19 ms), the queue keeps one proxy job active and one
+pending, and every superseded exact phase is cancelled (160, 124 and 124 of them in the three runs).
+Before this work the same burst presented one frame in three seconds: every render finished after
+a newer job had been requested and was dropped as stale.
+
+| Settled exact histogram after the last input (p50 / p95 ms) | Figure |
+| --- | --- |
+| 24 MP, exposure only, commit mode, 30 samples | 60.1 / 70.3 |
+| 24 MP, exposure only, drag mode, 2 commits | 54.3 / 54.3 |
+| 24 MP, full Basic layer, 2 commits | 153.8 / 158.6 |
+| 60 MP, full Basic layer, 2 commits | 356.4 / 367.0 |
+
+The settled histogram is the exact phase of the committed frame: the full-resolution render with
+every unit, then the reduction. It is not on the input path, so a drag does not wait for it; the
+60 MP full-Basic figure misses the 200 ms threshold that was set for 24 MP and is recorded here
+because the design asks for the tails.
+
+Where the per-input time went before the last two changes, measured with the per-leg timings the
+`slider_draft_preview` event now records: the owner's `draft.set` and preview-job work take under
+0.2 ms, the desktop's update, model derivation and view under 0.15 ms together, and every message
+handed back into the update loop through the runtime arrived about 7.9 ms later, one frame of the
+120 Hz display, because a redraw is always in flight during a drag. With the round trip as a task
+and the frame through an image allocation, a 24 MP drag measured 38.6 / 63.0 ms; with the round
+trip synchronous, 30.2 / 58.7; with the surface primitive, the rows above.
+
+| Core diagnostic, 24 MP crop stack (p50 / p95 ms, 10 samples) | Full resolution | Proxy for 2880 × 1800 |
+| --- | --- | --- |
+| Same stack without colour | 29.1 / 32.9 | 16.9 / 19.0 |
+| One +1 EV Basic layer | 35.8 / 37.5 | 21.1 / 23.0 |
+| Full Basic layer | 77.3 / 79.7 | 46.9 / 48.0 |
+| Proxy build (a cache miss: once per source, bounds and window size) | — | 21.2 / 25.7 |
+
+The proxy source for this stack is 4677 × 3118, larger than the 2879 × 1618 output it produces,
+because the 16:9 crop discards most of the rotated stage; the colour pass now covers only the band
+of rows the crop reads, which is what brought the full-Basic rows down from 162.5 and 99.8 ms in the
+first measurement of this plan. The full-Basic proxy render remains the largest per-input cost and
+is listed in the [performance rules](../engineering/performance-rules.md#known-remaining-costs).
+
+RAW, one functional trial per camera through `raw-editor` (the same 13-step journey as the RAW
+tables below, so these are single launches and not distributions): request to display of the
+exposure step is 10.5 ms on the Z6, 14.6 ms on the X100VI and 15.0 ms on the Air 2S, against
+133.3, 178.8 and the Air 2S figures recorded below for the full-resolution path; rotate, crop-fit
+and undo present in 18 to 46 ms. The white-balance steps still take 354–364 ms on the Z6 and
+1364–1428 ms on the other two, because temperature, tint, the gains and the neutral pick redevelop
+the mosaic on the source worker before any proxy exists; that is the RAW white-balance drag listed
+in the [performance rules](../engineering/performance-rules.md#known-remaining-costs).
+
+Memory and idle from the same timing tier, five launches per workload: sampled peak RSS 130.4 MiB
+empty, 389.7 MiB at 24 MP and 808.8 MiB at 60 MP (medians); idle CPU 1.53% of one core over 30 s
+with the 60 MP image open, a miss of the 1% target in the same range as the 1.29–1.46% recorded
+before this work, with the histogram and the surface primitive both drawn on each redraw and the
+500 ms sync still in place; no timer was added and none remains for previews or gestures.
+
 ### Provisional targets: measured
 
 Each target with the figure that answers it. A miss is a finding for the owner's review, not a
@@ -273,8 +360,12 @@ blocker, and no approximate processing, cache or timer was added to reach any of
 
 | Provisional target | Measured | Verdict |
 | --- | --- | --- |
-| Warm 24 MP slider-to-presented-frame p95 below 100 ms | 83.4 ms p95 (74.8 p50, 30 samples) | **Pass** |
-| Settled exact histogram p95 below 200 ms after the final input, 24 MP | 107.0 ms p95 (99.7 p50, 30 samples) | **Pass** |
+| Warm 24 MP slider-to-presented-frame p95 below 100 ms | 29.0 ms p95 (9.5 p50, 30 samples); 24.8 ms p95 with a full Basic layer | **Pass** |
+| Instant preview: drained drag p95 ≤ 33 ms at Fit, 24 and 60 MP, full Basic layer, with and without a 7° crop | 24.8, 28.9 and 28.7 ms p95 (30 samples each) | **Pass** |
+| Instant preview: burst drag ≥ 30 presented frames per second | 53.7 (exposure), 41.7 and 42.5 (full Basic, 24 and 60 MP) | **Pass** |
+| Instant preview: burst staleness p95 ≤ 50 ms | 32.9, 34.1 and 34.1 ms | **Pass** |
+| Instant preview: RAW exposure step presented within 50 ms | 10.5 / 14.6 / 15.0 ms request to display on the Z6 / X100VI / Air 2S, one trial each; a drained-drag distribution on RAW is not measured yet | **Pass** (functional) |
+| Settled exact histogram p95 below 200 ms after the final input, 24 MP | 70.3 ms p95 (60.1 p50, 30 samples) exposure only; 158.6 ms with a full Basic layer (2 commits) | **Pass** |
 | Scratch aggregate at most 64 MiB | 13.46 MiB high-water at 24 MP, 12.82 MiB at 60 MP | **Pass** |
 | 24 MP single-image edit working set ≤ 600 MiB CPU-resident | 645.3 MiB peak in the process that commits the full Basic layer, which also retains two full-window capture readbacks; 568.2 MiB in a second process holding the same committed layer with no captures, settling to 408.0 MiB | **Miss by 45 MiB** on the capturing process, **pass** on the same stack without the harness's captures |
 | 60 MP peak ≤ 1 GiB process RSS | 975.0 MiB median peak on a 60 MP open; 1316.4 MiB after sixteen consecutive 60 MP loads | **Pass** on one image, **miss** on the sixteen-load workload (unchanged from before this work: 1316.0 MiB) |
