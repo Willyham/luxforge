@@ -22,7 +22,7 @@ A slider dragged back and forth wildly at Fit shows the value under the pointer 
 
 | Provisional target | Threshold |
 | --- | --- |
-| Input to presented frame, drained drag, 24 MP and 60 MP JPEG at Fit, full Basic layer, with and without a 7° crop | p95 ≤ 33 ms |
+| Input to presented frame, drained drag, 24 MP and 60 MP JPEG at Fit, full Basic layer, with and without a 7° crop | p95 < 16 ms, acceptable below 32 ms (the owner's target of 2026-09-22; this design was measured against p95 ≤ 33 ms) |
 | Input to presented frame, RAW exposure drag at Fit, Z6 and X100VI | p95 ≤ 50 ms |
 | Burst drag (120 inputs per second for three seconds, alternating direction): presented frames per second | ≥ 30 |
 | Burst drag: staleness of each presented frame (its input's time to its presentation) | p95 ≤ 50 ms |

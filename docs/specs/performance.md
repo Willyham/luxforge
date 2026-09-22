@@ -26,6 +26,7 @@ Engineering hypotheses until measured and accepted on the recorded M4 configurat
 | Launch to usable empty shell | p95 < 1 s warm, < 2 s cold |
 | Uncached 24 MP JPEG to Fit preview | p95 < 750 ms; loading feedback within 100 ms |
 | Crop overlay frame time | p95 ≤ 16.7 ms at 60 Hz |
+| Slider input to presented frame at Fit, warm 24 MP | p95 < 16 ms; acceptable below 32 ms; a miss at or above 32 ms (owner's target of 2026-09-22) |
 | Geometry input to presented preview | p95 < 50 ms once the source preview is ready |
 | Empty steady-state process memory | ≤ 150 MiB including helper processes |
 | 24 MP single-image edit working set | ≤ 600 MiB CPU-resident |
@@ -360,7 +361,7 @@ blocker, and no approximate processing, cache or timer was added to reach any of
 
 | Provisional target | Measured | Verdict |
 | --- | --- | --- |
-| Warm 24 MP slider-to-presented-frame p95 below 100 ms | 29.0 ms p95 (9.5 p50, 30 samples); 24.8 ms p95 with a full Basic layer | **Pass** |
+| Warm 24 MP slider-to-presented-frame p95 below 16 ms, acceptable below 32 ms | 29.0 ms p95 (9.5 p50, 30 samples); 24.8 ms p95 with a full Basic layer | **Acceptable** (measured against the earlier 100 ms threshold; below the 32 ms bound, not the 16 ms target) |
 | Instant preview: drained drag p95 ≤ 33 ms at Fit, 24 and 60 MP, full Basic layer, with and without a 7° crop | 24.8, 28.9 and 28.7 ms p95 (30 samples each) | **Pass** |
 | Instant preview: burst drag ≥ 30 presented frames per second | 53.7 (exposure), 41.7 and 42.5 (full Basic, 24 and 60 MP) | **Pass** |
 | Instant preview: burst staleness p95 ≤ 50 ms | 32.9, 34.1 and 34.1 ms | **Pass** |
@@ -385,7 +386,7 @@ correlated state, events and pixel checks, and no latency is claimed from them.
 
 The `verify` timing tier reports these provisional targets itself: its summary lists each target
 above that `editor-latency` and `measure` can answer, with the measured figure, the sample count, the
-exact JSON path it came from and a `pass`, `miss` or `not_measured` verdict, next to the one-minute
+exact JSON path it came from and a `pass`, `acceptable` (past the target but inside its acceptable bound), `miss` or `not_measured` verdict, next to the one-minute
 load average of the host at the time. A verdict produced from those commands' default sample counts
 is a functional check that the targets are still roughly where this table says, not a baseline: a
 figure recorded here needs the sample count its own row states, on an otherwise quiet machine. A
@@ -554,7 +555,7 @@ Input-to-frame ends at the renderer's `Uploaded` callback, not display scanout. 
 visible and its module supplies the sampled polyline; its proof effect preserves photo pixels,
 so this measures the gesture, draft, preview and upload path, not a future Tone Curve processor.
 
-| Input-to-frame (ms) | p50 | p95 | Maximum | p95 < 100 ms |
+| Input-to-frame (ms) | p50 | p95 | Maximum | p95 < 100 ms (the threshold then) |
 | --- | --- | --- | --- | --- |
 | Basic slider before | 75.00 | 91.10 | 92.40 | Pass |
 | Basic slider after | 70.66 | 87.75 | 91.82 | Pass |
@@ -619,7 +620,7 @@ The three units together cost about eight times the sum of the singles. That is 
 
 `editor-latency --mode drag` on the generated 24 MP fixture, 30 drained inputs each, through the new `--action` and `--parameter` selector. The Basic exposure figure in the same harness is 74.8 / 83.4 ms.
 
-| Slider (24 MP, p50 / p95 ms) | Input to presented frame | Settled exact histogram | Peak RSS | p95 < 100 ms |
+| Slider (24 MP, p50 / p95 ms) | Input to presented frame | Settled exact histogram | Peak RSS | Verdict (16 ms target, 32 ms bound) |
 | --- | --- | --- | --- | --- |
 | Colour mixer, Red hue | 157.1 / 216.1 (min 137.0, max 342.4) | 280.3 / 287.3 | 1357 MiB | **Miss** |
 | Vignette, Amount | 121.6 / 135.3 (min 112.0, max 147.9) | 125.0 / 201.4 | 1352 MiB | **Miss** |
@@ -633,15 +634,15 @@ The mixer's per-pixel cost is the Oklab conversion (three cube roots each way) t
 
 The same harness on the same fixture after main's instant previews were merged (22 September 2026): at Fit every drafted frame is the display-bounded proxy render, so the input-to-presented figure is the proxy phase, and the exact phase runs behind it for the histogram, the overlays and the 100% view. The Presence frames carry `proxy_approximate: true` in the event log (a spatial layer's neighbourhoods scale with the stage); the mixer and vignette frames are proxy renders that equal the exact recipe at their own scale.
 
-| Slider (24 MP, p50 / p95 ms) | Input to presented proxy frame | Settled exact histogram | Peak RSS | p95 < 100 ms |
+| Slider (24 MP, p50 / p95 ms) | Input to presented proxy frame | Settled exact histogram | Peak RSS | Verdict (16 ms target, 32 ms bound) |
 | --- | --- | --- | --- | --- |
-| Presence, Clarity | 16.7 / 17.3 | 216.1 / 227.8 | 989 MiB | **Pass** |
-| Presence, Texture | 22.7 / 26.6 | 266.0 / 271.7 | 912 MiB | **Pass** |
-| Presence, Dehaze | 16.5 / 17.4 | 159.9 / 164.4 | 908 MiB | **Pass** |
-| Colour mixer, Red hue | 22.2 / 28.3 | 182.5 / 186.3 | 1267 MiB | **Pass** |
-| Vignette, Amount | 14.9 / 22.9 | 66.5 / 130.1 | 1261 MiB | **Pass** |
+| Presence, Clarity | 16.7 / 17.3 | 216.1 / 227.8 | 989 MiB | **Acceptable** |
+| Presence, Texture | 22.7 / 26.6 | 266.0 / 271.7 | 912 MiB | **Acceptable** |
+| Presence, Dehaze | 16.5 / 17.4 | 159.9 / 164.4 | 908 MiB | **Acceptable** |
+| Colour mixer, Red hue | 22.2 / 28.3 | 182.5 / 186.3 | 1267 MiB | **Acceptable** |
+| Vignette, Amount | 14.9 / 22.9 | 66.5 / 130.1 | 1261 MiB | **Acceptable** |
 
-The settled-histogram column is the exact phase's cost and stays where the full-resolution rows above put it, because that is the same 24 MP render; it no longer stands between an input and the frame on screen. Every slider of the three modules now meets the provisional p95 target, and the Presence sliders do so by about a factor of ten over their pre-merge rows.
+The settled-histogram column is the exact phase's cost and stays where the full-resolution rows above put it, because that is the same 24 MP render; it no longer stands between an input and the frame on screen. Under the owner's target of 2026-09-22 (16 ms p95, acceptable below 32 ms) every slider of the three modules is inside the acceptable bound and none meets the 16 ms target yet; the Presence rows improved by about a factor of ten over their pre-merge rows. Clarity and Dehaze at 17.3 and 17.4 ms p95 sit just past the target, so the display-bounded proxy render of a spatial layer is the next cost to measure and cut, with the coarser-proxy-while-moving and GPU colour-stage proposals of the [instant-preview design](../design/instant-preview.md#proposals-and-later-work) as the candidates.
 
 
 Rendered evidence is the `presence`, `mixer` and `vignette` smoke scenarios (15, 8 and 12 correlated frames at Fit and 100% with the module's own controls visible), and the acceptance chapter's ten checks per module through the JSON method table. A reviewer's render of the owner's 14 MP Sapa drone JPEG through the core alone (release, in memory: dehaze 65 ms, clarity 104 ms, texture 127 ms, all three at +50 672 ms) showed Dehaze +60 and +100 lifting the veil and deepening colour plausibly, Clarity +100 adding local contrast without visible halos at fit and at 100%, and Texture +100 sharpening fine detail with the expected crunch; it is a visual check, not a measurement. On a synthetic haze-free flat field Dehaze +100 drives the field toward black, because the dark-channel prior reads a uniform patch darker than the atmosphere as pure veil and the frozen `OMEGA_MAX = 1` removes all of it; the study records this and real photographs, whose windows contain dark pixels, do not show it.

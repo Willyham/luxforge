@@ -484,6 +484,9 @@ struct Target {
     count: Option<&'static str>,
     unit: &'static str,
     limit: f64,
+    /// A second, looser bound in the same direction: a figure past `limit` but inside this one is
+    /// `acceptable` rather than a miss. The owner's slider target is the one target that has one.
+    acceptable: Option<f64>,
     direction: Direction,
     strict: bool,
     scale: f64,
@@ -492,12 +495,13 @@ struct Target {
 
 const TARGETS: [Target; 11] = [
     Target {
-        text: "Warm 24 MP slider-to-presented-frame p95 < 100 ms",
+        text: "Warm 24 MP slider-to-presented-frame p95 < 16 ms, acceptable below 32 ms",
         from: From::Latency,
         path: "/timings_ms/input_to_presented_frame/p95_ms",
         count: Some("/timings_ms/input_to_presented_frame/count"),
         unit: "ms",
-        limit: 100.0,
+        limit: 16.0,
+        acceptable: Some(32.0),
         direction: Direction::AtMost,
         strict: true,
         scale: 1.0,
@@ -510,6 +514,7 @@ const TARGETS: [Target; 11] = [
         count: Some("/timings_ms/final_input_to_settled_histogram/count"),
         unit: "ms",
         limit: 200.0,
+        acceptable: None,
         direction: Direction::AtMost,
         strict: true,
         scale: 1.0,
@@ -522,6 +527,7 @@ const TARGETS: [Target; 11] = [
         count: None,
         unit: "MiB",
         limit: 64.0,
+        acceptable: None,
         direction: Direction::AtMost,
         strict: false,
         scale: 1.0 / (1024.0 * 1024.0),
@@ -534,6 +540,7 @@ const TARGETS: [Target; 11] = [
         count: None,
         unit: "MiB",
         limit: 600.0,
+        acceptable: None,
         direction: Direction::AtMost,
         strict: false,
         scale: 1.0,
@@ -546,6 +553,7 @@ const TARGETS: [Target; 11] = [
         count: None,
         unit: "MiB",
         limit: 1024.0,
+        acceptable: None,
         direction: Direction::AtMost,
         strict: false,
         scale: 1.0,
@@ -558,6 +566,7 @@ const TARGETS: [Target; 11] = [
         count: None,
         unit: "% of one core",
         limit: 1.0,
+        acceptable: None,
         direction: Direction::AtMost,
         strict: true,
         scale: 1.0,
@@ -570,6 +579,7 @@ const TARGETS: [Target; 11] = [
         count: None,
         unit: "ms",
         limit: 1000.0,
+        acceptable: None,
         direction: Direction::AtMost,
         strict: true,
         scale: 1.0,
@@ -582,6 +592,7 @@ const TARGETS: [Target; 11] = [
         count: None,
         unit: "ms",
         limit: 750.0,
+        acceptable: None,
         direction: Direction::AtMost,
         strict: true,
         scale: 1.0,
@@ -597,6 +608,7 @@ const TARGETS: [Target; 11] = [
         count: Some("/timings_ms/input_to_presented_frame/count"),
         unit: "ms",
         limit: 33.0,
+        acceptable: None,
         direction: Direction::AtMost,
         strict: false,
         scale: 1.0,
@@ -609,6 +621,7 @@ const TARGETS: [Target; 11] = [
         count: None,
         unit: "fps",
         limit: 30.0,
+        acceptable: None,
         direction: Direction::AtLeast,
         strict: false,
         scale: 1.0,
@@ -621,6 +634,7 @@ const TARGETS: [Target; 11] = [
         count: Some("/burst/staleness_ms/count"),
         unit: "ms",
         limit: 50.0,
+        acceptable: None,
         direction: Direction::AtMost,
         strict: false,
         scale: 1.0,
@@ -660,12 +674,14 @@ impl Target {
             return json!({"target":self.text,"unit":self.unit,"limit":self.limit,"source":format!("{} {}",self.file(),self.path),"measured":Value::Null,"samples":0,"verdict":"not_measured","reason":format!("{} holds no {}",self.file(),self.path),"note":self.note,"load_average_1m":load,"load_threshold":launch::LOAD_THRESHOLD});
         };
         let value = raw * self.scale;
-        let ok = match (self.direction, self.strict) {
-            (Direction::AtMost, true) => value < self.limit,
-            (Direction::AtMost, false) => value <= self.limit,
-            (Direction::AtLeast, true) => value > self.limit,
-            (Direction::AtLeast, false) => value >= self.limit,
+        let within = |limit: f64| match (self.direction, self.strict) {
+            (Direction::AtMost, true) => value < limit,
+            (Direction::AtMost, false) => value <= limit,
+            (Direction::AtLeast, true) => value > limit,
+            (Direction::AtLeast, false) => value >= limit,
         };
+        let ok = within(self.limit);
+        let acceptable = self.acceptable.is_some_and(within);
         // A figure taken while the host was busy is recorded with everything it came from, and is
         // not turned into a verdict: the target is unanswered, not met and not missed.
         let over = launch::unreliable(load);
@@ -673,10 +689,12 @@ impl Target {
             "unreliable"
         } else if ok {
             "pass"
+        } else if acceptable {
+            "acceptable"
         } else {
             "miss"
         };
-        json!({"target":self.text,"unit":self.unit,"limit":self.limit,"source":format!("{} {}",self.file(),self.path),"measured":value,"samples":self.samples(result),"verdict":verdict,"reason":over.then(|| too_loaded(load)),"note":self.note,"load_average_1m":load,"load_threshold":launch::LOAD_THRESHOLD})
+        json!({"target":self.text,"unit":self.unit,"limit":self.limit,"acceptable_limit":self.acceptable,"source":format!("{} {}",self.file(),self.path),"measured":value,"samples":self.samples(result),"verdict":verdict,"reason":over.then(|| too_loaded(load)),"note":self.note,"load_average_1m":load,"load_threshold":launch::LOAD_THRESHOLD})
     }
 }
 
@@ -1503,8 +1521,20 @@ mod tests {
                 )
             })
             .collect();
-        assert_eq!(verdicts[0]["verdict"], "pass");
+        assert_eq!(
+            verdicts[0]["verdict"], "miss",
+            "83.4 ms is past the 32 ms acceptable bound"
+        );
+        assert_eq!(verdicts[0]["acceptable_limit"], 32.0);
         assert_eq!(verdicts[0]["measured"], 83.4);
+        for (p95, expected) in [(12.0, "pass"), (20.0, "acceptable"), (32.0, "miss")] {
+            let banded = json!({"timings_ms":{"input_to_presented_frame":{"count":30,"p50_ms":p95 - 1.0,"p95_ms":p95}}});
+            assert_eq!(
+                TARGETS[0].verdict(Some(&banded), true, None)["verdict"],
+                expected,
+                "{p95} ms"
+            );
+        }
         assert_eq!(verdicts[0]["samples"], 30);
         assert_eq!(verdicts[1]["verdict"], "miss");
         assert_eq!(verdicts[2]["verdict"], "pass");
@@ -1853,13 +1883,13 @@ mod tests {
         assert_eq!(busy["load_threshold"], 8.0);
 
         // The same figure is a pass below the threshold and neither a pass nor a miss above it.
-        let latency = json!({"timings_ms":{"input_to_presented_frame":{"count":30,"p50_ms":74.8,"p95_ms":83.4}}});
+        let latency = json!({"timings_ms":{"input_to_presented_frame":{"count":30,"p50_ms":9.5,"p95_ms":12.4}}});
         let below = TARGETS[0].verdict(Some(&latency), true, Some(5.7));
         assert_eq!(below["verdict"], "pass");
         assert_eq!(below["reason"], Value::Null);
         let above = TARGETS[0].verdict(Some(&latency), true, Some(19.4));
         assert_eq!(above["verdict"], "unreliable");
-        assert_eq!(above["measured"], 83.4);
+        assert_eq!(above["measured"], 12.4);
         assert_eq!(above["samples"], 30);
         assert!(
             above["reason"].as_str().unwrap().contains("19.40")

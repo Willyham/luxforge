@@ -848,8 +848,8 @@ pub fn run(root: &Path, out: &Path, bin: &Path, options: Options) -> Result {
         "samples":options.samples,
         "gesture_values":values,
         "method":"Background evidence launch of the release binary, warm filesystem cache. In drag mode one scripted control step per input is left open, so the step settles only when the gesture has drained: every interval is one input, one draft.set, one preview job and one frame. In commit mode each step is a whole gesture, moved and released at once, so each sample is one committed frame and its exact histogram. Presented means preview_displayed: the update in which the rendered raster became the photo surface's source, drawn by the redraw that update requests; it is not display scanout.",
-        "provisional_input_to_frame_target":{"p95_below_ms":100.0,"measured_p95_ms":input_p95,
-            "met":input_p95.map(|ms| ms < 100.0)},
+        "provisional_input_to_frame_target":{"p95_below_ms":16.0,"acceptable_below_ms":32.0,"measured_p95_ms":input_p95,
+            "met":input_p95.map(|ms| ms < 16.0),"acceptable":input_p95.map(|ms| ms < 32.0)},
         "timings_ms":{
             "input_to_presented_frame":distribution(input_to_frame),
             "draft_set_round_trip":distribution(set_round_trip),

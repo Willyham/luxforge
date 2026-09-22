@@ -59,7 +59,7 @@ Accepted on 2026-09-21 for the [Basic and histogram design](design/basic-and-his
 
 The work ran to completion on the defaults below without further owner input; the owner reviews and refines the result afterwards. Each default is provisional and recorded in the design, so a later change is a normal edit, not a silent reinterpretation. Measured results against the provisional thresholds are in [performance](specs/performance.md).
 
-- Performance targets are provisional thresholds: warm 24 MP slider-to-presented-frame p95 below 100 ms, settled exact histogram p95 below 200 ms, a 64 MiB aggregate scratch cap. A measured miss is reported with its figures and does not block delivery.
+- Performance targets are provisional thresholds: settled exact histogram p95 below 200 ms and a 64 MiB aggregate scratch cap. The slider-to-presented-frame target was 100 ms p95 at first; on 2026-09-22 the owner set it to **16 ms p95 with an acceptable bound of 32 ms** (one and two frames at 60 Hz), so a figure below 16 ms passes, one below 32 ms is acceptable and one at or above 32 ms is a miss. A measured miss is reported with its figures and does not block delivery.
 - Global tone stays global. If the tone study finds a visual case a global curve cannot pass, the control ships with that limitation documented and an edge-aware proposal recorded as later work.
 - Clipping overlays: any channel at an endpoint counts; shadow clipping draws blue, highlight red, both magenta; tooltips state the rule.
 - Neutral picker: a 5 × 5 patch at input-stage pixel centres clipped at the image edges, evaluated before the Basic layer; near-black, clipped and non-invertible samples are rejected with a reason.
