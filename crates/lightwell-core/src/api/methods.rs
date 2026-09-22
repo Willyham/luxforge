@@ -1,7 +1,9 @@
 //! The method table: host methods carry their schema description, mutation flag and handler, and
 //! every module action resolves to a generated `edit.<action>` method from the same registry, so
 //! discovery, event emission and dispatch cannot drift apart.
-use super::{ApiRequest, ApiResponse, ClientSession, POINTER_MODE, PROTOCOL};
+use super::{
+    ApiRequest, ApiResponse, COMPONENT_GALLERY_PAGE_COUNT, ClientSession, POINTER_MODE, PROTOCOL,
+};
 use crate::{
     ActionDescriptor, AssetId, Draft, DraftId, EditorService, EntryId, Error, ErrorKind,
     HistorySelection, ModuleRegistry, Mutation, Zoom,
@@ -231,8 +233,12 @@ pub(super) const METHODS: &[MethodSpec] = &[
                 "clip_highlights",
                 "bool; show the highlight clipping overlay",
             ),
+            (
+                "component_gallery",
+                "null closes the diagnostic components board; integer 0..9 selects a page",
+            ),
         ],
-        notes: "session workspace state: panels, canvas mode, the thirds overlay and the clipping overlays; returns the session",
+        notes: "per-client screen preference: panels, canvas mode, overlays and diagnostic components page; needs no asset and changes no history or frame; returns the session",
         handler: Some(workspace_set),
     },
     MethodSpec {
@@ -871,6 +877,15 @@ fn canvas_modes(registry: &ModuleRegistry) -> Vec<String> {
     modes
 }
 
+/// A normal `Option<Option<T>>` deserializer cannot distinguish a missing field from explicit
+/// JSON null. `workspace.set` needs that distinction: omission preserves, null closes the board.
+fn present_nullable_page<'de, D>(deserializer: D) -> Result<Option<Option<usize>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Option::<usize>::deserialize(deserializer).map(Some)
+}
+
 fn workspace_set(
     service: &mut EditorService,
     session: &mut ClientSession,
@@ -885,6 +900,8 @@ fn workspace_set(
         thirds: Option<bool>,
         clip_shadows: Option<bool>,
         clip_highlights: Option<bool>,
+        #[serde(default, deserialize_with = "present_nullable_page")]
+        component_gallery: Option<Option<usize>>,
     }
     let p = parse::<P>(params)?;
     // Validate before changing anything, so a rejected request leaves the session as it was.
@@ -896,6 +913,17 @@ fn workspace_set(
                 format!("mode must be one of {}", modes.join(", ")),
             ));
         }
+    }
+    if let Some(Some(page)) = p.component_gallery
+        && page >= COMPONENT_GALLERY_PAGE_COUNT
+    {
+        return Err(Error::new(
+            ErrorKind::Validation,
+            format!(
+                "component_gallery must be null or an integer 0..{}",
+                COMPONENT_GALLERY_PAGE_COUNT - 1
+            ),
+        ));
     }
     if let Some(mode) = p.mode {
         session.workspace.mode = mode;
@@ -915,6 +943,9 @@ fn workspace_set(
     }
     if let Some(clip_highlights) = p.clip_highlights {
         session.workspace.clip_highlights = clip_highlights;
+    }
+    if let Some(page) = p.component_gallery {
+        session.workspace.component_gallery = page;
     }
     session.touch();
     session_value(service, session)
@@ -1370,6 +1401,7 @@ mod tests {
             [
                 "clip_highlights",
                 "clip_shadows",
+                "component_gallery",
                 "mode",
                 "state_panel",
                 "thirds",
@@ -1634,6 +1666,10 @@ mod tests {
                         step: None,
                         precision: None,
                         notes: "test".into(),
+                        soft_min: None,
+                        soft_max: None,
+                        fine_step: None,
+                        zero: None,
                     }],
                 }],
                 queries: Vec::new(),
@@ -1905,6 +1941,7 @@ mod tests {
                 "thirds": false,
                 "clip_shadows": false,
                 "clip_highlights": false,
+                "component_gallery": null,
             }),
             "a fresh session opens with both panels, the pointer and no overlay"
         );
@@ -1923,6 +1960,7 @@ mod tests {
                 "thirds": true,
                 "clip_shadows": false,
                 "clip_highlights": false,
+                "component_gallery": null,
             })
         );
         assert_eq!(set["revision"], json!(1), "a session change is a revision");
@@ -1967,6 +2005,93 @@ mod tests {
             set["workspace"],
             "an empty request keeps the state"
         );
+        drop(service);
+        std::fs::remove_file(catalog).unwrap();
+    }
+
+    #[test]
+    fn component_gallery_page_is_a_validated_per_client_workspace_preference() {
+        let catalog = std::env::temp_dir().join(format!(
+            "lightwell-methods-gallery-{}.sqlite",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_file(&catalog);
+        let mut service = EditorService::open(&catalog).unwrap();
+        let mut session = ClientSession::default();
+
+        let listed = ok(&mut service, &mut session, "schema.list", json!({}));
+        let gallery = &listed["methods"]["workspace.set"];
+        assert_eq!(gallery["mutates"], json!(false));
+        assert!(
+            gallery["optional"]["component_gallery"]
+                .as_str()
+                .unwrap()
+                .contains("integer 0..9")
+        );
+        assert!(
+            gallery["notes"]
+                .as_str()
+                .unwrap()
+                .contains("needs no asset")
+        );
+
+        let opened = ok(
+            &mut service,
+            &mut session,
+            "workspace.set",
+            json!({"component_gallery": 0, "tools_panel": false}),
+        );
+        assert_eq!(opened["workspace"]["component_gallery"], json!(0));
+        assert_eq!(opened["workspace"]["tools_panel"], json!(false));
+        assert_eq!(opened["workspace"]["state_panel"], json!(true));
+        assert_eq!(session.preview, crate::PreviewSession::default());
+
+        let switched = ok(
+            &mut service,
+            &mut session,
+            "workspace.set",
+            json!({"component_gallery": COMPONENT_GALLERY_PAGE_COUNT - 1}),
+        );
+        assert_eq!(switched["workspace"]["component_gallery"], json!(9));
+        assert_eq!(switched["workspace"]["tools_panel"], json!(false));
+        let preserved = session.clone();
+        for (case, params) in [
+            (
+                "above last page",
+                json!({"component_gallery": 10, "state_panel": false}),
+            ),
+            (
+                "negative page",
+                json!({"component_gallery": -1, "state_panel": false}),
+            ),
+            (
+                "fractional page",
+                json!({"component_gallery": 1.5, "state_panel": false}),
+            ),
+            (
+                "string page",
+                json!({"component_gallery": "0", "state_panel": false}),
+            ),
+        ] {
+            let rejected = call(&mut service, &mut session, "workspace.set", params);
+            assert_eq!(rejected.error.unwrap().code, "validation", "{case}");
+            assert_eq!(
+                session, preserved,
+                "{case} must change no workspace field or revision"
+            );
+        }
+        let unchanged = ok(&mut service, &mut session, "workspace.set", json!({}));
+        assert_eq!(unchanged["workspace"]["component_gallery"], json!(9));
+        let closed = ok(
+            &mut service,
+            &mut session,
+            "workspace.set",
+            json!({"component_gallery": null}),
+        );
+        assert_eq!(closed["workspace"]["component_gallery"], json!(null));
+        assert_eq!(closed["workspace"]["tools_panel"], json!(false));
+        assert_eq!(closed["workspace"]["state_panel"], json!(true));
+        assert_eq!(session.preview, crate::PreviewSession::default());
         drop(service);
         std::fs::remove_file(catalog).unwrap();
     }

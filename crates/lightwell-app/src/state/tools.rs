@@ -13,15 +13,81 @@ use crate::{
     state::Inputs,
 };
 use lightwell_core::{
-    ActionDescriptor, CanvasInteraction, Control, CropPayload, EffectStage, Layer,
-    ModuleDescriptor, ORIENTATION_EFFECT, Orientation, ParameterDescriptor, ParameterKind,
+    ActionDescriptor, ActionStyle, AssetId, CanvasInteraction, ChoiceStyle, ColorStyle, Control,
+    CropPayload, CurveBackground, EffectStage, EntryId, Layer, ModuleDescriptor, NumberStyle,
+    ORIENTATION_EFFECT, Orientation, ParameterDescriptor, ParameterKind, RailDecoration,
     ResetAction,
 };
 use serde_json::{Map, Value};
 use std::{
+    collections::BTreeMap,
     collections::hash_map::DefaultHasher,
     hash::{Hash, Hasher},
 };
+
+/// Local presentation state. The controller owns gesture changes and accepted sampled curves;
+/// refresh only reads these values, so a recipe refresh cannot reset a selected channel or point.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub(crate) struct ControlsUi {
+    pub(crate) group_expanded: BTreeMap<String, bool>,
+    pub(crate) curve_channels: BTreeMap<(String, String), usize>,
+    pub(crate) curve_points: BTreeMap<(String, String), usize>,
+    pub(crate) curve_edits: BTreeMap<(String, String, usize, usize), String>,
+    pub(crate) curve_samples: BTreeMap<(String, String), CurveSamples>,
+    pub(crate) color_open: BTreeMap<(String, String), bool>,
+    pub(crate) color_channels: BTreeMap<(String, String, usize), String>,
+    pub(crate) color_hex: BTreeMap<(String, String), String>,
+    /// Hue and saturation cannot be recovered from gray/black RGB. Keep the picker's fractions
+    /// only while its associated RGB still matches the authoritative field.
+    pub(crate) picker_hsv: BTreeMap<(String, String), PickerHsv>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct PickerHsv {
+    pub(crate) rgb: [u8; 3],
+    pub(crate) hsv: [f64; 3],
+}
+
+#[derive(Clone, Debug, Default, PartialEq)]
+pub(crate) struct CurveSamples {
+    pub(crate) asset: AssetId,
+    pub(crate) entry: EntryId,
+    pub(crate) source: Value,
+    pub(crate) points: Vec<[f32; 2]>,
+    pub(crate) version: u64,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum NumberControlStyle {
+    Slider,
+    Field,
+    Stepper,
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ChoiceControlStyle {
+    Segmented,
+    Chips,
+    Menu,
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ColorControlStyle {
+    Fields,
+    Picker,
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ActionControlStyle {
+    Default,
+    Primary,
+    Icon,
+}
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum RailStyle {
+    Plain,
+    Hue,
+    Temperature,
+    Tint,
+    Gradient(Vec<[u8; 3]>),
+}
 
 /// What the panel says about discovery before any section exists.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -137,8 +203,13 @@ pub(crate) struct SliderControl {
     pub(crate) unit: Option<String>,
     pub(crate) min: f64,
     pub(crate) max: f64,
+    pub(crate) soft_min: f64,
+    pub(crate) soft_max: f64,
     /// The rail's increment: the parameter's declared step, else [`generic_step`] over the range.
     pub(crate) step: f64,
+    pub(crate) fine_step: f64,
+    pub(crate) style: NumberControlStyle,
+    pub(crate) rail: RailStyle,
     /// How many decimals the value is shown with, and the precision a drag is quantized to.
     pub(crate) decimals: usize,
     /// Where a bipolar fill starts.
@@ -166,10 +237,19 @@ pub(crate) struct EnumControl {
     pub(crate) selected: Option<usize>,
     /// A short option list is a segmented control rather than a menu.
     pub(crate) segmented: bool,
+    pub(crate) style: ChoiceControlStyle,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct ToggleControl {
+    pub(crate) action: String,
+    pub(crate) parameter: String,
+    pub(crate) label: String,
+    pub(crate) on: bool,
 }
 
 #[allow(dead_code)]
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub(crate) struct ColorControl {
     pub(crate) action: String,
     pub(crate) parameter: String,
@@ -179,6 +259,64 @@ pub(crate) struct ColorControl {
     /// The whole field's text, so one channel edit keeps the other two as typed.
     pub(crate) text: String,
     pub(crate) invalid: Option<String>,
+    pub(crate) style: ColorControlStyle,
+    pub(crate) rgb: [u8; 3],
+    pub(crate) picker_hsv: Option<[f64; 3]>,
+    pub(crate) picker_open: bool,
+    pub(crate) dragging: bool,
+    pub(crate) hex_edit: ValueEdit,
+    pub(crate) channel_edits: [ValueEdit; 3],
+    pub(crate) version: u64,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct CurveChannelModel {
+    pub(crate) parameter: String,
+    pub(crate) label: String,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct CurvePointRowModel {
+    pub(crate) display: [String; 2],
+    pub(crate) edit: [ValueEdit; 2],
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct CurveControl {
+    pub(crate) id: (String, String),
+    pub(crate) action: String,
+    pub(crate) label: String,
+    pub(crate) channels: Vec<CurveChannelModel>,
+    pub(crate) sample_query: String,
+    pub(crate) background: bool,
+    pub(crate) selected_channel: usize,
+    pub(crate) selected_point: Option<usize>,
+    pub(crate) points: Vec<[f32; 2]>,
+    pub(crate) sampled: Vec<[f32; 2]>,
+    pub(crate) identity: bool,
+    pub(crate) point_rows: Vec<CurvePointRowModel>,
+    pub(crate) dragging: bool,
+    pub(crate) version: u64,
+}
+
+pub(crate) fn group_key(module_id: &str, path: &[usize]) -> String {
+    let mut key = format!("{module_id}/");
+    for (index, part) in path.iter().enumerate() {
+        if index > 0 {
+            key.push('.');
+        }
+        key.push_str(&part.to_string());
+    }
+    key
+}
+
+fn choice_style(style: ChoiceStyle, options: usize) -> ChoiceControlStyle {
+    match style {
+        ChoiceStyle::Automatic if options <= 4 => ChoiceControlStyle::Segmented,
+        ChoiceStyle::Segmented => ChoiceControlStyle::Segmented,
+        ChoiceStyle::Automatic | ChoiceStyle::Chips => ChoiceControlStyle::Chips,
+        ChoiceStyle::Menu => ChoiceControlStyle::Menu,
+    }
 }
 
 /// Whether every field of one sub-group is still at its declared default.
@@ -210,6 +348,7 @@ pub(crate) struct GroupControl {
     pub(crate) reset: Option<ResetRef>,
     /// The group's position inside its module's controls, so a reset names it without a search.
     pub(crate) path: Vec<usize>,
+    pub(crate) expanded: bool,
     pub(crate) controls: Vec<ControlModel>,
     /// Original or Custom, for a group whose value controls all belong to field-patch actions.
     /// Every other action's fields are request inputs rather than a mirror of a stored layer, so
@@ -226,6 +365,8 @@ pub(crate) struct ActionControl {
     pub(crate) runnable: bool,
     /// Why the action cannot run, when it cannot.
     pub(crate) reason: Option<String>,
+    pub(crate) style: ActionControlStyle,
+    pub(crate) icon: Option<String>,
 }
 
 /// The declaring module's canvas pick, as a button in that module's own panel. It carries no
@@ -254,8 +395,10 @@ pub(crate) struct PickerControl {
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) enum ControlModel {
     Slider(SliderControl),
+    Toggle(ToggleControl),
     Enum(EnumControl),
     Color(ColorControl),
+    Curve(CurveControl),
     Group(GroupControl),
     Action(ActionControl),
     Picker(PickerControl),
@@ -481,6 +624,12 @@ fn digest(
     module.id.hash(&mut hasher);
     format!("{:?}", module.availability).hash(&mut hasher);
     (expanded, enabled, active, inputs.developer).hash(&mut hasher);
+    // Sampled curves may depend on the query's entry context even when their point fields are
+    // unchanged. Other modules retain their section version across an unrelated entry switch.
+    if contains_curve(&module.controls) {
+        inputs.display_entry.hash(&mut hasher);
+        inputs.state.map(|state| &state.asset.id).hash(&mut hasher);
+    }
     for action in &module.actions {
         action.id.hash(&mut hasher);
         for parameter in &action.parameters {
@@ -503,6 +652,58 @@ fn digest(
             .filter(|draft| draft.action == action.id)
             .map(|draft| (draft.parameter.as_str(), draft.conflicted))
             .hash(&mut hasher);
+        for ((curve_action, first_parameter), selected) in &inputs.control_ui.curve_channels {
+            if curve_action == &action.id {
+                (first_parameter, selected).hash(&mut hasher);
+            }
+        }
+        for ((curve_action, first_parameter), selected) in &inputs.control_ui.curve_points {
+            if curve_action == &action.id {
+                (first_parameter, selected).hash(&mut hasher);
+            }
+        }
+        for ((sample_action, parameter), samples) in &inputs.control_ui.curve_samples {
+            if sample_action == &action.id {
+                parameter.hash(&mut hasher);
+                samples.version.hash(&mut hasher);
+            }
+        }
+        for ((edit_action, parameter, point, axis), text) in &inputs.control_ui.curve_edits {
+            if edit_action == &action.id {
+                (parameter, point, axis, text).hash(&mut hasher);
+            }
+        }
+        for ((open_action, parameter), open) in &inputs.control_ui.color_open {
+            if open_action == &action.id {
+                (parameter, open).hash(&mut hasher);
+            }
+        }
+        for ((hex_action, parameter), text) in &inputs.control_ui.color_hex {
+            if hex_action == &action.id {
+                (parameter, text).hash(&mut hasher);
+            }
+        }
+        for ((edit_action, parameter, channel), text) in &inputs.control_ui.color_channels {
+            if edit_action == &action.id {
+                (parameter, channel, text).hash(&mut hasher);
+            }
+        }
+        for ((picker_action, parameter), picker) in &inputs.control_ui.picker_hsv {
+            if picker_action == &action.id {
+                (parameter, picker.rgb).hash(&mut hasher);
+                for fraction in picker.hsv {
+                    fraction.to_bits().hash(&mut hasher);
+                }
+            }
+        }
+    }
+    for (key, value) in &inputs.control_ui.group_expanded {
+        if key
+            .strip_prefix(&module.id)
+            .is_some_and(|rest| rest.starts_with('/'))
+        {
+            (key, value).hash(&mut hasher);
+        }
     }
     if let Some(state) = inputs.state {
         for layer in &state.current_entry.snapshot.recipe.layers {
@@ -525,6 +726,14 @@ fn digest(
         draft_digest(inputs).hash(&mut hasher);
     }
     hasher.finish()
+}
+
+fn contains_curve(controls: &[Control]) -> bool {
+    controls.iter().any(|control| match control {
+        Control::Curve { .. } => true,
+        Control::Group { controls, .. } => contains_curve(controls),
+        _ => false,
+    })
 }
 
 /// Everything the crop section shows, as one string. The draft is transient state, so a section
@@ -558,6 +767,7 @@ fn control_model(
             label,
             controls,
             reset,
+            collapsed,
         } => {
             let controls: Vec<ControlModel> = controls
                 .iter()
@@ -572,6 +782,12 @@ fn control_model(
                 label: label.to_owned(),
                 reset: ResetRef::of(reset),
                 path: path.to_vec(),
+                expanded: inputs
+                    .control_ui
+                    .group_expanded
+                    .get(&group_key(&module.id, path))
+                    .copied()
+                    .unwrap_or(!collapsed),
                 state: group_state(&controls, inputs),
                 controls,
             })
@@ -580,16 +796,73 @@ fn control_model(
             action,
             parameter,
             label,
+            style,
+            rail,
+        } => {
+            let mut model = value_model(module, inputs, action, parameter, label);
+            if let ControlModel::Slider(slider) = &mut model {
+                slider.style = match style {
+                    NumberStyle::Slider => NumberControlStyle::Slider,
+                    NumberStyle::Field => NumberControlStyle::Field,
+                    NumberStyle::Stepper => NumberControlStyle::Stepper,
+                };
+                slider.rail = match rail.unwrap_or(&RailDecoration::Plain) {
+                    RailDecoration::Plain => RailStyle::Plain,
+                    RailDecoration::Hue => RailStyle::Hue,
+                    RailDecoration::Temperature => RailStyle::Temperature,
+                    RailDecoration::Tint => RailStyle::Tint,
+                    RailDecoration::Gradient { stops } => RailStyle::Gradient(stops.clone()),
+                };
+            }
+            model
+        }
+        Rendered::Toggle {
+            action,
+            parameter,
+            label,
+        }
+        | Rendered::Choice {
+            action,
+            parameter,
+            label,
+            ..
         }
         | Rendered::Color {
             action,
             parameter,
             label,
-        } => value_model(module, inputs, action, parameter, label),
+            ..
+        } => {
+            let mut model = value_model(module, inputs, action, parameter, label);
+            if let Rendered::Choice { style, .. } = classify(control)
+                && let ControlModel::Enum(choice) = &mut model
+            {
+                choice.style = choice_style(style, choice.options.len());
+                choice.segmented = choice.style == ChoiceControlStyle::Segmented;
+            }
+            if let Rendered::Color { style, .. } = classify(control)
+                && let ControlModel::Color(color) = &mut model
+            {
+                color.style = match style {
+                    ColorStyle::Fields => ColorControlStyle::Fields,
+                    ColorStyle::Picker => ColorControlStyle::Picker,
+                };
+            }
+            model
+        }
+        Rendered::Curve {
+            action,
+            channels,
+            label,
+            sample_query,
+            background,
+        } => curve_model(inputs, action, channels, label, sample_query, background),
         Rendered::Action {
             action,
             label,
             preset,
+            style,
+            icon,
         } => {
             let declared = declared_action(inputs.modules, action);
             let params = declared.map(|declared| action_params(declared, preset, inputs.fields));
@@ -603,6 +876,12 @@ fn control_model(
                     Some(Ok(_)) => None,
                     None => Some(format!("No module declares the action {action}")),
                 },
+                style: match style {
+                    ActionStyle::Default => ActionControlStyle::Default,
+                    ActionStyle::Primary => ActionControlStyle::Primary,
+                    ActionStyle::Icon => ActionControlStyle::Icon,
+                },
+                icon: icon.map(str::to_owned),
             })
         }
         // The picker reads its mode's name and letter from the same canvas declaration the keymap
@@ -640,30 +919,65 @@ fn control_model(
 /// "all defaults" is the same statement as "that layer holds nothing for this group". A group of
 /// request inputs, a group with no value control at all and a mixed group get no caption.
 fn group_state(controls: &[ControlModel], inputs: &Inputs<'_>) -> Option<GroupState> {
-    let mut sliders = 0usize;
+    let mut values = 0usize;
     let mut custom = false;
+    fn field(
+        action: &str,
+        parameter: &str,
+        inputs: &Inputs<'_>,
+        values: &mut usize,
+        custom: &mut bool,
+    ) -> bool {
+        let Some(declared) =
+            declared_action(inputs.modules, action).filter(|declared| declared.patch)
+        else {
+            return false;
+        };
+        let Some(parameter_desc) = declared.parameter(parameter) else {
+            return false;
+        };
+        *values += 1;
+        *custom |= inputs.fields.get(action, parameter)
+            != Some(crate::app::fields::seed_text(parameter_desc).as_str());
+        true
+    }
     fn walk(
         controls: &[ControlModel],
         inputs: &Inputs<'_>,
-        sliders: &mut usize,
+        values: &mut usize,
         custom: &mut bool,
     ) -> bool {
         for control in controls {
             match control {
                 ControlModel::Slider(slider) => {
-                    let patch = declared_action(inputs.modules, &slider.action)
-                        .is_some_and(|declared| declared.patch);
-                    if !patch {
+                    if !field(&slider.action, &slider.parameter, inputs, values, custom) {
                         return false;
                     }
-                    *sliders += 1;
-                    // An unreadable field shows its own text rather than the formatted value, so it
-                    // differs from the default and the group reads Custom, which is what is true.
-                    *custom |= slider.display != slider.default;
                 }
-                ControlModel::Color(_) => return false,
+                ControlModel::Toggle(toggle) => {
+                    if !field(&toggle.action, &toggle.parameter, inputs, values, custom) {
+                        return false;
+                    }
+                }
+                ControlModel::Enum(choice) => {
+                    if !field(&choice.action, &choice.parameter, inputs, values, custom) {
+                        return false;
+                    }
+                }
+                ControlModel::Color(color) => {
+                    if !field(&color.action, &color.parameter, inputs, values, custom) {
+                        return false;
+                    }
+                }
+                ControlModel::Curve(curve) => {
+                    for channel in &curve.channels {
+                        if !field(&curve.action, &channel.parameter, inputs, values, custom) {
+                            return false;
+                        }
+                    }
+                }
                 ControlModel::Group(group) => {
-                    if !walk(&group.controls, inputs, sliders, custom) {
+                    if !walk(&group.controls, inputs, values, custom) {
                         return false;
                     }
                 }
@@ -672,7 +986,7 @@ fn group_state(controls: &[ControlModel], inputs: &Inputs<'_>) -> Option<GroupSt
         }
         true
     }
-    if !walk(controls, inputs, &mut sliders, &mut custom) || sliders == 0 {
+    if !walk(controls, inputs, &mut values, &mut custom) || values == 0 {
         return None;
     }
     Some(if custom {
@@ -716,17 +1030,72 @@ fn value_model(
         ParameterKind::Number { min, max } => ControlModel::Slider(slider(
             action, parameter, label, declared, text, invalid, typing, inputs, *min, *max, false,
         )),
-        ParameterKind::Color => ControlModel::Color(ColorControl {
-            action: action.to_owned(),
-            parameter: parameter.to_owned(),
-            ids: [0, 1, 2].map(|index| {
-                field_id(action, parameter, Some(crate::app::fields::CHANNELS[index]))
-            }),
-            label: labelled(label, declared),
-            channels: [0, 1, 2].map(|index| channel_text(text, index).to_owned()),
-            text: text.to_owned(),
-            invalid,
-        }),
+        ParameterKind::Color => {
+            let rgb = parse_field(declared, text)
+                .ok()
+                .and_then(|value| value.as_array().cloned())
+                .and_then(|values| {
+                    Some([
+                        values.first()?.as_u64()? as u8,
+                        values.get(1)?.as_u64()? as u8,
+                        values.get(2)?.as_u64()? as u8,
+                    ])
+                })
+                .unwrap_or([0, 0, 0]);
+            let picker_hsv = inputs
+                .control_ui
+                .picker_hsv
+                .get(&(action.to_owned(), parameter.to_owned()))
+                .filter(|picker| picker.rgb == rgb)
+                .map(|picker| picker.hsv);
+            let dragging = inputs
+                .dragging
+                .is_some_and(|(a, p)| a == action && p == parameter);
+            ControlModel::Color(ColorControl {
+                action: action.to_owned(),
+                parameter: parameter.to_owned(),
+                ids: [0, 1, 2].map(|index| {
+                    field_id(action, parameter, Some(crate::app::fields::CHANNELS[index]))
+                }),
+                label: labelled(label, declared),
+                channels: [0, 1, 2].map(|index| channel_text(text, index).to_owned()),
+                text: text.to_owned(),
+                invalid,
+                style: ColorControlStyle::Fields,
+                rgb,
+                picker_hsv,
+                picker_open: inputs
+                    .control_ui
+                    .color_open
+                    .get(&(action.to_owned(), parameter.to_owned()))
+                    .copied()
+                    .unwrap_or(false),
+                dragging,
+                hex_edit: inputs
+                    .control_ui
+                    .color_hex
+                    .get(&(action.to_owned(), parameter.to_owned()))
+                    .map(|text| ValueEdit::Typing(text.clone()))
+                    .unwrap_or_default(),
+                channel_edits: [0, 1, 2].map(|index| {
+                    inputs
+                        .control_ui
+                        .color_channels
+                        .get(&(action.to_owned(), parameter.to_owned(), index))
+                        .map(|text| ValueEdit::Typing(text.clone()))
+                        .unwrap_or_default()
+                }),
+                version: {
+                    let mut hasher = DefaultHasher::new();
+                    text.hash(&mut hasher);
+                    dragging.hash(&mut hasher);
+                    for fraction in picker_hsv.unwrap_or_default() {
+                        fraction.to_bits().hash(&mut hasher);
+                    }
+                    hasher.finish()
+                },
+            })
+        }
         ParameterKind::Enum { options } => ControlModel::Enum(EnumControl {
             action: action.to_owned(),
             parameter: parameter.to_owned(),
@@ -735,7 +1104,20 @@ fn value_model(
             options: options.clone(),
             selected: options.iter().position(|option| option == text.trim()),
             segmented: options.len() <= 4,
+            style: choice_style(ChoiceStyle::Automatic, options.len()),
         }),
+        ParameterKind::Boolean => ControlModel::Toggle(ToggleControl {
+            action: action.to_owned(),
+            parameter: parameter.to_owned(),
+            label: labelled(label, declared),
+            on: parse_field(declared, text)
+                .ok()
+                .and_then(|value| value.as_bool())
+                .unwrap_or(false),
+        }),
+        ParameterKind::Curve { .. } => ControlModel::Unsupported(format!(
+            "curve parameter {parameter} of action {action} needs a curve control"
+        )),
     }
 }
 
@@ -788,9 +1170,14 @@ fn slider(
         unit: declared.unit.clone(),
         min,
         max,
+        soft_min: declared.soft_min.unwrap_or(min),
+        soft_max: declared.soft_max.unwrap_or(max),
         step,
+        fine_step: declared.fine_step.unwrap_or(step / 10.0),
+        style: NumberControlStyle::Slider,
+        rail: RailStyle::Plain,
         decimals: decimals_for(declared),
-        zero: 0.0_f64.clamp(min, max),
+        zero: declared.zero.unwrap_or(0.0_f64.clamp(min, max)),
         value,
         display: if invalid.is_some() {
             text.to_owned()
@@ -809,6 +1196,144 @@ fn slider(
         invalid,
         default: crate::app::fields::seed_text(declared),
     }
+}
+
+fn curve_model(
+    inputs: &Inputs<'_>,
+    action: &str,
+    channels: &[lightwell_core::CurveChannel],
+    label: &str,
+    sample_query: &str,
+    background: CurveBackground,
+) -> ControlModel {
+    let id = (
+        action.to_owned(),
+        channels
+            .first()
+            .map(|channel| channel.parameter.clone())
+            .unwrap_or_default(),
+    );
+    let selected_channel = inputs
+        .control_ui
+        .curve_channels
+        .get(&id)
+        .copied()
+        .unwrap_or(0)
+        .min(channels.len().saturating_sub(1));
+    let Some(channel) = channels.get(selected_channel) else {
+        return ControlModel::Unsupported(format!(
+            "curve control of action {action} has no channel"
+        ));
+    };
+    let parameter = &channel.parameter;
+    let text = inputs.fields.get(action, parameter).unwrap_or_default();
+    let declared = inputs
+        .modules
+        .iter()
+        .find_map(|module| module.action(action))
+        .and_then(|declared| declared.parameter(parameter));
+    let precision = declared
+        .and_then(|parameter| parameter.precision)
+        .unwrap_or(3) as usize;
+    let parsed = declared.and_then(|declared| parse_field(declared, text).ok());
+    let points = parsed
+        .as_ref()
+        .and_then(Value::as_array)
+        .map(|points| {
+            points
+                .iter()
+                .filter_map(|point| {
+                    let pair = point.as_array()?;
+                    Some([
+                        pair.first()?.as_f64()? as f32,
+                        pair.get(1)?.as_f64()? as f32,
+                    ])
+                })
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    let selected_point = inputs
+        .control_ui
+        .curve_points
+        .get(&id)
+        .copied()
+        .filter(|index| *index < points.len());
+    let point_rows = points
+        .iter()
+        .enumerate()
+        .map(|(index, point)| CurvePointRowModel {
+            display: [0, 1].map(|axis| {
+                // Plot coordinates use f32; field text retains the authoritative f64 value.
+                let value = parsed
+                    .as_ref()
+                    .and_then(|value| value.get(index))
+                    .and_then(|value| value.get(axis))
+                    .and_then(Value::as_f64)
+                    .unwrap_or(point[axis] as f64);
+                let formatted = format!("{value:.precision$}");
+                if precision == 0 {
+                    formatted
+                } else {
+                    formatted
+                        .trim_end_matches('0')
+                        .trim_end_matches('.')
+                        .to_owned()
+                }
+            }),
+            edit: [0, 1].map(|axis| {
+                inputs
+                    .control_ui
+                    .curve_edits
+                    .get(&(action.to_owned(), parameter.to_owned(), index, axis))
+                    .map(|text| ValueEdit::Typing(text.clone()))
+                    .unwrap_or_default()
+            }),
+        })
+        .collect();
+    let samples = inputs
+        .control_ui
+        .curve_samples
+        .get(&(action.to_owned(), parameter.to_owned()))
+        .filter(|samples| {
+            parsed.as_ref() == Some(&samples.source)
+                && inputs.display_entry == Some(&samples.entry)
+                && inputs
+                    .state
+                    .is_some_and(|state| state.asset.id == samples.asset)
+        });
+    let mut hasher = DefaultHasher::new();
+    text.hash(&mut hasher);
+    selected_channel.hash(&mut hasher);
+    selected_point.hash(&mut hasher);
+    samples.map(|samples| samples.version).hash(&mut hasher);
+    let dragging = inputs
+        .dragging
+        .is_some_and(|(a, p)| a == action && p == parameter);
+    dragging.hash(&mut hasher);
+    ControlModel::Curve(CurveControl {
+        id,
+        action: action.to_owned(),
+        label: label.to_owned(),
+        channels: channels
+            .iter()
+            .map(|channel| CurveChannelModel {
+                parameter: channel.parameter.clone(),
+                label: channel.label.clone(),
+            })
+            .collect(),
+        sample_query: sample_query.to_owned(),
+        background: matches!(background, CurveBackground::Histogram),
+        selected_channel,
+        selected_point,
+        identity: points.iter().all(|point| point[0] == point[1]),
+        points,
+        sampled: samples
+            .map(|samples| samples.points.clone())
+            .unwrap_or_default(),
+        point_rows,
+        dragging,
+        version: hasher.finish(),
+    })
 }
 
 /// The crop draft's own panel, generated from the declared crop-frame interaction.
@@ -901,21 +1426,45 @@ pub(crate) enum Rendered<'a> {
         label: &'a str,
         controls: &'a [Control],
         reset: Option<&'a ResetAction>,
+        collapsed: bool,
     },
     Number {
         action: &'a str,
         parameter: &'a str,
         label: &'a str,
+        style: NumberStyle,
+        rail: Option<&'a RailDecoration>,
+    },
+    Toggle {
+        action: &'a str,
+        parameter: &'a str,
+        label: &'a str,
+    },
+    Choice {
+        action: &'a str,
+        parameter: &'a str,
+        label: &'a str,
+        style: ChoiceStyle,
     },
     Color {
         action: &'a str,
         parameter: &'a str,
         label: &'a str,
+        style: ColorStyle,
+    },
+    Curve {
+        action: &'a str,
+        channels: &'a [lightwell_core::CurveChannel],
+        label: &'a str,
+        sample_query: &'a str,
+        background: CurveBackground,
     },
     Action {
         action: &'a str,
         label: &'a str,
         preset: &'a Map<String, Value>,
+        style: ActionStyle,
+        icon: Option<&'a str>,
     },
     /// The declaring module's own canvas pick, offered in its panel.
     Picker {
@@ -930,37 +1479,82 @@ pub(crate) fn classify(control: &Control) -> Rendered<'_> {
             label,
             controls,
             reset,
+            collapsed,
         } => Rendered::Group {
             label,
             controls,
             reset: reset.as_ref(),
+            collapsed: *collapsed,
         },
         Control::Number {
             action,
             parameter,
             label,
+            style,
+            rail,
         } => Rendered::Number {
             action,
             parameter,
             label,
+            style: *style,
+            rail: rail.as_ref(),
+        },
+        Control::Toggle {
+            action,
+            parameter,
+            label,
+        } => Rendered::Toggle {
+            action,
+            parameter,
+            label,
+        },
+        Control::Choice {
+            action,
+            parameter,
+            label,
+            style,
+        } => Rendered::Choice {
+            action,
+            parameter,
+            label,
+            style: *style,
+        },
+        Control::Curve {
+            action,
+            channels,
+            label,
+            sample_query,
+            background,
+        } => Rendered::Curve {
+            action,
+            channels,
+            label,
+            sample_query,
+            background: *background,
         },
         Control::Color {
             action,
             parameter,
             label,
+            style,
         } => Rendered::Color {
             action,
             parameter,
             label,
+            style: *style,
         },
         Control::Action {
             action,
             label,
             preset,
+            style,
+            icon,
         } => Rendered::Action {
             action,
             label,
             preset,
+            style: *style,
+            icon: icon.as_deref(),
         },
         Control::Picker { label } => Rendered::Picker { label },
         // A kind added to the descriptor later is reported, never dropped.
@@ -1036,12 +1630,37 @@ fn labelled_control<'a>(controls: &'a [Control], action: &str, parameter: &str) 
             action: declared,
             parameter: named,
             label,
+            ..
         }
         | Rendered::Color {
             action: declared,
             parameter: named,
             label,
+            ..
+        }
+        | Rendered::Toggle {
+            action: declared,
+            parameter: named,
+            label,
+        }
+        | Rendered::Choice {
+            action: declared,
+            parameter: named,
+            label,
+            ..
         } if declared == action && named == parameter => Some(label),
+        Rendered::Curve {
+            action: declared,
+            channels,
+            label,
+            ..
+        } if declared == action
+            && channels
+                .iter()
+                .any(|channel| channel.parameter == parameter) =>
+        {
+            Some(label)
+        }
         _ => None,
     })
 }
@@ -1256,6 +1875,7 @@ fn collect_actions(
                 action,
                 label,
                 preset,
+                ..
             } => entries.push((
                 format!("{} · {label}", module.title),
                 format!("edit.{action}"),

@@ -2,6 +2,7 @@
 //! response becomes exactly one of these; pixel deltas, pointer positions and key codes stay in the
 //! view and the keymap.
 use crate::{
+    app::controls::CurveSampleIdentity,
     app::tasks::{PreviewPayload, Refresh, SyncResult, Upload},
     crop_draft::Handle,
     state::histogram::Readout,
@@ -11,6 +12,7 @@ use lightwell_core::{
     ClientSession, ContentPoint, Draft, EntryId, HistoryPage, ModuleDescriptor, PreviewJob,
     RecipeDescription, Version,
 };
+use lightwell_ui::{ColorPickerEvent, CurveEditorEvent};
 use serde_json::{Map, Value};
 use std::path::PathBuf;
 
@@ -59,6 +61,7 @@ pub(crate) enum MenuTarget {
     Control {
         action: String,
         parameter: Option<String>,
+        preset: Option<Map<String, Value>>,
     },
     /// The open crop draft's own Apply: Copy as JSON request for its current values.
     Draft,
@@ -139,6 +142,10 @@ pub(crate) enum CropMessage {
 pub(crate) enum Message {
     /// One raw window or keyboard event, handed to the keyboard table with the live context.
     Key(iced::Event, iced::event::Status),
+    /// Browse a developer component page, or return to the editor with None.
+    Gallery(Option<usize>),
+    /// Reference gallery examples never operate the photograph.
+    GalleryPreview,
     /// Open the native file picker.
     Open,
     /// Copy the status message to the clipboard.
@@ -220,6 +227,66 @@ pub(crate) enum Message {
         parameter: String,
         value: f64,
     },
+    /// A slider rail position in 0..=1; the host maps it through the descriptor's soft range.
+    ControlFraction {
+        action: String,
+        parameter: String,
+        fraction: f64,
+    },
+    /// A discrete control sends one field of its declared action once.
+    ControlDiscrete {
+        action: String,
+        parameter: String,
+        value: Value,
+    },
+    /// The end of a continuous control gesture.
+    ControlReleased {
+        action: String,
+        parameter: String,
+    },
+    /// One explicit stepper button press or keyboard step.
+    ControlStep {
+        action: String,
+        parameter: String,
+        direction: i8,
+    },
+    ControlKeyNudge {
+        action: String,
+        parameter: String,
+        direction: i8,
+        shift: bool,
+        option: bool,
+    },
+    ControlFieldNudge {
+        action: String,
+        parameter: String,
+        direction: i8,
+        shift: bool,
+        option: bool,
+    },
+    TogglePicker {
+        action: String,
+        parameter: String,
+    },
+    ToggleGroup {
+        module_id: String,
+        path: Vec<usize>,
+    },
+    ControlPicker {
+        action: String,
+        parameter: String,
+        event: ColorPickerEvent,
+    },
+    ControlCurve {
+        action: String,
+        parameter: String,
+        event: CurveEditorEvent,
+    },
+    /// Sampled curve geometry from the module's declared read-only query.
+    CurveSampled {
+        identity: CurveSampleIdentity,
+        result: Result<Value, String>,
+    },
     /// A slider drag ended: it commits the open draft of a patch action, and otherwise runs the
     /// control's action once, exactly as Enter in the field does.
     SliderReleased {
@@ -298,6 +365,7 @@ pub(crate) enum Message {
     CopyRequest {
         action: String,
         parameter: Option<String>,
+        preset: Option<Map<String, Value>>,
     },
     /// Copy the JSON request the open crop draft's own Apply would send.
     CopyDraftRequest,

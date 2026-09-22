@@ -34,6 +34,8 @@ pub(crate) struct Inputs<'a> {
     /// The displayed entry's layers as the owner described them.
     pub(crate) recipe: Option<&'a RecipeDescription>,
     pub(crate) fields: &'a Fields,
+    /// Local presentation state for generated controls; it never enters the recipe.
+    pub(crate) control_ui: &'a tools::ControlsUi,
     /// The (action, parameter) whose value is being typed.
     pub(crate) editing: Option<&'a (String, String)>,
     /// The (action, parameter) whose slider is being dragged.
@@ -56,7 +58,7 @@ pub(crate) struct Inputs<'a> {
     pub(crate) status: &'a str,
     pub(crate) busy: bool,
     pub(crate) can_open: bool,
-    /// The desktop was started with `--developer`, so developer modules are listed.
+    /// Developer mode is active (debug build or `--developer`), so diagnostic UI is listed.
     pub(crate) developer: bool,
     pub(crate) compare_held: bool,
     pub(crate) scale_factor: f32,
@@ -160,7 +162,9 @@ mod tests {
         tools::{ControlModel, ValueEdit},
         *,
     };
-    use crate::app::testing::{crop_descriptor, crop_layer, descriptors, entry};
+    use crate::app::testing::{
+        controls_descriptor, crop_descriptor, crop_layer, descriptors, entry,
+    };
     use lightwell_core::{
         AssetId, AssetRecord, Availability, CropPayload, LayerDescription, Orientation,
         POINTER_MODE,
@@ -179,6 +183,7 @@ mod tests {
         modules: Vec<ModuleDescriptor>,
         recipe: Option<RecipeDescription>,
         fields: Fields,
+        control_ui: tools::ControlsUi,
         editing: Option<(String, String)>,
         dragging: Option<(String, String)>,
         expanded: BTreeMap<String, bool>,
@@ -210,6 +215,7 @@ mod tests {
                 modules,
                 recipe: None,
                 fields,
+                control_ui: tools::ControlsUi::default(),
                 editing: None,
                 dragging: None,
                 expanded: BTreeMap::new(),
@@ -272,6 +278,7 @@ mod tests {
                 modules_ready: true,
                 recipe: self.recipe.as_ref(),
                 fields: &self.fields,
+                control_ui: &self.control_ui,
                 editing: self.editing.as_ref(),
                 dragging: self.dragging.as_ref(),
                 expanded: &self.expanded,
@@ -1225,5 +1232,160 @@ mod tests {
         // Snapshot evidence names every section it drew.
         let scene = Scene::new(vec![crop_descriptor()]).opened(Vec::new());
         assert_eq!(scene.derive().expanded(), json!({"lightwell.crop": true}));
+    }
+
+    #[test]
+    fn every_declared_control_maps_to_plain_data_and_local_curve_state_survives_refresh() {
+        let fixture = controls_descriptor();
+        let mut scene = Scene::new(vec![fixture.clone(), crop_descriptor()]).opened(Vec::new());
+        let mut workspace = Workspace::default();
+        workspace.derive(&scene.inputs());
+        let fixture_section = section(&workspace, &fixture.id);
+        let ControlModel::Group(group) = &fixture_section.controls[0] else {
+            panic!("declared group")
+        };
+        assert!(group.expanded);
+        let ControlModel::Slider(amount) = &group.controls[0] else {
+            panic!("number")
+        };
+        assert_eq!(
+            (amount.min, amount.max, amount.soft_min, amount.soft_max),
+            (-10.0, 10.0, -5.0, 5.0)
+        );
+        assert_eq!(
+            (amount.step, amount.fine_step, amount.zero),
+            (0.1, 0.01, 0.0)
+        );
+        assert!(matches!(amount.rail, tools::RailStyle::Temperature));
+        assert!(
+            matches!(group.controls[1], ControlModel::Slider(ref field) if field.style == tools::NumberControlStyle::Stepper)
+        );
+        assert!(
+            matches!(group.controls[2], ControlModel::Slider(ref field) if field.style == tools::NumberControlStyle::Field)
+        );
+        assert!(matches!(group.controls[3], ControlModel::Toggle(ref field) if !field.on));
+        assert!(
+            matches!(group.controls[4], ControlModel::Enum(ref field) if field.style == tools::ChoiceControlStyle::Menu)
+        );
+        assert!(
+            matches!(group.controls[5], ControlModel::Color(ref field) if field.style == tools::ColorControlStyle::Picker && field.rgb == [32,64,128])
+        );
+        assert!(
+            matches!(group.controls[6], ControlModel::Curve(ref field) if field.channels.len() == 2 && field.sample_query == "fixture-samples" && field.points.len() == 3)
+        );
+        assert!(
+            matches!(group.controls[7], ControlModel::Action(ref field) if field.style == tools::ActionControlStyle::Icon && field.icon.as_deref() == Some("reset"))
+        );
+        let crop_version = section(&workspace, "lightwell.crop").version;
+        let fixture_version = fixture_section.version;
+        scene
+            .control_ui
+            .curve_channels
+            .insert(("fixture-set".into(), "master".into()), 1);
+        scene
+            .control_ui
+            .curve_points
+            .insert(("fixture-set".into(), "master".into()), 2);
+        scene.control_ui.curve_samples.insert(
+            ("fixture-set".into(), "red".into()),
+            tools::CurveSamples {
+                asset: scene.state.as_ref().unwrap().asset.id.clone(),
+                entry: scene.display_entry.clone().unwrap(),
+                source: json!([[0.0, 0.0], [0.5, 0.5], [1.0, 1.0]]),
+                points: vec![[0.0, 0.0], [1.0, 1.0]],
+                version: 7,
+            },
+        );
+        scene
+            .control_ui
+            .group_expanded
+            .insert(tools::group_key(&fixture.id, &[0]), false);
+        workspace.derive(&scene.inputs());
+        let fixture_section = section(&workspace, &fixture.id);
+        assert_eq!(fixture_section.version, fixture_version + 1);
+        assert_eq!(section(&workspace, "lightwell.crop").version, crop_version);
+        let ControlModel::Group(group) = &fixture_section.controls[0] else {
+            panic!("group")
+        };
+        assert!(!group.expanded);
+        assert!(
+            matches!(group.controls[6], ControlModel::Curve(ref field) if field.selected_channel == 1 && field.selected_point == Some(2) && field.sampled.len() == 2)
+        );
+        workspace.derive(&scene.inputs());
+        assert_eq!(
+            section(&workspace, &fixture.id).version,
+            fixture_version + 1
+        );
+        let original_entry = scene.display_entry.replace(EntryId::new()).unwrap();
+        workspace.derive(&scene.inputs());
+        let ControlModel::Group(group) = &section(&workspace, &fixture.id).controls[0] else {
+            panic!("group")
+        };
+        assert!(
+            matches!(group.controls[6], ControlModel::Curve(ref field) if field.sampled.is_empty()),
+            "a different entry cannot reuse sampled geometry for identical control points"
+        );
+        scene.display_entry = Some(original_entry);
+        workspace.derive(&scene.inputs());
+        scene.fields.set(
+            "fixture-set",
+            "red",
+            "[[0.0,0.0],[0.5,0.7],[1.0,1.0]]".into(),
+        );
+        workspace.derive(&scene.inputs());
+        let ControlModel::Group(group) = &section(&workspace, &fixture.id).controls[0] else {
+            panic!("group")
+        };
+        assert!(
+            matches!(group.controls[6], ControlModel::Curve(ref field) if field.sampled.is_empty()),
+            "old sampled geometry is hidden until the query matches the current points"
+        );
+        assert_eq!(section(&workspace, "lightwell.crop").version, crop_version);
+    }
+
+    #[test]
+    fn cached_canvas_versions_track_picker_fractions_selection_and_drag_state() {
+        let fixture = controls_descriptor();
+        let mut scene = Scene::new(vec![fixture.clone()]).opened(Vec::new());
+        let mut workspace = Workspace::default();
+        workspace.derive(&scene.inputs());
+        let versions = |workspace: &Workspace| {
+            let ControlModel::Group(group) = &section(workspace, &fixture.id).controls[0] else {
+                panic!("group")
+            };
+            let (ControlModel::Color(color), ControlModel::Curve(curve)) =
+                (&group.controls[5], &group.controls[6])
+            else {
+                panic!("canvas controls")
+            };
+            (color.version, curve.version, color.picker_hsv)
+        };
+        let initial = versions(&workspace);
+        scene.dragging = Some(("fixture-set".into(), "rgb".into()));
+        workspace.derive(&scene.inputs());
+        assert_ne!(versions(&workspace).0, initial.0);
+        scene.dragging = Some(("fixture-set".into(), "master".into()));
+        workspace.derive(&scene.inputs());
+        assert_ne!(versions(&workspace).1, initial.1);
+        scene.dragging = None;
+        scene
+            .control_ui
+            .curve_points
+            .insert(("fixture-set".into(), "master".into()), 1);
+        workspace.derive(&scene.inputs());
+        assert_ne!(versions(&workspace).1, initial.1);
+        scene.control_ui.picker_hsv.insert(
+            ("fixture-set".into(), "rgb".into()),
+            tools::PickerHsv {
+                rgb: [32, 64, 128],
+                hsv: [0.7, 0.75, 0.5],
+            },
+        );
+        workspace.derive(&scene.inputs());
+        assert_eq!(versions(&workspace).2, Some([0.7, 0.75, 0.5]));
+        assert_ne!(versions(&workspace).0, initial.0);
+        scene.fields.set("fixture-set", "rgb", "[0,255,0]".into());
+        workspace.derive(&scene.inputs());
+        assert_eq!(versions(&workspace).2, None, "the field is authoritative");
     }
 }

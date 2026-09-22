@@ -6,7 +6,7 @@
 //! render identity, so it cannot disagree with the model about what the plot means — and it cannot
 //! normalize one channel differently from another, because it never sees the raw numbers at all.
 
-use crate::theme;
+use crate::{Icon, icon, theme};
 use iced::{
     Color, Element, Length, Point, Rectangle, Renderer, Size, Theme,
     widget::{button, canvas, container, text, tooltip},
@@ -195,14 +195,14 @@ impl<M> canvas::Program<M> for Plot {
     }
 }
 
-/// One clipping triangle: the glyph, whether the plot found any pixel at that endpoint, and whether
+/// One clipping triangle: the icon, whether the plot found any pixel at that endpoint, and whether
 /// its overlay is currently drawn.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ClipTriangleModel {
-    pub glyph: String,
+    pub icon: Icon,
     /// The rule this triangle follows, stated in full on hover.
     pub tooltip: String,
-    /// The colour this endpoint's overlay uses; the glyph takes it when `tinted`.
+    /// The colour this endpoint's overlay uses; the icon takes it when `tinted`.
     pub tint: Color,
     /// This endpoint has pixels, so the triangle is coloured rather than grey.
     pub tinted: bool,
@@ -222,37 +222,31 @@ pub fn clip_triangle<'a, M: Clone + 'a>(
 ) -> Element<'a, M> {
     let tint = model.tint;
     let active = model.active;
-    let glyph_color = match (model.enabled, model.tinted) {
+    let icon_color = match (model.enabled, model.tinted) {
         (false, _) => theme::TEXT_TERTIARY,
         (true, true) => tint,
         (true, false) => theme::TEXT_TERTIARY,
     };
-    let control = button(
-        container(
-            text(model.glyph.clone())
-                .size(theme::SIZE_CONTROL)
-                .color(glyph_color),
-        )
-        .center(Length::Fill),
-    )
-    .width(Length::Fixed(TRIANGLE_SIZE))
-    .height(Length::Fixed(TRIANGLE_SIZE))
-    .padding(0.0)
-    .style(move |theme: &Theme, status: button::Status| {
-        let mut style = theme::button_plain(theme, status);
-        if active {
-            // An overlay that is on reads as a filled chip in its own clipping colour, which is the
-            // same colour the overlay draws on the photograph.
-            style.background = Some(iced::Background::Color(Color { a: 0.22, ..tint }));
-            style.border = iced::Border {
-                color: tint,
-                width: theme::BORDER_WIDTH,
-                radius: theme::RADIUS.into(),
-            };
-        }
-        style
-    })
-    .on_press_maybe(if model.enabled { on_press } else { None });
+    let control =
+        button(container(icon(model.icon, theme::SIZE_CONTROL, icon_color)).center(Length::Fill))
+            .width(Length::Fixed(TRIANGLE_SIZE))
+            .height(Length::Fixed(TRIANGLE_SIZE))
+            .padding(0.0)
+            .style(move |theme: &Theme, status: button::Status| {
+                let mut style = theme::button_plain(theme, status);
+                if active {
+                    // An overlay that is on reads as a filled chip in its own clipping colour, which is the
+                    // same colour the overlay draws on the photograph.
+                    style.background = Some(iced::Background::Color(Color { a: 0.22, ..tint }));
+                    style.border = iced::Border {
+                        color: tint,
+                        width: theme::BORDER_WIDTH,
+                        radius: theme::RADIUS.into(),
+                    };
+                }
+                style
+            })
+            .on_press_maybe(if model.enabled { on_press } else { None });
     tooltip(
         control,
         container(

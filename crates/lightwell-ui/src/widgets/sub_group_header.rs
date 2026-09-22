@@ -1,6 +1,6 @@
 //! A sub-group label within a module (White balance, Tone, Color) with an optional reset.
 
-use super::icon_button::{IconButtonModel, icon_button};
+use super::icon_button::{Icon, IconButtonModel, icon_button};
 use super::text::{caption, section_label};
 use crate::theme;
 use iced::widget::{container, row};
@@ -33,7 +33,7 @@ pub fn sub_group_header<'a, M: Clone + 'a>(
     if model.reset {
         header = header.push(icon_button(
             &IconButtonModel {
-                glyph: "\u{21ba}".to_string(),
+                icon: Icon::Reset,
                 tooltip: "Reset".to_string(),
                 enabled: model.enabled,
                 selected: false,

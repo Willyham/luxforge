@@ -164,6 +164,10 @@ fn number(
         step: Some(step),
         precision: Some(precision),
         notes: "finite value".into(),
+        soft_min: None,
+        soft_max: None,
+        fine_step: None,
+        zero: None,
     }
 }
 
@@ -180,6 +184,10 @@ fn coordinate(name: &str) -> ParameterDescriptor {
         step: None,
         precision: None,
         notes: "upright RAW content coordinate".into(),
+        soft_min: None,
+        soft_max: None,
+        fine_step: None,
+        zero: None,
     }
 }
 
@@ -263,16 +271,22 @@ impl RawModule {
                             action: SET_EXPOSURE.into(),
                             parameter: "ev".into(),
                             label: "Exposure".into(),
+                            style: crate::NumberStyle::Slider,
+                            rail: None,
                         },
                         Control::Number {
                             action: SET_TEMPERATURE.into(),
                             parameter: "kelvin".into(),
                             label: "Custom temperature".into(),
+                            style: crate::NumberStyle::Slider,
+                            rail: None,
                         },
                         Control::Number {
                             action: SET_TINT.into(),
                             parameter: "tint".into(),
                             label: "Custom tint".into(),
+                            style: crate::NumberStyle::Slider,
+                            rail: None,
                         },
                         // The sensor neutral pick, beside the temperature and tint it sets.
                         Control::Picker {
@@ -282,8 +296,11 @@ impl RawModule {
                             action: AS_SHOT.into(),
                             label: "As shot".into(),
                             preset: Map::new(),
+                            style: crate::ActionStyle::Default,
+                            icon: None,
                         },
                     ],
+                    collapsed: false,
                 }],
                 reset: Some(ResetAction {
                     action: RESET.into(),

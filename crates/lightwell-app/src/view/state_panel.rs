@@ -11,8 +11,8 @@ use iced::{
     },
 };
 use lightwell_ui::{
-    ChipModel, IconButtonModel, ListRowModel, Marker, chip, icon_button, inline_menu, list_row,
-    section_label, theme,
+    ChipModel, Icon, IconButtonModel, ListRowModel, Marker, chip, icon_button, inline_menu,
+    list_row, section_label, theme,
 };
 
 pub(crate) fn state_panel(model: &StatePanelModel) -> Element<'_, Message> {
@@ -55,7 +55,7 @@ fn versions(model: &StatePanelModel) -> Element<'_, Message> {
             Space::new().width(Length::Fill),
             icon_button(
                 &IconButtonModel {
-                    glyph: "+".into(),
+                    icon: Icon::Plus,
                     tooltip: "Save the displayed state as a version".into(),
                     enabled: true,
                     selected: model.version_form_open,

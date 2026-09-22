@@ -38,6 +38,41 @@ pub struct FillStops {
     pub right: Segment,
 }
 
+/// The side of a soft rail that contains a valid hard-range value.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Side {
+    Low,
+    High,
+}
+
+/// Position of a hard-range value relative to the soft rail.
+pub fn over_range_side(soft_min: f64, soft_max: f64, value: f64) -> Option<Side> {
+    if value < soft_min {
+        Some(Side::Low)
+    } else if value > soft_max {
+        Some(Side::High)
+    } else {
+        None
+    }
+}
+
+/// Clamp a numeric value to the rail and return its fraction. The caller owns the numeric range.
+pub fn fraction_from_value(min: f64, max: f64, value: f64) -> f64 {
+    if !min.is_finite() || !max.is_finite() || max <= min {
+        return 0.0;
+    }
+    ((value - min) / (max - min)).clamp(0.0, 1.0)
+}
+
+/// Evenly spaced colour-stop positions, including both endpoints.
+pub fn rail_stop_positions(count: usize) -> Vec<f32> {
+    match count {
+        0 => Vec::new(),
+        1 => vec![0.0],
+        count => (0..count).map(|i| i as f32 / (count - 1) as f32).collect(),
+    }
+}
+
 /// Computes the rail fill geometry for a slider spanning `min..=max`, currently at `value`, whose
 /// fill grows from `zero` (or from `min` when `zero` is `None`, for a unipolar slider).
 ///
@@ -120,14 +155,13 @@ pub fn value_from_fraction(min: f64, max: f64, step: f64, fraction: f64) -> f64 
 /// show.
 pub const MAX_DECIMALS: usize = 6;
 
-/// Cleans up one value a pointer drag produced, so the message the host receives is already the
-/// value the row will display: snapped to `step` from `min`, clamped into `min..=max`, then rounded
-/// to `decimals`.
+/// Cleans up one value after the host maps a rail fraction into the declared range: snapped to
+/// `step` from `min`, clamped into `min..=max`, then rounded to `decimals`.
 ///
-/// This is the widget crate's job by design — mapping a pointer position to a value belongs to the
-/// widget, not to the host — and it is what keeps `1.7000000000000002` off the screen and out of
-/// the recipe. Iced's own slider snapping is float arithmetic over `min + n * step`, which lands
-/// next to the step rather than on it; rounding to the declared decimals lands on it exactly.
+/// The widget reports a fraction so the host can apply its declared range. Calling this pure
+/// helper after that mapping keeps `1.7000000000000002` off the screen and out of the recipe.
+/// Iced's own slider snapping is float arithmetic over `min + n * step`, which can land next to
+/// the step; rounding to the declared decimals lands on it exactly.
 ///
 /// A non-positive or non-finite `step` disables snapping, `decimals` above [`MAX_DECIMALS`] is
 /// treated as [`MAX_DECIMALS`], a degenerate range answers `min`, and a non-finite `value` answers
@@ -246,6 +280,21 @@ mod tests {
     fn value_from_fraction_clamps_out_of_range_fractions() {
         assert_eq!(value_from_fraction(0.0, 100.0, 1.0, -5.0), 0.0);
         assert_eq!(value_from_fraction(0.0, 100.0, 1.0, 5.0), 100.0);
+    }
+
+    #[test]
+    fn soft_range_marks_only_the_excess_side() {
+        assert_eq!(over_range_side(-2.0, 2.0, -3.0), Some(Side::Low));
+        assert_eq!(over_range_side(-2.0, 2.0, 3.0), Some(Side::High));
+        assert_eq!(over_range_side(-2.0, 2.0, 1.0), None);
+        assert_eq!(fraction_from_value(-2.0, 2.0, 3.0), 1.0);
+    }
+
+    #[test]
+    fn rail_stops_span_the_full_rail() {
+        assert_eq!(rail_stop_positions(0), Vec::<f32>::new());
+        assert_eq!(rail_stop_positions(1), vec![0.0]);
+        assert_eq!(rail_stop_positions(4), vec![0.0, 1.0 / 3.0, 2.0 / 3.0, 1.0]);
     }
 
     /// The exact complaint this exists for: iced's own snapping to a 0.01 step lands next to the

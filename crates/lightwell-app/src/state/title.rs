@@ -10,6 +10,8 @@ pub(crate) const SEGMENT_NONE: usize = usize::MAX;
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct TitleBarModel {
+    pub(crate) developer: bool,
+    pub(crate) can_open_gallery: bool,
     pub(crate) file_name: Option<String>,
     pub(crate) dimensions: Option<(u32, u32)>,
     /// The zoom field's text as typed.
@@ -34,6 +36,13 @@ pub(crate) fn derive(inputs: &Inputs<'_>) -> TitleBarModel {
     let editable = inputs.state.is_some() && inputs.session.preview.can_edit() && !inputs.busy;
     let zoom = &inputs.session.preview.view.zoom;
     TitleBarModel {
+        developer: inputs.developer,
+        can_open_gallery: inputs.developer
+            && !inputs.busy
+            && inputs.draft.is_none()
+            && !inputs.draft_pending
+            && inputs.slider_draft.is_none()
+            && !inputs.compare_held,
         file_name: inputs.state.and_then(|state| {
             state
                 .asset
