@@ -1,6 +1,6 @@
 # Masking
 
-Status: **design proposal. Nothing here is implemented and no owner decision has been recorded.** It proposes local adjustments — linear and radial gradients first, then brushes, then non-AI range selections — as a host concept over the delivered modules, with a [phased task plan](../../tasks/implementation-masking.json). The [proposals](#proposals-with-recorded-defaults) at the end carry defaults so the work can run on agent judgement once the owner authorizes it, exactly as the Basic and Presence defaults did; each one is the owner's to refine. It builds on the [module and API contract](modules-and-api.md), the delivered [Basic adjustments](basic-and-histogram.md), [Presence, mixer and vignette](presence-mixer-vignette.md), the [content-space edit rule](content-space-edits.md), the [UI components](ui-components.md) vocabulary, the [Develop workspace](develop-workspace.md) tool array and the [instant preview](instant-preview.md) proxy contract.
+Status: **design proposal. No feature here is implemented and no owner decision on the feature has been recorded.** Its coverage mathematics is the one settled part: mask space, the component composition algebra and the linear and radial falloffs are frozen by the [mask study](mask-study.md) against an independent `f64` reference, which settles [proposals](#proposals-with-recorded-defaults) P2 and P3 with figures. The design proposes local adjustments — linear and radial gradients first, then brushes, then non-AI range selections — as a host concept over the delivered modules, with a [phased task plan](../../tasks/implementation-masking.json). The [proposals](#proposals-with-recorded-defaults) at the end carry defaults so the work can run on agent judgement once the owner authorizes it, exactly as the Basic and Presence defaults did; each one is the owner's to refine. It builds on the [module and API contract](modules-and-api.md), the delivered [Basic adjustments](basic-and-histogram.md), [Presence, mixer and vignette](presence-mixer-vignette.md), the [content-space edit rule](content-space-edits.md), the [UI components](ui-components.md) vocabulary, the [Develop workspace](develop-workspace.md) tool array and the [instant preview](instant-preview.md) proxy contract.
 
 ## Outcome and scope
 
@@ -54,7 +54,7 @@ intersect  m = min(m, c)
 M          = (amount / 100) · (invert ? 1 − m : m)
 ```
 
-This is the Zadeh fuzzy-set algebra: union, complement and intersection. It is chosen over the product algebra (`m·(1−c)` for subtract) because it is **idempotent** — subtracting the same brush stroke twice is the same as subtracting it once — which is what makes a component list safe to reorder, duplicate and re-run. The product algebra is recorded as [proposal P2](#proposals-with-recorded-defaults).
+This is the Zadeh fuzzy-set algebra: union, complement and intersection, frozen by the [mask study](mask-study.md#composition) over the product algebra because it is **idempotent** and order-independent *exactly*, bit for bit — subtracting the same brush stroke twice is the same as subtracting it once — which is what makes a component list safe to reorder, duplicate and re-run. The product algebra fails both by up to `0.248209` of coverage and `1.943e-16` respectively; the study also records what the choice costs, a C⁰ crease where two components cross. That settles [proposal P2](#proposals-with-recorded-defaults).
 
 Strokes inside one brush component do not use this algebra; see [brush](#brush-phase-c).
 
@@ -64,6 +64,8 @@ Every component's geometry is stored in **content-stage** coordinates, the stage
 
 - **Positions** are stored as normalized fractions `x, y ∈ [0, 1]` of the content stage's width and height. Normalized storage is what makes a mask resolution independent, so a masked recipe stays [proxy eligible](instant-preview.md#render-what-the-display-can-show).
 - **Distances** (a radius, a brush size) are stored in **mask-space units**, where one unit is the content stage's *height*. Evaluation maps a stored position to mask space as `u = x · W/H`, `v = y`, so `v` spans `0..1`, `u` spans `0..W/H`, and a circle is a circle whatever the aspect ratio.
+
+The [mask study](mask-study.md#mask-space) freezes both spellings of that map — the stored-position one above and `u = (px + 0.5)/H`, `v = (py + 0.5)/H` for a pixel centre, which are within `2.220e-16` of each other and not bit-identical — and the legal range of a stored distance, `1e-4` to `64` mask-space units, the floor being what bounds every divisor a falloff takes. It also records the one question it does not settle: whether stored positions stay within `[0, 1]`, which forbids a gradient endpoint or a radial centre outside the frame.
 
 A mask is only ever attached to a layer before the geometry tail, so its input stage always *is* the content stage. That is a validation rule, not a convention: a `finish`-stage or `geometry`-stage layer cannot carry a mask.
 
@@ -90,7 +92,7 @@ So overlapping masks apply in the order the mask list shows, which is visible, r
 
 ## Component kinds
 
-Every equation below is a **proposal frozen by the mask study** (`docs/design/mask-study.md`, written in phase A against an independent `f64` reference, like the vignette study). `smooth(s) = s²(3 − 2s)` throughout, so every falloff is C¹ and symmetric.
+The linear and radial equations below are **frozen by the [mask study](mask-study.md)** against an independent `f64` reference, in the exact form and order a production unit transcribes; the brush and range equations are proposals until their own work freezes them the same way. `smooth(s) = s²(3 − 2s)` throughout — the delivered [vignette](vignette-study.md#falloff-midpoint-and-feather)'s falloff, kept so the editor has one falloff shape — so every falloff is C¹ and symmetric.
 
 ### Linear gradient (phase A)
 
@@ -101,7 +103,7 @@ t = clamp(((p − p0) · (p1 − p0)) / ((p1 − p0) · (p1 − p0)), 0, 1)
 c = smooth(t)
 ```
 
-A zero-length axis is a `validation` error. The gesture is Lightroom's: drag from the untouched side toward the affected side; the three drawn lines are `p0`, the midpoint and `p1`. Rotation is inherent in the two endpoints, so there is no separate angle to keep consistent, and both endpoints have number fields.
+An axis shorter than one legal distance (`1e-4` mask-space units) is a `validation` error, which is the study's spelling of "a zero-length axis is rejected": the axis length is itself a distance, so it takes the same bound and the divisor `l2` is never below `1e-8`. The gesture is Lightroom's: drag from the untouched side toward the affected side; the three drawn lines are `p0`, the midpoint and `p1`. Rotation is inherent in the two endpoints, so there is no separate angle to keep consistent, and both endpoints have number fields.
 
 ### Radial gradient (phase B)
 
@@ -116,7 +118,9 @@ c      = 1                            r ≤ r0
        = smooth((1 − r) / (1 − r0))   otherwise      (feather = 0 is the hard edge at r = 1)
 ```
 
-**Inside is selected.** Lightroom's radial affects the outside until you tick Invert; ours affects the inside, which is what a person drawing an ellipse around a face expects, and the component's own Invert gives the other reading. This is [proposal P3](#proposals-with-recorded-defaults).
+The study freezes this as the one-branch `smooth(clamp((1 − r)/(1 − r0), 0, 1))`, proved bit-identical to the three branches above, with `feather = 0` taken as an explicit hard-edge case so no vanishing span is ever divided by — the discipline the delivered vignette unit's `hard_step` already follows.
+
+**Inside is selected.** Lightroom's radial affects the outside until you tick Invert; ours affects the inside, which is what a person drawing an ellipse around a face expects, and the component's own Invert gives the other reading — exactly, at no precision cost. The study [confirms](mask-study.md#what-settles-p3) it on the bounds rectangle: an inside-selected radial's coverage is zero outside its ellipse, so a masked run skips 82% of a 24 MP frame in the worked case, while outside-selected coverage is non-zero everywhere and no span or tile could ever be skipped. That settles [proposal P3](#proposals-with-recorded-defaults).
 
 ### Brush (phase C)
 
@@ -348,8 +352,8 @@ Each phase ends with the evidence its claims need; a phase is not complete witho
 
 ## Phases in one line each
 
-- **A — foundation and the linear gradient.** The model, persistence in catalog format 5, the `mask` target field, `CompiledMask`, the masked colour primitive, `render.transform`, the `mask.*` commands the gradient needs, the Mask mode and panel, the overlay, and the mask study that freezes the composition algebra and the gradient falloff. At the end of A a person can drag a gradient and lift the sky's exposure, from the panel or from JSON.
-- **B — radial and combination.** The radial component, Subtract and Intersect, inversion at both levels, amount, reorder and duplicate, the component-list UX, and the masked spatial primitive so Presence runs through a mask.
+- **A — foundation and the linear gradient.** The model, persistence in catalog format 5, the `mask` target field, `CompiledMask`, the masked colour primitive, `render.transform`, the `mask.*` commands the gradient needs, the Mask mode and panel, and the overlay, over the [mask study](mask-study.md)'s frozen composition algebra and gradient falloff. At the end of A a person can drag a gradient and lift the sky's exposure, from the panel or from JSON.
+- **B — radial and combination.** The radial component transcribed from the same study, Subtract and Intersect, inversion at both levels, amount, reorder and duplicate, the component-list UX, and the masked spatial primitive so Presence runs through a mask.
 - **C — brushes.** The `points` parameter kind, the content-addressed stroke store in catalog format 6, the `brush-paint` canvas interaction and its draft, the brush component with multiple strokes, erase strokes, size, feather and flow, the grid index and its cost contract, path decimation and the payload bounds, and brush-over-gradient combination. The path kind, the stroke list and the interaction are host primitives the corrections design reuses rather than reimplements.
 - **D — range selections.** Luminance range, colour range and the colour-constrained brush, each with its own study, plus the honest statement in the user guide about what they do and do not select.
 
@@ -360,8 +364,8 @@ Each is the owner's to decide. The default is what the work runs on if implement
 | # | Question | Recorded default |
 | --- | --- | --- |
 | P1 | Are masks a target for the existing modules, or a separate local-adjustment module with its own sliders? | A target. Local Temperature through Dehaze arrive with no new equations, and Tone Curve and Detail inherit masking by declaring one flag |
-| P2 | Zadeh (`max`/`min`) or product algebra for combining components? | Zadeh, for idempotence |
-| P3 | Does a radial gradient select inside or outside by default? | Inside; the component's Invert gives the other reading |
+| P2 | Zadeh (`max`/`min`) or product algebra for combining components? | Zadeh. **Settled** by the [mask study](mask-study.md#what-settles-p2): Zadeh is idempotent and order-independent bit for bit over randomized component lists, while the product algebra changes coverage by up to `0.248209` when a component is duplicated and by `1.943e-16` when two add components are reordered. The two fields differ by up to 12 output codes on 9.03% of a 24 MP frame, so the choice is visible and is made on those properties; its cost, a C⁰ crease of up to `2.218e-3` per pixel where components cross, is recorded there |
+| P3 | Does a radial gradient select inside or outside by default? | Inside. **Settled** by the [mask study](mask-study.md#what-settles-p3): the two readings are exact complements, so Invert costs nothing, but an inside-selected radial has a bounded coverage region — 17.6% of a 24 MP frame in the worked case, against the whole frame outside-selected — so the ordinary case is the one the bounds rectangle can skip |
 | P4 | Flow and Density, or one amount? | Flow only, with max along a stroke and screen union across strokes; Density named as not delivered, with its reason |
 | P5 | What happens to a brush stroke thinner than a proxy pixel? | The mask field is supersampled 2 × 2 and the frame is marked approximate |
 | P6 | Do snapshots share unchanged mask blobs by content hash? | **Decided by the owner on 2026-09-23: yes, a content-addressed stroke store, in phase C before the first brush ships.** Embedded strokes grow quadratically at about 1.8 KiB per stroke per entry; see [stroke storage](#stroke-storage) |
