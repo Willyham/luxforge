@@ -14,7 +14,7 @@ Each JSON file is an independent plan. IDs start at `TASK-001` inside every file
 
 Editor follow-ups and later work wait until the owner asks for them.
 
-Masking is designed but not authorized: its [design](../docs/design/masking.md) is a proposal with recorded defaults, and its plan waits for the owner exactly as the editor follow-ups do.
+Masking is designed but not authorized: its [design](../docs/design/masking.md) is a proposal with recorded defaults, and its plan waits for the owner exactly as the editor follow-ups do. Only its numerical task is done — the [mask study](../docs/design/mask-study.md) freezes the coverage mathematics and settles two of the design's proposals — and nothing in the feature is built.
 
 RAW editing is implemented with initial native M4 verification. Its [design](../docs/design/initial-raw.md) records the owner's continuous RAW editing requirement, the pinned processing path, and outstanding controlled quality, resource and platform qualification. The supplied FC3411 DNG has required gain/warp corrections and continuous editor support; its [contract](../docs/design/air2s-dng.md) records the qualified encoding, numerical interpretation and limits. RAW JPEG-export integration requires the separately delivered shared exporter and does not block the RAW editing checkpoint.
 

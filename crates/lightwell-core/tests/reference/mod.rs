@@ -17,6 +17,7 @@
 #![allow(dead_code)]
 
 pub mod colour;
+pub mod mask;
 pub mod mixer;
 pub mod presence;
 pub mod tone;

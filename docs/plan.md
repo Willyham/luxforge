@@ -34,7 +34,7 @@ Initial RAW implementation is requested, with a [design](design/initial-raw.md) 
 | Useful small library | Multi-image import, virtualized browsing, filtering, tagging, collections, lazy shoot subsets, multi-selection and stacking, broader source recovery |
 | Tonal editing and PNG | Exposure, white balance, contrast and related controls with explicit numerical and color contracts |
 | Trustworthy RAW | [Continuous RAW editing](design/initial-raw.md) for Nikon Z6, Fujifilm X100VI and DJI Air 2S by actual mode; measured decoder/development selection, high-precision recipe evaluation and neutral exposure/WB |
-| Richer tools | Texture, clarity and dehaze (Presence), the colour mixer and the post-crop vignette are implemented and verified on the M4 Mac per their [design](design/presence-mixer-vignette.md); clone/heal remains, and masks have a proposed [design](design/masking.md) and [task plan](../tasks/implementation-masking.json) awaiting the owner's decision |
+| Richer tools | Texture, clarity and dehaze (Presence), the colour mixer and the post-crop vignette are implemented and verified on the M4 Mac per their [design](design/presence-mixer-vignette.md); clone/heal remains, and masks have a proposed [design](design/masking.md) and [task plan](../tasks/implementation-masking.json) awaiting the owner's decision, with their coverage mathematics already frozen by the [mask study](design/mask-study.md) |
 | External modules | Measured activation costs and a separately authored module loaded through documented host APIs |
 
 ## Future extension possibilities

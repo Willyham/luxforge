@@ -8,7 +8,7 @@
     {
       "id": "TASK-001",
       "description": "Freeze the mask coverage mathematics in a study: mask space, the component composition algebra, the linear and radial falloffs and the stated tolerances, with an independent f64 reference.",
-      "status": "pending",
+      "status": "completed",
       "dependencies": [],
       "extra_context": [
         "No equation in the design is final until this study selects and freezes it. The study document is docs/design/mask-study.md, written in the form of the delivered vignette, tone and mixer studies: proposed forms, the reference implementation, the comparison and the frozen choice with its tolerance.",
