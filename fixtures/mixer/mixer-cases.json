@@ -1,0 +1,7353 @@
+{
+  "generated_by": "crates/lightwell-core/tests/mixer_reference.rs generate_mixer_fixtures",
+  "note": "Independent f64 reference (tests/reference/mixer.rs). expected_linear is linear sRGB after the frozen mixer unit (hue, then chroma, then luminance), full f64 precision, unclamped. Production is compared against this file within the tolerance frozen in docs/design/mixer-study.md.",
+  "range_order": [
+    "red",
+    "orange",
+    "yellow",
+    "green",
+    "aqua",
+    "blue",
+    "purple",
+    "magenta"
+  ],
+  "parameter_sets": [
+    {
+      "name": "neutral",
+      "hue": [
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "saturation": [
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "luminance": [
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ]
+    },
+    {
+      "name": "red_hue_plus_100",
+      "hue": [
+        100.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "saturation": [
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "luminance": [
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ]
+    },
+    {
+      "name": "aqua_hue_minus_100",
+      "hue": [
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        -100.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "saturation": [
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "luminance": [
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ]
+    },
+    {
+      "name": "blue_saturation_minus_100",
+      "hue": [
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "saturation": [
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        -100.0,
+        0.0,
+        0.0
+      ],
+      "luminance": [
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ]
+    },
+    {
+      "name": "green_saturation_plus_100",
+      "hue": [
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "saturation": [
+        0.0,
+        0.0,
+        0.0,
+        100.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "luminance": [
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ]
+    },
+    {
+      "name": "orange_luminance_plus_100",
+      "hue": [
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "saturation": [
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "luminance": [
+        0.0,
+        100.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ]
+    },
+    {
+      "name": "purple_luminance_minus_100",
+      "hue": [
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "saturation": [
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "luminance": [
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        -100.0,
+        0.0
+      ]
+    },
+    {
+      "name": "orange_combined",
+      "hue": [
+        0.0,
+        -50.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "saturation": [
+        0.0,
+        50.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "luminance": [
+        0.0,
+        -50.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ]
+    },
+    {
+      "name": "all_ranges",
+      "hue": [
+        25.0,
+        25.0,
+        25.0,
+        25.0,
+        25.0,
+        25.0,
+        25.0,
+        25.0
+      ],
+      "saturation": [
+        -40.0,
+        -40.0,
+        -40.0,
+        -40.0,
+        -40.0,
+        -40.0,
+        -40.0,
+        -40.0
+      ],
+      "luminance": [
+        30.0,
+        30.0,
+        30.0,
+        30.0,
+        30.0,
+        30.0,
+        30.0,
+        30.0
+      ]
+    }
+  ],
+  "cases": [
+    {
+      "name": "centre_red__neutral",
+      "input": {
+        "kind": "srgb8",
+        "rgb": [
+          255,
+          0,
+          0
+        ]
+      },
+      "parameters": "neutral",
+      "expected_linear": [
+        1.0000000004038365,
+        -4.965820563779255e-9,
+        -3.046650381977045e-8
+      ]
+    },
+    {
+      "name": "centre_red__red_hue_plus_100",
+      "input": {
+        "kind": "srgb8",
+        "rgb": [
+          255,
+          0,
+          0
+        ]
+      },
+      "parameters": "red_hue_plus_100",
+      "expected_linear": [
+        0.9731999815671467,
+        0.01670385758596529,
+        -0.048432193570227475
+      ]
+    },
+    {
+      "name": "centre_red__aqua_hue_minus_100",
+      "input": {
+        "kind": "srgb8",
+        "rgb": [
+          255,
+          0,
+          0
+        ]
+      },
+      "parameters": "aqua_hue_minus_100",
+      "expected_linear": [
+        1.0000000004038365,
+        -4.965820563779255e-9,
+        -3.046650381977045e-8
+      ]
+    },
+    {
+      "name": "centre_red__blue_saturation_minus_100",
+      "input": {
+        "kind": "srgb8",
+        "rgb": [
+          255,
+          0,
+          0
+        ]
+      },
+      "parameters": "blue_saturation_minus_100",
+      "expected_linear": [
+        1.0000000004038365,
+        -4.965820563779255e-9,
+        -3.046650381977045e-8
+      ]
+    },
+    {
+      "name": "centre_red__green_saturation_plus_100",
+      "input": {
+        "kind": "srgb8",
+        "rgb": [
+          255,
+          0,
+          0
+        ]
+      },
+      "parameters": "green_saturation_plus_100",
+      "expected_linear": [
+        1.0000000004038365,
+        -4.965820563779255e-9,
+        -3.046650381977045e-8
+      ]
+    },
+    {
+      "name": "centre_red__orange_luminance_plus_100",
+      "input": {
+        "kind": "srgb8",
+        "rgb": [
+          255,
+          0,
+          0
+        ]
+      },
+      "parameters": "orange_luminance_plus_100",
+      "expected_linear": [
+        1.0000000004038365,
+        -4.965820563779255e-9,
+        -3.046650381977045e-8
+      ]
+    },
+    {
+      "name": "centre_red__purple_luminance_minus_100",
+      "input": {
+        "kind": "srgb8",
+        "rgb": [
+          255,
+          0,
+          0
+        ]
+      },
+      "parameters": "purple_luminance_minus_100",
+      "expected_linear": [
+        1.0000000004038365,
+        -4.965820563779255e-9,
+        -3.046650381977045e-8
+      ]
+    },
+    {
+      "name": "centre_red__orange_combined",
+      "input": {
+        "kind": "srgb8",
+        "rgb": [
+          255,
+          0,
+          0
+        ]
+      },
+      "parameters": "orange_combined",
+      "expected_linear": [
+        1.0000000004038365,
+        -4.965820563779255e-9,
+        -3.046650381977045e-8
+      ]
+    },
+    {
+      "name": "centre_red__all_ranges",
+      "input": {
+        "kind": "srgb8",
+        "rgb": [
+          255,
+          0,
+          0
+        ]
+      },
+      "parameters": "all_ranges",
+      "expected_linear": [
+        0.8179815623703245,
+        0.16369079644025286,
+        0.10174120596822614
+      ]
+    },
+    {
+      "name": "centre_orange__neutral",
+      "input": {
+        "kind": "srgb8",
+        "rgb": [
+          255,
+          128,
+          0
+        ]
+      },
+      "parameters": "neutral",
+      "expected_linear": [
+        1.0000000201694468,
+        0.21586048726920368,
+        -5.198148006479997e-8
+      ]
+    },
+    {
+      "name": "centre_orange__red_hue_plus_100",
+      "input": {
+        "kind": "srgb8",
+        "rgb": [
+          255,
+          128,
+          0
+        ]
+      },
+      "parameters": "red_hue_plus_100",
+      "expected_linear": [
+        1.0000000201694468,
+        0.21586048726920368,
+        -5.198148006479997e-8
+      ]
+    },
+    {
+      "name": "centre_orange__aqua_hue_minus_100",
+      "input": {
+        "kind": "srgb8",
+        "rgb": [
+          255,
+          128,
+          0
+        ]
+      },
+      "parameters": "aqua_hue_minus_100",
+      "expected_linear": [
+        1.0000000201694468,
+        0.21586048726920368,
+        -5.198148006479997e-8
+      ]
+    },
+    {
+      "name": "centre_orange__blue_saturation_minus_100",
+      "input": {
+        "kind": "srgb8",
+        "rgb": [
+          255,
+          128,
+          0
+        ]
+      },
+      "parameters": "blue_saturation_minus_100",
+      "expected_linear": [
+        1.0000000201694468,
+        0.21586048726920368,
+        -5.198148006479997e-8
+      ]
+    },
+    {
+      "name": "centre_orange__green_saturation_plus_100",
+      "input": {
+        "kind": "srgb8",
+        "rgb": [
+          255,
+          128,
+          0
+        ]
+      },
+      "parameters": "green_saturation_plus_100",
+      "expected_linear": [
+        1.0000000201694468,
+        0.21586048726920368,
+        -5.198148006479997e-8
+      ]
+    },
+    {
+      "name": "centre_orange__orange_luminance_plus_100",
+      "input": {
+        "kind": "srgb8",
+        "rgb": [
+          255,
+          128,
+          0
+        ]
+      },
+      "parameters": "orange_luminance_plus_100",
+      "expected_linear": [
+        1.4430840364412347,
+        0.3933041785758319,
+        0.06565745978794746
+      ]
+    },
+    {
+      "name": "centre_orange__purple_luminance_minus_100",
+      "input": {
+        "kind": "srgb8",
+        "rgb": [
+          255,
+          128,
+          0
+        ]
+      },
+      "parameters": "purple_luminance_minus_100",
+      "expected_linear": [
+        1.0000000201694468,
+        0.21586048726920368,
+        -5.198148006479997e-8
+      ]
+    },
+    {
+      "name": "centre_orange__orange_combined",
+      "input": {
+        "kind": "srgb8",
+        "rgb": [
+          255,
+          128,
+          0
+        ]
+      },
+      "parameters": "orange_combined",
+      "expected_linear": [
+        1.0667709891452208,
+        0.014102463955804442,
+        -0.0800987125507295
+      ]
+    },
+    {
+      "name": "centre_orange__all_ranges",
+      "input": {
+        "kind": "srgb8",
+        "rgb": [
+          255,
+          128,
+          0
+        ]
+      },
+      "parameters": "all_ranges",
+      "expected_linear": [
+        0.8263476171686556,
+        0.3750758796417113,
+        0.1449645960521997
+      ]
+    },
+    {
+      "name": "centre_yellow__neutral",
+      "input": {
+        "kind": "srgb8",
+        "rgb": [
+          255,
+          255,
+          0
+        ]
+      },
+      "parameters": "neutral",
+      "expected_linear": [
+        1.0000000819359802,
+        0.9999999624156631,
+        -1.30333794978732e-7
+      ]
+    },
+    {
+      "name": "centre_yellow__red_hue_plus_100",
+      "input": {
+        "kind": "srgb8",
+        "rgb": [
+          255,
+          255,
+          0
+        ]
+      },
+      "parameters": "red_hue_plus_100",
+      "expected_linear": [
+        1.0000000819359802,
+        0.9999999624156631,
+        -1.30333794978732e-7
+      ]
+    },
+    {
+      "name": "centre_yellow__aqua_hue_minus_100",
+      "input": {
+        "kind": "srgb8",
+        "rgb": [
+          255,
+          255,
+          0
+        ]
+      },
+      "parameters": "aqua_hue_minus_100",
+      "expected_linear": [
+        1.0000000819359802,
+        0.9999999624156631,
+        -1.30333794978732e-7
+      ]
+    },
+    {
+      "name": "centre_yellow__blue_saturation_minus_100",
+      "input": {
+        "kind": "srgb8",
+        "rgb": [
+          255,
+          255,
+          0
+        ]
+      },
+      "parameters": "blue_saturation_minus_100",
+      "expected_linear": [
+        1.0000000819359802,
+        0.9999999624156631,
+        -1.30333794978732e-7
+      ]
+    },
+    {
+      "name": "centre_yellow__green_saturation_plus_100",
+      "input": {
+        "kind": "srgb8",
+        "rgb": [
+          255,
+          255,
+          0
+        ]
+      },
+      "parameters": "green_saturation_plus_100",
+      "expected_linear": [
+        1.0000000819359802,
+        0.9999999624156631,
+        -1.30333794978732e-7
+      ]
+    },
+    {
+      "name": "centre_yellow__orange_luminance_plus_100",
+      "input": {
+        "kind": "srgb8",
+        "rgb": [
+          255,
+          255,
+          0
+        ]
+      },
+      "parameters": "orange_luminance_plus_100",
+      "expected_linear": [
+        1.0000000819359802,
+        0.9999999624156631,
+        -1.30333794978732e-7
+      ]
+    },
+    {
+      "name": "centre_yellow__purple_luminance_minus_100",
+      "input": {
+        "kind": "srgb8",
+        "rgb": [
+          255,
+          255,
+          0
+        ]
+      },
+      "parameters": "purple_luminance_minus_100",
+      "expected_linear": [
+        1.0000000819359802,
+        0.9999999624156631,
+        -1.30333794978732e-7
+      ]
+    },
+    {
+      "name": "centre_yellow__orange_combined",
+      "input": {
+        "kind": "srgb8",
+        "rgb": [
+          255,
+          255,
+          0
+        ]
+      },
+      "parameters": "orange_combined",
+      "expected_linear": [
+        1.0000000819359802,
+        0.9999999624156631,
+        -1.30333794978732e-7
+      ]
+    },
+    {
+      "name": "centre_yellow__all_ranges",
+      "input": {
+        "kind": "srgb8",
+        "rgb": [
+          255,
+          255,
+          0
+        ]
+      },
+      "parameters": "all_ranges",
+      "expected_linear": [
+        0.9153063211419035,
+        1.0128994819274673,
+        0.3229839050939808
+      ]
+    },
+    {
+      "name": "centre_green__neutral",
+      "input": {
+        "kind": "srgb8",
+        "rgb": [
+          0,
+          255,
+          0
+        ]
+      },
+      "parameters": "neutral",
+      "expected_linear": [
+        7.272492129339891e-8,
+        0.9999999708281616,
+        -1.0005049955186252e-7
+      ]
+    },
+    {
+      "name": "centre_green__red_hue_plus_100",
+      "input": {
+        "kind": "srgb8",
+        "rgb": [
+          0,
+          255,
+          0
+        ]
+      },
+      "parameters": "red_hue_plus_100",
+      "expected_linear": [
+        7.272492129339891e-8,
+        0.9999999708281616,
+        -1.0005049955186252e-7
+      ]
+    },
+    {
+      "name": "centre_green__aqua_hue_minus_100",
+      "input": {
+        "kind": "srgb8",
+        "rgb": [
+          0,
+          255,
+          0
+        ]
+      },
+      "parameters": "aqua_hue_minus_100",
+      "expected_linear": [
+        7.272492129339891e-8,
+        0.9999999708281616,
+        -1.0005049955186252e-7
+      ]
+    },
+    {
+      "name": "centre_green__blue_saturation_minus_100",
+      "input": {
+        "kind": "srgb8",
+        "rgb": [
+          0,
+          255,
+          0
+        ]
+      },
+      "parameters": "blue_saturation_minus_100",
+      "expected_linear": [
+        7.272492129339891e-8,
+        0.9999999708281616,
+        -1.0005049955186252e-7
+      ]
+    },
+    {
+      "name": "centre_green__green_saturation_plus_100",
+      "input": {
+        "kind": "srgb8",
+        "rgb": [
+          0,
+          255,
+          0
+        ]
+      },
+      "parameters": "green_saturation_plus_100",
+      "expected_linear": [
+        -0.5552320323920146,
+        1.274245142632989,
+        -0.3524436331815959
+      ]
+    },
+    {
+      "name": "centre_green__orange_luminance_plus_100",
+      "input": {
+        "kind": "srgb8",
+        "rgb": [
+          0,
+          255,
+          0
+        ]
+      },
+      "parameters": "orange_luminance_plus_100",
+      "expected_linear": [
+        7.272492129339891e-8,
+        0.9999999708281616,
+        -1.0005049955186252e-7
+      ]
+    },
+    {
+      "name": "centre_green__purple_luminance_minus_100",
+      "input": {
+        "kind": "srgb8",
+        "rgb": [
+          0,
+          255,
+          0
+        ]
+      },
+      "parameters": "purple_luminance_minus_100",
+      "expected_linear": [
+        7.272492129339891e-8,
+        0.9999999708281616,
+        -1.0005049955186252e-7
+      ]
+    },
+    {
+      "name": "centre_green__orange_combined",
+      "input": {
+        "kind": "srgb8",
+        "rgb": [
+          0,
+          255,
+          0
+        ]
+      },
+      "parameters": "orange_combined",
+      "expected_linear": [
+        7.272492129339891e-8,
+        0.9999999708281616,
+        -1.0005049955186252e-7
+      ]
+    },
+    {
+      "name": "centre_green__all_ranges",
+      "input": {
+        "kind": "srgb8",
+        "rgb": [
+          0,
+          255,
+          0
+        ]
+      },
+      "parameters": "all_ranges",
+      "expected_linear": [
+        0.19880905824014156,
+        0.9605697844018075,
+        0.3136312861538679
+      ]
+    },
+    {
+      "name": "centre_aqua__neutral",
+      "input": {
+        "kind": "srgb8",
+        "rgb": [
+          0,
+          255,
+          255
+        ]
+      },
+      "parameters": "neutral",
+      "expected_linear": [
+        6.331820021077128e-8,
+        0.9999999873190222,
+        0.999999773856553
+      ]
+    },
+    {
+      "name": "centre_aqua__red_hue_plus_100",
+      "input": {
+        "kind": "srgb8",
+        "rgb": [
+          0,
+          255,
+          255
+        ]
+      },
+      "parameters": "red_hue_plus_100",
+      "expected_linear": [
+        6.331820021077128e-8,
+        0.9999999873190222,
+        0.999999773856553
+      ]
+    },
+    {
+      "name": "centre_aqua__aqua_hue_minus_100",
+      "input": {
+        "kind": "srgb8",
+        "rgb": [
+          0,
+          255,
+          255
+        ]
+      },
+      "parameters": "aqua_hue_minus_100",
+      "expected_linear": [
+        0.10678848336488389,
+        1.0119669176260364,
+        0.612812292493897
+      ]
+    },
+    {
+      "name": "centre_aqua__blue_saturation_minus_100",
+      "input": {
+        "kind": "srgb8",
+        "rgb": [
+          0,
+          255,
+          255
+        ]
+      },
+      "parameters": "blue_saturation_minus_100",
+      "expected_linear": [
+        6.331820021077128e-8,
+        0.9999999873190222,
+        0.999999773856553
+      ]
+    },
+    {
+      "name": "centre_aqua__green_saturation_plus_100",
+      "input": {
+        "kind": "srgb8",
+        "rgb": [
+          0,
+          255,
+          255
+        ]
+      },
+      "parameters": "green_saturation_plus_100",
+      "expected_linear": [
+        6.331820021077128e-8,
+        0.9999999873190222,
+        0.999999773856553
+      ]
+    },
+    {
+      "name": "centre_aqua__orange_luminance_plus_100",
+      "input": {
+        "kind": "srgb8",
+        "rgb": [
+          0,
+          255,
+          255
+        ]
+      },
+      "parameters": "orange_luminance_plus_100",
+      "expected_linear": [
+        6.331820021077128e-8,
+        0.9999999873190222,
+        0.999999773856553
+      ]
+    },
+    {
+      "name": "centre_aqua__purple_luminance_minus_100",
+      "input": {
+        "kind": "srgb8",
+        "rgb": [
+          0,
+          255,
+          255
+        ]
+      },
+      "parameters": "purple_luminance_minus_100",
+      "expected_linear": [
+        6.331820021077128e-8,
+        0.9999999873190222,
+        0.999999773856553
+      ]
+    },
+    {
+      "name": "centre_aqua__orange_combined",
+      "input": {
+        "kind": "srgb8",
+        "rgb": [
+          0,
+          255,
+          255
+        ]
+      },
+      "parameters": "orange_combined",
+      "expected_linear": [
+        6.331820021077128e-8,
+        0.9999999873190222,
+        0.999999773856553
+      ]
+    },
+    {
+      "name": "centre_aqua__all_ranges",
+      "input": {
+        "kind": "srgb8",
+        "rgb": [
+          0,
+          255,
+          255
+        ]
+      },
+      "parameters": "all_ranges",
+      "expected_linear": [
+        0.30813540345081236,
+        0.939269300591238,
+        1.0202146497943574
+      ]
+    },
+    {
+      "name": "centre_blue__neutral",
+      "input": {
+        "kind": "srgb8",
+        "rgb": [
+          0,
+          0,
+          255
+        ]
+      },
+      "parameters": "neutral",
+      "expected_linear": [
+        1.709726415999313e-9,
+        7.49879833228384e-9,
+        0.9999999204714654
+      ]
+    },
+    {
+      "name": "centre_blue__red_hue_plus_100",
+      "input": {
+        "kind": "srgb8",
+        "rgb": [
+          0,
+          0,
+          255
+        ]
+      },
+      "parameters": "red_hue_plus_100",
+      "expected_linear": [
+        1.709726415999313e-9,
+        7.49879833228384e-9,
+        0.9999999204714654
+      ]
+    },
+    {
+      "name": "centre_blue__aqua_hue_minus_100",
+      "input": {
+        "kind": "srgb8",
+        "rgb": [
+          0,
+          0,
+          255
+        ]
+      },
+      "parameters": "aqua_hue_minus_100",
+      "expected_linear": [
+        1.709726415999313e-9,
+        7.49879833228384e-9,
+        0.9999999204714654
+      ]
+    },
+    {
+      "name": "centre_blue__blue_saturation_minus_100",
+      "input": {
+        "kind": "srgb8",
+        "rgb": [
+          0,
+          0,
+          255
+        ]
+      },
+      "parameters": "blue_saturation_minus_100",
+      "expected_linear": [
+        0.09235381641819103,
+        0.09235381641819106,
+        0.09235381641819106
+      ]
+    },
+    {
+      "name": "centre_blue__green_saturation_plus_100",
+      "input": {
+        "kind": "srgb8",
+        "rgb": [
+          0,
+          0,
+          255
+        ]
+      },
+      "parameters": "green_saturation_plus_100",
+      "expected_linear": [
+        1.709726415999313e-9,
+        7.49879833228384e-9,
+        0.9999999204714654
+      ]
+    },
+    {
+      "name": "centre_blue__orange_luminance_plus_100",
+      "input": {
+        "kind": "srgb8",
+        "rgb": [
+          0,
+          0,
+          255
+        ]
+      },
+      "parameters": "orange_luminance_plus_100",
+      "expected_linear": [
+        1.709726415999313e-9,
+        7.49879833228384e-9,
+        0.9999999204714654
+      ]
+    },
+    {
+      "name": "centre_blue__purple_luminance_minus_100",
+      "input": {
+        "kind": "srgb8",
+        "rgb": [
+          0,
+          0,
+          255
+        ]
+      },
+      "parameters": "purple_luminance_minus_100",
+      "expected_linear": [
+        1.709726415999313e-9,
+        7.49879833228384e-9,
+        0.9999999204714654
+      ]
+    },
+    {
+      "name": "centre_blue__orange_combined",
+      "input": {
+        "kind": "srgb8",
+        "rgb": [
+          0,
+          0,
+          255
+        ]
+      },
+      "parameters": "orange_combined",
+      "expected_linear": [
+        1.709726415999313e-9,
+        7.49879833228384e-9,
+        0.9999999204714654
+      ]
+    },
+    {
+      "name": "centre_blue__all_ranges",
+      "input": {
+        "kind": "srgb8",
+        "rgb": [
+          0,
+          0,
+          255
+        ]
+      },
+      "parameters": "all_ranges",
+      "expected_linear": [
+        0.04557305953492663,
+        0.1091914639774616,
+        0.6634300099096777
+      ]
+    },
+    {
+      "name": "centre_purple__neutral",
+      "input": {
+        "kind": "srgb8",
+        "rgb": [
+          128,
+          0,
+          255
+        ]
+      },
+      "parameters": "neutral",
+      "expected_linear": [
+        0.21586050065890586,
+        7.712945393478776e-9,
+        0.9999999046134974
+      ]
+    },
+    {
+      "name": "centre_purple__red_hue_plus_100",
+      "input": {
+        "kind": "srgb8",
+        "rgb": [
+          128,
+          0,
+          255
+        ]
+      },
+      "parameters": "red_hue_plus_100",
+      "expected_linear": [
+        0.21586050065890586,
+        7.712945393478776e-9,
+        0.9999999046134974
+      ]
+    },
+    {
+      "name": "centre_purple__aqua_hue_minus_100",
+      "input": {
+        "kind": "srgb8",
+        "rgb": [
+          128,
+          0,
+          255
+        ]
+      },
+      "parameters": "aqua_hue_minus_100",
+      "expected_linear": [
+        0.21586050065890586,
+        7.712945393478776e-9,
+        0.9999999046134974
+      ]
+    },
+    {
+      "name": "centre_purple__blue_saturation_minus_100",
+      "input": {
+        "kind": "srgb8",
+        "rgb": [
+          128,
+          0,
+          255
+        ]
+      },
+      "parameters": "blue_saturation_minus_100",
+      "expected_linear": [
+        0.21586050065890586,
+        7.712945393478776e-9,
+        0.9999999046134974
+      ]
+    },
+    {
+      "name": "centre_purple__green_saturation_plus_100",
+      "input": {
+        "kind": "srgb8",
+        "rgb": [
+          128,
+          0,
+          255
+        ]
+      },
+      "parameters": "green_saturation_plus_100",
+      "expected_linear": [
+        0.21586050065890586,
+        7.712945393478776e-9,
+        0.9999999046134974
+      ]
+    },
+    {
+      "name": "centre_purple__orange_luminance_plus_100",
+      "input": {
+        "kind": "srgb8",
+        "rgb": [
+          128,
+          0,
+          255
+        ]
+      },
+      "parameters": "orange_luminance_plus_100",
+      "expected_linear": [
+        0.21586050065890586,
+        7.712945393478776e-9,
+        0.9999999046134974
+      ]
+    },
+    {
+      "name": "centre_purple__purple_luminance_minus_100",
+      "input": {
+        "kind": "srgb8",
+        "rgb": [
+          128,
+          0,
+          255
+        ]
+      },
+      "parameters": "purple_luminance_minus_100",
+      "expected_linear": [
+        0.05772800906515266,
+        -0.04422101972660965,
+        0.3840583404943875
+      ]
+    },
+    {
+      "name": "centre_purple__orange_combined",
+      "input": {
+        "kind": "srgb8",
+        "rgb": [
+          128,
+          0,
+          255
+        ]
+      },
+      "parameters": "orange_combined",
+      "expected_linear": [
+        0.21586050065890586,
+        7.712945393478776e-9,
+        0.9999999046134974
+      ]
+    },
+    {
+      "name": "centre_purple__all_ranges",
+      "input": {
+        "kind": "srgb8",
+        "rgb": [
+          128,
+          0,
+          255
+        ]
+      },
+      "parameters": "all_ranges",
+      "expected_linear": [
+        0.2720877112420453,
+        0.12146727059234402,
+        0.6906570092895876
+      ]
+    },
+    {
+      "name": "centre_magenta__neutral",
+      "input": {
+        "kind": "srgb8",
+        "rgb": [
+          255,
+          0,
+          255
+        ]
+      },
+      "parameters": "neutral",
+      "expected_linear": [
+        0.9999999947863393,
+        7.798759776855846e-9,
+        0.9999998621283066
+      ]
+    },
+    {
+      "name": "centre_magenta__red_hue_plus_100",
+      "input": {
+        "kind": "srgb8",
+        "rgb": [
+          255,
+          0,
+          255
+        ]
+      },
+      "parameters": "red_hue_plus_100",
+      "expected_linear": [
+        0.9999999947863393,
+        7.798759776855846e-9,
+        0.9999998621283066
+      ]
+    },
+    {
+      "name": "centre_magenta__aqua_hue_minus_100",
+      "input": {
+        "kind": "srgb8",
+        "rgb": [
+          255,
+          0,
+          255
+        ]
+      },
+      "parameters": "aqua_hue_minus_100",
+      "expected_linear": [
+        0.9999999947863393,
+        7.798759776855846e-9,
+        0.9999998621283066
+      ]
+    },
+    {
+      "name": "centre_magenta__blue_saturation_minus_100",
+      "input": {
+        "kind": "srgb8",
+        "rgb": [
+          255,
+          0,
+          255
+        ]
+      },
+      "parameters": "blue_saturation_minus_100",
+      "expected_linear": [
+        0.9999999947863393,
+        7.798759776855846e-9,
+        0.9999998621283066
+      ]
+    },
+    {
+      "name": "centre_magenta__green_saturation_plus_100",
+      "input": {
+        "kind": "srgb8",
+        "rgb": [
+          255,
+          0,
+          255
+        ]
+      },
+      "parameters": "green_saturation_plus_100",
+      "expected_linear": [
+        0.9999999947863393,
+        7.798759776855846e-9,
+        0.9999998621283066
+      ]
+    },
+    {
+      "name": "centre_magenta__orange_luminance_plus_100",
+      "input": {
+        "kind": "srgb8",
+        "rgb": [
+          255,
+          0,
+          255
+        ]
+      },
+      "parameters": "orange_luminance_plus_100",
+      "expected_linear": [
+        0.9999999947863393,
+        7.798759776855846e-9,
+        0.9999998621283066
+      ]
+    },
+    {
+      "name": "centre_magenta__purple_luminance_minus_100",
+      "input": {
+        "kind": "srgb8",
+        "rgb": [
+          255,
+          0,
+          255
+        ]
+      },
+      "parameters": "purple_luminance_minus_100",
+      "expected_linear": [
+        0.9999999947863393,
+        7.798759776855846e-9,
+        0.9999998621283066
+      ]
+    },
+    {
+      "name": "centre_magenta__orange_combined",
+      "input": {
+        "kind": "srgb8",
+        "rgb": [
+          255,
+          0,
+          255
+        ]
+      },
+      "parameters": "orange_combined",
+      "expected_linear": [
+        0.9999999947863393,
+        7.798759776855846e-9,
+        0.9999998621283066
+      ]
+    },
+    {
+      "name": "centre_magenta__all_ranges",
+      "input": {
+        "kind": "srgb8",
+        "rgb": [
+          255,
+          0,
+          255
+        ]
+      },
+      "parameters": "all_ranges",
+      "expected_linear": [
+        0.9251476695721554,
+        0.1857446261911941,
+        0.7142907181570504
+      ]
+    },
+    {
+      "name": "grey_0__neutral",
+      "input": {
+        "kind": "srgb8",
+        "rgb": [
+          0,
+          0,
+          0
+        ]
+      },
+      "parameters": "neutral",
+      "expected_linear": [
+        0.0,
+        0.0,
+        0.0
+      ]
+    },
+    {
+      "name": "grey_0__red_hue_plus_100",
+      "input": {
+        "kind": "srgb8",
+        "rgb": [
+          0,
+          0,
+          0
+        ]
+      },
+      "parameters": "red_hue_plus_100",
+      "expected_linear": [
+        0.0,
+        0.0,
+        0.0
+      ]
+    },
+    {
+      "name": "grey_0__aqua_hue_minus_100",
+      "input": {
+        "kind": "srgb8",
+        "rgb": [
+          0,
+          0,
+          0
+        ]
+      },
+      "parameters": "aqua_hue_minus_100",
+      "expected_linear": [
+        0.0,
+        0.0,
+        0.0
+      ]
+    },
+    {
+      "name": "grey_0__blue_saturation_minus_100",
+      "input": {
+        "kind": "srgb8",
+        "rgb": [
+          0,
+          0,
+          0
+        ]
+      },
+      "parameters": "blue_saturation_minus_100",
+      "expected_linear": [
+        0.0,
+        0.0,
+        0.0
+      ]
+    },
+    {
+      "name": "grey_0__green_saturation_plus_100",
+      "input": {
+        "kind": "srgb8",
+        "rgb": [
+          0,
+          0,
+          0
+        ]
+      },
+      "parameters": "green_saturation_plus_100",
+      "expected_linear": [
+        0.0,
+        0.0,
+        0.0
+      ]
+    },
+    {
+      "name": "grey_0__orange_luminance_plus_100",
+      "input": {
+        "kind": "srgb8",
+        "rgb": [
+          0,
+          0,
+          0
+        ]
+      },
+      "parameters": "orange_luminance_plus_100",
+      "expected_linear": [
+        0.0,
+        0.0,
+        0.0
+      ]
+    },
+    {
+      "name": "grey_0__purple_luminance_minus_100",
+      "input": {
+        "kind": "srgb8",
+        "rgb": [
+          0,
+          0,
+          0
+        ]
+      },
+      "parameters": "purple_luminance_minus_100",
+      "expected_linear": [
+        0.0,
+        0.0,
+        0.0
+      ]
+    },
+    {
+      "name": "grey_0__orange_combined",
+      "input": {
+        "kind": "srgb8",
+        "rgb": [
+          0,
+          0,
+          0
+        ]
+      },
+      "parameters": "orange_combined",
+      "expected_linear": [
+        0.0,
+        0.0,
+        0.0
+      ]
+    },
+    {
+      "name": "grey_0__all_ranges",
+      "input": {
+        "kind": "srgb8",
+        "rgb": [
+          0,
+          0,
+          0
+        ]
+      },
+      "parameters": "all_ranges",
+      "expected_linear": [
+        0.0,
+        0.0,
+        0.0
+      ]
+    },
+    {
+      "name": "grey_32__neutral",
+      "input": {
+        "kind": "srgb8",
+        "rgb": [
+          32,
+          32,
+          32
+        ]
+      },
+      "parameters": "neutral",
+      "expected_linear": [
+        0.014443844600418096,
+        0.014443843311365452,
+        0.014443839822138675
+      ]
+    },
+    {
+      "name": "grey_32__red_hue_plus_100",
+      "input": {
+        "kind": "srgb8",
+        "rgb": [
+          32,
+          32,
+          32
+        ]
+      },
+      "parameters": "red_hue_plus_100",
+      "expected_linear": [
+        0.014443844600418096,
+        0.014443843311365452,
+        0.014443839822138675
+      ]
+    },
+    {
+      "name": "grey_32__aqua_hue_minus_100",
+      "input": {
+        "kind": "srgb8",
+        "rgb": [
+          32,
+          32,
+          32
+        ]
+      },
+      "parameters": "aqua_hue_minus_100",
+      "expected_linear": [
+        0.014443844600418096,
+        0.014443843311365452,
+        0.014443839822138675
+      ]
+    },
+    {
+      "name": "grey_32__blue_saturation_minus_100",
+      "input": {
+        "kind": "srgb8",
+        "rgb": [
+          32,
+          32,
+          32
+        ]
+      },
+      "parameters": "blue_saturation_minus_100",
+      "expected_linear": [
+        0.014443844600418096,
+        0.014443843311365452,
+        0.014443839822138675
+      ]
+    },
+    {
+      "name": "grey_32__green_saturation_plus_100",
+      "input": {
+        "kind": "srgb8",
+        "rgb": [
+          32,
+          32,
+          32
+        ]
+      },
+      "parameters": "green_saturation_plus_100",
+      "expected_linear": [
+        0.014443844600418096,
+        0.014443843311365452,
+        0.014443839822138675
+      ]
+    },
+    {
+      "name": "grey_32__orange_luminance_plus_100",
+      "input": {
+        "kind": "srgb8",
+        "rgb": [
+          32,
+          32,
+          32
+        ]
+      },
+      "parameters": "orange_luminance_plus_100",
+      "expected_linear": [
+        0.014443844600425262,
+        0.014443843311372623,
+        0.014443839822145844
+      ]
+    },
+    {
+      "name": "grey_32__purple_luminance_minus_100",
+      "input": {
+        "kind": "srgb8",
+        "rgb": [
+          32,
+          32,
+          32
+        ]
+      },
+      "parameters": "purple_luminance_minus_100",
+      "expected_linear": [
+        0.014443844600418096,
+        0.014443843311365452,
+        0.014443839822138675
+      ]
+    },
+    {
+      "name": "grey_32__orange_combined",
+      "input": {
+        "kind": "srgb8",
+        "rgb": [
+          32,
+          32,
+          32
+        ]
+      },
+      "parameters": "orange_combined",
+      "expected_linear": [
+        0.014443844600414505,
+        0.014443843311361856,
+        0.014443839822135086
+      ]
+    },
+    {
+      "name": "grey_32__all_ranges",
+      "input": {
+        "kind": "srgb8",
+        "rgb": [
+          32,
+          32,
+          32
+        ]
+      },
+      "parameters": "all_ranges",
+      "expected_linear": [
+        0.014443844600425965,
+        0.01444384331137331,
+        0.014443839822146542
+      ]
+    },
+    {
+      "name": "grey_64__neutral",
+      "input": {
+        "kind": "srgb8",
+        "rgb": [
+          64,
+          64,
+          64
+        ]
+      },
+      "parameters": "neutral",
+      "expected_linear": [
+        0.05126946193896861,
+        0.051269457363384105,
+        0.051269444978123344
+      ]
+    },
+    {
+      "name": "grey_64__red_hue_plus_100",
+      "input": {
+        "kind": "srgb8",
+        "rgb": [
+          64,
+          64,
+          64
+        ]
+      },
+      "parameters": "red_hue_plus_100",
+      "expected_linear": [
+        0.05126946193896861,
+        0.051269457363384105,
+        0.051269444978123344
+      ]
+    },
+    {
+      "name": "grey_64__aqua_hue_minus_100",
+      "input": {
+        "kind": "srgb8",
+        "rgb": [
+          64,
+          64,
+          64
+        ]
+      },
+      "parameters": "aqua_hue_minus_100",
+      "expected_linear": [
+        0.05126946193896861,
+        0.051269457363384105,
+        0.051269444978123344
+      ]
+    },
+    {
+      "name": "grey_64__blue_saturation_minus_100",
+      "input": {
+        "kind": "srgb8",
+        "rgb": [
+          64,
+          64,
+          64
+        ]
+      },
+      "parameters": "blue_saturation_minus_100",
+      "expected_linear": [
+        0.05126946193896861,
+        0.051269457363384105,
+        0.051269444978123344
+      ]
+    },
+    {
+      "name": "grey_64__green_saturation_plus_100",
+      "input": {
+        "kind": "srgb8",
+        "rgb": [
+          64,
+          64,
+          64
+        ]
+      },
+      "parameters": "green_saturation_plus_100",
+      "expected_linear": [
+        0.05126946193896861,
+        0.051269457363384105,
+        0.051269444978123344
+      ]
+    },
+    {
+      "name": "grey_64__orange_luminance_plus_100",
+      "input": {
+        "kind": "srgb8",
+        "rgb": [
+          64,
+          64,
+          64
+        ]
+      },
+      "parameters": "orange_luminance_plus_100",
+      "expected_linear": [
+        0.05126946193901011,
+        0.051269457363425606,
+        0.05126944497816483
+      ]
+    },
+    {
+      "name": "grey_64__purple_luminance_minus_100",
+      "input": {
+        "kind": "srgb8",
+        "rgb": [
+          64,
+          64,
+          64
+        ]
+      },
+      "parameters": "purple_luminance_minus_100",
+      "expected_linear": [
+        0.05126946193896861,
+        0.051269457363384105,
+        0.051269444978123344
+      ]
+    },
+    {
+      "name": "grey_64__orange_combined",
+      "input": {
+        "kind": "srgb8",
+        "rgb": [
+          64,
+          64,
+          64
+        ]
+      },
+      "parameters": "orange_combined",
+      "expected_linear": [
+        0.05126946193894785,
+        0.05126945736336337,
+        0.05126944497810259
+      ]
+    },
+    {
+      "name": "grey_64__all_ranges",
+      "input": {
+        "kind": "srgb8",
+        "rgb": [
+          64,
+          64,
+          64
+        ]
+      },
+      "parameters": "all_ranges",
+      "expected_linear": [
+        0.051269461939014174,
+        0.0512694573634296,
+        0.05126944497816886
+      ]
+    },
+    {
+      "name": "grey_128__neutral",
+      "input": {
+        "kind": "srgb8",
+        "rgb": [
+          128,
+          128,
+          128
+        ]
+      },
+      "parameters": "neutral",
+      "expected_linear": [
+        0.21586051512335386,
+        0.21586049585870687,
+        0.21586044371287524
+      ]
+    },
+    {
+      "name": "grey_128__red_hue_plus_100",
+      "input": {
+        "kind": "srgb8",
+        "rgb": [
+          128,
+          128,
+          128
+        ]
+      },
+      "parameters": "red_hue_plus_100",
+      "expected_linear": [
+        0.21586051512335386,
+        0.21586049585870687,
+        0.21586044371287524
+      ]
+    },
+    {
+      "name": "grey_128__aqua_hue_minus_100",
+      "input": {
+        "kind": "srgb8",
+        "rgb": [
+          128,
+          128,
+          128
+        ]
+      },
+      "parameters": "aqua_hue_minus_100",
+      "expected_linear": [
+        0.21586051512335386,
+        0.21586049585870687,
+        0.21586044371287524
+      ]
+    },
+    {
+      "name": "grey_128__blue_saturation_minus_100",
+      "input": {
+        "kind": "srgb8",
+        "rgb": [
+          128,
+          128,
+          128
+        ]
+      },
+      "parameters": "blue_saturation_minus_100",
+      "expected_linear": [
+        0.21586051512335386,
+        0.21586049585870687,
+        0.21586044371287524
+      ]
+    },
+    {
+      "name": "grey_128__green_saturation_plus_100",
+      "input": {
+        "kind": "srgb8",
+        "rgb": [
+          128,
+          128,
+          128
+        ]
+      },
+      "parameters": "green_saturation_plus_100",
+      "expected_linear": [
+        0.21586051512335386,
+        0.21586049585870687,
+        0.21586044371287524
+      ]
+    },
+    {
+      "name": "grey_128__orange_luminance_plus_100",
+      "input": {
+        "kind": "srgb8",
+        "rgb": [
+          128,
+          128,
+          128
+        ]
+      },
+      "parameters": "orange_luminance_plus_100",
+      "expected_linear": [
+        0.21586051512358903,
+        0.21586049585894224,
+        0.2158604437131105
+      ]
+    },
+    {
+      "name": "grey_128__purple_luminance_minus_100",
+      "input": {
+        "kind": "srgb8",
+        "rgb": [
+          128,
+          128,
+          128
+        ]
+      },
+      "parameters": "purple_luminance_minus_100",
+      "expected_linear": [
+        0.21586051512335386,
+        0.21586049585870687,
+        0.21586044371287524
+      ]
+    },
+    {
+      "name": "grey_128__orange_combined",
+      "input": {
+        "kind": "srgb8",
+        "rgb": [
+          128,
+          128,
+          128
+        ]
+      },
+      "parameters": "orange_combined",
+      "expected_linear": [
+        0.21586051512323617,
+        0.21586049585858924,
+        0.2158604437127576
+      ]
+    },
+    {
+      "name": "grey_128__all_ranges",
+      "input": {
+        "kind": "srgb8",
+        "rgb": [
+          128,
+          128,
+          128
+        ]
+      },
+      "parameters": "all_ranges",
+      "expected_linear": [
+        0.21586051512361196,
+        0.2158604958589649,
+        0.21586044371313332
+      ]
+    },
+    {
+      "name": "grey_192__neutral",
+      "input": {
+        "kind": "srgb8",
+        "rgb": [
+          192,
+          192,
+          192
+        ]
+      },
+      "parameters": "neutral",
+      "expected_linear": [
+        0.5271151623577737,
+        0.5271151153149536,
+        0.5271149879787492
+      ]
+    },
+    {
+      "name": "grey_192__red_hue_plus_100",
+      "input": {
+        "kind": "srgb8",
+        "rgb": [
+          192,
+          192,
+          192
+        ]
+      },
+      "parameters": "red_hue_plus_100",
+      "expected_linear": [
+        0.5271151623577737,
+        0.5271151153149536,
+        0.5271149879787492
+      ]
+    },
+    {
+      "name": "grey_192__aqua_hue_minus_100",
+      "input": {
+        "kind": "srgb8",
+        "rgb": [
+          192,
+          192,
+          192
+        ]
+      },
+      "parameters": "aqua_hue_minus_100",
+      "expected_linear": [
+        0.5271151623577737,
+        0.5271151153149536,
+        0.5271149879787492
+      ]
+    },
+    {
+      "name": "grey_192__blue_saturation_minus_100",
+      "input": {
+        "kind": "srgb8",
+        "rgb": [
+          192,
+          192,
+          192
+        ]
+      },
+      "parameters": "blue_saturation_minus_100",
+      "expected_linear": [
+        0.5271151623577737,
+        0.5271151153149536,
+        0.5271149879787492
+      ]
+    },
+    {
+      "name": "grey_192__green_saturation_plus_100",
+      "input": {
+        "kind": "srgb8",
+        "rgb": [
+          192,
+          192,
+          192
+        ]
+      },
+      "parameters": "green_saturation_plus_100",
+      "expected_linear": [
+        0.5271151623577737,
+        0.5271151153149536,
+        0.5271149879787492
+      ]
+    },
+    {
+      "name": "grey_192__orange_luminance_plus_100",
+      "input": {
+        "kind": "srgb8",
+        "rgb": [
+          192,
+          192,
+          192
+        ]
+      },
+      "parameters": "orange_luminance_plus_100",
+      "expected_linear": [
+        0.5271151623582085,
+        0.5271151153153886,
+        0.5271149879791843
+      ]
+    },
+    {
+      "name": "grey_192__purple_luminance_minus_100",
+      "input": {
+        "kind": "srgb8",
+        "rgb": [
+          192,
+          192,
+          192
+        ]
+      },
+      "parameters": "purple_luminance_minus_100",
+      "expected_linear": [
+        0.5271151623577737,
+        0.5271151153149536,
+        0.5271149879787492
+      ]
+    },
+    {
+      "name": "grey_192__orange_combined",
+      "input": {
+        "kind": "srgb8",
+        "rgb": [
+          192,
+          192,
+          192
+        ]
+      },
+      "parameters": "orange_combined",
+      "expected_linear": [
+        0.5271151623575562,
+        0.5271151153147358,
+        0.5271149879785316
+      ]
+    },
+    {
+      "name": "grey_192__all_ranges",
+      "input": {
+        "kind": "srgb8",
+        "rgb": [
+          192,
+          192,
+          192
+        ]
+      },
+      "parameters": "all_ranges",
+      "expected_linear": [
+        0.5271151623582507,
+        0.5271151153154308,
+        0.5271149879792265
+      ]
+    },
+    {
+      "name": "grey_255__neutral",
+      "input": {
+        "kind": "srgb8",
+        "rgb": [
+          255,
+          255,
+          255
+        ]
+      },
+      "parameters": "neutral",
+      "expected_linear": [
+        1.000000069533121,
+        0.9999999802873053,
+        0.9999997387154016
+      ]
+    },
+    {
+      "name": "grey_255__red_hue_plus_100",
+      "input": {
+        "kind": "srgb8",
+        "rgb": [
+          255,
+          255,
+          255
+        ]
+      },
+      "parameters": "red_hue_plus_100",
+      "expected_linear": [
+        1.000000069533121,
+        0.9999999802873053,
+        0.9999997387154016
+      ]
+    },
+    {
+      "name": "grey_255__aqua_hue_minus_100",
+      "input": {
+        "kind": "srgb8",
+        "rgb": [
+          255,
+          255,
+          255
+        ]
+      },
+      "parameters": "aqua_hue_minus_100",
+      "expected_linear": [
+        1.000000069533121,
+        0.9999999802873053,
+        0.9999997387154016
+      ]
+    },
+    {
+      "name": "grey_255__blue_saturation_minus_100",
+      "input": {
+        "kind": "srgb8",
+        "rgb": [
+          255,
+          255,
+          255
+        ]
+      },
+      "parameters": "blue_saturation_minus_100",
+      "expected_linear": [
+        1.000000069533121,
+        0.9999999802873053,
+        0.9999997387154016
+      ]
+    },
+    {
+      "name": "grey_255__green_saturation_plus_100",
+      "input": {
+        "kind": "srgb8",
+        "rgb": [
+          255,
+          255,
+          255
+        ]
+      },
+      "parameters": "green_saturation_plus_100",
+      "expected_linear": [
+        1.000000069533121,
+        0.9999999802873053,
+        0.9999997387154016
+      ]
+    },
+    {
+      "name": "grey_255__orange_luminance_plus_100",
+      "input": {
+        "kind": "srgb8",
+        "rgb": [
+          255,
+          255,
+          255
+        ]
+      },
+      "parameters": "orange_luminance_plus_100",
+      "expected_linear": [
+        1.000000069533121,
+        0.9999999802873053,
+        0.9999997387154016
+      ]
+    },
+    {
+      "name": "grey_255__purple_luminance_minus_100",
+      "input": {
+        "kind": "srgb8",
+        "rgb": [
+          255,
+          255,
+          255
+        ]
+      },
+      "parameters": "purple_luminance_minus_100",
+      "expected_linear": [
+        1.000000069533121,
+        0.9999999802873053,
+        0.9999997387154016
+      ]
+    },
+    {
+      "name": "grey_255__orange_combined",
+      "input": {
+        "kind": "srgb8",
+        "rgb": [
+          255,
+          255,
+          255
+        ]
+      },
+      "parameters": "orange_combined",
+      "expected_linear": [
+        1.000000069533121,
+        0.9999999802873053,
+        0.9999997387154016
+      ]
+    },
+    {
+      "name": "grey_255__all_ranges",
+      "input": {
+        "kind": "srgb8",
+        "rgb": [
+          255,
+          255,
+          255
+        ]
+      },
+      "parameters": "all_ranges",
+      "expected_linear": [
+        1.000000069533121,
+        0.9999999802873053,
+        0.9999997387154016
+      ]
+    },
+    {
+      "name": "near_black_blue__neutral",
+      "input": {
+        "kind": "srgb8",
+        "rgb": [
+          2,
+          2,
+          6
+        ]
+      },
+      "parameters": "neutral",
+      "expected_linear": [
+        0.0006070540045921002,
+        0.0006070539697481307,
+        0.0018211616177177523
+      ]
+    },
+    {
+      "name": "near_black_blue__red_hue_plus_100",
+      "input": {
+        "kind": "srgb8",
+        "rgb": [
+          2,
+          2,
+          6
+        ]
+      },
+      "parameters": "red_hue_plus_100",
+      "expected_linear": [
+        0.0006070540045921002,
+        0.0006070539697481307,
+        0.0018211616177177523
+      ]
+    },
+    {
+      "name": "near_black_blue__aqua_hue_minus_100",
+      "input": {
+        "kind": "srgb8",
+        "rgb": [
+          2,
+          2,
+          6
+        ]
+      },
+      "parameters": "aqua_hue_minus_100",
+      "expected_linear": [
+        0.0006070540045921002,
+        0.0006070539697481307,
+        0.0018211616177177523
+      ]
+    },
+    {
+      "name": "near_black_blue__blue_saturation_minus_100",
+      "input": {
+        "kind": "srgb8",
+        "rgb": [
+          2,
+          2,
+          6
+        ]
+      },
+      "parameters": "blue_saturation_minus_100",
+      "expected_linear": [
+        0.0006344127429242965,
+        0.000652911226381132,
+        0.0014279645573077294
+      ]
+    },
+    {
+      "name": "near_black_blue__green_saturation_plus_100",
+      "input": {
+        "kind": "srgb8",
+        "rgb": [
+          2,
+          2,
+          6
+        ]
+      },
+      "parameters": "green_saturation_plus_100",
+      "expected_linear": [
+        0.0006070540045921002,
+        0.0006070539697481307,
+        0.0018211616177177523
+      ]
+    },
+    {
+      "name": "near_black_blue__orange_luminance_plus_100",
+      "input": {
+        "kind": "srgb8",
+        "rgb": [
+          2,
+          2,
+          6
+        ]
+      },
+      "parameters": "orange_luminance_plus_100",
+      "expected_linear": [
+        0.0006070540045921002,
+        0.0006070539697481307,
+        0.0018211616177177523
+      ]
+    },
+    {
+      "name": "near_black_blue__purple_luminance_minus_100",
+      "input": {
+        "kind": "srgb8",
+        "rgb": [
+          2,
+          2,
+          6
+        ]
+      },
+      "parameters": "purple_luminance_minus_100",
+      "expected_linear": [
+        0.000013606794112593552,
+        -6.450871410328459e-6,
+        0.00014436786354176312
+      ]
+    },
+    {
+      "name": "near_black_blue__orange_combined",
+      "input": {
+        "kind": "srgb8",
+        "rgb": [
+          2,
+          2,
+          6
+        ]
+      },
+      "parameters": "orange_combined",
+      "expected_linear": [
+        0.0006070540045921002,
+        0.0006070539697481307,
+        0.0018211616177177523
+      ]
+    },
+    {
+      "name": "near_black_blue__all_ranges",
+      "input": {
+        "kind": "srgb8",
+        "rgb": [
+          2,
+          2,
+          6
+        ]
+      },
+      "parameters": "all_ranges",
+      "expected_linear": [
+        0.002519509526993567,
+        0.0024802639833457147,
+        0.004015587175906197
+      ]
+    },
+    {
+      "name": "near_black_warm__neutral",
+      "input": {
+        "kind": "srgb8",
+        "rgb": [
+          6,
+          4,
+          2
+        ]
+      },
+      "parameters": "neutral",
+      "expected_linear": [
+        0.0018211619940146611,
+        0.0012141078967104,
+        0.0006070537041516871
+      ]
+    },
+    {
+      "name": "near_black_warm__red_hue_plus_100",
+      "input": {
+        "kind": "srgb8",
+        "rgb": [
+          6,
+          4,
+          2
+        ]
+      },
+      "parameters": "red_hue_plus_100",
+      "expected_linear": [
+        0.0018211619940146611,
+        0.0012141078967104,
+        0.0006070537041516871
+      ]
+    },
+    {
+      "name": "near_black_warm__aqua_hue_minus_100",
+      "input": {
+        "kind": "srgb8",
+        "rgb": [
+          6,
+          4,
+          2
+        ]
+      },
+      "parameters": "aqua_hue_minus_100",
+      "expected_linear": [
+        0.0018211619940146611,
+        0.0012141078967104,
+        0.0006070537041516871
+      ]
+    },
+    {
+      "name": "near_black_warm__blue_saturation_minus_100",
+      "input": {
+        "kind": "srgb8",
+        "rgb": [
+          6,
+          4,
+          2
+        ]
+      },
+      "parameters": "blue_saturation_minus_100",
+      "expected_linear": [
+        0.0018211619940146611,
+        0.0012141078967104,
+        0.0006070537041516871
+      ]
+    },
+    {
+      "name": "near_black_warm__green_saturation_plus_100",
+      "input": {
+        "kind": "srgb8",
+        "rgb": [
+          6,
+          4,
+          2
+        ]
+      },
+      "parameters": "green_saturation_plus_100",
+      "expected_linear": [
+        0.0018211619940146611,
+        0.0012141078967104,
+        0.0006070537041516871
+      ]
+    },
+    {
+      "name": "near_black_warm__orange_luminance_plus_100",
+      "input": {
+        "kind": "srgb8",
+        "rgb": [
+          6,
+          4,
+          2
+        ]
+      },
+      "parameters": "orange_luminance_plus_100",
+      "expected_linear": [
+        0.007161936033527395,
+        0.005575599785749709,
+        0.0038136595460644624
+      ]
+    },
+    {
+      "name": "near_black_warm__purple_luminance_minus_100",
+      "input": {
+        "kind": "srgb8",
+        "rgb": [
+          6,
+          4,
+          2
+        ]
+      },
+      "parameters": "purple_luminance_minus_100",
+      "expected_linear": [
+        0.0018211619940146611,
+        0.0012141078967104,
+        0.0006070537041516871
+      ]
+    },
+    {
+      "name": "near_black_warm__orange_combined",
+      "input": {
+        "kind": "srgb8",
+        "rgb": [
+          6,
+          4,
+          2
+        ]
+      },
+      "parameters": "orange_combined",
+      "expected_linear": [
+        0.0008914520897213016,
+        0.00045519999696214716,
+        0.00011435522731932288
+      ]
+    },
+    {
+      "name": "near_black_warm__all_ranges",
+      "input": {
+        "kind": "srgb8",
+        "rgb": [
+          6,
+          4,
+          2
+        ]
+      },
+      "parameters": "all_ranges",
+      "expected_linear": [
+        0.003242235362015834,
+        0.002572227953663248,
+        0.001723591691553727
+      ]
+    },
+    {
+      "name": "near_black_green__neutral",
+      "input": {
+        "kind": "srgb8",
+        "rgb": [
+          3,
+          5,
+          3
+        ]
+      },
+      "parameters": "neutral",
+      "expected_linear": [
+        0.0009105810581541173,
+        0.0015176348825913413,
+        0.0009105806466245128
+      ]
+    },
+    {
+      "name": "near_black_green__red_hue_plus_100",
+      "input": {
+        "kind": "srgb8",
+        "rgb": [
+          3,
+          5,
+          3
+        ]
+      },
+      "parameters": "red_hue_plus_100",
+      "expected_linear": [
+        0.0009105810581541173,
+        0.0015176348825913413,
+        0.0009105806466245128
+      ]
+    },
+    {
+      "name": "near_black_green__aqua_hue_minus_100",
+      "input": {
+        "kind": "srgb8",
+        "rgb": [
+          3,
+          5,
+          3
+        ]
+      },
+      "parameters": "aqua_hue_minus_100",
+      "expected_linear": [
+        0.0009112861582031323,
+        0.00151744902212126,
+        0.0009099377565497694
+      ]
+    },
+    {
+      "name": "near_black_green__blue_saturation_minus_100",
+      "input": {
+        "kind": "srgb8",
+        "rgb": [
+          3,
+          5,
+          3
+        ]
+      },
+      "parameters": "blue_saturation_minus_100",
+      "expected_linear": [
+        0.0009105810581541173,
+        0.0015176348825913413,
+        0.0009105806466245128
+      ]
+    },
+    {
+      "name": "near_black_green__green_saturation_plus_100",
+      "input": {
+        "kind": "srgb8",
+        "rgb": [
+          3,
+          5,
+          3
+        ]
+      },
+      "parameters": "green_saturation_plus_100",
+      "expected_linear": [
+        0.0007216769456003635,
+        0.0016173817274174355,
+        0.0007330023786866714
+      ]
+    },
+    {
+      "name": "near_black_green__orange_luminance_plus_100",
+      "input": {
+        "kind": "srgb8",
+        "rgb": [
+          3,
+          5,
+          3
+        ]
+      },
+      "parameters": "orange_luminance_plus_100",
+      "expected_linear": [
+        0.0009105810581541173,
+        0.0015176348825913413,
+        0.0009105806466245128
+      ]
+    },
+    {
+      "name": "near_black_green__purple_luminance_minus_100",
+      "input": {
+        "kind": "srgb8",
+        "rgb": [
+          3,
+          5,
+          3
+        ]
+      },
+      "parameters": "purple_luminance_minus_100",
+      "expected_linear": [
+        0.0009105810581541173,
+        0.0015176348825913413,
+        0.0009105806466245128
+      ]
+    },
+    {
+      "name": "near_black_green__orange_combined",
+      "input": {
+        "kind": "srgb8",
+        "rgb": [
+          3,
+          5,
+          3
+        ]
+      },
+      "parameters": "orange_combined",
+      "expected_linear": [
+        0.0009105810581541173,
+        0.0015176348825913413,
+        0.0009105806466245128
+      ]
+    },
+    {
+      "name": "near_black_green__all_ranges",
+      "input": {
+        "kind": "srgb8",
+        "rgb": [
+          3,
+          5,
+          3
+        ]
+      },
+      "parameters": "all_ranges",
+      "expected_linear": [
+        0.00196597455394673,
+        0.0027765181061557816,
+        0.00204429364044929
+      ]
+    },
+    {
+      "name": "skin_light__neutral",
+      "input": {
+        "kind": "srgb8",
+        "rgb": [
+          255,
+          219,
+          172
+        ]
+      },
+      "parameters": "neutral",
+      "expected_linear": [
+        1.000000053151688,
+        0.7083757594379995,
+        0.41254245452422833
+      ]
+    },
+    {
+      "name": "skin_light__red_hue_plus_100",
+      "input": {
+        "kind": "srgb8",
+        "rgb": [
+          255,
+          219,
+          172
+        ]
+      },
+      "parameters": "red_hue_plus_100",
+      "expected_linear": [
+        1.000000053151688,
+        0.7083757594379995,
+        0.41254245452422833
+      ]
+    },
+    {
+      "name": "skin_light__aqua_hue_minus_100",
+      "input": {
+        "kind": "srgb8",
+        "rgb": [
+          255,
+          219,
+          172
+        ]
+      },
+      "parameters": "aqua_hue_minus_100",
+      "expected_linear": [
+        1.000000053151688,
+        0.7083757594379995,
+        0.41254245452422833
+      ]
+    },
+    {
+      "name": "skin_light__blue_saturation_minus_100",
+      "input": {
+        "kind": "srgb8",
+        "rgb": [
+          255,
+          219,
+          172
+        ]
+      },
+      "parameters": "blue_saturation_minus_100",
+      "expected_linear": [
+        1.000000053151688,
+        0.7083757594379995,
+        0.41254245452422833
+      ]
+    },
+    {
+      "name": "skin_light__green_saturation_plus_100",
+      "input": {
+        "kind": "srgb8",
+        "rgb": [
+          255,
+          219,
+          172
+        ]
+      },
+      "parameters": "green_saturation_plus_100",
+      "expected_linear": [
+        1.000000053151688,
+        0.7083757594379995,
+        0.41254245452422833
+      ]
+    },
+    {
+      "name": "skin_light__orange_luminance_plus_100",
+      "input": {
+        "kind": "srgb8",
+        "rgb": [
+          255,
+          219,
+          172
+        ]
+      },
+      "parameters": "orange_luminance_plus_100",
+      "expected_linear": [
+        1.1037667991779727,
+        0.7911577541564231,
+        0.47154223105691984
+      ]
+    },
+    {
+      "name": "skin_light__purple_luminance_minus_100",
+      "input": {
+        "kind": "srgb8",
+        "rgb": [
+          255,
+          219,
+          172
+        ]
+      },
+      "parameters": "purple_luminance_minus_100",
+      "expected_linear": [
+        1.000000053151688,
+        0.7083757594379995,
+        0.41254245452422833
+      ]
+    },
+    {
+      "name": "skin_light__orange_combined",
+      "input": {
+        "kind": "srgb8",
+        "rgb": [
+          255,
+          219,
+          172
+        ]
+      },
+      "parameters": "orange_combined",
+      "expected_linear": [
+        1.046291959464816,
+        0.6233569953739373,
+        0.2860475269023013
+      ]
+    },
+    {
+      "name": "skin_light__all_ranges",
+      "input": {
+        "kind": "srgb8",
+        "rgb": [
+          255,
+          219,
+          172
+        ]
+      },
+      "parameters": "all_ranges",
+      "expected_linear": [
+        0.9241090972677988,
+        0.7780383956452998,
+        0.5690374185908642
+      ]
+    },
+    {
+      "name": "skin_mid__neutral",
+      "input": {
+        "kind": "srgb8",
+        "rgb": [
+          224,
+          172,
+          140
+        ]
+      },
+      "parameters": "neutral",
+      "expected_linear": [
+        0.7454042407868708,
+        0.41254260096381834,
+        0.26225055691421884
+      ]
+    },
+    {
+      "name": "skin_mid__red_hue_plus_100",
+      "input": {
+        "kind": "srgb8",
+        "rgb": [
+          224,
+          172,
+          140
+        ]
+      },
+      "parameters": "red_hue_plus_100",
+      "expected_linear": [
+        0.7454036281280182,
+        0.4125429163384339,
+        0.26224999903087504
+      ]
+    },
+    {
+      "name": "skin_mid__aqua_hue_minus_100",
+      "input": {
+        "kind": "srgb8",
+        "rgb": [
+          224,
+          172,
+          140
+        ]
+      },
+      "parameters": "aqua_hue_minus_100",
+      "expected_linear": [
+        0.7454042407868708,
+        0.41254260096381834,
+        0.26225055691421884
+      ]
+    },
+    {
+      "name": "skin_mid__blue_saturation_minus_100",
+      "input": {
+        "kind": "srgb8",
+        "rgb": [
+          224,
+          172,
+          140
+        ]
+      },
+      "parameters": "blue_saturation_minus_100",
+      "expected_linear": [
+        0.7454042407868708,
+        0.41254260096381834,
+        0.26225055691421884
+      ]
+    },
+    {
+      "name": "skin_mid__green_saturation_plus_100",
+      "input": {
+        "kind": "srgb8",
+        "rgb": [
+          224,
+          172,
+          140
+        ]
+      },
+      "parameters": "green_saturation_plus_100",
+      "expected_linear": [
+        0.7454042407868708,
+        0.41254260096381834,
+        0.26225055691421884
+      ]
+    },
+    {
+      "name": "skin_mid__orange_luminance_plus_100",
+      "input": {
+        "kind": "srgb8",
+        "rgb": [
+          224,
+          172,
+          140
+        ]
+      },
+      "parameters": "orange_luminance_plus_100",
+      "expected_linear": [
+        1.0279016565954102,
+        0.6064292263924853,
+        0.41012614419163423
+      ]
+    },
+    {
+      "name": "skin_mid__purple_luminance_minus_100",
+      "input": {
+        "kind": "srgb8",
+        "rgb": [
+          224,
+          172,
+          140
+        ]
+      },
+      "parameters": "purple_luminance_minus_100",
+      "expected_linear": [
+        0.7454042407868708,
+        0.41254260096381834,
+        0.26225055691421884
+      ]
+    },
+    {
+      "name": "skin_mid__orange_combined",
+      "input": {
+        "kind": "srgb8",
+        "rgb": [
+          224,
+          172,
+          140
+        ]
+      },
+      "parameters": "orange_combined",
+      "expected_linear": [
+        0.7069628970808068,
+        0.25585267679885376,
+        0.12249770026217241
+      ]
+    },
+    {
+      "name": "skin_mid__all_ranges",
+      "input": {
+        "kind": "srgb8",
+        "rgb": [
+          224,
+          172,
+          140
+        ]
+      },
+      "parameters": "all_ranges",
+      "expected_linear": [
+        0.7091046001468,
+        0.5162823565220712,
+        0.39023029682024984
+      ]
+    },
+    {
+      "name": "skin_dark__neutral",
+      "input": {
+        "kind": "srgb8",
+        "rgb": [
+          141,
+          85,
+          36
+        ]
+      },
+      "parameters": "neutral",
+      "expected_linear": [
+        0.2663556125810599,
+        0.09084170705120082,
+        0.017641934632823125
+      ]
+    },
+    {
+      "name": "skin_dark__red_hue_plus_100",
+      "input": {
+        "kind": "srgb8",
+        "rgb": [
+          141,
+          85,
+          36
+        ]
+      },
+      "parameters": "red_hue_plus_100",
+      "expected_linear": [
+        0.2663556125810599,
+        0.09084170705120082,
+        0.017641934632823125
+      ]
+    },
+    {
+      "name": "skin_dark__aqua_hue_minus_100",
+      "input": {
+        "kind": "srgb8",
+        "rgb": [
+          141,
+          85,
+          36
+        ]
+      },
+      "parameters": "aqua_hue_minus_100",
+      "expected_linear": [
+        0.2663556125810599,
+        0.09084170705120082,
+        0.017641934632823125
+      ]
+    },
+    {
+      "name": "skin_dark__blue_saturation_minus_100",
+      "input": {
+        "kind": "srgb8",
+        "rgb": [
+          141,
+          85,
+          36
+        ]
+      },
+      "parameters": "blue_saturation_minus_100",
+      "expected_linear": [
+        0.2663556125810599,
+        0.09084170705120082,
+        0.017641934632823125
+      ]
+    },
+    {
+      "name": "skin_dark__green_saturation_plus_100",
+      "input": {
+        "kind": "srgb8",
+        "rgb": [
+          141,
+          85,
+          36
+        ]
+      },
+      "parameters": "green_saturation_plus_100",
+      "expected_linear": [
+        0.2663556125810599,
+        0.09084170705120082,
+        0.017641934632823125
+      ]
+    },
+    {
+      "name": "skin_dark__orange_luminance_plus_100",
+      "input": {
+        "kind": "srgb8",
+        "rgb": [
+          141,
+          85,
+          36
+        ]
+      },
+      "parameters": "orange_luminance_plus_100",
+      "expected_linear": [
+        0.6155580739808635,
+        0.28312037201965123,
+        0.11926089939716078
+      ]
+    },
+    {
+      "name": "skin_dark__purple_luminance_minus_100",
+      "input": {
+        "kind": "srgb8",
+        "rgb": [
+          141,
+          85,
+          36
+        ]
+      },
+      "parameters": "purple_luminance_minus_100",
+      "expected_linear": [
+        0.2663556125810599,
+        0.09084170705120082,
+        0.017641934632823125
+      ]
+    },
+    {
+      "name": "skin_dark__orange_combined",
+      "input": {
+        "kind": "srgb8",
+        "rgb": [
+          141,
+          85,
+          36
+        ]
+      },
+      "parameters": "orange_combined",
+      "expected_linear": [
+        0.19340198471546638,
+        0.014318037125834206,
+        -0.015321011001251175
+      ]
+    },
+    {
+      "name": "skin_dark__all_ranges",
+      "input": {
+        "kind": "srgb8",
+        "rgb": [
+          141,
+          85,
+          36
+        ]
+      },
+      "parameters": "all_ranges",
+      "expected_linear": [
+        0.28119779596195565,
+        0.1670654568110721,
+        0.08701379218850086
+      ]
+    },
+    {
+      "name": "wheel_c050_h000__neutral",
+      "input": {
+        "kind": "linear",
+        "rgb": [
+          0.3237467170695088,
+          0.17483716973645103,
+          0.21169166790643312
+        ]
+      },
+      "parameters": "neutral",
+      "expected_linear": [
+        0.3237467293668265,
+        0.17483716597875343,
+        0.2116916128537476
+      ]
+    },
+    {
+      "name": "wheel_c050_h000__red_hue_plus_100",
+      "input": {
+        "kind": "linear",
+        "rgb": [
+          0.3237467170695088,
+          0.17483716973645103,
+          0.21169166790643312
+        ]
+      },
+      "parameters": "red_hue_plus_100",
+      "expected_linear": [
+        0.3281626405358811,
+        0.17493051479233654,
+        0.19923961468216522
+      ]
+    },
+    {
+      "name": "wheel_c050_h000__aqua_hue_minus_100",
+      "input": {
+        "kind": "linear",
+        "rgb": [
+          0.3237467170695088,
+          0.17483716973645103,
+          0.21169166790643312
+        ]
+      },
+      "parameters": "aqua_hue_minus_100",
+      "expected_linear": [
+        0.3237467293668265,
+        0.17483716597875343,
+        0.2116916128537476
+      ]
+    },
+    {
+      "name": "wheel_c050_h000__blue_saturation_minus_100",
+      "input": {
+        "kind": "linear",
+        "rgb": [
+          0.3237467170695088,
+          0.17483716973645103,
+          0.21169166790643312
+        ]
+      },
+      "parameters": "blue_saturation_minus_100",
+      "expected_linear": [
+        0.3237467293668265,
+        0.17483716597875343,
+        0.2116916128537476
+      ]
+    },
+    {
+      "name": "wheel_c050_h000__green_saturation_plus_100",
+      "input": {
+        "kind": "linear",
+        "rgb": [
+          0.3237467170695088,
+          0.17483716973645103,
+          0.21169166790643312
+        ]
+      },
+      "parameters": "green_saturation_plus_100",
+      "expected_linear": [
+        0.3237467293668265,
+        0.17483716597875343,
+        0.2116916128537476
+      ]
+    },
+    {
+      "name": "wheel_c050_h000__orange_luminance_plus_100",
+      "input": {
+        "kind": "linear",
+        "rgb": [
+          0.3237467170695088,
+          0.17483716973645103,
+          0.21169166790643312
+        ]
+      },
+      "parameters": "orange_luminance_plus_100",
+      "expected_linear": [
+        0.3237467293668265,
+        0.17483716597875343,
+        0.2116916128537476
+      ]
+    },
+    {
+      "name": "wheel_c050_h000__purple_luminance_minus_100",
+      "input": {
+        "kind": "linear",
+        "rgb": [
+          0.3237467170695088,
+          0.17483716973645103,
+          0.21169166790643312
+        ]
+      },
+      "parameters": "purple_luminance_minus_100",
+      "expected_linear": [
+        0.3237467293668265,
+        0.17483716597875343,
+        0.2116916128537476
+      ]
+    },
+    {
+      "name": "wheel_c050_h000__orange_combined",
+      "input": {
+        "kind": "linear",
+        "rgb": [
+          0.3237467170695088,
+          0.17483716973645103,
+          0.21169166790643312
+        ]
+      },
+      "parameters": "orange_combined",
+      "expected_linear": [
+        0.3237467293668265,
+        0.17483716597875343,
+        0.2116916128537476
+      ]
+    },
+    {
+      "name": "wheel_c050_h000__all_ranges",
+      "input": {
+        "kind": "linear",
+        "rgb": [
+          0.3237467170695088,
+          0.17483716973645103,
+          0.21169166790643312
+        ]
+      },
+      "parameters": "all_ranges",
+      "expected_linear": [
+        0.36800638137051966,
+        0.25842482881587125,
+        0.2773778125576047
+      ]
+    },
+    {
+      "name": "wheel_c050_h045__neutral",
+      "input": {
+        "kind": "linear",
+        "rgb": [
+          0.32473714715701607,
+          0.18512819094163013,
+          0.13748833115343395
+        ]
+      },
+      "parameters": "neutral",
+      "expected_linear": [
+        0.32473716092646515,
+        0.18512818571637943,
+        0.13748828382187467
+      ]
+    },
+    {
+      "name": "wheel_c050_h045__red_hue_plus_100",
+      "input": {
+        "kind": "linear",
+        "rgb": [
+          0.32473714715701607,
+          0.18512819094163013,
+          0.13748833115343395
+        ]
+      },
+      "parameters": "red_hue_plus_100",
+      "expected_linear": [
+        0.3222547220242887,
+        0.18657447441087607,
+        0.13406583595525104
+      ]
+    },
+    {
+      "name": "wheel_c050_h045__aqua_hue_minus_100",
+      "input": {
+        "kind": "linear",
+        "rgb": [
+          0.32473714715701607,
+          0.18512819094163013,
+          0.13748833115343395
+        ]
+      },
+      "parameters": "aqua_hue_minus_100",
+      "expected_linear": [
+        0.32473716092646515,
+        0.18512818571637943,
+        0.13748828382187467
+      ]
+    },
+    {
+      "name": "wheel_c050_h045__blue_saturation_minus_100",
+      "input": {
+        "kind": "linear",
+        "rgb": [
+          0.32473714715701607,
+          0.18512819094163013,
+          0.13748833115343395
+        ]
+      },
+      "parameters": "blue_saturation_minus_100",
+      "expected_linear": [
+        0.32473716092646515,
+        0.18512818571637943,
+        0.13748828382187467
+      ]
+    },
+    {
+      "name": "wheel_c050_h045__green_saturation_plus_100",
+      "input": {
+        "kind": "linear",
+        "rgb": [
+          0.32473714715701607,
+          0.18512819094163013,
+          0.13748833115343395
+        ]
+      },
+      "parameters": "green_saturation_plus_100",
+      "expected_linear": [
+        0.32473716092646515,
+        0.18512818571637943,
+        0.13748828382187467
+      ]
+    },
+    {
+      "name": "wheel_c050_h045__orange_luminance_plus_100",
+      "input": {
+        "kind": "linear",
+        "rgb": [
+          0.32473714715701607,
+          0.18512819094163013,
+          0.13748833115343395
+        ]
+      },
+      "parameters": "orange_luminance_plus_100",
+      "expected_linear": [
+        0.5641156567137936,
+        0.355063639452998,
+        0.28049643239764305
+      ]
+    },
+    {
+      "name": "wheel_c050_h045__purple_luminance_minus_100",
+      "input": {
+        "kind": "linear",
+        "rgb": [
+          0.32473714715701607,
+          0.18512819094163013,
+          0.13748833115343395
+        ]
+      },
+      "parameters": "purple_luminance_minus_100",
+      "expected_linear": [
+        0.32473716092646515,
+        0.18512818571637943,
+        0.13748828382187467
+      ]
+    },
+    {
+      "name": "wheel_c050_h045__orange_combined",
+      "input": {
+        "kind": "linear",
+        "rgb": [
+          0.32473714715701607,
+          0.18512819094163013,
+          0.13748833115343395
+        ]
+      },
+      "parameters": "orange_combined",
+      "expected_linear": [
+        0.25358761749096337,
+        0.10275894892999446,
+        0.06675853462818236
+      ]
+    },
+    {
+      "name": "wheel_c050_h045__all_ranges",
+      "input": {
+        "kind": "linear",
+        "rgb": [
+          0.32473714715701607,
+          0.18512819094163013,
+          0.13748833115343395
+        ]
+      },
+      "parameters": "all_ranges",
+      "expected_linear": [
+        0.3618304727348163,
+        0.26856811283822424,
+        0.22340815584469978
+      ]
+    },
+    {
+      "name": "wheel_c050_h090__neutral",
+      "input": {
+        "kind": "linear",
+        "rgb": [
+          0.2612757288111275,
+          0.21333373984536352,
+          0.11163044078335221
+        ]
+      },
+      "parameters": "neutral",
+      "expected_linear": [
+        0.2612757448032051,
+        0.21333373371990436,
+        0.11163039580500567
+      ]
+    },
+    {
+      "name": "wheel_c050_h090__red_hue_plus_100",
+      "input": {
+        "kind": "linear",
+        "rgb": [
+          0.2612757288111275,
+          0.21333373984536352,
+          0.11163044078335221
+        ]
+      },
+      "parameters": "red_hue_plus_100",
+      "expected_linear": [
+        0.2612757448032051,
+        0.21333373371990436,
+        0.11163039580500567
+      ]
+    },
+    {
+      "name": "wheel_c050_h090__aqua_hue_minus_100",
+      "input": {
+        "kind": "linear",
+        "rgb": [
+          0.2612757288111275,
+          0.21333373984536352,
+          0.11163044078335221
+        ]
+      },
+      "parameters": "aqua_hue_minus_100",
+      "expected_linear": [
+        0.2612757448032051,
+        0.21333373371990436,
+        0.11163039580500567
+      ]
+    },
+    {
+      "name": "wheel_c050_h090__blue_saturation_minus_100",
+      "input": {
+        "kind": "linear",
+        "rgb": [
+          0.2612757288111275,
+          0.21333373984536352,
+          0.11163044078335221
+        ]
+      },
+      "parameters": "blue_saturation_minus_100",
+      "expected_linear": [
+        0.2612757448032051,
+        0.21333373371990436,
+        0.11163039580500567
+      ]
+    },
+    {
+      "name": "wheel_c050_h090__green_saturation_plus_100",
+      "input": {
+        "kind": "linear",
+        "rgb": [
+          0.2612757288111275,
+          0.21333373984536352,
+          0.11163044078335221
+        ]
+      },
+      "parameters": "green_saturation_plus_100",
+      "expected_linear": [
+        0.2612757448032051,
+        0.21333373371990436,
+        0.11163039580500567
+      ]
+    },
+    {
+      "name": "wheel_c050_h090__orange_luminance_plus_100",
+      "input": {
+        "kind": "linear",
+        "rgb": [
+          0.2612757288111275,
+          0.21333373984536352,
+          0.11163044078335221
+        ]
+      },
+      "parameters": "orange_luminance_plus_100",
+      "expected_linear": [
+        0.3343503061031769,
+        0.2777616714286413,
+        0.15520781636792472
+      ]
+    },
+    {
+      "name": "wheel_c050_h090__purple_luminance_minus_100",
+      "input": {
+        "kind": "linear",
+        "rgb": [
+          0.2612757288111275,
+          0.21333373984536352,
+          0.11163044078335221
+        ]
+      },
+      "parameters": "purple_luminance_minus_100",
+      "expected_linear": [
+        0.2612757448032051,
+        0.21333373371990436,
+        0.11163039580500567
+      ]
+    },
+    {
+      "name": "wheel_c050_h090__orange_combined",
+      "input": {
+        "kind": "linear",
+        "rgb": [
+          0.2612757288111275,
+          0.21333373984536352,
+          0.11163044078335221
+        ]
+      },
+      "parameters": "orange_combined",
+      "expected_linear": [
+        0.23588763638675314,
+        0.1813571530423965,
+        0.0809536412880561
+      ]
+    },
+    {
+      "name": "wheel_c050_h090__all_ranges",
+      "input": {
+        "kind": "linear",
+        "rgb": [
+          0.2612757288111275,
+          0.21333373984536352,
+          0.11163044078335221
+        ]
+      },
+      "parameters": "all_ranges",
+      "expected_linear": [
+        0.31336908054669865,
+        0.28949922004621476,
+        0.20863680157050105
+      ]
+    },
+    {
+      "name": "wheel_c050_h135__neutral",
+      "input": {
+        "kind": "linear",
+        "rgb": [
+          0.17304670050604806,
+          0.24339975196624195,
+          0.14195143726636578
+        ]
+      },
+      "parameters": "neutral",
+      "expected_linear": [
+        0.17304671795523194,
+        0.24339974606830786,
+        0.14195138813174557
+      ]
+    },
+    {
+      "name": "wheel_c050_h135__red_hue_plus_100",
+      "input": {
+        "kind": "linear",
+        "rgb": [
+          0.17304670050604806,
+          0.24339975196624195,
+          0.14195143726636578
+        ]
+      },
+      "parameters": "red_hue_plus_100",
+      "expected_linear": [
+        0.17304671795523194,
+        0.24339974606830786,
+        0.14195138813174557
+      ]
+    },
+    {
+      "name": "wheel_c050_h135__aqua_hue_minus_100",
+      "input": {
+        "kind": "linear",
+        "rgb": [
+          0.17304670050604806,
+          0.24339975196624195,
+          0.14195143726636578
+        ]
+      },
+      "parameters": "aqua_hue_minus_100",
+      "expected_linear": [
+        0.17304671795523194,
+        0.24339974606830786,
+        0.14195138813174557
+      ]
+    },
+    {
+      "name": "wheel_c050_h135__blue_saturation_minus_100",
+      "input": {
+        "kind": "linear",
+        "rgb": [
+          0.17304670050604806,
+          0.24339975196624195,
+          0.14195143726636578
+        ]
+      },
+      "parameters": "blue_saturation_minus_100",
+      "expected_linear": [
+        0.17304671795523194,
+        0.24339974606830786,
+        0.14195138813174557
+      ]
+    },
+    {
+      "name": "wheel_c050_h135__green_saturation_plus_100",
+      "input": {
+        "kind": "linear",
+        "rgb": [
+          0.17304670050604806,
+          0.24339975196624195,
+          0.14195143726636578
+        ]
+      },
+      "parameters": "green_saturation_plus_100",
+      "expected_linear": [
+        0.13703239636486586,
+        0.26556924420823846,
+        0.08557946027294352
+      ]
+    },
+    {
+      "name": "wheel_c050_h135__orange_luminance_plus_100",
+      "input": {
+        "kind": "linear",
+        "rgb": [
+          0.17304670050604806,
+          0.24339975196624195,
+          0.14195143726636578
+        ]
+      },
+      "parameters": "orange_luminance_plus_100",
+      "expected_linear": [
+        0.17304671795523194,
+        0.24339974606830786,
+        0.14195138813174557
+      ]
+    },
+    {
+      "name": "wheel_c050_h135__purple_luminance_minus_100",
+      "input": {
+        "kind": "linear",
+        "rgb": [
+          0.17304670050604806,
+          0.24339975196624195,
+          0.14195143726636578
+        ]
+      },
+      "parameters": "purple_luminance_minus_100",
+      "expected_linear": [
+        0.17304671795523194,
+        0.24339974606830786,
+        0.14195138813174557
+      ]
+    },
+    {
+      "name": "wheel_c050_h135__orange_combined",
+      "input": {
+        "kind": "linear",
+        "rgb": [
+          0.17304670050604806,
+          0.24339975196624195,
+          0.14195143726636578
+        ]
+      },
+      "parameters": "orange_combined",
+      "expected_linear": [
+        0.17304671795523194,
+        0.24339974606830786,
+        0.14195138813174557
+      ]
+    },
+    {
+      "name": "wheel_c050_h135__all_ranges",
+      "input": {
+        "kind": "linear",
+        "rgb": [
+          0.17304670050604806,
+          0.24339975196624195,
+          0.14195143726636578
+        ]
+      },
+      "parameters": "all_ranges",
+      "expected_linear": [
+        0.24842387555121195,
+        0.3105139482847176,
+        0.23898527393116756
+      ]
+    },
+    {
+      "name": "wheel_c050_h180__neutral",
+      "input": {
+        "kind": "linear",
+        "rgb": [
+          0.11370170637579292,
+          0.25560670420537823,
+          0.22035491713343244
+        ]
+      },
+      "parameters": "neutral",
+      "expected_linear": [
+        0.11370172367552264,
+        0.2556066995961997,
+        0.22035485928854118
+      ]
+    },
+    {
+      "name": "wheel_c050_h180__red_hue_plus_100",
+      "input": {
+        "kind": "linear",
+        "rgb": [
+          0.11370170637579292,
+          0.25560670420537823,
+          0.22035491713343244
+        ]
+      },
+      "parameters": "red_hue_plus_100",
+      "expected_linear": [
+        0.11370172367552264,
+        0.2556066995961997,
+        0.22035485928854118
+      ]
+    },
+    {
+      "name": "wheel_c050_h180__aqua_hue_minus_100",
+      "input": {
+        "kind": "linear",
+        "rgb": [
+          0.11370170637579292,
+          0.25560670420537823,
+          0.22035491713343244
+        ]
+      },
+      "parameters": "aqua_hue_minus_100",
+      "expected_linear": [
+        0.13536292217781354,
+        0.2529815852746747,
+        0.17871863911927413
+      ]
+    },
+    {
+      "name": "wheel_c050_h180__blue_saturation_minus_100",
+      "input": {
+        "kind": "linear",
+        "rgb": [
+          0.11370170637579292,
+          0.25560670420537823,
+          0.22035491713343244
+        ]
+      },
+      "parameters": "blue_saturation_minus_100",
+      "expected_linear": [
+        0.11370172367552264,
+        0.2556066995961997,
+        0.22035485928854118
+      ]
+    },
+    {
+      "name": "wheel_c050_h180__green_saturation_plus_100",
+      "input": {
+        "kind": "linear",
+        "rgb": [
+          0.11370170637579292,
+          0.25560670420537823,
+          0.22035491713343244
+        ]
+      },
+      "parameters": "green_saturation_plus_100",
+      "expected_linear": [
+        0.09542121735237424,
+        0.2627436848549054,
+        0.2211628587940538
+      ]
+    },
+    {
+      "name": "wheel_c050_h180__orange_luminance_plus_100",
+      "input": {
+        "kind": "linear",
+        "rgb": [
+          0.11370170637579292,
+          0.25560670420537823,
+          0.22035491713343244
+        ]
+      },
+      "parameters": "orange_luminance_plus_100",
+      "expected_linear": [
+        0.11370172367552264,
+        0.2556066995961997,
+        0.22035485928854118
+      ]
+    },
+    {
+      "name": "wheel_c050_h180__purple_luminance_minus_100",
+      "input": {
+        "kind": "linear",
+        "rgb": [
+          0.11370170637579292,
+          0.25560670420537823,
+          0.22035491713343244
+        ]
+      },
+      "parameters": "purple_luminance_minus_100",
+      "expected_linear": [
+        0.11370172367552264,
+        0.2556066995961997,
+        0.22035485928854118
+      ]
+    },
+    {
+      "name": "wheel_c050_h180__orange_combined",
+      "input": {
+        "kind": "linear",
+        "rgb": [
+          0.11370170637579292,
+          0.25560670420537823,
+          0.22035491713343244
+        ]
+      },
+      "parameters": "orange_combined",
+      "expected_linear": [
+        0.11370172367552264,
+        0.2556066995961997,
+        0.22035485928854118
+      ]
+    },
+    {
+      "name": "wheel_c050_h180__all_ranges",
+      "input": {
+        "kind": "linear",
+        "rgb": [
+          0.11370170637579292,
+          0.25560670420537823,
+          0.22035491713343244
+        ]
+      },
+      "parameters": "all_ranges",
+      "expected_linear": [
+        0.2092641455065734,
+        0.31666164619089976,
+        0.303538825017286
+      ]
+    },
+    {
+      "name": "wheel_c050_h225__neutral",
+      "input": {
+        "kind": "linear",
+        "rgb": [
+          0.11569210125134591,
+          0.24214085171907657,
+          0.30906823184053145
+        ]
+      },
+      "parameters": "neutral",
+      "expected_linear": [
+        0.11569211709088681,
+        0.2421408486708903,
+        0.30906816561405637
+      ]
+    },
+    {
+      "name": "wheel_c050_h225__red_hue_plus_100",
+      "input": {
+        "kind": "linear",
+        "rgb": [
+          0.11569210125134591,
+          0.24214085171907657,
+          0.30906823184053145
+        ]
+      },
+      "parameters": "red_hue_plus_100",
+      "expected_linear": [
+        0.11569211709088681,
+        0.2421408486708903,
+        0.30906816561405637
+      ]
+    },
+    {
+      "name": "wheel_c050_h225__aqua_hue_minus_100",
+      "input": {
+        "kind": "linear",
+        "rgb": [
+          0.11569210125134591,
+          0.24214085171907657,
+          0.30906823184053145
+        ]
+      },
+      "parameters": "aqua_hue_minus_100",
+      "expected_linear": [
+        0.1074986109943051,
+        0.24942606121708405,
+        0.28086237907696165
+      ]
+    },
+    {
+      "name": "wheel_c050_h225__blue_saturation_minus_100",
+      "input": {
+        "kind": "linear",
+        "rgb": [
+          0.11569210125134591,
+          0.24214085171907657,
+          0.30906823184053145
+        ]
+      },
+      "parameters": "blue_saturation_minus_100",
+      "expected_linear": [
+        0.15487619230424063,
+        0.23224513472945482,
+        0.2699545253078901
+      ]
+    },
+    {
+      "name": "wheel_c050_h225__green_saturation_plus_100",
+      "input": {
+        "kind": "linear",
+        "rgb": [
+          0.11569210125134591,
+          0.24214085171907657,
+          0.30906823184053145
+        ]
+      },
+      "parameters": "green_saturation_plus_100",
+      "expected_linear": [
+        0.11569211709088681,
+        0.2421408486708903,
+        0.30906816561405637
+      ]
+    },
+    {
+      "name": "wheel_c050_h225__orange_luminance_plus_100",
+      "input": {
+        "kind": "linear",
+        "rgb": [
+          0.11569210125134591,
+          0.24214085171907657,
+          0.30906823184053145
+        ]
+      },
+      "parameters": "orange_luminance_plus_100",
+      "expected_linear": [
+        0.11569211709088681,
+        0.2421408486708903,
+        0.30906816561405637
+      ]
+    },
+    {
+      "name": "wheel_c050_h225__purple_luminance_minus_100",
+      "input": {
+        "kind": "linear",
+        "rgb": [
+          0.11569210125134591,
+          0.24214085171907657,
+          0.30906823184053145
+        ]
+      },
+      "parameters": "purple_luminance_minus_100",
+      "expected_linear": [
+        0.11569211709088681,
+        0.2421408486708903,
+        0.30906816561405637
+      ]
+    },
+    {
+      "name": "wheel_c050_h225__orange_combined",
+      "input": {
+        "kind": "linear",
+        "rgb": [
+          0.11569210125134591,
+          0.24214085171907657,
+          0.30906823184053145
+        ]
+      },
+      "parameters": "orange_combined",
+      "expected_linear": [
+        0.11569211709088681,
+        0.2421408486708903,
+        0.30906816561405637
+      ]
+    },
+    {
+      "name": "wheel_c050_h225__all_ranges",
+      "input": {
+        "kind": "linear",
+        "rgb": [
+          0.11569210125134591,
+          0.24214085171907657,
+          0.30906823184053145
+        ]
+      },
+      "parameters": "all_ranges",
+      "expected_linear": [
+        0.21792990042450827,
+        0.3051596130127697,
+        0.36004346412319005
+      ]
+    },
+    {
+      "name": "wheel_c050_h270__neutral",
+      "input": {
+        "kind": "linear",
+        "rgb": [
+          0.17577880706693627,
+          0.21310668664139892,
+          0.3459756993922454
+        ]
+      },
+      "parameters": "neutral",
+      "expected_linear": [
+        0.17577882098455033,
+        0.21310668444378872,
+        0.34597563049951086
+      ]
+    },
+    {
+      "name": "wheel_c050_h270__red_hue_plus_100",
+      "input": {
+        "kind": "linear",
+        "rgb": [
+          0.17577880706693627,
+          0.21310668664139892,
+          0.3459756993922454
+        ]
+      },
+      "parameters": "red_hue_plus_100",
+      "expected_linear": [
+        0.17577882098455033,
+        0.21310668444378872,
+        0.34597563049951086
+      ]
+    },
+    {
+      "name": "wheel_c050_h270__aqua_hue_minus_100",
+      "input": {
+        "kind": "linear",
+        "rgb": [
+          0.17577880706693627,
+          0.21310668664139892,
+          0.3459756993922454
+        ]
+      },
+      "parameters": "aqua_hue_minus_100",
+      "expected_linear": [
+        0.17577882098455033,
+        0.21310668444378872,
+        0.34597563049951086
+      ]
+    },
+    {
+      "name": "wheel_c050_h270__blue_saturation_minus_100",
+      "input": {
+        "kind": "linear",
+        "rgb": [
+          0.17577880706693627,
+          0.21310668664139892,
+          0.3459756993922454
+        ]
+      },
+      "parameters": "blue_saturation_minus_100",
+      "expected_linear": [
+        0.21197356496278008,
+        0.2159728422037016,
+        0.22715516075515446
+      ]
+    },
+    {
+      "name": "wheel_c050_h270__green_saturation_plus_100",
+      "input": {
+        "kind": "linear",
+        "rgb": [
+          0.17577880706693627,
+          0.21310668664139892,
+          0.3459756993922454
+        ]
+      },
+      "parameters": "green_saturation_plus_100",
+      "expected_linear": [
+        0.17577882098455033,
+        0.21310668444378872,
+        0.34597563049951086
+      ]
+    },
+    {
+      "name": "wheel_c050_h270__orange_luminance_plus_100",
+      "input": {
+        "kind": "linear",
+        "rgb": [
+          0.17577880706693627,
+          0.21310668664139892,
+          0.3459756993922454
+        ]
+      },
+      "parameters": "orange_luminance_plus_100",
+      "expected_linear": [
+        0.17577882098455033,
+        0.21310668444378872,
+        0.34597563049951086
+      ]
+    },
+    {
+      "name": "wheel_c050_h270__purple_luminance_minus_100",
+      "input": {
+        "kind": "linear",
+        "rgb": [
+          0.17577880706693627,
+          0.21310668664139892,
+          0.3459756993922454
+        ]
+      },
+      "parameters": "purple_luminance_minus_100",
+      "expected_linear": [
+        0.15725050446477465,
+        0.19189727093178283,
+        0.3164276510106935
+      ]
+    },
+    {
+      "name": "wheel_c050_h270__orange_combined",
+      "input": {
+        "kind": "linear",
+        "rgb": [
+          0.17577880706693627,
+          0.21310668664139892,
+          0.3459756993922454
+        ]
+      },
+      "parameters": "orange_combined",
+      "expected_linear": [
+        0.17577882098455033,
+        0.21310668444378872,
+        0.34597563049951086
+      ]
+    },
+    {
+      "name": "wheel_c050_h270__all_ranges",
+      "input": {
+        "kind": "linear",
+        "rgb": [
+          0.17577880706693627,
+          0.21310668664139892,
+          0.3459756993922454
+        ]
+      },
+      "parameters": "all_ranges",
+      "expected_linear": [
+        0.2629394323607117,
+        0.28496764358500437,
+        0.37755462992828354
+      ]
+    },
+    {
+      "name": "wheel_c050_h315__neutral",
+      "input": {
+        "kind": "linear",
+        "rgb": [
+          0.26102701040895554,
+          0.18621550580164314,
+          0.301144724955132
+        ]
+      },
+      "parameters": "neutral",
+      "expected_linear": [
+        0.2610270228575205,
+        0.18621550328306868,
+        0.30114466087912795
+      ]
+    },
+    {
+      "name": "wheel_c050_h315__red_hue_plus_100",
+      "input": {
+        "kind": "linear",
+        "rgb": [
+          0.26102701040895554,
+          0.18621550580164314,
+          0.301144724955132
+        ]
+      },
+      "parameters": "red_hue_plus_100",
+      "expected_linear": [
+        0.2610270228575205,
+        0.18621550328306868,
+        0.30114466087912795
+      ]
+    },
+    {
+      "name": "wheel_c050_h315__aqua_hue_minus_100",
+      "input": {
+        "kind": "linear",
+        "rgb": [
+          0.26102701040895554,
+          0.18621550580164314,
+          0.301144724955132
+        ]
+      },
+      "parameters": "aqua_hue_minus_100",
+      "expected_linear": [
+        0.2610270228575205,
+        0.18621550328306868,
+        0.30114466087912795
+      ]
+    },
+    {
+      "name": "wheel_c050_h315__blue_saturation_minus_100",
+      "input": {
+        "kind": "linear",
+        "rgb": [
+          0.26102701040895554,
+          0.18621550580164314,
+          0.301144724955132
+        ]
+      },
+      "parameters": "blue_saturation_minus_100",
+      "expected_linear": [
+        0.2610270228575205,
+        0.18621550328306868,
+        0.30114466087912795
+      ]
+    },
+    {
+      "name": "wheel_c050_h315__green_saturation_plus_100",
+      "input": {
+        "kind": "linear",
+        "rgb": [
+          0.26102701040895554,
+          0.18621550580164314,
+          0.301144724955132
+        ]
+      },
+      "parameters": "green_saturation_plus_100",
+      "expected_linear": [
+        0.2610270228575205,
+        0.18621550328306868,
+        0.30114466087912795
+      ]
+    },
+    {
+      "name": "wheel_c050_h315__orange_luminance_plus_100",
+      "input": {
+        "kind": "linear",
+        "rgb": [
+          0.26102701040895554,
+          0.18621550580164314,
+          0.301144724955132
+        ]
+      },
+      "parameters": "orange_luminance_plus_100",
+      "expected_linear": [
+        0.2610270228575205,
+        0.18621550328306868,
+        0.30114466087912795
+      ]
+    },
+    {
+      "name": "wheel_c050_h315__purple_luminance_minus_100",
+      "input": {
+        "kind": "linear",
+        "rgb": [
+          0.26102701040895554,
+          0.18621550580164314,
+          0.301144724955132
+        ]
+      },
+      "parameters": "purple_luminance_minus_100",
+      "expected_linear": [
+        0.18088773352782161,
+        0.1229978119659174,
+        0.2123071212783033
+      ]
+    },
+    {
+      "name": "wheel_c050_h315__orange_combined",
+      "input": {
+        "kind": "linear",
+        "rgb": [
+          0.26102701040895554,
+          0.18621550580164314,
+          0.301144724955132
+        ]
+      },
+      "parameters": "orange_combined",
+      "expected_linear": [
+        0.2610270228575205,
+        0.18621550328306868,
+        0.30114466087912795
+      ]
+    },
+    {
+      "name": "wheel_c050_h315__all_ranges",
+      "input": {
+        "kind": "linear",
+        "rgb": [
+          0.26102701040895554,
+          0.18621550580164314,
+          0.301144724955132
+        ]
+      },
+      "parameters": "all_ranges",
+      "expected_linear": [
+        0.3288357002513408,
+        0.2646323040184695,
+        0.339981498318392
+      ]
+    },
+    {
+      "name": "wheel_c120_h000__neutral",
+      "input": {
+        "kind": "linear",
+        "rgb": [
+          0.4841132335371213,
+          0.11447811103685687,
+          0.20573732709631598
+        ]
+      },
+      "parameters": "neutral",
+      "expected_linear": [
+        0.48411324124267074,
+        0.1144781082419145,
+        0.20573727394476313
+      ]
+    },
+    {
+      "name": "wheel_c120_h000__red_hue_plus_100",
+      "input": {
+        "kind": "linear",
+        "rgb": [
+          0.4841132335371213,
+          0.11447811103685687,
+          0.20573732709631598
+        ]
+      },
+      "parameters": "red_hue_plus_100",
+      "expected_linear": [
+        0.4959279546670931,
+        0.11417632907506811,
+        0.17697706307011604
+      ]
+    },
+    {
+      "name": "wheel_c120_h000__aqua_hue_minus_100",
+      "input": {
+        "kind": "linear",
+        "rgb": [
+          0.4841132335371213,
+          0.11447811103685687,
+          0.20573732709631598
+        ]
+      },
+      "parameters": "aqua_hue_minus_100",
+      "expected_linear": [
+        0.48411324124267074,
+        0.1144781082419145,
+        0.20573727394476313
+      ]
+    },
+    {
+      "name": "wheel_c120_h000__blue_saturation_minus_100",
+      "input": {
+        "kind": "linear",
+        "rgb": [
+          0.4841132335371213,
+          0.11447811103685687,
+          0.20573732709631598
+        ]
+      },
+      "parameters": "blue_saturation_minus_100",
+      "expected_linear": [
+        0.48411324124267074,
+        0.1144781082419145,
+        0.20573727394476313
+      ]
+    },
+    {
+      "name": "wheel_c120_h000__green_saturation_plus_100",
+      "input": {
+        "kind": "linear",
+        "rgb": [
+          0.4841132335371213,
+          0.11447811103685687,
+          0.20573732709631598
+        ]
+      },
+      "parameters": "green_saturation_plus_100",
+      "expected_linear": [
+        0.48411324124267074,
+        0.1144781082419145,
+        0.20573727394476313
+      ]
+    },
+    {
+      "name": "wheel_c120_h000__orange_luminance_plus_100",
+      "input": {
+        "kind": "linear",
+        "rgb": [
+          0.4841132335371213,
+          0.11447811103685687,
+          0.20573732709631598
+        ]
+      },
+      "parameters": "orange_luminance_plus_100",
+      "expected_linear": [
+        0.48411324124267074,
+        0.1144781082419145,
+        0.20573727394476313
+      ]
+    },
+    {
+      "name": "wheel_c120_h000__purple_luminance_minus_100",
+      "input": {
+        "kind": "linear",
+        "rgb": [
+          0.4841132335371213,
+          0.11447811103685687,
+          0.20573732709631598
+        ]
+      },
+      "parameters": "purple_luminance_minus_100",
+      "expected_linear": [
+        0.48411324124267074,
+        0.1144781082419145,
+        0.20573727394476313
+      ]
+    },
+    {
+      "name": "wheel_c120_h000__orange_combined",
+      "input": {
+        "kind": "linear",
+        "rgb": [
+          0.4841132335371213,
+          0.11447811103685687,
+          0.20573732709631598
+        ]
+      },
+      "parameters": "orange_combined",
+      "expected_linear": [
+        0.48411324124267074,
+        0.1144781082419145,
+        0.20573727394476313
+      ]
+    },
+    {
+      "name": "wheel_c120_h000__all_ranges",
+      "input": {
+        "kind": "linear",
+        "rgb": [
+          0.4841132335371213,
+          0.11447811103685687,
+          0.20573732709631598
+        ]
+      },
+      "parameters": "all_ranges",
+      "expected_linear": [
+        0.48409319357303876,
+        0.21577998409748866,
+        0.26286122362675757
+      ]
+    },
+    {
+      "name": "wheel_c120_h045__neutral",
+      "input": {
+        "kind": "linear",
+        "rgb": [
+          0.49130342228481866,
+          0.13426018137984755,
+          0.049757740257615396
+        ]
+      },
+      "parameters": "neutral",
+      "expected_linear": [
+        0.4913034335434677,
+        0.1342601752243432,
+        0.04975770449943809
+      ]
+    },
+    {
+      "name": "wheel_c120_h045__red_hue_plus_100",
+      "input": {
+        "kind": "linear",
+        "rgb": [
+          0.49130342228481866,
+          0.13426018137984755,
+          0.049757740257615396
+        ]
+      },
+      "parameters": "red_hue_plus_100",
+      "expected_linear": [
+        0.48521465039990186,
+        0.13745966873966708,
+        0.04346707758157861
+      ]
+    },
+    {
+      "name": "wheel_c120_h045__aqua_hue_minus_100",
+      "input": {
+        "kind": "linear",
+        "rgb": [
+          0.49130342228481866,
+          0.13426018137984755,
+          0.049757740257615396
+        ]
+      },
+      "parameters": "aqua_hue_minus_100",
+      "expected_linear": [
+        0.4913034335434677,
+        0.1342601752243432,
+        0.04975770449943809
+      ]
+    },
+    {
+      "name": "wheel_c120_h045__blue_saturation_minus_100",
+      "input": {
+        "kind": "linear",
+        "rgb": [
+          0.49130342228481866,
+          0.13426018137984755,
+          0.049757740257615396
+        ]
+      },
+      "parameters": "blue_saturation_minus_100",
+      "expected_linear": [
+        0.4913034335434677,
+        0.1342601752243432,
+        0.04975770449943809
+      ]
+    },
+    {
+      "name": "wheel_c120_h045__green_saturation_plus_100",
+      "input": {
+        "kind": "linear",
+        "rgb": [
+          0.49130342228481866,
+          0.13426018137984755,
+          0.049757740257615396
+        ]
+      },
+      "parameters": "green_saturation_plus_100",
+      "expected_linear": [
+        0.4913034335434677,
+        0.1342601752243432,
+        0.04975770449943809
+      ]
+    },
+    {
+      "name": "wheel_c120_h045__orange_luminance_plus_100",
+      "input": {
+        "kind": "linear",
+        "rgb": [
+          0.49130342228481866,
+          0.13426018137984755,
+          0.049757740257615396
+        ]
+      },
+      "parameters": "orange_luminance_plus_100",
+      "expected_linear": [
+        0.8099894286839912,
+        0.2812182215235523,
+        0.13951322862747684
+      ]
+    },
+    {
+      "name": "wheel_c120_h045__purple_luminance_minus_100",
+      "input": {
+        "kind": "linear",
+        "rgb": [
+          0.49130342228481866,
+          0.13426018137984755,
+          0.049757740257615396
+        ]
+      },
+      "parameters": "purple_luminance_minus_100",
+      "expected_linear": [
+        0.4913034335434677,
+        0.1342601752243432,
+        0.04975770449943809
+      ]
+    },
+    {
+      "name": "wheel_c120_h045__orange_combined",
+      "input": {
+        "kind": "linear",
+        "rgb": [
+          0.49130342228481866,
+          0.13426018137984755,
+          0.049757740257615396
+        ]
+      },
+      "parameters": "orange_combined",
+      "expected_linear": [
+        0.4398401262231787,
+        0.04274503455002009,
+        -0.002656092150901873
+      ]
+    },
+    {
+      "name": "wheel_c120_h045__all_ranges",
+      "input": {
+        "kind": "linear",
+        "rgb": [
+          0.49130342228481866,
+          0.13426018137984755,
+          0.049757740257615396
+        ]
+      },
+      "parameters": "all_ranges",
+      "expected_linear": [
+        0.47072274162219546,
+        0.23803338565955556,
+        0.14378416714831282
+      ]
+    },
+    {
+      "name": "wheel_c120_h090__neutral",
+      "input": {
+        "kind": "linear",
+        "rgb": [
+          0.3325026268900597,
+          0.20129164144479755,
+          0.0032788245184089404
+        ]
+      },
+      "parameters": "neutral",
+      "expected_linear": [
+        0.33250264400925916,
+        0.201291633054321,
+        0.0032787937854265314
+      ]
+    },
+    {
+      "name": "wheel_c120_h090__red_hue_plus_100",
+      "input": {
+        "kind": "linear",
+        "rgb": [
+          0.3325026268900597,
+          0.20129164144479755,
+          0.0032788245184089404
+        ]
+      },
+      "parameters": "red_hue_plus_100",
+      "expected_linear": [
+        0.33250264400925916,
+        0.201291633054321,
+        0.0032787937854265314
+      ]
+    },
+    {
+      "name": "wheel_c120_h090__aqua_hue_minus_100",
+      "input": {
+        "kind": "linear",
+        "rgb": [
+          0.3325026268900597,
+          0.20129164144479755,
+          0.0032788245184089404
+        ]
+      },
+      "parameters": "aqua_hue_minus_100",
+      "expected_linear": [
+        0.33250264400925916,
+        0.201291633054321,
+        0.0032787937854265314
+      ]
+    },
+    {
+      "name": "wheel_c120_h090__blue_saturation_minus_100",
+      "input": {
+        "kind": "linear",
+        "rgb": [
+          0.3325026268900597,
+          0.20129164144479755,
+          0.0032788245184089404
+        ]
+      },
+      "parameters": "blue_saturation_minus_100",
+      "expected_linear": [
+        0.33250264400925916,
+        0.201291633054321,
+        0.0032787937854265314
+      ]
+    },
+    {
+      "name": "wheel_c120_h090__green_saturation_plus_100",
+      "input": {
+        "kind": "linear",
+        "rgb": [
+          0.3325026268900597,
+          0.20129164144479755,
+          0.0032788245184089404
+        ]
+      },
+      "parameters": "green_saturation_plus_100",
+      "expected_linear": [
+        0.33250264400925916,
+        0.201291633054321,
+        0.0032787937854265314
+      ]
+    },
+    {
+      "name": "wheel_c120_h090__orange_luminance_plus_100",
+      "input": {
+        "kind": "linear",
+        "rgb": [
+          0.3325026268900597,
+          0.20129164144479755,
+          0.0032788245184089404
+        ]
+      },
+      "parameters": "orange_luminance_plus_100",
+      "expected_linear": [
+        0.4181083636738725,
+        0.26451861008393185,
+        0.021241391020408784
+      ]
+    },
+    {
+      "name": "wheel_c120_h090__purple_luminance_minus_100",
+      "input": {
+        "kind": "linear",
+        "rgb": [
+          0.3325026268900597,
+          0.20129164144479755,
+          0.0032788245184089404
+        ]
+      },
+      "parameters": "purple_luminance_minus_100",
+      "expected_linear": [
+        0.33250264400925916,
+        0.201291633054321,
+        0.0032787937854265314
+      ]
+    },
+    {
+      "name": "wheel_c120_h090__orange_combined",
+      "input": {
+        "kind": "linear",
+        "rgb": [
+          0.3325026268900597,
+          0.20129164144479755,
+          0.0032788245184089404
+        ]
+      },
+      "parameters": "orange_combined",
+      "expected_linear": [
+        0.31583107121052206,
+        0.16506054610540577,
+        -0.020680092022181434
+      ]
+    },
+    {
+      "name": "wheel_c120_h090__all_ranges",
+      "input": {
+        "kind": "linear",
+        "rgb": [
+          0.3325026268900597,
+          0.20129164144479755,
+          0.0032788245184089404
+        ]
+      },
+      "parameters": "all_ranges",
+      "expected_linear": [
+        0.3517357545273111,
+        0.2882527914182264,
+        0.11313616752460623
+      ]
+    },
+    {
+      "name": "wheel_c120_h135__neutral",
+      "input": {
+        "kind": "linear",
+        "rgb": [
+          0.11618117027904276,
+          0.2780561686885699,
+          0.05542776050929596
+        ]
+      },
+      "parameters": "neutral",
+      "expected_linear": [
+        0.11618119088904069,
+        0.2780561606719293,
+        0.055427720979609685
+      ]
+    },
+    {
+      "name": "wheel_c120_h135__red_hue_plus_100",
+      "input": {
+        "kind": "linear",
+        "rgb": [
+          0.11618117027904276,
+          0.2780561686885699,
+          0.05542776050929596
+        ]
+      },
+      "parameters": "red_hue_plus_100",
+      "expected_linear": [
+        0.11618119088904069,
+        0.2780561606719293,
+        0.055427720979609685
+      ]
+    },
+    {
+      "name": "wheel_c120_h135__aqua_hue_minus_100",
+      "input": {
+        "kind": "linear",
+        "rgb": [
+          0.11618117027904276,
+          0.2780561686885699,
+          0.05542776050929596
+        ]
+      },
+      "parameters": "aqua_hue_minus_100",
+      "expected_linear": [
+        0.11618119088904069,
+        0.2780561606719293,
+        0.055427720979609685
+      ]
+    },
+    {
+      "name": "wheel_c120_h135__blue_saturation_minus_100",
+      "input": {
+        "kind": "linear",
+        "rgb": [
+          0.11618117027904276,
+          0.2780561686885699,
+          0.05542776050929596
+        ]
+      },
+      "parameters": "blue_saturation_minus_100",
+      "expected_linear": [
+        0.11618119088904069,
+        0.2780561606719293,
+        0.055427720979609685
+      ]
+    },
+    {
+      "name": "wheel_c120_h135__green_saturation_plus_100",
+      "input": {
+        "kind": "linear",
+        "rgb": [
+          0.11618117027904276,
+          0.2780561686885699,
+          0.05542776050929596
+        ]
+      },
+      "parameters": "green_saturation_plus_100",
+      "expected_linear": [
+        0.037321406694756296,
+        0.3228669832238255,
+        -0.04128470814833178
+      ]
+    },
+    {
+      "name": "wheel_c120_h135__orange_luminance_plus_100",
+      "input": {
+        "kind": "linear",
+        "rgb": [
+          0.11618117027904276,
+          0.2780561686885699,
+          0.05542776050929596
+        ]
+      },
+      "parameters": "orange_luminance_plus_100",
+      "expected_linear": [
+        0.11618119088904069,
+        0.2780561606719293,
+        0.055427720979609685
+      ]
+    },
+    {
+      "name": "wheel_c120_h135__purple_luminance_minus_100",
+      "input": {
+        "kind": "linear",
+        "rgb": [
+          0.11618117027904276,
+          0.2780561686885699,
+          0.05542776050929596
+        ]
+      },
+      "parameters": "purple_luminance_minus_100",
+      "expected_linear": [
+        0.11618119088904069,
+        0.2780561606719293,
+        0.055427720979609685
+      ]
+    },
+    {
+      "name": "wheel_c120_h135__orange_combined",
+      "input": {
+        "kind": "linear",
+        "rgb": [
+          0.11618117027904276,
+          0.2780561686885699,
+          0.05542776050929596
+        ]
+      },
+      "parameters": "orange_combined",
+      "expected_linear": [
+        0.11618119088904069,
+        0.2780561606719293,
+        0.055427720979609685
+      ]
+    },
+    {
+      "name": "wheel_c120_h135__all_ranges",
+      "input": {
+        "kind": "linear",
+        "rgb": [
+          0.11618117027904276,
+          0.2780561686885699,
+          0.05542776050929596
+        ]
+      },
+      "parameters": "all_ranges",
+      "expected_linear": [
+        0.19442558348624916,
+        0.3407449339963906,
+        0.17571507062702052
+      ]
+    },
+    {
+      "name": "wheel_c120_h180__neutral",
+      "input": {
+        "kind": "linear",
+        "rgb": [
+          -0.02073031449218412,
+          0.3085586028680802,
+          0.22653100273330995
+        ]
+      },
+      "parameters": "neutral",
+      "expected_linear": [
+        -0.02073029470108996,
+        0.3085585980054264,
+        0.22653094287956518
+      ]
+    },
+    {
+      "name": "wheel_c120_h180__red_hue_plus_100",
+      "input": {
+        "kind": "linear",
+        "rgb": [
+          -0.02073031449218412,
+          0.3085586028680802,
+          0.22653100273330995
+        ]
+      },
+      "parameters": "red_hue_plus_100",
+      "expected_linear": [
+        -0.02073029470108996,
+        0.3085585980054264,
+        0.22653094287956518
+      ]
+    },
+    {
+      "name": "wheel_c120_h180__aqua_hue_minus_100",
+      "input": {
+        "kind": "linear",
+        "rgb": [
+          -0.02073031449218412,
+          0.3085586028680802,
+          0.22653100273330995
+        ]
+      },
+      "parameters": "aqua_hue_minus_100",
+      "expected_linear": [
+        0.027756693846652712,
+        0.30266169350810385,
+        0.13016870532828395
+      ]
+    },
+    {
+      "name": "wheel_c120_h180__blue_saturation_minus_100",
+      "input": {
+        "kind": "linear",
+        "rgb": [
+          -0.02073031449218412,
+          0.3085586028680802,
+          0.22653100273330995
+        ]
+      },
+      "parameters": "blue_saturation_minus_100",
+      "expected_linear": [
+        -0.02073029470108996,
+        0.3085585980054264,
+        0.22653094287956518
+      ]
+    },
+    {
+      "name": "wheel_c120_h180__green_saturation_plus_100",
+      "input": {
+        "kind": "linear",
+        "rgb": [
+          -0.02073031449218412,
+          0.3085586028680802,
+          0.22653100273330995
+        ]
+      },
+      "parameters": "green_saturation_plus_100",
+      "expected_linear": [
+        -0.0611604558369575,
+        0.3247117632485327,
+        0.22850228986551774
+      ]
+    },
+    {
+      "name": "wheel_c120_h180__orange_luminance_plus_100",
+      "input": {
+        "kind": "linear",
+        "rgb": [
+          -0.02073031449218412,
+          0.3085586028680802,
+          0.22653100273330995
+        ]
+      },
+      "parameters": "orange_luminance_plus_100",
+      "expected_linear": [
+        -0.02073029470108996,
+        0.3085585980054264,
+        0.22653094287956518
+      ]
+    },
+    {
+      "name": "wheel_c120_h180__purple_luminance_minus_100",
+      "input": {
+        "kind": "linear",
+        "rgb": [
+          -0.02073031449218412,
+          0.3085586028680802,
+          0.22653100273330995
+        ]
+      },
+      "parameters": "purple_luminance_minus_100",
+      "expected_linear": [
+        -0.02073029470108996,
+        0.3085585980054264,
+        0.22653094287956518
+      ]
+    },
+    {
+      "name": "wheel_c120_h180__orange_combined",
+      "input": {
+        "kind": "linear",
+        "rgb": [
+          -0.02073031449218412,
+          0.3085586028680802,
+          0.22653100273330995
+        ]
+      },
+      "parameters": "orange_combined",
+      "expected_linear": [
+        -0.02073029470108996,
+        0.3085585980054264,
+        0.22653094287956518
+      ]
+    },
+    {
+      "name": "wheel_c120_h180__all_ranges",
+      "input": {
+        "kind": "linear",
+        "rgb": [
+          -0.02073031449218412,
+          0.3085586028680802,
+          0.22653100273330995
+        ]
+      },
+      "parameters": "all_ranges",
+      "expected_linear": [
+        0.10314730195379226,
+        0.3554885319792223,
+        0.3259997738232933
+      ]
+    },
+    {
+      "name": "wheel_c120_h225__neutral",
+      "input": {
+        "kind": "linear",
+        "rgb": [
+          -0.010750951452653715,
+          0.27048950434582286,
+          0.4660880625876255
+        ]
+      },
+      "parameters": "neutral",
+      "expected_linear": [
+        -0.01075093514586331,
+        0.2704895033819368,
+        0.4660879815362714
+      ]
+    },
+    {
+      "name": "wheel_c120_h225__red_hue_plus_100",
+      "input": {
+        "kind": "linear",
+        "rgb": [
+          -0.010750951452653715,
+          0.27048950434582286,
+          0.4660880625876255
+        ]
+      },
+      "parameters": "red_hue_plus_100",
+      "expected_linear": [
+        -0.01075093514586331,
+        0.2704895033819368,
+        0.4660879815362714
+      ]
+    },
+    {
+      "name": "wheel_c120_h225__aqua_hue_minus_100",
+      "input": {
+        "kind": "linear",
+        "rgb": [
+          -0.010750951452653715,
+          0.27048950434582286,
+          0.4660880625876255
+        ]
+      },
+      "parameters": "aqua_hue_minus_100",
+      "expected_linear": [
+        -0.0312739340979869,
+        0.29030887622200363,
+        0.3854117435737465
+      ]
+    },
+    {
+      "name": "wheel_c120_h225__blue_saturation_minus_100",
+      "input": {
+        "kind": "linear",
+        "rgb": [
+          -0.010750951452653715,
+          0.27048950434582286,
+          0.4660880625876255
+        ]
+      },
+      "parameters": "blue_saturation_minus_100",
+      "expected_linear": [
+        0.07435226719070365,
+        0.252068720280084,
+        0.3547635422898585
+      ]
+    },
+    {
+      "name": "wheel_c120_h225__green_saturation_plus_100",
+      "input": {
+        "kind": "linear",
+        "rgb": [
+          -0.010750951452653715,
+          0.27048950434582286,
+          0.4660880625876255
+        ]
+      },
+      "parameters": "green_saturation_plus_100",
+      "expected_linear": [
+        -0.01075093514586331,
+        0.2704895033819368,
+        0.4660879815362714
+      ]
+    },
+    {
+      "name": "wheel_c120_h225__orange_luminance_plus_100",
+      "input": {
+        "kind": "linear",
+        "rgb": [
+          -0.010750951452653715,
+          0.27048950434582286,
+          0.4660880625876255
+        ]
+      },
+      "parameters": "orange_luminance_plus_100",
+      "expected_linear": [
+        -0.01075093514586331,
+        0.2704895033819368,
+        0.4660879815362714
+      ]
+    },
+    {
+      "name": "wheel_c120_h225__purple_luminance_minus_100",
+      "input": {
+        "kind": "linear",
+        "rgb": [
+          -0.010750951452653715,
+          0.27048950434582286,
+          0.4660880625876255
+        ]
+      },
+      "parameters": "purple_luminance_minus_100",
+      "expected_linear": [
+        -0.01075093514586331,
+        0.2704895033819368,
+        0.4660879815362714
+      ]
+    },
+    {
+      "name": "wheel_c120_h225__orange_combined",
+      "input": {
+        "kind": "linear",
+        "rgb": [
+          -0.010750951452653715,
+          0.27048950434582286,
+          0.4660880625876255
+        ]
+      },
+      "parameters": "orange_combined",
+      "expected_linear": [
+        -0.01075093514586331,
+        0.2704895033819368,
+        0.4660879815362714
+      ]
+    },
+    {
+      "name": "wheel_c120_h225__all_ranges",
+      "input": {
+        "kind": "linear",
+        "rgb": [
+          -0.010750951452653715,
+          0.27048950434582286,
+          0.4660880625876255
+        ]
+      },
+      "parameters": "all_ranges",
+      "expected_linear": [
+        0.12533588973881551,
+        0.32563257520717,
+        0.47315897351884706
+      ]
+    },
+    {
+      "name": "wheel_c120_h270__neutral",
+      "input": {
+        "kind": "linear",
+        "rgb": [
+          0.1286114997675886,
+          0.19868521511895423,
+          0.5762125428930336
+        ]
+      },
+      "parameters": "neutral",
+      "expected_linear": [
+        0.12861151194587014,
+        0.1986852161041573,
+        0.576212455013333
+      ]
+    },
+    {
+      "name": "wheel_c120_h270__red_hue_plus_100",
+      "input": {
+        "kind": "linear",
+        "rgb": [
+          0.1286114997675886,
+          0.19868521511895423,
+          0.5762125428930336
+        ]
+      },
+      "parameters": "red_hue_plus_100",
+      "expected_linear": [
+        0.12861151194587014,
+        0.1986852161041573,
+        0.576212455013333
+      ]
+    },
+    {
+      "name": "wheel_c120_h270__aqua_hue_minus_100",
+      "input": {
+        "kind": "linear",
+        "rgb": [
+          0.1286114997675886,
+          0.19868521511895423,
+          0.5762125428930336
+        ]
+      },
+      "parameters": "aqua_hue_minus_100",
+      "expected_linear": [
+        0.12861151194587014,
+        0.1986852161041573,
+        0.576212455013333
+      ]
+    },
+    {
+      "name": "wheel_c120_h270__blue_saturation_minus_100",
+      "input": {
+        "kind": "linear",
+        "rgb": [
+          0.1286114997675886,
+          0.19868521511895423,
+          0.5762125428930336
+        ]
+      },
+      "parameters": "blue_saturation_minus_100",
+      "expected_linear": [
+        0.20641309182588385,
+        0.2158503812115283,
+        0.24316176517074595
+      ]
+    },
+    {
+      "name": "wheel_c120_h270__green_saturation_plus_100",
+      "input": {
+        "kind": "linear",
+        "rgb": [
+          0.1286114997675886,
+          0.19868521511895423,
+          0.5762125428930336
+        ]
+      },
+      "parameters": "green_saturation_plus_100",
+      "expected_linear": [
+        0.12861151194587014,
+        0.1986852161041573,
+        0.576212455013333
+      ]
+    },
+    {
+      "name": "wheel_c120_h270__orange_luminance_plus_100",
+      "input": {
+        "kind": "linear",
+        "rgb": [
+          0.1286114997675886,
+          0.19868521511895423,
+          0.5762125428930336
+        ]
+      },
+      "parameters": "orange_luminance_plus_100",
+      "expected_linear": [
+        0.12861151194587014,
+        0.1986852161041573,
+        0.576212455013333
+      ]
+    },
+    {
+      "name": "wheel_c120_h270__purple_luminance_minus_100",
+      "input": {
+        "kind": "linear",
+        "rgb": [
+          0.1286114997675886,
+          0.19868521511895423,
+          0.5762125428930336
+        ]
+      },
+      "parameters": "purple_luminance_minus_100",
+      "expected_linear": [
+        0.11368241013050931,
+        0.17792817492768162,
+        0.5336614401005574
+      ]
+    },
+    {
+      "name": "wheel_c120_h270__orange_combined",
+      "input": {
+        "kind": "linear",
+        "rgb": [
+          0.1286114997675886,
+          0.19868521511895423,
+          0.5762125428930336
+        ]
+      },
+      "parameters": "orange_combined",
+      "expected_linear": [
+        0.12861151194587014,
+        0.1986852161041573,
+        0.576212455013333
+      ]
+    },
+    {
+      "name": "wheel_c120_h270__all_ranges",
+      "input": {
+        "kind": "linear",
+        "rgb": [
+          0.1286114997675886,
+          0.19868521511895423,
+          0.5762125428930336
+        ]
+      },
+      "parameters": "all_ranges",
+      "expected_linear": [
+        0.23106830830060676,
+        0.27690185442055004,
+        0.5208472203517958
+      ]
+    },
+    {
+      "name": "wheel_c120_h315__neutral",
+      "input": {
+        "kind": "linear",
+        "rgb": [
+          0.327763404591378,
+          0.14020771605444832,
+          0.4404861338865318
+        ]
+      },
+      "parameters": "neutral",
+      "expected_linear": [
+        0.32776341321006636,
+        0.14020771612760902,
+        0.44048605860776824
+      ]
+    },
+    {
+      "name": "wheel_c120_h315__red_hue_plus_100",
+      "input": {
+        "kind": "linear",
+        "rgb": [
+          0.327763404591378,
+          0.14020771605444832,
+          0.4404861338865318
+        ]
+      },
+      "parameters": "red_hue_plus_100",
+      "expected_linear": [
+        0.32776341321006636,
+        0.14020771612760902,
+        0.44048605860776824
+      ]
+    },
+    {
+      "name": "wheel_c120_h315__aqua_hue_minus_100",
+      "input": {
+        "kind": "linear",
+        "rgb": [
+          0.327763404591378,
+          0.14020771605444832,
+          0.4404861338865318
+        ]
+      },
+      "parameters": "aqua_hue_minus_100",
+      "expected_linear": [
+        0.32776341321006636,
+        0.14020771612760902,
+        0.44048605860776824
+      ]
+    },
+    {
+      "name": "wheel_c120_h315__blue_saturation_minus_100",
+      "input": {
+        "kind": "linear",
+        "rgb": [
+          0.327763404591378,
+          0.14020771605444832,
+          0.4404861338865318
+        ]
+      },
+      "parameters": "blue_saturation_minus_100",
+      "expected_linear": [
+        0.32776341321006636,
+        0.14020771612760902,
+        0.44048605860776824
+      ]
+    },
+    {
+      "name": "wheel_c120_h315__green_saturation_plus_100",
+      "input": {
+        "kind": "linear",
+        "rgb": [
+          0.327763404591378,
+          0.14020771605444832,
+          0.4404861338865318
+        ]
+      },
+      "parameters": "green_saturation_plus_100",
+      "expected_linear": [
+        0.32776341321006636,
+        0.14020771612760902,
+        0.44048605860776824
+      ]
+    },
+    {
+      "name": "wheel_c120_h315__orange_luminance_plus_100",
+      "input": {
+        "kind": "linear",
+        "rgb": [
+          0.327763404591378,
+          0.14020771605444832,
+          0.4404861338865318
+        ]
+      },
+      "parameters": "orange_luminance_plus_100",
+      "expected_linear": [
+        0.32776341321006636,
+        0.14020771612760902,
+        0.44048605860776824
+      ]
+    },
+    {
+      "name": "wheel_c120_h315__purple_luminance_minus_100",
+      "input": {
+        "kind": "linear",
+        "rgb": [
+          0.327763404591378,
+          0.14020771605444832,
+          0.4404861338865318
+        ]
+      },
+      "parameters": "purple_luminance_minus_100",
+      "expected_linear": [
+        0.23289113547284773,
+        0.08686287705893295,
+        0.32288514572466226
+      ]
+    },
+    {
+      "name": "wheel_c120_h315__orange_combined",
+      "input": {
+        "kind": "linear",
+        "rgb": [
+          0.327763404591378,
+          0.14020771605444832,
+          0.4404861338865318
+        ]
+      },
+      "parameters": "orange_combined",
+      "expected_linear": [
+        0.32776341321006636,
+        0.14020771612760902,
+        0.44048605860776824
+      ]
+    },
+    {
+      "name": "wheel_c120_h315__all_ranges",
+      "input": {
+        "kind": "linear",
+        "rgb": [
+          0.327763404591378,
+          0.14020771605444832,
+          0.4404861338865318
+        ]
+      },
+      "parameters": "all_ranges",
+      "expected_linear": [
+        0.3874905368446138,
+        0.23055219683859615,
+        0.41844401065664383
+      ]
+    },
+    {
+      "name": "wheel_c200_h000__neutral",
+      "input": {
+        "kind": "linear",
+        "rgb": [
+          0.6816089277638857,
+          0.041398453306344576,
+          0.1990412514757562
+        ]
+      },
+      "parameters": "neutral",
+      "expected_linear": [
+        0.6816089290386848,
+        0.041398452006867065,
+        0.19904120044401075
+      ]
+    },
+    {
+      "name": "wheel_c200_h000__red_hue_plus_100",
+      "input": {
+        "kind": "linear",
+        "rgb": [
+          0.6816089277638857,
+          0.041398453306344576,
+          0.1990412514757562
+        ]
+      },
+      "parameters": "red_hue_plus_100",
+      "expected_linear": [
+        0.7037162934291118,
+        0.0398697671756368,
+        0.1532023844865021
+      ]
+    },
+    {
+      "name": "wheel_c200_h000__aqua_hue_minus_100",
+      "input": {
+        "kind": "linear",
+        "rgb": [
+          0.6816089277638857,
+          0.041398453306344576,
+          0.1990412514757562
+        ]
+      },
+      "parameters": "aqua_hue_minus_100",
+      "expected_linear": [
+        0.6816089290386848,
+        0.041398452006867065,
+        0.19904120044401075
+      ]
+    },
+    {
+      "name": "wheel_c200_h000__blue_saturation_minus_100",
+      "input": {
+        "kind": "linear",
+        "rgb": [
+          0.6816089277638857,
+          0.041398453306344576,
+          0.1990412514757562
+        ]
+      },
+      "parameters": "blue_saturation_minus_100",
+      "expected_linear": [
+        0.6816089290386848,
+        0.041398452006867065,
+        0.19904120044401075
+      ]
+    },
+    {
+      "name": "wheel_c200_h000__green_saturation_plus_100",
+      "input": {
+        "kind": "linear",
+        "rgb": [
+          0.6816089277638857,
+          0.041398453306344576,
+          0.1990412514757562
+        ]
+      },
+      "parameters": "green_saturation_plus_100",
+      "expected_linear": [
+        0.6816089290386848,
+        0.041398452006867065,
+        0.19904120044401075
+      ]
+    },
+    {
+      "name": "wheel_c200_h000__orange_luminance_plus_100",
+      "input": {
+        "kind": "linear",
+        "rgb": [
+          0.6816089277638857,
+          0.041398453306344576,
+          0.1990412514757562
+        ]
+      },
+      "parameters": "orange_luminance_plus_100",
+      "expected_linear": [
+        0.6816089290386848,
+        0.041398452006867065,
+        0.19904120044401075
+      ]
+    },
+    {
+      "name": "wheel_c200_h000__purple_luminance_minus_100",
+      "input": {
+        "kind": "linear",
+        "rgb": [
+          0.6816089277638857,
+          0.041398453306344576,
+          0.1990412514757562
+        ]
+      },
+      "parameters": "purple_luminance_minus_100",
+      "expected_linear": [
+        0.6816089290386848,
+        0.041398452006867065,
+        0.19904120044401075
+      ]
+    },
+    {
+      "name": "wheel_c200_h000__orange_combined",
+      "input": {
+        "kind": "linear",
+        "rgb": [
+          0.6816089277638857,
+          0.041398453306344576,
+          0.1990412514757562
+        ]
+      },
+      "parameters": "orange_combined",
+      "expected_linear": [
+        0.6816089290386848,
+        0.041398452006867065,
+        0.19904120044401075
+      ]
+    },
+    {
+      "name": "wheel_c200_h000__all_ranges",
+      "input": {
+        "kind": "linear",
+        "rgb": [
+          0.6816089277638857,
+          0.041398453306344576,
+          0.1990412514757562
+        ]
+      },
+      "parameters": "all_ranges",
+      "expected_linear": [
+        0.6227619455068921,
+        0.16524632635143982,
+        0.24679106421568794
+      ]
+    },
+    {
+      "name": "wheel_c200_h045__neutral",
+      "input": {
+        "kind": "linear",
+        "rgb": [
+          0.7024333846556127,
+          0.06570544121157945,
+          -0.022625786605707007
+        ]
+      },
+      "parameters": "neutral",
+      "expected_linear": [
+        0.702433391890167,
+        0.06570543462662613,
+        -0.02262581086148767
+      ]
+    },
+    {
+      "name": "wheel_c200_h045__red_hue_plus_100",
+      "input": {
+        "kind": "linear",
+        "rgb": [
+          0.7024333846556127,
+          0.06570544121157945,
+          -0.022625786605707007
+        ]
+      },
+      "parameters": "red_hue_plus_100",
+      "expected_linear": [
+        0.6919240779599511,
+        0.07063951031922133,
+        -0.029978071126933806
+      ]
+    },
+    {
+      "name": "wheel_c200_h045__aqua_hue_minus_100",
+      "input": {
+        "kind": "linear",
+        "rgb": [
+          0.7024333846556127,
+          0.06570544121157945,
+          -0.022625786605707007
+        ]
+      },
+      "parameters": "aqua_hue_minus_100",
+      "expected_linear": [
+        0.702433391890167,
+        0.06570543462662613,
+        -0.02262581086148767
+      ]
+    },
+    {
+      "name": "wheel_c200_h045__blue_saturation_minus_100",
+      "input": {
+        "kind": "linear",
+        "rgb": [
+          0.7024333846556127,
+          0.06570544121157945,
+          -0.022625786605707007
+        ]
+      },
+      "parameters": "blue_saturation_minus_100",
+      "expected_linear": [
+        0.702433391890167,
+        0.06570543462662613,
+        -0.02262581086148767
+      ]
+    },
+    {
+      "name": "wheel_c200_h045__green_saturation_plus_100",
+      "input": {
+        "kind": "linear",
+        "rgb": [
+          0.7024333846556127,
+          0.06570544121157945,
+          -0.022625786605707007
+        ]
+      },
+      "parameters": "green_saturation_plus_100",
+      "expected_linear": [
+        0.702433391890167,
+        0.06570543462662613,
+        -0.02262581086148767
+      ]
+    },
+    {
+      "name": "wheel_c200_h045__orange_luminance_plus_100",
+      "input": {
+        "kind": "linear",
+        "rgb": [
+          0.7024333846556127,
+          0.06570544121157945,
+          -0.022625786605707007
+        ]
+      },
+      "parameters": "orange_luminance_plus_100",
+      "expected_linear": [
+        1.1163910150404697,
+        0.18380266494198694,
+        0.014272820530432162
+      ]
+    },
+    {
+      "name": "wheel_c200_h045__purple_luminance_minus_100",
+      "input": {
+        "kind": "linear",
+        "rgb": [
+          0.7024333846556127,
+          0.06570544121157945,
+          -0.022625786605707007
+        ]
+      },
+      "parameters": "purple_luminance_minus_100",
+      "expected_linear": [
+        0.702433391890167,
+        0.06570543462662613,
+        -0.02262581086148767
+      ]
+    },
+    {
+      "name": "wheel_c200_h045__orange_combined",
+      "input": {
+        "kind": "linear",
+        "rgb": [
+          0.7024333846556127,
+          0.06570544121157945,
+          -0.022625786605707007
+        ]
+      },
+      "parameters": "orange_combined",
+      "expected_linear": [
+        0.6875850870829961,
+        -0.04137072852329184,
+        -0.04775854401171971
+      ]
+    },
+    {
+      "name": "wheel_c200_h045__all_ranges",
+      "input": {
+        "kind": "linear",
+        "rgb": [
+          0.7024333846556127,
+          0.06570544121157945,
+          -0.022625786605707007
+        ]
+      },
+      "parameters": "all_ranges",
+      "expected_linear": [
+        0.6031047284510274,
+        0.19856180401313092,
+        0.06718576095606765
+      ]
+    },
+    {
+      "name": "wheel_c200_h090__neutral",
+      "input": {
+        "kind": "linear",
+        "rgb": [
+          0.42401236511481516,
+          0.17739111766213497,
+          -0.07542831207687296
+        ]
+      },
+      "parameters": "neutral",
+      "expected_linear": [
+        0.4240123831547197,
+        0.17739110722535287,
+        -0.07542832930542082
+      ]
+    },
+    {
+      "name": "wheel_c200_h090__red_hue_plus_100",
+      "input": {
+        "kind": "linear",
+        "rgb": [
+          0.42401236511481516,
+          0.17739111766213497,
+          -0.07542831207687296
+        ]
+      },
+      "parameters": "red_hue_plus_100",
+      "expected_linear": [
+        0.4240123831547197,
+        0.17739110722535287,
+        -0.07542832930542082
+      ]
+    },
+    {
+      "name": "wheel_c200_h090__aqua_hue_minus_100",
+      "input": {
+        "kind": "linear",
+        "rgb": [
+          0.42401236511481516,
+          0.17739111766213497,
+          -0.07542831207687296
+        ]
+      },
+      "parameters": "aqua_hue_minus_100",
+      "expected_linear": [
+        0.4240123831547197,
+        0.17739110722535287,
+        -0.07542832930542082
+      ]
+    },
+    {
+      "name": "wheel_c200_h090__blue_saturation_minus_100",
+      "input": {
+        "kind": "linear",
+        "rgb": [
+          0.42401236511481516,
+          0.17739111766213497,
+          -0.07542831207687296
+        ]
+      },
+      "parameters": "blue_saturation_minus_100",
+      "expected_linear": [
+        0.4240123831547197,
+        0.17739110722535287,
+        -0.07542832930542082
+      ]
+    },
+    {
+      "name": "wheel_c200_h090__green_saturation_plus_100",
+      "input": {
+        "kind": "linear",
+        "rgb": [
+          0.42401236511481516,
+          0.17739111766213497,
+          -0.07542831207687296
+        ]
+      },
+      "parameters": "green_saturation_plus_100",
+      "expected_linear": [
+        0.4240123831547197,
+        0.17739110722535287,
+        -0.07542832930542082
+      ]
+    },
+    {
+      "name": "wheel_c200_h090__orange_luminance_plus_100",
+      "input": {
+        "kind": "linear",
+        "rgb": [
+          0.42401236511481516,
+          0.17739111766213497,
+          -0.07542831207687296
+        ]
+      },
+      "parameters": "orange_luminance_plus_100",
+      "expected_linear": [
+        0.5250461717112861,
+        0.23802822963793224,
+        -0.08113307648007177
+      ]
+    },
+    {
+      "name": "wheel_c200_h090__purple_luminance_minus_100",
+      "input": {
+        "kind": "linear",
+        "rgb": [
+          0.42401236511481516,
+          0.17739111766213497,
+          -0.07542831207687296
+        ]
+      },
+      "parameters": "purple_luminance_minus_100",
+      "expected_linear": [
+        0.4240123831547197,
+        0.17739110722535287,
+        -0.07542832930542082
+      ]
+    },
+    {
+      "name": "wheel_c200_h090__orange_combined",
+      "input": {
+        "kind": "linear",
+        "rgb": [
+          0.42401236511481516,
+          0.17739111766213497,
+          -0.07542831207687296
+        ]
+      },
+      "parameters": "orange_combined",
+      "expected_linear": [
+        0.41965595164954966,
+        0.1345952191576806,
+        -0.08529010872523651
+      ]
+    },
+    {
+      "name": "wheel_c200_h090__all_ranges",
+      "input": {
+        "kind": "linear",
+        "rgb": [
+          0.42401236511481516,
+          0.17739111766213497,
+          -0.07542831207687296
+        ]
+      },
+      "parameters": "all_ranges",
+      "expected_linear": [
+        0.3994382188579722,
+        0.28243659946716604,
+        0.024458078213905582
+      ]
+    },
+    {
+      "name": "wheel_c200_h135__neutral",
+      "input": {
+        "kind": "linear",
+        "rgb": [
+          0.05550120368711938,
+          0.3128826286295398,
+          -0.0214809407468233
+        ]
+      },
+      "parameters": "neutral",
+      "expected_linear": [
+        0.05550122755631382,
+        0.31288261846214316,
+        -0.02148097027645346
+      ]
+    },
+    {
+      "name": "wheel_c200_h135__red_hue_plus_100",
+      "input": {
+        "kind": "linear",
+        "rgb": [
+          0.05550120368711938,
+          0.3128826286295398,
+          -0.0214809407468233
+        ]
+      },
+      "parameters": "red_hue_plus_100",
+      "expected_linear": [
+        0.05550122755631382,
+        0.31288261846214316,
+        -0.02148097027645346
+      ]
+    },
+    {
+      "name": "wheel_c200_h135__aqua_hue_minus_100",
+      "input": {
+        "kind": "linear",
+        "rgb": [
+          0.05550120368711938,
+          0.3128826286295398,
+          -0.0214809407468233
+        ]
+      },
+      "parameters": "aqua_hue_minus_100",
+      "expected_linear": [
+        0.05550122755631382,
+        0.31288261846214316,
+        -0.02148097027645346
+      ]
+    },
+    {
+      "name": "wheel_c200_h135__blue_saturation_minus_100",
+      "input": {
+        "kind": "linear",
+        "rgb": [
+          0.05550120368711938,
+          0.3128826286295398,
+          -0.0214809407468233
+        ]
+      },
+      "parameters": "blue_saturation_minus_100",
+      "expected_linear": [
+        0.05550122755631382,
+        0.31288261846214316,
+        -0.02148097027645346
+      ]
+    },
+    {
+      "name": "wheel_c200_h135__green_saturation_plus_100",
+      "input": {
+        "kind": "linear",
+        "rgb": [
+          0.05550120368711938,
+          0.3128826286295398,
+          -0.0214809407468233
+        ]
+      },
+      "parameters": "green_saturation_plus_100",
+      "expected_linear": [
+        -0.06352608035710472,
+        0.37442947114959624,
+        -0.12328142337555413
+      ]
+    },
+    {
+      "name": "wheel_c200_h135__orange_luminance_plus_100",
+      "input": {
+        "kind": "linear",
+        "rgb": [
+          0.05550120368711938,
+          0.3128826286295398,
+          -0.0214809407468233
+        ]
+      },
+      "parameters": "orange_luminance_plus_100",
+      "expected_linear": [
+        0.05550122755631382,
+        0.31288261846214316,
+        -0.02148097027645346
+      ]
+    },
+    {
+      "name": "wheel_c200_h135__purple_luminance_minus_100",
+      "input": {
+        "kind": "linear",
+        "rgb": [
+          0.05550120368711938,
+          0.3128826286295398,
+          -0.0214809407468233
+        ]
+      },
+      "parameters": "purple_luminance_minus_100",
+      "expected_linear": [
+        0.05550122755631382,
+        0.31288261846214316,
+        -0.02148097027645346
+      ]
+    },
+    {
+      "name": "wheel_c200_h135__orange_combined",
+      "input": {
+        "kind": "linear",
+        "rgb": [
+          0.05550120368711938,
+          0.3128826286295398,
+          -0.0214809407468233
+        ]
+      },
+      "parameters": "orange_combined",
+      "expected_linear": [
+        0.05550122755631382,
+        0.31288261846214316,
+        -0.02148097027645346
+      ]
+    },
+    {
+      "name": "wheel_c200_h135__all_ranges",
+      "input": {
+        "kind": "linear",
+        "rgb": [
+          0.05550120368711938,
+          0.3128826286295398,
+          -0.0214809407468233
+        ]
+      },
+      "parameters": "all_ranges",
+      "expected_linear": [
+        0.13468673573145323,
+        0.37354999012730244,
+        0.11071363939828338
+      ]
+    },
+    {
+      "name": "wheel_c200_h180__neutral",
+      "input": {
+        "kind": "linear",
+        "rgb": [
+          -0.16243415263906022,
+          0.36570352976292503,
+          0.23370410916209375
+        ]
+      },
+      "parameters": "neutral",
+      "expected_linear": [
+        -0.16243413093573145,
+        0.36570352493065195,
+        0.23370404695680483
+      ]
+    },
+    {
+      "name": "wheel_c200_h180__red_hue_plus_100",
+      "input": {
+        "kind": "linear",
+        "rgb": [
+          -0.16243415263906022,
+          0.36570352976292503,
+          0.23370410916209375
+        ]
+      },
+      "parameters": "red_hue_plus_100",
+      "expected_linear": [
+        -0.16243413093573145,
+        0.36570352493065195,
+        0.23370404695680483
+      ]
+    },
+    {
+      "name": "wheel_c200_h180__aqua_hue_minus_100",
+      "input": {
+        "kind": "linear",
+        "rgb": [
+          -0.16243415263906022,
+          0.36570352976292503,
+          0.23370410916209375
+        ]
+      },
+      "parameters": "aqua_hue_minus_100",
+      "expected_linear": [
+        -0.08794666353099326,
+        0.3565720178627704,
+        0.07965224111923602
+      ]
+    },
+    {
+      "name": "wheel_c200_h180__blue_saturation_minus_100",
+      "input": {
+        "kind": "linear",
+        "rgb": [
+          -0.16243415263906022,
+          0.36570352976292503,
+          0.23370410916209375
+        ]
+      },
+      "parameters": "blue_saturation_minus_100",
+      "expected_linear": [
+        -0.16243413093573145,
+        0.36570352493065195,
+        0.23370404695680483
+      ]
+    },
+    {
+      "name": "wheel_c200_h180__green_saturation_plus_100",
+      "input": {
+        "kind": "linear",
+        "rgb": [
+          -0.16243415263906022,
+          0.36570352976292503,
+          0.23370410916209375
+        ]
+      },
+      "parameters": "green_saturation_plus_100",
+      "expected_linear": [
+        -0.22366840619098635,
+        0.3908970547159958,
+        0.23705188918675493
+      ]
+    },
+    {
+      "name": "wheel_c200_h180__orange_luminance_plus_100",
+      "input": {
+        "kind": "linear",
+        "rgb": [
+          -0.16243415263906022,
+          0.36570352976292503,
+          0.23370410916209375
+        ]
+      },
+      "parameters": "orange_luminance_plus_100",
+      "expected_linear": [
+        -0.16243413093573145,
+        0.36570352493065195,
+        0.23370404695680483
+      ]
+    },
+    {
+      "name": "wheel_c200_h180__purple_luminance_minus_100",
+      "input": {
+        "kind": "linear",
+        "rgb": [
+          -0.16243415263906022,
+          0.36570352976292503,
+          0.23370410916209375
+        ]
+      },
+      "parameters": "purple_luminance_minus_100",
+      "expected_linear": [
+        -0.16243413093573145,
+        0.36570352493065195,
+        0.23370404695680483
+      ]
+    },
+    {
+      "name": "wheel_c200_h180__orange_combined",
+      "input": {
+        "kind": "linear",
+        "rgb": [
+          -0.16243415263906022,
+          0.36570352976292503,
+          0.23370410916209375
+        ]
+      },
+      "parameters": "orange_combined",
+      "expected_linear": [
+        -0.16243413093573145,
+        0.36570352493065195,
+        0.23370404695680483
+      ]
+    },
+    {
+      "name": "wheel_c200_h180__all_ranges",
+      "input": {
+        "kind": "linear",
+        "rgb": [
+          -0.16243415263906022,
+          0.36570352976292503,
+          0.23370410916209375
+        ]
+      },
+      "parameters": "all_ranges",
+      "expected_linear": [
+        -0.012391961392031817,
+        0.3980751805413889,
+        0.3527178478827706
+      ]
+    },
+    {
+      "name": "wheel_c200_h225__neutral",
+      "input": {
+        "kind": "linear",
+        "rgb": [
+          -0.1355654101218205,
+          0.2905992413597275,
+          0.6875307945091539
+        ]
+      },
+      "parameters": "neutral",
+      "expected_linear": [
+        -0.1355653941871482,
+        0.29059924330794673,
+        0.6875306949605867
+      ]
+    },
+    {
+      "name": "wheel_c200_h225__red_hue_plus_100",
+      "input": {
+        "kind": "linear",
+        "rgb": [
+          -0.1355654101218205,
+          0.2905992413597275,
+          0.6875307945091539
+        ]
+      },
+      "parameters": "red_hue_plus_100",
+      "expected_linear": [
+        -0.1355653941871482,
+        0.29059924330794673,
+        0.6875306949605867
+      ]
+    },
+    {
+      "name": "wheel_c200_h225__aqua_hue_minus_100",
+      "input": {
+        "kind": "linear",
+        "rgb": [
+          -0.1355654101218205,
+          0.2905992413597275,
+          0.6875307945091539
+        ]
+      },
+      "parameters": "aqua_hue_minus_100",
+      "expected_linear": [
+        -0.1718296404825133,
+        0.32858133179225624,
+        0.5259972063558809
+      ]
+    },
+    {
+      "name": "wheel_c200_h225__blue_saturation_minus_100",
+      "input": {
+        "kind": "linear",
+        "rgb": [
+          -0.1355654101218205,
+          0.2905992413597275,
+          0.6875307945091539
+        ]
+      },
+      "parameters": "blue_saturation_minus_100",
+      "expected_linear": [
+        -0.01052434934301584,
+        0.2704446641589938,
+        0.465755867728955
+      ]
+    },
+    {
+      "name": "wheel_c200_h225__green_saturation_plus_100",
+      "input": {
+        "kind": "linear",
+        "rgb": [
+          -0.1355654101218205,
+          0.2905992413597275,
+          0.6875307945091539
+        ]
+      },
+      "parameters": "green_saturation_plus_100",
+      "expected_linear": [
+        -0.1355653941871482,
+        0.29059924330794673,
+        0.6875306949605867
+      ]
+    },
+    {
+      "name": "wheel_c200_h225__orange_luminance_plus_100",
+      "input": {
+        "kind": "linear",
+        "rgb": [
+          -0.1355654101218205,
+          0.2905992413597275,
+          0.6875307945091539
+        ]
+      },
+      "parameters": "orange_luminance_plus_100",
+      "expected_linear": [
+        -0.1355653941871482,
+        0.29059924330794673,
+        0.6875306949605867
+      ]
+    },
+    {
+      "name": "wheel_c200_h225__purple_luminance_minus_100",
+      "input": {
+        "kind": "linear",
+        "rgb": [
+          -0.1355654101218205,
+          0.2905992413597275,
+          0.6875307945091539
+        ]
+      },
+      "parameters": "purple_luminance_minus_100",
+      "expected_linear": [
+        -0.1355653941871482,
+        0.29059924330794673,
+        0.6875306949605867
+      ]
+    },
+    {
+      "name": "wheel_c200_h225__orange_combined",
+      "input": {
+        "kind": "linear",
+        "rgb": [
+          -0.1355654101218205,
+          0.2905992413597275,
+          0.6875307945091539
+        ]
+      },
+      "parameters": "orange_combined",
+      "expected_linear": [
+        -0.1355653941871482,
+        0.29059924330794673,
+        0.6875306949605867
+      ]
+    },
+    {
+      "name": "wheel_c200_h225__all_ranges",
+      "input": {
+        "kind": "linear",
+        "rgb": [
+          -0.1355654101218205,
+          0.2905992413597275,
+          0.6875307945091539
+        ]
+      },
+      "parameters": "all_ranges",
+      "expected_linear": [
+        0.02739086695761804,
+        0.3438123441024624,
+        0.6210420726623911
+      ]
+    },
+    {
+      "name": "wheel_c200_h270__neutral",
+      "input": {
+        "kind": "linear",
+        "rgb": [
+          0.08886020893420826,
+          0.16565570612606448,
+          0.9171265548864358
+        ]
+      },
+      "parameters": "neutral",
+      "expected_linear": [
+        0.08886021887475809,
+        0.16565571113199212,
+        0.9171264433018806
+      ]
+    },
+    {
+      "name": "wheel_c200_h270__red_hue_plus_100",
+      "input": {
+        "kind": "linear",
+        "rgb": [
+          0.08886020893420826,
+          0.16565570612606448,
+          0.9171265548864358
+        ]
+      },
+      "parameters": "red_hue_plus_100",
+      "expected_linear": [
+        0.08886021887475809,
+        0.16565571113199212,
+        0.9171264433018806
+      ]
+    },
+    {
+      "name": "wheel_c200_h270__aqua_hue_minus_100",
+      "input": {
+        "kind": "linear",
+        "rgb": [
+          0.08886020893420826,
+          0.16565570612606448,
+          0.9171265548864358
+        ]
+      },
+      "parameters": "aqua_hue_minus_100",
+      "expected_linear": [
+        0.08886021887475809,
+        0.16565571113199212,
+        0.9171264433018806
+      ]
+    },
+    {
+      "name": "wheel_c200_h270__blue_saturation_minus_100",
+      "input": {
+        "kind": "linear",
+        "rgb": [
+          0.08886020893420826,
+          0.16565570612606448,
+          0.9171265548864358
+        ]
+      },
+      "parameters": "blue_saturation_minus_100",
+      "expected_linear": [
+        0.20016852313824962,
+        0.21558832237694336,
+        0.262018737556441
+      ]
+    },
+    {
+      "name": "wheel_c200_h270__green_saturation_plus_100",
+      "input": {
+        "kind": "linear",
+        "rgb": [
+          0.08886020893420826,
+          0.16565570612606448,
+          0.9171265548864358
+        ]
+      },
+      "parameters": "green_saturation_plus_100",
+      "expected_linear": [
+        0.08886021887475809,
+        0.16565571113199212,
+        0.9171264433018806
+      ]
+    },
+    {
+      "name": "wheel_c200_h270__orange_luminance_plus_100",
+      "input": {
+        "kind": "linear",
+        "rgb": [
+          0.08886020893420826,
+          0.16565570612606448,
+          0.9171265548864358
+        ]
+      },
+      "parameters": "orange_luminance_plus_100",
+      "expected_linear": [
+        0.08886021887475809,
+        0.16565571113199212,
+        0.9171264433018806
+      ]
+    },
+    {
+      "name": "wheel_c200_h270__purple_luminance_minus_100",
+      "input": {
+        "kind": "linear",
+        "rgb": [
+          0.08886020893420826,
+          0.16565570612606448,
+          0.9171265548864358
+        ]
+      },
+      "parameters": "purple_luminance_minus_100",
+      "expected_linear": [
+        0.07763177114242725,
+        0.1458696401233869,
+        0.8576239172351346
+      ]
+    },
+    {
+      "name": "wheel_c200_h270__orange_combined",
+      "input": {
+        "kind": "linear",
+        "rgb": [
+          0.08886020893420826,
+          0.16565570612606448,
+          0.9171265548864358
+        ]
+      },
+      "parameters": "orange_combined",
+      "expected_linear": [
+        0.08886021887475809,
+        0.16565571113199212,
+        0.9171264433018806
+      ]
+    },
+    {
+      "name": "wheel_c200_h270__all_ranges",
+      "input": {
+        "kind": "linear",
+        "rgb": [
+          0.08886020893420826,
+          0.16565570612606448,
+          0.9171265548864358
+        ]
+      },
+      "parameters": "all_ranges",
+      "expected_linear": [
+        0.19949443928432362,
+        0.26187838027786825,
+        0.7120941145048556
+      ]
+    },
+    {
+      "name": "wheel_c200_h315__neutral",
+      "input": {
+        "kind": "linear",
+        "rgb": [
+          0.40967817095293746,
+          0.08096149565662233,
+          0.6310195362907891
+        ]
+      },
+      "parameters": "neutral",
+      "expected_linear": [
+        0.4096781748730993,
+        0.08096149889814738,
+        0.6310194475746299
+      ]
+    },
+    {
+      "name": "wheel_c200_h315__red_hue_plus_100",
+      "input": {
+        "kind": "linear",
+        "rgb": [
+          0.40967817095293746,
+          0.08096149565662233,
+          0.6310195362907891
+        ]
+      },
+      "parameters": "red_hue_plus_100",
+      "expected_linear": [
+        0.4096781748730993,
+        0.08096149889814738,
+        0.6310194475746299
+      ]
+    },
+    {
+      "name": "wheel_c200_h315__aqua_hue_minus_100",
+      "input": {
+        "kind": "linear",
+        "rgb": [
+          0.40967817095293746,
+          0.08096149565662233,
+          0.6310195362907891
+        ]
+      },
+      "parameters": "aqua_hue_minus_100",
+      "expected_linear": [
+        0.4096781748730993,
+        0.08096149889814738,
+        0.6310194475746299
+      ]
+    },
+    {
+      "name": "wheel_c200_h315__blue_saturation_minus_100",
+      "input": {
+        "kind": "linear",
+        "rgb": [
+          0.40967817095293746,
+          0.08096149565662233,
+          0.6310195362907891
+        ]
+      },
+      "parameters": "blue_saturation_minus_100",
+      "expected_linear": [
+        0.4096781748730993,
+        0.08096149889814738,
+        0.6310194475746299
+      ]
+    },
+    {
+      "name": "wheel_c200_h315__green_saturation_plus_100",
+      "input": {
+        "kind": "linear",
+        "rgb": [
+          0.40967817095293746,
+          0.08096149565662233,
+          0.6310195362907891
+        ]
+      },
+      "parameters": "green_saturation_plus_100",
+      "expected_linear": [
+        0.4096781748730993,
+        0.08096149889814738,
+        0.6310194475746299
+      ]
+    },
+    {
+      "name": "wheel_c200_h315__orange_luminance_plus_100",
+      "input": {
+        "kind": "linear",
+        "rgb": [
+          0.40967817095293746,
+          0.08096149565662233,
+          0.6310195362907891
+        ]
+      },
+      "parameters": "orange_luminance_plus_100",
+      "expected_linear": [
+        0.4096781748730993,
+        0.08096149889814738,
+        0.6310194475746299
+      ]
+    },
+    {
+      "name": "wheel_c200_h315__purple_luminance_minus_100",
+      "input": {
+        "kind": "linear",
+        "rgb": [
+          0.40967817095293746,
+          0.08096149565662233,
+          0.6310195362907891
+        ]
+      },
+      "parameters": "purple_luminance_minus_100",
+      "expected_linear": [
+        0.29735992588540644,
+        0.03959958578761594,
+        0.4772910020742914
+      ]
+    },
+    {
+      "name": "wheel_c200_h315__orange_combined",
+      "input": {
+        "kind": "linear",
+        "rgb": [
+          0.40967817095293746,
+          0.08096149565662233,
+          0.6310195362907891
+        ]
+      },
+      "parameters": "orange_combined",
+      "expected_linear": [
+        0.4096781748730993,
+        0.08096149889814738,
+        0.6310194475746299
+      ]
+    },
+    {
+      "name": "wheel_c200_h315__all_ranges",
+      "input": {
+        "kind": "linear",
+        "rgb": [
+          0.40967817095293746,
+          0.08096149565662233,
+          0.6310195362907891
+        ]
+      },
+      "parameters": "all_ranges",
+      "expected_linear": [
+        0.45672597435303686,
+        0.18960069621096914,
+        0.5166121890442994
+      ]
+    },
+    {
+      "name": "out_of_gamut_bright__neutral",
+      "input": {
+        "kind": "linear",
+        "rgb": [
+          1.5,
+          0.5,
+          0.2
+        ]
+      },
+      "parameters": "neutral",
+      "expected_linear": [
+        1.5000000410324714,
+        0.49999997920476447,
+        0.19999987497302696
+      ]
+    },
+    {
+      "name": "out_of_gamut_bright__red_hue_plus_100",
+      "input": {
+        "kind": "linear",
+        "rgb": [
+          1.5,
+          0.5,
+          0.2
+        ]
+      },
+      "parameters": "red_hue_plus_100",
+      "expected_linear": [
+        1.4935238702512896,
+        0.5033207937351537,
+        0.19395809007386566
+      ]
+    },
+    {
+      "name": "out_of_gamut_bright__aqua_hue_minus_100",
+      "input": {
+        "kind": "linear",
+        "rgb": [
+          1.5,
+          0.5,
+          0.2
+        ]
+      },
+      "parameters": "aqua_hue_minus_100",
+      "expected_linear": [
+        1.5000000410324714,
+        0.49999997920476447,
+        0.19999987497302696
+      ]
+    },
+    {
+      "name": "out_of_gamut_bright__blue_saturation_minus_100",
+      "input": {
+        "kind": "linear",
+        "rgb": [
+          1.5,
+          0.5,
+          0.2
+        ]
+      },
+      "parameters": "blue_saturation_minus_100",
+      "expected_linear": [
+        1.5000000410324714,
+        0.49999997920476447,
+        0.19999987497302696
+      ]
+    },
+    {
+      "name": "out_of_gamut_bright__green_saturation_plus_100",
+      "input": {
+        "kind": "linear",
+        "rgb": [
+          1.5,
+          0.5,
+          0.2
+        ]
+      },
+      "parameters": "green_saturation_plus_100",
+      "expected_linear": [
+        1.5000000410324714,
+        0.49999997920476447,
+        0.19999987497302696
+      ]
+    },
+    {
+      "name": "out_of_gamut_bright__orange_luminance_plus_100",
+      "input": {
+        "kind": "linear",
+        "rgb": [
+          1.5,
+          0.5,
+          0.2
+        ]
+      },
+      "parameters": "orange_luminance_plus_100",
+      "expected_linear": [
+        1.6984116265271583,
+        0.5969485005707516,
+        0.25726967846509163
+      ]
+    },
+    {
+      "name": "out_of_gamut_bright__purple_luminance_minus_100",
+      "input": {
+        "kind": "linear",
+        "rgb": [
+          1.5,
+          0.5,
+          0.2
+        ]
+      },
+      "parameters": "purple_luminance_minus_100",
+      "expected_linear": [
+        1.5000000410324714,
+        0.49999997920476447,
+        0.19999987497302696
+      ]
+    },
+    {
+      "name": "out_of_gamut_bright__orange_combined",
+      "input": {
+        "kind": "linear",
+        "rgb": [
+          1.5,
+          0.5,
+          0.2
+        ]
+      },
+      "parameters": "orange_combined",
+      "expected_linear": [
+        1.7718076992160368,
+        0.29522102766047037,
+        0.04586971475568452
+      ]
+    },
+    {
+      "name": "out_of_gamut_bright__all_ranges",
+      "input": {
+        "kind": "linear",
+        "rgb": [
+          1.5,
+          0.5,
+          0.2
+        ]
+      },
+      "parameters": "all_ranges",
+      "expected_linear": [
+        1.2081416720926523,
+        0.6536873720762851,
+        0.3857698038037063
+      ]
+    },
+    {
+      "name": "out_of_gamut_mixed__neutral",
+      "input": {
+        "kind": "linear",
+        "rgb": [
+          1.5,
+          -0.1,
+          0.7
+        ]
+      },
+      "parameters": "neutral",
+      "expected_linear": [
+        1.4999999834957727,
+        -0.09999999286589148,
+        0.6999998826854971
+      ]
+    },
+    {
+      "name": "out_of_gamut_mixed__red_hue_plus_100",
+      "input": {
+        "kind": "linear",
+        "rgb": [
+          1.5,
+          -0.1,
+          0.7
+        ]
+      },
+      "parameters": "red_hue_plus_100",
+      "expected_linear": [
+        1.5332759653002839,
+        -0.10407213155883915,
+        0.64485376122447
+      ]
+    },
+    {
+      "name": "out_of_gamut_mixed__aqua_hue_minus_100",
+      "input": {
+        "kind": "linear",
+        "rgb": [
+          1.5,
+          -0.1,
+          0.7
+        ]
+      },
+      "parameters": "aqua_hue_minus_100",
+      "expected_linear": [
+        1.4999999834957727,
+        -0.09999999286589148,
+        0.6999998826854971
+      ]
+    },
+    {
+      "name": "out_of_gamut_mixed__blue_saturation_minus_100",
+      "input": {
+        "kind": "linear",
+        "rgb": [
+          1.5,
+          -0.1,
+          0.7
+        ]
+      },
+      "parameters": "blue_saturation_minus_100",
+      "expected_linear": [
+        1.4999999834957727,
+        -0.09999999286589148,
+        0.6999998826854971
+      ]
+    },
+    {
+      "name": "out_of_gamut_mixed__green_saturation_plus_100",
+      "input": {
+        "kind": "linear",
+        "rgb": [
+          1.5,
+          -0.1,
+          0.7
+        ]
+      },
+      "parameters": "green_saturation_plus_100",
+      "expected_linear": [
+        1.4999999834957727,
+        -0.09999999286589148,
+        0.6999998826854971
+      ]
+    },
+    {
+      "name": "out_of_gamut_mixed__orange_luminance_plus_100",
+      "input": {
+        "kind": "linear",
+        "rgb": [
+          1.5,
+          -0.1,
+          0.7
+        ]
+      },
+      "parameters": "orange_luminance_plus_100",
+      "expected_linear": [
+        1.4999999834957727,
+        -0.09999999286589148,
+        0.6999998826854971
+      ]
+    },
+    {
+      "name": "out_of_gamut_mixed__purple_luminance_minus_100",
+      "input": {
+        "kind": "linear",
+        "rgb": [
+          1.5,
+          -0.1,
+          0.7
+        ]
+      },
+      "parameters": "purple_luminance_minus_100",
+      "expected_linear": [
+        1.4999999834957727,
+        -0.09999999286589148,
+        0.6999998826854971
+      ]
+    },
+    {
+      "name": "out_of_gamut_mixed__orange_combined",
+      "input": {
+        "kind": "linear",
+        "rgb": [
+          1.5,
+          -0.1,
+          0.7
+        ]
+      },
+      "parameters": "orange_combined",
+      "expected_linear": [
+        1.4999999834957727,
+        -0.09999999286589148,
+        0.6999998826854971
+      ]
+    },
+    {
+      "name": "out_of_gamut_mixed__all_ranges",
+      "input": {
+        "kind": "linear",
+        "rgb": [
+          1.5,
+          -0.1,
+          0.7
+        ]
+      },
+      "parameters": "all_ranges",
+      "expected_linear": [
+        1.237424850999396,
+        0.13351417383842895,
+        0.5465538924324305
+      ]
+    }
+  ]
+}
