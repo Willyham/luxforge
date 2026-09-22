@@ -409,7 +409,12 @@ impl PreviewQueue {
                     identity: job.source.identity(),
                     plan,
                 };
-                let cached = self.cache.get(&key).cloned();
+                // The cache holds pixels; the settings a RAW development layer asks for come from
+                // this job's recipe, so a drafted exposure renders against the cached planes.
+                let cached = self
+                    .cache
+                    .get(&key)
+                    .map(|source| source.with_settings_of(&job.source));
                 ProxyStep::Planned { key, cached }
             }
             Ok(None) => ProxyStep::Declined(
@@ -1224,5 +1229,82 @@ mod tests {
         session.return_current();
         assert!(session.can_edit());
         assert_eq!(session.selection, HistorySelection::Current);
+    }
+
+    /// A cached RAW proxy is pixels, not settings: a second job over the same developed planes
+    /// with another exposure is a cache hit that renders at its own exposure.
+    #[test]
+    fn a_cached_raw_proxy_renders_at_the_exposure_of_the_job_that_hits_it() {
+        use crate::{LinearImage, LinearSettings};
+        let width = 2000;
+        let height = 1200;
+        let planes: Vec<f32> = (0..3 * width * height)
+            .map(|index| 0.1 + (index % 997) as f32 / 4000.0)
+            .collect();
+        let image = LinearImage::with_fingerprint(width, height, planes, "sha256:raw").unwrap();
+        let bounds = ProxyBounds {
+            width: 400,
+            height: 300,
+        };
+        let job_at = |ev: f64, analyse: bool| {
+            let mut job = job(1, analyse);
+            // The stock test job carries a pixel-stage layer, which is not proxy-eligible; the
+            // development settings alone are the stack under test.
+            job.recipe.layers.clear();
+            job.source = PreviewSource::Raw {
+                image: image.clone(),
+                settings: LinearSettings { exposure_ev: ev },
+            };
+            job.proxy = Some(bounds);
+            job
+        };
+        let mut queue = PreviewQueue::default();
+        let first = queue.request(job_at(0.0, false));
+        let mut dark = None;
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while dark.is_none() {
+            if let Some(result) = queue.poll()
+                && result.generation == first
+                && result.phase == PreviewPhase::Proxy
+            {
+                assert!(result.proxy_built, "the first job builds the proxy");
+                dark = Some(result.result.expect("a proxy frame"));
+            }
+            assert!(Instant::now() < deadline, "the first proxy never came");
+            std::thread::yield_now();
+        }
+        while queue.is_busy() {
+            let _ = queue.poll();
+            std::thread::yield_now();
+        }
+        let second = queue.request(job_at(1.0, false));
+        let mut bright = None;
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while bright.is_none() {
+            if let Some(result) = queue.poll()
+                && result.generation == second
+                && result.phase == PreviewPhase::Proxy
+            {
+                assert!(
+                    !result.proxy_built,
+                    "the same planes and bounds are a cache hit"
+                );
+                bright = Some(result.result.expect("a proxy frame"));
+            }
+            assert!(Instant::now() < deadline, "the second proxy never came");
+            std::thread::yield_now();
+        }
+        let (dark, bright) = (dark.unwrap(), bright.unwrap());
+        assert_eq!((dark.width, dark.height), (bright.width, bright.height));
+        let brighter = dark
+            .rgba
+            .chunks_exact(4)
+            .zip(bright.rgba.chunks_exact(4))
+            .filter(|(a, b)| b[0] > a[0])
+            .count();
+        assert!(
+            brighter > (dark.width * dark.height / 2) as usize,
+            "one stop more exposure brightens the cached proxy, not the cached settings"
+        );
     }
 }

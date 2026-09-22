@@ -201,6 +201,21 @@ impl PreviewSource {
         }))
     }
 
+    /// This source's pixels under the evaluation settings of `job`. A cached proxy is keyed by its
+    /// pixels alone — a RAW source's developed planes and view — while its `LinearSettings`
+    /// (the exposure a RAW development layer asks for) belong to the recipe being rendered, so a
+    /// cache hit takes the pixels from the cache and the settings from the job that is rendering.
+    /// A JPEG carries no settings and is returned as it is.
+    pub fn with_settings_of(&self, job: &PreviewSource) -> PreviewSource {
+        match (self, job) {
+            (Self::Raw { image, .. }, Self::Raw { settings, .. }) => Self::Raw {
+                image: image.clone(),
+                settings: *settings,
+            },
+            _ => self.clone(),
+        }
+    }
+
     /// Downscale this source to the plan's dimensions with a separable area average.
     ///
     /// This is frame work: it runs on the caller's thread and puts its two passes on the shared
