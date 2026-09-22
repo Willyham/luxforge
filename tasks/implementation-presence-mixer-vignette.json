@@ -343,7 +343,7 @@
     {
       "id": "TASK-007",
       "description": "Implement the colour mixer module: descriptor (colour effect at order 10, twenty-four number parameters, Hue, Saturation and Luminance groups with gradient rails and group resets, collapsed section after Presence), the set-mixer field patch and reset-mixer, labels and values, and the frozen Oklab unit joining the colour run.",
-      "status": "pending",
+      "status": "completed",
       "dependencies": [
         "TASK-001",
         "TASK-003"
@@ -351,7 +351,8 @@
       "extra_context": [
         "Production matches the mixer study's f64 reference within the frozen tolerance on every fixture; achromatic invariance, zero-weight invariance and identity are tested on production too. The unit joins the same colour run as Basic with no new boundary, so an inverse pair of mixer and Basic edits returns the input bytes where the study says it must.",
         "The gradient rail stops are declared per slider from the reference colours; the desktop draws exactly the stops declared.",
-        "Performance checklist: one pointwise unit, no allocation beyond the existing row scratch, plan by payload comparison, latency recorded."
+        "Performance checklist: one pointwise unit, no allocation beyond the existing row scratch, plan by payload comparison, latency recorded.",
+        "Evidence: lightwell.mixer (collapsed, order 10, effect lightwell.mixer.hsl, single layer) with twenty-four <range>-<property> parameters (hyphens, because parameter identities forbid underscores), set-mixer patch and reset-mixer, labels, values, three groups with gradient rails (Hue expanded, Saturation and Luminance collapsed) and one Oklab unit reusing the Basic conversion; production matches all 414 fixture cases with zero output-code deviation through render and render_linear (worst linear deviation 1.5e-6 against a 1e-5 tolerance); greys are byte-invariant; a neutral layer shares the source; the mixer follows Basic whichever was committed first; workspace suites, clippy and check-repository pass. Desktop latency is measured by the evidence task."
       ],
       "context_links": [
         {
@@ -400,7 +401,7 @@
     {
       "id": "TASK-008",
       "description": "Implement the vignette module: descriptor (finish effect, Amount, Midpoint, Roundness and Feather number parameters with defaults, one group with sliders and a module reset, collapsed section after Crop), the set-vignette field patch and reset-vignette, labels and values, and the frozen positional unit compiled against the output stage.",
-      "status": "pending",
+      "status": "completed",
       "dependencies": [
         "TASK-001",
         "TASK-004"
@@ -408,7 +409,8 @@
       "extra_context": [
         "Production matches the vignette study's f64 reference within tolerance on the JPEG and RAW paths; the centre is byte-invariant; the mask is symmetric under the transform module's mirror and flip; updating the crop layer in place recentres the vignette and updating the vignette never moves the crop.",
         "A stored stack with the vignette before a geometry layer is refused by the host rule from the stage task; this module adds no second rule.",
-        "Performance checklist: one positional pointwise unit, the mask evaluated per row from the stage size, no allocation beyond row scratch, latency recorded."
+        "Performance checklist: one positional pointwise unit, the mask evaluated per row from the stage size, no allocation beyond row scratch, latency recorded.",
+        "Evidence: lightwell.vignette (collapsed, finish stage, effect lightwell.vignette.postcrop because identity segments forbid hyphens, single layer) with amount, midpoint, roundness and feather defaults filled for missing keys, amount 0 neutral, set-vignette patch and reset-vignette, labels and values, one positional unit with f64 per-row and per-column mask tables and the production extended encode/decode for the positive branch; production matches the 202 mask cases to 1.1e-16 and the 60 amount cases within the frozen 1e-6 tolerance, and both fixture files within one output code through the real render path; the layer stays last through rotate, mirror and crop edits, recentres after a crop update, is mirror and flip symmetric byte for byte, keeps the shared source when neutral, and render/sample agree on both paths after a crop resample. Measured single-threaded apply_row over 6000x4000 in release on the M4 Pro: 57 ms at amount -50, 505 ms at +50 (encode/decode per channel), 164 ms at roundness -100. Workspace suites, clippy and check-repository pass."
       ],
       "context_links": [
         {

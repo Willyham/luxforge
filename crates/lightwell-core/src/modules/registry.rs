@@ -814,7 +814,7 @@ pub(crate) mod tests {
         assert!(registry.action("set-vignette").is_some());
         assert!(registry.action("reset-vignette").is_some());
         assert!(registry.effect(crate::VIGNETTE_EFFECT).is_some());
-        assert_eq!(registry.descriptors().len(), 6);
+        assert_eq!(registry.descriptors().len(), 7);
         assert!(registry.action("edit.set-pixel").is_none());
 
         for (case, module) in [
@@ -860,7 +860,7 @@ pub(crate) mod tests {
         }
         assert_eq!(
             registry.descriptors().len(),
-            6,
+            7,
             "nothing was half-registered"
         );
         assert!(
@@ -873,7 +873,7 @@ pub(crate) mod tests {
                 ))
                 .is_ok()
         );
-        assert_eq!(registry.descriptors().len(), 7);
+        assert_eq!(registry.descriptors().len(), 8);
     }
 
     /// A module whose canvas claims one mode-strip letter.
