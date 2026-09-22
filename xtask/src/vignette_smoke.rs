@@ -437,7 +437,7 @@ pub fn verify(evidence: &Path, app: &Value, _events: &[Value]) -> Result {
         "The release created no new history entry",
     )?;
     ensure(
-        label(&frames[6])? == "Amount -60",
+        label(&frames[6])? == "Vignette amount -60",
         format!("The committed entry is labelled {:?}", label(&frames[6])?),
     )?;
     ensure(
@@ -465,7 +465,7 @@ pub fn verify(evidence: &Path, app: &Value, _events: &[Value]) -> Result {
     )?;
     record(
         &frames[6],
-        "released: one entry \"Amount -60\" at Fit, every corner darker, the centre unaffected",
+        "released: one entry \"Vignette amount -60\" at Fit, every corner darker, the centre unaffected",
         json!({"revision": revision(&frames[6])?, "label": label(&frames[6])?, "corner_luminance": fit_corners, "centre_luminance": fit_centre, "layer": layer, "expanded": expanded_sections(&frames[6])}),
     );
 
@@ -527,7 +527,7 @@ pub fn verify(evidence: &Path, app: &Value, _events: &[Value]) -> Result {
         "The Roundness -100 commit did not advance the revision by one",
     )?;
     ensure(
-        label(&frames[9])? == "Roundness -100",
+        label(&frames[9])? == "Vignette roundness -100",
         format!("Frame 9 is labelled {:?}", label(&frames[9])?),
     )?;
     ensure(
@@ -556,7 +556,7 @@ pub fn verify(evidence: &Path, app: &Value, _events: &[Value]) -> Result {
         "The Roundness +100 commit did not advance the revision by one",
     )?;
     ensure(
-        label(&frames[10])? == "Roundness +100",
+        label(&frames[10])? == "Vignette roundness +100",
         format!("Frame 10 is labelled {:?}", label(&frames[10])?),
     )?;
     ensure(
@@ -587,7 +587,7 @@ pub fn verify(evidence: &Path, app: &Value, _events: &[Value]) -> Result {
         "The Feather 0 commit did not advance the revision by one",
     )?;
     ensure(
-        label(&frames[11])? == "Feather 0",
+        label(&frames[11])? == "Vignette feather 0",
         format!("Frame 11 is labelled {:?}", label(&frames[11])?),
     )?;
     ensure(
@@ -613,7 +613,7 @@ pub fn verify(evidence: &Path, app: &Value, _events: &[Value]) -> Result {
         "The Feather 100 commit did not advance the revision by one",
     )?;
     ensure(
-        label(&frames[12])? == "Feather 100",
+        label(&frames[12])? == "Vignette feather 100",
         format!("Frame 12 is labelled {:?}", label(&frames[12])?),
     )?;
     ensure(
