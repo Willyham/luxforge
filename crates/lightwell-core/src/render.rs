@@ -363,13 +363,18 @@ fn color_pixel(rgb: [u8; 3], run: &ColorRun<'_>) -> Result<[u8; 3], Error> {
 fn apply_color_run(
     pixels: &mut [u8],
     width: u32,
-    height: u32,
+    rows: std::ops::Range<usize>,
     run: &ColorRun<'_>,
     cancel: &Cancel,
 ) -> Result<(), Error> {
-    if pixels.is_empty() || width == 0 {
+    if pixels.is_empty() || width == 0 || rows.is_empty() {
         return Ok(());
     }
+    let stride = width as usize * 4;
+    // Only the band of rows the caller names is coloured; every other row keeps its bytes. The
+    // whole frame is the band whenever nothing after this pass reads less than that.
+    let pixels = &mut pixels[rows.start * stride..rows.end * stride];
+    let height = (rows.end - rows.start) as u32;
     let chunk_bytes = color_chunk_rows(width) * width as usize * 4;
     let process = |chunk: &mut [u8]| -> Result<(), Error> {
         // Before the reservation, so a cancelled pass never takes scratch it will not use.
@@ -612,6 +617,34 @@ impl Resample {
     }
 }
 
+/// The rows of a resample's input frame that its output can read, with a margin, so the pointwise
+/// colour before a crop is applied only where the crop looks. The mapping is affine, so the region
+/// its output rectangle reads is the convex hull of the four mapped corners, and the bilinear
+/// sample at each of them reads at most one neighbouring pixel in each direction, which the margin
+/// covers with a pixel to spare. Everything outside the band is discarded by the resample, so
+/// leaving it uncoloured changes no output byte.
+fn rows_read_by(resample: Resample, input_height: u32) -> std::ops::Range<usize> {
+    if resample.output_width == 0 || resample.output_height == 0 || input_height == 0 {
+        return 0..0;
+    }
+    let (last_x, last_y) = (resample.output_width - 1, resample.output_height - 1);
+    let mut top = f64::INFINITY;
+    let mut bottom = f64::NEG_INFINITY;
+    for (x, y) in [(0, 0), (last_x, 0), (0, last_y), (last_x, last_y)] {
+        let (_, v) = resample.input_at(x, y);
+        if !v.is_finite() {
+            return 0..input_height as usize;
+        }
+        top = top.min(v);
+        bottom = bottom.max(v);
+    }
+    let start = (top - 0.5).floor() - 2.0;
+    let end = (bottom - 0.5).ceil() + 3.0;
+    let start = start.max(0.0).min(f64::from(input_height)) as usize;
+    let end = end.max(0.0).min(f64::from(input_height)) as usize;
+    start..end.max(start)
+}
+
 /// One exact pass over one input frame: every output pixel copies exactly one input pixel.
 fn copy_transformed(
     input: &[u8],
@@ -827,7 +860,12 @@ fn mapped_replacements(segment: &Segment) -> Vec<(usize, u32, u32, [u8; 3])> {
 /// replacements before a colour run, then that run streamed over the frame, then the replacements
 /// after it. Writing the replacements in stack order lets a later one win at the same coordinate,
 /// exactly as a later layer does.
-fn apply_operations(pixels: &mut [u8], segment: &Segment, cancel: &Cancel) -> Result<(), Error> {
+fn apply_operations(
+    pixels: &mut [u8],
+    segment: &Segment,
+    rows: std::ops::Range<usize>,
+    cancel: &Cancel,
+) -> Result<(), Error> {
     if !segment.writes_pixels() {
         return Ok(());
     }
@@ -845,7 +883,7 @@ fn apply_operations(pixels: &mut [u8], segment: &Segment, cancel: &Cancel) -> Re
     };
     for run in color_runs(&segment.operations) {
         write(&mut next, run.start, pixels);
-        apply_color_run(pixels, segment.width, segment.height, &run, cancel)?;
+        apply_color_run(pixels, segment.width, rows.clone(), &run, cancel)?;
     }
     write(&mut next, usize::MAX, pixels);
     Ok(())
@@ -1159,11 +1197,19 @@ pub fn render_cancellable(
             cancel,
         )?)
     };
+    // A segment followed by a resample colours only the rows that resample reads; the last one
+    // colours its whole frame.
+    let band = |index: usize, height: u32| -> std::ops::Range<usize> {
+        match compiled.segments.get(index + 1).and_then(|next| next.entry) {
+            Some(resample) => rows_read_by(resample, height),
+            None => 0..height as usize,
+        }
+    };
     if let Some(pixels) = frame.as_mut() {
-        apply_operations(pixels, first, cancel)?;
+        apply_operations(pixels, first, band(0, height), cancel)?;
     }
 
-    for segment in &compiled.segments[1..] {
+    for (index, segment) in compiled.segments.iter().enumerate().skip(1) {
         let resample = segment
             .entry
             .expect("every segment after the first enters through a resample");
@@ -1180,7 +1226,7 @@ pub fn render_cancellable(
             width = segment.width;
             height = segment.height;
         }
-        apply_operations(&mut next, segment, cancel)?;
+        apply_operations(&mut next, segment, band(index, height), cancel)?;
         frame = Some(next);
     }
 
@@ -1208,6 +1254,64 @@ mod tests {
 
     fn registry() -> ModuleRegistry {
         ModuleRegistry::builtin()
+    }
+
+    /// The colour pass before a crop covers only the rows the crop reads, so the rendered frame
+    /// must still agree with the point sampler at every output pixel, and the band must be a
+    /// strict subset of the stage for a crop that discards rows.
+    #[test]
+    fn colour_before_a_crop_is_applied_only_where_the_crop_reads_and_stays_exact() {
+        // This colours real chunks, so it takes the guard the scratch-budget tests serialize on.
+        let _scratch = scratch_guard();
+        let registry = registry();
+        let source = source(240, 320);
+        let stage = CropStage {
+            width: 320,
+            height: 240,
+            angle: 7.0,
+        };
+        let (box_width, box_height) = stage.bounding_box();
+        // A wide, short crop near the centre, so whole rows above and below it are never read.
+        let rect = BoxRect {
+            x: box_width * 0.1,
+            y: box_height * 0.35,
+            width: box_width * 0.8,
+            height: box_height * 0.3,
+        };
+        let layers = vec![
+            turn(Transform::RotateRight),
+            Layer {
+                id: LayerId::new(),
+                effect_id: crate::BASIC_EFFECT.into(),
+                effect_format: EFFECT_FORMAT,
+                payload: json!({"exposure": 0.7, "contrast": 30.0, "vibrance": 40.0}),
+            },
+            Layer::crop(rect.normalized(&stage)),
+        ];
+        let recipe = Recipe { format: 1, layers };
+        let compiled = registry
+            .compile(source.width, source.height, &recipe)
+            .unwrap();
+        let resample = compiled.segments[1]
+            .entry
+            .expect("a rotated crop resamples");
+        let band = rows_read_by(resample, compiled.segments[0].height);
+        assert!(
+            band.start > 0 && band.end < compiled.segments[0].height as usize,
+            "the band {band:?} should exclude rows of the {} high stage",
+            compiled.segments[0].height
+        );
+        let raster = render(&registry, &source, SnapshotId::new(), &recipe).unwrap();
+        for y in 0..raster.height {
+            for x in 0..raster.width {
+                let sampled = sample(&registry, &source, &recipe, x, y).unwrap();
+                assert_eq!(
+                    raster.pixel(x, y),
+                    sampled.rgba,
+                    "pixel ({x}, {y}) differs from the sampler"
+                );
+            }
+        }
     }
     fn source(width: u32, height: u32) -> SourceImage {
         let mut rgba = Vec::new();
@@ -3032,14 +3136,28 @@ mod tests {
         let recipe = colour_recipe(vec![exposure_layer(&[1.0])]);
         let budget = ScratchBudget::default();
         assert_eq!(budget.limit(), 64 * 1024 * 1024, "the declared default");
-        assert_eq!(budget.in_use(), 0, "nothing is held between renders");
+        // The budget is process-wide and other tests' preview workers reserve from it on their
+        // own threads, so "nothing is held between renders" is read once those renders have
+        // finished, not at an arbitrary instant.
+        let idle = || {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+            while budget.in_use() != 0 {
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "scratch stayed held: {} bytes",
+                    budget.in_use()
+                );
+                std::thread::yield_now();
+            }
+        };
+        idle();
         let previous = budget.set_limit(16);
         let error = render(&registry, &source, SnapshotId::new(), &recipe)
             .expect_err("one row chunk is larger than 16 bytes");
         budget.set_limit(previous);
         assert_eq!(error.kind, ErrorKind::ResourceLimit);
         assert!(error.detail.contains("scratch"), "{error}");
-        assert_eq!(budget.in_use(), 0, "a failed reservation releases the rest");
+        idle();
         // The same stack renders again once the budget is back.
         assert!(render(&registry, &source, SnapshotId::new(), &recipe).is_ok());
         // A point sample streams nothing, so it answers whatever the budget is.
