@@ -29,7 +29,7 @@ use crate::{
     view,
 };
 use crop::PendingDraft;
-use evidence::{EVIDENCE_DEADLINE, Evidence, Settle};
+use evidence::{EVIDENCE_DEADLINE, Evidence, SCRIPT_EVIDENCE_DEADLINE, Settle};
 use fields::{Fields, action_params, number_text, reset_field_preset, submit_preset};
 use iced::{Element, Subscription, Task, widget::operation};
 use iced_runtime::image as image_memory;
@@ -1205,7 +1205,15 @@ impl Editor {
                 );
             }
             Message::EvidenceTick => {
-                if self.evidence.is_some() && self.started.elapsed() > EVIDENCE_DEADLINE {
+                let expired = self.evidence.as_ref().is_some_and(|evidence| {
+                    let deadline = if evidence.step > 0 || !evidence.script.is_empty() {
+                        SCRIPT_EVIDENCE_DEADLINE
+                    } else {
+                        EVIDENCE_DEADLINE
+                    };
+                    self.started.elapsed() > deadline
+                });
+                if expired {
                     eprintln!("Evidence deadline exceeded; inspect retained subprocess output");
                     std::process::exit(3);
                 }

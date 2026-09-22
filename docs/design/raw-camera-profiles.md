@@ -2,7 +2,7 @@
 
 Lightwell's camera policy lives in `crates/lightwell-raw/data/cameras.json`.
 The catalog selects supported recording modes and implemented processing
-capabilities. The modern-camera expansion and its remaining resource decision
+capabilities. The modern-camera expansion and its approved resource bounds
 are tracked in [modern camera support](modern-camera-support.md).
 
 ## Format and ownership
@@ -61,6 +61,7 @@ fields may be omitted; omitted calibration uses the backend matrix.
 | `corrections` | `stage3_gain_map_then_warp` for the GainMap→Warp path, or `stage_ordered` for bounded ordered opcode processing |
 | `required_opcodes` | 0–8 ordered descriptors `{id, list, version, flags}`. Supported IDs include GainMap 9, WarpRectilinear 1, FixVignetteRadial 3, FixBadPixelsConstant 4, and FixBadPixelsList 5; list 51022 for stage-three operations and at most one list-51008 sensor repair, version 16973824 (`0x01030000`), flags 0 |
 | `interpretation` | Persisted correction interpretation identity; update when processing semantics change |
+| `decoder_active_bottom_trim` | Optional integer 0–63. For a decoder whose reported active bottom is shorter than the authoritative DNG `ActiveArea`, requires the source bottom to equal decoder bottom plus this exact trim; all other edges must match. Omit when no decoder trim is needed. |
 
 The opcode recipe is validated against the implemented algorithm's supported
 order, stage, version and flags. Stage-ordered processing preserves source
@@ -91,8 +92,9 @@ and generated probe outputs remain outside the repository.
 ## Acceptance
 
 - No Lightwell production branch selects processing by camera name or mode ID.
-- The current catalog contains 84 camera profiles and 87 recording modes toward
-  the 100-profile target. Final qualification remains ongoing.
+- The current catalog contains 100 camera profiles and 103 recording modes.
+  One authentic selected mode per model has adapter evidence; controlled color
+  and broader recording-mode qualification remain separate.
 - Camera addition using existing strategies requires only data; implementing a
   new format/algorithm still requires code, tests and authentic qualification.
 - Invalid catalogs fail explicitly, with no partially accepted entries.

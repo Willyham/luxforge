@@ -21,7 +21,7 @@ pub const DARK_THRESHOLD: f64 = 0.01;
 pub const CLIPPED_THRESHOLD: f64 = 0.995;
 
 const MAX_SENSOR_SIDE: u32 = 16_384;
-const MAX_SENSOR_PIXELS: usize = 64_000_000;
+const MAX_SENSOR_PIXELS: usize = lightwell_raw::MAX_PIXELS;
 const MAX_BLACK_REPEAT_PIXELS: usize = 4_096;
 
 /// Immutable view of the retained integer mosaic and the calibration needed to interpret one

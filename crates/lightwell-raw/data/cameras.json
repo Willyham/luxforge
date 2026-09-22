@@ -2424,6 +2424,457 @@
           "compression": null
         }
       ]
+    },
+    {
+      "make": "Nikon",
+      "model": "D850",
+      "sensor_size": [
+        8288,
+        5520
+      ],
+      "cfa_size": [
+        2,
+        2
+      ],
+      "crop": "libraw_inset",
+      "dng": null,
+      "modes": [
+        {
+          "id": "NikonD850Raw14",
+          "bits": 14,
+          "decoder": "unpacked_load_raw()",
+          "raw_count": 1,
+          "dng_version": null,
+          "validation": "decoder_metadata",
+          "compression": null
+        }
+      ]
+    },
+    {
+      "make": "Nikon",
+      "model": "Z 7",
+      "sensor_size": [
+        8288,
+        5520
+      ],
+      "cfa_size": [
+        2,
+        2
+      ],
+      "crop": "libraw_inset",
+      "dng": null,
+      "modes": [
+        {
+          "id": "NikonZ7Raw14",
+          "bits": 14,
+          "decoder": "nikon_14bit_load_raw()",
+          "raw_count": 1,
+          "dng_version": null,
+          "validation": "decoder_metadata",
+          "compression": null
+        }
+      ]
+    },
+    {
+      "make": "Nikon",
+      "model": "Z 8",
+      "sensor_size": [
+        8280,
+        5520
+      ],
+      "cfa_size": [
+        2,
+        2
+      ],
+      "crop": "libraw_inset",
+      "dng": null,
+      "modes": [
+        {
+          "id": "NikonZ8Raw14",
+          "bits": 14,
+          "decoder": "nikon_load_raw()",
+          "raw_count": 1,
+          "dng_version": null,
+          "validation": "decoder_metadata",
+          "compression": null
+        }
+      ]
+    },
+    {
+      "make": "Nikon",
+      "model": "Z 9",
+      "sensor_size": [
+        8280,
+        5520
+      ],
+      "cfa_size": [
+        2,
+        2
+      ],
+      "crop": "libraw_inset",
+      "dng": null,
+      "modes": [
+        {
+          "id": "NikonZ9Raw14",
+          "bits": 14,
+          "decoder": "nikon_load_raw()",
+          "raw_count": 1,
+          "dng_version": null,
+          "validation": "decoder_metadata",
+          "compression": null
+        }
+      ]
+    },
+    {
+      "make": "Nikon",
+      "model": "Z 7_2",
+      "sensor_size": [
+        8288,
+        5520
+      ],
+      "cfa_size": [
+        2,
+        2
+      ],
+      "crop": "libraw_inset",
+      "dng": null,
+      "modes": [
+        {
+          "id": "NikonZ72Raw14",
+          "bits": 14,
+          "decoder": "nikon_14bit_load_raw()",
+          "raw_count": 1,
+          "dng_version": null,
+          "validation": "decoder_metadata",
+          "compression": null
+        }
+      ]
+    },
+    {
+      "make": "Sony",
+      "model": "ILCE-7RM4",
+      "sensor_size": [
+        9600,
+        6376
+      ],
+      "cfa_size": [
+        2,
+        2
+      ],
+      "crop": "libraw_inset",
+      "dng": null,
+      "modes": [
+        {
+          "id": "SonyILCE7RM4Raw14",
+          "bits": 14,
+          "decoder": "unpacked_load_raw()",
+          "raw_count": 1,
+          "dng_version": null,
+          "validation": "decoder_metadata",
+          "compression": null
+        }
+      ]
+    },
+    {
+      "make": "Sony",
+      "model": "ILCE-7RM5",
+      "sensor_size": [
+        9600,
+        6376
+      ],
+      "cfa_size": [
+        2,
+        2
+      ],
+      "crop": "libraw_inset",
+      "dng": null,
+      "modes": [
+        {
+          "id": "SonyILCE7RM5Raw14",
+          "bits": 14,
+          "decoder": "unpacked_load_raw()",
+          "raw_count": 1,
+          "dng_version": null,
+          "validation": "decoder_metadata",
+          "compression": null
+        }
+      ]
+    },
+    {
+      "make": "Sony",
+      "model": "ILCE-1",
+      "sensor_size": [
+        8672,
+        5784
+      ],
+      "cfa_size": [
+        2,
+        2
+      ],
+      "crop": "libraw_inset",
+      "dng": null,
+      "modes": [
+        {
+          "id": "SonyILCE1Raw14",
+          "bits": 14,
+          "decoder": "unpacked_load_raw()",
+          "raw_count": 1,
+          "dng_version": null,
+          "validation": "decoder_metadata",
+          "compression": null
+        }
+      ]
+    },
+    {
+      "make": "Sony",
+      "model": "ILCE-7CR",
+      "sensor_size": [
+        9600,
+        6376
+      ],
+      "cfa_size": [
+        2,
+        2
+      ],
+      "crop": "libraw_inset",
+      "dng": null,
+      "modes": [
+        {
+          "id": "SonyILCE7CRRaw14",
+          "bits": 14,
+          "decoder": "unpacked_load_raw()",
+          "raw_count": 1,
+          "dng_version": null,
+          "validation": "decoder_metadata",
+          "compression": null
+        }
+      ]
+    },
+    {
+      "make": "Canon",
+      "model": "EOS R5",
+      "sensor_size": [
+        8352,
+        5586
+      ],
+      "cfa_size": [
+        2,
+        2
+      ],
+      "crop": "libraw_inset",
+      "dng": null,
+      "modes": [
+        {
+          "id": "CanonEOSR5Raw14",
+          "bits": 14,
+          "decoder": "crxLoadRaw()",
+          "raw_count": 1,
+          "dng_version": null,
+          "validation": "decoder_metadata",
+          "compression": null
+        }
+      ]
+    },
+    {
+      "make": "Canon",
+      "model": "EOS R5 Mark II",
+      "sensor_size": [
+        8480,
+        5650
+      ],
+      "cfa_size": [
+        2,
+        2
+      ],
+      "crop": "libraw_inset",
+      "dng": null,
+      "modes": [
+        {
+          "id": "CanonEOSR5MarkIIRaw14",
+          "bits": 14,
+          "decoder": "crxLoadRaw()",
+          "raw_count": 1,
+          "dng_version": null,
+          "validation": "decoder_metadata",
+          "compression": null
+        }
+      ]
+    },
+    {
+      "make": "Fujifilm",
+      "model": "GFX100 II",
+      "sensor_size": [
+        11808,
+        8754
+      ],
+      "cfa_size": [
+        2,
+        2
+      ],
+      "crop": "libraw_inset",
+      "dng": null,
+      "modes": [
+        {
+          "id": "FujifilmGFX100IIRaw14",
+          "bits": 14,
+          "decoder": "unpacked_load_raw()",
+          "raw_count": 1,
+          "dng_version": null,
+          "validation": "decoder_metadata",
+          "compression": null
+        }
+      ]
+    },
+    {
+      "make": "Fujifilm",
+      "model": "GFX100S",
+      "sensor_size": [
+        11808,
+        8754
+      ],
+      "cfa_size": [
+        2,
+        2
+      ],
+      "crop": "libraw_inset",
+      "dng": null,
+      "modes": [
+        {
+          "id": "FujifilmGFX100SRaw16",
+          "bits": 16,
+          "decoder": "unpacked_load_raw()",
+          "raw_count": 1,
+          "dng_version": null,
+          "validation": "decoder_metadata",
+          "compression": null
+        }
+      ]
+    },
+    {
+      "make": "Fujifilm",
+      "model": "GFX50S II",
+      "sensor_size": [
+        8472,
+        6210
+      ],
+      "cfa_size": [
+        2,
+        2
+      ],
+      "crop": "libraw_inset",
+      "dng": null,
+      "modes": [
+        {
+          "id": "FujifilmGFX50S2Raw14",
+          "bits": 14,
+          "decoder": "unpacked_load_raw()",
+          "raw_count": 1,
+          "dng_version": null,
+          "validation": "decoder_metadata",
+          "compression": null
+        }
+      ]
+    },
+    {
+      "make": "Leica",
+      "model": "Q2",
+      "sensor_size": [
+        8424,
+        5632
+      ],
+      "cfa_size": [
+        2,
+        2
+      ],
+      "crop": "dng_tags",
+      "dng": {
+        "container": "integer_cfa_single_segment",
+        "calibration": "root_fixed_matrix",
+        "illuminants": [
+          17,
+          23
+        ],
+        "selected_matrix": 2,
+        "calibration_identity": "ColorMatrix2-fixed-XYZ-to-camera",
+        "corrections": "stage_ordered",
+        "interpretation": "dng-stage-order-active-v1-unclipped-bicubic-a-0.75",
+        "required_opcodes": [
+          {
+            "id": 4,
+            "list": 51008,
+            "version": 16973824,
+            "flags": 0
+          },
+          {
+            "id": 1,
+            "list": 51022,
+            "version": 16973824,
+            "flags": 0
+          }
+        ]
+      },
+      "modes": [
+        {
+          "id": "LeicaQ2Dng14",
+          "bits": 14,
+          "decoder": "packed_dng_load_raw()",
+          "raw_count": 1,
+          "dng_version": 17039360,
+          "validation": "decoder_metadata",
+          "compression": null
+        }
+      ]
+    },
+    {
+      "make": "Leica",
+      "model": "SL2",
+      "sensor_size": [
+        8424,
+        5632
+      ],
+      "cfa_size": [
+        2,
+        2
+      ],
+      "crop": "dng_tags",
+      "dng": {
+        "container": "integer_cfa_single_segment",
+        "calibration": "root_fixed_matrix",
+        "illuminants": [
+          17,
+          23
+        ],
+        "selected_matrix": 2,
+        "calibration_identity": "ColorMatrix2-fixed-XYZ-to-camera",
+        "corrections": "stage_ordered",
+        "interpretation": "dng-stage-order-active-v1-unclipped-bicubic-a-0.75",
+        "decoder_active_bottom_trim": 19,
+        "required_opcodes": [
+          {
+            "id": 4,
+            "list": 51008,
+            "version": 16973824,
+            "flags": 0
+          },
+          {
+            "id": 1,
+            "list": 51022,
+            "version": 16973824,
+            "flags": 0
+          }
+        ]
+      },
+      "modes": [
+        {
+          "id": "LeicaSL2Dng14",
+          "bits": 14,
+          "decoder": "packed_dng_load_raw()",
+          "raw_count": 1,
+          "dng_version": 17039360,
+          "validation": "decoder_metadata",
+          "compression": null
+        }
+      ]
     }
   ]
 }

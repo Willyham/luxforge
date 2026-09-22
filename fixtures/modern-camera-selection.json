@@ -61,7 +61,7 @@
       "source_url": "https://raw.pixls.us/getfile.php/1842/nice/Nikon - D850 - 14bit 14bit uncompressed (3:2).NEF",
       "sha256": "ce1fb927aca4f0ac3a1fa5caded0d7859560988e500f71177287310fd1a3d845",
       "license": "CC0-1.0",
-      "status": "pending_raw_resource_decision",
+      "status": "adapter_verified",
       "native_make": "Nikon",
       "native_model": "D850",
       "sensor_size": [
@@ -112,7 +112,7 @@
       "source_url": "https://raw.pixls.us/getfile.php/2788/nice/Nikon - Z 7 - 12bit 12bit compressed (3:2).NEF",
       "sha256": "ef046d37ffb11807648dd0b55589c02825f98c2c99416f4a7a74ae965a8eeb72",
       "license": "CC0-1.0",
-      "status": "pending_raw_resource_decision",
+      "status": "adapter_verified",
       "native_make": "Nikon",
       "native_model": "Z 7",
       "sensor_size": [
@@ -129,7 +129,7 @@
       "source_url": "https://raw.pixls.us/getfile.php/6617/nice/Nikon - Z 8 - 8bit 8bit compressed (3:2).NEF",
       "sha256": "c13a8675294456b9c979e6c1e556951654f35377b2870af2874bfb556f21ce40",
       "license": "CC0-1.0",
-      "status": "pending_raw_resource_decision",
+      "status": "adapter_verified",
       "native_make": "Nikon",
       "native_model": "Z 8",
       "sensor_size": [
@@ -146,7 +146,7 @@
       "source_url": "https://raw.pixls.us/getfile.php/5146/nice/Nikon - Z 9 - 8bit 8bit compressed (3:2).NEF",
       "sha256": "99d0fe24a38f0f7623aeab21440d266a5ac09f9665cf5283f590337e84323c38",
       "license": "CC0-1.0",
-      "status": "pending_raw_resource_decision",
+      "status": "adapter_verified",
       "native_make": "Nikon",
       "native_model": "Z 9",
       "sensor_size": [
@@ -265,7 +265,7 @@
       "source_url": "https://raw.pixls.us/getfile.php/4217/nice/Nikon - Z 7_2 - 14bit 14bit Uncompressed (3:2).NEF",
       "sha256": "33a6a4838bc9d80fa1cb2e7c2011e52ca9f4965a26e67b604412c69928d37c45",
       "license": "CC0-1.0",
-      "status": "pending_raw_resource_decision",
+      "status": "adapter_verified",
       "native_make": "Nikon",
       "native_model": "Z 7_2",
       "sensor_size": [
@@ -503,7 +503,7 @@
       "source_url": "https://raw.pixls.us/getfile.php/3481/nice/Sony - ILCE-7RM4 - 14bit 14bit uncompressed (3:2).ARW",
       "sha256": "2c7d9ddce62bf197bc922e28b3eb93817ff723867dcc34bc3de0179fe12d6a13",
       "license": "CC0-1.0",
-      "status": "pending_raw_resource_decision",
+      "status": "adapter_verified",
       "native_make": "Sony",
       "native_model": "ILCE-7RM4",
       "sensor_size": [
@@ -520,7 +520,7 @@
       "source_url": "https://raw.pixls.us/getfile.php/6231/nice/Sony - ILCE-7RM5 - 14bit 14bit uncompressed (3:2).ARW",
       "sha256": "8918ba274f0919be4f9902f9eebcab4663445ebe441d22fb48f3f328198ac2ee",
       "license": "CC0-1.0",
-      "status": "pending_raw_resource_decision",
+      "status": "adapter_verified",
       "native_make": "Sony",
       "native_model": "ILCE-7RM5",
       "sensor_size": [
@@ -571,7 +571,7 @@
       "source_url": "https://raw.pixls.us/getfile.php/4467/nice/Sony - ILCE-1 - 14bit 14bit uncompressed (3:2).ARW",
       "sha256": "ebc775fd757a853d018c18664fda4258be87a9597af3f7a260182ddbcbec985e",
       "license": "CC0-1.0",
-      "status": "pending_raw_resource_decision",
+      "status": "adapter_verified",
       "native_make": "Sony",
       "native_model": "ILCE-1",
       "sensor_size": [
@@ -588,7 +588,7 @@
       "source_url": "https://raw.pixls.us/getfile.php/7031/nice/Sony - ILCE-7CR - 14bit 14bit uncompressed (3:2).ARW",
       "sha256": "4cc138b310801ff528d5dcc0acfd0b8f58fb8aef7ae404f0f8fd3f32845783a4",
       "license": "CC0-1.0",
-      "status": "pending_raw_resource_decision",
+      "status": "adapter_verified",
       "native_make": "Sony",
       "native_model": "ILCE-7CR",
       "sensor_size": [
@@ -622,7 +622,7 @@
       "source_url": "https://raw.pixls.us/getfile.php/4694/nice/Canon - EOS R5 - 3:2.CR3",
       "sha256": "21430c36387efe65bd09ac0fcd724bfd959d93dd391ec811a1b741c8663becb5",
       "license": "CC0-1.0",
-      "status": "pending_raw_resource_decision",
+      "status": "adapter_verified",
       "native_make": "Canon",
       "native_model": "EOS R5",
       "sensor_size": [
@@ -775,7 +775,7 @@
       "source_url": "https://raw.pixls.us/getfile.php/7881/nice/Canon - EOS R5 Mark II - RAW (3:2).CR3",
       "sha256": "d6e6aa3b493ea8936dff0efb0cc17c87471437e7317bce37c8c82ba08b9cab7b",
       "license": "CC0-1.0",
-      "status": "pending_raw_resource_decision",
+      "status": "adapter_verified",
       "native_make": "Canon",
       "native_model": "EOS R5 Mark II",
       "sensor_size": [
@@ -1098,7 +1098,7 @@
       "source_url": "https://raw.pixls.us/getfile.php/7174/nice/Fujifilm - GFX100 II - 14bit 14bit uncompressed (4:3).RAF",
       "sha256": "b7b329bcbfcc07c5523a2b172a5173f4de4b841c8315078a1b69150ddaa16f30",
       "license": "CC0-1.0",
-      "status": "pending_raw_resource_decision",
+      "status": "adapter_verified",
       "native_make": "Fujifilm",
       "native_model": "GFX100 II",
       "sensor_size": [
@@ -1115,7 +1115,7 @@
       "source_url": "https://raw.pixls.us/getfile.php/4493/nice/Fujifilm - GFX100S - 16bit 16bit uncompressed (4:3).RAF",
       "sha256": "79bd20f5ed2fe5c0d1d0ff5b317dedb41f16feb55e693e5569e165fd1c7bcaa4",
       "license": "CC0-1.0",
-      "status": "pending_raw_resource_decision",
+      "status": "adapter_verified",
       "native_make": "Fujifilm",
       "native_model": "GFX100S",
       "sensor_size": [
@@ -1132,7 +1132,7 @@
       "source_url": "https://raw.pixls.us/getfile.php/5002/nice/Fujifilm - GFX50S II - 14bit 14bit uncompressed (4:3).RAF",
       "sha256": "cf53a9018d5a77cd854ea0a91afee2a35ac8fab8f814020d79f728f99ba99892",
       "license": "CC0-1.0",
-      "status": "pending_raw_resource_decision",
+      "status": "adapter_verified",
       "native_make": "Fujifilm",
       "native_model": "GFX50S II",
       "sensor_size": [
@@ -1539,7 +1539,7 @@
       "source_url": "https://raw.pixls.us/getfile.php/3204/nice/Leica - Q2 - 14bit 14bit uncompressed (3:2).DNG",
       "sha256": "a71f98405e9e9c1e4ac0f2d2e6c52d65daae3234fc0a9f6eed2a84ee4ce794ad",
       "license": "CC0-1.0",
-      "status": "pending_raw_resource_decision",
+      "status": "adapter_verified",
       "native_make": "Leica",
       "native_model": "Q2",
       "sensor_size": [
@@ -1556,7 +1556,7 @@
       "source_url": "https://raw.pixls.us/getfile.php/7872/nice/Leica - SL2 - 14bit uncompressed (3:2).DNG",
       "sha256": "d00f05468793e4509b53230e90dcdc078e823b254eee95f1c68b29e217df99bf",
       "license": "CC0-1.0",
-      "status": "pending_raw_resource_decision",
+      "status": "adapter_verified",
       "native_make": "Leica",
       "native_model": "SL2",
       "sensor_size": [

@@ -1,15 +1,17 @@
 # Modern camera resource ledger
 
-Status: design and measurement ledger for the proposed modern-camera expansion.
-This document does not change an admission, decoder, frame, or process limit.
-The 128 MP, 1.5 GiB float, and 512 MiB encoded figures below are planning
-proposals supplied by the expansion work; they are not a release claim.
+Status: design and measurement ledger for the modern-camera expansion. The
+owner-approved RAW admission contract is 128 MP, 1.5 GiB per planar RGB float
+buffer, and 512 MiB encoded source. This is an implementation contract, not a
+process RSS limit or a broad quality claim. All 100 selected models have
+authentic adapter qualification. JPEG limits remain independent and
+unchanged.
 
 ## Scope and accounting rules
 
-The current application limits remain those in
-[architecture](architecture.md): 128 MiB encoded source, 64 MP, 16384 pixels
-per side, 512 MiB per evaluated frame, and 64 MiB aggregate float scratch.
+JPEG keeps the existing [architecture](architecture.md) evaluated-frame and
+aggregate-scratch limits. RAW uses the approved 512 MiB encoded source, 128 MP,
+16384-pixel-side, and 1.5 GiB single planar RGB buffer limits.
 The standalone raw probe has separate diagnostic checks and must not be used
 as evidence that the editor admits a camera mode. A decoder limit is not a
 process or GPU limit.
@@ -20,17 +22,17 @@ bytes/pixel; the terminal RGBA display buffer is 8-bit `4 bytes/pixel`.
 
 | Work item | 24 MP | 40 MP | 128 MP | Liveness implication |
 | --- | ---: | ---: | ---: | --- |
-| Encoded source at the proposed 512 MiB ceiling | 512 MiB | 512 MiB | 512 MiB | The current application ceiling is 128 MiB; this row is a proposal only. |
+| Encoded RAW source at the approved 512 MiB ceiling | 512 MiB | 512 MiB | 512 MiB | RAW-only admission bound; JPEG limits remain independent. |
 | Immutable u16 mosaic | 45.8 MiB | 76.3 MiB | 244.1 MiB | Retained by the source while WB or a source redevelopment is possible. |
-| One planar RGB float frame | 274.7 MiB | 457.8 MiB | 1,464.8 MiB | A 128 MP frame is below a 1.5 GiB single-frame proposal, but above the current 512 MiB frame limit. |
+| One planar RGB float frame | 274.7 MiB | 457.8 MiB | 1,464.8 MiB | A 128 MP frame is below the approved 1.5 GiB per-buffer bound. |
 | One terminal RGBA8 display/upload frame | 91.6 MiB | 152.6 MiB | 488.3 MiB | The terminal buffer is 8-bit; GPU/shared-memory copies still need accounting. |
 | Two planar RGB float frames | 549.3 MiB | 915.5 MiB | 2,929.7 MiB | Active plus pending preview, or input plus output at a resample boundary. |
 | Mosaic plus two planar RGB frames | 595.1 MiB | 991.8 MiB | 3,173.8 MiB | Does not include native decoder scratch, allocator retention, or GPU/shared-memory copies. |
 
-The 1.5 GiB proposal therefore covers one 128 MP planar RGB frame only. It
+The 1.5 GiB contract therefore covers one 128 MP planar RGB frame only. It
 does not cover the source mosaic, a second visible/pending frame, native
-demosaicer scratch, or a display upload. A 512 MiB encoded proposal is also
-independent of the current 128 MiB admission limit and cannot be adopted by
+demosaicer scratch, or a display upload. The 512 MiB encoded bound is also
+independent of JPEG limits and cannot be adopted by
 raising one constant: source bytes, decompressed mosaic, decoder allocations,
 float planes, and shared-memory display resources overlap in time.
 
@@ -129,12 +131,55 @@ provisional <1% target. These default sample counts are functional observations,
 not a performance baseline or a RAW memory guarantee. The full summary is
 `artifacts/modern-camera-full-final/summary.md`.
 
-## Modes held at the current limits
+## High-resolution editor measurements
+
+The final build (`83243ad47ccf7f5afe7ef9323ab504a9789c26d4ad9a2aa4a4a9b8c537efdaca`)
+passed 27 edit/history/reopen trials across these six models and the three owner
+originals, three per source, using the
+same roughly 50 ms process-RSS sampling and hidden native Metal editor. The
+source originals remained unchanged. Filesystem cache was not purged, and GPU
+memory was not isolated. Captures and correlated state are under
+`artifacts/modern-camera-100-final/raw-editor/run/`.
+
+| Source | Median first-process peak MiB | Maximum peak MiB |
+| --- | ---: | ---: |
+| Fujifilm GFX100S | 4277.9 | 4409.9 |
+| Sony A7R V | 3298.1 | 3533.5 |
+| Canon EOS R5 | 2147.6 | 2152.2 |
+| Nikon Z8 | 2268.6 | 2603.7 |
+| Leica Q2 | 2321.8 | 2473.0 |
+| Leica SL2 | 2351.0 | 2352.8 |
+
+The GFX100S source is 200.4 MiB encoded and has 103.37 million sensor pixels.
+One sensor-sized planar RGB float buffer is 1182.9 MiB; its complete editor
+journey reached 4.31 GiB sampled peak RSS. Increasing admission permits larger
+existing allocations; it does not make a file's encoded size representative of
+editor memory. Resolution drives decoded memory, while compression and required
+corrections also affect processing time.
+
+The Q2 journey exceeded the old 25-second evidence deadline while still producing
+valid correlated frames. Scripted evidence now has a 60-second application
+bound and the RAW harness has a 70-second process bound. Its completed first
+processes took about 32–33 seconds across the three trials. These whole-journey
+measurements include multiple developments and captures; they are not slider
+latency measurements or controlled performance baselines.
+
+The complete final verification passed its functional checks, including 19
+rendered scenarios and all 27 RAW edit/reopen trials. Its standard JPEG timing
+components ran above the host-load threshold (one-minute averages 10.00–10.87,
+threshold 8), so their timing verdicts are explicitly unreliable. Observed
+slider p95 was 84.48 ms, settled histogram p95 109.9 ms, scratch high-water mark
+13.46 MiB, and 24/60 MP median peak RSS 497.4/981.7 MiB. Idle CPU was 1.85%.
+These numbers are not performance acceptance or a baseline. The full report is
+`artifacts/modern-camera-100-final/summary.md`.
+
+## Modes and measured resource context
 
 These are measured encoded sizes and native sensor dimensions from the selected
-CC0 files. Planar bytes are `sensor pixels × 12`; none has been admitted by the
-application. A valid matrix and successful standalone unpack do not bypass its
-resource limits.
+CC0 files. Planar bytes are `sensor pixels × 12`. These rows preserve the
+measured resource context used when the RAW budget was approved; admission still
+requires profile identity, source evidence and mode qualification. A valid matrix
+and successful standalone unpack do not establish broad image-quality support.
 
 | Selected model | Sensor MP | Encoded MiB | One planar RGB MiB |
 | --- | ---: | ---: | ---: |
@@ -172,12 +217,12 @@ references and measured native/display phases.
 
 ## Practical recommendation
 
-Keep the current 64 MP, 128 MiB encoded, 512 MiB frame, and 64 MiB scratch
-limits until full editor measurements exist. For a first modern-camera subset,
-prefer 24–40 MP single-frame Bayer modes that fit one planar RGB frame under
-512 MiB, release native scratch before display conversion, and enforce one
-active plus one pending preview with byte-accounted eviction. Measure complete 40 MP editor workflows before making process-memory claims;
-128 MP modes remain resource-gated experiments. A 128 MP release path
+Keep JPEG's existing frame and scratch limits. For RAW, use the approved 128 MP,
+512 MiB encoded, and 1.5 GiB single-planar-buffer limits while qualification
+continues. Prefer single-frame modes whose measured liveness fits the available
+buffer and worker budgets, release native scratch before display conversion, and enforce one
+active plus one pending preview with byte-accounted eviction. Measure complete editor workflows at each supported resolution before making process-memory claims;
+128 MP modes remain qualification work. A process-wide 128 MP claim
 needs tiling or another bounded representation plus measured RCD/Markesteijn,
 display/GPU, and WB replacement liveness; accepting it by increasing the
 encoded or float constant alone would undercount the simultaneous peak.

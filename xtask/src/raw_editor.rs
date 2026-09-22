@@ -211,7 +211,7 @@ fn run_app(
             break status;
         }
         ensure(
-            started.elapsed() < Duration::from_secs(35),
+            started.elapsed() < Duration::from_secs(70),
             "RAW editor app deadline exceeded",
         )?;
         if let Ok(sample) = rss_mib(root, child.child.id()) {

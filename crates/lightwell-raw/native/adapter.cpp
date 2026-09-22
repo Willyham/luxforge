@@ -73,7 +73,7 @@ extern "C" int lw_raw_open(const uint8_t *bytes, size_t length,
                             LwCancel cancel, void *cancel_context,
                             void **handle_out, LwMetadata *meta,
                             char *err, size_t err_len) noexcept {
-  if (!bytes || !length || !handle_out || !meta || length > 128ull*1024*1024) {
+  if (!bytes || !length || !handle_out || !meta || length > LW_MAX_SOURCE_BYTES) {
     error(err, err_len, "invalid or oversized RAW input"); return 1;
   }
   *handle_out = nullptr;
@@ -97,7 +97,7 @@ extern "C" int lw_raw_open(const uint8_t *bytes, size_t length,
     if(identity.raw_count<1||identity.raw_count>2){error(err,err_len,"RAW frame count exceeds primary-frame mode bounds");return 7;}
     const auto &s=h->decoder.imgdata.sizes;
     const uint64_t n=uint64_t(s.raw_width)*s.raw_height;
-    if (!s.raw_width || !s.raw_height || s.raw_width>16384 || s.raw_height>16384 || n>64000000) {
+    if (!s.raw_width || !s.raw_height || s.raw_width>LW_MAX_SIDE || s.raw_height>LW_MAX_SIDE || n>LW_MAX_PIXELS) {
       error(err, err_len, "RAW dimensions or stride exceed adapter limits"); return 4;
     }
     const unsigned before_width=s.raw_width,before_height=s.raw_height,before_pitch=s.raw_pitch;
@@ -188,8 +188,8 @@ extern "C" int lw_raw_develop(const uint16_t *samples,size_t count,
                                LwCancel cancel,void *cancel_context,
                                char *err,size_t err_len) noexcept {
   if(!samples||!meta||!gains||!red||!green||!blue||!meta->width||!meta->height||
-     count!=uint64_t(meta->width)*meta->height||count>64000000||
-     count>512ull*1024*1024/(3*sizeof(float))) {
+     count!=uint64_t(meta->width)*meta->height||count>LW_MAX_PIXELS||
+     count>LW_MAX_RGB_BYTES/(3*sizeof(float))) {
     error(err,err_len,"invalid or oversized develop buffers");return 1;
   }
   if (patch_count>65536 || (patch_count && !patches)) {

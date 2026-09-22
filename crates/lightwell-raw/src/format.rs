@@ -311,6 +311,7 @@ pub fn required_dng_opcodes(bytes: &[u8]) -> Result<Vec<u32>, RawError> {
 #[derive(Clone, Copy)]
 pub(super) struct DngSensorContainer {
     pub raw_ifd: u32,
+    pub active_area: RawRect,
     pub default_crop: RawRect,
 }
 
@@ -346,6 +347,7 @@ pub(super) fn dng_container(
     bytes: &[u8],
     native: &NativeMetadata,
     strategy: &DngContainer,
+    decoder_active_bottom_trim: u32,
 ) -> Result<DngSensorContainer, RawError> {
     let (tiff, first) = Tiff::header(bytes, 0).ok_or(RawError::InvalidInput("DNG TIFF header"))?;
     let mut queue = vec![first];
@@ -460,9 +462,27 @@ pub(super) fn dng_container(
             .active_x
             .checked_add(native.active_width)
             .ok_or(RawError::InvalidInput("DNG active bounds"))?;
-        if area[0] != native.active_y
-            || area[1] != native.active_x
-            || area[2] != active_bottom
+        let source_active = RawRect {
+            x: area[1],
+            y: area[0],
+            width: area[3]
+                .checked_sub(area[1])
+                .ok_or(RawError::InvalidInput("DNG ActiveArea bounds"))?,
+            height: area[2]
+                .checked_sub(area[0])
+                .ok_or(RawError::InvalidInput("DNG ActiveArea bounds"))?,
+        };
+        let expected_bottom = active_bottom
+            .checked_add(decoder_active_bottom_trim)
+            .ok_or(RawError::InvalidInput("DNG active trim"))?;
+        crate::checked_rect(source_active, native.width, native.height)
+            .map_err(|_| RawError::InvalidInput("DNG ActiveArea bounds"))?;
+        if source_active.x != native.active_x
+            || source_active.y != native.active_y
+            || source_active.width != native.active_width
+            || area[2] != expected_bottom
+            || source_active.x + source_active.width > native.width
+            || source_active.y + source_active.height > native.height
             || area[3] != active_right
         {
             return Err(RawError::InvalidInput(
@@ -525,13 +545,14 @@ pub(super) fn dng_container(
                 .is_none_or(|v| v > native.height)
             || crop.x < native.active_x
             || crop.y < native.active_y
-            || crop.x + crop.width > active_right
-            || crop.y + crop.height > active_bottom
+            || crop.x + crop.width > source_active.x + source_active.width
+            || crop.y + crop.height > source_active.y + source_active.height
         {
             return Err(RawError::InvalidInput("DNG default crop bounds"));
         }
         candidate = Some(DngSensorContainer {
             raw_ifd: rel,
+            active_area: source_active,
             default_crop: crop,
         });
     }
@@ -1019,7 +1040,7 @@ mod tests {
     fn dng_container_root_ifd_defaults_active_area_to_full_sensor() {
         let (bytes, native) = dng_fixture(16, 1, None, [0, 0], [8, 4], 512, 64, &[]);
         let result =
-            dng_container(&bytes, &native, &DngContainer::IntegerCfaSingleSegment).unwrap();
+            dng_container(&bytes, &native, &DngContainer::IntegerCfaSingleSegment, 0).unwrap();
         assert_eq!(
             result.default_crop,
             RawRect {
@@ -1035,7 +1056,7 @@ mod tests {
     fn dng_container_accepts_14bit_packed_and_compression_seven() {
         let (bytes, native) = dng_fixture(14, 7, Some([0, 0, 4, 8]), [1, 1], [6, 2], 512, 7, &[]);
         let result =
-            dng_container(&bytes, &native, &DngContainer::IntegerCfaSingleSegment).unwrap();
+            dng_container(&bytes, &native, &DngContainer::IntegerCfaSingleSegment, 0).unwrap();
         assert_eq!(
             result.default_crop,
             RawRect {
@@ -1050,7 +1071,60 @@ mod tests {
     #[test]
     fn dng_container_accepts_padded_14bit_single_strip() {
         let (bytes, native) = dng_fixture(14, 1, Some([0, 0, 4, 8]), [0, 0], [8, 4], 512, 64, &[]);
-        assert!(dng_container(&bytes, &native, &DngContainer::IntegerCfaSingleSegment).is_ok());
+        assert!(dng_container(&bytes, &native, &DngContainer::IntegerCfaSingleSegment, 0).is_ok());
+    }
+
+    #[test]
+    fn dng_container_requires_exact_decoder_active_bottom_trim() {
+        let (bytes, mut native) =
+            dng_fixture(14, 1, Some([0, 0, 4, 8]), [0, 0], [8, 4], 512, 64, &[]);
+        native.active_height = 2;
+        assert!(dng_container(&bytes, &native, &DngContainer::IntegerCfaSingleSegment, 2).is_ok());
+        assert!(matches!(
+            dng_container(&bytes, &native, &DngContainer::IntegerCfaSingleSegment, 1),
+            Err(RawError::InvalidInput(
+                "DNG ActiveArea differs from decoder"
+            ))
+        ));
+
+        let (shifted, native_shifted) =
+            dng_fixture(14, 1, Some([0, 1, 4, 8]), [0, 0], [8, 4], 512, 64, &[]);
+        assert!(matches!(
+            dng_container(
+                &shifted,
+                &native_shifted,
+                &DngContainer::IntegerCfaSingleSegment,
+                0
+            ),
+            Err(RawError::InvalidInput(
+                "DNG ActiveArea differs from decoder"
+            ))
+        ));
+
+        let (overflow, native_overflow) =
+            dng_fixture(14, 1, Some([0, 0, 4, 9]), [0, 0], [8, 4], 512, 64, &[]);
+        assert!(matches!(
+            dng_container(
+                &overflow,
+                &native_overflow,
+                &DngContainer::IntegerCfaSingleSegment,
+                0
+            ),
+            Err(RawError::InvalidInput("DNG ActiveArea bounds"))
+        ));
+
+        let (outside, mut native_outside) =
+            dng_fixture(14, 1, Some([0, 0, 4, 8]), [0, 3], [8, 4], 512, 64, &[]);
+        native_outside.active_height = 2;
+        assert!(matches!(
+            dng_container(
+                &outside,
+                &native_outside,
+                &DngContainer::IntegerCfaSingleSegment,
+                2
+            ),
+            Err(RawError::InvalidInput("DNG default crop bounds"))
+        ));
     }
 
     #[test]
@@ -1066,7 +1140,7 @@ mod tests {
         put_entry(&mut bytes, 8, 11, 323, 4, 1, 4);
         put_entry(&mut bytes, 8, 12, 50719, 4, 2, 320);
         put_entry(&mut bytes, 8, 13, 50720, 4, 2, 328);
-        let result = dng_container(&bytes, &native, &DngContainer::IntegerCfaSingleSegment);
+        let result = dng_container(&bytes, &native, &DngContainer::IntegerCfaSingleSegment, 0);
         assert_eq!(
             result.unwrap().default_crop,
             RawRect {
@@ -1090,14 +1164,14 @@ mod tests {
             64,
             &[(512, 0), (1024, 0)],
         );
-        let result = dng_container(&bytes, &native, &DngContainer::IntegerCfaSingleSegment);
+        let result = dng_container(&bytes, &native, &DngContainer::IntegerCfaSingleSegment, 0);
         assert!(matches!(
             result,
             Err(RawError::InvalidInput("ambiguous DNG raw SubIFD"))
         ));
         let (bytes, native) = dng_fixture(16, 1, Some([0, 0, 4, 8]), [0, 0], [8, 4], 4090, 64, &[]);
         assert!(matches!(
-            dng_container(&bytes, &native, &DngContainer::IntegerCfaSingleSegment),
+            dng_container(&bytes, &native, &DngContainer::IntegerCfaSingleSegment, 0),
             Err(RawError::UnsupportedMode(_))
         ));
     }
@@ -1107,7 +1181,7 @@ mod tests {
         let (mut bytes, native) =
             dng_fixture(16, 1, Some([0, 0, 4, 8]), [1, 1], [6, 2], 512, 64, &[]);
         bytes[328..332].copy_from_slice(&9_u32.to_le_bytes());
-        let result = dng_container(&bytes, &native, &DngContainer::IntegerCfaSingleSegment);
+        let result = dng_container(&bytes, &native, &DngContainer::IntegerCfaSingleSegment, 0);
         assert!(matches!(
             result,
             Err(RawError::InvalidInput("DNG default crop bounds"))
@@ -1135,6 +1209,7 @@ mod tests {
             corrections: DngCorrections::Stage3GainMapThenWarp,
             interpretation: "test".into(),
             required_opcodes: Vec::new(),
+            decoder_active_bottom_trim: 0,
         };
         assert!(
             matches!(dng_color_calibration(&bytes, &native, &settings), Err(RawError::UnsupportedMode(message)) if message == "DNG nonidentity CameraCalibration")

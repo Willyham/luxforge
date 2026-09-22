@@ -191,9 +191,9 @@ impl Bins {
         }
     }
 
-    /// Fold one pixel into these bins. 64 MP (the current source-size limit) is comfortably below
+    /// Fold one pixel into these bins. 128 MP (the largest source-size limit) is comfortably below
     /// `u64::MAX`, so every counter here accumulates with plain addition and never needs checked or
-    /// saturating arithmetic; see `counts_cannot_overflow_within_the_64_megapixel_limit` below.
+    /// saturating arithmetic; see `counts_cannot_overflow_within_the_raw_pixel_limit` below.
     #[inline]
     fn add_pixel(&mut self, pixel: [u8; 4]) {
         let [r, g, b, _alpha] = pixel;
@@ -570,15 +570,15 @@ mod tests {
     }
 
     #[test]
-    fn counts_cannot_overflow_within_the_64_megapixel_limit() {
-        // The current source-size limit is 64 MP. Every counter in `Bins` accumulates with plain
+    fn counts_cannot_overflow_within_the_raw_pixel_limit() {
+        // The largest admitted source-size limit is 128 MP. Every counter in `Bins` accumulates with plain
         // (unchecked) addition; this states and proves the bound that makes that safe: even a
         // report whose every pixel hits the same bin and every predicate stays far below
         // `u64::MAX`, so no counter can wrap or need checked arithmetic.
-        const MAX_PIXELS: u64 = 64 * 1024 * 1024;
+        const MAX_PIXELS: u64 = lightwell_raw::MAX_PIXELS as u64;
         const _: () = assert!(
             MAX_PIXELS < u64::MAX / 4,
-            "64 MP must stay far below u64::MAX even summed across several counters"
+            "128 MP must stay far below u64::MAX even summed across several counters"
         );
     }
 
@@ -597,9 +597,9 @@ mod tests {
 
     #[test]
     fn report_serializes_within_the_16_kib_bound() {
-        // A representative worst case: every counter at the 64 MP source-size limit and maximal
+        // A representative worst case: every counter at the 128 MP source-size limit and maximal
         // dimensions, so every field's JSON digit count is near its practical maximum.
-        const MAX_PIXELS: u64 = 64 * 1024 * 1024;
+        const MAX_PIXELS: u64 = lightwell_raw::MAX_PIXELS as u64;
         let report = Report {
             r: [MAX_PIXELS; 256],
             g: [MAX_PIXELS; 256],

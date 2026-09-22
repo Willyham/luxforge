@@ -94,6 +94,8 @@ pub(crate) struct Dng {
     pub corrections: DngCorrections,
     pub interpretation: String,
     pub required_opcodes: Vec<Opcode>,
+    #[serde(default)]
+    pub decoder_active_bottom_trim: u32,
 }
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -139,10 +141,10 @@ impl Catalog {
             let [w, h] = camera.sensor_size;
             if w == 0
                 || h == 0
-                || w > 16384
-                || h > 16384
-                || u64::from(w) * u64::from(h) > 64_000_000
-                || u64::from(w) * u64::from(h) * 12 > 512 * 1024 * 1024
+                || w > crate::limits::MAX_SIDE
+                || h > crate::limits::MAX_SIDE
+                || u64::from(w) * u64::from(h) > crate::limits::MAX_PIXELS as u64
+                || u64::from(w) * u64::from(h) * 12 > crate::limits::MAX_RGB_BYTES as u64
             {
                 return fail("sensor size exceeds decode/development limits");
             }
@@ -228,6 +230,9 @@ impl Catalog {
                         .any(|ops| ops[0].list > ops[1].list)
                 {
                     return fail("unsupported DNG opcode recipe");
+                }
+                if dng.decoder_active_bottom_trim > 63 {
+                    return fail("DNG decoder active-bottom trim exceeds bound");
                 }
                 if dng.corrections == DngCorrections::Stage3GainMapThenWarp
                     && (dng.required_opcodes.len() != 2
@@ -321,6 +326,9 @@ mod tests {
 
     #[test]
     fn rejects_invalid_catalogs_without_partial_acceptance() {
+        let mut excessive_trim = catalog();
+        excessive_trim["cameras"][2]["dng"]["decoder_active_bottom_trim"] = json!(64);
+        assert!(parse(&excessive_trim).is_err());
         let mutations: Vec<(&str, Value)> = vec![
             ("/version", json!(2)),
             ("/cameras", json!([])),

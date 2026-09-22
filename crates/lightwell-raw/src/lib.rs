@@ -15,10 +15,12 @@ use std::{
 mod dng;
 mod dng_ops;
 mod format;
+mod limits;
 mod profiles;
 pub use dng::{DngCalibrationMetadata, DngCorrectionMetadata, DngOpcodeProvenance};
 pub use format::required_dng_opcodes;
 use format::{classify_mode, raf_default_crop};
+pub use limits::{MAX_PIXELS, MAX_RGB_BYTES, MAX_SIDE, MAX_SOURCE_BYTES};
 use profiles::{Catalog, Crop};
 
 fn camera_catalog() -> &'static Catalog {
@@ -29,10 +31,6 @@ fn camera_catalog() -> &'static Catalog {
     })
 }
 
-const MAX_SOURCE_BYTES: usize = 128 * 1024 * 1024;
-const MAX_PIXELS: usize = 64_000_000;
-const MAX_SIDE: u32 = 16_384;
-const MAX_RGB_BYTES: usize = 512 * 1024 * 1024;
 const PROVIDER: &str = "LibRaw 0.22.2 + librtprocess 9a858270";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -360,7 +358,7 @@ impl RawSource {
             return Err(RawError::InvalidInput("empty source"));
         }
         if bytes.len() > MAX_SOURCE_BYTES {
-            return Err(RawError::ResourceLimit("source exceeds 128 MiB"));
+            return Err(RawError::ResourceLimit("source exceeds 512 MiB"));
         }
         if cancel.load(Ordering::Relaxed) {
             return Err(RawError::Cancelled);
@@ -490,7 +488,7 @@ impl RawSource {
             .and_then(|v| v.checked_mul(std::mem::size_of::<f32>()))
             .ok_or(RawError::ResourceLimit("RGB allocation overflow"))?;
         if rgb_bytes > MAX_RGB_BYTES {
-            return Err(RawError::ResourceLimit("RGB planes exceed 512 MiB"));
+            return Err(RawError::ResourceLimit("RGB planes exceed 1.5 GiB"));
         }
         let mut data = Vec::new();
         data.try_reserve_exact(n * 3)
@@ -589,7 +587,7 @@ impl RawSource {
             .checked_mul(native.height as usize)
             .ok_or(RawError::ResourceLimit("sensor area overflow"))?;
         if n > MAX_PIXELS {
-            return Err(RawError::ResourceLimit("sensor exceeds 64 MP"));
+            return Err(RawError::ResourceLimit("sensor exceeds 128 MP"));
         }
         Ok(n)
     }
@@ -729,7 +727,14 @@ impl RawSource {
         let dng_container = profile
             .dng
             .as_ref()
-            .map(|settings| format::dng_container(bytes, native, &settings.container))
+            .map(|settings| {
+                format::dng_container(
+                    bytes,
+                    native,
+                    &settings.container,
+                    settings.decoder_active_bottom_trim,
+                )
+            })
             .transpose()?;
         let default_crop = match profile.crop {
             Crop::RafTags => {
@@ -758,7 +763,10 @@ impl RawSource {
             let (matrix, calibration) = format::dng_color_calibration(bytes, native, settings)?;
             let correction = dng::DngCorrection::parse(
                 opcodes,
-                active,
+                dng_container
+                    .as_ref()
+                    .expect("validated DNG crop capability")
+                    .active_area,
                 dng_container
                     .expect("validated DNG processing capability")
                     .raw_ifd,
@@ -778,7 +786,9 @@ impl RawSource {
                 mode,
                 sensor_width: native.width,
                 sensor_height: native.height,
-                active_area: active,
+                active_area: dng_container
+                    .as_ref()
+                    .map_or(active, |container| container.active_area),
                 default_crop,
                 cfa_width: cfa_w as u8,
                 cfa_height: cfa_h as u8,
@@ -1085,6 +1095,16 @@ mod tests {
         ));
         n.width = 16_384;
         n.height = 16_384;
+        assert!(matches!(
+            RawSource::checked_len(&n),
+            Err(RawError::ResourceLimit(_))
+        ));
+        n.width = 16_000;
+        n.height = 8_000;
+        let admitted = RawSource::checked_len(&n).unwrap();
+        assert_eq!(admitted, MAX_PIXELS);
+        assert!(admitted * 3 * std::mem::size_of::<f32>() <= MAX_RGB_BYTES);
+        n.height += 1;
         assert!(matches!(
             RawSource::checked_len(&n),
             Err(RawError::ResourceLimit(_))

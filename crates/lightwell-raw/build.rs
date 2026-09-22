@@ -1,3 +1,5 @@
+#[path = "src/limits.rs"]
+mod limits;
 #[path = "src/profiles.rs"]
 mod profiles;
 
@@ -82,6 +84,10 @@ fn main() {
     rust.push_str("}\n");
     names.push_str("} } }\n");
     rust.push_str(&names);
+    native.push_str(&format!(
+        "\n#define LW_MAX_SOURCE_BYTES {}ull\n#define LW_MAX_PIXELS {}ull\n#define LW_MAX_SIDE {}u\n#define LW_MAX_RGB_BYTES {}ull\n",
+        limits::MAX_SOURCE_BYTES, limits::MAX_PIXELS, limits::MAX_SIDE, limits::MAX_RGB_BYTES
+    ));
     fs::write(out.join("camera_allowlist.h"), native).expect("write native camera table");
     fs::write(out.join("raw_modes.rs"), rust).expect("write mode identifiers");
     let mut build = cc::Build::new();
@@ -103,6 +109,7 @@ fn main() {
     build.compile("lightwell_raw_native");
     println!("cargo:rerun-if-changed=data/cameras.json");
     println!("cargo:rerun-if-changed=src/profiles.rs");
+    println!("cargo:rerun-if-changed=src/limits.rs");
     println!("cargo:rerun-if-changed=native/adapter.cpp");
     println!("cargo:rerun-if-changed=vendor/libraw-0.22.2");
     println!("cargo:rerun-if-changed=vendor/librtprocess-9a858270");

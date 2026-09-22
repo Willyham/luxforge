@@ -16,8 +16,8 @@ The caller must read/hash a stable original through the catalog's source-verific
 The qualified DJI Air 2S FC3411 DNG has required OpcodeList3 GainMap (9) followed by per-channel WarpRectilinear (1). `decode` associates them with the unique raw sensor SubIFD, validates their versions, area, finite values and warp geometry, and rejects unknown mandatory operations. `develop` applies the gain in active-area coordinates and then resamples each camera plane through its own chromatic warp before the caller's color matrix and default crop. It recognizes the exact identity green warp and retains those gained pixels without interpolation. It reuses one active-plane scratch buffer and keeps the full-sensor output layout. `corrected_sensor_sample_location` and `gain_at_corrected_sensor` provide bounded per-channel queries for the neutral picker. `dng_corrections` records the exact operation order, payload hashes, optional operations skipped and interpretation identity. This float path preserves negative values and highlight headroom. The DNG specification calls for clipping after OpcodeList2/3, so these float values are not a strict clipped DNG rendering when an intermediate value leaves [0,1]. This preserves the existing Lightwell RAW contract: scene headroom remains available to later exposure edits, with clipping only at terminal display.
 
 The public metadata includes validated `active_area`, `default_crop`, `black_cfa`,
-CFA and calibration fields. The selected mode declares the validated raw frame count. The current catalog contains 84
-camera profiles and 87 recording modes; resource and visible-quality
+CFA and calibration fields. The selected mode declares the validated raw frame count. The current catalog contains 100
+camera profiles and 103 recording modes; resource and visible-quality
 qualification remains ongoing.
 
 The ordered DNG path also recognizes FixVignetteRadial (3),
@@ -48,13 +48,20 @@ and pinned LibRaw's upstream camera tables remain code-owned.
 
 ## Bounds and liveness
 
+These are RAW adapter limits. JPEG rendering keeps its separate existing
+RGBA8/frame and scratch limits; the RAW increase does not change JPEG behavior.
+The 512 MiB encoded, 128 MP sensor, and 1.5 GiB per-planar-buffer values are
+approved implementation limits. One authentic selected mode per model has
+adapter qualification; editor measurements are recorded in the resource ledger.
+The 1.5 GiB value is not a process RSS budget.
+
 | Allocation or resource | Bound / owner |
 | --- | --- |
-| Encoded source | 128 MiB Rust input limit; borrowed for the synchronous native decode only |
-| Sensor shape | 16,384 per side and 64 million pixels, checked before Rust allocation and after native unpack; primary frame only |
+| Encoded source | 512 MiB RAW-only Rust input limit; borrowed for the synchronous native decode only |
+| Sensor shape | 16,384 per side and 128 million pixels, checked before Rust allocation and after native unpack; primary frame only |
 | Native unpack | LibRaw `max_raw_memory_mb=512`, plus Rust checked dimensions/stride; native temporary decoder closes before source publication |
 | Retained u16 sensor mosaic | One Rust allocation, `2 × pixels`, shared by `Arc<Vec<u16>>` |
-| Developed float output | One Rust `Vec<f32>` of `3 × pixels`, capped at 512 MiB; `[R plane,G plane,B plane]` |
+| Developed float output | One Rust `Vec<f32>` of `3 × pixels`, capped at 1.5 GiB per planar RGB buffer; `[R plane,G plane,B plane]` |
 | Demosaic input | One temporary float mosaic, `4 × pixels`, plus algorithm tile workspace and row-pointer tables; released before `develop` returns |
 | DNG stage-three warp | One temporary active-area float plane, `4 × active pixels`, reused for three channels after native demosaic scratch is released |
 | Job concurrency | Owned by the editor worker; reserve for in-flight mosaic/output/old presentation before starting replacement |

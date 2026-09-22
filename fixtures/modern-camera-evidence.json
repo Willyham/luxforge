@@ -8427,12 +8427,1611 @@
         ],
         "source": "dng-calibration-source"
       }
+    },
+    {
+      "sample_id": "1842",
+      "make": "Nikon",
+      "model": "D850",
+      "mode": "NikonD850Raw14",
+      "source_sha256": "ce1fb927aca4f0ac3a1fa5caded0d7859560988e500f71177287310fd1a3d845",
+      "source_sha256_after": "ce1fb927aca4f0ac3a1fa5caded0d7859560988e500f71177287310fd1a3d845",
+      "source_preserved": true,
+      "sensor": {
+        "width": 8288,
+        "height": 5520,
+        "raw_count": 1
+      },
+      "active_area": {
+        "x": 0,
+        "y": 0,
+        "width": 8288,
+        "height": 5520
+      },
+      "default_crop": {
+        "x": 16,
+        "y": 8,
+        "width": 8256,
+        "height": 5504
+      },
+      "mosaic_sha256": "276debf7907fffe761916da70c49134bde1a131e11ed8685b3f7f99f5fde0d11",
+      "as_shot": {
+        "width": 8288,
+        "height": 5520,
+        "finite": true,
+        "min": 0.0,
+        "max": 0.25742012,
+        "sha256": "1b34f98b0269160c3d044fa4facfd85a066080d47d28794255ebbbda238f4a32"
+      },
+      "perturbed_wb": {
+        "width": 8288,
+        "height": 5520,
+        "finite": true,
+        "min": 0.0,
+        "max": 0.2702911,
+        "sha256": "ee77ef97eea189c046c5099d5fa4673a9f662a6648b4fda260af11d1e9a3ff6e"
+      },
+      "warnings": [],
+      "selected_sample": {
+        "sample_id": "1842",
+        "sha256": "ce1fb927aca4f0ac3a1fa5caded0d7859560988e500f71177287310fd1a3d845",
+        "status": "adapter_verified",
+        "identity_match": true,
+        "hash_match": true
+      },
+      "color_calibration": {
+        "xyz_to_camera": [
+          [
+            1.0405,
+            -0.3755,
+            -0.127
+          ],
+          [
+            -0.5461,
+            1.3787,
+            0.1793
+          ],
+          [
+            -0.104,
+            0.2015,
+            0.6785
+          ],
+          [
+            0.0,
+            0.0,
+            0.0
+          ]
+        ],
+        "camera_to_linear_srgb": [
+          [
+            1.4009159,
+            -0.31296784,
+            -0.087948,
+            0.0
+          ],
+          [
+            -0.124928154,
+            1.4125458,
+            -0.28761768,
+            0.0
+          ],
+          [
+            0.008026219,
+            -0.4077147,
+            1.3996885,
+            0.0
+          ]
+        ],
+        "source": "LibRaw 0.22.2"
+      }
+    },
+    {
+      "sample_id": "2788",
+      "make": "Nikon",
+      "model": "Z 7",
+      "mode": "NikonZ7Raw14",
+      "source_sha256": "ef046d37ffb11807648dd0b55589c02825f98c2c99416f4a7a74ae965a8eeb72",
+      "source_sha256_after": "ef046d37ffb11807648dd0b55589c02825f98c2c99416f4a7a74ae965a8eeb72",
+      "source_preserved": true,
+      "sensor": {
+        "width": 8288,
+        "height": 5520,
+        "raw_count": 1
+      },
+      "active_area": {
+        "x": 0,
+        "y": 0,
+        "width": 8288,
+        "height": 5520
+      },
+      "default_crop": {
+        "x": 16,
+        "y": 8,
+        "width": 8256,
+        "height": 5504
+      },
+      "mosaic_sha256": "f753e130d50790cbcbe7f5ad481beda4ba8a3dc2a3b77c12ed5f907499172768",
+      "as_shot": {
+        "width": 8288,
+        "height": 5520,
+        "finite": true,
+        "min": 0.0,
+        "max": 1.7140583,
+        "sha256": "4a11fc7a1be313e8ce1279bf82895f08f480377faca01d48d08f51eb0f302841"
+      },
+      "perturbed_wb": {
+        "width": 8288,
+        "height": 5520,
+        "finite": true,
+        "min": 0.0,
+        "max": 1.6830937,
+        "sha256": "9692e5c2b54803b2ec94792474e5b694ed2ca7c41dce5327ba021027b3c092ef"
+      },
+      "warnings": [],
+      "selected_sample": {
+        "sample_id": "2788",
+        "sha256": "ef046d37ffb11807648dd0b55589c02825f98c2c99416f4a7a74ae965a8eeb72",
+        "status": "adapter_verified",
+        "identity_match": true,
+        "hash_match": true
+      },
+      "color_calibration": {
+        "xyz_to_camera": [
+          [
+            1.3705,
+            -0.6004,
+            -0.14
+          ],
+          [
+            -0.5464,
+            1.3568,
+            0.2062
+          ],
+          [
+            -0.094,
+            0.1706,
+            0.7618
+          ],
+          [
+            0.0,
+            0.0,
+            0.0
+          ]
+        ],
+        "camera_to_linear_srgb": [
+          [
+            1.2743257,
+            -0.08630886,
+            -0.18801686,
+            0.0
+          ],
+          [
+            -0.108365946,
+            1.4216813,
+            -0.3133154,
+            0.0
+          ],
+          [
+            0.0053123427,
+            -0.35270625,
+            1.3473939,
+            0.0
+          ]
+        ],
+        "source": "LibRaw 0.22.2"
+      }
+    },
+    {
+      "sample_id": "3204",
+      "make": "Leica",
+      "model": "Q2",
+      "mode": "LeicaQ2Dng14",
+      "source_sha256": "a71f98405e9e9c1e4ac0f2d2e6c52d65daae3234fc0a9f6eed2a84ee4ce794ad",
+      "source_sha256_after": "a71f98405e9e9c1e4ac0f2d2e6c52d65daae3234fc0a9f6eed2a84ee4ce794ad",
+      "source_preserved": true,
+      "sensor": {
+        "width": 8424,
+        "height": 5632,
+        "raw_count": 1
+      },
+      "active_area": {
+        "x": 0,
+        "y": 0,
+        "width": 8392,
+        "height": 5632
+      },
+      "default_crop": {
+        "x": 12,
+        "y": 24,
+        "width": 8368,
+        "height": 5584
+      },
+      "mosaic_sha256": "b0f40275fbde9e86fd8c57db60ab14bd92736625f83a69a4c8de2e2549e324d1",
+      "as_shot": {
+        "width": 8424,
+        "height": 5632,
+        "finite": true,
+        "min": -0.01198566,
+        "max": 2.0410159,
+        "sha256": "5c213f37c2870537ca747ee099ef92b5e7379e486bc7b6eb9aaafe813316e85d"
+      },
+      "perturbed_wb": {
+        "width": 8424,
+        "height": 5632,
+        "finite": true,
+        "min": -0.012580002,
+        "max": 2.1430664,
+        "sha256": "31a9b4b32c7fe1aa4f8b1ee237831bb1635de5abb6d882093a3f647839867e6b"
+      },
+      "warnings": [],
+      "selected_sample": {
+        "sample_id": "3204",
+        "sha256": "a71f98405e9e9c1e4ac0f2d2e6c52d65daae3234fc0a9f6eed2a84ee4ce794ad",
+        "status": "adapter_verified",
+        "identity_match": true,
+        "hash_match": true
+      },
+      "color_calibration": {
+        "xyz_to_camera": [
+          [
+            0.8389,
+            -0.3198,
+            -0.1019
+          ],
+          [
+            -0.3834,
+            1.0222,
+            0.0661
+          ],
+          [
+            -0.1122,
+            0.19,
+            0.3415
+          ],
+          [
+            0.0,
+            0.0,
+            0.0
+          ]
+        ],
+        "camera_to_linear_srgb": [
+          [
+            1.3520311,
+            -0.21433352,
+            -0.13769765,
+            0.0
+          ],
+          [
+            -0.14250211,
+            1.2964298,
+            -0.15392768,
+            0.0
+          ],
+          [
+            0.0580368,
+            -0.55584663,
+            1.4978099,
+            0.0
+          ]
+        ],
+        "source": "DNG root calibration"
+      },
+      "dng_corrections": {
+        "interpretation": "dng-stage-order-active-v1-unclipped-bicubic-a-0.75",
+        "applied": [
+          {
+            "list": 51008,
+            "id": 4,
+            "version": 16973824,
+            "flags": 0,
+            "payload_sha256": "cd04a4754498e06db5a13c5f371f1f04ff6d2470f24aa9bd886540e5dce77f70"
+          },
+          {
+            "list": 51022,
+            "id": 1,
+            "version": 16973824,
+            "flags": 0,
+            "payload_sha256": "35ff224b6d2e843b60594a69896403ef405cfb0c20a8f333a458390fbf8d7556"
+          }
+        ],
+        "skipped_optional": [],
+        "calibration": {
+          "illuminants": [
+            17,
+            23
+          ],
+          "color_matrix1_sha256": "ee04cf63e7df68be6c8671ec61212adeb3168d0a734e67323206ebac7b40bcd6",
+          "color_matrix2_sha256": "a885d4a47202cdc86aa0ed4bd1f8cb45bdd2dea1232d6ddafc4681403d30d394",
+          "selected": "ColorMatrix2-fixed-XYZ-to-camera"
+        }
+      }
+    },
+    {
+      "sample_id": "3481",
+      "make": "Sony",
+      "model": "ILCE-7RM4",
+      "mode": "SonyILCE7RM4Raw14",
+      "source_sha256": "2c7d9ddce62bf197bc922e28b3eb93817ff723867dcc34bc3de0179fe12d6a13",
+      "source_sha256_after": "2c7d9ddce62bf197bc922e28b3eb93817ff723867dcc34bc3de0179fe12d6a13",
+      "source_preserved": true,
+      "sensor": {
+        "width": 9600,
+        "height": 6376,
+        "raw_count": 1
+      },
+      "active_area": {
+        "x": 0,
+        "y": 0,
+        "width": 9568,
+        "height": 6376
+      },
+      "default_crop": {
+        "x": 0,
+        "y": 20,
+        "width": 9504,
+        "height": 6336
+      },
+      "mosaic_sha256": "addf68960b36ea040c7ef293389def07dfdef8739132feecf74f23892ce3a794",
+      "as_shot": {
+        "width": 9600,
+        "height": 6376,
+        "finite": true,
+        "min": -0.0048425095,
+        "max": 1.4014585,
+        "sha256": "d6aeaf546713e4fd50d8748dcba7ddbe07a8b034f701d286505a5a2a04a90c8c"
+      },
+      "perturbed_wb": {
+        "width": 9600,
+        "height": 6376,
+        "finite": true,
+        "min": -0.005084635,
+        "max": 1.3313855,
+        "sha256": "fb580f737ec84f5583fb3b05c0c05b4f373f80e0e8247ec27a7ef9140e4c508b"
+      },
+      "warnings": [],
+      "selected_sample": {
+        "sample_id": "3481",
+        "sha256": "2c7d9ddce62bf197bc922e28b3eb93817ff723867dcc34bc3de0179fe12d6a13",
+        "status": "adapter_verified",
+        "identity_match": true,
+        "hash_match": true
+      },
+      "color_calibration": {
+        "xyz_to_camera": [
+          [
+            0.7662,
+            -0.2686,
+            -0.066
+          ],
+          [
+            -0.524,
+            1.2965,
+            0.253
+          ],
+          [
+            -0.0796,
+            0.1508,
+            0.6167
+          ],
+          [
+            0.0,
+            0.0,
+            0.0
+          ]
+        ],
+        "camera_to_linear_srgb": [
+          [
+            1.5417386,
+            -0.357951,
+            -0.18378763,
+            0.0
+          ],
+          [
+            -0.13061102,
+            1.5490167,
+            -0.4184057,
+            0.0
+          ],
+          [
+            0.0047354447,
+            -0.39965713,
+            1.3949217,
+            0.0
+          ]
+        ],
+        "source": "LibRaw 0.22.2"
+      }
+    },
+    {
+      "sample_id": "4217",
+      "make": "Nikon",
+      "model": "Z 7_2",
+      "mode": "NikonZ72Raw14",
+      "source_sha256": "33a6a4838bc9d80fa1cb2e7c2011e52ca9f4965a26e67b604412c69928d37c45",
+      "source_sha256_after": "33a6a4838bc9d80fa1cb2e7c2011e52ca9f4965a26e67b604412c69928d37c45",
+      "source_preserved": true,
+      "sensor": {
+        "width": 8288,
+        "height": 5520,
+        "raw_count": 1
+      },
+      "active_area": {
+        "x": 0,
+        "y": 0,
+        "width": 8288,
+        "height": 5520
+      },
+      "default_crop": {
+        "x": 16,
+        "y": 8,
+        "width": 8256,
+        "height": 5504
+      },
+      "mosaic_sha256": "5b40c9b597a43c5dea164ff77384a54ac2c2efce6f40daecc11c805f2c4f189a",
+      "as_shot": {
+        "width": 8288,
+        "height": 5520,
+        "finite": true,
+        "min": 0.0017510604,
+        "max": 0.46227568,
+        "sha256": "af3739590c25ae091b97b438961b44327af22460318ee35772c95b2e86609c34"
+      },
+      "perturbed_wb": {
+        "width": 8288,
+        "height": 5520,
+        "finite": true,
+        "min": 0.0012392469,
+        "max": 0.48538947,
+        "sha256": "9cc2ded506152176481a45b608d2c0df9ed41d4926bc4ca5d65f66da57a1ec0d"
+      },
+      "warnings": [],
+      "selected_sample": {
+        "sample_id": "4217",
+        "sha256": "33a6a4838bc9d80fa1cb2e7c2011e52ca9f4965a26e67b604412c69928d37c45",
+        "status": "adapter_verified",
+        "identity_match": true,
+        "hash_match": true
+      },
+      "color_calibration": {
+        "xyz_to_camera": [
+          [
+            1.3705,
+            -0.6004,
+            -0.14
+          ],
+          [
+            -0.5464,
+            1.3568,
+            0.2062
+          ],
+          [
+            -0.094,
+            0.1706,
+            0.7618
+          ],
+          [
+            0.0,
+            0.0,
+            0.0
+          ]
+        ],
+        "camera_to_linear_srgb": [
+          [
+            1.2743257,
+            -0.08630886,
+            -0.18801686,
+            0.0
+          ],
+          [
+            -0.108365946,
+            1.4216813,
+            -0.3133154,
+            0.0
+          ],
+          [
+            0.0053123427,
+            -0.35270625,
+            1.3473939,
+            0.0
+          ]
+        ],
+        "source": "LibRaw 0.22.2"
+      }
+    },
+    {
+      "sample_id": "4467",
+      "make": "Sony",
+      "model": "ILCE-1",
+      "mode": "SonyILCE1Raw14",
+      "source_sha256": "ebc775fd757a853d018c18664fda4258be87a9597af3f7a260182ddbcbec985e",
+      "source_sha256_after": "ebc775fd757a853d018c18664fda4258be87a9597af3f7a260182ddbcbec985e",
+      "source_preserved": true,
+      "sensor": {
+        "width": 8672,
+        "height": 5784,
+        "raw_count": 1
+      },
+      "active_area": {
+        "x": 0,
+        "y": 0,
+        "width": 8660,
+        "height": 5784
+      },
+      "default_crop": {
+        "x": 12,
+        "y": 12,
+        "width": 8640,
+        "height": 5760
+      },
+      "mosaic_sha256": "6a37be14262a4a1ba9e379c380bb32bd1b0d17ba9137936bc7069bf232ec8046",
+      "as_shot": {
+        "width": 8672,
+        "height": 5784,
+        "finite": true,
+        "min": 0.0,
+        "max": 2.3681643,
+        "sha256": "fbc351a12f64e75f35efbd869ac1a64d390c604fb5263e7c8d7831825d14c4ed"
+      },
+      "perturbed_wb": {
+        "width": 8672,
+        "height": 5784,
+        "finite": true,
+        "min": 0.0,
+        "max": 2.4865723,
+        "sha256": "06b76f8d9aea7d105aad6724c061a079f4a69f1a354d031ae077819955b3da43"
+      },
+      "warnings": [],
+      "selected_sample": {
+        "sample_id": "4467",
+        "sha256": "ebc775fd757a853d018c18664fda4258be87a9597af3f7a260182ddbcbec985e",
+        "status": "adapter_verified",
+        "identity_match": true,
+        "hash_match": true
+      },
+      "color_calibration": {
+        "xyz_to_camera": [
+          [
+            0.8161,
+            -0.2947,
+            -0.0739
+          ],
+          [
+            -0.4811,
+            1.2668,
+            0.2389
+          ],
+          [
+            -0.0437,
+            0.1229,
+            0.6524
+          ],
+          [
+            0.0,
+            0.0,
+            0.0
+          ]
+        ],
+        "camera_to_linear_srgb": [
+          [
+            1.5114094,
+            -0.33588248,
+            -0.17552687,
+            0.0
+          ],
+          [
+            -0.1452035,
+            1.5464272,
+            -0.40122372,
+            0.0
+          ],
+          [
+            -0.015366313,
+            -0.36241114,
+            1.3777775,
+            0.0
+          ]
+        ],
+        "source": "LibRaw 0.22.2"
+      }
+    },
+    {
+      "sample_id": "4493",
+      "make": "Fujifilm",
+      "model": "GFX100S",
+      "mode": "FujifilmGFX100SRaw16",
+      "source_sha256": "79bd20f5ed2fe5c0d1d0ff5b317dedb41f16feb55e693e5569e165fd1c7bcaa4",
+      "source_sha256_after": "79bd20f5ed2fe5c0d1d0ff5b317dedb41f16feb55e693e5569e165fd1c7bcaa4",
+      "source_preserved": true,
+      "sensor": {
+        "width": 11808,
+        "height": 8754,
+        "raw_count": 1
+      },
+      "active_area": {
+        "x": 0,
+        "y": 2,
+        "width": 11662,
+        "height": 8746
+      },
+      "default_crop": {
+        "x": 8,
+        "y": 8,
+        "width": 11648,
+        "height": 8735
+      },
+      "mosaic_sha256": "57fc8068f79335161daca6ec8979ca7ad547cb7fc1d8f8d30389979f7cbf39a4",
+      "as_shot": {
+        "width": 11808,
+        "height": 8754,
+        "finite": true,
+        "min": -0.0073080505,
+        "max": 0.9355738,
+        "sha256": "c03bd63504e8c4b90cad207ee01bef4f2975b30b72dc87b821ae6f327f04660a"
+      },
+      "perturbed_wb": {
+        "width": 11808,
+        "height": 8754,
+        "finite": true,
+        "min": -0.006942648,
+        "max": 0.8887951,
+        "sha256": "0fd8c9e4ccb7e7d8d233ccc768b06fa1b66d06dbaec4fa812dba51212b15a641"
+      },
+      "warnings": [],
+      "selected_sample": {
+        "sample_id": "4493",
+        "sha256": "79bd20f5ed2fe5c0d1d0ff5b317dedb41f16feb55e693e5569e165fd1c7bcaa4",
+        "status": "adapter_verified",
+        "identity_match": true,
+        "hash_match": true
+      },
+      "color_calibration": {
+        "xyz_to_camera": [
+          [
+            1.6212,
+            -0.8423,
+            -0.1583
+          ],
+          [
+            -0.4336,
+            1.2583,
+            0.1937
+          ],
+          [
+            -0.0195,
+            0.0726,
+            0.6199
+          ],
+          [
+            0.0,
+            0.0,
+            0.0
+          ]
+        ],
+        "camera_to_linear_srgb": [
+          [
+            1.0725317,
+            0.17123598,
+            -0.24376762,
+            0.0
+          ],
+          [
+            -0.12672333,
+            1.4310784,
+            -0.30435514,
+            0.0
+          ],
+          [
+            -0.009696719,
+            -0.29345968,
+            1.3031564,
+            0.0
+          ]
+        ],
+        "source": "LibRaw 0.22.2"
+      }
+    },
+    {
+      "sample_id": "4694",
+      "make": "Canon",
+      "model": "EOS R5",
+      "mode": "CanonEOSR5Raw14",
+      "source_sha256": "21430c36387efe65bd09ac0fcd724bfd959d93dd391ec811a1b741c8663becb5",
+      "source_sha256_after": "21430c36387efe65bd09ac0fcd724bfd959d93dd391ec811a1b741c8663becb5",
+      "source_preserved": true,
+      "sensor": {
+        "width": 8352,
+        "height": 5586,
+        "raw_count": 1
+      },
+      "active_area": {
+        "x": 144,
+        "y": 112,
+        "width": 8191,
+        "height": 5463
+      },
+      "default_crop": {
+        "x": 144,
+        "y": 112,
+        "width": 8192,
+        "height": 5464
+      },
+      "mosaic_sha256": "2660f27211bbe9322195ba1533e928c3f1de6b8bf654f7dd2c41e3839b007b10",
+      "as_shot": {
+        "width": 8352,
+        "height": 5586,
+        "finite": true,
+        "min": -0.0017091228,
+        "max": 1.0133625,
+        "sha256": "735504c15e38f912ff3de070c8d8025b76009adc6d760eef6b6f8bb4213513fd"
+      },
+      "perturbed_wb": {
+        "width": 8352,
+        "height": 5586,
+        "finite": true,
+        "min": -0.0016236667,
+        "max": 1.0133399,
+        "sha256": "91c879d6083aad825add40ed294f39b9726d259a37f46814ec01c6e11f4188ab"
+      },
+      "warnings": [],
+      "selected_sample": {
+        "sample_id": "4694",
+        "sha256": "21430c36387efe65bd09ac0fcd724bfd959d93dd391ec811a1b741c8663becb5",
+        "status": "adapter_verified",
+        "identity_match": true,
+        "hash_match": true
+      },
+      "color_calibration": {
+        "xyz_to_camera": [
+          [
+            0.9766,
+            -0.2953,
+            -0.1254
+          ],
+          [
+            -0.4276,
+            1.2116,
+            0.2433
+          ],
+          [
+            -0.0437,
+            0.1336,
+            0.5131
+          ],
+          [
+            0.0,
+            0.0,
+            0.0
+          ]
+        ],
+        "camera_to_linear_srgb": [
+          [
+            1.5350963,
+            -0.55457944,
+            0.01948309,
+            0.0
+          ],
+          [
+            -0.17334126,
+            1.6527568,
+            -0.47941557,
+            0.0
+          ],
+          [
+            -0.01373636,
+            -0.4534525,
+            1.4671888,
+            0.0
+          ]
+        ],
+        "source": "LibRaw 0.22.2"
+      }
+    },
+    {
+      "sample_id": "5002",
+      "make": "Fujifilm",
+      "model": "GFX50S II",
+      "mode": "FujifilmGFX50S2Raw14",
+      "source_sha256": "cf53a9018d5a77cd854ea0a91afee2a35ac8fab8f814020d79f728f99ba99892",
+      "source_sha256_after": "cf53a9018d5a77cd854ea0a91afee2a35ac8fab8f814020d79f728f99ba99892",
+      "source_preserved": true,
+      "sensor": {
+        "width": 8472,
+        "height": 6210,
+        "raw_count": 1
+      },
+      "active_area": {
+        "x": 0,
+        "y": 0,
+        "width": 8280,
+        "height": 6208
+      },
+      "default_crop": {
+        "x": 12,
+        "y": 8,
+        "width": 8256,
+        "height": 6192
+      },
+      "mosaic_sha256": "36b3e5ae85c97ade6261cd5e10ec18545fdcba920fb4b54b94e6ba593fcdb943",
+      "as_shot": {
+        "width": 8472,
+        "height": 6210,
+        "finite": true,
+        "min": -0.007949701,
+        "max": 2.011026,
+        "sha256": "d6541437f5184d3b7cfcd2dd485d92611d05a0977e74c929550a46d025cd5194"
+      },
+      "perturbed_wb": {
+        "width": 8472,
+        "height": 6210,
+        "finite": true,
+        "min": -0.0075589186,
+        "max": 1.9104745,
+        "sha256": "2e68fdeb875772e5b6e44e747d0a044562debddc1ba1f825a389d08cca8ac8d3"
+      },
+      "warnings": [],
+      "selected_sample": {
+        "sample_id": "5002",
+        "sha256": "cf53a9018d5a77cd854ea0a91afee2a35ac8fab8f814020d79f728f99ba99892",
+        "status": "adapter_verified",
+        "identity_match": true,
+        "hash_match": true
+      },
+      "color_calibration": {
+        "xyz_to_camera": [
+          [
+            1.1756,
+            -0.4754,
+            -0.0874
+          ],
+          [
+            -0.3056,
+            1.1045,
+            0.2305
+          ],
+          [
+            -0.0381,
+            0.1457,
+            0.6006
+          ],
+          [
+            0.0,
+            0.0,
+            0.0
+          ]
+        ],
+        "camera_to_linear_srgb": [
+          [
+            1.4748083,
+            -0.19417012,
+            -0.28063825,
+            0.0
+          ],
+          [
+            -0.23508278,
+            1.6968378,
+            -0.46175504,
+            0.0
+          ],
+          [
+            -0.0026588799,
+            -0.46995702,
+            1.472616,
+            0.0
+          ]
+        ],
+        "source": "LibRaw 0.22.2"
+      }
+    },
+    {
+      "sample_id": "5146",
+      "make": "Nikon",
+      "model": "Z 9",
+      "mode": "NikonZ9Raw14",
+      "source_sha256": "99d0fe24a38f0f7623aeab21440d266a5ac09f9665cf5283f590337e84323c38",
+      "source_sha256_after": "99d0fe24a38f0f7623aeab21440d266a5ac09f9665cf5283f590337e84323c38",
+      "source_preserved": true,
+      "sensor": {
+        "width": 8280,
+        "height": 5520,
+        "raw_count": 1
+      },
+      "active_area": {
+        "x": 0,
+        "y": 0,
+        "width": 8280,
+        "height": 5520
+      },
+      "default_crop": {
+        "x": 12,
+        "y": 8,
+        "width": 8256,
+        "height": 5504
+      },
+      "mosaic_sha256": "ae1036b4a0a78e141662d938f33a5fa81f83e1ed07585ee3db44be1c04bacc3c",
+      "as_shot": {
+        "width": 8280,
+        "height": 5520,
+        "finite": true,
+        "min": -0.00077896344,
+        "max": 1.8399376,
+        "sha256": "18407f865bcf19d66ecb51f502305a89221f3429702f6abb85a4b327631db480"
+      },
+      "perturbed_wb": {
+        "width": 8280,
+        "height": 5520,
+        "finite": true,
+        "min": -0.0008179116,
+        "max": 1.8513652,
+        "sha256": "bcff35d170a5444214ba77ab71da3705dde096ea7ef532df975fafce7186c8cc"
+      },
+      "warnings": [],
+      "selected_sample": {
+        "sample_id": "5146",
+        "sha256": "99d0fe24a38f0f7623aeab21440d266a5ac09f9665cf5283f590337e84323c38",
+        "status": "adapter_verified",
+        "identity_match": true,
+        "hash_match": true
+      },
+      "color_calibration": {
+        "xyz_to_camera": [
+          [
+            1.3389,
+            -0.6049,
+            -0.1441
+          ],
+          [
+            -0.4544,
+            1.2757,
+            0.1969
+          ],
+          [
+            0.0229,
+            0.0498,
+            0.739
+          ],
+          [
+            0.0,
+            0.0,
+            0.0
+          ]
+        ],
+        "camera_to_linear_srgb": [
+          [
+            1.2278929,
+            -0.060976405,
+            -0.1669165,
+            0.0
+          ],
+          [
+            -0.13027762,
+            1.4429189,
+            -0.3126412,
+            0.0
+          ],
+          [
+            -0.03516128,
+            -0.265081,
+            1.3002423,
+            0.0
+          ]
+        ],
+        "source": "LibRaw 0.22.2"
+      }
+    },
+    {
+      "sample_id": "6231",
+      "make": "Sony",
+      "model": "ILCE-7RM5",
+      "mode": "SonyILCE7RM5Raw14",
+      "source_sha256": "8918ba274f0919be4f9902f9eebcab4663445ebe441d22fb48f3f328198ac2ee",
+      "source_sha256_after": "8918ba274f0919be4f9902f9eebcab4663445ebe441d22fb48f3f328198ac2ee",
+      "source_preserved": true,
+      "sensor": {
+        "width": 9600,
+        "height": 6376,
+        "raw_count": 1
+      },
+      "active_area": {
+        "x": 0,
+        "y": 0,
+        "width": 9564,
+        "height": 6376
+      },
+      "default_crop": {
+        "x": 32,
+        "y": 20,
+        "width": 9504,
+        "height": 6336
+      },
+      "mosaic_sha256": "e723862e178ccd157cbc78a6a7eeb58f62985d92baabb35b3681346cfd8a605f",
+      "as_shot": {
+        "width": 9600,
+        "height": 6376,
+        "finite": true,
+        "min": -0.0020309621,
+        "max": 1.2222085,
+        "sha256": "43347d641b0dfa55242cd0f53fd0b3389fbcde25f0416973b61bfb4c365195f7"
+      },
+      "perturbed_wb": {
+        "width": 9600,
+        "height": 6376,
+        "finite": true,
+        "min": -0.0021325103,
+        "max": 1.2200196,
+        "sha256": "e5697af59d8fa8ce6e9f32cbfc4172c33aa89d59d064c24d748cb0630314fe63"
+      },
+      "warnings": [],
+      "selected_sample": {
+        "sample_id": "6231",
+        "sha256": "8918ba274f0919be4f9902f9eebcab4663445ebe441d22fb48f3f328198ac2ee",
+        "status": "adapter_verified",
+        "identity_match": true,
+        "hash_match": true
+      },
+      "color_calibration": {
+        "xyz_to_camera": [
+          [
+            0.82,
+            -0.2976,
+            -0.0719
+          ],
+          [
+            -0.4296,
+            1.2053,
+            0.2532
+          ],
+          [
+            -0.0429,
+            0.1282,
+            0.5774
+          ],
+          [
+            0.0,
+            0.0,
+            0.0
+          ]
+        ],
+        "camera_to_linear_srgb": [
+          [
+            1.5221971,
+            -0.3397746,
+            -0.18242253,
+            0.0
+          ],
+          [
+            -0.1688753,
+            1.6326119,
+            -0.46373662,
+            0.0
+          ],
+          [
+            -0.012806096,
+            -0.41792846,
+            1.4307345,
+            0.0
+          ]
+        ],
+        "source": "LibRaw 0.22.2"
+      }
+    },
+    {
+      "sample_id": "6617",
+      "make": "Nikon",
+      "model": "Z 8",
+      "mode": "NikonZ8Raw14",
+      "source_sha256": "c13a8675294456b9c979e6c1e556951654f35377b2870af2874bfb556f21ce40",
+      "source_sha256_after": "c13a8675294456b9c979e6c1e556951654f35377b2870af2874bfb556f21ce40",
+      "source_preserved": true,
+      "sensor": {
+        "width": 8280,
+        "height": 5520,
+        "raw_count": 1
+      },
+      "active_area": {
+        "x": 0,
+        "y": 0,
+        "width": 8280,
+        "height": 5520
+      },
+      "default_crop": {
+        "x": 12,
+        "y": 8,
+        "width": 8256,
+        "height": 5504
+      },
+      "mosaic_sha256": "9e074e5be3f87bf32823858401d94e3ec19257e320c8413f6479ffd20c0acb57",
+      "as_shot": {
+        "width": 8280,
+        "height": 5520,
+        "finite": true,
+        "min": 0.0,
+        "max": 1.5371095,
+        "sha256": "066a56d04503864ff92ff829498f1f993545591406f7b8aee247ec154e43b103"
+      },
+      "perturbed_wb": {
+        "width": 8280,
+        "height": 5520,
+        "finite": true,
+        "min": 0.0,
+        "max": 1.4889811,
+        "sha256": "0f046158e2f0fea64aa5c96e3d0d0d8ceb702d265379373875ecdac92c7f41f8"
+      },
+      "warnings": [],
+      "selected_sample": {
+        "sample_id": "6617",
+        "sha256": "c13a8675294456b9c979e6c1e556951654f35377b2870af2874bfb556f21ce40",
+        "status": "adapter_verified",
+        "identity_match": true,
+        "hash_match": true
+      },
+      "color_calibration": {
+        "xyz_to_camera": [
+          [
+            1.1423,
+            -0.4564,
+            -0.1123
+          ],
+          [
+            -0.4816,
+            1.2895,
+            0.2119
+          ],
+          [
+            -0.021,
+            0.1061,
+            0.7282
+          ],
+          [
+            0.0,
+            0.0,
+            0.0
+          ]
+        ],
+        "camera_to_linear_srgb": [
+          [
+            1.3931009,
+            -0.21568689,
+            -0.17741396,
+            0.0
+          ],
+          [
+            -0.13636345,
+            1.4786358,
+            -0.34227228,
+            0.0
+          ],
+          [
+            -0.025612125,
+            -0.3210265,
+            1.3466387,
+            0.0
+          ]
+        ],
+        "source": "LibRaw 0.22.2"
+      }
+    },
+    {
+      "sample_id": "7031",
+      "make": "Sony",
+      "model": "ILCE-7CR",
+      "mode": "SonyILCE7CRRaw14",
+      "source_sha256": "4cc138b310801ff528d5dcc0acfd0b8f58fb8aef7ae404f0f8fd3f32845783a4",
+      "source_sha256_after": "4cc138b310801ff528d5dcc0acfd0b8f58fb8aef7ae404f0f8fd3f32845783a4",
+      "source_preserved": true,
+      "sensor": {
+        "width": 9600,
+        "height": 6376,
+        "raw_count": 1
+      },
+      "active_area": {
+        "x": 0,
+        "y": 0,
+        "width": 9564,
+        "height": 6376
+      },
+      "default_crop": {
+        "x": 32,
+        "y": 20,
+        "width": 9504,
+        "height": 6336
+      },
+      "mosaic_sha256": "f90f9c02b1926f69d7c8754eb95689a67b32a963e6bfce20c74f2b75610f8e44",
+      "as_shot": {
+        "width": 9600,
+        "height": 6376,
+        "finite": true,
+        "min": -0.000165396,
+        "max": 1.0000153,
+        "sha256": "a7091288f76914e9ffd0714f1fac39a8c211b97f3f5300e3f29db34014d143b4"
+      },
+      "perturbed_wb": {
+        "width": 9600,
+        "height": 6376,
+        "finite": true,
+        "min": -0.0001736658,
+        "max": 1.0000153,
+        "sha256": "029c6af33bc6d2858effb82082939acc5610a7d0bbdb0a2387c82fb97881cf6f"
+      },
+      "warnings": [],
+      "selected_sample": {
+        "sample_id": "7031",
+        "sha256": "4cc138b310801ff528d5dcc0acfd0b8f58fb8aef7ae404f0f8fd3f32845783a4",
+        "status": "adapter_verified",
+        "identity_match": true,
+        "hash_match": true
+      },
+      "color_calibration": {
+        "xyz_to_camera": [
+          [
+            0.82,
+            -0.2976,
+            -0.0719
+          ],
+          [
+            -0.4296,
+            1.2053,
+            0.2532
+          ],
+          [
+            -0.0429,
+            0.1282,
+            0.5774
+          ],
+          [
+            0.0,
+            0.0,
+            0.0
+          ]
+        ],
+        "camera_to_linear_srgb": [
+          [
+            1.5221971,
+            -0.3397746,
+            -0.18242253,
+            0.0
+          ],
+          [
+            -0.1688753,
+            1.6326119,
+            -0.46373662,
+            0.0
+          ],
+          [
+            -0.012806096,
+            -0.41792846,
+            1.4307345,
+            0.0
+          ]
+        ],
+        "source": "LibRaw 0.22.2"
+      }
+    },
+    {
+      "sample_id": "7174",
+      "make": "Fujifilm",
+      "model": "GFX100 II",
+      "mode": "FujifilmGFX100IIRaw14",
+      "source_sha256": "b7b329bcbfcc07c5523a2b172a5173f4de4b841c8315078a1b69150ddaa16f30",
+      "source_sha256_after": "b7b329bcbfcc07c5523a2b172a5173f4de4b841c8315078a1b69150ddaa16f30",
+      "source_preserved": true,
+      "sensor": {
+        "width": 11808,
+        "height": 8754,
+        "raw_count": 1
+      },
+      "active_area": {
+        "x": 0,
+        "y": 2,
+        "width": 11662,
+        "height": 8746
+      },
+      "default_crop": {
+        "x": 8,
+        "y": 8,
+        "width": 11648,
+        "height": 8735
+      },
+      "mosaic_sha256": "d930d5e67f35087083f2e5cff9d234c1209b40d2dae7820773f44ea68636795f",
+      "as_shot": {
+        "width": 11808,
+        "height": 8754,
+        "finite": true,
+        "min": -0.12925325,
+        "max": 0.45465845,
+        "sha256": "eed8a9a6faefaf83c7c72aaab00b54ff1acf2f4489da54479fd25acd56dd8a44"
+      },
+      "perturbed_wb": {
+        "width": 11808,
+        "height": 8754,
+        "finite": true,
+        "min": -0.13571592,
+        "max": 0.4773913,
+        "sha256": "689279cdcb25e37605d8e65c945546d541ae0bafd0f78934a6f33369bde7ff9a"
+      },
+      "warnings": [],
+      "selected_sample": {
+        "sample_id": "7174",
+        "sha256": "b7b329bcbfcc07c5523a2b172a5173f4de4b841c8315078a1b69150ddaa16f30",
+        "status": "adapter_verified",
+        "identity_match": true,
+        "hash_match": true
+      },
+      "color_calibration": {
+        "xyz_to_camera": [
+          [
+            1.2806,
+            -0.5779,
+            -0.111
+          ],
+          [
+            -0.3546,
+            1.1507,
+            0.2318
+          ],
+          [
+            -0.0177,
+            0.0996,
+            0.5715
+          ],
+          [
+            0.0,
+            0.0,
+            0.0
+          ]
+        ],
+        "camera_to_linear_srgb": [
+          [
+            1.3032024,
+            -0.0443004,
+            -0.258902,
+            0.0
+          ],
+          [
+            -0.18021859,
+            1.6078583,
+            -0.42763972,
+            0.0
+          ],
+          [
+            -0.0155692855,
+            -0.38890982,
+            1.4044791,
+            0.0
+          ]
+        ],
+        "source": "LibRaw 0.22.2"
+      }
+    },
+    {
+      "sample_id": "7872",
+      "make": "Leica",
+      "model": "SL2",
+      "mode": "LeicaSL2Dng14",
+      "source_sha256": "d00f05468793e4509b53230e90dcdc078e823b254eee95f1c68b29e217df99bf",
+      "source_sha256_after": "d00f05468793e4509b53230e90dcdc078e823b254eee95f1c68b29e217df99bf",
+      "source_preserved": true,
+      "sensor": {
+        "width": 8424,
+        "height": 5632,
+        "raw_count": 1
+      },
+      "active_area": {
+        "x": 0,
+        "y": 0,
+        "width": 8392,
+        "height": 5632
+      },
+      "default_crop": {
+        "x": 12,
+        "y": 24,
+        "width": 8368,
+        "height": 5584
+      },
+      "mosaic_sha256": "e543b28a596190198dc1d9be19067d21711809c27c2c67ceaf5b12eca8021e94",
+      "as_shot": {
+        "width": 8424,
+        "height": 5632,
+        "finite": true,
+        "min": 0.0,
+        "max": 1.8095703,
+        "sha256": "d216994ef0345e13356a9506ecfacf96326fa87b2c554b326890f09f50b26c8a"
+      },
+      "perturbed_wb": {
+        "width": 8424,
+        "height": 5632,
+        "finite": true,
+        "min": 0.0,
+        "max": 1.9000487,
+        "sha256": "3e9165a17e5e5d802bf0f6537dec401261f2fb4c1ab5689d1537855cbb4fd198"
+      },
+      "warnings": [],
+      "selected_sample": {
+        "sample_id": "7872",
+        "sha256": "d00f05468793e4509b53230e90dcdc078e823b254eee95f1c68b29e217df99bf",
+        "status": "adapter_verified",
+        "identity_match": true,
+        "hash_match": true
+      },
+      "color_calibration": {
+        "xyz_to_camera": [
+          [
+            0.8389,
+            -0.3198,
+            -0.1019
+          ],
+          [
+            -0.3834,
+            1.0222,
+            0.0661
+          ],
+          [
+            -0.1122,
+            0.19,
+            0.3415
+          ],
+          [
+            0.0,
+            0.0,
+            0.0
+          ]
+        ],
+        "camera_to_linear_srgb": [
+          [
+            1.3520311,
+            -0.21433352,
+            -0.13769765,
+            0.0
+          ],
+          [
+            -0.14250211,
+            1.2964298,
+            -0.15392768,
+            0.0
+          ],
+          [
+            0.0580368,
+            -0.55584663,
+            1.4978099,
+            0.0
+          ]
+        ],
+        "source": "DNG root calibration"
+      },
+      "dng_corrections": {
+        "interpretation": "dng-stage-order-active-v1-unclipped-bicubic-a-0.75",
+        "applied": [
+          {
+            "list": 51008,
+            "id": 4,
+            "version": 16973824,
+            "flags": 0,
+            "payload_sha256": "cd04a4754498e06db5a13c5f371f1f04ff6d2470f24aa9bd886540e5dce77f70"
+          },
+          {
+            "list": 51022,
+            "id": 1,
+            "version": 16973824,
+            "flags": 0,
+            "payload_sha256": "7bc7662e8626112d6fbc9e051a133e628711918f09f78279928c121dd4f44ce7"
+          }
+        ],
+        "skipped_optional": [],
+        "calibration": {
+          "illuminants": [
+            17,
+            23
+          ],
+          "color_matrix1_sha256": "ee04cf63e7df68be6c8671ec61212adeb3168d0a734e67323206ebac7b40bcd6",
+          "color_matrix2_sha256": "a885d4a47202cdc86aa0ed4bd1f8cb45bdd2dea1232d6ddafc4681403d30d394",
+          "selected": "ColorMatrix2-fixed-XYZ-to-camera"
+        }
+      },
+      "geometry_provenance": {
+        "source": "DNG ActiveArea",
+        "decoder_active_bottom_trim": 19,
+        "active_area_authoritative": true
+      }
+    },
+    {
+      "sample_id": "7881",
+      "make": "Canon",
+      "model": "EOS R5 Mark II",
+      "mode": "CanonEOSR5MarkIIRaw14",
+      "source_sha256": "d6e6aa3b493ea8936dff0efb0cc17c87471437e7317bce37c8c82ba08b9cab7b",
+      "source_sha256_after": "d6e6aa3b493ea8936dff0efb0cc17c87471437e7317bce37c8c82ba08b9cab7b",
+      "source_preserved": true,
+      "sensor": {
+        "width": 8480,
+        "height": 5650,
+        "raw_count": 1
+      },
+      "active_area": {
+        "x": 258,
+        "y": 162,
+        "width": 8222,
+        "height": 5488
+      },
+      "default_crop": {
+        "x": 272,
+        "y": 176,
+        "width": 8192,
+        "height": 5464
+      },
+      "mosaic_sha256": "d95903a539f856af849207cc277c7fc963312638005597ef1b001cc914b2e7b7",
+      "as_shot": {
+        "width": 8480,
+        "height": 5650,
+        "finite": true,
+        "min": -0.0147715,
+        "max": 1.0321264,
+        "sha256": "1e5c75184c325666078d1c372f25fac0ede0377e4151f52caf4590863073346f"
+      },
+      "perturbed_wb": {
+        "width": 8480,
+        "height": 5650,
+        "finite": true,
+        "min": -0.015296158,
+        "max": 1.0336336,
+        "sha256": "199f546b7051450cee435d153c7fca181ea9ba16a292f47ed801b4cf7f240512"
+      },
+      "warnings": [],
+      "selected_sample": {
+        "sample_id": "7881",
+        "sha256": "d6e6aa3b493ea8936dff0efb0cc17c87471437e7317bce37c8c82ba08b9cab7b",
+        "status": "adapter_verified",
+        "identity_match": true,
+        "hash_match": true
+      },
+      "color_calibration": {
+        "xyz_to_camera": [
+          [
+            0.9396,
+            -0.2598,
+            -0.1207
+          ],
+          [
+            -0.4408,
+            1.2296,
+            0.2369
+          ],
+          [
+            -0.0505,
+            0.1575,
+            0.6077
+          ],
+          [
+            0.0,
+            0.0,
+            0.0
+          ]
+        ],
+        "camera_to_linear_srgb": [
+          [
+            1.5943217,
+            -0.6237859,
+            0.029464189,
+            0.0
+          ],
+          [
+            -0.1738153,
+            1.6337732,
+            -0.45995787,
+            0.0
+          ],
+          [
+            -0.017072676,
+            -0.44437551,
+            1.4614482,
+            0.0
+          ]
+        ],
+        "source": "LibRaw 0.22.2"
+      }
     }
   ],
   "validation": {
-    "qualified_result_count": 84,
+    "qualified_result_count": 100,
     "failed_result_ids": [],
-    "enabled_mode_count": 87,
+    "enabled_mode_count": 103,
     "enabled_mode_mismatches": [],
     "selected_sample_mismatches": [],
     "all_results_passed": true,
@@ -8445,10 +10044,10 @@
       "7796"
     ],
     "final_override_results_passed": true,
-    "catalog_camera_profile_count": 84,
-    "catalog_mode_count": 87,
+    "catalog_camera_profile_count": 100,
+    "catalog_mode_count": 103,
     "catalog_mode_identity_unique": true,
-    "qualified_mode_identity_count": 84,
-    "selected_sample_identity_count": 84
+    "qualified_mode_identity_count": 100,
+    "selected_sample_identity_count": 100
   }
 }

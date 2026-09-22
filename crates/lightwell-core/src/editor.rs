@@ -1608,8 +1608,14 @@ impl EditorService {
             )
         })?;
         let signature = source_signature(&asset.locator, &before);
+        let raw_source = matches!(&asset.source, SourceKind::Raw { .. });
+        let max_source_bytes = if raw_source {
+            lightwell_raw::MAX_SOURCE_BYTES as u64
+        } else {
+            128 * 1024 * 1024
+        };
         if signature.byte_len != asset.byte_len
-            || signature.byte_len > 128 * 1024 * 1024
+            || signature.byte_len > max_source_bytes
             || signature.file_identity != asset.file_identity
         {
             return Err(Error::new(

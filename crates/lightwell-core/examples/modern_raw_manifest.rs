@@ -18,7 +18,7 @@ use std::{
 const IDS: [&str; 10] = [
     "2418", "980", "1625", "6585", "6122", "7790", "7796", "1141", "3115", "1052",
 ];
-const MAX_BYTES: u64 = 128 * 1024 * 1024;
+const MAX_BYTES: u64 = lightwell_raw::MAX_SOURCE_BYTES as u64;
 const MAX_CORPUS_BYTES: u64 = 1 << 20;
 const MAX_ROWS: usize = 128;
 
@@ -55,14 +55,22 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut args = env::args_os().skip(1);
     let corpus = PathBuf::from(
         args.next()
-            .ok_or("usage: modern_raw_manifest CORPUS_RESULTS OUTPUT")?,
+            .ok_or("usage: modern_raw_manifest CORPUS_RESULTS OUTPUT [SAMPLE_ID ...]")?,
     );
     let output = PathBuf::from(
         args.next()
-            .ok_or("usage: modern_raw_manifest CORPUS_RESULTS OUTPUT")?,
+            .ok_or("usage: modern_raw_manifest CORPUS_RESULTS OUTPUT [SAMPLE_ID ...]")?,
     );
-    if args.next().is_some() {
-        return Err("usage: modern_raw_manifest CORPUS_RESULTS OUTPUT".into());
+    let supplied_ids: Vec<String> = args.map(|id| id.to_string_lossy().into_owned()).collect();
+    let ids: Vec<&str> = if supplied_ids.is_empty() {
+        IDS.to_vec()
+    } else {
+        supplied_ids.iter().map(String::as_str).collect()
+    };
+    if ids.len() > MAX_ROWS
+        || ids.iter().collect::<std::collections::HashSet<_>>().len() != ids.len()
+    {
+        return Err("select at most 128 unique sample IDs".into());
     }
     let corpus_file = File::open(corpus)?;
     if corpus_file.metadata()?.len() > MAX_CORPUS_BYTES {
@@ -77,7 +85,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .create_new(true)
         .open(&output)?;
     let mut sources = Vec::new();
-    for id in IDS {
+    for id in ids {
         let row = rows
             .iter()
             .find(|row| row.id == id)
@@ -90,7 +98,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         file.take(MAX_BYTES.saturating_add(1))
             .read_to_end(&mut bytes)?;
         if bytes.len() as u64 > MAX_BYTES {
-            return Err(format!("{id}: source exceeds 128 MiB").into());
+            return Err(format!("{id}: source exceeds 512 MiB").into());
         }
         let sha256 = format!("{:x}", Sha256::digest(&bytes));
         if !sha256.eq_ignore_ascii_case(&row.sha256) {

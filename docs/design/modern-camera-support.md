@@ -24,30 +24,34 @@ source preservation, mosaic/float correctness, calibrated dimensions and crop,
 then representative background editor/history/reopen workflows. Separate each
 mode's demonstrated evidence from outstanding controlled color/scene coverage.
 
-Default resource bounds remain in force until an evidence-backed RAW-specific
-change is agreed. High-resolution models, container compression, missing crop
+The owner-approved RAW resource contract is separate from JPEG: encoded RAW up
+to 512 MiB, 128 million sensor pixels, 16384 px per side, and one 1.5 GiB
+planar RGB float buffer. The per-buffer value is not a process RSS budget;
+native LibRaw scratch remains capped at 512 MiB and concurrent mosaics, previews,
+display/GPU resources and editor liveness remain separately bounded. JPEG limits
+are unchanged. High-resolution models, container compression, missing crop
 metadata, per-green black levels and DNG correction layouts may require shared
 capabilities before a profile can be enabled. Never inflate the support count
 with guessed entries or bypass required corrections to admit a model.
 
 ## Current evidence
 
-The selection contains 100 distinct model identities. Of these, 84 models
-(87 configured recording modes including the original modes) fit the current
-resource bounds. The authentic adapter run covers one selected recording mode
-per enabled model: 83 CC0 public sources and the existing owner Air 2S source.
-Each qualification checks source hashes before/after, full mosaic retention,
-usable calibration, and finite as-shot and perturbed-white-balance development. Per-source metadata and hashes
-are in [the evidence manifest](../../fixtures/modern-camera-evidence.json);
-[the selection](../../fixtures/modern-camera-selection.json) records source URLs,
-licenses and the 16 pending models. The float hashes record this build's output;
-they are not independent color-reference ground truth.
+The selection contains 100 configured model identities and 103 recording modes,
+including the original modes. The authentic adapter evidence covers one selected
+recording mode per model: 99 CC0 public sources and the existing owner Air 2S
+source. Each qualification checks source hashes before/after, full mosaic
+retention, usable calibration, and finite as-shot and perturbed-white-balance
+development. Per-source metadata and hashes are in
+[the evidence manifest](../../fixtures/modern-camera-evidence.json);
+[the selection](../../fixtures/modern-camera-selection.json) records source URLs
+and licenses. Float hashes record this build's output; they are not independent
+color-reference ground truth.
 
-Pending models are Nikon D850, Z7, Z7 II, Z8 and Z9; Sony A1, A7R IV, A7R V
-and A7CR; Canon R5 and R5 II; Fujifilm GFX100S, GFX100 II and GFX50S II; and
-Leica Q2 and SL2. Their actual encoded or planar float sizes exceed the current
-limits. The [resource ledger](modern-camera-resource-ledger.md) describes the
-proposed RAW-only increase and live allocations. These models are not enabled.
+The high-resolution profiles use the approved RAW-only resource contract in
+[the resource ledger](modern-camera-resource-ledger.md). For DNGs whose decoder
+reports a trimmed active bottom, a bounded profile value reconciles that exact
+delta while preserving the source ActiveArea for correction coordinates. The
+SL2 profile records LibRaw's 19-row trim; the full raw mosaic is retained.
 A demonstrated mode does not qualify every recording setting or, for drones,
 every camera module. The Mavic 3 Pro Cine fixture covers its 4032×3024 module.
 
@@ -55,8 +59,9 @@ The native M4 Pro editor passed 39 edit/history/reopen trials across ten
 representative modern models and the three original owner fixtures. The checks
 cover temperature/tint, individual channel WB, neutral picking, exposure,
 rotation/crop/undo, historical previews and exact reopened displayed pixels.
-Full verification also passed 19 general rendered scenarios and the independent
-RAW numerical reference. The resource ledger records sampled process memory
+The final build additionally passed 27 edit/reopen trials across six larger/Leica
+models and the three owner originals. Full verification also passed 19 general
+rendered scenarios and the independent RAW numerical reference. The resource ledger records sampled process memory
 and its limits. Controlled
 color/detail, other recording modes, and native Windows/Linux package
 qualification remain separate work.
@@ -65,7 +70,8 @@ qualification remain separate work.
 
 Download the selected public sources with the bounded
 `probes/raw/collect_camera_metadata.py` tool using the raw.pixls.us repository
-index and selected numeric sample IDs. It verifies the repository's CC0
+index and selected numeric sample IDs. Pass `--max-source-mib 512` for the
+complete selection; its conservative default download cap is 128 MiB. It verifies the repository's CC0
 license and SHA-256 and refuses to reuse an output directory. The separate
 native probe can inspect larger files, but does not establish application
 support. Keep images and generated results in an ignored evidence directory.
@@ -82,7 +88,7 @@ cargo run --release --locked -p lightwell-raw --example qualify_profiles -- \
 
 The qualifier runs sources sequentially, refuses an existing output file, and
 returns failure if any source changes, metadata is unsupported, or development
-fails. Its maximum source read is the application's 128 MiB bound. Public
+fails. Its maximum source read is the RAW adapter's 512 MiB bound. Public
 fixture redistributions and source photographs are not committed.
 
 OM-3 calibration comes from the exact model entry in pinned RawSpeed camera
@@ -105,13 +111,14 @@ support documentation, and passing quick/rendered/timing checks. Full verificati
 is required before claiming the broad support checkpoint. Existing three-camera
 metadata, corrections, source preservation and history remain regressions.
 
-## Open decisions
+## Coverage and resource scope
 
 - Exact model set follows the agreed broadly used modern mix and available
   decoder evidence; selection must not hide popular high-resolution models simply
-  because they exceed the current per-frame allocation bound.
-- Any increased RAW-specific allocation budget requires an explicit proposal and
-  owner decision with a measured allocation ledger. JPEG limits stay independent.
+  because they require more memory.
+- The approved RAW-specific allocation budget is 512 MiB encoded, 128 MP sensor,
+  and 1.5 GiB per planar RGB float buffer. JPEG limits stay independent. A
+  process-wide RSS claim still requires measured editor liveness evidence.
 
 ## Performance checklist
 
@@ -123,8 +130,9 @@ metadata, corrections, source preservation and history remain regressions.
   binary search; constant-marker scans are linear in the bounded sensor size.
   No new full RGB copy is introduced. Ordered DNG warps reuse one active-area
   float plane after native demosaic scratch is released, as in the original
-  Air 2S path. Existing 128 MiB encoded, 64 MP sensor and 512 MiB planar limits
-  still apply; aggregate editor RSS is measured separately.
+  Air 2S path. The approved RAW limits are 512 MiB encoded, 128 MP sensor and
+  1.5 GiB per planar RGB buffer; aggregate editor RSS is measured separately and
+  high-resolution editor evidence is recorded in the resource ledger.
 - The neutral picker checks at most 65,536 sparse replacements and samples its
   fixed patch with binary-search lookup. It does not develop or rasterize a
   frame. No decoding, color conversion or hashing moves onto the catalog owner.

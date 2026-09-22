@@ -17,7 +17,7 @@ use std::{
 
 const MAX_MANIFEST_BYTES: u64 = 1 << 20;
 const MAX_SAMPLES: usize = 128;
-const MAX_SOURCE_BYTES: u64 = 128 * 1024 * 1024;
+const MAX_SOURCE_BYTES: u64 = lightwell_raw::MAX_SOURCE_BYTES as u64;
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
