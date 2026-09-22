@@ -14,7 +14,7 @@ The invariant that a layer's coordinates are its input stage is unchanged. Placi
 
 ### Ordering rule
 
-- The host, not the module, chooses a new layer's position from the effect's declared stage. A `pixel` effect inserts immediately before the first `geometry` layer, or appends when the stack has no geometry layer. A `geometry` effect appends, as today. `Update` keeps the layer's identity and position, as today.
+- The host, not the module, chooses a new layer's position from the effect's declared stage and order. A `pixel` effect inserts before the first `spatial`, `geometry` or `finish` layer, or at the end when the stack has none of them, so it is always carried by the geometry after it. The whole placement table, including the `spatial` and `finish` stages and the order among layers of one stage, is in the [module contract](modules-and-api.md). `Update` keeps the layer's identity and position.
 - Ordering within the tail is unchanged: transforms and the crop keep their sequence, a stack holds at most one crop layer, and the crop module edits it in place.
 - Recipe validation does not reject stacks with a pixel layer after a geometry layer. Such a stack still renders exactly as it always did, because the renderer's meaning of a layer's coordinates has not changed; only where the host places new layers has. The current shapes rule needs no format marker change because no stored shape changes.
 - The crop conflict rule (a crop change that would push a later layer out of its stage is rejected) stays in force. With pixel layers before the crop it no longer triggers for them.
