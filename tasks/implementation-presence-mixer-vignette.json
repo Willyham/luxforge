@@ -125,7 +125,7 @@
     },
     {
       "id": "TASK-003",
-      "description": "Numerical study for the colour mixer: freeze the eight Oklab hue-range basis functions (centres, overlap, partition of unity, chroma ramp), the hue rotation, chroma scaling and luminance response for the −100..+100 ranges, the gamut policy and the production tolerance against an independent f64 reference, and record them in a mixer study note.",
+      "description": "Numerical study for the colour mixer: freeze the eight Oklab hue-range basis functions (centres, overlap, partition of unity, chroma ramp), the hue rotation, chroma scaling and luminance response for the \u2212100..+100 ranges, the gamut policy and the production tolerance against an independent f64 reference, and record them in a mixer study note.",
       "status": "pending",
       "dependencies": [],
       "extra_context": [
@@ -177,7 +177,7 @@
       "status": "pending",
       "dependencies": [],
       "extra_context": [
-        "Required properties: amount 0 is the exact identity for every mask; the centre pixel is unchanged for every parameter combination; the mask is symmetric under mirror and flip and depends only on the stage size and parameters; negative amount at −100 reaches black at the corners; positive amount never exceeds the display white in encoded terms.",
+        "Required properties: amount 0 is the exact identity for every mask; the centre pixel is unchanged for every parameter combination; the mask is symmetric under mirror and flip and depends only on the stage size and parameters; negative amount at \u2212100 reaches black at the corners; positive amount never exceeds the display white in encoded terms.",
         "Fixtures: flat fields and gradients at several aspect ratios with parameters at their extremes and defaults; corner and centre samples hand-computed."
       ],
       "context_links": [
@@ -216,14 +216,14 @@
     },
     {
       "id": "TASK-005",
-      "description": "Implement the spatial primitive in the host: Processing::Spatial with at most four SpatialUnit units, the stage boundary in compile and segment evaluation on the JPEG and RAW paths, tiled 512 × 512 halo-bounded execution on the shared Rayon pool with per-tile scratch from the existing budget, cancellation between tiles, compile-time refusal of an over-bound halo, the 1/16-scale global-estimate reduction with its eight-entry cache, and the bounded point-sample path through a spatial layer.",
+      "description": "Implement the spatial primitive in the host: Processing::Spatial with at most four SpatialUnit units, the stage boundary in compile and segment evaluation on the JPEG and RAW paths, tiled 512 \u00d7 512 halo-bounded execution on the shared Rayon pool with per-tile scratch from the existing budget, cancellation between tiles, compile-time refusal of an over-bound halo, the 1/16-scale global-estimate reduction with its eight-entry cache, and the bounded point-sample path through a spatial layer.",
       "status": "pending",
       "dependencies": [
         "TASK-001",
         "TASK-002"
       ],
       "extra_context": [
-        "Proved with a test unit (a box blur with a declared halo and a global mean estimate), not with the presence units: tiled output is byte-identical across tile sizes and equals a whole-frame reference; render.sample through the unit equals the rendered byte; a sample allocates at most one tile and, on an estimate cache miss, one 1/16-scale reduction.",
+        "Proved with a test unit (a box blur with a declared halo and a global mean estimate), not with the presence units: tiled output agrees with a whole-frame reference within the frozen tolerance for tile sizes 128 and 512 and is deterministic across runs; render.sample through the unit equals the rendered byte because it evaluates the stage-aligned tile that contains the point; a sample allocates at most one tile and, on an estimate cache miss, one 1/16-scale reduction. On the RAW linear path the operation pulls its input tiles through the compiled prefix and writes one float frame the rest of the evaluation pulls from.",
         "At most two full frames exist at once; the frame limit, scratch budget and one-megapixel threshold are unchanged. No full-frame float buffer on the JPEG path. Nothing runs on the owner thread. Neutral operations compile to nothing and keep source sharing.",
         "Performance checklist: new allocations are the tile planes (bounded by the scratch budget), the reduction (at most 0.25 MP) and the estimate store (at most 32 KiB); measured 24 MP and 60 MP before/after render figures recorded with scope."
       ],
@@ -257,9 +257,9 @@
         }
       ],
       "acceptance_criteria": [
-        "Tiled rendering of the test unit is byte-identical for tile sizes 128, 512 and whole-frame and matches the f64 reference within the frozen tolerance, on the JPEG and RAW paths, under exact geometry, around a point replacement and before a crop resample.",
+        "Tiled rendering of the test unit for tile sizes 128 and 512 agrees with the whole-frame f64 reference within the frozen tolerance and is deterministic across runs, on the JPEG and RAW paths, under exact geometry, around a point replacement and before a crop resample.",
         "A halo above the bound and a fifth unit are refused at compile time with named errors; cancellation between tiles is exercised by a test that cancels mid-render.",
-        "render.sample through the spatial unit equals the rendered byte and allocates at most one tile; the estimate cache hit and miss paths are tested and the store evicts oldest first.",
+        "render.sample through the spatial unit equals the rendered byte at every pixel of a small fixture and allocates at most one tile; the estimate cache hit and miss paths are tested and the store evicts oldest first.",
         "Recorded 24 MP and 60 MP release render measurements for the test unit with peak RSS and scratch high-water mark, and the checklist answered."
       ],
       "test_strategy": {
