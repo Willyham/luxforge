@@ -12,6 +12,7 @@ path = "src/lib.rs"
 
 [dependencies]
 iced.workspace = true
+wgpu.workspace = true
 
 [lints]
 workspace = true

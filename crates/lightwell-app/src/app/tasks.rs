@@ -7,7 +7,7 @@ use lightwell_core::{
     ApiRequest, AssetId, ClientId, ClientSession, ContentPoint, Draft, DraftId, EditorState,
     EntryId, EventsResult, HistoryEntry, HistoryPage, HistorySelection, Lineage, ModuleDescriptor,
     Mutation, MutationOutcome, MutationResult, OwnerHandle, PreviewJob, PreviewRequest,
-    RecipeDescription, Version,
+    ProxyBounds, RecipeDescription, Version,
 };
 use serde_json::{Value, json};
 use std::{
@@ -58,13 +58,38 @@ pub(crate) struct Upload {
     pub(crate) entry_id: EntryId,
     pub(crate) snapshot_id: String,
     pub(crate) source_fingerprint: String,
-    pub(crate) started: Instant,
+    /// These pixels are the display proxy of the frame, not its exact render. `width`/`height`
+    /// above are the texture's own size, which at a proxy is the proxy's; the exact stage the
+    /// picks, the percent box and the overlay grid map through stays on `Editor::dimensions`.
+    pub(crate) proxy: bool,
+    /// The proxy source dimensions this frame was rendered against, when it is one.
+    pub(crate) proxy_dimensions: Option<(u32, u32)>,
+    /// The proxy source was built for this frame rather than taken from the queue's cache.
+    pub(crate) proxy_built: bool,
+    /// These proxy pixels approximate the exact render at display size, because the stack holds
+    /// a spatial-stage layer whose neighbourhoods scale with the stage.
+    pub(crate) proxy_approximate: bool,
+    /// Why these pixels are being uploaded when no render asked for it: `Some("zoom")` is the
+    /// retained raster a zoom change needed. `None` is the ordinary path, a rendered frame.
+    pub(crate) reason: Option<&'static str>,
 }
 
 #[derive(Clone, Debug)]
 pub(crate) enum SyncResult {
     Unchanged { sequence: u64 },
     Changed(Box<Refresh>),
+}
+
+/// Offer a job the display bounds the caller computed, when there are any.
+///
+/// The bounds are decided in `update`, on the thread that owns the window, and travel with the
+/// request: a task runs off-thread and must not read the editor. `None` asks for the exact path
+/// alone, which is what a zoom at or above 100% and a truncated crop-draft job take.
+fn proxied(request: PreviewRequest, proxy: Option<ProxyBounds>) -> PreviewRequest {
+    match proxy {
+        Some(bounds) => request.proxy(bounds),
+        None => request,
+    }
 }
 
 pub(crate) fn mutation(revision: u64) -> Mutation {
@@ -221,6 +246,7 @@ pub(crate) fn refresh(
     asset_id: AssetId,
     with_history: bool,
     mut sequence: u64,
+    proxy: Option<ProxyBounds>,
 ) -> Result<Refresh, String> {
     let mut fetch = |method: &str, params: Value| -> Result<Value, String> {
         let (value, seen) = call(owner, client, method, params)?;
@@ -270,9 +296,12 @@ pub(crate) fn refresh(
     // it, because its identity describes the whole stack rather than the prefix it renders.
     let job = ready_preview_job(
         owner,
-        PreviewRequest::new(client, asset_id)
-            .entry(selected)
-            .analyse(),
+        proxied(
+            PreviewRequest::new(client, asset_id)
+                .entry(selected)
+                .analyse(),
+            proxy,
+        ),
         &expected,
     )?;
     Ok(Refresh {
@@ -305,6 +334,7 @@ pub(crate) fn import_task(
     path: PathBuf,
     generation: u64,
     open_guard: Arc<AtomicU64>,
+    proxy: Option<ProxyBounds>,
 ) -> Task<Message> {
     Task::perform(
         async move {
@@ -331,6 +361,7 @@ pub(crate) fn import_task(
                 state.asset.id,
                 true,
                 sequence.max(adopted_sequence),
+                proxy,
             )?;
             if open_guard.load(Ordering::Acquire) != generation {
                 return Err("superseded open".into());
@@ -347,11 +378,12 @@ pub(crate) fn state_task(
     asset_id: AssetId,
     method: String,
     params: Value,
+    proxy: Option<ProxyBounds>,
 ) -> Task<Message> {
     Task::perform(
         async move {
             let (_, sequence) = call(&owner, client, &method, params)?;
-            refresh(&owner, client, asset_id, false, sequence)
+            refresh(&owner, client, asset_id, false, sequence, proxy)
         },
         |result| Message::Refreshed(result.map(Box::new)),
     )
@@ -364,6 +396,7 @@ pub(crate) fn preview_task(
     entry_id: Option<EntryId>,
     method: &'static str,
     params: Value,
+    proxy: Option<ProxyBounds>,
 ) -> Task<Message> {
     Task::perform(
         async move {
@@ -385,9 +418,12 @@ pub(crate) fn preview_task(
             };
             let job = ready_preview_job(
                 &owner,
-                PreviewRequest::new(client, asset_id)
-                    .entry(entry_id)
-                    .analyse(),
+                proxied(
+                    PreviewRequest::new(client, asset_id)
+                        .entry(entry_id)
+                        .analyse(),
+                    proxy,
+                ),
                 &expected,
             )?;
             Ok(PreviewPayload {
@@ -486,33 +522,76 @@ pub(crate) fn draft_begin_task(
 /// stack — so the worker that produced those pixels reduces them, exactly as it does for a
 /// committed frame. A gesture therefore still costs one `draft.set` and one preview job per tick:
 /// the analysis rides the job it already asked for and no second render happens.
-pub(crate) fn draft_set_task(
-    owner: OwnerHandle,
+///
+/// It runs on the calling thread, synchronously: the owner's share is two `O(layers)` requests
+/// that measure well under a millisecond, while handing the answer back through the runtime costs
+/// a whole display frame whenever a redraw is in flight, which during a drag is always. A gesture
+/// therefore pays the round trip where it is cheapest instead of waiting a frame for its result.
+pub(crate) fn draft_set_now(
+    owner: &OwnerHandle,
     client: ClientId,
     draft_id: DraftId,
     asset_id: AssetId,
     fields: Value,
-) -> Task<Message> {
-    Task::perform(
-        async move {
-            let (draft, _) = call(
-                &owner,
-                client,
-                "draft.set",
-                json!({"draft_id":draft_id,"fields":fields}),
-            )?;
-            let draft = parse::<Draft>(draft)?;
-            let job = owner
-                .preview_job(
-                    PreviewRequest::new(client, asset_id)
-                        .draft(draft_id)
-                        .analyse(),
-                )
-                .map_err(|error| error.to_string())?;
-            Ok((draft, job))
+    proxy: Option<ProxyBounds>,
+) -> Result<(Draft, PreviewJob, RoundTrip), String> {
+    let queued = Instant::now();
+    let started = queued;
+    let (draft, _) = call(
+        owner,
+        client,
+        "draft.set",
+        json!({"draft_id":draft_id,"fields":fields}),
+    )?;
+    let answered = Instant::now();
+    let draft = parse::<Draft>(draft)?;
+    let job = owner
+        .preview_job(proxied(
+            PreviewRequest::new(client, asset_id)
+                .draft(draft_id)
+                .analyse(),
+            proxy,
+        ))
+        .map_err(|error| error.to_string())?;
+    let planned = Instant::now();
+    Ok((
+        draft,
+        job,
+        RoundTrip {
+            queued,
+            started,
+            answered,
+            planned,
         },
-        |result| Message::SliderDraftSet(result.map(Box::new)),
-    )
+    ))
+}
+
+/// Where the time of one `draft.set` round trip went, so an evidence run can tell the executor's
+/// scheduling from the owner's own work.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct RoundTrip {
+    /// The task was created in `update`.
+    pub(crate) queued: Instant,
+    /// The task began running on the executor.
+    pub(crate) started: Instant,
+    /// The owner answered `draft.set`.
+    pub(crate) answered: Instant,
+    /// The owner returned the preview job.
+    pub(crate) planned: Instant,
+}
+
+impl RoundTrip {
+    /// The four legs in milliseconds: executor wait, `draft.set` on the owner, the preview job on
+    /// the owner, and the return to `update` measured against `now`.
+    pub(crate) fn legs_ms(&self, now: Instant) -> [f64; 4] {
+        let ms = |from: Instant, to: Instant| to.duration_since(from).as_secs_f64() * 1000.0;
+        [
+            ms(self.queued, self.started),
+            ms(self.started, self.answered),
+            ms(self.answered, self.planned),
+            ms(self.planned, now),
+        ]
+    }
 }
 
 /// Commit the draft once. A real outcome is read back exactly as any other command's is; a no-op
@@ -523,6 +602,7 @@ pub(crate) fn draft_commit_task(
     draft_id: DraftId,
     asset_id: AssetId,
     mutation: Mutation,
+    proxy: Option<ProxyBounds>,
 ) -> Task<Message> {
     Task::perform(
         async move {
@@ -536,7 +616,7 @@ pub(crate) fn draft_commit_task(
             if result.outcome == MutationOutcome::NoOp {
                 return Ok(None);
             }
-            refresh(&owner, client, asset_id, false, sequence).map(Some)
+            refresh(&owner, client, asset_id, false, sequence, proxy).map(Some)
         },
         |result| Message::SliderDraftCommitted(result.map(|refresh| refresh.map(Box::new))),
     )
@@ -581,15 +661,17 @@ pub(crate) fn current_preview_task(
     client: ClientId,
     asset_id: AssetId,
     entry_id: Option<EntryId>,
+    proxy: Option<ProxyBounds>,
 ) -> Task<Message> {
     Task::perform(
         async move {
             let job = owner
-                .preview_job(
+                .preview_job(proxied(
                     PreviewRequest::new(client, asset_id)
                         .entry(entry_id)
                         .analyse(),
-                )
+                    proxy,
+                ))
                 .map_err(|error| error.to_string())?;
             let (session, sequence) = call(&owner, client, "session.state", json!({}))?;
             Ok(PreviewPayload {
@@ -769,6 +851,7 @@ pub(crate) fn sync_task(
     client: ClientId,
     asset_id: AssetId,
     after: u64,
+    proxy: Option<ProxyBounds>,
 ) -> Task<Message> {
     Task::perform(
         async move {
@@ -777,7 +860,7 @@ pub(crate) fn sync_task(
             if events.events.is_empty() && !events.gap {
                 Ok(SyncResult::Unchanged { sequence })
             } else {
-                refresh(&owner, client, asset_id, true, sequence)
+                refresh(&owner, client, asset_id, true, sequence, proxy)
                     .map(Box::new)
                     .map(SyncResult::Changed)
             }

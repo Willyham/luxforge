@@ -28,7 +28,7 @@ Doctor reports missing tools and the graphics environment without installing any
 | Run an agent's editor check without taking focus (macOS) | `cargo xtask develop --background --catalog FILE [--open PATH]` |
 | Exact current-editor journey, display-independent, including the Basic and histogram chapter | `cargo run --release --locked --package xtask -- editor-acceptance --output NEW_DIR` |
 | Core timing on a real-sized JPEG | `cargo run --release --locked --package xtask -- editor-performance --source JPEG --output NEW_DIR [--samples N]` |
-| Desktop slider/curve-to-presented-frame and settled-histogram timing, peak RSS, scratch and idle CPU; `--action`/`--parameter` measure any other field-patch slider (presence, mixer, vignette, ...) in place of the default Basic exposure | `cargo run --release --locked --package xtask -- editor-latency --source JPEG --output NEW_DIR [--binary PATH] [--samples N] [--control slider|curve] [--action ID --parameter NAME] [--crop DEGREES] [--idle]` |
+| Desktop slider/curve-to-presented-frame and settled-histogram timing, peak RSS, scratch and idle CPU; `--action`/`--parameter` measure any other field-patch slider (presence, mixer, vignette, ...) in place of the default Basic exposure | `cargo run --release --locked --package xtask -- editor-latency --source JPEG --output NEW_DIR [--binary PATH] [--samples N] [--mode drag\|commit\|burst] [--control slider\|curve] [--action ID --parameter NAME] [--crop DEGREES] [--basic] [--idle]` |
 | Verify golden fixtures; generate 24 MP, 60 MP and the mixer and presence scenarios' own hue-wheel and gradient/edge/texture/flat workloads | `cargo xtask fixtures`, `cargo xtask generate-fixtures [--output NEW_DIR]` |
 | RAW corpus integrity; independent numerical stage references | `cargo xtask raw-corpus --manifest FILE --output NEW_DIR`, `cargo xtask raw-reference --output NEW_DIR` |
 | Authentic RAW editor journey, reopen and resource sampling; `--samples` defaults to 3 trials per source | `cargo run --release --locked --package xtask -- raw-editor --manifest FILE --output NEW_DIR [--samples N] [--binary PATH]` |
@@ -182,7 +182,31 @@ the same `workspace.set` path as the button.
 
 ## Rendered evidence
 
-Smoke runs the built or packaged editor through a deterministic evidence sequence (repeated `--open`, evidence directory, fixed window size, bounded deadlines); there is no separate viewer, so the captured frame is the editor window with its sidebar. Scenarios: `empty`, `load`, `replacement`, `invalid`, `repeated`, `alternating`, `large24`, `large60`, `crop`, `crop-draft`, `workspace`, `basic`, `basic-panel`, `basic-crop`, `basic-restart`, `histogram`, `presence`, `mixer`, `vignette`, `unavailable`; generate the large, hue-wheel and presence fixtures first. Each run writes `result.json`, `app/events.jsonl`, `app/state.json`, `app/frame-*.png` (window-renderer readbacks, not OS screenshots), `subprocess.log` and `reproduce.md`. Each frame records `surface_columns`, the physical x range of the photo surface derived from the editor's layout constants, and the runner verifies fixture colors, Fit geometry and centering within that range, generation and state, backend, exit status and unchanged source hashes before writing `passed`; blank, stale or missing frames fail. The `render_ready` event marks the upload of the open request's preview raster, which is when a frame becomes capturable. A 25-second application deadline and a 35-second process deadline bound hangs.
+Smoke runs the built or packaged editor through a deterministic evidence sequence (repeated `--open`, evidence directory, fixed window size, bounded deadlines); there is no separate viewer, so the captured frame is the editor window with its sidebar. Scenarios: `empty`, `load`, `replacement`, `invalid`, `repeated`, `alternating`, `large24`, `large60`, `crop`, `crop-draft`, `workspace`, `basic`, `basic-panel`, `basic-crop`, `basic-restart`, `histogram`, `unavailable`; generate the large fixtures first. Each run writes `result.json`, `app/events.jsonl`, `app/state.json`, `app/frame-*.png` (window-renderer readbacks, not OS screenshots), `subprocess.log` and `reproduce.md`. Each frame records `surface_columns`, the physical x range of the photo surface derived from the editor's layout constants, and the runner verifies fixture colors, Fit geometry and centering within that range, generation and state, backend, exit status and unchanged source hashes before writing `passed`; blank, stale or missing frames fail. The `render_ready` event marks the upload of the open request's preview raster, which is when a frame becomes capturable. Single-open evidence has a 25-second application deadline; multi-step evidence scripts have 60 seconds for repeated RAW redevelopment. Smoke retains its 35-second process deadline; the RAW editor journey has a 70-second process deadline. These are harness hang bounds, not interactive latency targets.
+
+At Fit, and at any zoom that draws the stage smaller than itself, the frame a scenario captures is
+the **display proxy**: the whole recipe rendered against a source downscaled once to the photo area,
+which is the size the display was going to minify the exact render down to anyway. `preview_displayed`
+therefore carries `proxy`, `proxy_dimensions` (the proxy source's own size, null when there is none),
+`proxy_built` (the proxy source was built for this frame rather than taken from the queue's cache)
+and `reason` (`"zoom"` when the frame is a retained raster a zoom change needed rather than a
+render). Its `dimensions` stay the exact output stage's, which is what picks, the percent-zoom box
+and the overlay cell grid map through.
+
+The photograph is drawn by a **photo surface**: a shader primitive that owns one wgpu texture,
+writes the raster it is given into that texture during the frame that draws it, and recreates the
+texture only when the raster's dimensions change. So `preview_displayed` is emitted in the update
+that makes a raster the surface's source, and carries `"path": "surface"` to say so; the pixels are
+on screen in the redraw that update requests, with no image-allocation round trip on the input path
+and no upload message to wait for. It therefore carries no `upload_ms`, and neither does
+`render_ready`: there is no upload step to time. The clipping overlay and the crop draft's input
+stage keep the toolkit's image widget and still upload, which is what `clipping_overlay` and the
+draft's own settle report. `preview_exact_adopted` records the exact phase of such a job
+being taken up without an upload, `preview_exact_cancelled` records one a newer value superseded, and
+`clipping_overlay` carries `approximate` while the mask is derived from the proxy on screen rather
+than from that exact raster. `state.json` carries `proxy: {eligible, declined, approximate, dimensions, bounds,
+presented}`, so a stack that took the exact path — an ineligible layer, a stage already inside the
+bounds, a failed build — says so rather than being silently identical.
 
 ### The Basic and histogram acceptance chapter
 
@@ -212,9 +236,9 @@ and are referenced rather than duplicated.
 
 ### Authentic RAW evidence
 
-`raw-editor` runs the actual background editor, then reopens the same isolated catalog in a second process. Each source passes exposure, gain and custom temperature/tint edits, a sensor-neutral pick, geometry, undo, Original/current history selection and Fit/100%. It checks displayed entry/snapshot/layers, bound control values, source hashes, actual photo pixels and exact reopened presentation. These comparisons prove reevaluation and state correlation, not controlled color accuracy.
+`raw-editor` runs the actual background editor, then reopens the same isolated catalog in a second process. Each source passes exposure, gain and custom temperature/tint edits, a sensor-neutral pick, geometry, undo, Original/current history selection and Fit/100%. It checks displayed entry/snapshot/layers, bound control values, source hashes, actual photo pixels and exact reopened presentation. These comparisons prove reevaluation and state correlation, not controlled color accuracy. Large RAWs and required DNG corrections can take substantially longer than small fixtures; a script that continues producing correlated frames must be assessed against the whole-journey deadline.
 
-The local manifest has `format:1` and a `sources` array. Each source supplies `id`, `path`, `sha256`, `mode`, `make`, `model`, upright `source_dimensions:[width,height]`, `orientation` and a fixture-verified `neutral_point:[x,y]`. Supported mode strings are `NikonZ6Lossless12`, `NikonZ6Lossless14`, `FujifilmX100ViUncompressed14`, `FujifilmX100ViLossless14` and `DjiAir2sDng16`. The DJI source additionally supplies exact `sensor_dimensions`, `active_area` and `default_crop` expectations, and the harness verifies the mandatory correction order and persisted interpretation. Keep private paths and derived evidence ignored. `--samples` defaults to 3 (range 1–100), a functional run; a latency distribution needs `--samples 30`. Use an explicit absolute `--binary` and the same `CARGO_TARGET_DIR` for build and harness when working across worktrees.
+The local manifest has `format:1` and a `sources` array. Each source supplies `id`, `path`, `sha256`, `mode`, `make`, `model`, upright `source_dimensions:[width,height]`, `orientation` and a fixture-verified `neutral_point:[x,y]`. Mode strings, make and model must match the current [camera catalog](../../crates/lightwell-raw/data/cameras.json). DNG sources additionally supply exact `sensor_dimensions`, `active_area` and `default_crop` expectations, and the harness verifies required opcode order, calibration and persisted interpretation against that profile. Keep private paths and derived evidence ignored. `--samples` defaults to 3 (range 1–100), a functional run; a latency distribution needs `--samples 30`. Use an explicit absolute `--binary` and the same `CARGO_TARGET_DIR` for build and harness when working across worktrees.
 
 Reports include binary/lock/manifest hashes, launch mode, stage events, frame checks and sampled process RSS. The filesystem cache is not purged; app-cold is not OS-cache-cold. GPU memory is not isolated from RSS, and capture readbacks can affect memory. Same-process editing without repeated captures is a separate resource control.
 
@@ -258,12 +282,18 @@ Each step is an object with exactly one key.
   `reapply` wait for the crop layer's truncated input-stage preview, `apply` waits for its committed
   pixels, and the rest are captured on the next rendered frame.
 - `slider` drives one gesture on a generated control: `{"action": "set-basic", "parameter":
-  "exposure", "values": [0.25, 0.5, 0.75]}` sends one pointer move per value with the gated draft
-  tick between them, exactly as a drag and the subscription produce them. `"release": true` ends it
+  "exposure", "values": [0.25, 0.5, 0.75]}` sends one pointer move per value, exactly as a drag
+  produces them. Each move sends its `draft.set` and the one preview job for it as soon as nothing
+  is in flight; there is no tick to wait for. `"release": true` ends it
   with the control's release, which commits once; `"cancel": true` ends it with Escape; neither
   leaves the gesture open and captures the frame once the draft has drained, so the pixels belong to
   the newest value it sent. A second `slider` step naming the same control continues the same
-  gesture.
+  gesture. An `"interval_ms": 8` field paces the values instead of sending them all at once: one
+  value is sent per tick of a timer gated on the step still having values left to send, so a wild
+  drag can be scripted without the harness deciding what reaches the owner. Each paced value is
+  recorded as its own `slider_step_value` event (`{"value", "index"}`), even one the core's own
+  gesture round trip coalesces away, so the harness can time an input that never reached the owner.
+  Without `interval_ms` every value is sent at once, as before.
 - `slider_draft` answers an open gesture's Changed elsewhere notice: `"discard"` or `"reapply"`.
 - `field` types into one generated field: `{"action": "set-basic", "parameter": "exposure", "text":
   "1.5"}`, with `"submit": true` for Enter, which commits that one field without a draft.
@@ -405,11 +435,13 @@ catalog owner's thread and so cannot see scheduling, GPU upload or presentation.
 evidence script, drives the release binary through a background evidence launch, and reads the
 timings out of that run's `events.jsonl`. Each measured input is one scripted `slider` step left
 open, so the step settles only once the gesture has drained: one input, one `draft.set`, one preview
-job, one upload, with nothing from the previous input still in flight. `slider_draft_set` gives the
+job, one frame, with nothing from the previous input still in flight. `slider_draft_set` gives the
 input's time, `slider_draft_preview` names the preview generation that `draft.set` produced, and the
-`preview_displayed` of that generation is when the pixels became a renderer texture. Presented
-therefore means the desktop's `Uploaded` message, not display scanout: the figures are an upper
-bound on the editor's own work and a lower bound on what an eye sees. The measured window is
+`preview_displayed` of that generation is when that raster became the photo surface's source.
+Presented therefore means that update, whose redraw draws the frame, not display scanout: the
+figures are an upper bound on the editor's own work and a lower bound on what an eye sees. The
+report's `gpu_upload` is null with a note for the same reason `preview_displayed` carries no
+`upload_ms`, and `render_and_upload` covers the render and the hand-over together. The measured window is
 invisible, so nothing in these runs is composited or scanned out at all; the figures cover the
 editor's own path to the texture and say nothing about the cost of putting that texture on a
 screen. The last scripted value also
@@ -417,11 +449,30 @@ releases, so its drafted preview is superseded by the commit — that is the que
 report counts — and it is measured through to the `analysis_adopted` of the committed frame, which
 is the settled exact histogram. A final burst step sends every value between two ticks to show the
 driver's coalescing. `--crop DEGREES` commits a straightening 16:9 crop first, so the measured stack
-carries the crop resample as well as the colour pass. `--idle` adds a second workload: one evidence
+carries the crop resample as well as the colour pass. `--basic` commits a Basic layer with every
+field non-neutral first, so each measured frame runs every one of the module's colour units. `--idle` adds a second workload: one evidence
 run commits a Basic layer with all ten fields non-neutral into a catalog that outlives it, then an
 ordinary launch reopens the same file from that catalog and is left alone for thirty seconds, which
 is where peak RSS with a full stack and idle CPU come from. `latency.json` and `resources.json` keep
 every sample, the scratch budget's high-water mark and the correlated state.
+
+`--mode burst` is a wild, undrained drag rather than the drained gesture drag and commit mode
+measure: one scripted `slider` step of exposure values, paced through `interval_ms` at 120 values a
+second for 3 seconds (360 values, a triangle wave from 0 to +2 EV, down to -2 EV and back to 0,
+released at the end) instead of sent all at once, so the desktop's own gesture round trip decides
+what reaches the owner exactly as a real fast drag would. `--samples` is ignored: every burst run
+sends the same fixed values. Its `latency.json` keeps the same header fields as drag and commit
+(host, binary hashes, launch mode, method, queue counts) and adds a `burst` object: `scripted_values`
+and `sent_values` (the paced driver's own `slider_step_value` events, which count a value the core
+coalesces away as scripted rather than measured), `draft_sets` and `preview_jobs` (the core's own
+real-time coalescing of that pace), `presented_frames` and `presented_fps` (every `preview_displayed`
+over the run, drafted and committed alike, divided by the seconds from the first `slider_step_value`
+to the last of them), `staleness_ms` (each presented drafted frame's own `slider_draft_set` time to
+its `preview_displayed` time, paired by generation exactly as drag mode pairs them) and
+`frame_gap_ms` plus `max_gap_ms` (the intervals between consecutive presented drafted frames),
+`cancelled_exact` (`preview_exact_cancelled` events: full-resolution phases a newer value
+superseded, which carry no frame and are counted rather than delivered) and `proxy` (the last
+presented frame's `proxy`/`proxy_dimensions`).
 
 On macOS, smoke, hardening, measurement, latency, RAW editor and probe subprocesses always use the same background bundle as `develop --background`, and every one of them that launches the editor passes `--hidden-window`, so the run has neither an activated process nor a window on screen. Reports record `launch_mode`; reproduce through the harness to preserve focus protection. A native graphical session is still required. Windows and Linux retain direct launches; background behavior is not claimed there. Measurement launch times include the temporary bundle and executable copy, so they do not measure normal foreground activation, and with an invisible window they do not include the cost of compositing a visible one either.
 

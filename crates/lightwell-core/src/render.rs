@@ -11,7 +11,7 @@ use std::{
     cell::Cell,
     sync::{
         Arc, LazyLock,
-        atomic::{AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
     },
 };
 
@@ -20,13 +20,64 @@ pub mod spatial;
 pub use linear::{
     LinearImage, LinearSettings, render_linear, render_linear_cancellable, sample_linear,
 };
-pub use spatial::{Cancel, RENDER_CANCELLED, SpatialBudget, cached_estimates, clear_estimates};
 use spatial::{
     PRODUCTION_TILE, SpatialPlan, build_reduction, fill_planes, resolve_globals, run_batches,
     run_tile,
 };
+pub use spatial::{SpatialBudget, cached_estimates, clear_estimates};
 
 const PARALLEL_RENDER_PIXELS: u64 = 1_000_000;
+
+/// The detail every cancelled pass carries. The kind is the meaning; nothing about the work itself
+/// went wrong, so there is nothing image-specific to say.
+pub(crate) const CANCELLED: &str = "superseded by a newer request";
+
+/// A cooperative cancellation token shared between the thread that renders and the one that
+/// supersedes it.
+///
+/// Every rasterizing pass, the resample, the streamed colour pass, the linear row pass and the
+/// histogram reducer read it once per row or chunk, so a superseded full-resolution render stops
+/// within one chunk of the request instead of competing for the shared Rayon pool with the render
+/// that replaced it. A cancelled pass returns [`ErrorKind::Cancelled`] and never a partial frame;
+/// scratch reservations are released by their guards on the way out, exactly as on any other early
+/// return.
+///
+/// Both the load and the store are relaxed. The flag is the only thing communicated — no pixels are
+/// published through it and no other value depends on the order it becomes visible in — so the one
+/// relaxed load per chunk is all the hot loop pays.
+#[derive(Clone, Debug, Default)]
+pub struct Cancel(Arc<AtomicBool>);
+
+impl Cancel {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// A token that is never cancelled, for callers with nothing to supersede. It is a fresh token
+    /// rather than a shared one, so no caller can cancel another's work through it; the cost is one
+    /// `Arc` allocation per render, which is nothing beside the frame that render allocates.
+    pub fn never() -> Self {
+        Self::default()
+    }
+
+    pub fn cancel(&self) {
+        self.0.store(true, Ordering::Relaxed);
+    }
+
+    pub fn is_cancelled(&self) -> bool {
+        self.0.load(Ordering::Relaxed)
+    }
+
+    /// `Err(ErrorKind::Cancelled)` when cancelled, for the passes to call per chunk.
+    #[inline]
+    pub fn check(&self) -> Result<(), Error> {
+        if self.is_cancelled() {
+            Err(Error::new(ErrorKind::Cancelled, CANCELLED))
+        } else {
+            Ok(())
+        }
+    }
+}
 
 /// The sRGB transfer function applied backwards, in f64: one encoded channel in `[0, 1]` to linear
 /// light. Every table below is built from this one definition.
@@ -258,7 +309,7 @@ fn color_runs(operations: &[Processing]) -> ColorRuns<'_> {
 
 /// One 8-bit pixel decoded into linear sRGB.
 #[inline]
-fn decode_pixel(rgb: [u8; 3]) -> [f32; 3] {
+pub(crate) fn decode_pixel(rgb: [u8; 3]) -> [f32; 3] {
     let table = &*SRGB_TO_LINEAR;
     [
         table[rgb[0] as usize],
@@ -267,15 +318,24 @@ fn decode_pixel(rgb: [u8; 3]) -> [f32; 3] {
     ]
 }
 
+/// The output boundary for one channel already carried in f64: clamp to `[0, 1]`, then take the
+/// code whose exact threshold interval holds the value, which equals `floor(255 · encode(v) + 0.5)`.
+///
+/// A pass that accumulates in f64 — the proxy downscale averages a source rectangle that way —
+/// quantizes through this directly, so no f32 rounding is inserted between its arithmetic and the
+/// code boundary.
+#[inline]
+pub(crate) fn quantize_channel(value: f64) -> u8 {
+    let thresholds = &*SRGB_CODE_THRESHOLDS;
+    let value = value.clamp(0.0, 1.0);
+    thresholds.partition_point(|threshold| *threshold <= value) as u8
+}
+
 /// The output boundary: clamp to `[0, 1]`, then take the code whose exact threshold interval holds
 /// the value, which equals `floor(255 · encode(v) + 0.5)`.
 #[inline]
-fn quantize_pixel(rgb: [f32; 3]) -> [u8; 3] {
-    let thresholds = &*SRGB_CODE_THRESHOLDS;
-    rgb.map(|value| {
-        let value = f64::from(value.clamp(0.0, 1.0));
-        thresholds.partition_point(|threshold| *threshold <= value) as u8
-    })
+pub(crate) fn quantize_pixel(rgb: [f32; 3]) -> [u8; 3] {
+    rgb.map(|value| quantize_channel(f64::from(value)))
 }
 
 /// Apply every unit of one run, in order, to one contiguous run of already decoded linear pixels of
@@ -313,18 +373,26 @@ fn color_pixel(rgb: [u8; 3], run: &ColorRun<'_>, x: u32, y: u32) -> Result<[u8; 
 fn apply_color_run(
     pixels: &mut [u8],
     width: u32,
-    height: u32,
+    rows: std::ops::Range<usize>,
     run: &ColorRun<'_>,
+    cancel: &Cancel,
 ) -> Result<(), Error> {
-    if pixels.is_empty() || width == 0 {
+    if pixels.is_empty() || width == 0 || rows.is_empty() {
         return Ok(());
     }
+    let stride = width as usize * 4;
+    // Only the band of rows the caller names is coloured; every other row keeps its bytes. The
+    // whole frame is the band whenever nothing after this pass reads less than that.
+    let pixels = &mut pixels[rows.start * stride..rows.end * stride];
+    let height = (rows.end - rows.start) as u32;
     let chunk_rows = color_chunk_rows(width);
     let chunk_bytes = chunk_rows * width as usize * 4;
-    // A chunk is a whole number of rows, so the row a pixel belongs to is the chunk's first row
-    // plus its offset inside the chunk: every unit is handed one row at a time, at the coordinates
-    // of the stage this segment produces.
+    // A chunk is a whole number of rows, so the row a pixel belongs to is the band's first row
+    // plus the chunk's offset inside it: every unit is handed one row at a time, at the
+    // coordinates of the stage this segment produces.
     let process = |chunk_index: usize, chunk: &mut [u8]| -> Result<(), Error> {
+        // Before the reservation, so a cancelled pass never takes scratch it will not use.
+        cancel.check()?;
         let count = chunk.len() / 4;
         let _reservation =
             ScratchBudget::default().reserve(count * std::mem::size_of::<[f32; 3]>())?;
@@ -332,7 +400,7 @@ fn apply_color_run(
             .chunks_exact(4)
             .map(|pixel| decode_pixel([pixel[0], pixel[1], pixel[2]]))
             .collect();
-        let first_row = (chunk_index * chunk_rows) as u32;
+        let first_row = (rows.start + chunk_index * chunk_rows) as u32;
         for (offset, row) in linear.chunks_mut(width as usize).enumerate() {
             apply_units(run, first_row + offset as u32, 0, row)?;
         }
@@ -435,7 +503,7 @@ pub struct Raster {
 }
 
 impl Raster {
-    fn expected_len(width: u32, height: u32) -> Result<usize, Error> {
+    pub(crate) fn expected_len(width: u32, height: u32) -> Result<usize, Error> {
         let pixels = u64::from(width)
             .checked_mul(u64::from(height))
             .and_then(|n| n.checked_mul(4))
@@ -572,18 +640,51 @@ impl Resample {
     }
 }
 
+/// The rows of a resample's input frame that its output can read, with a margin, so the pointwise
+/// colour before a crop is applied only where the crop looks. The mapping is affine, so the region
+/// its output rectangle reads is the convex hull of the four mapped corners, and the bilinear
+/// sample at each of them reads at most one neighbouring pixel in each direction, which the margin
+/// covers with a pixel to spare. Everything outside the band is discarded by the resample, so
+/// leaving it uncoloured changes no output byte.
+fn rows_read_by(resample: Resample, input_height: u32) -> std::ops::Range<usize> {
+    if resample.output_width == 0 || resample.output_height == 0 || input_height == 0 {
+        return 0..0;
+    }
+    let (last_x, last_y) = (resample.output_width - 1, resample.output_height - 1);
+    let mut top = f64::INFINITY;
+    let mut bottom = f64::NEG_INFINITY;
+    for (x, y) in [(0, 0), (last_x, 0), (0, last_y), (last_x, last_y)] {
+        let (_, v) = resample.input_at(x, y);
+        if !v.is_finite() {
+            return 0..input_height as usize;
+        }
+        top = top.min(v);
+        bottom = bottom.max(v);
+    }
+    let start = (top - 0.5).floor() - 2.0;
+    let end = (bottom - 0.5).ceil() + 3.0;
+    let start = start.max(0.0).min(f64::from(input_height)) as usize;
+    let end = end.max(0.0).min(f64::from(input_height)) as usize;
+    start..end.max(start)
+}
+
 /// One exact pass over one input frame: every output pixel copies exactly one input pixel.
 fn copy_transformed(
     input: &[u8],
     input_width: u32,
     geometry: ExactGeometry,
+    cancel: &Cancel,
 ) -> Result<Vec<u8>, Error> {
     let width = geometry.output_width;
     let height = geometry.output_height;
+    cancel.check()?;
     let mut output = vec![0; Raster::expected_len(width, height)?];
     let row_bytes = usize::try_from(u64::from(width) * 4)
         .map_err(|_| Error::new(ErrorKind::ResourceLimit, "image row is not addressable"))?;
-    let copy_row = |out_y: usize, row: &mut [u8]| {
+    // One relaxed load per output row, ahead of that row's copies; the arithmetic below is
+    // untouched.
+    let copy_row = |out_y: usize, row: &mut [u8]| -> Result<(), Error> {
+        cancel.check()?;
         for out_x in 0..width {
             let (input_x, input_y) = geometry.unmap(out_x, out_y as u32);
             let from =
@@ -591,17 +692,18 @@ fn copy_transformed(
             let to = out_x as usize * 4;
             row[to..to + 4].copy_from_slice(&input[from..from + 4]);
         }
+        Ok(())
     };
     if u64::from(width) * u64::from(height) >= PARALLEL_RENDER_PIXELS {
         output
             .par_chunks_exact_mut(row_bytes)
             .enumerate()
-            .for_each(|(out_y, row)| copy_row(out_y, row));
+            .try_for_each(|(out_y, row)| copy_row(out_y, row))?;
     } else {
         output
             .chunks_exact_mut(row_bytes)
             .enumerate()
-            .for_each(|(out_y, row)| copy_row(out_y, row));
+            .try_for_each(|(out_y, row)| copy_row(out_y, row))?;
     }
     Ok(output)
 }
@@ -612,9 +714,11 @@ fn resample_frame(
     input_width: u32,
     input_height: u32,
     resample: Resample,
+    cancel: &Cancel,
 ) -> Result<Vec<u8>, Error> {
     let width = resample.output_width;
     let height = resample.output_height;
+    cancel.check()?;
     let mut output = vec![0; Raster::expected_len(width, height)?];
     let row_bytes = usize::try_from(u64::from(width) * 4)
         .map_err(|_| Error::new(ErrorKind::ResourceLimit, "image row is not addressable"))?;
@@ -623,24 +727,28 @@ fn resample_frame(
         let pixel = &input[offset..offset + 4];
         [pixel[0], pixel[1], pixel[2], pixel[3]]
     };
-    let sample_row = |out_y: usize, row: &mut [u8]| {
+    // One relaxed load per output row, ahead of that row's samples; the point sampler and the
+    // bilinear blend are untouched.
+    let sample_row = |out_y: usize, row: &mut [u8]| -> Result<(), Error> {
+        cancel.check()?;
         for out_x in 0..width {
             let (u, v) = resample.input_at(out_x, out_y as u32);
             let pixel = bilinear(u, v, input_width, input_height, fetch);
             let to = out_x as usize * 4;
             row[to..to + 4].copy_from_slice(&pixel);
         }
+        Ok(())
     };
     if u64::from(width) * u64::from(height) >= PARALLEL_RENDER_PIXELS {
         output
             .par_chunks_exact_mut(row_bytes)
             .enumerate()
-            .for_each(|(out_y, row)| sample_row(out_y, row));
+            .try_for_each(|(out_y, row)| sample_row(out_y, row))?;
     } else {
         output
             .chunks_exact_mut(row_bytes)
             .enumerate()
-            .for_each(|(out_y, row)| sample_row(out_y, row));
+            .try_for_each(|(out_y, row)| sample_row(out_y, row))?;
     }
     Ok(output)
 }
@@ -862,7 +970,12 @@ fn mapped_replacements(segment: &Segment) -> Vec<(usize, u32, u32, [u8; 3])> {
 /// replacements before a colour run, then that run streamed over the frame, then the replacements
 /// after it. Writing the replacements in stack order lets a later one win at the same coordinate,
 /// exactly as a later layer does.
-fn apply_operations(pixels: &mut [u8], segment: &Segment) -> Result<(), Error> {
+fn apply_operations(
+    pixels: &mut [u8],
+    segment: &Segment,
+    rows: std::ops::Range<usize>,
+    cancel: &Cancel,
+) -> Result<(), Error> {
     if !segment.writes_pixels() {
         return Ok(());
     }
@@ -880,7 +993,7 @@ fn apply_operations(pixels: &mut [u8], segment: &Segment) -> Result<(), Error> {
     };
     for run in color_runs(&segment.operations) {
         write(&mut next, run.start, pixels);
-        apply_color_run(pixels, segment.width, segment.height, &run)?;
+        apply_color_run(pixels, segment.width, rows.clone(), &run, cancel)?;
     }
     write(&mut next, usize::MAX, pixels);
     Ok(())
@@ -1252,13 +1365,13 @@ pub fn render(
     snapshot_id: SnapshotId,
     recipe: &Recipe,
 ) -> Result<Raster, Error> {
-    render_cancellable(registry, source, snapshot_id, recipe, &Cancel::new())
+    render_cancellable(registry, source, snapshot_id, recipe, &Cancel::never())
 }
 
-/// [`render`] with a token a caller can set from another thread to stop work it no longer wants.
-/// The token is checked between tile batches of a spatial operation, which is the only part of a
-/// render whose cost is not bounded by one pass over the frame; a cancelled render returns
-/// [`RENDER_CANCELLED`] and releases every reservation it held.
+/// [`render`] under a [`Cancel`] token the passes read once per row or chunk and once per batch of
+/// spatial tiles. With a token that is never cancelled this is byte for byte [`render`]; it is the
+/// same code, and [`render`] is one call to it. A cancelled render releases every reservation it
+/// held.
 pub fn render_cancellable(
     registry: &ModuleRegistry,
     source: &SourceImage,
@@ -1286,6 +1399,8 @@ pub(crate) fn render_tiled(
     cancel: &Cancel,
     tile: u32,
 ) -> Result<Raster, Error> {
+    // A token already cancelled when the call arrives costs no frame at all.
+    cancel.check()?;
     check_source(source)?;
     let compiled = registry.compile(source.width, source.height, recipe)?;
     let first = &compiled.segments[0];
@@ -1299,13 +1414,27 @@ pub(crate) fn render_tiled(
             source.rgba.as_ref(),
             source.width,
             first.geometry,
+            cancel,
         )?)
     };
+    // A segment followed by a resample colours only the rows that resample reads; the last one
+    // colours its whole frame.
+    let band = |index: usize, height: u32| -> std::ops::Range<usize> {
+        match compiled
+            .segments
+            .get(index + 1)
+            .and_then(|next| next.entry.as_ref())
+        {
+            Some(Entry::Resample(resample)) => rows_read_by(*resample, height),
+            // A spatial boundary reads every row of the frame before it, plus a halo.
+            Some(Entry::Spatial { .. }) | None => 0..height as usize,
+        }
+    };
     if let Some(pixels) = frame.as_mut() {
-        apply_operations(pixels, first)?;
+        apply_operations(pixels, first, band(0, height), cancel)?;
     }
 
-    for segment in &compiled.segments[1..] {
+    for (index, segment) in compiled.segments.iter().enumerate().skip(1) {
         let entry = segment
             .entry
             .as_ref()
@@ -1314,7 +1443,7 @@ pub(crate) fn render_tiled(
         let input = previous.as_deref().unwrap_or(source.rgba.as_ref());
         let mut next = match entry {
             Entry::Resample(resample) => {
-                let frame = resample_frame(input, width, height, *resample)?;
+                let frame = resample_frame(input, width, height, *resample, cancel)?;
                 width = resample.output_width;
                 height = resample.output_height;
                 frame
@@ -1335,12 +1464,12 @@ pub(crate) fn render_tiled(
         // The frame the boundary read is released before the next pass, so two frames is the peak.
         drop(previous);
         if !segment.geometry.is_identity(width, height) {
-            let transformed = copy_transformed(&next, width, segment.geometry)?;
+            let transformed = copy_transformed(&next, width, segment.geometry, cancel)?;
             next = transformed;
             width = segment.width;
             height = segment.height;
         }
-        apply_operations(&mut next, segment)?;
+        apply_operations(&mut next, segment, band(index, height), cancel)?;
         frame = Some(next);
     }
 
@@ -1368,6 +1497,64 @@ mod tests {
 
     fn registry() -> ModuleRegistry {
         ModuleRegistry::builtin()
+    }
+
+    /// The colour pass before a crop covers only the rows the crop reads, so the rendered frame
+    /// must still agree with the point sampler at every output pixel, and the band must be a
+    /// strict subset of the stage for a crop that discards rows.
+    #[test]
+    fn colour_before_a_crop_is_applied_only_where_the_crop_reads_and_stays_exact() {
+        // This colours real chunks, so it takes the guard the scratch-budget tests serialize on.
+        let _scratch = scratch_guard();
+        let registry = registry();
+        let source = source(240, 320);
+        let stage = CropStage {
+            width: 320,
+            height: 240,
+            angle: 7.0,
+        };
+        let (box_width, box_height) = stage.bounding_box();
+        // A wide, short crop near the centre, so whole rows above and below it are never read.
+        let rect = BoxRect {
+            x: box_width * 0.1,
+            y: box_height * 0.35,
+            width: box_width * 0.8,
+            height: box_height * 0.3,
+        };
+        let layers = vec![
+            turn(Transform::RotateRight),
+            Layer {
+                id: LayerId::new(),
+                effect_id: crate::BASIC_EFFECT.into(),
+                effect_format: EFFECT_FORMAT,
+                payload: json!({"exposure": 0.7, "contrast": 30.0, "vibrance": 40.0}),
+            },
+            Layer::crop(rect.normalized(&stage)),
+        ];
+        let recipe = Recipe { format: 1, layers };
+        let compiled = registry
+            .compile(source.width, source.height, &recipe)
+            .unwrap();
+        let Some(Entry::Resample(resample)) = compiled.segments[1].entry else {
+            panic!("a rotated crop resamples");
+        };
+        let band = rows_read_by(resample, compiled.segments[0].height);
+        assert!(
+            band.start > 0 && band.end < compiled.segments[0].height as usize,
+            "the band {band:?} should exclude rows of the {} high stage",
+            compiled.segments[0].height
+        );
+        let raster = render(&registry, &source, SnapshotId::new(), &recipe).unwrap();
+        for y in 0..raster.height {
+            for x in 0..raster.width {
+                let sampled = sample(&registry, &source, &recipe, x, y).unwrap();
+                assert_eq!(
+                    raster.pixel(x, y),
+                    sampled.rgba,
+                    "pixel ({x}, {y}) differs from the sampler"
+                );
+            }
+        }
     }
     fn source(width: u32, height: u32) -> SourceImage {
         let mut rgba = Vec::new();
@@ -3312,14 +3499,28 @@ mod tests {
         let recipe = colour_recipe(vec![exposure_layer(&[1.0])]);
         let budget = ScratchBudget::default();
         assert_eq!(budget.limit(), 64 * 1024 * 1024, "the declared default");
-        assert_eq!(budget.in_use(), 0, "nothing is held between renders");
+        // The budget is process-wide and other tests' preview workers reserve from it on their
+        // own threads, so "nothing is held between renders" is read once those renders have
+        // finished, not at an arbitrary instant.
+        let idle = || {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+            while budget.in_use() != 0 {
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "scratch stayed held: {} bytes",
+                    budget.in_use()
+                );
+                std::thread::yield_now();
+            }
+        };
+        idle();
         let previous = budget.set_limit(16);
         let error = render(&registry, &source, SnapshotId::new(), &recipe)
             .expect_err("one row chunk is larger than 16 bytes");
         budget.set_limit(previous);
         assert_eq!(error.kind, ErrorKind::ResourceLimit);
         assert!(error.detail.contains("scratch"), "{error}");
-        assert_eq!(budget.in_use(), 0, "a failed reservation releases the rest");
+        idle();
         // The same stack renders again once the budget is back.
         assert!(render(&registry, &source, SnapshotId::new(), &recipe).is_ok());
         // A point sample streams nothing, so it answers whatever the budget is.
@@ -3346,4 +3547,83 @@ mod tests {
         assert_eq!(color_chunk_rows(10_000), 8);
         assert_eq!(color_chunk_rows(64), COLOR_CHUNK_ROWS);
     }
+
+    // ---------------------------------------------------------------------------------------
+    // Cooperative cancellation.
+    // ---------------------------------------------------------------------------------------
+
+    /// A programmatically filled source, so a photo-sized case costs an allocation and a fill and
+    /// reads no file. The pattern varies on both axes and in all three channels, so a wrong row,
+    /// a dropped channel or a short frame is visible in the byte comparison.
+    fn cancellation_source(width: u32, height: u32) -> SourceImage {
+        let mut rgba = vec![0_u8; width as usize * height as usize * 4];
+        for (index, pixel) in rgba.chunks_exact_mut(4).enumerate() {
+            pixel.copy_from_slice(&[index as u8, (index >> 5) as u8, (index >> 11) as u8, 255]);
+        }
+        SourceImage {
+            width,
+            height,
+            rgba: rgba.into(),
+            fingerprint: "sha256:cancellation".into(),
+            orientation: 1,
+        }
+    }
+
+    /// The stack every cancellation test renders: the one orientation layer, one colour-stage
+    /// Basic layer and a 7° straightening crop, so the exact transform pass, the streamed colour
+    /// pass and the resample all run over the frame. The quarter turn means the crop's input stage
+    /// is the turned one, which is the stage it is fitted onto.
+    fn cancellation_stack(width: u32, height: u32) -> Recipe {
+        Recipe {
+            format: 1,
+            layers: vec![
+                turn(Transform::RotateRight),
+                Layer {
+                    id: LayerId::new(),
+                    effect_id: crate::BASIC_EFFECT.into(),
+                    effect_format: EFFECT_FORMAT,
+                    payload: json!({"exposure": 0.5, "contrast": 20.0, "vibrance": 30.0}),
+                },
+                Layer::crop(fitted_crop(height, width, 7.0, [0.05, 0.05, 0.9, 0.9])),
+            ],
+        }
+    }
+
+    #[test]
+    fn an_uncancelled_token_renders_the_bytes_the_plain_entry_point_renders() {
+        let registry = ModuleRegistry::builtin();
+        let source = cancellation_source(512, 384);
+        let recipe = cancellation_stack(512, 384);
+        let snapshot = SnapshotId::new();
+        let plain = render(&registry, &source, snapshot.clone(), &recipe).unwrap();
+        let cancellable =
+            render_cancellable(&registry, &source, snapshot, &recipe, &Cancel::never()).unwrap();
+        // Dimensions, fingerprint, snapshot identity and every byte.
+        assert_eq!(plain, cancellable);
+        assert!(
+            plain.width > 1 && plain.height > 1,
+            "the stack renders a frame"
+        );
+        // The stack really exercises all three passes: a turn, a colour run and a resample.
+        assert_ne!(plain.rgba.as_ref(), source.rgba.as_ref());
+    }
+
+    #[test]
+    fn a_pre_cancelled_token_stops_a_render_before_it_allocates_a_frame() {
+        let registry = ModuleRegistry::builtin();
+        let source = cancellation_source(512, 384);
+        let recipe = cancellation_stack(512, 384);
+        let cancel = Cancel::new();
+        cancel.cancel();
+        assert!(cancel.is_cancelled());
+        let error = render_cancellable(&registry, &source, SnapshotId::new(), &recipe, &cancel)
+            .expect_err("a cancelled token refuses the render");
+        assert_eq!(error.kind, ErrorKind::Cancelled);
+        assert_eq!(error.kind.code(), "cancelled");
+    }
+
+    // The photo-sized latency case and the scratch-budget observation live in
+    // `tests/cancellation.rs`: the budget is process-wide, and the lib test binary runs 250 other
+    // tests beside this one, several of which legitimately hold reservations while it reads the
+    // counter. Its own test binary is a process where nothing else reserves.
 }

@@ -6,6 +6,7 @@
 //! planes come from and how a point sample re-runs exactly one tile so that a sampled byte is the
 //! byte a render of that tile produces.
 
+pub(crate) use super::Cancel;
 use crate::{
     Error, ErrorKind,
     modules::{
@@ -20,7 +21,7 @@ use std::{
     collections::VecDeque,
     sync::{
         Mutex,
-        atomic::{AtomicBool, AtomicU64, Ordering},
+        atomic::{AtomicU64, Ordering},
     },
 };
 
@@ -115,44 +116,6 @@ pub(crate) struct SpatialReservation<'a> {
 impl Drop for SpatialReservation<'_> {
     fn drop(&mut self) {
         self.budget.used.fetch_sub(self.bytes, Ordering::SeqCst);
-    }
-}
-
-/// The detail of the error a cancelled render returns. There is no `Cancelled` error kind, so a
-/// caller that needs to tell a cancellation from a real render failure compares this exact detail.
-pub const RENDER_CANCELLED: &str = "render cancelled";
-
-pub(crate) fn cancelled() -> Error {
-    Error::new(ErrorKind::Render, RENDER_CANCELLED)
-}
-
-/// A shared flag a caller sets to stop a render it no longer wants. A render checks it between
-/// tile batches, so a cancelled render returns promptly and releases its reservations; nothing
-/// checks it inside a tile, so the granularity is one batch of tiles.
-#[derive(Clone, Debug, Default)]
-pub struct Cancel(std::sync::Arc<AtomicBool>);
-
-impl Cancel {
-    /// A fresh token that has not been cancelled.
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    /// Ask whoever holds this token to stop. Idempotent, and safe from any thread.
-    pub fn cancel(&self) {
-        self.0.store(true, Ordering::SeqCst);
-    }
-
-    pub fn is_cancelled(&self) -> bool {
-        self.0.load(Ordering::SeqCst)
-    }
-
-    pub(crate) fn check(&self) -> Result<(), Error> {
-        if self.is_cancelled() {
-            Err(cancelled())
-        } else {
-            Ok(())
-        }
     }
 }
 
@@ -1777,8 +1740,7 @@ pub(crate) mod tests {
             Ok(_) => panic!("a cancelled render does not return a frame"),
             Err(error) => error,
         };
-        assert_eq!(error.kind, ErrorKind::Render);
-        assert_eq!(error.detail, RENDER_CANCELLED);
+        assert_eq!(error.kind, ErrorKind::Cancelled);
         assert!(
             elapsed < std::time::Duration::from_secs(30),
             "a cancelled render returns promptly, not in {elapsed:?}"
@@ -1791,7 +1753,7 @@ pub(crate) mod tests {
                 Ok(_) => panic!("still cancelled"),
                 Err(error) => error,
             };
-        assert_eq!(error.detail, RENDER_CANCELLED);
+        assert_eq!(error.kind, ErrorKind::Cancelled);
         budget.set_limit(previous);
     }
 

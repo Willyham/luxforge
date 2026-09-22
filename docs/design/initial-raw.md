@@ -2,6 +2,10 @@
 
 Status: continuous RAW editing is implemented; supplied-file M4 verification passes, with broader qualification tracked separately. The owner NEF, RAF and DNG pass native development, actual JSON editing/history/reopen and background Metal rendering. The supplied DJI Air 2S DNG uses required GainMap and WarpRectilinear corrections under the [Air 2S contract](air2s-dng.md). The [task plan](../../tasks/implementation-initial-raw.json), [integration contract](raw-integration.md) and [coverage manifest](../../fixtures/raw-coverage.json) distinguish delivered behavior from remaining controlled-scene, resource and platform qualification.
 
+Camera-specific mode and processing policy is defined in the validated embedded
+[RAW camera catalog](raw-camera-profiles.md). Camera profiles select existing
+capabilities; capture-specific metadata remains authoritative in each original.
+
 ## Outcome and delivery boundaries
 
 Open the owner's original Nikon Z6 NEF and Fujifilm X100VI RAF files directly, develop their sensor data into a useful neutral rendition, edit through the same history and command service as JPEG, and preserve every original byte. A camera's embedded JPEG is not the developed result. Support is qualified by actual recording mode and evidence, not by extension or a decoder's camera list.
@@ -135,7 +139,7 @@ One source worker admits at most eight pending tasks and retains 64 terminal res
 
 Use generation-bound identities containing source fingerprint, interpretation/decoder build, development settings/effect format, recipe snapshot, selected entry, output dimensions, color domain and quality. Include draft identity if that shared capability exists. Full-quality and reduced previews have different keys. A late load or render cannot replace a newer selection. A failed replacement preserves the last successful asset and all its edits.
 
-Current hard limits remain the starting contract: encoded input 128 MiB, 64 MP, 16384 px per side, 512 MiB per evaluated frame. Measure actual sensor allocation dimensions and the largest owner files. Do not raise a JPEG limit globally to accommodate a RAW decoder. If modes exceed a bound, propose an explicit RAW-specific limit with a complete allocation ledger before accepting them.
+RAW admission uses the approved 512 MiB encoded input, 128 million sensor pixels, 16384 px per side and 1.5 GiB per planar RGB float buffer. Terminal RGBA8 remains capped at 512 MiB. JPEG retains its independent 128 MiB encoded, 64 MP and 512 MiB frame limits. The [RAW resource ledger](modern-camera-resource-ledger.md) accounts for overlapping allocations and measured editor memory; per-buffer bounds do not constitute a process memory ceiling.
 
 Approximate payload sizes below use nominal delivered dimensions and MiB = 2²⁰ bytes. Native margins, allocator overhead and workspaces are additional:
 
@@ -232,7 +236,7 @@ Neutral rendering, exact as-shot defaults, custom WB mapping and the retained wo
 | Required question | Implementation / evidence contract |
 | --- | --- |
 | Reads/hashes/decodes | One verified preparation/cache route; no direct request-path `open_source`; consistent source bytes and signature validation |
-| Full-frame allocations | Explicit typed source/development/output buffers with a phase ledger, 512 MiB frame limit or approved narrower tiling, and shared byte reservations |
+| Full-frame allocations | Explicit typed source/development/output buffers with a phase ledger: RAW planar RGB at most 1.5 GiB, terminal RGBA8 at most 512 MiB, plus bounded worker concurrency |
 | Point/no-op work | Parameter/geometry checks stay bounded; prepared point sampling uses shared math; cache misses return preparation state |
 | Owner-thread work | Only metadata/transactions/session completions; no RAW read/hash/unpack/develop/raster/encode |
 | Desktop refreshes | One state/entry merge and preview request per committed change; source readiness never refetches whole history |

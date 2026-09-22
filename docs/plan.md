@@ -23,7 +23,7 @@ After M4: JPEG export (quality 90, no overwrites, optional metadata stripped by 
 
 ## Later phases
 
-Basic adjustments (white balance with a neutral picker, exposure, tone, vibrance and saturation as one colour-stage layer) and the histogram inspector with clipping overlays are implemented and verified on the M4 Mac against the [design](design/basic-and-histogram.md) and its frozen [tone](design/basic-tone.md), [white balance](design/basic-white-balance.md) and [colour](design/basic-colour.md) studies. The recorded defaults the work ran on (provisional performance thresholds, the overlay rule, the picker patch, the float tolerances, one Basic layer) are the owner's to refine; measured misses are listed in [performance](specs/performance.md).
+Instant previews are implemented and verified on the M4 Mac: every preview job at Fit renders the recipe against a display-bounded proxy first and presents it through a surface that owns its texture, the exact render follows as a cancellable phase for the histogram, the overlays and the 100% view, and a gesture's round trip is synchronous, so a drained drag presents in 18 to 29 ms and a wild drag at 42 to 54 frames per second on 24 and 60 MP sources with every Basic unit active ([design](design/instant-preview.md), [measurements](specs/performance.md#instant-previews-proxy-phase-hop-rule-and-the-surface-primitive)). Basic adjustments (white balance with a neutral picker, exposure, tone, vibrance and saturation as one colour-stage layer) and the histogram inspector with clipping overlays are implemented and verified on the M4 Mac against the [design](design/basic-and-histogram.md) and its frozen [tone](design/basic-tone.md), [white balance](design/basic-white-balance.md) and [colour](design/basic-colour.md) studies. The recorded defaults the work ran on (provisional performance thresholds, the overlay rule, the picker patch, the float tolerances, one Basic layer) are the owner's to refine; measured misses are listed in [performance](specs/performance.md).
 
 Relative priority still needs owner input; see the [open questions](decisions.md#open-product-questions).
 
@@ -36,6 +36,10 @@ Initial RAW implementation is requested, with a [design](design/initial-raw.md) 
 | Trustworthy RAW | [Continuous RAW editing](design/initial-raw.md) for Nikon Z6, Fujifilm X100VI and DJI Air 2S by actual mode; measured decoder/development selection, high-precision recipe evaluation and neutral exposure/WB |
 | Richer tools | Texture, clarity and dehaze (Presence), the colour mixer and the post-crop vignette are implemented and verified on the M4 Mac per their [design](design/presence-mixer-vignette.md); separately scoped masks and clone/heal remain |
 | External modules | Measured activation costs and a separately authored module loaded through documented host APIs |
+
+## Future extension possibilities
+
+[Shared editing](design/shared-editing.md) explores one host desktop, one invited collaborator or agent, and one photograph, using the shared command service and host-rendered previews. It is a future possibility with no scheduled milestone or implementation tasks. Collaborative undo, gesture sharing, permissions and conflict policy need explicit decisions; independent offline replicas and CRDTs are deferred until a workflow requires them. The proposal does not depend on cloud accounts or catalog sync.
 
 ## Not in scope
 

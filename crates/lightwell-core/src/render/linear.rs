@@ -6,9 +6,9 @@
 //! The byte JPEG evaluator in [`super::render`] remains unchanged.
 
 use super::{
-    Compiled, Entry, Raster,
+    Cancel, Compiled, Entry, Raster,
     spatial::{
-        self, Cancel, PRODUCTION_TILE, SpatialPlan, build_reduction, fill_planes, resolve_globals,
+        self, PRODUCTION_TILE, SpatialPlan, build_reduction, fill_planes, resolve_globals,
         run_batches, run_tile,
     },
 };
@@ -19,9 +19,10 @@ use crate::{
 use rayon::prelude::*;
 use std::sync::{Arc, Weak};
 
-const MAX_PIXELS: u64 = 64_000_000;
+const MAX_PIXELS: u64 = lightwell_raw::MAX_PIXELS as u64;
 const MAX_SIDE: u32 = 16_384;
-const MAX_SOURCE_BYTES: u64 = 512 * 1024 * 1024;
+const MAX_SOURCE_BYTES: u64 = lightwell_raw::MAX_RGB_BYTES as u64;
+const MAX_RGBA_BYTES: u64 = 512 * 1024 * 1024;
 const MAX_RESAMPLES: usize = 1;
 const PARALLEL_RENDER_PIXELS: u64 = 1_000_000;
 
@@ -49,7 +50,7 @@ fn layout(width: u32, height: u32) -> Result<(usize, usize), Error> {
     if pixels > MAX_PIXELS {
         return Err(Error::new(
             ErrorKind::ResourceLimit,
-            "linear source exceeds 64 megapixels",
+            "linear source exceeds 128 megapixels",
         ));
     }
     let values = pixels.checked_mul(3).ok_or_else(|| {
@@ -104,10 +105,10 @@ fn output_len(width: u32, height: u32) -> Result<usize, Error> {
                 "linear output dimensions overflow",
             )
         })?;
-    if pixels > MAX_PIXELS {
+    if pixels > lightwell_raw::MAX_PIXELS as u64 {
         return Err(Error::new(
             ErrorKind::ResourceLimit,
-            "linear output exceeds 64 megapixels",
+            "linear output exceeds 128 megapixels",
         ));
     }
     let bytes = pixels.checked_mul(4).ok_or_else(|| {
@@ -116,7 +117,7 @@ fn output_len(width: u32, height: u32) -> Result<usize, Error> {
             "linear output byte length overflow",
         )
     })?;
-    if bytes > MAX_SOURCE_BYTES {
+    if bytes > MAX_RGBA_BYTES {
         return Err(Error::new(
             ErrorKind::ResourceLimit,
             "linear output exceeds 512 MiB",
@@ -179,7 +180,15 @@ pub struct LinearImage {
     planes: Arc<Vec<f32>>,
     fingerprint: String,
     view: View,
+    /// Which development these planes are: a process-unique number taken when the planes were
+    /// adopted, shared by every view over them and by nothing else. A redevelopment of the same
+    /// source is a new number even when the allocator hands its planes the address the old ones
+    /// had, which is why a cache keys on this and never on an address.
+    development: u64,
 }
+
+/// The source of every [`LinearImage::development`] number.
+static NEXT_DEVELOPMENT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
 
 impl LinearImage {
     /// Construct an identity-view image from contiguous planar R, G and B values.
@@ -232,6 +241,7 @@ impl LinearImage {
                 height,
                 orientation: 1,
             },
+            development: NEXT_DEVELOPMENT.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
         })
     }
 
@@ -274,6 +284,7 @@ impl LinearImage {
             planes: Arc::clone(&self.planes),
             fingerprint: self.fingerprint.clone(),
             view,
+            development: self.development,
         })
     }
 
@@ -296,8 +307,31 @@ impl LinearImage {
         )
     }
 
+    /// The development these planes belong to: equal for every view over the same adopted planes,
+    /// different for every redevelopment, and never reused within the process.
+    pub fn development(&self) -> u64 {
+        self.development
+    }
+
     pub(crate) fn storage_weak(&self) -> Weak<Vec<f32>> {
         Arc::downgrade(&self.planes)
+    }
+
+    /// A bulk reader over this image's viewed pixels. The plane length and the view are resolved
+    /// once here instead of per access, which is what the proxy downscale needs: it reads every
+    /// viewed pixel at most twice per axis and allocates nothing of its own to do it.
+    pub(crate) fn reader(&self) -> ViewReader<'_> {
+        let (width, height) = self.view.output_dimensions();
+        ViewReader {
+            planes: self.planes.as_slice(),
+            base_width: self.base_width,
+            // `layout` accepted these dimensions when the image was built, so the product is
+            // addressable and this cannot overflow `usize`.
+            plane_len: self.base_width as usize * self.base_height as usize,
+            view: self.view,
+            width,
+            height,
+        }
     }
 
     pub fn planes(&self) -> &[f32] {
@@ -339,6 +373,39 @@ impl LinearImage {
                 "linear source produced a non-finite pixel",
             ))
         }
+    }
+}
+
+/// Reads viewed pixels of a [`LinearImage`] without recomputing its layout per access. It borrows
+/// the one immutable plane allocation and copies nothing.
+pub(crate) struct ViewReader<'a> {
+    planes: &'a [f32],
+    base_width: u32,
+    plane_len: usize,
+    view: View,
+    width: u32,
+    height: u32,
+}
+
+impl ViewReader<'_> {
+    pub(crate) fn dimensions(&self) -> (u32, u32) {
+        (self.width, self.height)
+    }
+
+    /// One viewed pixel, or `None` outside the view: the same mapping and the same values as
+    /// [`LinearImage::pixel`], which is what makes a bulk read agree with a point read.
+    #[inline]
+    pub(crate) fn pixel(&self, x: u32, y: u32) -> Option<[f32; 3]> {
+        if x >= self.width || y >= self.height {
+            return None;
+        }
+        let (base_x, base_y) = self.view.map(x, y)?;
+        let index = base_y as usize * self.base_width as usize + base_x as usize;
+        Some([
+            self.planes[index],
+            self.planes[self.plane_len + index],
+            self.planes[2 * self.plane_len + index],
+        ])
     }
 }
 
@@ -716,13 +783,13 @@ pub fn render_linear(
         snapshot_id,
         recipe,
         settings,
-        &Cancel::new(),
+        &Cancel::never(),
     )
 }
 
-/// [`render_linear`] with a token a caller can set from another thread. It is checked between the
-/// tile batches of each spatial operation, which is where a RAW render's unbounded-in-layers work
-/// happens.
+/// [`render_linear`] under a [`Cancel`] token the row pass reads once per row and the spatial
+/// operations read once per tile batch. With a token that is never cancelled this is byte for byte
+/// [`render_linear`]; it is the same code, and [`render_linear`] is one call to it.
 pub fn render_linear_cancellable(
     registry: &ModuleRegistry,
     source: &LinearImage,
@@ -754,6 +821,8 @@ pub(super) fn render_linear_tiled(
     cancel: &Cancel,
     tile: u32,
 ) -> Result<Raster, Error> {
+    // A token already cancelled when the call arrives costs no frame at all.
+    cancel.check()?;
     let evaluation = LinearEvaluation::new(registry, source, recipe, settings, cancel, tile)?;
     let (width, height) = evaluation.stage();
     let output_len = output_len(width, height)?;
@@ -764,7 +833,10 @@ pub(super) fn render_linear_tiled(
         )
     })?;
     let mut output = vec![0; output_len];
+    // One relaxed load per output row, ahead of that row's evaluations; the f64 evaluation and the
+    // terminal boundary are untouched.
     let render_row = |row_index: usize, row: &mut [u8]| -> Result<(), Error> {
+        cancel.check()?;
         for x in 0..width {
             let pixel = evaluation.pixel(x, row_index as u32)?.ok_or_else(|| {
                 Error::new(
@@ -851,6 +923,16 @@ mod tests {
             1.055 * value.powf(1.0 / 2.4) - 0.055
         };
         (encoded * 255.0).round() as u8
+    }
+
+    #[test]
+    fn raw_planar_bound_is_separate_from_terminal_rgba_bound() {
+        // This checks admission arithmetic only; LinearImage is not allocated.
+        assert!(layout(16_000, 8_000).is_ok());
+        assert!(output_len(16_000, 6_250).is_ok());
+        assert!(output_len(16_000, 8_000).is_ok());
+        assert!(output_len(16_000, 8_001).is_err());
+        assert!(layout(16_384, 16_384).is_err());
     }
 
     /// A colour-stage layer reaches the linear path too: the Basic module's units run on the
@@ -1218,12 +1300,77 @@ mod tests {
         assert!(LinearImage::new(2, 2, vec![f32::NAN; 12]).is_err());
         assert!(LinearImage::new(0, 1, Vec::<f32>::new()).is_err());
         assert!(LinearImage::new(16_385, 1, Vec::<f32>::new()).is_err());
-        assert!(output_len(8_192, 8_192).is_err());
+        assert!(output_len(16_000, 8_001).is_err());
         let source = image(2, 2, &[[0.0, 0.0, 0.0]; 4]);
         assert!(source.with_view([1, 1, 2, 2], 1).is_err());
         assert!(source.with_view([u32::MAX, 0, 2, 1], 1).is_err());
         assert!(source.with_view([0, 0, 2, 2], 9).is_err());
         assert!(LinearSettings { exposure_ev: 5.1 }.multiplier().is_err());
         assert!(linear_bilinear(1.0, 1.0, 2, 2, |_x, _y| Ok([f64::INFINITY; 3])).is_err());
+    }
+
+    /// A synthetic linear source with a varying value in all three channels, filled
+    /// programmatically so no file is read.
+    fn cancellation_image(width: u32, height: u32) -> LinearImage {
+        let pixels = (width * height) as usize;
+        let mut planes = Vec::with_capacity(pixels * 3);
+        for channel in 0..3 {
+            planes.extend((0..pixels).map(|index| ((index * (channel + 1)) % 997) as f32 / 997.0));
+        }
+        LinearImage::with_fingerprint(width, height, planes, "sha256:linear-cancellation").unwrap()
+    }
+
+    fn cancellation_recipe() -> Recipe {
+        Recipe {
+            format: crate::RECIPE_FORMAT,
+            layers: vec![Layer {
+                id: crate::LayerId::new(),
+                effect_id: crate::BASIC_EFFECT.into(),
+                effect_format: crate::EFFECT_FORMAT,
+                payload: serde_json::json!({"exposure": 0.5, "contrast": 20.0, "vibrance": 30.0}),
+            }],
+        }
+    }
+
+    #[test]
+    fn an_uncancelled_token_renders_the_linear_bytes_the_plain_entry_point_renders() {
+        let registry = ModuleRegistry::builtin();
+        let source = cancellation_image(160, 120);
+        let recipe = cancellation_recipe();
+        let snapshot = SnapshotId::new();
+        let plain = render_linear(
+            &registry,
+            &source,
+            snapshot.clone(),
+            &recipe,
+            LinearSettings::default(),
+        )
+        .unwrap();
+        let cancellable = render_linear_cancellable(
+            &registry,
+            &source,
+            snapshot,
+            &recipe,
+            LinearSettings::default(),
+            &Cancel::never(),
+        )
+        .unwrap();
+        assert_eq!(plain, cancellable);
+    }
+
+    #[test]
+    fn a_pre_cancelled_token_stops_a_linear_render_before_it_allocates_a_frame() {
+        let cancel = Cancel::new();
+        cancel.cancel();
+        let error = render_linear_cancellable(
+            &ModuleRegistry::builtin(),
+            &cancellation_image(160, 120),
+            SnapshotId::new(),
+            &cancellation_recipe(),
+            LinearSettings::default(),
+            &cancel,
+        )
+        .expect_err("a cancelled token refuses the linear render");
+        assert_eq!(error.kind, crate::ErrorKind::Cancelled);
     }
 }

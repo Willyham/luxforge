@@ -144,7 +144,16 @@ fn picker_and_curve_share_bounded_draft_and_commit_once() {
         let mut draft = editor.session.draft.clone().unwrap();
         draft.draft_revision += 1;
         let job = refresh_for(&asset, &current, Vec::new(), &[&current], false).job;
-        let _ = editor.update(Message::SliderDraftSet(Ok(Box::new((draft, job)))));
+        let now = std::time::Instant::now();
+        let round_trip = crate::app::tasks::RoundTrip {
+            queued: now,
+            started: now,
+            answered: now,
+            planned: now,
+        };
+        let _ = editor.update(Message::SliderDraftSet(Ok(Box::new((
+            draft, job, round_trip,
+        )))));
         for _ in 0..2 {
             let _ = editor.update(Message::ControlReleased {
                 action: ACTION.into(),

@@ -3,10 +3,11 @@
 //! the control was generated from, so every module with a patch action gets this gesture and no
 //! module is named here.
 //!
-//! One gesture is one core draft. Pointer-down (the first move) opens it with `draft.begin`;
-//! pointer moves only record the newest value; a 16 ms tick, gated on the open draft exactly as the
-//! preview poll is gated on an in-flight preview, sends at most one `draft.set` and the one preview
-//! job for the settings it accepted, and sends nothing while a previous round trip is in flight.
+//! One gesture is one core draft. Pointer-down (the first move) opens it with `draft.begin`; every
+//! later move sends `draft.set` and the one preview job for the settings it accepted **the moment**
+//! nothing is in flight, and only records the newest value while one is. There is no tick: the
+//! bound is unchanged in substance — at most one draft round trip in flight, at most one preview
+//! job per accepted value, intermediate values coalesced — but nothing waits on a timer for it.
 //! Release commits once through `draft.commit`, Escape cancels through `draft.cancel`, and an
 //! external revision marks the draft conflicted, which keeps it and refuses the commit until the
 //! Changed elsewhere notice is answered with Discard or Reapply.
@@ -17,7 +18,7 @@ use crate::{
         message::Message,
         tasks::{
             draft_begin_task, draft_cancel_task, draft_commit_task, draft_reapply_task,
-            draft_set_task, mutation,
+            draft_set_now, mutation,
         },
     },
     state::tools,
@@ -133,11 +134,13 @@ impl Editor {
             self.set_control_field_value(&action, &parameter, &value);
             self.editing = None;
             self.dragging = Some((action, parameter));
-            self.slider_draft
-                .as_mut()
-                .expect("the checked draft")
-                .pending = Some(value);
-            return Task::none();
+            if let Some(draft) = &mut self.slider_draft {
+                draft.pending = Some(value);
+            }
+            // Sent now when the previous round trip has answered; recorded otherwise, and the
+            // answer to that round trip sends the newest value. No timer stands between the input
+            // and the request it produces.
+            return self.slider_tick();
         }
         if let Some(reason) = self.slider_draft_refusal() {
             self.status = reason;
@@ -175,8 +178,12 @@ impl Editor {
         draft_begin_task(self.owner.clone(), self.client, asset, action)
     }
 
-    /// The gated tick: at most one `draft.set` and one preview job per frame, and nothing at all
-    /// while a previous round trip is in flight.
+    /// The gate every outstanding value passes through: at most one `draft.set` and one preview
+    /// job at a time, and nothing at all while a previous round trip is in flight.
+    ///
+    /// A move calls this directly. `Message::SliderDraftTick` is the same call under its old name,
+    /// which the evidence driver and the paced step still send after each move; with the send
+    /// already done it finds nothing outstanding and does nothing.
     pub(crate) fn slider_tick(&mut self) -> Task<Message> {
         let Some(draft) = &self.slider_draft else {
             return Task::none();
@@ -206,7 +213,11 @@ impl Editor {
             "slider_draft_set",
             json!({"draft_id":draft_id.as_str(),"fields":fields}),
         );
-        draft_set_task(self.owner.clone(), self.client, draft_id, asset, fields)
+        let proxy = self.proxy_bounds();
+        // Synchronous on purpose: see `draft_set_now`. The answer is handled exactly as a message
+        // would be, so nothing else about the gesture changes.
+        let result = draft_set_now(&self.owner, self.client, draft_id, asset, fields, proxy);
+        self.slider_set(result)
     }
 
     /// `draft.begin` answered: the draft exists, so the first value can go out.
@@ -234,20 +245,40 @@ impl Editor {
     /// One `draft.set` answered with the preview of the settings it accepted.
     pub(crate) fn slider_set(
         &mut self,
-        result: Result<(Draft, lightwell_core::PreviewJob), String>,
+        result: Result<
+            (
+                Draft,
+                lightwell_core::PreviewJob,
+                crate::app::tasks::RoundTrip,
+            ),
+            String,
+        >,
     ) -> Task<Message> {
         let Some(draft) = &mut self.slider_draft else {
             return Task::none();
         };
         draft.in_flight = false;
         match result {
-            Ok((set, job)) => {
+            Ok((set, job, round_trip)) => {
+                let now = std::time::Instant::now();
+                let legs = round_trip.legs_ms(now);
+                let timing = self.loop_timing.get();
+                let since = |at: Option<std::time::Instant>| {
+                    at.map(|at| now.duration_since(at).as_secs_f64() * 1000.0)
+                };
+                let loop_timing = json!({
+                    "last_update_ms": timing.last_update_ms,
+                    "last_rederive_ms": timing.last_rederive_ms,
+                    "last_view_ms": timing.last_view_ms,
+                    "since_view_end_ms": since(timing.last_view_end),
+                    "since_update_end_ms": since(timing.last_update_end),
+                });
                 draft.draft_revision = set.draft_revision;
                 draft.conflicted = set.conflicted;
                 let label = draft.label.clone();
                 let (draft_revision, sent) = (set.draft_revision, draft.sent.clone());
                 self.session.draft = Some(set);
-                self.preview_generation = self.preview_queue.request(job);
+                self.preview_generation = self.request_preview(job);
                 self.status = format!("Drafting {label}…");
                 // The one record that ties an input to the frame it will produce: the `draft.set`
                 // this answers carried `value`, and the preview job just queued for it is
@@ -255,7 +286,7 @@ impl Editor {
                 // it a measurement can only guess which frame belongs to which slider value.
                 self.event(
                     "slider_draft_preview",
-                    json!({"generation":self.preview_generation,"draft_revision":draft_revision,"value":sent}),
+                    json!({"generation":self.preview_generation,"draft_revision":draft_revision,"value":sent,"round_trip_ms":{"executor_wait":legs[0],"draft_set":legs[1],"preview_job":legs[2],"return":legs[3]},"loop":loop_timing}),
                 );
                 self.after_slider_round_trip()
             }
@@ -309,7 +340,15 @@ impl Editor {
             "slider_draft_commit",
             json!({"draft_id":draft_id.as_str(),"request_id":mutation.request_id,"expected_revision":base_revision}),
         );
-        draft_commit_task(self.owner.clone(), self.client, draft_id, asset, mutation)
+        let proxy = self.proxy_bounds();
+        draft_commit_task(
+            self.owner.clone(),
+            self.client,
+            draft_id,
+            asset,
+            mutation,
+            proxy,
+        )
     }
 
     /// `draft.commit` answered. A real outcome merges into history like any other command; a no-op
@@ -450,11 +489,13 @@ impl Editor {
         let asset = self.state.as_ref()?.asset.id.clone();
         let entry = self.displayed_entry();
         self.seed_values();
+        let proxy = self.proxy_bounds();
         Some(crate::app::tasks::current_preview_task(
             self.owner.clone(),
             self.client,
             asset,
             entry,
+            proxy,
         ))
     }
 

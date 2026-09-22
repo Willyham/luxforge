@@ -246,6 +246,22 @@ fn plan(tier: Tier, manifest: bool, fixtures: bool) -> Vec<Spec> {
             )
         });
         specs.push(Spec {
+            result: Some("latency.json"),
+            launches: Launches::Latency,
+            binary: true,
+            ..spec(
+                "editor-latency-burst",
+                "timing",
+                &[
+                    "editor-latency",
+                    "--source",
+                    GENERATED[0],
+                    "--mode",
+                    "burst",
+                ],
+            )
+        });
+        specs.push(Spec {
             result: Some("measurements.json"),
             launches: Launches::Measure,
             binary: true,
@@ -383,6 +399,8 @@ fn unit(metric: &str) -> &'static str {
         "MiB"
     } else if metric.contains("cpu_percent") {
         "% of one core"
+    } else if metric.contains("_fps") {
+        "fps"
     } else if metric.ends_with("_s") {
         "s"
     } else {
@@ -443,11 +461,22 @@ fn measured(result: &Value, workload: &str, metric: &str) -> usize {
 enum From {
     Latency,
     Measure,
+    /// `editor-latency --mode burst`'s own report: a wild, undrained drag.
+    Burst,
+}
+
+/// Which side of `limit` is a pass. Every target before the instant-preview design was an upper
+/// bound; the burst design adds a lower bound (frames per second), so the comparison is explicit
+/// rather than assumed.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Direction {
+    AtMost,
+    AtLeast,
 }
 
 /// A provisional target from the performance specification with the exact JSON path that answers
-/// it. `strict` is the comparison the specification wrote, and `scale` converts the stored figure
-/// into `unit`.
+/// it. `strict` is the comparison the specification wrote (`<`/`>` rather than `<=`/`>=`), and
+/// `scale` converts the stored figure into `unit`.
 struct Target {
     text: &'static str,
     from: From,
@@ -455,12 +484,13 @@ struct Target {
     count: Option<&'static str>,
     unit: &'static str,
     limit: f64,
+    direction: Direction,
     strict: bool,
     scale: f64,
     note: &'static str,
 }
 
-const TARGETS: [Target; 8] = [
+const TARGETS: [Target; 11] = [
     Target {
         text: "Warm 24 MP slider-to-presented-frame p95 < 100 ms",
         from: From::Latency,
@@ -468,6 +498,7 @@ const TARGETS: [Target; 8] = [
         count: Some("/timings_ms/input_to_presented_frame/count"),
         unit: "ms",
         limit: 100.0,
+        direction: Direction::AtMost,
         strict: true,
         scale: 1.0,
         note: "",
@@ -479,6 +510,7 @@ const TARGETS: [Target; 8] = [
         count: Some("/timings_ms/final_input_to_settled_histogram/count"),
         unit: "ms",
         limit: 200.0,
+        direction: Direction::AtMost,
         strict: true,
         scale: 1.0,
         note: "",
@@ -490,6 +522,7 @@ const TARGETS: [Target; 8] = [
         count: None,
         unit: "MiB",
         limit: 64.0,
+        direction: Direction::AtMost,
         strict: false,
         scale: 1.0 / (1024.0 * 1024.0),
         note: "High-water mark of the process-wide colour budget over the gesture run",
@@ -501,6 +534,7 @@ const TARGETS: [Target; 8] = [
         count: None,
         unit: "MiB",
         limit: 600.0,
+        direction: Direction::AtMost,
         strict: false,
         scale: 1.0,
         note: "Sampled process RSS includes capture readbacks and GPU resources",
@@ -512,6 +546,7 @@ const TARGETS: [Target; 8] = [
         count: None,
         unit: "MiB",
         limit: 1024.0,
+        direction: Direction::AtMost,
         strict: false,
         scale: 1.0,
         note: "One 60 MP open; the sixteen-load workload is a separate row in the measurements",
@@ -523,6 +558,7 @@ const TARGETS: [Target; 8] = [
         count: None,
         unit: "% of one core",
         limit: 1.0,
+        direction: Direction::AtMost,
         strict: true,
         scale: 1.0,
         note: "One 30 s window after readiness and a one-second settle",
@@ -534,6 +570,7 @@ const TARGETS: [Target; 8] = [
         count: None,
         unit: "ms",
         limit: 1000.0,
+        direction: Direction::AtMost,
         strict: true,
         scale: 1.0,
         note: "Upper bound: includes copying the executable into the temporary background bundle",
@@ -545,9 +582,49 @@ const TARGETS: [Target; 8] = [
         count: None,
         unit: "ms",
         limit: 750.0,
+        direction: Direction::AtMost,
         strict: true,
         scale: 1.0,
         note: "Warm filesystem cache, CPU raster; import, refresh and render",
+    },
+    // The instant-preview design's provisional targets (docs/design/instant-preview.md, "Goal"):
+    // the drained-drag bound tightens from the row above as the proxy phase lands, and burst is a
+    // wild, undrained drag the drag report cannot answer at all.
+    Target {
+        text: "Instant preview: drained drag input-to-presented-frame p95 <= 33 ms, 24 MP",
+        from: From::Latency,
+        path: "/timings_ms/input_to_presented_frame/p95_ms",
+        count: Some("/timings_ms/input_to_presented_frame/count"),
+        unit: "ms",
+        limit: 33.0,
+        direction: Direction::AtMost,
+        strict: false,
+        scale: 1.0,
+        note: "Same drag report and path as the warm 24 MP row above; this is the design's own, tighter provisional threshold",
+    },
+    Target {
+        text: "Instant preview: burst presented frames per second >= 30",
+        from: From::Burst,
+        path: "/burst/presented_fps",
+        count: None,
+        unit: "fps",
+        limit: 30.0,
+        direction: Direction::AtLeast,
+        strict: false,
+        scale: 1.0,
+        note: "editor-latency --mode burst: 120 inputs/s for 3 s, alternating direction",
+    },
+    Target {
+        text: "Instant preview: burst presented-frame staleness p95 <= 50 ms",
+        from: From::Burst,
+        path: "/burst/staleness_ms/p95_ms",
+        count: Some("/burst/staleness_ms/count"),
+        unit: "ms",
+        limit: 50.0,
+        direction: Direction::AtMost,
+        strict: false,
+        scale: 1.0,
+        note: "Each presented frame's own input time (slider_draft_set) to its presentation",
     },
 ];
 
@@ -556,6 +633,7 @@ impl Target {
         match self.from {
             From::Latency => "editor-latency/run/latency.json",
             From::Measure => "measure/run/measurements.json",
+            From::Burst => "editor-latency-burst/run/latency.json",
         }
     }
     /// Sample count for the figure: the distribution's own count where the file records one, the
@@ -582,10 +660,11 @@ impl Target {
             return json!({"target":self.text,"unit":self.unit,"limit":self.limit,"source":format!("{} {}",self.file(),self.path),"measured":Value::Null,"samples":0,"verdict":"not_measured","reason":format!("{} holds no {}",self.file(),self.path),"note":self.note,"load_average_1m":load,"load_threshold":launch::LOAD_THRESHOLD});
         };
         let value = raw * self.scale;
-        let ok = if self.strict {
-            value < self.limit
-        } else {
-            value <= self.limit
+        let ok = match (self.direction, self.strict) {
+            (Direction::AtMost, true) => value < self.limit,
+            (Direction::AtMost, false) => value <= self.limit,
+            (Direction::AtLeast, true) => value > self.limit,
+            (Direction::AtLeast, false) => value >= self.limit,
         };
         // A figure taken while the host was busy is recorded with everything it came from, and is
         // not turned into a verdict: the target is unanswered, not met and not missed.
@@ -619,6 +698,7 @@ fn collect(out: &Path, tier: Tier, entries: &[Entry]) -> (Vec<Value>, Vec<Value>
     let performance = optional(&out.join("editor-performance/run/result.json"));
     let latency = optional(&out.join("editor-latency/run/latency.json"));
     let measure = optional(&out.join("measure/run/measurements.json"));
+    let burst = optional(&out.join("editor-latency-burst/run/latency.json"));
     if let Some(result) = &performance {
         let load = load_of(entries, "editor-performance");
         for (metric, value) in result["timings_ms"].as_object().into_iter().flatten() {
@@ -663,7 +743,6 @@ fn collect(out: &Path, tier: Tier, entries: &[Entry]) -> (Vec<Value>, Vec<Value>
                 "launch_to_observed_frame_ms",
                 "sampled_peak_rss_mib",
                 "open_to_raster_ms",
-                "upload_ms",
                 "request_to_capture_ms",
             ] {
                 let stat = &result["summary"][workload][metric];
@@ -692,12 +771,37 @@ fn collect(out: &Path, tier: Tier, entries: &[Entry]) -> (Vec<Value>, Vec<Value>
             ));
         }
     }
+    if let Some(result) = &burst {
+        let load = load_of(entries, "editor-latency-burst");
+        for metric in ["staleness_ms", "frame_gap_ms"] {
+            let value = &result["burst"][metric];
+            rows.push(row(
+                "editor-latency-burst/run/latency.json",
+                &format!("burst.{metric}"),
+                value["p50_ms"].clone(),
+                value["p95_ms"].clone(),
+                value["count"].as_u64().unwrap_or(0) as usize,
+                load,
+            ));
+        }
+        // Frames per second is one observation over the whole run, not a distribution.
+        let fps = result["burst"]["presented_fps"].clone();
+        rows.push(row(
+            "editor-latency-burst/run/latency.json",
+            "burst.presented_fps",
+            fps.clone(),
+            Value::Null,
+            usize::from(!fps.is_null()),
+            load,
+        ));
+    }
     let targets = TARGETS
         .iter()
         .map(|target| {
             let (result, component) = match target.from {
                 From::Latency => (latency.as_ref(), "editor-latency"),
                 From::Measure => (measure.as_ref(), "measure"),
+                From::Burst => (burst.as_ref(), "editor-latency-burst"),
             };
             target.verdict(result, tier.timing(), load_of(entries, component))
         })
@@ -1292,6 +1396,7 @@ mod tests {
                 "editor-acceptance",
                 "editor-performance",
                 "editor-latency",
+                "editor-latency-burst",
                 "measure"
             ]
         );
@@ -1299,16 +1404,17 @@ mod tests {
         assert_eq!(&full[..2], ["check", "editor-acceptance"]);
         // Every rendered scenario, then the RAW components, then the timing components last.
         assert_eq!(
-            &full[full.len() - 5..],
+            &full[full.len() - 6..],
             [
                 "raw-reference",
                 "raw-editor",
                 "editor-performance",
                 "editor-latency",
+                "editor-latency-burst",
                 "measure"
             ]
         );
-        assert_eq!(full.len(), 2 + smoke::SCENARIOS.len() + 5);
+        assert_eq!(full.len(), 2 + smoke::SCENARIOS.len() + 6);
         // Missing generated fixtures are produced first, and only where a tier needs them.
         assert_eq!(names(Tier::Quick, false, false)[0], "check");
         assert_eq!(names(Tier::Rendered, false, false)[0], "generate-fixtures");
@@ -1409,6 +1515,19 @@ mod tests {
             verdicts[3]["reason"],
             "measure/run/measurements.json was not written"
         );
+        // The instant-preview design's drained-drag row reads the same drag report and path as the
+        // warm-24MP row above, but its tighter 33 ms threshold misses the same 83.4 ms figure.
+        assert_eq!(verdicts[8]["target"], TARGETS[8].text);
+        assert_eq!(verdicts[8]["verdict"], "miss");
+        assert_eq!(verdicts[8]["measured"], 83.4);
+        // The burst targets read a different file, never written in this test, so they too are
+        // unmeasured rather than failed.
+        assert_eq!(verdicts[9]["verdict"], "not_measured");
+        assert_eq!(
+            verdicts[9]["reason"],
+            "editor-latency-burst/run/latency.json was not written"
+        );
+        assert_eq!(verdicts[10]["verdict"], "not_measured");
         // A file that exists but holds no such path is also unmeasured, with the path named.
         let empty = json!({"timings_ms":{}});
         let missing = TARGETS[0].verdict(Some(&empty), true, None);
@@ -1449,6 +1568,27 @@ mod tests {
         assert_eq!(verdict(6)["verdict"], "miss");
         assert_eq!(verdict(7)["verdict"], "pass");
         assert_eq!(verdict(7)["samples"], 3);
+    }
+    #[test]
+    fn burst_targets_read_their_own_report_and_the_fps_row_is_a_lower_bound() {
+        let passing = json!({
+            "burst":{
+                "presented_fps":42.0,
+                "staleness_ms":{"count":300,"p50_ms":18.0,"p95_ms":41.0},
+            },
+        });
+        let verdict =
+            |index: usize, result: &Value| TARGETS[index].verdict(Some(result), true, Some(2.5));
+        // 42 fps clears the >= 30 lower bound; a figure below it misses instead of passing, which
+        // proves the direction is not silently inverted into an upper bound.
+        assert_eq!(verdict(9, &passing)["verdict"], "pass");
+        assert_eq!(verdict(9, &passing)["measured"], 42.0);
+        assert_eq!(verdict(10, &passing)["verdict"], "pass");
+        assert_eq!(verdict(10, &passing)["samples"], 300);
+        let failing =
+            json!({"burst":{"presented_fps":18.0,"staleness_ms":{"count":300,"p95_ms":61.0}}});
+        assert_eq!(verdict(9, &failing)["verdict"], "miss");
+        assert_eq!(verdict(10, &failing)["verdict"], "miss");
     }
     #[test]
     fn launch_counts_come_from_what_each_component_recorded() {

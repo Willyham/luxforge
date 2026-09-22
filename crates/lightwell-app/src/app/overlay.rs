@@ -29,6 +29,11 @@ pub(crate) struct OverlayRequest {
     pub(crate) cells_h: u32,
     pub(crate) shadows: bool,
     pub(crate) highlights: bool,
+    /// The mask was derived from the display proxy of this generation rather than from its exact
+    /// raster, because the exact phase has not landed yet. It follows the drag; the exact phase
+    /// replaces it. It is part of the request so that the arrival of the exact raster is a
+    /// different request and re-derives the mask instead of leaving the approximate one on screen.
+    pub(crate) approximate: bool,
 }
 
 /// One derived overlay: an RGBA buffer of exactly `cells_w * cells_h` pixels, ready to upload.
@@ -101,9 +106,17 @@ pub(crate) struct OverlayQueue {
     sequence: u64,
     active: Option<Active>,
     pending: Option<(u64, Arc<Raster>, OverlayRequest)>,
+    /// Called on the worker thread once a result is sent, so nothing has to wake on a timer to find
+    /// out. It shares the preview queue's own channel: one subscription serves both.
+    waker: Option<Arc<dyn Fn() + Send + Sync>>,
 }
 
 impl OverlayQueue {
+    /// Install the waker every finished job posts. Same shape as `PreviewQueue::set_waker`.
+    pub(crate) fn set_waker(&mut self, waker: Arc<dyn Fn() + Send + Sync>) {
+        self.waker = Some(waker);
+    }
+
     /// Ask for one overlay over `raster`. Replacing the pending job drops it: a zoom that is
     /// already superseded is never computed.
     pub(crate) fn request(&mut self, raster: Arc<Raster>, request: OverlayRequest) {
@@ -124,6 +137,7 @@ impl OverlayQueue {
 
     fn start(&mut self, sequence: u64, raster: Arc<Raster>, request: OverlayRequest) {
         let (sender, receiver) = sync_channel(1);
+        let waker = self.waker.clone();
         std::thread::spawn(move || {
             let result = overlay(
                 raster.rgba.as_ref(),
@@ -133,12 +147,17 @@ impl OverlayQueue {
                 request.cells_h,
             )
             .map(|cells| paint(&cells, request.shadows, request.highlights));
-            let _ = sender.send(OverlayResult {
+            let sent = sender.send(OverlayResult {
                 width: request.cells_w,
                 height: request.cells_h,
                 request,
                 result,
             });
+            if sent.is_ok()
+                && let Some(waker) = waker
+            {
+                waker();
+            }
         });
         self.active = Some(Active {
             generation: sequence,
@@ -240,6 +259,7 @@ mod tests {
             cells_h: cells.1,
             shadows: true,
             highlights: true,
+            approximate: false,
         }
     }
 

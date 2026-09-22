@@ -94,7 +94,7 @@ The core owns one draft per client session, held in `ClientSession.draft` and re
 
 `conflicted` is `base_revision != current revision` of the asset, evaluated whenever the draft is read, set, committed or reported, so a commit by any client, including this client's own undo, redo or restore, marks the draft without a notification path. Draft state is session state: it emits no event and appears in no history. Two drafts of different clients never interact. A draft's effective recipe is the current snapshot with the action's plan applied to the draft's fields, computed on demand and never persisted; a `NoOp` plan means the current recipe.
 
-Preview during a gesture: `OwnerHandle::preview_job` accepts a `draft: Option<DraftId>` beside `layer_count`; the job renders the draft's effective recipe and carries `draft_revision` for correlation. `render.sample` accepts an optional `draft_id` and samples the same effective recipe. The desktop bound is one 16 ms tick, gated on an open draft exactly as the preview poll is gated on an in-flight preview: pointer moves update the field and a pending value; the tick sends at most one `draft.set` and one preview job for the newest pending value, and nothing while a previous `draft.set` is in flight. Release, key-up or Enter sends `draft.commit`, Escape and focus loss send `draft.cancel`, and an external revision shows the existing Changed elsewhere notice with Discard (`draft.cancel`) and Reapply (`draft.reapply`) while the slider keeps the drafted value. Leaving the mode or starting Compare with a draft open is refused as it is for crop. The crop draft stays desktop-local; only its conflict semantics are shared.
+Preview during a gesture: `OwnerHandle::preview_job` accepts a `draft: Option<DraftId>` beside `layer_count`; the job renders the draft's effective recipe and carries `draft_revision` for correlation. `render.sample` accepts an optional `draft_id` and samples the same effective recipe. The desktop bound is one round trip in flight: a pointer move sends `draft.set` and the one preview job for the value it accepted the moment nothing is in flight, synchronously on the desktop thread ([instant previews](instant-preview.md#one-frame-per-hop)), and only records the newest value while one is; the answer sends that newest value. There is no tick and no timer. At Fit the job's proxy phase is what the drag shows and its exact phase is what the histogram reads. Release, key-up or Enter sends `draft.commit`, Escape and focus loss send `draft.cancel`, and an external revision shows the existing Changed elsewhere notice with Discard (`draft.cancel`) and Reapply (`draft.reapply`) while the slider keeps the drafted value. Leaving the mode or starting Compare with a draft open is refused as it is for crop. The crop draft stays desktop-local; only its conflict semantics are shared.
 
 ### Pointwise colour processing
 
@@ -261,10 +261,13 @@ presented, drafts included — holds during an active gesture as well. The draft
 for the reduction, so the worker that rendered those pixels reduces them, and the report, the
 raster and the texture are adopted together under the drafted frame's own generation: the plot is
 the drafted population, its identity carries the draft revision the pixels were planned from, and
-the clipping overlay is re-derived from the drafted raster. Between the gesture's tick and the
-drafted pixels reaching the screen the previous report stays plotted and is marked updating, as it
-is for a committed render; it never goes to zero counters. The bound is unchanged: one `draft.set`
-and one preview job per 16 ms tick, with the analysis riding that job and no second render.
+the clipping overlay is re-derived from the drafted raster. Between an input and the exact phase of
+its frame landing, the previous report stays plotted and is marked updating, as it is for a
+committed render; it never goes to zero counters. At Fit the drafted pixels on screen are the job's
+proxy phase and the report is reduced from its exact phase, which a newer input cancels, so during a
+fast drag the plot follows the frames the gesture pauses on and the counts are never approximate.
+The bound is one `draft.set` and one preview job per accepted value, with the analysis riding that
+job and no second render.
 The `histogram` scenario's open-gesture frame proves it on the M4 — status ready,
 `identity.draft_revision` present, and the eleven counters equal to an independent core render and
 reduction of the drafted stack rebuilt from the committed layers the frame displays and the drafted

@@ -130,7 +130,7 @@ Recommendations for the owner, recorded as proposals until decided. The plan run
 | Mixer layout | Three property groups (Hue, Saturation, Luminance) with eight sliders each | Lightroom's per-colour view and targeted-adjustment drag, which need a view switch and a drag canvas interaction that the vocabulary does not have |
 | Vignette style | One luminance-neutral style; positive amount lightens toward white | Highlight-priority and paint-overlay styles, colour-priority desaturation |
 | Spatial precision on the JPEG path | The spatial operation reads the quantized frame of the preceding segment, one extra 8-bit boundary on an 8-bit source | A float hand-off from the colour run, which needs a full-frame float plane the memory limits do not allow |
-| Gesture latency for spatial sliders | Full-resolution drafts as today; misses are reported | A bounded Fit-resolution draft render, to be measured as a separate proposal |
+| Gesture latency for spatial sliders | Decided 2026-09-22: at Fit a Presence stack renders through the instant-preview proxy at display size, marked approximate, and the exact phase still feeds the histogram, the overlays and the 100% view | Exact-only drafts, which cost a full-resolution neighbourhood pass per input |
 | Point-sample cost through a spatial layer | The declared O(halo² × layers) exception | Refusing samples through spatial layers, which would break readout and acceptance parity |
 
 ## References

@@ -270,6 +270,62 @@ impl ModuleRegistry {
         successor.unwrap_or(upper).clamp(lower, upper)
     }
 
+    /// Whether this stack may be rendered against a downscaled proxy source.
+    ///
+    /// A source-stage, colour-stage, geometry-stage or finish-stage effect is resolution
+    /// independent: the source development is pointwise, a colour unit is pointwise, the geometry
+    /// payloads are normalized to their own input stage and a finish unit's mask is normalized to
+    /// the output stage, so the same recipe compiles unchanged against a smaller content stage and
+    /// produces the same picture at display size. A spatial-stage effect is eligible too, but its
+    /// neighbourhoods scale with the stage, so its proxy frame is an approximation of the exact
+    /// render at display size rather than the same picture; [`Self::proxy_approximate`] says when
+    /// a stack renders that way, and the exact phase still produces every number. A pixel-stage
+    /// effect is not eligible: its payload addresses content pixels, which a rescaled stage no
+    /// longer has. An effect no provider declares is ineligible too, because nothing can say what
+    /// stage it addresses.
+    ///
+    /// Cost is `O(layers)` and reads no pixels. The error names the first ineligible layer's effect
+    /// identity and its index, so the caller reports the reason rather than silently taking the
+    /// exact path.
+    pub fn proxy_eligible(&self, recipe: &Recipe) -> Result<(), Error> {
+        for (index, layer) in recipe.layers.iter().enumerate() {
+            match self.effect_stage(&layer.effect_id) {
+                Some(
+                    EffectStage::Source
+                    | EffectStage::Color
+                    | EffectStage::Spatial
+                    | EffectStage::Geometry
+                    | EffectStage::Finish,
+                ) => {}
+                Some(EffectStage::Pixel) => {
+                    return Err(validation(format!(
+                        "layer {index} is not proxy-eligible: effect {} is at the pixel stage, \
+                         whose coordinates are content pixels and cannot be rescaled",
+                        layer.effect_id
+                    )));
+                }
+                None => {
+                    return Err(validation(format!(
+                        "layer {index} is not proxy-eligible: no provider declares effect {}, so \
+                         its stage is unknown",
+                        layer.effect_id
+                    )));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Whether a proxy render of this stack is an approximation: a spatial-stage layer's
+    /// neighbourhoods scale with the stage it is rendered at, so its display-size frame is close to
+    /// the exact render but not the same picture. Cost is `O(layers)` and reads no pixels.
+    pub fn proxy_approximate(&self, recipe: &Recipe) -> bool {
+        recipe
+            .layers
+            .iter()
+            .any(|layer| self.effect_stage(&layer.effect_id) == Some(EffectStage::Spatial))
+    }
+
     /// The provider that can evaluate this effect, or `None` when none is registered or the
     /// registered one reports itself unavailable.
     fn provider(&self, effect_id: &str) -> Option<&dyn ToolModule> {

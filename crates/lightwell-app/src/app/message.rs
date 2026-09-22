@@ -176,11 +176,6 @@ pub(crate) enum Message {
     Sync,
     /// Poll the preview queue while a job is in flight.
     Poll,
-    /// The displayed preview's pixels reached the GPU.
-    Uploaded(
-        Upload,
-        Result<image_memory::Allocation, image_memory::Error>,
-    ),
     /// One derived clipping overlay reached the GPU. The generation says which photograph it
     /// belongs to, so an overlay for a replaced frame is dropped instead of drawn over the new one.
     OverlayUploaded(
@@ -293,13 +288,16 @@ pub(crate) enum Message {
         action: String,
         parameter: String,
     },
-    /// The 16 ms tick that drives an open slider draft. It is gated on that draft, so a desktop
-    /// with no gesture in progress runs no timer of its own.
+    /// Send an open slider draft's outstanding value, if a round trip is not already in flight.
+    ///
+    /// No timer produces this any more: a move sends its own `draft.set` the moment nothing is in
+    /// flight. It remains as the entry point the evidence driver and the paced step still use after
+    /// each move, where it finds the send already done and does nothing.
     SliderDraftTick,
     /// `draft.begin` answered.
     SliderDraftBegun(Result<Box<Draft>, String>),
     /// One `draft.set` and the preview job for the settings it accepted.
-    SliderDraftSet(Result<Box<(Draft, PreviewJob)>, String>),
+    SliderDraftSet(Result<Box<(Draft, PreviewJob, crate::app::tasks::RoundTrip)>, String>),
     /// End the open slider draft and commit it once.
     SliderDraftCommit,
     /// `draft.commit` answered. `None` is a no-op outcome: the gesture returned to its start, so
@@ -434,6 +432,9 @@ pub(crate) enum Message {
     Info(iced::system::Information),
     /// The evidence deadline check.
     EvidenceTick,
+    /// One tick of a paced evidence slider step: send its next value. Exists only while a paced
+    /// step has values left to send, which is also when the subscription that produces it exists.
+    PacedSliderTick,
     /// Capture the frame the next redraw presents.
     Capture,
     Captured(iced::window::Screenshot),

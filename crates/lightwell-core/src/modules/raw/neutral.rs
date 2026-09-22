@@ -21,7 +21,7 @@ pub const DARK_THRESHOLD: f64 = 0.01;
 pub const CLIPPED_THRESHOLD: f64 = 0.995;
 
 const MAX_SENSOR_SIDE: u32 = 16_384;
-const MAX_SENSOR_PIXELS: usize = 64_000_000;
+const MAX_SENSOR_PIXELS: usize = lightwell_raw::MAX_PIXELS;
 const MAX_BLACK_REPEAT_PIXELS: usize = 4_096;
 
 /// Immutable view of the retained integer mosaic and the calibration needed to interpret one
@@ -30,12 +30,16 @@ const MAX_BLACK_REPEAT_PIXELS: usize = 4_096;
 #[derive(Clone, Copy, Debug)]
 pub struct SensorMosaic<'a> {
     pub samples: &'a [u16],
+    pub corrections: &'a [lightwell_raw::MosaicCorrection],
     pub width: u32,
     pub height: u32,
     pub cfa_width: u8,
     pub cfa_height: u8,
     /// Red, green, and blue are encoded as 0, 1, and 2 respectively.
     pub cfa: &'a [u8],
+    /// Native CFA site IDs used to select per-site black calibration. Bayer
+    /// green sites remain distinct (usually IDs 1 and 3).
+    pub black_cfa: &'a [u8],
     pub black_base: f32,
     pub black_channels: [f32; 4],
     pub black_repeat_width: u8,
@@ -64,6 +68,18 @@ fn checked_source_len(source: &SensorMosaic<'_>) -> Result<usize, Error> {
     if length > MAX_SENSOR_PIXELS || source.samples.len() != length {
         return Err(validation("neutral picker mosaic length is invalid"));
     }
+    if source.corrections.len() > 65_536
+        || source
+            .corrections
+            .iter()
+            .any(|p| p.index as usize >= length)
+        || source
+            .corrections
+            .windows(2)
+            .any(|p| p[0].index >= p[1].index)
+    {
+        return Err(validation("neutral picker sparse corrections are invalid"));
+    }
     Ok(length)
 }
 
@@ -76,7 +92,15 @@ fn validate_cfa(source: &SensorMosaic<'_>) -> Result<(), Error> {
         .0
         .checked_mul(dimensions.1)
         .ok_or_else(|| validation("neutral picker CFA dimensions overflow"))?;
-    if source.cfa.len() != cfa_len || source.cfa.iter().any(|channel| *channel > 2) {
+    if source.cfa.len() != cfa_len
+        || source.cfa.iter().any(|channel| *channel > 2)
+        || source.black_cfa.len() != cfa_len
+        || source
+            .black_cfa
+            .iter()
+            .zip(source.cfa)
+            .any(|(&site, &channel)| site > 3 || (if site == 3 { 1 } else { site }) != channel)
+    {
         return Err(validation("neutral picker CFA is malformed"));
     }
     let counts =
@@ -133,11 +157,20 @@ fn validate_calibration(source: &SensorMosaic<'_>) -> Result<(), Error> {
             "neutral picker black repeat contains an invalid value",
         ));
     }
+    let max_repeat = source.black_repeat.iter().copied().fold(0.0_f32, f32::max);
+    if source.black_channels.iter().any(|channel| {
+        let denominator = source.sensor_white - source.black_base - *channel - max_repeat;
+        !denominator.is_finite() || denominator <= 0.0
+    }) {
+        return Err(validation(
+            "neutral picker black/white denominator is invalid",
+        ));
+    }
     Ok(())
 }
 
-fn black_at(source: &SensorMosaic<'_>, x: u32, y: u32, channel: usize) -> f64 {
-    let mut black = f64::from(source.black_base) + f64::from(source.black_channels[channel]);
+fn black_at(source: &SensorMosaic<'_>, x: u32, y: u32, black_channel: usize) -> f64 {
+    let mut black = f64::from(source.black_base) + f64::from(source.black_channels[black_channel]);
     if source.black_repeat_width != 0 {
         let repeat_x = (x % u32::from(source.black_repeat_width)) as usize;
         let repeat_y = (y % u32::from(source.black_repeat_height)) as usize;
@@ -206,9 +239,19 @@ pub fn sensor_neutral_gains_mapped(
             let channel = usize::from(source.cfa[cfa_index]);
             let (mapped_x, mapped_y) = map_at(x, y, channel)?;
             let (sample_x, sample_y) = nearest_site(source, mapped_x, mapped_y, channel)?;
-            let black = black_at(source, sample_x, sample_y, channel);
+            let sample_cfa_index =
+                ((sample_y % cfa_height) * cfa_width + (sample_x % cfa_width)) as usize;
+            let black_channel = usize::from(source.black_cfa[sample_cfa_index]);
+            let black = black_at(source, sample_x, sample_y, black_channel);
+            let sample_index = (sample_y as usize) * (source.width as usize) + sample_x as usize;
             let sample = f64::from(
-                source.samples[(sample_y as usize) * (source.width as usize) + sample_x as usize],
+                match source
+                    .corrections
+                    .binary_search_by_key(&(sample_index as u32), |p| p.index)
+                {
+                    Ok(index) => source.corrections[index].value,
+                    Err(_) => source.samples[sample_index],
+                },
             );
             let denominator = f64::from(source.sensor_white) - black;
             let normalized = (sample - black) / denominator;
@@ -223,7 +266,7 @@ pub fn sensor_neutral_gains_mapped(
                     "neutral picker patch is dark, clipped or non-finite",
                 ));
             }
-            let gain = gain_at(mapped_x, mapped_y, channel)?;
+            let gain = gain_at(x as f64, y as f64, channel)?;
             if !gain.is_finite() || gain <= 0.0 {
                 return Err(validation("neutral picker site gain is invalid"));
             }
@@ -316,6 +359,7 @@ mod tests {
     use super::*;
 
     const BAYER: [u8; 4] = [0, 1, 1, 2];
+    const BAYER_BLACK: [u8; 4] = [0, 1, 3, 2];
     const XTRANS: [u8; 36] = [
         1, 1, 0, 1, 1, 2, 1, 1, 2, 1, 1, 0, 2, 0, 1, 0, 2, 1, 1, 1, 2, 1, 1, 0, 1, 1, 0, 1, 1, 2,
         0, 2, 1, 2, 0, 1,
@@ -333,12 +377,14 @@ mod tests {
         sensor_white: f32,
     ) -> SensorMosaic<'a> {
         SensorMosaic {
+            corrections: &[],
             samples,
             width,
             height,
             cfa_width,
             cfa_height,
             cfa,
+            black_cfa: if cfa_width == 2 { &BAYER_BLACK } else { cfa },
             black_base: 10.0,
             black_channels: [2.0, 3.0, 4.0, 5.0],
             black_repeat_width: 2,
@@ -366,8 +412,13 @@ mod tests {
                     cfa[((y % u32::from(cfa_height)) * u32::from(cfa_width)
                         + (x % u32::from(cfa_width))) as usize],
                 );
+                let black_channel = if cfa_width == 2 {
+                    usize::from(BAYER_BLACK[((y % 2) * 2 + (x % 2)) as usize])
+                } else {
+                    channel
+                };
                 let black = 10.0
-                    + [2.0, 3.0, 4.0, 5.0][channel]
+                    + [2.0, 3.0, 4.0, 5.0][black_channel]
                     + f64::from(black_repeat[((y % 2) * 2 + (x % 2)) as usize]);
                 samples[(y * width + x) as usize] =
                     (black + values[channel] * (f64::from(sensor_white) - black)).round() as u16;
@@ -398,6 +449,39 @@ mod tests {
         close(gains[0], 2.0);
         close(gains[1], 1.0);
         close(gains[2], 4.0);
+    }
+
+    #[test]
+    fn sparse_sensor_repairs_are_used_without_mutating_the_mosaic() {
+        let black_repeat = [1.0, 2.0, 3.0, 4.0];
+        let mut pixels = fixture(
+            24,
+            22,
+            2,
+            2,
+            &BAYER,
+            [0.25, 0.5, 0.125],
+            &black_repeat,
+            65_535.0,
+        );
+        let expected = sensor_neutral_gains(
+            &source(&pixels, 24, 22, 2, 2, &BAYER, &black_repeat, 65_535.0),
+            9,
+            10,
+        )
+        .unwrap();
+        let index = 10 * 24 + 10;
+        let repair = lightwell_raw::MosaicCorrection {
+            index: index as u32,
+            value: pixels[index],
+        };
+        pixels[index] = 0;
+        let before = pixels.clone();
+        let mut view = source(&pixels, 24, 22, 2, 2, &BAYER, &black_repeat, 65_535.0);
+        assert!(sensor_neutral_gains(&view, 9, 10).is_err());
+        view.corrections = std::slice::from_ref(&repair);
+        assert_eq!(sensor_neutral_gains(&view, 9, 10).unwrap(), expected);
+        assert_eq!(pixels, before);
     }
 
     #[test]
@@ -468,12 +552,14 @@ mod tests {
             }
         }
         let view = SensorMosaic {
+            corrections: &[],
             samples: &pixels,
             width: 64,
             height: 48,
             cfa_width: 2,
             cfa_height: 2,
             cfa: &BAYER,
+            black_cfa: &BAYER,
             black_base: 0.0,
             black_channels: [0.0; 4],
             black_repeat_width: 0,

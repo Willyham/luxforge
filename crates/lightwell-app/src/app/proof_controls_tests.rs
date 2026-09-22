@@ -81,7 +81,8 @@ impl Proof {
         assert!(modules[0].developer);
         editor.expanded.insert(MODULE.into(), true);
         let _ = editor.update(Message::ModulesLoaded(Ok(modules)));
-        let refreshed = tasks::refresh(&owner, editor.client, asset.clone(), true, 0).unwrap();
+        let refreshed =
+            tasks::refresh(&owner, editor.client, asset.clone(), true, 0, None).unwrap();
         let sequence = refreshed.sequence;
         let _ = editor.update(Message::Refreshed(Ok(Box::new(refreshed))));
         assert!(editor.editable());
@@ -195,6 +196,7 @@ impl Proof {
             self.asset.clone(),
             false,
             self.sequence,
+            None,
         )
         .unwrap();
         self.sequence = self.sequence.max(refreshed.sequence);
@@ -253,6 +255,7 @@ impl Proof {
             self.asset.clone(),
             false,
             self.sequence,
+            None,
         )
         .unwrap();
         self.sequence = self.sequence.max(refreshed.sequence);
@@ -610,6 +613,7 @@ fn proof_action_styles_and_group_reset_reach_the_same_json_method() {
         proof.asset.clone(),
         false,
         proof.sequence,
+        None,
     )
     .unwrap();
     let _ = proof
