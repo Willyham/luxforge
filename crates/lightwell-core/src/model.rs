@@ -11,6 +11,9 @@ pub const CROP_EFFECT: &str = "lightwell.geometry.crop";
 /// The one colour-stage effect of the Basic module: every implemented Basic parameter of a stack
 /// lives in one layer of this effect.
 pub const BASIC_EFFECT: &str = "lightwell.basic.adjust";
+/// The colour mixer's one pointwise unit: hue, saturation and luminance for the eight colour
+/// ranges, declared order 10 so a mixer layer always follows the Basic layer in the colour run.
+pub const MIXER_EFFECT: &str = "lightwell.mixer.hsl";
 pub const EFFECT_FORMAT: u32 = 1;
 
 fn valid_id(value: &str, prefix: &str) -> bool {

@@ -90,7 +90,8 @@ const fn gaps_deg() -> [f64; RANGE_COUNT] {
     let mut gaps = [0.0; RANGE_COUNT];
     let mut range = 0;
     while range < RANGE_COUNT {
-        gaps[range] = wrap_turn(CENTRE_HUES_DEG[(range + 1) % RANGE_COUNT] - CENTRE_HUES_DEG[range]);
+        gaps[range] =
+            wrap_turn(CENTRE_HUES_DEG[(range + 1) % RANGE_COUNT] - CENTRE_HUES_DEG[range]);
         range += 1;
     }
     gaps
@@ -226,7 +227,8 @@ impl Mixer {
         let other = 1.0 - weight;
         let rotation =
             ramp * (weight * self.rotation_deg[lower] + other * self.rotation_deg[upper]);
-        let saturation = ramp * (weight * self.chroma_gain[lower] + other * self.chroma_gain[upper]);
+        let saturation =
+            ramp * (weight * self.chroma_gain[lower] + other * self.chroma_gain[upper]);
         let amount =
             ramp * (weight * self.luminance_amount[lower] + other * self.luminance_amount[upper]);
         // The factor cannot be negative in exact arithmetic; the clamp is the frozen guard against
@@ -385,14 +387,16 @@ mod tests {
             let forward = Mixer::new(hue, [0.0; RANGE_COUNT], [0.0; RANGE_COUNT]);
             assert!(
                 (f64::from(forward.rotation_deg[range]) - 0.5 * GAPS_DEG[range]).abs() < 1e-4,
-                "{}", RANGE_NAMES[range]
+                "{}",
+                RANGE_NAMES[range]
             );
             hue[range] = -100.0;
             let backward = Mixer::new(hue, [0.0; RANGE_COUNT], [0.0; RANGE_COUNT]);
             let behind = GAPS_DEG[(range + RANGE_COUNT - 1) % RANGE_COUNT];
             assert!(
                 (f64::from(backward.rotation_deg[range]) + 0.5 * behind).abs() < 1e-4,
-                "{}", RANGE_NAMES[range]
+                "{}",
+                RANGE_NAMES[range]
             );
         }
     }
@@ -475,8 +479,8 @@ mod tests {
     // -------------------------------------------------------------------------------------------
 
     fn fixture_file() -> Value {
-        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../../fixtures/mixer/mixer-cases.json");
+        let path =
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/mixer/mixer-cases.json");
         serde_json::from_str(&fs::read_to_string(&path).expect("the mixer fixtures"))
             .expect("valid fixture JSON")
     }

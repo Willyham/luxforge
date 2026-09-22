@@ -96,7 +96,7 @@ All three sections render from descriptors with the delivered vocabulary; no new
 | Section | Registry position and initial state | Groups and controls |
 | --- | --- | --- |
 | Presence | After Basic, collapsed | One group: Texture, Clarity, Dehaze sliders, zero at 0; module reset |
-| Colour mixer | After Presence, collapsed | Hue, Saturation and Luminance groups, each with the eight colour sliders in the order red, orange, yellow, green, aqua, blue, purple, magenta and its own reset. Rails use the `gradient` hint: a hue rail runs from the previous to the next range colour through this one, a saturation rail from grey to the colour, a luminance rail from the dark to the light version of the colour |
+| Colour mixer | After Presence, collapsed | Hue, Saturation and Luminance groups, each with the eight colour sliders in the order red, orange, yellow, green, aqua, blue, purple, magenta and its own reset. Rails use the `gradient` hint: a hue rail runs from the previous to the next range colour through this one, a saturation rail from grey to the colour, a luminance rail from the dark to the light version of the colour. Hue starts expanded; Saturation and Luminance start collapsed |
 | Vignette | After Crop, collapsed | One group: Amount (zero 0, soft range full), Midpoint, Roundness, Feather; module reset |
 
 History labels come from `ToolModule::label`, recipe rows from `describe_layer`, and seeded slider values from `values`, so the panel shows authoritative current or historical values for each module as it does for Basic.

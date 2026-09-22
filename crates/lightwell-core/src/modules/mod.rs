@@ -5,6 +5,7 @@ mod basic;
 mod controls;
 mod crop;
 mod descriptor;
+mod mixer;
 mod pixel;
 mod processing;
 mod raw;
@@ -26,6 +27,7 @@ pub use descriptor::{
     NumberStyle, ParameterDescriptor, ParameterKind, RailDecoration, ResetAction, action_label,
     check_parameters, check_value, render_summary, valid_identity, valid_name,
 };
+pub use mixer::MixerModule;
 pub use pixel::PixelModule;
 pub use processing::{
     ColorOperation, ExactGeometry, MAX_COLOR_UNITS, PointwiseColor, Processing, Resample, Stage,

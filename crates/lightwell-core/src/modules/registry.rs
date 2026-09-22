@@ -2,8 +2,8 @@
 //! action and query identity. Registration touches no image or catalog resource.
 use super::{
     ActionDescriptor, BasicModule, CanvasInteraction, CropModule, EffectDescriptor, EffectStage,
-    MAX_COLOR_UNITS, ModuleDescriptor, PixelModule, Processing, RawModule, Stage, ToolModule,
-    TransformModule,
+    MAX_COLOR_UNITS, MixerModule, ModuleDescriptor, PixelModule, Processing, RawModule, Stage,
+    ToolModule, TransformModule,
 };
 use crate::{
     Error, ErrorKind, Layer, RECIPE_FORMAT, Recipe,
@@ -70,6 +70,8 @@ impl ModuleRegistry {
             Arc::new(PixelModule::new()) as Arc<dyn ToolModule>,
             Arc::new(RawModule::new()),
             Arc::new(BasicModule::new()),
+            // A Presence module will later be registered here, between Basic and the mixer.
+            Arc::new(MixerModule::new()),
             Arc::new(TransformModule::new()),
             Arc::new(CropModule::new()),
         ] {
@@ -802,10 +804,13 @@ pub(crate) mod tests {
         assert!(registry.action("set-basic").is_some());
         assert!(registry.action("reset-basic").is_some());
         assert!(registry.effect(BASIC_EFFECT).is_some());
+        assert!(registry.action("set-mixer").is_some());
+        assert!(registry.action("reset-mixer").is_some());
+        assert!(registry.effect(crate::MIXER_EFFECT).is_some());
         assert!(registry.action("set-raw-exposure").is_some());
         assert!(registry.action("reset-raw").is_some());
         assert!(registry.effect(RAW_EFFECT).is_some());
-        assert_eq!(registry.descriptors().len(), 5);
+        assert_eq!(registry.descriptors().len(), 6);
         assert!(registry.action("edit.set-pixel").is_none());
 
         for (case, module) in [
@@ -851,7 +856,7 @@ pub(crate) mod tests {
         }
         assert_eq!(
             registry.descriptors().len(),
-            5,
+            6,
             "nothing was half-registered"
         );
         assert!(
@@ -864,7 +869,7 @@ pub(crate) mod tests {
                 ))
                 .is_ok()
         );
-        assert_eq!(registry.descriptors().len(), 6);
+        assert_eq!(registry.descriptors().len(), 7);
     }
 
     /// A module whose canvas claims one mode-strip letter.
@@ -1399,7 +1404,9 @@ pub(crate) mod tests {
             (
                 "test.mixer",
                 MIXER_EFFECT,
-                "set-mixer",
+                // Distinct from the real mixer module's own "set-mixer" action, which
+                // `ModuleRegistry::builtin()` now registers.
+                "set-test-mixer",
                 EffectStage::Color,
                 10,
             ),
