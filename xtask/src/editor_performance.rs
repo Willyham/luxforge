@@ -153,7 +153,7 @@ pub fn run(root: &Path, source: &Path, out: &Path, samples: usize) -> Result {
     let original = state.current_entry.id;
 
     let started = Instant::now();
-    let original_job = service.preview_job(&asset, Some(&original), None, None)?;
+    let original_job = service.preview_job(&asset, Some(&original), None, None, None)?;
     let cached_preview_job_ms = milliseconds(started);
     let started = Instant::now();
     let original_raster = match &original_job.source {
@@ -232,7 +232,7 @@ pub fn run(root: &Path, source: &Path, out: &Path, samples: usize) -> Result {
     // colour-stage commit, before the geometry tail. The identity render shares the source buffer
     // and allocates no frame, so it is the floor; the same stack without the colour layer is the
     // honest baseline for the pass itself, because it materializes exactly the same frames.
-    let colour_job = service.preview_job(&asset, Some(&crop_entry), None, None)?;
+    let colour_job = service.preview_job(&asset, Some(&crop_entry), None, None, None)?;
     let colour_registry = ModuleRegistry::builtin();
     let stack = colour_job.entry.snapshot.recipe.clone();
     let identity = Recipe {
@@ -328,7 +328,7 @@ pub fn run(root: &Path, source: &Path, out: &Path, samples: usize) -> Result {
 
     let service = EditorService::open(&catalog)?;
     let started = Instant::now();
-    let cold_job = service.preview_job(&asset, Some(&original), None, None)?;
+    let cold_job = service.preview_job(&asset, Some(&original), None, None, None)?;
     let cold_source_and_job_ms = milliseconds(started);
     let started = Instant::now();
     let cold_raster = match &cold_job.source {

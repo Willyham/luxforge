@@ -2,7 +2,7 @@
 use super::{ApiEvent, ApiRequest, ApiResponse, ClientSession, EventsResult, methods};
 use crate::{
     AnalysisPlan, AnalysisSelection, AssetId, DraftId, EditorService, EditorState, EntryId, Error,
-    ErrorKind, JobId, ModuleRegistry, PreviewJob,
+    ErrorKind, JobId, ModuleRegistry, PreviewJob, ProxyBounds,
     analysis::{AnalysisIdentity, AnalysisJob, AnalysisQueue, AnalysisRead, AnalysisStore, Report},
     editor::{PreparedFile, RawDevelopment, SourceSignature},
     source::RawPrepared,
@@ -85,6 +85,10 @@ pub struct PreviewRequest {
     /// raster. Refused together with `layer_count`: a truncated job renders a layer prefix its
     /// identity does not describe.
     pub analyse: bool,
+    /// The physical pixels the photo area can show this frame in, when the caller wants the job to
+    /// have a proxy phase. `None` asks for the exact path alone. The owner only copies it into the
+    /// job; the preview queue decides whether a proxy is worthwhile and builds it on its worker.
+    pub proxy: Option<ProxyBounds>,
 }
 
 impl PreviewRequest {
@@ -97,6 +101,7 @@ impl PreviewRequest {
             layer_count: None,
             draft: None,
             analyse: false,
+            proxy: None,
         }
     }
     /// Show this entry instead of the current one.
@@ -118,6 +123,11 @@ impl PreviewRequest {
     /// second render.
     pub fn analyse(mut self) -> Self {
         self.analyse = true;
+        self
+    }
+    /// Offer this job a proxy phase at the display bounds the frame will be shown in.
+    pub fn proxy(mut self, bounds: ProxyBounds) -> Self {
+        self.proxy = Some(bounds);
         self
     }
 }
@@ -777,6 +787,7 @@ fn owner_loop(
                             request.entry_id.as_ref(),
                             request.layer_count,
                             draft,
+                            request.proxy,
                         )
                         .map(|mut job| {
                             job.analyse = request.analyse;

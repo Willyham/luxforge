@@ -5429,6 +5429,7 @@ mod tests {
             )
             .expect("a test analysis identity"),
             analyse: false,
+            proxy: None,
             entry,
         };
         editor.editing = Some(("set-raw-exposure".into(), "ev".into()));

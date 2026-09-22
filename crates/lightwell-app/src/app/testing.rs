@@ -257,6 +257,7 @@ pub(crate) fn refresh_for(
             )
             .expect("a test analysis identity"),
             analyse: false,
+            proxy: None,
         },
         session: ClientSession::default(),
         sequence: 7,

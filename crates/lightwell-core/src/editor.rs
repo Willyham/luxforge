@@ -1,7 +1,7 @@
 use crate::{
     AssetId, ContentPoint, Draft, DraftId, EntryId, Error, ErrorKind, HistoryEntry, Layer, LayerId,
-    ModuleRegistry, Mutation, PreviewJob, PreviewSource, Raster, Recipe, Snapshot, SnapshotId,
-    Transform,
+    ModuleRegistry, Mutation, PreviewJob, PreviewSource, ProxyBounds, Raster, Recipe, Snapshot,
+    SnapshotId, Transform,
     analysis::AnalysisIdentity,
     modules::{
         ActionInput, ActionPlan, EffectStage, Stage, StageContext, action_label, check_parameters,
@@ -978,12 +978,15 @@ impl EditorService {
     /// truncates the rendered stack to its first `n` layers, which the desktop uses to show a
     /// layer's input stage while drafting it; it must not exceed the rendered stack's layer count.
     /// A draft previews the current entry, so naming a historical one beside it is refused.
+    /// `proxy` offers the display bounds the frame will be shown in; the queue decides what to do
+    /// with them, and this call reads no pixels either way.
     pub fn preview_job(
         &self,
         asset_id: &AssetId,
         entry_id: Option<&EntryId>,
         layer_count: Option<usize>,
         draft: Option<&Draft>,
+        proxy: Option<ProxyBounds>,
     ) -> Result<PreviewJob, Error> {
         let state = self.state(asset_id)?;
         if draft.is_some() && entry_id.is_some_and(|entry_id| entry_id != &state.current_entry.id) {
@@ -1037,6 +1040,10 @@ impl EditorService {
             draft_revision,
             identity,
             analyse: false,
+            // A truncated job renders a layer prefix, whose output stage a plan computed from the
+            // whole stack does not describe, and the desktop shows it only as a drafting aid. It
+            // therefore never has a proxy phase, whatever bounds the caller offered.
+            proxy: proxy.filter(|_| layer_count.is_none()),
         })
     }
 
@@ -2731,7 +2738,7 @@ mod tests {
         assert_eq!(initial.current_entry.snapshot.recipe.layers.len(), 1);
         let source_layer = initial.current_entry.snapshot.recipe.layers[0].id.clone();
         let original = service
-            .preview_job(&initial.asset.id, None, None, None)
+            .preview_job(&initial.asset.id, None, None, None, None)
             .unwrap();
         assert!(matches!(original.source, PreviewSource::Raw { .. }));
         let as_shot = raw_payload(&initial.current_entry.snapshot.recipe).unwrap();
@@ -2777,7 +2784,7 @@ mod tests {
         );
         assert_eq!(
             service
-                .preview_job(&initial.asset.id, None, None, None)
+                .preview_job(&initial.asset.id, None, None, None, None)
                 .unwrap_err()
                 .kind,
             ErrorKind::PreparationRequired
@@ -2796,7 +2803,7 @@ mod tests {
         service.install_development(&request, developed).unwrap();
         assert!(matches!(
             service
-                .preview_job(&initial.asset.id, None, None, None)
+                .preview_job(&initial.asset.id, None, None, None, None)
                 .unwrap()
                 .source,
             PreviewSource::Raw { .. }
@@ -2972,10 +2979,10 @@ mod tests {
         let mut service = EditorService::open(&catalog).unwrap();
         let state = service.import(&fixture()).unwrap();
         let first = service
-            .preview_job(&state.asset.id, None, None, None)
+            .preview_job(&state.asset.id, None, None, None, None)
             .unwrap();
         let second = service
-            .preview_job(&state.asset.id, None, None, None)
+            .preview_job(&state.asset.id, None, None, None, None)
             .unwrap();
         let (PreviewSource::Jpeg(first_source), PreviewSource::Jpeg(second_source)) =
             (&first.source, &second.source)
@@ -3006,7 +3013,7 @@ mod tests {
         std::fs::copy(fixture(), &source).unwrap();
         let mut service = EditorService::open(&dir.join("catalog.sqlite")).unwrap();
         let asset = service.import(&source).unwrap().asset.id;
-        service.preview_job(&asset, None, None, None).unwrap();
+        service.preview_job(&asset, None, None, None, None).unwrap();
         let replacement =
             Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/s0/orientation-2.jpg");
         assert_eq!(
@@ -3016,7 +3023,7 @@ mod tests {
         std::fs::copy(replacement, &source).unwrap();
         assert_eq!(
             service
-                .preview_job(&asset, None, None, None)
+                .preview_job(&asset, None, None, None, None)
                 .unwrap_err()
                 .kind,
             ErrorKind::SourceUnavailable
@@ -4164,7 +4171,7 @@ mod tests {
             .unwrap();
         let rendered = |service: &EditorService, layer_count: Option<usize>| -> Raster {
             let job = service
-                .preview_job(&asset, None, layer_count, None)
+                .preview_job(&asset, None, layer_count, None, None)
                 .unwrap();
             let mut queue = PreviewQueue::default();
             queue.request(job);
@@ -4191,7 +4198,7 @@ mod tests {
         assert_eq!(none.pixel(0, 0), Some(original), "no layer, no edit");
         assert_ne!(none.pixel(0, 0), prefix.pixel(0, 0));
         let error = service
-            .preview_job(&asset, None, Some(3), None)
+            .preview_job(&asset, None, Some(3), None, None)
             .expect_err("an out-of-range layer count");
         assert_eq!(error.kind, ErrorKind::Validation);
         assert!(
