@@ -2,7 +2,7 @@
 
 The Develop workspace opens supported JPEG, Nikon Z6 NEF, Fujifilm X100VI RAF and DJI Air 2S DNG originals, with exact transforms, crop/straighten, persistent history and the JSON API. RAW adds editable source exposure and white balance. Export, Locate and MCP are planned; see [feature status](features.md).
 
-JPEG Basic exposure, tone, white balance and colour controls are built, with the neutral picker, and so are the histogram and clipping inspector that share their [design](design/basic-and-histogram.md).
+JPEG Basic exposure, tone, white balance and colour controls are built, with the neutral picker, and so are the histogram and clipping inspector that share their [design](design/basic-and-histogram.md), and the Presence, Colour mixer and Vignette sections of their own [design](design/presence-mixer-vignette.md).
 
 Initial RAW support covers full-size Z6 12/14-bit lossless NEF, X100VI 14-bit uncompressed/lossless RAF and the supplied Air 2S FC3411 uncompressed DNG mode with 16-bit stored samples. Air 2S development includes its required embedded gain-map and chromatic-warp corrections. Broader recording modes and controlled color/detail qualification remain in the [coverage manifest](../fixtures/raw-coverage.json); generic DNG support is not implied. A failed Open keeps the previous photo.
 
@@ -109,6 +109,22 @@ The two small triangles in the plot's bottom corners are the clipping overlays, 
 
 Move the pointer over the photograph and the three output codes under it appear in the caption row, with the pixel's coordinates: `R 128 · G 64 · B 255 · 120, 80`. It reads the same evaluated picture the plot describes, clears when the pointer leaves, and asks for one pixel at a time however fast you move.
 
+### Presence
+
+Presence is the section under Basic, collapsed until you open it, with three sliders that each run −100 to +100 in whole steps. They act on a neighbourhood of every pixel rather than on the pixel alone, which is what separates them from Basic's Contrast.
+
+**Texture** raises or lowers medium-scale detail: fabric weave, foliage, skin texture. Positive values strengthen it and negative values soften it while broad shading stays where it was. **Clarity** does the same for broad local contrast, the difference between a region and its surroundings, so a flat scene gains depth and a harsh one calms down; it works on brightness only, so colours keep their hue and saturation, and its gain is compressed near black and white so it cannot create a new clipped highlight or crushed shadow. **Dehaze** estimates the atmospheric veil in the photograph, the brightest low-contrast light the haze adds, and removes a fraction of it at positive values or adds a uniform veil at negative ones. It changes colour as well as brightness, because haze is a coloured veil, and it can only remove what the estimate finds: a veil that varies quickly across the frame is partly left in place.
+
+Whatever order you touch them in, they run in a fixed one: Dehaze, then Texture, then Clarity, after Basic and the Colour mixer and before the quarter-turns and the crop, as one layer updated in place. Each slider drafts and previews live as Basic's do and commits once on release with a label such as "Clarity +40"; the group's reset and the section's reset return the three to zero as one entry, "Reset Presence". A neighbourhood operation costs more than a pointwise one, and the three together cost more than their sum, because every tile of the photograph is computed with a wide margin around it; on a 24 MP photograph a single slider previews within a few hundred milliseconds and all three together take well over a second per frame, which is reported in [performance](specs/performance.md) rather than hidden by a lower-quality preview. Fine noise is texture as far as these controls can tell, so both amplify noise in shadows; inspect at 100%.
+
+### Colour mixer
+
+The Colour mixer is the section after Presence, collapsed until you open it. It adjusts eight colour ranges separately: red, orange, yellow, green, aqua, blue, purple and magenta, in that order around the wheel, each with a **Hue**, **Saturation** and **Luminance** slider from −100 to +100 in whole steps. The three properties are three groups; Hue starts open and Saturation and Luminance start collapsed, and each group has its own reset.
+
+A pixel belongs to at most two neighbouring ranges, in proportion to where its hue sits between their centres, so a change to Red fades smoothly into Orange and Magenta and never draws a hard edge through a gradient. Greys and near-greys belong to no range and are untouched by every slider, which keeps shadow noise from being coloured. Hue turns a range's colours toward the next range (positive) or the previous one (negative), by up to half the distance to its neighbour at ±100, so two opposing sliders on neighbouring ranges can meet but never cross. Saturation runs from fully grey at −100 to twice the colour's chroma at +100. Luminance darkens or lightens the range's colours without pushing them past black or white. The rail under each slider shows what it does: the hue rail runs from the previous range's colour through this one to the next, the saturation rail from grey to the colour, the luminance rail from its dark to its light version.
+
+It is one layer in the recipe, always evaluated after Basic whichever you touched first, and each slider drafts, previews and commits as Basic's do, labelled with the range and property: "Red hue +20", "Reset Hue", "Reset Colour mixer". Lightroom's per-colour view, targeted adjustment drag and black-and-white mix are not built.
+
 ### RAW development
 
 The NEF, RAF or DNG remains the original throughout editing. Exposure, white balance and composition are saved as recipe settings. History and versions retain those settings; reopening rebuilds the needed high-precision image from the original. Display previews are disposable.
@@ -141,6 +157,12 @@ The panel prints the input stage, the rectangle in whole box pixels, the resulti
 Apply, or press Enter, commits one action and one new history entry, adjusting the existing crop layer in place and keeping its identity or appending one when there is none. Cancel, or press Escape, discards the draft and changes nothing. Enter and Escape act only when no field has just consumed the key. Reset crop is the module's own control: it commits the neutral crop through history and ends the draft. No pointer movement commits anything, and the rotation shown while drafting is a display filter — the committed render is what counts.
 
 Selecting a historical state pauses the draft rather than discarding it: the historical preview is shown and Return to current resumes drafting. If anything else changes the photograph while a draft is open — another client, or your own Undo, Redo or Restore — the draft is kept and marked "Changed elsewhere". Apply is refused until you choose Discard, which drops the draft, or Reapply, which re-reads the current stack, rebases the draft onto it keeping the angle and the composition as far as it fits, and lets you apply normally.
+
+### Vignette
+
+Vignette is the last section of the tools panel, collapsed until you open it, and it is applied after the crop: its centre is the centre of the cropped picture, and a later crop moves it, exactly as a post-crop vignette should. **Amount** runs −100 to +100; negative darkens toward black at the edges, and −100 reaches black at the corners, while positive lightens toward white without ever exceeding it. **Midpoint** (0 to 100) sets how far from the centre the falloff begins, **Feather** (0 to 100) how wide the transition is, from a hard edge at 0 to a gradient that spans the whole picture at 100, and **Roundness** (−100 to +100) the shape, from a rounded rectangle through the ellipse that matches the picture's proportions to a circle. The corners are always the far edge of the mask, whatever the shape.
+
+Amount 0 is the identity whatever the other three hold, so a layer with the amount at zero changes nothing. Each slider drafts and commits as Basic's do, labelled "Vignette amount −35" or "Vignette feather 80"; the reset returns all four to their defaults as one entry, "Reset Vignette". Only this one style is built: the highlight-priority, colour-priority and paint-overlay variants are not.
 
 ## History
 
