@@ -247,7 +247,7 @@ fn color_runs(operations: &[Processing]) -> ColorRuns<'_> {
 
 /// One 8-bit pixel decoded into linear sRGB.
 #[inline]
-fn decode_pixel(rgb: [u8; 3]) -> [f32; 3] {
+pub(crate) fn decode_pixel(rgb: [u8; 3]) -> [f32; 3] {
     let table = &*SRGB_TO_LINEAR;
     [
         table[rgb[0] as usize],
@@ -256,15 +256,24 @@ fn decode_pixel(rgb: [u8; 3]) -> [f32; 3] {
     ]
 }
 
+/// The output boundary for one channel already carried in f64: clamp to `[0, 1]`, then take the
+/// code whose exact threshold interval holds the value, which equals `floor(255 · encode(v) + 0.5)`.
+///
+/// A pass that accumulates in f64 — the proxy downscale averages a source rectangle that way —
+/// quantizes through this directly, so no f32 rounding is inserted between its arithmetic and the
+/// code boundary.
+#[inline]
+pub(crate) fn quantize_channel(value: f64) -> u8 {
+    let thresholds = &*SRGB_CODE_THRESHOLDS;
+    let value = value.clamp(0.0, 1.0);
+    thresholds.partition_point(|threshold| *threshold <= value) as u8
+}
+
 /// The output boundary: clamp to `[0, 1]`, then take the code whose exact threshold interval holds
 /// the value, which equals `floor(255 · encode(v) + 0.5)`.
 #[inline]
-fn quantize_pixel(rgb: [f32; 3]) -> [u8; 3] {
-    let thresholds = &*SRGB_CODE_THRESHOLDS;
-    rgb.map(|value| {
-        let value = f64::from(value.clamp(0.0, 1.0));
-        thresholds.partition_point(|threshold| *threshold <= value) as u8
-    })
+pub(crate) fn quantize_pixel(rgb: [f32; 3]) -> [u8; 3] {
+    rgb.map(|value| quantize_channel(f64::from(value)))
 }
 
 /// Apply every unit of one run, in order, to already decoded linear pixels. Nothing is clamped or
@@ -410,7 +419,7 @@ pub struct Raster {
 }
 
 impl Raster {
-    fn expected_len(width: u32, height: u32) -> Result<usize, Error> {
+    pub(crate) fn expected_len(width: u32, height: u32) -> Result<usize, Error> {
         let pixels = u64::from(width)
             .checked_mul(u64::from(height))
             .and_then(|n| n.checked_mul(4))

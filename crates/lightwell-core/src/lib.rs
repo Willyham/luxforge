@@ -10,6 +10,7 @@ mod model;
 mod modules;
 mod preview;
 mod profile;
+mod proxy;
 mod render;
 mod source;
 pub use api::*;
@@ -20,6 +21,7 @@ use image::{ImageDecoder, ImageReader, Limits};
 pub use model::*;
 pub use modules::*;
 pub use preview::*;
+pub use proxy::{ProxyBounds, ProxyCache, ProxyIdentity, ProxyKey, ProxyPlan};
 pub use render::{
     ContentPoint, LinearImage, LinearSettings, Raster, Sample, ScratchBudget, extents, locate,
     render, render_linear, sample, sample_linear,

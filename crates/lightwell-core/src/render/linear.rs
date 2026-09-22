@@ -291,6 +291,23 @@ impl LinearImage {
         Arc::downgrade(&self.planes)
     }
 
+    /// A bulk reader over this image's viewed pixels. The plane length and the view are resolved
+    /// once here instead of per access, which is what the proxy downscale needs: it reads every
+    /// viewed pixel at most twice per axis and allocates nothing of its own to do it.
+    pub(crate) fn reader(&self) -> ViewReader<'_> {
+        let (width, height) = self.view.output_dimensions();
+        ViewReader {
+            planes: self.planes.as_slice(),
+            base_width: self.base_width,
+            // `layout` accepted these dimensions when the image was built, so the product is
+            // addressable and this cannot overflow `usize`.
+            plane_len: self.base_width as usize * self.base_height as usize,
+            view: self.view,
+            width,
+            height,
+        }
+    }
+
     pub fn planes(&self) -> &[f32] {
         self.planes.as_slice()
     }
@@ -330,6 +347,39 @@ impl LinearImage {
                 "linear source produced a non-finite pixel",
             ))
         }
+    }
+}
+
+/// Reads viewed pixels of a [`LinearImage`] without recomputing its layout per access. It borrows
+/// the one immutable plane allocation and copies nothing.
+pub(crate) struct ViewReader<'a> {
+    planes: &'a [f32],
+    base_width: u32,
+    plane_len: usize,
+    view: View,
+    width: u32,
+    height: u32,
+}
+
+impl ViewReader<'_> {
+    pub(crate) fn dimensions(&self) -> (u32, u32) {
+        (self.width, self.height)
+    }
+
+    /// One viewed pixel, or `None` outside the view: the same mapping and the same values as
+    /// [`LinearImage::pixel`], which is what makes a bulk read agree with a point read.
+    #[inline]
+    pub(crate) fn pixel(&self, x: u32, y: u32) -> Option<[f32; 3]> {
+        if x >= self.width || y >= self.height {
+            return None;
+        }
+        let (base_x, base_y) = self.view.map(x, y)?;
+        let index = base_y as usize * self.base_width as usize + base_x as usize;
+        Some([
+            self.planes[index],
+            self.planes[self.plane_len + index],
+            self.planes[2 * self.plane_len + index],
+        ])
     }
 }
 

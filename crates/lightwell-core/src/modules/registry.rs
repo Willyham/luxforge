@@ -200,6 +200,41 @@ impl ModuleRegistry {
         }
     }
 
+    /// Whether this stack may be rendered against a downscaled proxy source.
+    ///
+    /// A source-stage, colour-stage or geometry-stage effect is resolution independent: the source
+    /// development is pointwise, a colour unit is pointwise and the geometry payloads are
+    /// normalized to their own input stage, so the same recipe compiles unchanged against a smaller
+    /// content stage and produces the same picture at display size. A pixel-stage effect is not:
+    /// its payload addresses content pixels, which a rescaled stage no longer has. An effect no
+    /// provider declares is ineligible too, because nothing can say what stage it addresses.
+    ///
+    /// Cost is `O(layers)` and reads no pixels. The error names the first ineligible layer's effect
+    /// identity and its index, so the caller reports the reason rather than silently taking the
+    /// exact path.
+    pub fn proxy_eligible(&self, recipe: &Recipe) -> Result<(), Error> {
+        for (index, layer) in recipe.layers.iter().enumerate() {
+            match self.effect_stage(&layer.effect_id) {
+                Some(EffectStage::Source | EffectStage::Color | EffectStage::Geometry) => {}
+                Some(EffectStage::Pixel) => {
+                    return Err(validation(format!(
+                        "layer {index} is not proxy-eligible: effect {} is at the pixel stage, \
+                         whose coordinates are content pixels and cannot be rescaled",
+                        layer.effect_id
+                    )));
+                }
+                None => {
+                    return Err(validation(format!(
+                        "layer {index} is not proxy-eligible: no provider declares effect {}, so \
+                         its stage is unknown",
+                        layer.effect_id
+                    )));
+                }
+            }
+        }
+        Ok(())
+    }
+
     /// The provider that can evaluate this effect, or `None` when none is registered or the
     /// registered one reports itself unavailable.
     fn provider(&self, effect_id: &str) -> Option<&dyn ToolModule> {
