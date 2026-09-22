@@ -1396,6 +1396,43 @@ mod tests {
     }
 
     #[test]
+    fn the_linear_path_agrees_with_itself_through_a_spatial_layer_and_a_crop() {
+        let _guard = spatial_guard();
+        clear_estimates();
+        let registry = spatial_registry();
+        let source = linear_source(60, 44);
+        let crop = fitted_crop(60, 44, 6.0, [0.2, 0.2, 0.55, 0.55]);
+        let stack = recipe(vec![spatial_layer(&["blur:2", "shift"]), crop_layer(crop)]);
+        let rendered = crate::render_linear(
+            &registry,
+            &source,
+            SnapshotId::new(),
+            &stack,
+            LinearSettings::default(),
+        )
+        .unwrap();
+        assert!(rendered.width > 1 && rendered.height > 1);
+        for y in 0..rendered.height {
+            for x in 0..rendered.width {
+                let sampled = crate::sample_linear(
+                    &registry,
+                    &source,
+                    &stack,
+                    LinearSettings::default(),
+                    x,
+                    y,
+                )
+                .unwrap();
+                assert_eq!(
+                    sampled.rgba,
+                    rendered.pixel(x, y),
+                    "linear crop after blur: sample at ({x}, {y})"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn a_sample_uses_the_same_tile_grid_the_render_used() {
         let _guard = spatial_guard();
         clear_estimates();
@@ -1413,8 +1450,9 @@ mod tests {
             16,
         )
         .unwrap();
-        let evaluation =
-            crate::render::Evaluation::new(&registry, &source, &stack).unwrap().with_tile(16);
+        let evaluation = crate::render::Evaluation::new(&registry, &source, &stack)
+            .unwrap()
+            .with_tile(16);
         for y in 0..raster.height {
             for x in 0..raster.width {
                 assert_eq!(
