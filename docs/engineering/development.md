@@ -334,7 +334,9 @@ also writes `app/crop-checks.json` with the measured values and their tolerances
 
 `basic-panel` opens `fixtures/s0/greyscale.jpg` at 1440 × 900 and drives a Temperature drag, a typed
 Vibrance, a preview of the Temperature entry and its return, the Colour group's reset, the neutral
-picker's mode, a pick on a neutral grey patch and a pick on a clipped one. That fixture is used
+picker's mode, a pick on a neutral grey patch and a pick on a clipped one. Its opened frame is also
+the default screen the Module panels density is accepted on, with Basic expanded and every other
+section collapsed by its own descriptor. That fixture is used
 because the picker needs both a genuinely neutral patch and a clipped one, and it has each: uniform
 grey quadrants and a white cross at code 255. The runner checks, per frame, the revision, the history
 label, the stored Basic payload, the one Basic layer's identity across every edit and what each of

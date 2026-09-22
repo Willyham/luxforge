@@ -193,7 +193,7 @@ notes: "the exact transform to compose into the stack's orientation".into(),
                 reset: None,
                 canvas: None,
                 developer: false,
-                collapsed: false,
+                collapsed: true,
                 layout: crate::ModuleLayout::Stacked,
                 availability: Availability::Available,
             },
@@ -420,6 +420,7 @@ mod tests {
         let descriptor = module.descriptor();
         descriptor.validate().expect("a valid transform descriptor");
         assert_eq!(descriptor.id, "lightwell.transform");
+        assert!(descriptor.collapsed, "the section starts collapsed");
         assert_eq!(
             descriptor.effects,
             vec![EffectDescriptor {

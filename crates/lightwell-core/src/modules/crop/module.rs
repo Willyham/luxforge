@@ -235,7 +235,7 @@ parameters: Vec::new(),
                     shortcut: Some("R".into()),
                 }),
                 developer: false,
-                collapsed: false,
+                collapsed: true,
                 layout: crate::ModuleLayout::Stacked,
                 availability: Availability::Available,
             },
@@ -724,6 +724,7 @@ mod tests {
         descriptor.validate().expect("a valid crop descriptor");
         assert_eq!(descriptor.id, "lightwell.crop");
         assert_eq!(descriptor.title, "Crop and straighten");
+        assert!(descriptor.collapsed, "the section starts collapsed");
         assert_eq!(
             descriptor
                 .actions
