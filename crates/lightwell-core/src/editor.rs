@@ -2484,7 +2484,7 @@ fn entry_from(
     decode("invalid history entry", json)
 }
 
-fn source_signature(path: &Path, metadata: &Metadata) -> SourceSignature {
+pub(crate) fn source_signature(path: &Path, metadata: &Metadata) -> SourceSignature {
     SourceSignature {
         byte_len: metadata.len(),
         modified: metadata.modified().ok(),

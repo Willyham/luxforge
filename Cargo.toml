@@ -20,6 +20,7 @@ rusqlite = { version = "=0.40.2", features = ["bundled"] }
 serde = { version = "=1.0.229", features = ["derive"] }
 serde_json = "=1.0.149"
 sha2 = "=0.10.9"
+url = "=2.5.8"
 uuid = { version = "=1.26.1", features = ["v4"] }
 # The exact `wgpu` Iced 0.14 resolves to, for the photo surface's own shader primitive. Iced 0.14
 # does not re-export it (`iced::widget::renderer` is hidden), so it is named here and pinned to the
