@@ -1,6 +1,7 @@
 use crate::{
     basic_smoke as basic, controls_smoke as controls, crop_smoke as crop, gallery_smoke as gallery,
-    histogram_smoke as histogram, workspace_smoke as workspace, *,
+    histogram_smoke as histogram, mixer_smoke as mixer, vignette_smoke as vignette,
+    workspace_smoke as workspace, *,
 };
 use std::{
     process::{Child, Stdio},
@@ -8,7 +9,7 @@ use std::{
 };
 /// Every rendered scenario, in the order `verify --tier rendered` runs them. One list: `main.rs`
 /// and `verify` both reach a scenario through [`dispatch`], so a new scenario is named here once.
-pub const SCENARIOS: [&str; 19] = [
+pub const SCENARIOS: [&str; 21] = [
     "empty",
     "load",
     "replacement",
@@ -25,6 +26,8 @@ pub const SCENARIOS: [&str; 19] = [
     "basic-crop",
     "basic-restart",
     "histogram",
+    "mixer",
+    "vignette",
     "gallery",
     "controls",
     "unavailable",
@@ -334,6 +337,16 @@ pub fn verify(evidence: &Path, scenario: &str, count: usize) -> Result<Value> {
         }
         return Ok(app);
     }
+    if let Some(frames) = mixer::frames(scenario) {
+        let (app, events) = preamble(evidence, frames)?;
+        mixer::verify(evidence, &app, &events)?;
+        return Ok(app);
+    }
+    if let Some(frames) = vignette::frames(scenario) {
+        let (app, events) = preamble(evidence, frames)?;
+        vignette::verify(evidence, &app, &events)?;
+        return Ok(app);
+    }
     let (app, events) = preamble(evidence, count.max(1))?;
     let frames = app["frames"].as_array().ok_or("Missing frames")?;
     for (index, frame) in frames.iter().enumerate() {
@@ -462,6 +475,16 @@ pub fn run(root: &Path, out: &Path, scenario: &str, bin: &Path, timeout: Duratio
         scenario if histogram::source(scenario).is_some() => {
             vec![root.join(histogram::source(scenario).expect("the scenario's fixture"))]
         }
+        // `mixer` drives the Colour mixer section over a generated hue wheel, so a hue rotation's
+        // continuity across the spectrum can be inspected; the golden fixtures hold only four flat
+        // quadrant colours.
+        scenario if mixer::source(scenario).is_some() => {
+            vec![root.join(mixer::source(scenario).expect("the mixer fixture"))]
+        }
+        // `vignette` drives the section over the ordinary quadrant fixture.
+        scenario if vignette::source(scenario).is_some() => {
+            vec![root.join(vignette::source(scenario).expect("the vignette fixture"))]
+        }
         _ => return Err("Unknown smoke scenario".into()),
     };
     fs::create_dir_all(out)?;
@@ -512,8 +535,10 @@ pub fn run(root: &Path, out: &Path, scenario: &str, bin: &Path, timeout: Duratio
             workspace::WINDOW[0].into(),
             workspace::WINDOW[1].into(),
         ]);
-    } else if let Some(script) =
-        histogram::script(scenario).or_else(|| histogram::crop_script(scenario))
+    } else if let Some(script) = histogram::script(scenario)
+        .or_else(|| histogram::crop_script(scenario))
+        .or_else(|| mixer::script(scenario))
+        .or_else(|| vignette::script(scenario))
     {
         let file = out.join("script.json");
         write_json(&file, &script)?;

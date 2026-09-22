@@ -39,6 +39,62 @@ fn encode(path: &Path, w: u32, h: u32) -> Result {
         .encode_image(&img)?;
     Ok(())
 }
+
+/// The `mixer` smoke scenario's own fixture: a small, fully saturated hue wheel. The golden
+/// orientation fixtures hold only four flat quadrant colours, with no continuous hue range to
+/// inspect a mixer hue rotation's continuity across, so this generates one deterministically the
+/// same way the quadrant pattern above does. Angle 0 (the wheel's own east point) is pure sRGB red,
+/// where the colour mixer's own red range is centred, and angle continues counter-clockwise through
+/// the spectrum; radius is saturation, full value throughout, so every ring but the centre is fully
+/// saturated.
+pub const HUE_WHEEL_SIZE: u32 = 480;
+
+fn hsv_to_rgb(hue_deg: f32, saturation: f32, value: f32) -> [u8; 3] {
+    let c = value * saturation;
+    let h_prime = hue_deg / 60.0;
+    let x = c * (1.0 - (h_prime.rem_euclid(2.0) - 1.0).abs());
+    let (r1, g1, b1) = match h_prime as u32 % 6 {
+        0 => (c, x, 0.0),
+        1 => (x, c, 0.0),
+        2 => (0.0, c, x),
+        3 => (0.0, x, c),
+        4 => (x, 0.0, c),
+        _ => (c, 0.0, x),
+    };
+    let m = value - c;
+    [
+        ((r1 + m) * 255.0).round().clamp(0.0, 255.0) as u8,
+        ((g1 + m) * 255.0).round().clamp(0.0, 255.0) as u8,
+        ((b1 + m) * 255.0).round().clamp(0.0, 255.0) as u8,
+    ]
+}
+
+fn hue_wheel(size: u32) -> RgbImage {
+    let radius = size as f32 / 2.0;
+    // The near-grey canvas outside the circle, distinct enough from every saturated wheel colour
+    // that a saturation threshold finds the wheel's own bounds without ever catching the backdrop.
+    const BACKGROUND: Rgb<u8> = Rgb([40, 40, 42]);
+    RgbImage::from_fn(size, size, |x, y| {
+        let dx = x as f32 + 0.5 - radius;
+        let dy = y as f32 + 0.5 - radius;
+        let r = (dx * dx + dy * dy).sqrt();
+        if r > radius {
+            BACKGROUND
+        } else {
+            let hue = dy.atan2(dx).to_degrees().rem_euclid(360.0);
+            let saturation = (r / radius).min(1.0);
+            Rgb(hsv_to_rgb(hue, saturation, 1.0))
+        }
+    })
+}
+
+fn encode_wheel(path: &Path) -> Result {
+    let img = hue_wheel(HUE_WHEEL_SIZE);
+    image::codecs::jpeg::JpegEncoder::new_with_quality(fs::File::create(path)?, 95)
+        .encode_image(&img)?;
+    Ok(())
+}
+
 pub fn generate(out: &Path) -> Result {
     ensure(
         !out.exists(),
@@ -52,11 +108,19 @@ pub fn generate(out: &Path) -> Result {
         encode(&path, w, h)?;
         entries.push(json!({"file":file,"width":w,"height":h,"sha256":hash(&path)?}));
     }
+    let wheel_path = out.join("hue-wheel.jpg");
+    encode_wheel(&wheel_path)?;
+    entries.push(
+        json!({"file":"hue-wheel.jpg","width":HUE_WHEEL_SIZE,"height":HUE_WHEEL_SIZE,"sha256":hash(&wheel_path)?}),
+    );
     write_json(
         &out.join("manifest.json"),
         &json!({"generator":"Rust image 0.25.9 / xtask pattern-v1","entries":entries}),
     )?;
-    println!("Generated 24/60 MP fixtures in {}", out.display());
+    println!(
+        "Generated 24/60 MP and hue-wheel fixtures in {}",
+        out.display()
+    );
     Ok(())
 }
 pub fn check(root: &Path) -> Result {

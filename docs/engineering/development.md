@@ -28,8 +28,8 @@ Doctor reports missing tools and the graphics environment without installing any
 | Run an agent's editor check without taking focus (macOS) | `cargo xtask develop --background --catalog FILE [--open PATH]` |
 | Exact current-editor journey, display-independent, including the Basic and histogram chapter | `cargo run --release --locked --package xtask -- editor-acceptance --output NEW_DIR` |
 | Core timing on a real-sized JPEG | `cargo run --release --locked --package xtask -- editor-performance --source JPEG --output NEW_DIR [--samples N]` |
-| Desktop slider/curve-to-presented-frame and settled-histogram timing, peak RSS, scratch and idle CPU | `cargo run --release --locked --package xtask -- editor-latency --source JPEG --output NEW_DIR [--binary PATH] [--samples N] [--control slider|curve] [--crop DEGREES] [--idle]` |
-| Verify golden fixtures; generate 24 and 60 MP workloads | `cargo xtask fixtures`, `cargo xtask generate-fixtures [--output NEW_DIR]` |
+| Desktop slider/curve-to-presented-frame and settled-histogram timing, peak RSS, scratch and idle CPU; `--action`/`--parameter` measure any other field-patch slider (mixer, vignette, ...) in place of the default Basic exposure | `cargo run --release --locked --package xtask -- editor-latency --source JPEG --output NEW_DIR [--binary PATH] [--samples N] [--control slider|curve] [--action ID --parameter NAME] [--crop DEGREES] [--idle]` |
+| Verify golden fixtures; generate 24 MP, 60 MP and the mixer scenario's hue-wheel workloads | `cargo xtask fixtures`, `cargo xtask generate-fixtures [--output NEW_DIR]` |
 | RAW corpus integrity; independent numerical stage references | `cargo xtask raw-corpus --manifest FILE --output NEW_DIR`, `cargo xtask raw-reference --output NEW_DIR` |
 | Authentic RAW editor journey, reopen and resource sampling; `--samples` defaults to 3 trials per source | `cargo run --release --locked --package xtask -- raw-editor --manifest FILE --output NEW_DIR [--samples N] [--binary PATH]` |
 | Rendered smoke scenario, needs a native graphical session | `cargo xtask smoke --scenario NAME --output NEW_DIR [--binary PATH]` |
@@ -40,6 +40,8 @@ Doctor reports missing tools and the graphics environment without installing any
 | Rendered histogram, clipping overlays, pointer readout and a drafted frame | `cargo xtask smoke --scenario histogram --output NEW_DIR` |
 | Rendered Basic composed with crop and straighten | `cargo xtask smoke --scenario basic-crop --output NEW_DIR` |
 | Rendered restart: a Basic edit committed in one launch and reopened in the next | `cargo xtask smoke --scenario basic-restart --output NEW_DIR` |
+| Rendered Colour mixer: section expand, a Red hue drag and commit at Fit and 100%, a Saturation group reset and a stronger hue shift, over a generated hue wheel | `cargo xtask smoke --scenario mixer --output NEW_DIR` |
+| Rendered Vignette: section expand, an Amount drag and commit at Fit and 100%, roundness and feather extremes, a post-crop recentre and the module reset | `cargo xtask smoke --scenario vignette --output NEW_DIR` |
 | Inspect a capture | `cargo xtask check-capture --image PNG [--orientation N]` |
 | Process failure checks; macOS measurement, `--samples` defaults to 5 launches per workload | `cargo xtask hardening --binary PATH --output NEW_DIR`, `cargo xtask measure --binary PATH --output NEW_DIR [--samples N]` |
 | Package; dependency inventory | `cargo xtask package --output NEW_DIR`, `cargo xtask inventory --output NEW_DIR` |
@@ -55,7 +57,7 @@ Every evidence command refuses an existing output directory: use a fresh `artifa
 | Tier | What it runs |
 | --- | --- |
 | `quick` | `check` and `editor-acceptance` |
-| `rendered` | quick plus all 19 smoke scenarios, including `gallery` and `controls`, through a bounded pool |
+| `rendered` | quick plus all 21 smoke scenarios, including `gallery` and `controls`, through a bounded pool |
 | `timing` | quick plus `editor-performance`, `editor-latency` and `measure`, in that order, serially, after everything else in the tier and behind the host-wide timing lock |
 | `full` | rendered plus timing plus `raw-reference` and, with `--manifest FILE`, `raw-editor` |
 
@@ -67,8 +69,8 @@ The command builds `lightwell-app` and `xtask` once in release, then runs each c
 process of the release `xtask` executable with its console output in `<out>/<component>/console.log`
 and its own evidence in `<out>/<component>/run/`. `--binary PATH` is forwarded to every component
 that takes one; without it the executable just built is passed explicitly, so every component
-measures the same file. The rendered and timing tiers run `generate-fixtures` first when the 24 or
-60 MP workloads are missing. A component that has stopped making progress is killed after twenty
+measures the same file. The rendered and timing tiers run `generate-fixtures` first when the 24 MP,
+60 MP or hue-wheel workloads are missing. A component that has stopped making progress is killed after twenty
 minutes and recorded as `timed_out`.
 
 The rendered scenarios are the one block that overlaps: they run through a bounded pool, three at a
@@ -179,7 +181,7 @@ the same `workspace.set` path as the button.
 
 ## Rendered evidence
 
-Smoke runs the built or packaged editor through a deterministic evidence sequence (repeated `--open`, evidence directory, fixed window size, bounded deadlines); there is no separate viewer, so the captured frame is the editor window with its sidebar. Scenarios: `empty`, `load`, `replacement`, `invalid`, `repeated`, `alternating`, `large24`, `large60`, `crop`, `crop-draft`, `workspace`, `basic`, `basic-panel`, `basic-crop`, `basic-restart`, `histogram`, `unavailable`; generate the large fixtures first. Each run writes `result.json`, `app/events.jsonl`, `app/state.json`, `app/frame-*.png` (window-renderer readbacks, not OS screenshots), `subprocess.log` and `reproduce.md`. Each frame records `surface_columns`, the physical x range of the photo surface derived from the editor's layout constants, and the runner verifies fixture colors, Fit geometry and centering within that range, generation and state, backend, exit status and unchanged source hashes before writing `passed`; blank, stale or missing frames fail. The `render_ready` event marks the upload of the open request's preview raster, which is when a frame becomes capturable. A 25-second application deadline and a 35-second process deadline bound hangs.
+Smoke runs the built or packaged editor through a deterministic evidence sequence (repeated `--open`, evidence directory, fixed window size, bounded deadlines); there is no separate viewer, so the captured frame is the editor window with its sidebar. Scenarios: `empty`, `load`, `replacement`, `invalid`, `repeated`, `alternating`, `large24`, `large60`, `crop`, `crop-draft`, `workspace`, `basic`, `basic-panel`, `basic-crop`, `basic-restart`, `histogram`, `mixer`, `vignette`, `unavailable`; generate the large and hue-wheel fixtures first. Each run writes `result.json`, `app/events.jsonl`, `app/state.json`, `app/frame-*.png` (window-renderer readbacks, not OS screenshots), `subprocess.log` and `reproduce.md`. Each frame records `surface_columns`, the physical x range of the photo surface derived from the editor's layout constants, and the runner verifies fixture colors, Fit geometry and centering within that range, generation and state, backend, exit status and unchanged source hashes before writing `passed`; blank, stale or missing frames fail. The `render_ready` event marks the upload of the open request's preview raster, which is when a frame becomes capturable. A 25-second application deadline and a 35-second process deadline bound hangs.
 
 ### The Basic and histogram acceptance chapter
 

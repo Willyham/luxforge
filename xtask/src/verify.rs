@@ -28,8 +28,13 @@ pub const JOBS: usize = 3;
 /// normal outcome.
 const DEADLINE: Duration = Duration::from_secs(20 * 60);
 
-/// The JPEG workloads the rendered and timing tiers need before they can run.
-const GENERATED: [&str; 2] = ["fixtures/generated/24mp.jpg", "fixtures/generated/60mp.jpg"];
+/// The JPEG workloads the rendered and timing tiers need before they can run. The hue wheel is the
+/// `mixer` scenario's own fixture; timing components still read `GENERATED[0]`, the 24 MP workload.
+const GENERATED: [&str; 3] = [
+    "fixtures/generated/24mp.jpg",
+    "fixtures/generated/60mp.jpg",
+    "fixtures/generated/hue-wheel.jpg",
+];
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Tier {
