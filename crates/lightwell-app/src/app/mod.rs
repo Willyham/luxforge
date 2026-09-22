@@ -153,7 +153,7 @@ fn registry(disabled: &[String], developer: bool) -> Result<ModuleRegistry, Stri
         Arc::new(lightwell_core::PixelModule::new()) as Arc<dyn ToolModule>,
         Arc::new(lightwell_core::RawModule::new()),
         Arc::new(lightwell_core::BasicModule::new()),
-        // A Presence module will later be registered here, between Basic and the mixer.
+        Arc::new(lightwell_core::PresenceModule::new()),
         Arc::new(lightwell_core::MixerModule::new()),
         Arc::new(lightwell_core::TransformModule::new()),
         Arc::new(lightwell_core::CropModule::new()),

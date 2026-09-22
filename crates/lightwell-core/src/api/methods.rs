@@ -1327,6 +1327,8 @@ mod tests {
                 "edit.reset-raw",
                 "edit.set-basic",
                 "edit.reset-basic",
+                "edit.set-presence",
+                "edit.reset-presence",
                 "edit.set-mixer",
                 "edit.reset-mixer",
                 "edit.transform",

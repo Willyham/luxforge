@@ -15,6 +15,11 @@ pub const BASIC_EFFECT: &str = "lightwell.basic.adjust";
 /// ranges, declared order 10 so a mixer layer always follows the Basic layer in the colour run.
 pub const MIXER_EFFECT: &str = "lightwell.mixer.hsl";
 
+/// The one spatial-stage effect of the Presence module: Texture, Clarity and Dehaze of a stack live
+/// in one layer of this effect, evaluated after the pointwise colour run and before the geometry
+/// tail as one tiled neighbourhood pass.
+pub const PRESENCE_EFFECT: &str = "lightwell.presence.adjust";
+
 /// The one finish-stage effect of the Vignette module: every implemented Vignette parameter of a
 /// stack lives in one layer of this effect, evaluated after the geometry tail in output-stage
 /// pixel coordinates. Named `postcrop` rather than `post-crop`: `valid_identity` forbids a hyphen

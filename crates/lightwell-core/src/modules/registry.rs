@@ -2,8 +2,8 @@
 //! action and query identity. Registration touches no image or catalog resource.
 use super::{
     ActionDescriptor, BasicModule, CanvasInteraction, CropModule, EffectDescriptor, EffectStage,
-    MAX_COLOR_UNITS, MixerModule, ModuleDescriptor, PixelModule, Processing, RawModule,
-    SPATIAL_TILE, Stage, ToolModule, TransformModule, VignetteModule,
+    MAX_COLOR_UNITS, MixerModule, ModuleDescriptor, PixelModule, PresenceModule, Processing,
+    RawModule, SPATIAL_TILE, Stage, ToolModule, TransformModule, VignetteModule,
 };
 use crate::{
     Error, ErrorKind, Layer, RECIPE_FORMAT, Recipe,
@@ -73,7 +73,7 @@ impl ModuleRegistry {
             Arc::new(PixelModule::new()) as Arc<dyn ToolModule>,
             Arc::new(RawModule::new()),
             Arc::new(BasicModule::new()),
-            // A Presence module will later be registered here, between Basic and the mixer.
+            Arc::new(PresenceModule::new()),
             Arc::new(MixerModule::new()),
             Arc::new(TransformModule::new()),
             Arc::new(CropModule::new()),
@@ -835,7 +835,10 @@ pub(crate) mod tests {
         assert!(registry.action("set-vignette").is_some());
         assert!(registry.action("reset-vignette").is_some());
         assert!(registry.effect(crate::VIGNETTE_EFFECT).is_some());
-        assert_eq!(registry.descriptors().len(), 7);
+        assert!(registry.action("set-presence").is_some());
+        assert!(registry.action("reset-presence").is_some());
+        assert!(registry.effect(crate::PRESENCE_EFFECT).is_some());
+        assert_eq!(registry.descriptors().len(), 8);
         assert!(registry.action("edit.set-pixel").is_none());
 
         for (case, module) in [
@@ -881,7 +884,7 @@ pub(crate) mod tests {
         }
         assert_eq!(
             registry.descriptors().len(),
-            7,
+            8,
             "nothing was half-registered"
         );
         assert!(
@@ -894,7 +897,7 @@ pub(crate) mod tests {
                 ))
                 .is_ok()
         );
-        assert_eq!(registry.descriptors().len(), 8);
+        assert_eq!(registry.descriptors().len(), 9);
     }
 
     /// A module whose canvas claims one mode-strip letter.
