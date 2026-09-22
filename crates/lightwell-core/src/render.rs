@@ -1325,6 +1325,7 @@ mod tests {
                 reset: None,
                 canvas: None,
                 developer: false,
+                collapsed: false,
                 availability: Availability::Available,
             }))
         }
@@ -2436,6 +2437,7 @@ mod tests {
                 reset: None,
                 canvas: None,
                 developer: false,
+                collapsed: false,
                 availability: Availability::Available,
             }))
         }

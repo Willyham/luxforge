@@ -193,6 +193,7 @@ notes: "the exact transform to compose into the stack's orientation".into(),
                 reset: None,
                 canvas: None,
                 developer: false,
+                collapsed: false,
                 availability: Availability::Available,
             },
         }

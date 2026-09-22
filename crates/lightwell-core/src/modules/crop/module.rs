@@ -235,6 +235,7 @@ parameters: Vec::new(),
                     shortcut: Some("R".into()),
                 }),
                 developer: false,
+                collapsed: false,
                 availability: Availability::Available,
             },
         }

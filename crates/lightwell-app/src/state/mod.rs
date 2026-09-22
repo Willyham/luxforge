@@ -460,6 +460,22 @@ mod tests {
     }
 
     #[test]
+    fn a_section_declared_collapsed_starts_collapsed_until_the_person_expands_it() {
+        let mut crop = crop_descriptor();
+        crop.collapsed = true;
+        let mut scene = Scene::new(vec![crop.clone()]).opened(Vec::new());
+        assert!(
+            !section(&scene.derive(), &crop.id).expanded,
+            "the descriptor's hint is the initial state"
+        );
+        scene.expanded.insert(crop.id.clone(), true);
+        assert!(
+            section(&scene.derive(), &crop.id).expanded,
+            "a person's own choice wins over the hint"
+        );
+    }
+
+    #[test]
     fn sections_start_expanded_and_a_draft_holds_its_own_section_open() {
         let crop = crop_descriptor();
         let mut scene = Scene::new(vec![crop.clone()]).opened(Vec::new());

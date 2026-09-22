@@ -670,6 +670,7 @@ impl BasicModule {
                     shortcut: Some("W".into()),
                 }),
                 developer: false,
+                collapsed: false,
                 availability: Availability::Available,
             },
         }

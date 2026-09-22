@@ -486,6 +486,7 @@ pub(crate) mod tests {
                 reset: None,
                 canvas: None,
                 developer: false,
+                collapsed: false,
                 availability,
             })
         }
@@ -579,6 +580,7 @@ pub(crate) mod tests {
                 reset: None,
                 canvas: None,
                 developer: false,
+                collapsed: false,
                 availability: Availability::Available,
             }))
         }
@@ -734,6 +736,7 @@ pub(crate) mod tests {
                 reset: None,
                 canvas: None,
                 developer: false,
+                collapsed: false,
                 availability: Availability::Available,
             }))
         }

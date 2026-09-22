@@ -1678,6 +1678,7 @@ mod tests {
                 reset: None,
                 canvas: None,
                 developer: false,
+                collapsed: false,
                 availability: Availability::Available,
             },
             seen: seen.clone(),
@@ -1763,6 +1764,7 @@ mod tests {
                 reset: None,
                 canvas: None,
                 developer: false,
+                collapsed: false,
                 availability,
             }))
         }

@@ -136,6 +136,7 @@ notes: "three 8-bit sRGB channels".into(),
                 }),
                 // A proof tool, not a photo-editing one.
                 developer: true,
+                collapsed: false,
                 availability: Availability::Available,
             },
         }

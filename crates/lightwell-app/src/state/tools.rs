@@ -541,8 +541,8 @@ fn section(
     }
 }
 
-/// Sections start expanded except developer ones, and the section whose canvas mode is drafting is
-/// held open until the draft ends.
+/// Sections start expanded except developer ones and those whose descriptor declares `collapsed`,
+/// and the section whose canvas mode is drafting is held open until the draft ends.
 fn expanded(module: &ModuleDescriptor, inputs: &Inputs<'_>) -> bool {
     if inputs.draft.is_some() && owns_mode(module, inputs) {
         return true;
@@ -551,7 +551,7 @@ fn expanded(module: &ModuleDescriptor, inputs: &Inputs<'_>) -> bool {
         .expanded
         .get(&module.id)
         .copied()
-        .unwrap_or(!module.developer)
+        .unwrap_or(!(module.developer || module.collapsed))
 }
 
 /// This module owns the active canvas mode.

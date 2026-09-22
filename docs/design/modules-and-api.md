@@ -21,6 +21,7 @@ Every module returns one `ModuleDescriptor` from `descriptor()`. It is plain dat
 | Field | Meaning |
 | --- | --- |
 | `id`, `title` | Stable provider identity, e.g. `lightwell.pixel`; lowercase ASCII words separated by dots |
+| `hint`, `collapsed`, `developer` | Section hints for clients: the one-line description under the title, whether the section starts collapsed (a person's own expand or collapse still wins), and whether the module is a developer tool hidden outside developer mode. None of them changes the API |
 | `effects[]` | `id` (durable effect identity stored in every layer, e.g. `lightwell.pixel.replace`), `format` (internal payload format marker), `stage` (`source`, `pixel`, `color`, `spatial`, `geometry` or `finish`) and `order` (a `u16`, default `0`, always reported), which together decide where the host puts a new layer of that effect. Every delivered effect declares order `0` |
 | `actions[]` | `id` (unique across all modules, e.g. `set-pixel`), `title`, `notes`, `summary`, `patch`, `parameters[]` |
 | `queries[]` | Optional read-only questions about a stored stack, declared and validated exactly like an action: `id` (unique across all modules' queries), `title`, `notes`, `parameters[]`. A query mutates nothing, writes no history entry and emits no event. The Basic module declares `neutral-sample {x, y}` |

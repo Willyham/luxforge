@@ -315,6 +315,7 @@ impl RawModule {
                     shortcut: Some("N".into()),
                 }),
                 developer: false,
+                collapsed: false,
                 availability: Availability::Available,
             },
         }

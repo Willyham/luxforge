@@ -404,6 +404,10 @@ pub struct ModuleDescriptor {
     /// for developer tools. The API is unaffected.
     #[serde(default)]
     pub developer: bool,
+    /// The section starts collapsed in a client's tools panel; a person's own expand or collapse
+    /// still wins. A hint for clients, never a rule for the API.
+    #[serde(default)]
+    pub collapsed: bool,
     pub availability: Availability,
 }
 
@@ -1593,6 +1597,7 @@ mod tests {
             }),
             canvas: None,
             developer: false,
+            collapsed: false,
             availability: Availability::Available,
         }
     }
