@@ -1,0 +1,310 @@
+{
+  "generated_by": "crates/lightwell-core/tests/presence_reference.rs generate_presence_fixtures",
+  "note": "Every figure quoted in docs/design/presence-study.md, recomputed from the same reference by measurements_match_reference on each test run.",
+  "measurements": [
+    {
+      "name": "texture_step_high_plus100_overshoot",
+      "value": 0.01389836800892641
+    },
+    {
+      "name": "texture_step_high_plus100_halo_px",
+      "value": 8.0
+    },
+    {
+      "name": "clarity_step_high_plus100_overshoot",
+      "value": 0.13967401138892527
+    },
+    {
+      "name": "clarity_step_high_plus100_halo_px",
+      "value": 176.0
+    },
+    {
+      "name": "texture_step_high_minus100_overshoot",
+      "value": 0.004659592931059053
+    },
+    {
+      "name": "texture_step_high_minus100_halo_px",
+      "value": 7.0
+    },
+    {
+      "name": "clarity_step_high_minus100_overshoot",
+      "value": 0.12725451467459015
+    },
+    {
+      "name": "clarity_step_high_minus100_halo_px",
+      "value": 171.0
+    },
+    {
+      "name": "texture_step_low_plus100_overshoot",
+      "value": 0.03812787272073126
+    },
+    {
+      "name": "texture_step_low_plus100_halo_px",
+      "value": 8.0
+    },
+    {
+      "name": "clarity_step_low_plus100_overshoot",
+      "value": 0.062052882322299885
+    },
+    {
+      "name": "clarity_step_low_plus100_halo_px",
+      "value": 171.0
+    },
+    {
+      "name": "texture_step_low_minus100_overshoot",
+      "value": 0.01330579927777542
+    },
+    {
+      "name": "texture_step_low_minus100_halo_px",
+      "value": 7.0
+    },
+    {
+      "name": "clarity_step_low_minus100_overshoot",
+      "value": 0.047783170288526855
+    },
+    {
+      "name": "clarity_step_low_minus100_halo_px",
+      "value": 167.0
+    },
+    {
+      "name": "texture_step_vertical_plus100_overshoot",
+      "value": 0.013898368008926243
+    },
+    {
+      "name": "texture_step_vertical_plus100_halo_px",
+      "value": 8.0
+    },
+    {
+      "name": "clarity_step_vertical_plus100_overshoot",
+      "value": 0.13967401138892524
+    },
+    {
+      "name": "clarity_step_vertical_plus100_halo_px",
+      "value": 176.0
+    },
+    {
+      "name": "texture_step_vertical_minus100_overshoot",
+      "value": 0.004659592931059053
+    },
+    {
+      "name": "texture_step_vertical_minus100_halo_px",
+      "value": 7.0
+    },
+    {
+      "name": "clarity_step_vertical_minus100_overshoot",
+      "value": 0.12725451467459015
+    },
+    {
+      "name": "clarity_step_vertical_minus100_halo_px",
+      "value": 171.0
+    },
+    {
+      "name": "texture_band_gain_p25_plus100",
+      "value": 1.092539728774494
+    },
+    {
+      "name": "texture_band_gain_p25_minus100",
+      "value": 0.969153246752606
+    },
+    {
+      "name": "texture_band_gain_p40_plus100",
+      "value": 1.2962936595239398
+    },
+    {
+      "name": "texture_band_gain_p40_minus100",
+      "value": 0.9012290234248308
+    },
+    {
+      "name": "texture_band_gain_p60_plus100",
+      "value": 2.1767405696643185
+    },
+    {
+      "name": "texture_band_gain_p60_minus100",
+      "value": 0.6074509566393258
+    },
+    {
+      "name": "texture_band_gain_p80_plus100",
+      "value": 2.886991417788906
+    },
+    {
+      "name": "texture_band_gain_p80_minus100",
+      "value": 0.3693355745316779
+    },
+    {
+      "name": "texture_band_gain_p100_plus100",
+      "value": 3.2253391079093094
+    },
+    {
+      "name": "texture_band_gain_p100_minus100",
+      "value": 0.2557436731217525
+    },
+    {
+      "name": "texture_band_gain_p120_plus100",
+      "value": 3.1893332818874724
+    },
+    {
+      "name": "texture_band_gain_p120_minus100",
+      "value": 0.26761377071393266
+    },
+    {
+      "name": "texture_band_gain_p160_plus100",
+      "value": 2.754222756158738
+    },
+    {
+      "name": "texture_band_gain_p160_minus100",
+      "value": 0.4139204496960888
+    },
+    {
+      "name": "texture_band_gain_p320_plus100",
+      "value": 1.619350262343424
+    },
+    {
+      "name": "texture_band_gain_p320_minus100",
+      "value": 0.793491219672036
+    },
+    {
+      "name": "texture_band_gain_p640_plus100",
+      "value": 1.1686630823692923
+    },
+    {
+      "name": "texture_band_gain_p640_minus100",
+      "value": 0.9437777878057985
+    },
+    {
+      "name": "texture_band_gain_p1280_plus100",
+      "value": 1.0430682519142802
+    },
+    {
+      "name": "texture_band_gain_p1280_minus100",
+      "value": 0.9856438963035331
+    },
+    {
+      "name": "clarity_band_gain_p8_plus100",
+      "value": 2.0311466628428683
+    },
+    {
+      "name": "clarity_band_gain_p8_minus100",
+      "value": 0.2777343009760804
+    },
+    {
+      "name": "clarity_band_gain_p32_plus100",
+      "value": 2.0129406190026273
+    },
+    {
+      "name": "clarity_band_gain_p32_minus100",
+      "value": 0.2705883751450601
+    },
+    {
+      "name": "clarity_band_gain_p64_plus100",
+      "value": 2.0018697998323383
+    },
+    {
+      "name": "clarity_band_gain_p64_minus100",
+      "value": 0.2686215358362067
+    },
+    {
+      "name": "clarity_band_gain_p128_plus100",
+      "value": 1.955863474159484
+    },
+    {
+      "name": "clarity_band_gain_p128_minus100",
+      "value": 0.2908475107370203
+    },
+    {
+      "name": "clarity_band_gain_p256_plus100",
+      "value": 1.9206605435153767
+    },
+    {
+      "name": "clarity_band_gain_p256_minus100",
+      "value": 0.30940972265206124
+    },
+    {
+      "name": "clarity_band_gain_p512_plus100",
+      "value": 1.3980502198893805
+    },
+    {
+      "name": "clarity_band_gain_p512_minus100",
+      "value": 0.7014698016711706
+    },
+    {
+      "name": "clarity_band_gain_p1024_plus100",
+      "value": 1.1148982824857208
+    },
+    {
+      "name": "clarity_band_gain_p1024_minus100",
+      "value": 0.9138338922501363
+    },
+    {
+      "name": "ramp8_max_code_step_clarity_plus100",
+      "value": 2.0
+    },
+    {
+      "name": "ramp8_max_code_step_texture_plus100",
+      "value": 1.0
+    },
+    {
+      "name": "ramp8_max_code_step_both_plus100",
+      "value": 3.0
+    },
+    {
+      "name": "noise_0005_texture_plus100",
+      "value": 1.3990029191541509
+    },
+    {
+      "name": "noise_0005_texture_minus100",
+      "value": 0.9179246674060124
+    },
+    {
+      "name": "noise_0005_clarity_plus100",
+      "value": 2.0000372232981842
+    },
+    {
+      "name": "noise_0020_texture_plus100",
+      "value": 1.3897679326979182
+    },
+    {
+      "name": "noise_0020_texture_minus100",
+      "value": 0.9191626168141374
+    },
+    {
+      "name": "noise_0020_clarity_plus100",
+      "value": 1.9949949804069147
+    },
+    {
+      "name": "noise_0080_texture_plus100",
+      "value": 1.1445846554355963
+    },
+    {
+      "name": "noise_0080_texture_minus100",
+      "value": 0.9677425265642559
+    },
+    {
+      "name": "noise_0080_clarity_plus100",
+      "value": 1.93202426849847
+    },
+    {
+      "name": "haze_flat_recovery_max_error",
+      "value": 6.328271240363392e-15
+    },
+    {
+      "name": "haze_ramp_recovery_max_error",
+      "value": 0.30349755831796743
+    },
+    {
+      "name": "haze_ramp_gentle_recovery_max_error",
+      "value": 0.01560159313469811
+    },
+    {
+      "name": "f32_guided_error_r_fine",
+      "value": 5.022647860952745e-7
+    },
+    {
+      "name": "f32_guided_error_r_coarse",
+      "value": 3.4999596199014604e-7
+    },
+    {
+      "name": "f32_guided_error_r_clarity_reduced",
+      "value": 1.2099841812940326e-6
+    }
+  ]
+}
