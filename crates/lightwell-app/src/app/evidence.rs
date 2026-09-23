@@ -15,9 +15,18 @@ use crate::{
     },
 };
 use iced::Task;
+use iced::advanced::{Layout, Widget, layout, mouse, renderer, widget::Tree};
 use lightwell_ui::{ColorPickerEvent, CurveEditorEvent};
 use serde_json::{Map, Value, json};
-use std::{collections::VecDeque, path::PathBuf, time::Duration};
+use std::{
+    collections::VecDeque,
+    path::PathBuf,
+    sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+    },
+    time::{Duration, Instant},
+};
 
 /// An evidence run that has not finished by then is stuck; exit so the harness reaps nothing.
 pub(crate) const EVIDENCE_DEADLINE: Duration = Duration::from_secs(25);
@@ -28,6 +37,9 @@ pub(crate) const SCRIPT_EVIDENCE_DEADLINE: Duration = Duration::from_secs(60);
 /// The most steps one evidence run accepts, so a script cannot outlive the evidence deadline
 /// unnoticed.
 const MAX_SCRIPT_STEPS: usize = 64;
+
+/// The longest one `wait` step may idle, so a script cannot spend its deadline doing nothing.
+const MAX_WAIT_MS: u64 = 10_000;
 
 pub(crate) struct Evidence {
     pub(crate) dir: PathBuf,
@@ -54,6 +66,96 @@ pub(crate) struct Evidence {
     /// The gallery page shown instead of the workspace for a scripted capture.
     /// Requested tools-panel scroll fraction, retained beside the capture for correlation.
     pub(crate) tools_scroll: Option<f64>,
+    /// When a `wait` step's frame may be captured. The evidence tick checks it, so a wait adds no
+    /// timer of its own.
+    pub(crate) wait_until: Option<Instant>,
+    pub(crate) sync: CaptureSync,
+}
+
+/// What keeps a capture's pixels and its recorded state the same moment. A screenshot reads back
+/// the frame the window renderer drew last rather than drawing a fresh one, so a message handled
+/// after that frame was built — a preview result arriving in the same batch as the capture tick —
+/// would otherwise leave the state describing a picture the capture does not show. A capture is
+/// therefore taken only when the frame drawn last was built after every update so far, and the
+/// state is recorded at that moment, beside the request for the screenshot.
+pub(crate) struct CaptureSync {
+    /// Updates handled so far.
+    pub(crate) updates: u64,
+    /// `updates` as it stood when the frame drawn last was built, stored by that frame's
+    /// [`DrawnMarker`] as it is drawn; `u64::MAX` until the first frame is.
+    pub(crate) drawn: Arc<AtomicU64>,
+    /// The state and the requested generation recorded with the screenshot being taken.
+    pub(crate) state: Option<(Value, u64)>,
+}
+
+impl Default for CaptureSync {
+    fn default() -> Self {
+        Self {
+            updates: 0,
+            drawn: Arc::new(AtomicU64::new(u64::MAX)),
+            state: None,
+        }
+    }
+}
+
+impl CaptureSync {
+    /// Whether the frame drawn last shows the state as it is now.
+    pub(crate) fn current(&self) -> bool {
+        self.drawn.load(Ordering::Relaxed) == self.updates
+    }
+}
+
+/// A widget that draws nothing and, each time it is drawn, stores how many updates the view it
+/// belongs to was built after. Present only in evidence runs, as the top layer of the window.
+struct DrawnMarker {
+    updates: u64,
+    sink: Arc<AtomicU64>,
+}
+
+impl<Message, Theme, Renderer> Widget<Message, Theme, Renderer> for DrawnMarker
+where
+    Renderer: iced::advanced::Renderer,
+{
+    fn size(&self) -> iced::Size<iced::Length> {
+        iced::Size::new(iced::Length::Shrink, iced::Length::Shrink)
+    }
+
+    fn layout(
+        &mut self,
+        _tree: &mut Tree,
+        _renderer: &Renderer,
+        _limits: &layout::Limits,
+    ) -> layout::Node {
+        layout::Node::new(iced::Size::ZERO)
+    }
+
+    fn draw(
+        &self,
+        _tree: &Tree,
+        _renderer: &mut Renderer,
+        _theme: &Theme,
+        _style: &renderer::Style,
+        _layout: Layout<'_>,
+        _cursor: mouse::Cursor,
+        _viewport: &iced::Rectangle,
+    ) {
+        self.sink.store(self.updates, Ordering::Relaxed);
+    }
+}
+
+/// `content` with a [`DrawnMarker`] over it, for an evidence run's window.
+pub(crate) fn marked<'a>(
+    content: iced::Element<'a, Message>,
+    sync: &CaptureSync,
+) -> iced::Element<'a, Message> {
+    iced::widget::stack![
+        content,
+        iced::Element::new(DrawnMarker {
+            updates: sync.updates,
+            sink: sync.drawn.clone(),
+        })
+    ]
+    .into()
 }
 
 /// The state of a slider step sent by a timer rather than all at once. Each tick sends the next
@@ -123,6 +225,16 @@ pub(crate) enum Step {
     /// Import one file through the section's own import task, bypassing only the native dialog.
     /// The path is as the script wrote it, relative to the editor's working directory.
     PresetImport(String),
+    /// Ask nothing of the editor for at least this many milliseconds, then capture. The evidence
+    /// tick keeps rebuilding the view meanwhile, as the editor's own event sync does while a
+    /// photograph is open, so the frame shows what idling did to the screen.
+    Wait(u64),
+    /// Scroll the percent-zoom surface to a fraction of its scrollable range on each axis, as a
+    /// pan does, and capture once the offset it reports has reached the owner's session.
+    Pan {
+        x: f32,
+        y: f32,
+    },
 }
 
 /// One library preset, by its exact name, and by its group when two groups hold that name. A step
@@ -447,6 +559,8 @@ impl Step {
                 json!({"preset_create":value})
             }
             Self::PresetImport(path) => json!({"preset_import":{"path":path}}),
+            Self::Wait(ms) => json!({"wait":{"ms":ms}}),
+            Self::Pan { x, y } => json!({"pan":{"x":x,"y":y}}),
         }
     }
 }
@@ -533,6 +647,9 @@ pub(crate) enum Settle {
     Presets,
     /// A host method a script called directly answered.
     Host,
+    /// The percent-zoom surface reported a new scroll offset and the owner answered the
+    /// `view.set` that carried it.
+    Pan,
 }
 
 impl Editor {
@@ -580,6 +697,8 @@ impl Editor {
             Step::PresetCreate(step) => self.preset_create_step(step),
             Step::PresetDelete(pick) => self.preset_delete_step(pick),
             Step::PresetImport(path) => self.preset_import_step(path),
+            Step::Wait(ms) => self.wait_step(ms),
+            Step::Pan { x, y } => self.pan_step(x, y),
         }
     }
 
@@ -1143,6 +1262,50 @@ impl Editor {
         }
         self.await_step(Settle::Session);
         self.update(Message::Gallery(page))
+    }
+
+    /// Ask nothing of the editor until `ms` have passed; the evidence tick captures the frame then.
+    fn wait_step(&mut self, ms: u64) -> Task<Message> {
+        if let Some(evidence) = &mut self.evidence {
+            evidence.wait_until = Some(Instant::now() + Duration::from_millis(ms));
+        }
+        Task::none()
+    }
+
+    /// Called by every evidence tick: a `wait` step whose time is up captures its frame.
+    pub(crate) fn wait_elapsed(&mut self) {
+        let due = self.evidence.as_ref().is_some_and(|evidence| {
+            evidence
+                .wait_until
+                .is_some_and(|until| Instant::now() >= until)
+        });
+        if due {
+            if let Some(evidence) = &mut self.evidence {
+                evidence.wait_until = None;
+            }
+            self.capture_next_frame();
+        }
+    }
+
+    /// Scroll the percent-zoom surface through the same scrollable a Space drag scrolls. The
+    /// scrollable reports the new offset on its next frame, which reaches the owner as the pan any
+    /// scroll sends; the step settles on that answer, so the captured state carries the offset the
+    /// frame was drawn at.
+    fn pan_step(&mut self, x: f32, y: f32) -> Task<Message> {
+        if self.state.is_none() {
+            return self.fail_step("no photograph is open");
+        }
+        if !matches!(
+            self.session.preview.view.zoom,
+            lightwell_core::Zoom::Percent { .. }
+        ) {
+            return self.fail_step("pan needs a percentage zoom");
+        }
+        self.await_step(Settle::Pan);
+        iced::widget::operation::snap_to(
+            crate::app::crop::SURFACE_ID,
+            iced::widget::scrollable::RelativeOffset { x, y },
+        )
     }
 
     fn tools_scroll_step(&mut self, fraction: f64) -> Task<Message> {
@@ -1763,8 +1926,10 @@ fn parse_step(step: &Value) -> Result<Step, String> {
             "preset_delete",
         )?)),
         "preset_import" => parse_preset_import(value),
+        "wait" => parse_wait(value),
+        "pan" => parse_pan(value),
         other => Err(format!(
-            "unknown step kind {other}; expected api, draft, slider, controls, picker, curve, group, tab, section, gallery, tools_scroll, slider_draft, field, reset, pick, view, workspace, preview, palette, hover, preset, preset_create, preset_delete or preset_import"
+            "unknown step kind {other}; expected api, draft, slider, controls, picker, curve, group, tab, section, gallery, tools_scroll, slider_draft, field, reset, pick, view, workspace, preview, palette, hover, preset, preset_create, preset_delete, preset_import, wait or pan"
         )),
     }
 }
@@ -2578,6 +2743,42 @@ fn parse_hover(value: &Value) -> Result<Step, String> {
     })
 }
 
+fn parse_wait(value: &Value) -> Result<Step, String> {
+    let object = value.as_object().ok_or("wait takes an object with ms")?;
+    for key in object.keys() {
+        if key != "ms" {
+            return Err(format!("unknown wait field {key}"));
+        }
+    }
+    object
+        .get("ms")
+        .and_then(Value::as_u64)
+        .filter(|ms| (1..=MAX_WAIT_MS).contains(ms))
+        .map(Step::Wait)
+        .ok_or_else(|| format!("wait ms takes an integer from 1 to {MAX_WAIT_MS}"))
+}
+
+fn parse_pan(value: &Value) -> Result<Step, String> {
+    let object = value
+        .as_object()
+        .ok_or("pan takes an object with an x and a y")?;
+    for key in object.keys() {
+        if !matches!(key.as_str(), "x" | "y") {
+            return Err(format!("unknown pan field {key}"));
+        }
+    }
+    let fraction = |name: &str| -> Result<f32, String> {
+        unit_fraction(
+            object.get(name).ok_or(format!("pan needs {name}"))?,
+            &format!("pan {name}"),
+        )
+    };
+    Ok(Step::Pan {
+        x: fraction("x")?,
+        y: fraction("y")?,
+    })
+}
+
 fn parse_preview(value: &Value) -> Result<PreviewStep, String> {
     match value {
         Value::String(text) if text.trim() == "current" => Ok(PreviewStep::Current),
@@ -2920,6 +3121,8 @@ mod tests {
             had_errors: false,
             paced_slider: None,
             tools_scroll: None,
+            wait_until: None,
+            sync: CaptureSync::default(),
         });
         editor.activity.requested = 1;
 
@@ -3075,6 +3278,81 @@ mod tests {
         // The script is exhausted, and every step was recorded as sent.
         assert!(evidence(&editor).script.is_empty());
         finish(editor, catalog);
+    }
+
+    /// `wait` and `pan` parse strictly and record themselves back in the shape the script wrote.
+    #[test]
+    fn wait_and_pan_steps_parse_strictly_and_round_trip() {
+        let steps = parse_script(r#"[{"wait":{"ms":1000}},{"pan":{"x":0.5,"y":1.0}}]"#)
+            .expect("a valid script");
+        assert_eq!(steps, vec![Step::Wait(1000), Step::Pan { x: 0.5, y: 1.0 }]);
+        assert_eq!(steps[0].record(), json!({"wait":{"ms":1000}}));
+        assert_eq!(steps[1].record(), json!({"pan":{"x":0.5,"y":1.0}}));
+        for (script, expected) in [
+            (r#"[{"wait":{"ms":0}}]"#, "integer from 1 to 10000"),
+            (r#"[{"wait":{"ms":10001}}]"#, "integer from 1 to 10000"),
+            (r#"[{"wait":{"ms":1.5}}]"#, "integer from 1 to 10000"),
+            (r#"[{"wait":{"seconds":1}}]"#, "unknown wait field"),
+            (r#"[{"wait":5}]"#, "an object with ms"),
+            (r#"[{"pan":{"x":0.5}}]"#, "pan needs y"),
+            (r#"[{"pan":{"x":1.5,"y":0}}]"#, "fraction from 0 to 1"),
+            (r#"[{"pan":{"x":0,"y":0,"z":0}}]"#, "unknown pan field"),
+        ] {
+            let error = parse_script(script).expect_err(script);
+            assert!(error.contains(expected), "{script}: {error}");
+        }
+    }
+
+    /// A `wait` step captures nothing until its interval has passed, and then exactly one frame,
+    /// on the evidence tick that finds it due.
+    #[test]
+    fn a_scripted_wait_captures_once_its_interval_has_passed() {
+        let (mut editor, catalog, _, _) = scripted(r#"[{"wait":{"ms":20}}]"#);
+        let _ = editor.next_step();
+        assert!(!evidence(&editor).capture_pending);
+        assert!(evidence(&editor).wait_until.is_some());
+        let _ = editor.update(Message::EvidenceTick);
+        assert!(
+            !evidence(&editor).capture_pending,
+            "a tick before the interval captures nothing"
+        );
+        std::thread::sleep(Duration::from_millis(30));
+        let _ = editor.update(Message::EvidenceTick);
+        assert!(evidence(&editor).capture_pending);
+        assert!(evidence(&editor).wait_until.is_none());
+        finish(editor, catalog);
+    }
+
+    /// A pan scrolls the percent-zoom scrollable, which does not exist at Fit: the step is refused
+    /// there, recorded, and still captured.
+    #[test]
+    fn a_scripted_pan_needs_a_percentage_zoom() {
+        let (mut editor, catalog, _, _) = scripted(r#"[{"pan":{"x":0.5,"y":0.5}}]"#);
+        let _ = editor.next_step();
+        let record = evidence(&editor).current.clone().expect("a step record");
+        assert_eq!(record["status"], json!("failed"));
+        assert!(
+            record["reason"]
+                .as_str()
+                .is_some_and(|reason| reason.contains("percentage zoom")),
+            "{record}"
+        );
+        assert!(evidence(&editor).capture_pending);
+        finish(editor, catalog);
+    }
+
+    /// A capture is allowed only when the frame drawn last was built after every update so far:
+    /// before the first frame is drawn, and after any update since, it is not.
+    #[test]
+    fn a_capture_waits_for_a_frame_built_after_every_update() {
+        let mut sync = CaptureSync::default();
+        assert!(!sync.current(), "nothing has been drawn yet");
+        sync.drawn.store(sync.updates, Ordering::Relaxed);
+        assert!(sync.current());
+        sync.updates += 1;
+        assert!(!sync.current(), "an update since the frame was built");
+        sync.drawn.store(sync.updates, Ordering::Relaxed);
+        assert!(sync.current());
     }
 
     #[test]

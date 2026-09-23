@@ -399,6 +399,8 @@ pub(crate) fn scripted(steps: &str) -> (Editor, PathBuf, AssetId, PathBuf) {
         had_errors: false,
         paced_slider: None,
         tools_scroll: None,
+        wait_until: None,
+        sync: crate::app::evidence::CaptureSync::default(),
     });
     editor.activity.requested = 1;
     (editor, catalog, asset, dir)

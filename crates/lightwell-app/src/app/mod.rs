@@ -300,6 +300,8 @@ pub(crate) struct HeldByProxy {
 /// whether a message waited on the desktop's own work or on the runtime.
 #[derive(Clone, Copy, Debug, Default)]
 pub(crate) struct LoopTiming {
+    /// How many times the view has been built, over the life of the process.
+    pub(crate) views: u64,
     pub(crate) last_update_ms: f64,
     pub(crate) last_rederive_ms: f64,
     pub(crate) last_view_ms: f64,
@@ -529,6 +531,8 @@ impl Editor {
                 had_errors: false,
                 paced_slider: None,
                 tools_scroll: None,
+                wait_until: None,
+                sync: evidence::CaptureSync::default(),
             }
         });
         let initial = config.files.pop_front();
@@ -779,7 +783,7 @@ impl Editor {
                 entry.as_ref(),
             );
         }
-        json!({"run_id":self.run_id,"mode":if self.evidence.is_some() {"evidence"} else {"editor"},"selection":self.session.preview.selection,"orientation":self.activity.orientation,"phase":self.activity.phase,"requested_generation":self.activity.requested,"displayed_generation":self.activity.displayed,"displayed_draft_revision":self.displayed_draft_revision,"source_dimensions":self.activity.source_dimensions,"preview_dimensions":self.activity.preview_dimensions,"backend":self.activity.backend,"status":self.status,"error_code":self.activity.error_code,"modules":module_summary(&self.modules),"controls":self.fields.summary(),"control_ui":{"group_expanded":self.controls_ui.group_expanded,"selected_tab":self.controls_ui.selected_tab,"curve_channels":curve_channels,"curve_points":curve_points,"picker_open":picker_open,"curves":curves,"pickers":pickers},"gallery":gallery,"tools_scroll":tools_scroll,"crop":self.crop_summary(),"draft":self.draft_summary(),"stack":self.stack_summary(),"workspace":serde_json::to_value(&self.session.workspace).unwrap_or(Value::Null),"developer":self.developer,"expanded":self.workspace.expanded(),"pickers":self.workspace.pickers(),"notices":self.notice_titles(),"compare":self.compare_return.is_some(),"render_error":self.render_error_summary(),"palette":{"open":self.palette_open,"query":self.palette_query},"presets":self.presets_summary(),"histogram":self.histogram_summary(),"readout":self.readout_summary(),"status_bar":self.status_bar_summary(),"proxy":self.proxy_summary(),"scratch":Self::scratch_summary()})
+        json!({"run_id":self.run_id,"mode":if self.evidence.is_some() {"evidence"} else {"editor"},"selection":self.session.preview.selection,"orientation":self.activity.orientation,"phase":self.activity.phase,"requested_generation":self.activity.requested,"displayed_generation":self.activity.displayed,"displayed_draft_revision":self.displayed_draft_revision,"source_dimensions":self.activity.source_dimensions,"preview_dimensions":self.activity.preview_dimensions,"backend":self.activity.backend,"status":self.status,"error_code":self.activity.error_code,"modules":module_summary(&self.modules),"controls":self.fields.summary(),"control_ui":{"group_expanded":self.controls_ui.group_expanded,"selected_tab":self.controls_ui.selected_tab,"curve_channels":curve_channels,"curve_points":curve_points,"picker_open":picker_open,"curves":curves,"pickers":pickers},"gallery":gallery,"tools_scroll":tools_scroll,"crop":self.crop_summary(),"draft":self.draft_summary(),"stack":self.stack_summary(),"workspace":serde_json::to_value(&self.session.workspace).unwrap_or(Value::Null),"developer":self.developer,"expanded":self.workspace.expanded(),"pickers":self.workspace.pickers(),"notices":self.notice_titles(),"compare":self.compare_return.is_some(),"render_error":self.render_error_summary(),"palette":{"open":self.palette_open,"query":self.palette_query},"presets":self.presets_summary(),"histogram":self.histogram_summary(),"readout":self.readout_summary(),"status_bar":self.status_bar_summary(),"proxy":self.proxy_summary(),"surface":self.surface_summary(),"scratch":Self::scratch_summary()})
     }
 
     /// The Presets section as the frame drew it: its rows, the create form and whether the section
@@ -853,6 +857,24 @@ impl Editor {
             }
             None => Value::Null,
         }
+    }
+
+    /// The photograph's surface as a captured frame reports it: the view it is drawn at, the raster
+    /// it holds and that raster's version, how many rasters the surface has written into its
+    /// texture and how many times the view has been built. Two frames with the same version and
+    /// the same write count prove nothing was written between them, however often the view was
+    /// rebuilt meanwhile.
+    fn surface_summary(&self) -> Value {
+        json!({
+            "view": serde_json::to_value(&self.session.preview.view).unwrap_or(Value::Null),
+            "raster": self.photo.as_ref().map(|photo| {
+                let (width, height) = photo.size();
+                json!([width, height])
+            }),
+            "version": self.photo.as_ref().map(lightwell_ui::PhotoRaster::version),
+            "texture_writes": lightwell_ui::photo_surface::texture_writes(),
+            "views": self.loop_timing.get().views,
+        })
     }
 
     /// The display proxy as a captured frame reports it: the bounds the next job will offer, what
@@ -1096,6 +1118,9 @@ impl Editor {
     pub(crate) fn update(&mut self, message: Message) -> Task<Message> {
         let started = Instant::now();
         let task = self.update_inner(message);
+        if let Some(evidence) = &mut self.evidence {
+            evidence.sync.updates += 1;
+        }
         let mut timing = self.loop_timing.get();
         timing.last_update_ms = started.elapsed().as_secs_f64() * 1000.0;
         timing.last_update_end = Some(Instant::now());
@@ -1313,6 +1338,7 @@ impl Editor {
             // beside it. One preview job produces the display-size frame this zoom wants, and it is
             // the only render any view change asks for.
             self.event("preview_proxy_requested", json!({ "zoom": zoom }));
+            self.await_requested_frame();
             return self.request_current_preview();
         }
         if !wants_proxy && self.presented_exact_raster().is_none() {
@@ -1415,14 +1441,22 @@ impl Editor {
             "preview_proxy_requested",
             json!({"reason":"bounds","bounds":{"width":bounds.width,"height":bounds.height}}),
         );
-        // A scripted step waiting on the session round trip now waits for the refitted frame, so
-        // the capture never shows a proxy of the previous bounds.
+        self.await_requested_frame();
+        self.request_current_preview()
+    }
+
+    /// A view change has just asked for the frame it needs. A scripted step whose frame is still
+    /// to be captured — waiting on the session round trip, or already settled by it earlier in this
+    /// same update — waits for that frame instead, so the capture never shows the picture the view
+    /// has already replaced, such as a proxy of the previous bounds.
+    fn await_requested_frame(&mut self) {
         if let Some(evidence) = &mut self.evidence
-            && evidence.awaiting == Some(Settle::Session)
+            && (evidence.awaiting == Some(Settle::Session)
+                || (evidence.awaiting.is_none() && evidence.capture_pending))
         {
+            evidence.capture_pending = false;
             evidence.awaiting = Some(Settle::Preview);
         }
-        self.request_current_preview()
     }
 
     fn request_current_preview(&mut self) -> Task<Message> {
@@ -1945,6 +1979,7 @@ impl Editor {
                     eprintln!("Evidence deadline exceeded; inspect retained subprocess output");
                     std::process::exit(3);
                 }
+                self.wait_elapsed();
             }
             Message::PacedSliderTick => return self.slider_paced_tick(),
             Message::Capture => {
@@ -1953,8 +1988,11 @@ impl Editor {
                 };
                 // Wait for the backend, for tool discovery and for the preset library, so a frame
                 // always shows real controls and the library rather than their loading lines.
+                // The screenshot reads back the frame drawn last, so it waits for a frame built
+                // after every update so far; the next frame tick tries again.
                 if !evidence.capture_pending
                     || evidence.saving
+                    || !evidence.sync.current()
                     || self.activity.backend.is_none()
                     || !self.modules_ready
                     || !self.presets.ready()
@@ -1965,6 +2003,10 @@ impl Editor {
                 }
                 evidence.capture_pending = false;
                 evidence.saving = true;
+                let recorded = (self.snapshot(), self.activity.requested);
+                if let Some(evidence) = &mut self.evidence {
+                    evidence.sync.state = Some(recorded);
+                }
                 return iced::window::oldest()
                     .and_then(iced::window::screenshot)
                     .map(Message::Captured);
@@ -1974,12 +2016,22 @@ impl Editor {
                     "frame_captured",
                     json!({"displayed_generation":self.activity.displayed,"request_to_capture_ms":self.activity.request_started.elapsed().as_secs_f64()*1000.}),
                 );
-                let state = self.snapshot();
-                let generation = self.activity.requested;
+                // The state as it stood when the screenshot was asked for, which is the state the
+                // frame it reads back was built from.
+                let (state, generation) = self
+                    .evidence
+                    .as_mut()
+                    .and_then(|evidence| evidence.sync.state.take())
+                    .unwrap_or_else(|| (self.snapshot(), self.activity.requested));
                 let scale = shot.scale_factor;
                 let logical_width = shot.size.width as f32 / scale;
                 // The photo surface spans the window minus padding, the sidebar and their spacing.
                 let columns = view::surface_columns(logical_width, scale, &self.workspace);
+                let canvas = view::canvas_rect(
+                    (logical_width, shot.size.height as f32 / scale),
+                    scale,
+                    &self.workspace,
+                );
                 let Some(evidence) = &self.evidence else {
                     return Task::none();
                 };
@@ -2001,7 +2053,7 @@ impl Editor {
                             ::image::ColorType::Rgba8,
                         )
                         .map_err(|e| e.to_string())?;
-                        let frame = json!({"file":name,"state":state,"step":step,"capture_provenance":"window-renderer-readback","color":"sRGB","physical_size":[shot.size.width,shot.size.height],"scale":scale,"surface_columns":columns});
+                        let frame = json!({"file":name,"state":state,"step":step,"capture_provenance":"window-renderer-readback","color":"sRGB","physical_size":[shot.size.width,shot.size.height],"scale":scale,"surface_columns":columns,"canvas_rect":canvas});
                         std::fs::write(
                             dir.join(format!("state-{number}.json")),
                             serde_json::to_vec_pretty(&frame).expect("frame is serializable"),
@@ -2121,6 +2173,7 @@ impl Editor {
                 if let Some((x, y)) = self.pending_pan.take() {
                     return self.pan(x, y);
                 }
+                self.settle_step(Settle::Pan);
             }
             Message::VersionsLoaded(result) => {
                 self.busy = false;
@@ -3650,23 +3703,29 @@ impl Editor {
 
     fn view(&self) -> Element<'_, Message> {
         let started = Instant::now();
-        if let Some(page) = self.gallery_page() {
-            return view::gallery(page);
-        }
-        let element = view::workspace(
-            &self.workspace,
-            view::Surfaces {
-                photo: self.photo.as_ref(),
-                draft_photo: self.draft_photo.as_ref(),
-                overlay: self.overlay_surface(),
-                draft: self.crop.as_ref(),
-            },
-        );
+        let element = match self.gallery_page() {
+            Some(page) => view::gallery(page),
+            None => view::workspace(
+                &self.workspace,
+                view::Surfaces {
+                    photo: self.photo.as_ref(),
+                    draft_photo: self.draft_photo.as_ref(),
+                    overlay: self.overlay_surface(),
+                    draft: self.crop.as_ref(),
+                },
+            ),
+        };
         let mut timing = self.loop_timing.get();
+        timing.views += 1;
         timing.last_view_ms = started.elapsed().as_secs_f64() * 1000.0;
         timing.last_view_end = Some(Instant::now());
         self.loop_timing.set(timing);
-        element
+        match &self.evidence {
+            // An evidence run marks which update each drawn frame was built after, so a capture
+            // records the state of the frame it reads back.
+            Some(evidence) => evidence::marked(element, &evidence.sync),
+            None => element,
+        }
     }
 
     /// What the keyboard table depends on right now.
@@ -7241,6 +7300,32 @@ mod tests {
             })
             .count();
         assert_eq!(refits, 1, "a refit is asked for once, not per event");
+        finish(editor, catalog);
+    }
+
+    /// A scripted step whose frame is due — its session round trip settled it earlier in the same
+    /// update — waits instead for the refit the view just asked for, so its capture never shows a
+    /// proxy made for the previous bounds.
+    #[test]
+    fn a_settled_step_waits_for_the_refit_its_view_asked_for() {
+        let (mut editor, catalog, _, _) = crate::app::testing::scripted(r#"[{"wait":{"ms":1}}]"#);
+        editor.window = (1440.0, 900.0);
+        editor.dimensions = Some((4000, 3000));
+        editor.session.preview.view.zoom = Zoom::Fit;
+        editor.scale_factor = 1.0;
+        editor.presented_generation = 7;
+        editor.presented_proxy = true;
+        editor.preview_generation = 7;
+        editor.presented_bounds = editor.proxy_bounds();
+        if let Some(evidence) = &mut editor.evidence {
+            evidence.awaiting = None;
+            evidence.capture_pending = true;
+        }
+        let _ = editor.update(Message::ScaleFactor(2.0));
+        assert!(editor.refit_pending, "the new bounds asked for a frame");
+        let evidence = crate::app::testing::evidence(&editor);
+        assert!(!evidence.capture_pending, "the old proxy is not captured");
+        assert_eq!(evidence.awaiting, Some(Settle::Preview));
         finish(editor, catalog);
     }
 }
