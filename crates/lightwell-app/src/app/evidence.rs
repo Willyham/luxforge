@@ -1010,13 +1010,22 @@ impl Editor {
         if !drafting && !modifier {
             return self.fail_step("no crop draft is open");
         }
+        // Ending the draft returns the session to the pointer through one `workspace.set`, which
+        // answers on a later turn. The frame waits for that answer when the mode is about to
+        // change, so the recorded mode is the one the captured frame shows.
+        let leaves_mode = matches!(step, DraftStep::Cancel)
+            && self.session.workspace.mode != lightwell_core::POINTER_MODE;
         // Setting the angle text does not change the draft; submitting it does, exactly as Enter in
         // the field does.
         let mut tasks = vec![self.crop_update(message)];
         if matches!(step, DraftStep::Angle(_)) {
             tasks.push(self.crop_update(CropMessage::SubmitAngle));
         }
-        self.capture_next_frame();
+        if leaves_mode {
+            self.await_step(Settle::Session);
+        } else {
+            self.capture_next_frame();
+        }
         Task::batch(tasks)
     }
 
