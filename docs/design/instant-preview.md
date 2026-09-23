@@ -29,7 +29,7 @@ A slider dragged back and forth wildly at Fit shows the value under the pointer 
 | Settled exact histogram after the last input, 24 MP | p95 < 200 ms (unchanged) |
 | Idle CPU and process memory | unchanged targets; the proxy adds at most one bounded buffer |
 
-"Presented" keeps its harness meaning: the desktop update in which the rendered raster became the view's source, drawn by the redraw that update requests. It is not scanout.
+"Presented" keeps its harness meaning: the desktop update in which the rendered raster became the photo surface's source, drawn by the redraw that update requests. It is not scanout.
 
 ## Design
 
@@ -67,16 +67,16 @@ During a gesture, before the exact phase of the newest frame has landed, the cli
 Measured on the M4 Mac with per-leg timings: the owner answers `draft.set` and plans the preview job in under 0.2 ms, the desktop's own update, model derivation and view take under 0.15 ms together, and every message handed back into the update loop through the runtime — a task result, a worker's wake, an image allocation's answer — arrives about 8 ms later, one frame of the 120 Hz display. A redraw is always in flight during a drag, the main thread waits on its present, and a message that arrives meanwhile waits with it. The per-input path therefore has as few runtime hops as its work allows:
 
 - The gesture's `draft.set` and preview-job requests are made synchronously on the desktop thread. They are two `O(layers)` owner requests; the owner does no frame work by rule, so the wait is bounded by catalog work alone.
-- At Fit, the proxy frame is drawn by a photo-surface primitive that owns its texture: the raster handed to the view is written to that texture in the same frame that draws it, so no allocation round trip stands between the worker's result and the screen. The overlay and the crop draft keep the toolkit's image path. Percentage zooms use the toolkit's image widget, whose viewport stays bounded by the window while the scrollable carries the full zoomed extent; this avoids GPU viewport limits on large photos.
+- The photograph is drawn by a photo-surface primitive that owns its texture, at Fit and at every percentage: the raster handed to the view is written to that texture in the same frame that draws it, so no allocation round trip stands between the worker's result and the screen, and a redraw with no new raster writes nothing. The overlay and the crop draft keep the toolkit's image path. At a percentage the surface is the whole zoomed box inside a scrollable, far larger than the window, so it hands the renderer only the part on screen: the GPU viewport stays within the window, inside the device's 8192 px limit. An exact render wider or taller than that limit, such as a 60 MP photograph at 100%, is held in a grid of textures that meet without a seam.
 - The worker's wake is the one hop that remains, because the raster has to reach the thread that draws.
 
-"Presented" in the harness is the update in which the raster became the view's source; it is drawn by the redraw that update requests, which is the next frame.
+"Presented" in the harness is the update in which the raster became the surface's source; it is drawn by the redraw that update requests, which is the next frame.
 
 ### The Fit view is the proxy
 
 At Fit, and at any zoom whose displayed size fits the bounds, the presented texture is the proxy render, for drafted and committed frames alike. The photograph therefore never changes appearance between the last drafted frame and the committed one: both are the same recipe at the same size through the same filter. This replaces the GPU's bilinear minification of a full-resolution texture with a box-filtered display-size render, which is a visible improvement in aliasing at Fit and a change to what a Fit capture contains. The exact render is still produced for every committed frame and stays the source of every number.
 
-Zooming from Fit to 100% uploads the retained exact raster when the exact phase has landed and re-renders nothing; when it has not, the view waits for that phase with the existing loading state. Zooming back to Fit uploads the proxy again (a cache hit and a small upload). A view change still triggers no render. The upload limit of 4096 px per side no longer applies to the exact texture, which is uploaded whole for 100% inspection as it is today; the proxy is within it by construction.
+Zooming from Fit to 100% uploads the retained exact raster when the exact phase has landed and re-renders nothing; when it has not, the view waits for that phase with the existing loading state. Zooming back to Fit uploads the proxy again (a cache hit and a small upload). A view change still triggers no render. The proxy's 4096 px per side does not bound the exact texture, which is written whole for 100% inspection, in tiles of at most 8192 px a side when it is larger than that; the proxy is one texture by construction.
 
 ### What is preserved
 
