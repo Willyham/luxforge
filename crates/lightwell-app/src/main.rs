@@ -164,6 +164,8 @@ fn main() {
         std::process::exit(2)
     });
     let size = config.size.unwrap_or((1440., 900.));
+    // The editor presents through the GPU device the counters read, so reading it opens nothing new.
+    lightwell_core::resources::declare_gpu_presenter();
     if let Err(error) = app::run(config, size) {
         eprintln!("Could not start Lightwell editor: {error}");
         std::process::exit(1);

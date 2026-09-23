@@ -14,6 +14,7 @@ mod preview;
 mod profile;
 mod proxy;
 mod render;
+pub mod resources;
 mod source;
 pub use activity::{Activity, ActivityBoard, ActivitySnapshot, ActivitySpec};
 pub use api::*;

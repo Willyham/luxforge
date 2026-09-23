@@ -1880,6 +1880,7 @@ name = "lightwell-core"
 version = "0.0.0"
 dependencies = [
  "image",
+ "lightwell-process",
  "lightwell-raw",
  "moxcms",
  "rayon",
