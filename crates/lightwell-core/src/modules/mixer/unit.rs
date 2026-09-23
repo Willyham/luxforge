@@ -9,9 +9,8 @@
 //!
 //! The Oklab conversion is **not** restated here: it is the one accepted in
 //! `docs/design/basic-colour.md` and implemented in [`crate::modules::basic::colour`], reused
-//! unchanged so the two colour modules cannot drift apart and the matrices exist once. The one
-//! mixer-specific step on the way back is [`reconstruct`], which gives an achromatic result three
-//! bit-identical channels.
+//! unchanged so the two colour modules cannot drift apart and the matrices exist once; that
+//! conversion also gives an achromatic result three bit-identical channels.
 //!
 //! Coefficients are computed in f64 — the frozen centres, the eight gaps derived from them, the
 //! hue warp's knots, slopes and per-segment cubics, and the sixteen saturation and luminance
@@ -249,20 +248,6 @@ fn luminance_response(l: f32, amount: f32) -> f32 {
     core.powf(gamma) + (l - core)
 }
 
-/// The unit's reconstruction from Oklab: [`colour::from_oklab`], except that an achromatic colour
-/// (`a = b = 0`, either zero's sign) reconstructs to `L^3` in all three channels, which is what the
-/// exact matrices give it. The rounded published `M1^-1` rows do not sum to bit-identical values in
-/// f32, so the general path returns three channels a few ulps apart, and where they straddle an
-/// output code threshold a grey renders with one channel a code off.
-fn reconstruct(lab: Oklab) -> [f32; 3] {
-    if lab.a == 0.0 && lab.b == 0.0 {
-        let grey = lab.l * lab.l * lab.l;
-        [grey, grey, grey]
-    } else {
-        colour::from_oklab(lab)
-    }
-}
-
 /// The colour mixer unit: twenty-four sliders reduced to the hue warp's eight cubics and two
 /// per-range f32 coefficient arrays.
 ///
@@ -348,7 +333,7 @@ impl PointwiseColor for Mixer {
         for pixel in rgb {
             let lab = colour::to_oklab(*pixel);
             if lab.a == 0.0 && lab.b == 0.0 {
-                *pixel = reconstruct(lab);
+                *pixel = colour::from_oklab(lab);
                 continue;
             }
             let ramp = chroma_ramp(colour::chroma(lab));
@@ -372,7 +357,7 @@ impl PointwiseColor for Mixer {
             } else {
                 luminance_response(lab.l, amount)
             };
-            *pixel = reconstruct(Oklab { l, a, b });
+            *pixel = colour::from_oklab(Oklab { l, a, b });
         }
     }
 
@@ -786,48 +771,6 @@ mod tests {
                 );
             }
         }
-    }
-
-    /// An achromatic Oklab colour reconstructs to three bit-identical channels, `L^3`, while the
-    /// shared conversion on its own leaves them a few ulps apart; the figure printed is how many of
-    /// a million evenly spaced `L` in `[0, 1]` it would render with a split code.
-    #[test]
-    fn an_achromatic_colour_reconstructs_to_three_identical_channels() {
-        let samples = 1_000_000;
-        let mut split = 0usize;
-        let mut worst = 0.0f32;
-        for step in 0..=samples {
-            let l = step as f32 / samples as f32;
-            for zero in [0.0f32, -0.0] {
-                let lab = Oklab {
-                    l,
-                    a: zero,
-                    b: -zero,
-                };
-                let [r, g, b] = reconstruct(lab);
-                assert!(
-                    r == g && g == b && r == l * l * l,
-                    "L = {l}: {:?}",
-                    [r, g, b]
-                );
-            }
-            let shared = colour::from_oklab(Oklab { l, a: 0.0, b: 0.0 });
-            worst = worst.max(
-                (shared[0] - shared[1])
-                    .abs()
-                    .max((shared[1] - shared[2]).abs()),
-            );
-            let codes = crate::render::quantize_pixel(shared);
-            if codes[0] != codes[1] || codes[1] != codes[2] {
-                split += 1;
-            }
-        }
-        // Printed with --nocapture: the evidence that the dedicated path is needed.
-        println!(
-            "the shared from_oklab splits {split} of {} achromatic L values across an output code; \
-             largest channel difference {worst:e}",
-            samples + 1
-        );
     }
 
     /// `describe` names the unit and exactly its non-neutral fields, and two different payloads
