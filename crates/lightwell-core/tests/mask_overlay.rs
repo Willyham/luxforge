@@ -549,17 +549,19 @@ fn a_mask_with_nothing_to_describe_has_no_grid() {
     assert!(plain.mask_overlay_absent.is_none());
 }
 
-/// A mask that reads pixels has no coverage grid, and the frame says so in the host's own words
-/// rather than arriving with a silent absence.
+/// A mask that reads pixels and that **no layer is bound to** has no coverage grid, and the frame
+/// says so in the host's own words rather than arriving with a silent absence.
 ///
-/// The refusal itself is [`analysis::coverage_grid`]'s and stays exactly as it is: the grid is a
-/// function of position over the finished frame, a value-based component's coverage is a function of
-/// the pixel the masked operation *receives*, and painting one as the other would draw a selection
-/// the render never makes (proposal P16 of `docs/design/range-study.md`, open). What is asserted here
-/// is that the reason reaches the client with the frame — a client that asked for an overlay and
-/// waits for its texture has nothing else to stop waiting on.
+/// A value-based component's coverage is a function of the pixel the masked operation *receives*, and
+/// with no layer bound there is no operation to be the input of: a pixel read anywhere else would be
+/// in a different domain from the one the selection is evaluated in, which is the same rule
+/// `mask.sample-input` and the constrained brush's seed are refused by. So the grid is refused, the
+/// reason names both halves — that the coverage depends on the pixel it reads and that no layer is
+/// bound — and it says where such a selection *can* be read. What is asserted here is that the reason
+/// reaches the client with the frame: a client that asked for an overlay and waits for its texture has
+/// nothing else to stop waiting on.
 #[test]
-fn a_mask_that_reads_pixels_says_why_it_has_no_grid() {
+fn a_value_based_mask_no_layer_is_bound_to_says_why_it_has_no_grid() {
     let f = Fixture::open("reads-pixels");
     let created = f.mask_command("mask.create-linear", linear(0.5, 0.0, 0.5, 1.0), "create");
     let mask = mask_id(&created);
@@ -570,7 +572,8 @@ fn a_mask_that_reads_pixels_says_why_it_has_no_grid() {
         cells_h: 9,
     };
 
-    // The gradient alone has a grid, so the difference below is the range component and nothing else.
+    // The gradient alone has a grid, bound or not, because its coverage is position alone: the
+    // difference below is the range component and nothing else.
     let geometric = exact(f.job(f.preview().mask_overlay(request.clone())));
     assert!(geometric.mask_overlay.is_some());
     assert!(geometric.mask_overlay_absent.is_none());
@@ -581,7 +584,7 @@ fn a_mask_that_reads_pixels_says_why_it_has_no_grid() {
                "high": 80.0, "high_feather": 5.0}),
         "add-range",
     );
-    let reading = exact(f.job(f.preview().mask_overlay(request)));
+    let reading = exact(f.job(f.preview().mask_overlay(request.clone())));
     assert!(
         reading.result.is_ok(),
         "the frame itself still renders: only the overlay is refused"
@@ -591,9 +594,356 @@ fn a_mask_that_reads_pixels_says_why_it_has_no_grid() {
         .mask_overlay_absent
         .expect("the host's own reason travels with the frame");
     assert!(
-        reason.contains("depends on the pixel it reads") && reason.contains("100%"),
+        reason.contains("depends on the pixel it reads")
+            && reason.contains("no layer is bound to mask")
+            && reason.contains("100%"),
         "{reason}"
     );
+
+    // Bind an adjustment through the mask and the same request has a grid: the refusal was the
+    // missing operation and not the component's kind.
+    f.edit(
+        "set-basic",
+        json!({"mask": mask.as_str(), "exposure": 1.0}),
+        "lift",
+    );
+    let bound = exact(f.job(f.preview().mask_overlay(request)));
+    assert!(
+        bound.mask_overlay.is_some(),
+        "a bound value-based mask has a grid: {:?}",
+        bound.mask_overlay_absent
+    );
+    assert!(bound.mask_overlay_absent.is_none());
+}
+
+/// Every cell of a value-based mask's grid is the mask's own field at the pixel **the masked
+/// operation receives** — the pixel `mask.sample-input` answers at the same coordinate, which is the
+/// pixel the constrained brush's seed is read from.
+///
+/// That is the shared-rule proof: the overlay resolves the layer through
+/// `mask::commands::input_layer_index` and reads its input through the same prefix evaluation the
+/// host's own read-only command does, so the two cannot disagree about which pixel a mask reads. The
+/// expected byte is composed here from the host's answer and [`CompiledMask`], not from the unit that
+/// filled the grid.
+#[test]
+fn a_value_based_grid_is_read_on_the_pixel_mask_sample_input_answers() {
+    let f = Fixture::open("value-based");
+    let created = f.mask_command(
+        "mask.create-luminance-range",
+        json!({"low": 25.0, "low_feather": 15.0, "high": 80.0, "high_feather": 15.0}),
+        "create",
+    );
+    let mask = mask_id(&created);
+    f.edit(
+        "set-basic",
+        json!({"mask": mask.as_str(), "exposure": 1.0}),
+        "lift",
+    );
+
+    let (cells_w, cells_h) = (13, 9);
+    let job = f.job(f.preview().mask_overlay(MaskOverlayRequest {
+        mask: mask.clone(),
+        component: None,
+        cells_w,
+        cells_h,
+    }));
+    let registry = job.registry.clone();
+    let recipe = job.recipe.clone();
+    let (width, height) = job.source.dimensions();
+    let held = recipe
+        .masks
+        .iter()
+        .find(|held| held.id == mask)
+        .expect("the stack holds the mask")
+        .clone();
+    let result = exact(job);
+    let overlay = result
+        .mask_overlay
+        .as_ref()
+        .expect("a bound value-based mask has a grid");
+
+    let transform = stage_transform(&registry, width, height, &recipe).expect("a tail");
+    let stage = Stage {
+        width: transform.content.width,
+        height: transform.content.height,
+    };
+    let compiled = CompiledMask::new(&held, stage, &recipe.strokes).expect("the mask compiles");
+    // No geometry layer, so the frame is its content stage and a cell's own pixel is a content pixel.
+    assert_eq!(
+        (transform.output.width, transform.output.height),
+        (stage.width, stage.height)
+    );
+
+    let mut seen_none = false;
+    let mut seen_covered = false;
+    for cy in 0..cells_h {
+        let py = cell_pixel(cy, stage.height, cells_h);
+        for cx in 0..cells_w {
+            let px = cell_pixel(cx, stage.width, cells_w);
+            let answered = f.call(
+                &format!("sample-{cx}-{cy}"),
+                "mask.sample-input",
+                json!({"asset_id": f.asset_value, "mask": mask.as_str(), "x": px, "y": py}),
+            );
+            let pixel = [
+                answered["r"].as_f64().expect("a linear red"),
+                answered["g"].as_f64().expect("a linear green"),
+                answered["b"].as_f64().expect("a linear blue"),
+            ];
+            let expected = analysis::quantize_coverage(compiled.coverage(px, py, pixel));
+            assert_eq!(
+                overlay.coverage[(cy * cells_w + cx) as usize],
+                expected,
+                "cell ({cx}, {cy}) over pixel ({px}, {py}) reads {pixel:?}"
+            );
+            seen_none |= expected == MASK_COVERAGE_NONE;
+            seen_covered |= expected > MASK_COVERAGE_NONE;
+        }
+    }
+    // The band selects some of this photograph and not all of it, so the equality above is over a
+    // grid with both answers in it rather than a uniform one.
+    assert!(
+        seen_none && seen_covered,
+        "the band's grid is uniform, so this proves nothing about its argument"
+    );
+}
+
+/// The coverage the grid reports is the coverage the **render applies** at the same cell, measured
+/// from the rendered photograph rather than asserted by inspection.
+///
+/// One `-1 EV` Basic layer through a band-only mask, so the render's own arithmetic at a pixel is
+/// `out = in · (1 + M · (g - 1))` in linear light with `g = 0.5`, which inverts to
+/// `M = (out/in - 1)/(g - 1)`. A darkening lift is chosen because it cannot clip: every cell of the
+/// picture still carries the coverage that produced it. `in` is the source pixel this frame's content
+/// stage holds and `out` is the byte the frame holds, so the measured coverage comes from the
+/// photograph and from nothing this change wrote.
+///
+/// The two ends of the field are exact, because the blend's endpoints are: an uncovered cell's byte is
+/// the source's own and a fully covered cell's is the full lift. The middle is compared against the
+/// resolution the picture itself has — one output code at that brightness — because no measurement
+/// read off an 8-bit frame can be finer than that.
+#[test]
+fn the_value_based_grid_is_the_coverage_the_render_applies() {
+    let f = Fixture::open("measured");
+    // A **mixed** mask: a vertical gradient intersected with a luminance band. The gradient puts a
+    // continuous field over the frame, so the picture has coverages between the ends to measure at
+    // all, and the band gates it on the pixel, so a cell's byte is still a function of what the
+    // operation receives there. The fixture is flat colour fields, on which a band alone is very
+    // nearly binary. The gradient runs between a quarter and three quarters of the frame, so the grid
+    // holds rows at each exact end of the field as well as the ramp between them.
+    let created = f.mask_command("mask.create-linear", linear(0.5, 0.25, 0.5, 0.75), "create");
+    let mask = mask_id(&created);
+    f.mask_command(
+        "mask.add-luminance-range",
+        json!({"mask": mask.as_str(), "mode": "intersect", "low": 15.0, "low_feather": 20.0,
+               "high": 90.0, "high_feather": 20.0}),
+        "add-range",
+    );
+    f.edit(
+        "set-basic",
+        json!({"mask": mask.as_str(), "exposure": -1.0}),
+        "darken",
+    );
+
+    let (cells_w, cells_h) = (23, 15);
+    let job = f.job(f.preview().mask_overlay(MaskOverlayRequest {
+        mask: mask.clone(),
+        component: None,
+        cells_w,
+        cells_h,
+    }));
+    let source = match &job.source {
+        lightwell_core::PreviewSource::Jpeg(image) => image.clone(),
+        other => panic!("the JPEG fixture is not a {other:?}"),
+    };
+    let result = exact(job);
+    let raster = result.result.as_ref().expect("a frame").clone();
+    let overlay = result.mask_overlay.as_ref().expect("a grid").clone();
+    assert_eq!((raster.width, raster.height), (source.width, source.height));
+
+    // The lift the layer applies, in linear light: one stop down.
+    let gain = 0.5_f64;
+    let mut compared = 0usize;
+    let mut ends = 0usize;
+    let mut worst = 0.0f64;
+    for cy in 0..cells_h {
+        let py = cell_pixel(cy, raster.height, cells_h);
+        for cx in 0..cells_w {
+            let px = cell_pixel(cx, raster.width, cells_w);
+            let offset = (py as usize * raster.width as usize + px as usize) * 4;
+            let reported = f64::from(overlay.coverage[(cy * cells_w + cx) as usize]) / 255.0;
+            // The green channel alone: one channel is enough to measure a coverage the blend applies
+            // to all three.
+            let source_code = u32::from(source.rgba[offset + 1]);
+            let output_code = u32::from(raster.rgba[offset + 1]);
+            let input = code_to_linear(source_code);
+            let output = code_to_linear(output_code);
+            let full = linear_to_code(input * gain);
+            if reported == 0.0 {
+                // An uncovered cell is the identity, bit for bit, wherever the lift would have moved
+                // the byte at all.
+                if full != source_code {
+                    assert_eq!(
+                        output_code, source_code,
+                        "cell ({cx}, {cy}) reports no coverage and the picture changed there"
+                    );
+                    ends += 1;
+                }
+                continue;
+            }
+            if reported == 1.0 {
+                assert_eq!(
+                    output_code, full,
+                    "cell ({cx}, {cy}) reports full coverage and the picture is not fully lifted"
+                );
+                ends += 1;
+                continue;
+            }
+            // One output code here is worth `dlinear / (in · |g - 1|)` of coverage. The tolerance is
+            // two of them: the frame's own rounding, and the reported byte's.
+            let code = code_to_linear(output_code + 1) - code_to_linear(output_code);
+            let span = input * (1.0 - gain);
+            if span <= 2.0 * code {
+                // A cell so dark that the whole field spans less than the codes the frame can tell
+                // apart. The picture cannot measure a coverage there, and pretending otherwise would
+                // make this a test of rounding.
+                continue;
+            }
+            let measured = (output / input - 1.0) / (gain - 1.0);
+            let resolution = 2.0 * code / span;
+            let difference = (measured - reported).abs();
+            worst = worst.max(difference / resolution);
+            assert!(
+                difference <= resolution,
+                "cell ({cx}, {cy}) reports {reported:.4} and the picture measures {measured:.4}, \
+                 past the {resolution:.4} that one output code buys at input {input:.4}"
+            );
+            compared += 1;
+        }
+    }
+    assert!(
+        compared > 20 && ends > 20,
+        "{compared} cells measured in the middle of the field and {ends} at its ends is not enough \
+         of this grid to have proved anything"
+    );
+    println!(
+        "{compared} cells measured against the picture and {ends} at the field's exact ends; worst \
+         disagreement {worst:.3} of what one output code buys"
+    );
+}
+
+/// A mask a person **painted**, with one stroke limited to a colour, has a grid too.
+///
+/// This is the half TASK-024 widened: a brush is a position-based kind whose *stroke* can read the
+/// pixel, so before P16 was built a mask a person had painted could lose its overlay where only a
+/// typed one could before. It is the same rule and the same implementation, which is why nothing here
+/// is a second code path — only a second kind of component reaching it.
+#[test]
+fn a_painted_mask_with_a_limited_stroke_has_a_grid() {
+    let f = Fixture::open("painted");
+    let drawn = f.mask_command(
+        "mask.add-stroke",
+        json!({"points": [[0.3, 0.3], [0.7, 0.55]], "size": 0.25, "feather": 40.0,
+               "flow": 100.0, "erase": false}),
+        "paint",
+    );
+    let mask = mask_id(&drawn);
+    let component = drawn["component"]
+        .as_str()
+        .expect("the stroke made a component")
+        .to_owned();
+    f.edit(
+        "set-basic",
+        json!({"mask": mask.as_str(), "exposure": 1.0}),
+        "lift",
+    );
+    // A second stroke over the first, held to the colour under where it starts.
+    f.mask_command(
+        "mask.add-stroke",
+        json!({"mask": mask.as_str(), "component": component, "points": [[0.35, 0.33], [0.6, 0.5]],
+               "size": 0.2, "feather": 40.0, "flow": 100.0, "erase": false,
+               "limit_to_colour": true, "colour_refine": 50.0}),
+        "limit",
+    );
+
+    let (cells_w, cells_h) = (17, 11);
+    let job = f.job(f.preview().mask_overlay(MaskOverlayRequest {
+        mask: mask.clone(),
+        component: None,
+        cells_w,
+        cells_h,
+    }));
+    let registry = job.registry.clone();
+    let recipe = job.recipe.clone();
+    let (width, height) = job.source.dimensions();
+    let held = recipe
+        .masks
+        .iter()
+        .find(|held| held.id == mask)
+        .expect("the stack holds the mask")
+        .clone();
+    let compiled = CompiledMask::new(&held, Stage { width, height }, &recipe.strokes)
+        .expect("the painted mask compiles");
+    assert!(
+        compiled.reads_pixels(),
+        "a stroke limited to a colour makes the mask read pixels"
+    );
+    let result = exact(job);
+    let overlay = result
+        .mask_overlay
+        .as_ref()
+        .expect("a painted mask a person can see");
+    assert!(result.mask_overlay_absent.is_none());
+    assert!(
+        overlay
+            .coverage
+            .iter()
+            .any(|cell| *cell > MASK_COVERAGE_NONE),
+        "the painted mask's grid is all zeros"
+    );
+
+    // And it is the same field, read on the same input the host's own command answers.
+    let transform = stage_transform(&registry, width, height, &recipe).expect("a tail");
+    for cy in 0..cells_h {
+        let py = cell_pixel(cy, transform.output.height, cells_h);
+        for cx in 0..cells_w {
+            let px = cell_pixel(cx, transform.output.width, cells_w);
+            let answered = f.call(
+                &format!("painted-sample-{cx}-{cy}"),
+                "mask.sample-input",
+                json!({"asset_id": f.asset_value, "mask": mask.as_str(), "x": px, "y": py}),
+            );
+            let pixel = [
+                answered["r"].as_f64().unwrap(),
+                answered["g"].as_f64().unwrap(),
+                answered["b"].as_f64().unwrap(),
+            ];
+            assert_eq!(
+                overlay.coverage[(cy * cells_w + cx) as usize],
+                analysis::quantize_coverage(compiled.coverage(px, py, pixel)),
+                "cell ({cx}, {cy}) over pixel ({px}, {py})"
+            );
+        }
+    }
+}
+
+fn code_to_linear(code: u32) -> f64 {
+    let encoded = f64::from(code) / 255.0;
+    if encoded <= 0.040_45 {
+        encoded / 12.92
+    } else {
+        ((encoded + 0.055) / 1.055).powf(2.4)
+    }
+}
+
+fn linear_to_code(linear: f64) -> u32 {
+    let clamped = linear.clamp(0.0, 1.0);
+    let encoded = if clamped <= 0.003_130_8 {
+        12.92 * clamped
+    } else {
+        1.055 * clamped.powf(1.0 / 2.4) - 0.055
+    };
+    (255.0 * encoded + 0.5).floor() as u32
 }
 
 /// The delivered cell cap bounds the grid however large the stage is, and the request that would
@@ -661,6 +1011,7 @@ fn the_cell_cap_bounds_the_grid_on_a_stage_that_exceeds_it() {
             &identity,
             oversized.width,
             8,
+            analysis::MaskPixels::Unavailable("this mask reads no pixel"),
             &Default::default()
         )
         .expect_err("one cell per pixel is past the cap")
@@ -672,6 +1023,7 @@ fn the_cell_cap_bounds_the_grid_on_a_stage_that_exceeds_it() {
         &identity,
         MAX_OVERLAY_CELLS,
         8,
+        analysis::MaskPixels::Unavailable("this mask reads no pixel"),
         &Default::default(),
     )
     .unwrap()

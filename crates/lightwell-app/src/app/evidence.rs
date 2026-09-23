@@ -2554,10 +2554,11 @@ impl Editor {
     /// asked for the overlay waits for the grid's own texture, because settling on the frame would
     /// capture the photograph before the overlay it is evidence of reached the GPU — so a refusal
     /// the host makes on the worker, one round trip later, leaves it waiting for pixels that will
-    /// never come. A mask whose coverage depends on the pixel it reads is refused a grid by design
-    /// ([proposal P16](../../../../docs/design/range-study.md#proposals), open), and before this the
-    /// step ran to its deadline instead of recording that reason. Only a step waiting for the
-    /// overlay is ended: the absence is nothing to any other step.
+    /// never come. A mask whose coverage depends on the pixel it reads and that no layer is bound to
+    /// is refused a grid by design, as is one whose bound layer sits behind a spatial layer
+    /// ([proposal P16](../../../../docs/design/range-study.md#proposals)), and before this the step
+    /// ran to its deadline instead of recording that reason. Only a step waiting for the overlay is
+    /// ended: the absence is nothing to any other step.
     pub(crate) fn mask_overlay_refused_step(&mut self, reason: &str) {
         if self
             .evidence

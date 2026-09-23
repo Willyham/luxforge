@@ -3,7 +3,7 @@ use crate::{
     Cancel, Component, ComponentId, ComponentMode, EntryId, Error, ErrorKind, HistoryEntry,
     LinearImage, LinearSettings, Mask, MaskId, ModuleRegistry, ProxyApproximation, ProxyBounds,
     ProxyCache, ProxyKey, Raster, Recipe, SourceImage,
-    analysis::{AnalysisIdentity, MAX_OVERLAY_CELLS, MaskOverlay, Report},
+    analysis::{AnalysisIdentity, MAX_OVERLAY_CELLS, MaskOverlay, MaskPixels, Report},
     mask::CompiledMask,
     modules::Stage,
     render, render_cancellable, render_linear, render_linear_cancellable, stage_transform,
@@ -138,6 +138,76 @@ impl PreviewSource {
         match self {
             Self::Jpeg(image) => (image.width, image.height),
             Self::Raw { image, .. } => (image.width(), image.height()),
+        }
+    }
+
+    /// The input of one layer of `recipe` as a point query, through whichever path this source
+    /// interprets: the prefix before that layer, compiled once.
+    ///
+    /// This is the same prefix the colour-constrained brush's seed and `mask.sample-input` read,
+    /// through `StageContext::sample_before`; the mask table and the stroke store travel with it for
+    /// the same reason they do there — a prefix layer may itself be masked, and dropping them would
+    /// make a valid stack look as if it named a mask that does not exist.
+    ///
+    /// **A prefix holding a spatial layer is refused by name, before anything is built.** One point
+    /// query through such a layer is the declared exception to [performance rule
+    /// 4](../../docs/engineering/performance-rules.md#rules) — it evaluates a stage-aligned tile plus
+    /// the operation's halo, and nothing caches that tile — and the linear path pays for it earlier
+    /// still, materializing one float frame per spatial operation when the evaluation is built. The
+    /// caller here asks per display cell, so it is refused rather than paid: the check is the prefix's
+    /// own compilation, which is `O(layers)` and allocates no frame, and it happens before either
+    /// evaluation exists so neither path allocates anything to be told no.
+    ///
+    /// Cost is therefore two `compile_layers` and no frame at all.
+    pub(crate) fn layer_input<'a>(
+        &'a self,
+        registry: &ModuleRegistry,
+        recipe: &Recipe,
+        layer: usize,
+    ) -> Result<crate::render::LayerInput<'a>, Error> {
+        let layers = crate::editor::prefix(&recipe.layers, layer)?;
+        let (width, height) = self.dimensions();
+        if registry
+            .compile_layers(width, height, layers, &recipe.masks, &recipe.strokes)?
+            .evaluates_spatial()
+        {
+            return Err(Error::new(
+                ErrorKind::ResourceLimit,
+                format!(
+                    "a spatial layer before the masked one means reading the pixel it receives \
+                     evaluates a {} px tile per grid cell",
+                    crate::render::spatial::PRODUCTION_TILE
+                ),
+            ));
+        }
+        match self {
+            Self::Jpeg(image) => Ok(crate::render::LayerInput::Byte(
+                crate::render::Evaluation::over_layers(
+                    registry,
+                    image,
+                    layers,
+                    &recipe.masks,
+                    &recipe.strokes,
+                )?,
+            )),
+            Self::Raw { image, settings } => {
+                let prefix = Recipe {
+                    format: recipe.format,
+                    layers: layers.to_vec(),
+                    masks: recipe.masks.clone(),
+                    strokes: recipe.strokes.clone(),
+                };
+                Ok(crate::render::LayerInput::Linear(
+                    crate::render::linear::LinearEvaluation::new(
+                        registry,
+                        image,
+                        &prefix,
+                        *settings,
+                        &Cancel::never(),
+                        crate::render::spatial::PRODUCTION_TILE,
+                    )?,
+                ))
+            }
         }
     }
 
@@ -786,7 +856,8 @@ fn run(
     };
     // The coverage grid is filled beside the frame it describes, from the very stack that produced
     // it, so the two travel together under one generation. It reads no pixel of that frame and
-    // allocates one byte per display cell.
+    // allocates one byte per display cell; a mask that reads pixels reads them from the input of its
+    // own first bound layer instead, one point query per cell.
     let (mask_overlay, mask_overlay_absent) = match (&result, &job.mask_overlay) {
         (Ok(_), Some(request)) => {
             mask_overlay_for(&job.registry, &job.source, recipe, request, &exact_cancel)
@@ -882,11 +953,54 @@ fn mask_overlay_for(
         Ok(compiled) => compiled,
         Err(error) => return refused(error),
     };
+    // A value-based component is answered on the pixel the masked operation receives, which is the
+    // input of the mask's **first bound layer** — the rule `mask::commands::input_layer_index`
+    // states once for everything that reads a pixel through a mask, and which the colour-constrained
+    // brush's seed and `mask.sample-input` already read, so the overlay and the seed cannot disagree
+    // about which pixel a mask reads. The prefix is compiled once and asked once per cell.
+    let input;
+    let unavailable;
+    let pixels = if !compiled.reads_pixels() {
+        // Position-only: no operation is needed and none is looked for, so a geometric grid costs
+        // exactly what it did before a value-based component existed.
+        MaskPixels::Unavailable("this mask reads no pixel")
+    } else {
+        match crate::mask::commands::input_layer_index(recipe, &request.mask)
+            .and_then(|layer| source.layer_input(registry, recipe, layer))
+        {
+            // Two different stages would be two different coverage fields, and `coverage_grid`
+            // refuses that mismatch for the frame; it is refused here for the operation, in the same
+            // voice, rather than read at coordinates of another stage.
+            Ok(prefix) if prefix.stage() != stage => {
+                unavailable = format!(
+                    "the masked operation receives a {}x{} stage and this mask is compiled against \
+                     {}x{}",
+                    prefix.stage().width,
+                    prefix.stage().height,
+                    stage.width,
+                    stage.height
+                );
+                MaskPixels::Unavailable(&unavailable)
+            }
+            Ok(prefix) => {
+                input = prefix;
+                MaskPixels::Input(&input)
+            }
+            // No layer is bound to this mask, or its prefix holds a spatial layer, or it does not
+            // compile: in every case there is no operation whose input this grid can read, and the
+            // refusal's own sentence says which and what to do about it.
+            Err(error) => {
+                unavailable = error.detail;
+                MaskPixels::Unavailable(&unavailable)
+            }
+        }
+    };
     let coverage = match crate::analysis::coverage_grid(
         &compiled,
         &transform,
         request.cells_w,
         request.cells_h,
+        pixels,
         cancel,
     ) {
         Ok(Some(coverage)) => coverage,
@@ -1894,5 +2008,181 @@ mod tests {
             brighter > (dark.width * dark.height / 2) as usize,
             "one stop more exposure brightens the cached proxy, not the cached settings"
         );
+    }
+
+    /// A luminance band on its own, which is what makes a mask read pixels.
+    fn band_mask() -> Mask {
+        let mut mask = Mask::new("Mask 1");
+        mask.components.push(Component::new(
+            "Luminance range 1",
+            ComponentMode::Add,
+            "luminance-range",
+            json!({"low": 15.0, "low_feather": 20.0, "high": 90.0, "high_feather": 20.0}),
+        ));
+        mask
+    }
+
+    /// A gradient intersected with a band: a value-based mask whose conservative rectangle is the
+    /// gradient's, which is what the per-cell pixel read is skipped outside.
+    fn mixed_mask() -> Mask {
+        let mut mask = gradient_mask(0.3);
+        mask.components.push(Component::new(
+            "Luminance range 1",
+            ComponentMode::Intersect,
+            "luminance-range",
+            json!({"low": 15.0, "low_feather": 20.0, "high": 90.0, "high_feather": 20.0}),
+        ));
+        mask
+    }
+
+    /// A value-based mask whose first bound layer sits behind a **spatial** layer has no grid, and the
+    /// refusal names the cost rather than paying it.
+    ///
+    /// A point sample through a spatial segment is the declared exception to [performance rule
+    /// 4](../../docs/engineering/performance-rules.md#rules): it evaluates one stage-aligned tile plus
+    /// the operation's halo, and nothing caches that tile, so asking it once per display cell would
+    /// render a tile of the picture per cell — millions of them. That is not an overlay to ship
+    /// slowly, so the grid is refused here on exactly the rule the unbound mask is refused on, and the
+    /// 100% view still reads such a selection. The **geometric** half of the same stack is unaffected,
+    /// because a position-only mask needs no pixel at all.
+    #[test]
+    fn a_value_based_mask_behind_a_spatial_layer_has_no_grid_and_says_what_it_would_cost() {
+        let mask = band_mask();
+        let geometric = gradient_mask(0.3);
+        let presence = |mask: Option<&Mask>| Layer {
+            id: LayerId::new(),
+            effect_id: crate::PRESENCE_EFFECT.into(),
+            effect_format: EFFECT_FORMAT,
+            payload: json!({"texture": 40.0}),
+            mask: mask.map(|mask| mask.id.clone()),
+        };
+        for (held, absent) in [(&mask, true), (&geometric, false)] {
+            let job = stacked_with_masks(
+                64,
+                48,
+                vec![presence(None), presence(Some(held))],
+                vec![held.clone()],
+                None,
+            );
+            let request = MaskOverlayRequest {
+                mask: held.id.clone(),
+                component: None,
+                cells_w: 8,
+                cells_h: 6,
+            };
+            let (grid, reason) = mask_overlay_for(
+                &job.registry,
+                &job.source,
+                &job.recipe,
+                &request,
+                &Cancel::never(),
+            );
+            if absent {
+                assert!(grid.is_none(), "a value-based mask behind a spatial layer");
+                let reason = reason.expect("the host's own reason travels with the frame");
+                assert!(
+                    reason.contains("depends on the pixel it reads")
+                        && reason.contains("tile per grid cell")
+                        && reason.contains("100% view"),
+                    "{reason}"
+                );
+            } else {
+                assert!(
+                    grid.is_some(),
+                    "a position-only mask needs no pixel and keeps its grid: {reason:?}"
+                );
+                assert_eq!(reason, None);
+            }
+        }
+    }
+
+    /// What the coverage overlay costs the exact preview phase, on 24 MP and 60 MP, before and after
+    /// a value-based component is in the mask — the measurement proposal P16 of
+    /// `docs/design/range-study.md` was decided against.
+    ///
+    /// The "before" figure for a value-based mask is nothing at all, because such a mask was refused a
+    /// grid; the geometric rows are the delivered cost of a grid and must not have moved. So the added
+    /// cost is the band and mixed rows, and it is stated against the exact render of the same frame,
+    /// which is the phase the grid is filled beside.
+    ///
+    /// The two grid sizes are the two a person actually asks for, from
+    /// `state::histogram::overlay_cells`: at Fit one cell per physical pixel of the drawn photograph,
+    /// and at 100% the delivered 4096-cell cap a side.
+    ///
+    /// Ignored by default because it is a measurement and not a pass/fail property. Run it with
+    /// `cargo test --release --locked --package lightwell-core --lib -- --ignored --nocapture
+    /// preview::tests::the_cost_of_a_coverage_grid`, and record the host's one-minute load average
+    /// beside every figure.
+    #[test]
+    #[ignore = "a recorded measurement, not an assertion"]
+    fn the_cost_of_a_coverage_grid() {
+        // A canvas 1728 px wide is the Develop workspace's photograph on the reference machine.
+        let stages = [("24 MP", 6000_u32, 4000_u32), ("60 MP", 9504, 6336)];
+        for (label, width, height) in stages {
+            let fit = crate::analysis::MAX_OVERLAY_CELLS.min(1728);
+            let fit_cells = (fit, (fit * height).div_ceil(width));
+            let hundred = {
+                let cap = f64::from(crate::analysis::MAX_OVERLAY_CELLS);
+                let scale = (cap / f64::from(width)).min(cap / f64::from(height));
+                (
+                    (f64::from(width) * scale).round() as u32,
+                    (f64::from(height) * scale).round() as u32,
+                )
+            };
+            for (name, mask) in [
+                ("gradient (delivered)", gradient_mask(0.3)),
+                ("band", band_mask()),
+                ("gradient ∩ band", mixed_mask()),
+            ] {
+                let job = stacked_with_masks(
+                    width,
+                    height,
+                    masked_basic(&mask),
+                    vec![mask.clone()],
+                    None,
+                );
+                let registry = job.registry.clone();
+                let source = job.source.clone();
+                let recipe = job.recipe.clone();
+                let snapshot = job.entry.snapshot.id.clone();
+                // The phase the grid is filled beside, for the figures to be stated against.
+                let started = Instant::now();
+                let raster = source
+                    .render(&registry, snapshot, &recipe)
+                    .expect("the exact frame");
+                let render = started.elapsed();
+                std::hint::black_box(raster.rgba.len());
+                for (view, (cells_w, cells_h)) in [("fit", fit_cells), ("100%", hundred)] {
+                    let request = MaskOverlayRequest {
+                        mask: mask.id.clone(),
+                        component: None,
+                        cells_w,
+                        cells_h,
+                    };
+                    let started = Instant::now();
+                    let (grid, absent) =
+                        mask_overlay_for(&registry, &source, &recipe, &request, &Cancel::never());
+                    let elapsed = started.elapsed();
+                    let cells = u64::from(cells_w) * u64::from(cells_h);
+                    match grid {
+                        Some(grid) => {
+                            std::hint::black_box(grid.coverage.len());
+                            println!(
+                                "{label} {name} at {view}: {cells_w}x{cells_h} = {cells} cells in \
+                             {:.1} ms ({:.1} ns/cell), beside a {:.1} ms exact render — {:.1}% of it",
+                                elapsed.as_secs_f64() * 1000.0,
+                                elapsed.as_secs_f64() * 1e9 / cells as f64,
+                                render.as_secs_f64() * 1000.0,
+                                100.0 * elapsed.as_secs_f64() / render.as_secs_f64(),
+                            );
+                        }
+                        None => println!(
+                            "{label} {name} at {view}: no grid — {}",
+                            absent.unwrap_or_else(|| "nothing to describe".into())
+                        ),
+                    }
+                }
+            }
+        }
     }
 }

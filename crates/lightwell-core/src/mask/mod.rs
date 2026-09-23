@@ -144,8 +144,9 @@ struct ComponentKind {
     /// A geometric kind is `false`; the two range selections are `true`. It is declared here because
     /// four behaviours follow from it that a client has to be able to name before it draws a control:
     /// the conservative rectangle is the whole stage, no proxy frame is marked approximate, the
-    /// coverage overlay has no grid to draw, and what such a component selects moves when a layer
-    /// ahead of it changes the operation's input. A panel reads this rather than matching on kind
+    /// coverage overlay reads the masked operation's own input rather than position alone, and what
+    /// such a component selects moves when a layer ahead of it changes the operation's input. A panel
+    /// reads this rather than matching on kind
     /// tokens of its own, so a kind registered later carries the same statement without the panel
     /// being edited.
     ///
@@ -169,10 +170,14 @@ struct ComponentKind {
 }
 
 /// The one limit every value-based kind has, whatever its axis: it reads the input of the operation
-/// it modulates, which is what makes it move under a reordering, leaves it with no coverage overlay
-/// ([proposal P16](../../../docs/design/range-study.md#proposals), open) and makes the 100% view the
-/// only place it can be read exactly.
-const VALUE_BASED_LIMIT: &str = "Read on this layer's own input, so a layer above it changes what this selects · no coverage overlay, and at Fit it reads a downscaled pixel: the 100% view is the truth";
+/// it modulates, which is what makes it move under a reordering and makes the 100% view the only
+/// place it can be read exactly.
+///
+/// The overlay reads that same input — the mask's first bound layer's, once per display cell
+/// ([proposal P16](../../../docs/design/range-study.md#proposals), decided and built) — so the
+/// sentence no longer says there is none. It still says where the truth is, because at Fit the cell's
+/// own pixel is a downscaled one and coverage of the average is not the average of coverages.
+const VALUE_BASED_LIMIT: &str = "Read on this layer's own input, so a layer above it changes what this selects · the overlay reads that input too, and at Fit it reads a downscaled pixel: the 100% view is the truth";
 
 /// How many colours one component of a sampling kind holds, and what one of them declares.
 struct ColourSamples {
@@ -303,8 +308,10 @@ pub fn component_geometry_is_defaulted(kind: &str) -> bool {
 /// than of the pixel's position.
 ///
 /// A client asks this to say what such a component does *not* do before a person has drawn anything
-/// with it: it has no coverage overlay, its conservative rectangle is the whole stage, and what it
-/// selects moves when a layer ahead of it changes the operation's input. It reads the kind table, so
+/// with it: its coverage overlay is read on the masked operation's own input rather than on position
+/// alone, so at Fit it is read on a downscaled pixel and the 100% view is the truth; its conservative
+/// rectangle is the whole stage; and what it selects moves when a layer ahead of it changes the
+/// operation's input. It reads the kind table, so
 /// a kind registered later carries the same statement without a second list to keep in step, and it
 /// is the kind's answer rather than one component's — a brush is position-based here and still reads
 /// the pixel when one of its strokes is held to a colour.
@@ -465,15 +472,17 @@ impl CompiledGeometry {
     }
 
     /// Whether this component's coverage depends on the pixel's value rather than on its position.
-    /// It is what makes a mask's bounds the whole stage and what a client is told so it can say the
-    /// 100% view is the truth for such a selection.
+    /// It is what makes a mask's bounds the whole stage, what decides whether the coverage overlay
+    /// needs the masked operation's input, and what a client is told so it can say the 100% view is
+    /// the truth for such a selection.
     fn reads_pixels(&self) -> bool {
         match self {
             Self::Linear(_) | Self::Radial(_) => false,
             // A brush reads pixels exactly when one of its strokes is limited to a colour. That is
             // the whole of what the colour-constrained brush costs the rest of the mask, and it is
-            // the range selections' cost too: the overlay refuses such a mask, and what the stroke
-            // paints moves when a layer ahead of the masked one changes the operation's input.
+            // the range selections' cost too: the overlay has to be handed the masked operation's
+            // input before it can draw such a mask, and what the stroke paints moves when a layer
+            // ahead of the masked one changes that input.
             Self::Brush(brush) => brush.reads_pixels(),
             Self::LuminanceRange(_) | Self::ColourRange(_) => true,
         }
@@ -646,10 +655,12 @@ impl CompiledMask {
 
     /// Whether any component of this mask reads the pixel's value rather than its position.
     ///
-    /// A caller that has no pixel to offer — the coverage overlay is the one in the build — has to
-    /// be able to ask, because the honest answer for such a mask is not a grid of zeros. It is also
-    /// what a panel reads to say that a range selection is evaluated on what the current view can
-    /// see and that the 100% view is the truth. `O(components)` and reads nothing.
+    /// A caller decides from this whether it needs a pixel at all: the coverage overlay reads the
+    /// masked operation's input once per display cell for a mask that answers yes, and refuses the
+    /// grid when no operation is bound to read one from, because the honest answer for such a mask is
+    /// not a grid of zeros. It is also what a panel reads to say that a range selection is evaluated
+    /// on what the current view can see and that the 100% view is the truth. `O(components)` and
+    /// reads nothing.
     pub fn reads_pixels(&self) -> bool {
         self.components
             .iter()

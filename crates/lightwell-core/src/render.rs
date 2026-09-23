@@ -1140,6 +1140,19 @@ impl Compiled {
             })
         })
     }
+
+    /// Whether answering one pixel of this compilation evaluates a spatial segment.
+    ///
+    /// A spatial point query is the declared exception to [performance rule
+    /// 4](../../docs/engineering/performance-rules.md#rules): it evaluates one stage-aligned tile
+    /// plus the operation's halo, and nothing caches that tile, so a caller that asks per display
+    /// cell pays it per cell. The coverage overlay reads this to refuse rather than to pay it.
+    /// `O(segments)` and reads no pixels.
+    pub(crate) fn evaluates_spatial(&self) -> bool {
+        self.segments
+            .iter()
+            .any(|segment| matches!(segment.entry, Some(Entry::Spatial { .. })))
+    }
 }
 
 /// Where one segment-output pixel comes from: the input-frame pixel it reads and the replacement
@@ -1603,6 +1616,59 @@ impl<'a> Evaluation<'a> {
             nearest_index(u, previous.width),
             nearest_index(v, previous.height),
         )
+    }
+}
+
+/// The input of one layer of a recipe, as a point query over the stage that layer receives: one
+/// compiled prefix answering any number of pixels in linear light.
+///
+/// **This is where a value-based mask component's pixel comes from.** The colour-constrained brush's
+/// seed and `mask.sample-input` read exactly this — the prefix before the mask's first bound layer,
+/// through `StageContext::sample_before` — one pixel at a time. The coverage overlay asks the same
+/// question once per display cell, so the prefix is compiled *once* here and the per-cell cost is the
+/// point query alone: `O(layers)`, no frame allocated ([performance rule
+/// 4](../../docs/engineering/performance-rules.md#rules)).
+///
+/// The two arms are the two source interpretations and they answer in the same domain the render's
+/// masked primitives blend in. The byte path's prefix ends at a quantized boundary, exactly as the
+/// brush's stored seed and `mask.sample-input` do, so the overlay and the seed read one value; the
+/// linear path never quantizes at all.
+pub(crate) enum LayerInput<'a> {
+    Byte(Evaluation<'a>),
+    Linear(linear::LinearEvaluation<'a>),
+}
+
+impl LayerInput<'_> {
+    /// The stage the layer receives, which is the stage a mask bound to it is compiled against.
+    pub(crate) fn stage(&self) -> Stage {
+        match self {
+            Self::Byte(evaluation) => evaluation.stage(),
+            Self::Linear(evaluation) => {
+                let (width, height) = evaluation.stage();
+                Stage { width, height }
+            }
+        }
+    }
+
+    /// One pixel of the layer's input stage, in linear light, or `None` outside that stage.
+    pub(crate) fn linear(&self, x: u32, y: u32) -> Result<Option<[f64; 3]>, Error> {
+        match self {
+            Self::Byte(evaluation) => Ok(evaluation.pixel(x, y)?.map(|rgba| {
+                let linear = decode_pixel([rgba[0], rgba[1], rgba[2]]);
+                [
+                    f64::from(linear[0]),
+                    f64::from(linear[1]),
+                    f64::from(linear[2]),
+                ]
+            })),
+            Self::Linear(evaluation) => evaluation.pixel(x, y),
+        }
+    }
+}
+
+impl crate::analysis::MaskInputPixel for LayerInput<'_> {
+    fn linear(&self, x: u32, y: u32) -> Result<Option<[f64; 3]>, Error> {
+        LayerInput::linear(self, x, y)
     }
 }
 

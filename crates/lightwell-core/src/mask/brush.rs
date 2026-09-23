@@ -600,8 +600,8 @@ impl Compiled {
     /// component's coverage a function of the pixel's value and not of its position alone.
     ///
     /// The consequences are the range selections' own, stated there and not softened here: the
-    /// coverage overlay refuses such a mask, and what a limited stroke paints moves when a layer
-    /// ahead of the masked one changes the operation's input. Its **geometric** feature width is
+    /// coverage overlay has to read the masked operation's input to draw such a mask at all, and what
+    /// a limited stroke paints moves when a layer ahead of the masked one changes that input. Its **geometric** feature width is
     /// unaffected, because a colour test draws no ramp across the frame for a pixel grid to miss.
     pub(super) fn reads_pixels(&self) -> bool {
         self.strokes.iter().any(|stroke| stroke.colour.is_some())

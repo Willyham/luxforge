@@ -2675,7 +2675,7 @@ fn pixel_sample(
 
 /// The ordered layers before a position in the stack, which is what a module asks about when it
 /// plans against the stage that position receives. A position past the end is a validation error.
-fn prefix(layers: &[Layer], index: usize) -> Result<&[Layer], Error> {
+pub(crate) fn prefix(layers: &[Layer], index: usize) -> Result<&[Layer], Error> {
     layers.get(..index).ok_or_else(|| {
         Error::new(
             ErrorKind::Validation,

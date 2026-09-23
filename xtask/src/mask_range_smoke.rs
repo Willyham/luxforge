@@ -5,21 +5,23 @@
 //! applies an adjustment through the result and shows the band taking a grey card along with the sky
 //! it was drawn for; then intersects a colour range, picks the sky off the photograph and shows the
 //! grey card come back; then puts a `+0.75 EV` layer **ahead** of the masked one and shows the band
-//! stop selecting the sky altogether; then asks each component for its overlay, where a gradient's
-//! grid is drawn and both range components' are refused in the host's own words. The second reopens
+//! stop selecting the sky altogether; then asks the composed mask and each component for its overlay,
+//! where all four grids are drawn and the two range components' own grids show the failure and its
+//! remedy as pictures. The second reopens
 //! that catalog and takes the colour range's own limits one at a time — a sampled grey selecting every
 //! neutral, a second swatch adding a colour, a third changing nothing, and one person's skin selecting
 //! another's — and finishes with the colour-constrained brush: one stroke across two surfaces, and a
 //! colour-held erase that takes one of them back out and leaves the other alone.
 //!
-//! **Why the readings are taken from the photograph and not from the overlay.** The three delivered
-//! scenarios before this one read coverage off the `mask-on-black` overlay. A mask holding a range
-//! component has **no** overlay: the grid is a function of position over the finished frame, whose
-//! pixels are the masked operation's *output*, and painting it would draw a selection the render never
-//! made ([proposal P16](../../docs/design/range-study.md#proposals), open and the owner's). So every
-//! coverage reading here is taken from the rendered photograph with an adjustment applied through the
-//! mask, which is what the design says the 100% view is for, and the refusals are captured as frames
-//! of their own rather than worked around.
+//! **Why the readings are taken from the photograph as well as from the overlay.** Every claim this
+//! scenario makes about what a selection selects is read from the rendered photograph with an
+//! adjustment applied through the mask, because that is the picture a person is actually editing. The
+//! overlay is now read too, and read **against** those same frames: a mask that reads pixels is
+//! answered on the input of its first bound layer ([proposal P16](../../docs/design/range-study.md#proposals),
+//! decided by the owner on 2026-09-23), so the composed mask's grid and the frame the masked Exposure
+//! produced are two views of one selection and are checked patch by patch against each other. The
+//! overlay at Fit is still read on a downscaled pixel and the 100% view is still the truth; what the
+//! grid buys is that a selection can be *seen* rather than only inferred.
 //!
 //! **Why the comparisons are against a control inside the same frame.** A value-based selection moves
 //! when a layer ahead of it changes the operation's input, and proving that by predicting an output
@@ -224,15 +226,15 @@ fn launch1_script() -> Value {
         // 20: undone, and the selection comes back with the input it was drawn against.
         {"api":{"method":"history.undo","params":{}}},
         // 21: the overlay on with the pointer off the list, which asks for the **composed** mask's
-        // grid. This mask reads pixels, so there is no grid: the step is captured with the host's own
-        // reason on it rather than waiting out the run for a texture nothing will fill.
+        // grid. This mask reads pixels, and a layer is bound to it — the masked Exposure of step 12 —
+        // so the grid is read on that layer's own input and drawn. It is checked against frame 20:
+        // the patches it calls selected are the patches that frame moved.
         {"workspace":{"mask_overlay":"mask-on-black"}},
-        // 22: the pointer on the gradient's row, which asks for that one component's grid. A gradient
-        // is a function of position, so it has one, and this frame is the only coverage a person can
-        // see of this mask.
+        // 22: the pointer on the gradient's row, which asks for that one component's grid.
         {"mask":{"hover":1}},
-        // 23-24: the pointer on each range component's row in turn. Each is refused, by name, for the
-        // same reason the composition was.
+        // 23-24: the pointer on each range component's row in turn. Each has its own grid now, and
+        // the pair is the study's failure and its remedy as pictures: the band takes the grey card
+        // beside the sky, and the picked colour range does not.
         {"mask":{"hover":0}},
         {"mask":{"hover":2}},
         // 25: the overlay off, leaving the photograph.
@@ -767,7 +769,7 @@ pub fn run(root: &Path, out: &Path, bin: &Path, timeout: Duration) -> Result {
     fs::write(
         out.join("reproduce.md"),
         format!(
-            "# Smoke run\n\nScenario: {SCENARIO}. Status: {}.\n\nLaunch mode: {}. Reproduce with `cargo xtask generate-fixtures --output fixtures/generated` then `cargo xtask smoke --scenario {SCENARIO} --output NEW_DIR --binary PATH`; on macOS each launch runs hidden in a background-only bundle, so no window is ever placed on the desktop.\n\nTwo launches over one catalog: the first types a luminance band, intersects a gradient and a picked colour range with it, shows a grey card taken along with the sky and then given back, shows a layer ahead of the mask stop the selection altogether, and asks each component for the overlay a range component does not have; the second takes the colour range's own limits one at a time and finishes with a colour-held erase across two surfaces.\n\nActual renderer readback. Synthetic fixtures only: the patches are the 24-patch reflective colour chart's own sRGB renderings, which is what `docs/design/range-study.md` measured over.\n",
+            "# Smoke run\n\nScenario: {SCENARIO}. Status: {}.\n\nLaunch mode: {}. Reproduce with `cargo xtask generate-fixtures --output fixtures/generated` then `cargo xtask smoke --scenario {SCENARIO} --output NEW_DIR --binary PATH`; on macOS each launch runs hidden in a background-only bundle, so no window is ever placed on the desktop.\n\nTwo launches over one catalog: the first types a luminance band, intersects a gradient and a picked colour range with it, shows a grey card taken along with the sky and then given back, shows a layer ahead of the mask stop the selection altogether, and asks the composed mask and each component for its coverage overlay, checking the composition's grid patch by patch against the frame the masked adjustment produced; the second takes the colour range's own limits one at a time and finishes with a colour-held erase across two surfaces.\n\nActual renderer readback. Synthetic fixtures only: the patches are the 24-patch reflective colour chart's own sRGB renderings, which is what `docs/design/range-study.md` measured over.\n",
             result["status"],
             launch::MODE
         ),
@@ -829,17 +831,12 @@ fn verify_launch1(evidence: &Path, app: &Value, events: &[Value]) -> Result<Valu
         frames.len() == LAUNCH1_FRAMES,
         format!("Launch 1 wrote {} frames", frames.len()),
     )?;
-    // Three steps are refused on purpose, and nothing else is: the overlay of a mask that reads
-    // pixels, and each of its two range components' own. The set is pinned by position and by the
-    // host's own words, so a refusal this scenario did not mean to capture still fails the run.
-    let refused = only_refusals(
-        app,
-        &[
-            (20, "depends on the pixel it reads"),
-            (22, "depends on the pixel it reads"),
-            (23, "depends on the pixel it reads"),
-        ],
-    )?;
+    // Nothing in this launch is refused. The three refusals it used to capture were the overlay of a
+    // mask that reads pixels and each of its two range components' own; the overlay now reads the
+    // input of the mask's first bound layer, which this launch bound when it dragged the masked
+    // Exposure, so all four requests are answered. The set is still pinned, so a refusal this
+    // scenario did not mean to capture still fails the run.
+    let refused = only_refusals(app, &[])?;
     let paths: Vec<PathBuf> = frames
         .iter()
         .map(|frame| frame_identity(evidence, app, frame))
@@ -1072,51 +1069,55 @@ fn verify_launch1(evidence: &Path, app: &Value, events: &[Value]) -> Result<Valu
         json!({"patches":undone.clone(),"label":label(&frames[20])?}),
     );
 
-    // The four answers the overlay got, in order: the composed mask refused, the gradient's own grid
-    // painted and uploaded, and each range component's refused. One drawn of four asked for is the
-    // whole of what a mask holding a range component can show, and it is the gap P16 names.
+    // The four answers the overlay got, in order: the composed mask and then each of the three
+    // components in turn, every one of them a grid painted and uploaded. Two of those three read the
+    // pixel their operation receives, and they are answered because a layer is bound to this mask.
     let answers = overlay_answers(events);
     ensure(
-        answers.len() == 4
-            && answers[0]["drawn"] == json!(false)
-            && answers[1]["drawn"] == json!(true)
-            && answers[2]["drawn"] == json!(false)
-            && answers[3]["drawn"] == json!(false),
+        answers.len() == 4 && answers.iter().all(|answer| answer["drawn"] == json!(true)),
         format!("The overlay answered {}", json!(answers)),
     )?;
-    ensure(
-        answers[1]["component"] == component(&frames[22], 1)?["id"],
-        format!(
-            "The one grid painted names {}, and the gradient's row is {}",
-            answers[1]["component"],
-            component(&frames[22], 1)?["id"]
-        ),
-    )?;
+    for (answer, (frame, row)) in answers[1..].iter().zip([(22usize, 1), (23, 0), (24, 2)]) {
+        ensure(
+            answer["component"] == component(&frames[frame], row)?["id"],
+            format!(
+                "The grid for frame {frame} names {}, and row {row} is {}",
+                answer["component"],
+                component(&frames[frame], row)?["id"]
+            ),
+        )?;
+    }
 
-    // Frame 21: the composed mask has no overlay. The photograph is still the photograph — a refused
-    // grid leaves the picture alone rather than drawing a black frame or an empty texture — and the
-    // reason travels with the step.
-    let refused_frame = read(&paths[21], bounds)?;
-    for (name, value) in &refused_frame {
-        untouched(
-            &format!("{name} with the overlay asked for and refused"),
-            *value,
-            reading(&undone, name)?,
+    // Frame 21: the **composed** mask's own grid, drawn on black, read in the pixels. This is the
+    // frame P16 exists for, and what it is checked against is the photograph's own measured change:
+    // the composition is a band intersected with a gradient intersected with a picked colour range,
+    // so a patch it covers is exactly a patch the masked Exposure moved in frame 20, and a patch it
+    // does not cover is exactly a patch that frame left alone. The overlay and the render are
+    // therefore compared against each other in a person's own two frames, not against a number this
+    // scenario predicted.
+    let composed = read(&paths[21], bounds)?;
+    for (name, value) in &composed {
+        let lifted = (reading(&undone, name)? - reading(&opened, name)?).abs();
+        let selected = lifted >= MOVED;
+        ensure(
+            selected == (*value >= 128.0),
+            format!(
+                "the composed mask's overlay: {name} read {value:.1} of coverage where the \
+                 photograph moved by {lifted:.2} under the same mask"
+            ),
         )?;
     }
     record(
         &frames[21],
-        "the overlay asked for on the composed mask and refused: there is no grid for a selection \
-         evaluated on the operation's input, so the photograph is left exactly as it was and the \
-         reason travels with the frame",
-        json!({"reason":refused[0]["reason"].clone(),"patches":refused_frame.clone()}),
+        "the composed mask's own coverage, drawn on black: every patch the overlay calls selected is \
+         a patch the masked Exposure moved in the frame before it, and every patch it calls \
+         unselected is one that frame left alone — the overlay is the selection the render makes",
+        json!({"patches":composed.clone(),"moved_against":undone.clone()}),
     );
 
-    // Frame 22: the gradient's own row. A position-based component has a grid, and `mask-on-black`
-    // paints it as an opaque greyscale, so this is read in the pixels: the fixture's top row is inside
-    // the gradient and reads white, its bottom row is outside and reads black, and the row between
-    // them is on the ramp and reads between the two. It is the only coverage of this mask a person
-    // can see.
+    // Frame 22: the gradient's own row. A position-based component's grid has not changed: the
+    // fixture's top row is inside the gradient and reads white, its bottom row is outside and reads
+    // black, and the row between them is on the ramp and reads between the two.
     let drawn = read(&paths[22], bounds)?;
     ensure(
         component(&frames[22], 1)?["hovered"] == json!(true),
@@ -1139,30 +1140,54 @@ fn verify_launch1(evidence: &Path, app: &Value, events: &[Value]) -> Result<Valu
     }
     record(
         &frames[22],
-        "the gradient's own contribution, drawn on black: the one component of this mask whose \
-         coverage is a function of position, full over the top row, on its ramp in the middle and \
-         nothing over the bottom row",
+        "the gradient's own contribution, drawn on black: full over the top row, on its ramp in the \
+         middle and nothing over the bottom row",
         json!({"patches":drawn.clone(),
                "hovered":component(&frames[22],1)?["hovered"].clone()}),
     );
 
-    // Frames 23-24: each range component's own row. Each is refused for the same reason the
-    // composition was, and each leaves the photograph alone.
-    for frame in [23usize, 24] {
-        let left = read(&paths[frame], bounds)?;
-        for (name, value) in &left {
-            untouched(
-                &format!("{name} with a range component's own overlay refused"),
-                *value,
-                reading(&undone, name)?,
-            )?;
-        }
+    // Frames 23-24: each range component's own row, each with a grid of its own now. A component's
+    // grid is that component alone, so neither is bounded by the gradient: the band takes both sky
+    // patches and the grey card beside them — which is this study's `1.4` output codes, drawn — and
+    // the colour range picked on the sky takes the sky and leaves the grey card. That pair is the
+    // failure and its remedy, in the overlay, where before they could only be read off the picture.
+    let band = read(&paths[23], bounds)?;
+    let picked = read(&paths[24], bounds)?;
+    for (what, grid) in [("the band's", &band), ("the colour range's", &picked)] {
+        ensure(
+            reading(grid, "sky-top")? >= 200.0 && reading(grid, "sky-bottom")? >= 200.0,
+            format!(
+                "{what} own overlay left a sky patch out: {:.1} and {:.1}",
+                reading(grid, "sky-top")?,
+                reading(grid, "sky-bottom")?
+            ),
+        )?;
     }
+    ensure(
+        reading(&band, "grey-card")? >= 200.0,
+        format!(
+            "the band's own overlay does not show it taking the grey card: {:.1}",
+            reading(&band, "grey-card")?
+        ),
+    )?;
+    ensure(
+        reading(&picked, "grey-card")? <= 40.0,
+        format!(
+            "the picked colour range's own overlay still takes the grey card: {:.1}",
+            reading(&picked, "grey-card")?
+        ),
+    )?;
+    record(
+        &frames[23],
+        "the band's own contribution, drawn on black: brightness alone takes the grey card along \
+         with the sky, which is this study's 1.4 output codes shown rather than described",
+        json!({"patches":band.clone()}),
+    );
     record(
         &frames[24],
-        "each range component's own overlay refused in turn, by name and for the same reason: a \
-         value-based selection is not a function of position over the finished frame",
-        json!({"reasons":[refused[1]["reason"].clone(),refused[2]["reason"].clone()]}),
+        "the picked colour range's own contribution, drawn on black: the sky stays and the grey card \
+         is gone, which is the remedy the component list is for",
+        json!({"patches":picked.clone()}),
     );
 
     // Frame 27: the statement itself, on screen. The row is open and the panel is scrolled to it, so

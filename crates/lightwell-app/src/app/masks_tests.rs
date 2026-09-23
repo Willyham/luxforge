@@ -2014,10 +2014,11 @@ fn a_refused_mask_command_ends_the_step_that_sent_it() {
 /// This is the refusal one step further out than
 /// [`a_refused_mask_command_ends_the_step_that_sent_it`]: the request is accepted, the frame is
 /// rendered, and it is the **grid** that is refused, on the worker, a round trip after the step
-/// returned. A mask holding a component whose coverage depends on the pixel it reads has no
-/// coverage grid at all — the grid is a function of position over the finished frame, which that
-/// coverage is not (proposal P16 of `docs/design/range-study.md`, open) — so a step that asked for
-/// the overlay would otherwise wait out the run's whole deadline for a texture nothing will fill.
+/// returned. The mask here is drawn and **no layer is bound to it**, and it holds a component whose
+/// coverage depends on the pixel the masked operation receives — so there is no operation to read
+/// that pixel from and no grid at all (proposal P16 of `docs/design/range-study.md`, decided and
+/// built). A step that asked for the overlay would otherwise wait out the run's whole deadline for a
+/// texture nothing will fill.
 #[test]
 fn a_refused_coverage_grid_ends_the_step_waiting_for_it() {
     use crate::app::{
@@ -2099,8 +2100,9 @@ fn a_refused_coverage_grid_ends_the_step_waiting_for_it() {
     assert!(
         step["reason"]
             .as_str()
-            .is_some_and(|reason| reason.contains("depends on the pixel it reads")),
-        "the host's own reason is what is recorded: {step}"
+            .is_some_and(|reason| reason.contains("depends on the pixel it reads")
+                && reason.contains("no layer is bound to mask")),
+        "the host's own reason is what is recorded, and it says which half is missing: {step}"
     );
     assert!(
         masking.editor.mask_overlay_surface().is_none(),

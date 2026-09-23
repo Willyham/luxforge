@@ -200,7 +200,8 @@ roof and your stroke reaches it, it is painted too, and the remedy is to subtrac
 caught. The colour is sampled once, where the stroke starts, and stored with the stroke: later edits
 never move it, and nothing is re-read when the picture is drawn. Because the stroke then reads pixels,
 it inherits what the range selections say below — what it holds follows the adjustment's own input, so
-a layer ahead of the mask changes it, and a mask holding such a stroke draws no coverage overlay.
+a layer ahead of the mask changes it, and its overlay is read on that input rather than on the finished
+picture.
 Limit to colour needs an adjustment to read the input of, so the toggle is unavailable until the open
 mask is bound to a layer, and it says so.
 
@@ -259,9 +260,13 @@ which is here:
   the coverage of an averaged pixel is not the average of the coverages — at a sky/roof edge a band
   that takes the sky at 0.475 and the roof at 0 takes their average pixel at 0. The 100% view is the
   truth for a range selection; the fitted view is an honest preview of a downscaled picture. The
-  overlay draws no grid at all for a mask holding a range component, and says why: a grid describes
-  the finished frame, whose pixels are the adjustment's *output*, so drawing one would mean guessing
-  an input the render never used. Read such a selection in the picture at 100%.
+  overlay is read on the same input the adjustment is — the input of the first layer the mask is bound
+  to, one pixel per overlay cell — and never on the finished frame, whose pixels are the adjustment's
+  *output* and would draw a selection the picture never had. So the overlay at Fit is as honest, and as
+  approximate, as the fitted picture behind it. Two masks have no grid at all and say why: one no layer
+  is bound to yet, because there is no adjustment whose input to read, and one whose adjustment sits
+  behind Presence or another neighbourhood effect, because reading that input costs a tile of the
+  picture per overlay cell. Read either in the picture at 100%.
 - **A narrow band speckles on noise.** A range selection is a per-pixel test, so it inherits the
   picture's grain: on a shadow around output code 40 with two codes of noise, a hard edge flips 47%
   of neighbouring pixels by more than half, a shoulder of 1 flips 31%, and a shoulder of 5 — about 13

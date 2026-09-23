@@ -533,7 +533,7 @@ fn linear_bilinear(
     }
 }
 
-struct LinearEvaluation<'a> {
+pub(crate) struct LinearEvaluation<'a> {
     source: &'a LinearImage,
     compiled: Compiled,
     exposure_multiplier: f64,
@@ -549,7 +549,7 @@ struct LinearEvaluation<'a> {
 }
 
 impl<'a> LinearEvaluation<'a> {
-    fn new(
+    pub(crate) fn new(
         registry: &ModuleRegistry,
         source: &'a LinearImage,
         recipe: &Recipe,
@@ -684,7 +684,7 @@ impl<'a> LinearEvaluation<'a> {
         Ok(frame)
     }
 
-    fn stage(&self) -> (u32, u32) {
+    pub(crate) fn stage(&self) -> (u32, u32) {
         let segment = self
             .compiled
             .segments
@@ -706,7 +706,7 @@ impl<'a> LinearEvaluation<'a> {
         }
     }
 
-    fn pixel(&self, x: u32, y: u32) -> Result<Option<[f64; 3]>, Error> {
+    pub(crate) fn pixel(&self, x: u32, y: u32) -> Result<Option<[f64; 3]>, Error> {
         self.pixel_in(self.compiled.segments.len() - 1, x, y)
     }
 

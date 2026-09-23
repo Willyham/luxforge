@@ -21,6 +21,13 @@
 //! ([`StageTransform`]) and asking [`CompiledMask::coverage`] about the content pixel that lands in.
 //! That is the same coordinate convention and the same rounding `render.locate` walks, so the
 //! overlay and a pick agree about which content pixel an output pixel holds.
+//!
+//! **A value-based component is answered on the pixel the masked operation receives.** Such a
+//! component's coverage is a function of that pixel and not of position, and the frame the grid
+//! describes holds that operation's *output*, so the input is supplied by the caller as
+//! [`MaskPixels::Input`] — the recipe prefix up to the mask's first bound layer, evaluated once per
+//! grid cell (proposal P16 of `docs/design/range-study.md`, decided by the owner on 2026-09-23). A
+//! caller with no operation to read one from says so instead, and the grid is refused by name.
 use super::overlay::{MAX_OVERLAY_CELLS, cell_pixel};
 use crate::{
     Cancel, ComponentId, Error, ErrorKind, MaskId, StageTransform, mask::CompiledMask,
@@ -31,12 +38,40 @@ use rayon::prelude::*;
 /// A cell no part of the mask reaches.
 pub const MASK_COVERAGE_NONE: u8 = 0;
 
-/// The pixel value handed to a field that does not read one. `coverage_grid` refuses a mask whose
-/// coverage depends on a pixel before any cell is filled, so this is never consulted by any
-/// component; it exists because the field's signature takes a pixel and this grid has none.
+/// The pixel value handed to a field that does not read one. A mask that reads no pixel ignores it
+/// — which `a_geometric_component_ignores_the_pixel_it_is_handed` proves is exact and not an
+/// approximation — so the grid never pays for a read such a mask would discard.
 const NO_PIXEL: [f64; 3] = [0.0, 0.0, 0.0];
 /// A cell the mask covers completely.
 pub const MASK_COVERAGE_FULL: u8 = 255;
+
+/// The input pixel of the operation a mask modulates, at one pixel of that operation's own stage,
+/// in linear light — the argument [`CompiledMask::coverage`] takes.
+///
+/// It is a point query and it must stay one: the grid asks it once per display cell, so an
+/// implementation that rasterized would make the overlay a second rendering path ([performance
+/// rules 4 and 11](../../../docs/engineering/performance-rules.md#rules)). `Sync` because the cells
+/// are filled on the shared Rayon pool above the parallel threshold; the cells are independent and
+/// the query is read-only, so the split decides nothing about the result.
+pub trait MaskInputPixel: Sync {
+    /// The pixel at `(x, y)` of the stage the masked operation receives, or `None` when that
+    /// coordinate is outside it.
+    fn linear(&self, x: u32, y: u32) -> Result<Option<[f64; 3]>, Error>;
+}
+
+/// Where a value-based component's pixel comes from, or the caller's own reason there is none.
+///
+/// The reason is the caller's because only the caller knows it: the grid has a mask and a frame and
+/// no recipe, so it cannot say *why* no operation was offered. [`coverage_grid`] carries that
+/// sentence into its refusal, so a person reading the frame is told what to do about it rather than
+/// only that nothing was drawn.
+#[derive(Clone, Copy)]
+pub enum MaskPixels<'a> {
+    /// No operation's input is available, with the caller's reason why.
+    Unavailable(&'a str),
+    /// The input of the operation this mask modulates.
+    Input(&'a (dyn MaskInputPixel + 'a)),
+}
 
 /// The cell count above which the grid is filled on the shared Rayon pool. It is the same
 /// one-megapixel threshold the reducer and the rasterizer use, counted in cells here because cells
@@ -87,37 +122,58 @@ fn content_pixel(coordinate: f64, extent: u32) -> Option<u32> {
 }
 
 /// Everything one cell row needs that does not depend on which row it is: the two stages, the
-/// output-to-content affine and the grid's shape. Computed once per grid, never per cell.
+/// output-to-content affine, the grid's shape and where a value-based component's pixel comes from.
+/// Computed once per grid, never per cell.
 #[derive(Clone, Copy)]
-struct Cells {
+struct Cells<'a> {
     content: Stage,
     output: Stage,
     inverse: [f64; 6],
     cells_w: u32,
     cells_h: u32,
+    /// The masked operation's input, or `None` when this mask reads no pixel at all. It is `None`
+    /// for a position-only mask even when the caller offered one, so a geometric grid costs exactly
+    /// what it cost before a value-based component existed.
+    input: Option<&'a (dyn MaskInputPixel + 'a)>,
 }
 
-impl Cells {
+impl Cells<'_> {
     /// Fill one cell row. `row` is that row's slice of the grid and `cy` its cell row index.
-    fn fill_row(&self, row: &mut [u8], cy: u32, mask: &CompiledMask) {
+    fn fill_row(&self, row: &mut [u8], cy: u32, mask: &CompiledMask) -> Result<(), Error> {
         let py = cell_pixel(cy, self.output.height, self.cells_h);
         let oy = f64::from(py) + 0.5;
+        let bounds = mask.bounds();
         for (cx, cell) in row.iter_mut().enumerate() {
             let px = cell_pixel(cx as u32, self.output.width, self.cells_w);
             let ox = f64::from(px) + 0.5;
             let x = self.inverse[0] * ox + self.inverse[1] * oy + self.inverse[2];
             let y = self.inverse[3] * ox + self.inverse[4] * oy + self.inverse[5];
-            *cell = match (
+            let (Some(x), Some(y)) = (
                 content_pixel(x, self.content.width),
                 content_pixel(y, self.content.height),
-            ) {
-                // Every mask that reaches this grid is position-only, which `coverage_grid` has
-                // already established, so the pixel value the field takes is never read and the
-                // neutral triple below stands for "no pixel was consulted" rather than for a colour.
-                (Some(x), Some(y)) => quantize_coverage(mask.coverage(x, y, NO_PIXEL)),
-                _ => MASK_COVERAGE_NONE,
+            ) else {
+                *cell = MASK_COVERAGE_NONE;
+                continue;
+            };
+            *cell = match self.input {
+                // A position-only mask ignores the pixel the field's signature takes, so the neutral
+                // triple below stands for "no pixel was consulted" rather than for a colour.
+                None => quantize_coverage(mask.coverage(x, y, NO_PIXEL)),
+                // Outside the conservative rectangle the composed coverage is *exactly* zero
+                // whatever the pixel is, so the query is skipped rather than answered and thrown
+                // away: a range component bounds the whole stage, but the mixed mask that intersects
+                // one with a gradient costs the gradient's rectangle and no more. An empty rectangle
+                // never reaches here — `coverage_grid` answers such a mask with no grid at all.
+                Some(_) if !bounds.contains(x, y) => MASK_COVERAGE_NONE,
+                Some(input) => match input.linear(x, y)? {
+                    Some(pixel) => quantize_coverage(mask.coverage(x, y, pixel)),
+                    // The masked operation's own stage ran out before the frame did, which is the
+                    // same absence of a picture a cell outside the content stage reports.
+                    None => MASK_COVERAGE_NONE,
+                },
             };
         }
+        Ok(())
     }
 }
 
@@ -132,15 +188,25 @@ impl Cells {
 /// happens to exclude is a different thing: it *is* a mask of this frame and its honest grid over
 /// this frame is zeros, so it is present.
 ///
-/// Cost is `O(cells × components)` with one byte of state per cell. It reads no pixel of the frame
-/// and allocates nothing proportional to the stage, and it is bounded by [`MAX_OVERLAY_CELLS`] a
-/// side. Serial below a megapixel of cells and on the shared Rayon pool above it; the cells are
+/// **A value-based component is answered on `pixels`.** Such a component's coverage is a function of
+/// the pixel the masked *operation* receives, which the frame this grid describes does not hold: that
+/// frame is the operation's output. So the input is the caller's to supply, as the recipe prefix up
+/// to the mask's first bound layer, and it is asked once per cell — never per pixel. A caller with no
+/// operation to read one from passes [`MaskPixels::Unavailable`] with its reason, and a mask that
+/// reads pixels is then refused a grid by name, because a grid computed from anything else would draw
+/// a selection the render never makes. A position-only mask never consults `pixels` at all.
+///
+/// Cost is `O(cells × components)` with one byte of state per cell, plus one point query per cell
+/// inside [`CompiledMask::bounds`] when the mask reads pixels. It reads no pixel of the frame and
+/// allocates nothing proportional to the stage, and it is bounded by [`MAX_OVERLAY_CELLS`] a side.
+/// Serial below a megapixel of cells and on the shared Rayon pool above it; the cells are
 /// independent, so the split decides nothing about the result. `cancel` is read once per cell row.
 pub fn coverage_grid(
     mask: &CompiledMask,
     transform: &StageTransform,
     cells_w: u32,
     cells_h: u32,
+    pixels: MaskPixels<'_>,
     cancel: &Cancel,
 ) -> Result<Option<Vec<u8>>, Error> {
     cancel.check()?;
@@ -184,20 +250,24 @@ pub fn coverage_grid(
     if mask.bounds().is_empty() {
         return Ok(None);
     }
-    // A value-based component's coverage is a function of the pixel the masked *operation* receives,
-    // and this grid is a function of position over the finished frame: the frame's own pixel is that
-    // operation's output and not its input, so painting it here would draw a selection the render
-    // never makes. The honest answer is that there is no grid, with the reason named, until the
-    // overlay is given the masked operation's input — which is its own decision (proposal P16 of
-    // `docs/design/range-study.md`) and not something to guess at per cell.
-    if mask.reads_pixels() {
-        return Err(Error::new(
-            ErrorKind::Validation,
-            "this mask has a component whose coverage depends on the pixel it reads, and a \
-             coverage grid is a function of position over the finished frame; the 100% \
-             view is where such a selection can be read",
-        ));
-    }
+    // A value-based component's coverage is a function of the pixel the masked *operation* receives.
+    // The frame this grid describes holds that operation's output rather than its input, so with no
+    // operation offered there is nothing to read the pixel from, and a grid computed from the frame
+    // instead would draw a selection the render never makes. The honest answer is that there is no
+    // grid, with the caller's own reason named and where the selection *can* be read.
+    let input = match (mask.reads_pixels(), pixels) {
+        (false, _) => None,
+        (true, MaskPixels::Input(input)) => Some(input),
+        (true, MaskPixels::Unavailable(reason)) => {
+            return Err(Error::new(
+                ErrorKind::Validation,
+                format!(
+                    "this mask has a component whose coverage depends on the pixel it reads, and \
+                     {reason}; the 100% view is where such a selection can be read"
+                ),
+            ));
+        }
+    };
     let count = (cells_w as usize) * (cells_h as usize);
     let cells = Cells {
         content,
@@ -205,6 +275,7 @@ pub fn coverage_grid(
         inverse: transform.inverse,
         cells_w,
         cells_h,
+        input,
     };
     let mut grid = vec![MASK_COVERAGE_NONE; count];
     let row = cells_w as usize;
@@ -213,13 +284,12 @@ pub fn coverage_grid(
             .enumerate()
             .try_for_each(|(cy, slice)| {
                 cancel.check()?;
-                cells.fill_row(slice, cy as u32, mask);
-                Ok::<(), Error>(())
+                cells.fill_row(slice, cy as u32, mask)
             })?;
     } else {
         for (cy, slice) in grid.chunks_mut(row).enumerate() {
             cancel.check()?;
-            cells.fill_row(slice, cy as u32, mask);
+            cells.fill_row(slice, cy as u32, mask)?;
         }
     }
     Ok(Some(grid))
@@ -267,6 +337,50 @@ mod tests {
         .expect("the gradient compiles")
     }
 
+    /// No operation was offered. The gradients here read no pixel, so the variant is never consulted;
+    /// the one test that does read one says so in its own words.
+    const NO_INPUT: MaskPixels<'static> = MaskPixels::Unavailable("this caller has no operation");
+
+    /// A stand-in for the masked operation's input: a horizontal luminance ramp over the stage, so
+    /// the pixel a cell reads is a known function of its own column and a band's coverage over the
+    /// grid is checkable by hand.
+    struct Ramp {
+        stage: Stage,
+    }
+
+    impl MaskInputPixel for Ramp {
+        fn linear(&self, x: u32, y: u32) -> Result<Option<[f64; 3]>, Error> {
+            if x >= self.stage.width || y >= self.stage.height {
+                return Ok(None);
+            }
+            let value = f64::from(x) / f64::from(self.stage.width - 1);
+            Ok(Some([value, value, value]))
+        }
+    }
+
+    /// A pixel source that refuses, to prove the refusal is carried out of the fill rather than
+    /// swallowed into a zero.
+    struct Broken;
+
+    impl MaskInputPixel for Broken {
+        fn linear(&self, _: u32, _: u32) -> Result<Option<[f64; 3]>, Error> {
+            Err(Error::new(
+                ErrorKind::Render,
+                "the prefix could not be read",
+            ))
+        }
+    }
+
+    fn luminance_range(mask: &mut Mask, mode: ComponentMode) {
+        let name = mask.next_component_name("luminance-range");
+        mask.components.push(Component::new(
+            name,
+            mode,
+            "luminance-range",
+            json!({"low": 20.0, "low_feather": 10.0, "high": 80.0, "high_feather": 10.0}),
+        ));
+    }
+
     #[test]
     fn quantization_reaches_both_ends_of_the_field() {
         assert_eq!(quantize_coverage(0.0), MASK_COVERAGE_NONE);
@@ -288,9 +402,16 @@ mod tests {
         let compiled = compiled(&mask, width, height);
         let transform = identity(width, height);
         let (cells_w, cells_h) = (37, 23);
-        let grid = coverage_grid(&compiled, &transform, cells_w, cells_h, &Cancel::never())
-            .expect("a grid")
-            .expect("the gradient covers part of the stage");
+        let grid = coverage_grid(
+            &compiled,
+            &transform,
+            cells_w,
+            cells_h,
+            NO_INPUT,
+            &Cancel::never(),
+        )
+        .expect("a grid")
+        .expect("the gradient covers part of the stage");
         assert_eq!(grid.len(), (cells_w * cells_h) as usize);
         for cy in 0..cells_h {
             // The centre of this cell's own pixel span, transcribed independently.
@@ -321,19 +442,27 @@ mod tests {
         let compiled = compiled(&mask, width, height);
         let transform = identity(width, height);
         let (cells_w, cells_h) = (128, 96);
-        let grid = coverage_grid(&compiled, &transform, cells_w, cells_h, &Cancel::never())
-            .unwrap()
-            .unwrap();
+        let grid = coverage_grid(
+            &compiled,
+            &transform,
+            cells_w,
+            cells_h,
+            NO_INPUT,
+            &Cancel::never(),
+        )
+        .unwrap()
+        .unwrap();
         let cells = Cells {
             content: Stage { width, height },
             output: Stage { width, height },
             inverse: transform.inverse,
             cells_w,
             cells_h,
+            input: None,
         };
         let mut serial = vec![MASK_COVERAGE_NONE; (cells_w * cells_h) as usize];
         for (cy, slice) in serial.chunks_mut(cells_w as usize).enumerate() {
-            cells.fill_row(slice, cy as u32, &compiled);
+            cells.fill_row(slice, cy as u32, &compiled).unwrap();
         }
         assert_eq!(grid, serial);
     }
@@ -353,6 +482,7 @@ mod tests {
                 &transform,
                 8,
                 8,
+                NO_INPUT,
                 &Cancel::never()
             )
             .unwrap(),
@@ -368,6 +498,7 @@ mod tests {
                 &transform,
                 8,
                 8,
+                NO_INPUT,
                 &Cancel::never()
             )
             .unwrap(),
@@ -384,6 +515,7 @@ mod tests {
             &transform,
             8,
             8,
+            NO_INPUT,
             &Cancel::never(),
         )
         .unwrap()
@@ -393,6 +525,7 @@ mod tests {
             &transform,
             8,
             8,
+            NO_INPUT,
             &Cancel::never(),
         )
         .unwrap()
@@ -414,7 +547,7 @@ mod tests {
         let compiled = compiled(&mask, width, height);
         let transform = identity(width, height);
 
-        let error = coverage_grid(&compiled, &transform, width, 8, &Cancel::never())
+        let error = coverage_grid(&compiled, &transform, width, 8, NO_INPUT, &Cancel::never())
             .expect_err("a cell per pixel is past the cap");
         assert_eq!(error.kind, ErrorKind::ResourceLimit);
         assert!(
@@ -428,6 +561,7 @@ mod tests {
             &transform,
             MAX_OVERLAY_CELLS,
             8,
+            NO_INPUT,
             &Cancel::never(),
         )
         .unwrap()
@@ -443,14 +577,21 @@ mod tests {
         let mask = vertical_gradient();
         let compiled = compiled(&mask, width, height);
         assert_eq!(
-            coverage_grid(&compiled, &identity(width, height), 0, 8, &Cancel::never())
-                .expect_err("an empty grid")
-                .kind,
+            coverage_grid(
+                &compiled,
+                &identity(width, height),
+                0,
+                8,
+                NO_INPUT,
+                &Cancel::never()
+            )
+            .expect_err("an empty grid")
+            .kind,
             ErrorKind::Validation
         );
         // A transform describing another content stage is two different coverage fields.
         let elsewhere = identity(width + 1, height);
-        let error = coverage_grid(&compiled, &elsewhere, 8, 8, &Cancel::never())
+        let error = coverage_grid(&compiled, &elsewhere, 8, 8, NO_INPUT, &Cancel::never())
             .expect_err("a stage the mask was not compiled against");
         assert_eq!(error.kind, ErrorKind::Validation);
         assert!(error.detail.contains("64x48"), "{}", error.detail);
@@ -463,7 +604,7 @@ mod tests {
         let cancel = Cancel::new();
         cancel.cancel();
         assert_eq!(
-            coverage_grid(&compiled, &identity(64, 48), 8, 8, &cancel)
+            coverage_grid(&compiled, &identity(64, 48), 8, 8, NO_INPUT, &cancel)
                 .expect_err("a cancelled token refuses the grid")
                 .kind,
             ErrorKind::Cancelled
@@ -489,9 +630,16 @@ mod tests {
             inverse: [1.0, 0.0, 0.0, 0.0, 1.0, 0.0],
         };
         let (cells_w, cells_h) = (4, 4);
-        let grid = coverage_grid(&compiled, &transform, cells_w, cells_h, &Cancel::never())
-            .unwrap()
-            .unwrap();
+        let grid = coverage_grid(
+            &compiled,
+            &transform,
+            cells_w,
+            cells_h,
+            NO_INPUT,
+            &Cancel::never(),
+        )
+        .unwrap()
+        .unwrap();
         // Rows 0 and 1 sample output rows 12 and 36, which are on the picture; rows 2 and 3 sample
         // 60 and 84, which are past its last row. The zeros are the frame running out of content,
         // not the mask running out of coverage.
@@ -513,33 +661,37 @@ mod tests {
             }
         }
     }
-    /// A mask with a value-based component has no coverage grid, and the refusal says why.
+    /// A mask with a value-based component has no coverage grid when no operation's input is
+    /// offered, and the refusal carries both the caller's own reason and where the selection *can*
+    /// be read.
     ///
-    /// The grid is a function of position over the *finished* frame; a range selection's coverage is
-    /// a function of the pixel the masked **operation** receives, which is that frame's input and
-    /// not its output. Painting the frame's own pixel here would draw a selection the render never
-    /// makes, so the honest answer is a refusal naming the reason, and where such a selection can be
-    /// read — the 100% view. Giving the overlay the masked operation's input is proposal P16 of
-    /// `docs/design/range-study.md` and a decision of its own.
+    /// A range selection's coverage is a function of the pixel the masked **operation** receives,
+    /// which the frame this grid describes does not hold: that frame is the operation's output.
+    /// Computing the grid from it instead would draw a selection the render never makes, so with no
+    /// input to read, the honest answer is the refusal (proposal P16 of
+    /// `docs/design/range-study.md`).
     #[test]
-    fn a_mask_that_reads_pixels_has_no_coverage_grid() {
+    fn a_mask_that_reads_pixels_has_no_coverage_grid_without_an_operation() {
         let (width, height) = (64, 48);
         let mut mask = vertical_gradient();
-        let name = mask.next_component_name("luminance-range");
-        mask.components.push(Component::new(
-            name,
-            ComponentMode::Intersect,
-            "luminance-range",
-            json!({"low": 20.0, "low_feather": 10.0, "high": 80.0, "high_feather": 10.0}),
-        ));
+        luminance_range(&mut mask, ComponentMode::Intersect);
         let mixed = compiled(&mask, width, height);
         assert!(mixed.reads_pixels());
-        let error = coverage_grid(&mixed, &identity(width, height), 8, 8, &Cancel::never())
-            .expect_err("a value-based mask has no grid");
+        let error = coverage_grid(
+            &mixed,
+            &identity(width, height),
+            8,
+            8,
+            MaskPixels::Unavailable("no layer is bound to it"),
+            &Cancel::never(),
+        )
+        .expect_err("a value-based mask with no operation has no grid");
         assert_eq!(error.kind, ErrorKind::Validation);
         assert!(
-            error.detail.contains("100% view"),
-            "the refusal says where the selection can be read: {}",
+            error.detail.contains("depends on the pixel it reads")
+                && error.detail.contains("no layer is bound to it")
+                && error.detail.contains("100% view"),
+            "the refusal names why and where the selection can be read: {}",
             error.detail
         );
         // The geometric half of the same mask still has one, so a client can show the component
@@ -547,9 +699,169 @@ mod tests {
         let geometry = compiled(&vertical_gradient(), width, height);
         assert!(!geometry.reads_pixels());
         assert!(
-            coverage_grid(&geometry, &identity(width, height), 8, 8, &Cancel::never())
-                .unwrap()
-                .is_some()
+            coverage_grid(
+                &geometry,
+                &identity(width, height),
+                8,
+                8,
+                NO_INPUT,
+                &Cancel::never()
+            )
+            .unwrap()
+            .is_some()
         );
+    }
+
+    /// Given the masked operation's input, every cell of a value-based mask is the quantized
+    /// coverage of the pixel that operation receives there — the same field a render evaluates at
+    /// the same pixel, and not a function of position at all.
+    ///
+    /// The expected value is computed from [`CompiledMask`] over the same ramp, so what is compared
+    /// is the grid's addressing and its argument, not the band's mathematics, which
+    /// `docs/design/mask-study.md` freezes elsewhere.
+    #[test]
+    fn a_value_based_cell_is_the_coverage_of_the_pixel_the_operation_receives() {
+        let (width, height) = (200, 120);
+        let mut mask = Mask::new("Mask 1");
+        luminance_range(&mut mask, ComponentMode::Add);
+        let compiled = compiled(&mask, width, height);
+        assert!(compiled.reads_pixels());
+        let stage = Stage { width, height };
+        let ramp = Ramp { stage };
+        let (cells_w, cells_h) = (37, 23);
+        let grid = coverage_grid(
+            &compiled,
+            &identity(width, height),
+            cells_w,
+            cells_h,
+            MaskPixels::Input(&ramp),
+            &Cancel::never(),
+        )
+        .expect("a grid")
+        .expect("the band selects part of the ramp");
+        assert_eq!(grid.len(), (cells_w * cells_h) as usize);
+        for cy in 0..cells_h {
+            let py =
+                (((2 * u64::from(cy) + 1) * u64::from(height)) / (2 * u64::from(cells_h))) as u32;
+            for cx in 0..cells_w {
+                let px = (((2 * u64::from(cx) + 1) * u64::from(width)) / (2 * u64::from(cells_w)))
+                    as u32;
+                let pixel = ramp.linear(px, py).unwrap().expect("inside the stage");
+                assert_eq!(
+                    grid[(cy * cells_w + cx) as usize],
+                    quantize_coverage(compiled.coverage(px, py, pixel)),
+                    "cell ({cx}, {cy}) over pixel ({px}, {py})"
+                );
+            }
+        }
+        // The band is a function of the pixel alone, so every cell of a column is the same byte and
+        // the grid is not a gradient down the frame.
+        for cy in 1..cells_h {
+            assert_eq!(
+                grid[cy as usize * cells_w as usize..(cy as usize + 1) * cells_w as usize],
+                grid[..cells_w as usize],
+                "row {cy} differs from row 0, so the band read something other than the pixel"
+            );
+        }
+        // And it is not constant either: the ramp crosses the band, so the row has both ends of the
+        // field in it.
+        assert_eq!(grid[0], MASK_COVERAGE_NONE);
+        assert!(grid[..cells_w as usize].contains(&MASK_COVERAGE_FULL));
+    }
+
+    /// Outside the conservative rectangle the composed coverage is exactly zero whatever the pixel
+    /// is, so no pixel is read there. A mask that intersects a gradient with a band therefore costs
+    /// the gradient's rectangle and no more, which is what keeps a mixed mask's overlay cheap.
+    #[test]
+    fn a_cell_outside_the_rectangle_reads_no_pixel() {
+        let (width, height) = (64, 48);
+        let mut mask = Mask::new("Mask 1");
+        // A radial covering the left half only, intersected with a band: the rectangle is the
+        // radial's, and the right half of the stage is outside it.
+        mask.components.push(Component::new(
+            "Radial 1",
+            ComponentMode::Add,
+            "radial",
+            json!({"x": 0.2, "y": 0.5, "radius_x": 0.15, "radius_y": 0.4, "angle": 0.0,
+                   "feather": 10.0}),
+        ));
+        luminance_range(&mut mask, ComponentMode::Intersect);
+        let compiled = compiled(&mask, width, height);
+        assert!(compiled.reads_pixels());
+        let bounds = compiled.bounds();
+        assert!(
+            !bounds.is_empty() && bounds.x1() < width,
+            "the rectangle is smaller than the stage: {bounds:?}"
+        );
+        // `Broken` refuses every read, so a grid at all is proof that only cells inside the
+        // rectangle asked it anything — and the cells it did not ask are the zeros the field has
+        // there.
+        let grid = coverage_grid(
+            &compiled,
+            &identity(width, height),
+            4,
+            4,
+            MaskPixels::Input(&Broken),
+            &Cancel::never(),
+        );
+        let error = grid.expect_err("the cells inside the rectangle do read the pixel");
+        assert_eq!(error.kind, ErrorKind::Render);
+
+        // Move the rectangle off the sampled cells entirely and nothing is read at all: a 1x1 grid
+        // samples the stage's centre, which this radial does not reach.
+        let one = coverage_grid(
+            &compiled,
+            &identity(width, height),
+            1,
+            1,
+            MaskPixels::Input(&Broken),
+            &Cancel::never(),
+        )
+        .expect("no cell of this grid is inside the rectangle")
+        .expect("the mask still describes this frame");
+        assert_eq!(one, vec![MASK_COVERAGE_NONE]);
+    }
+
+    /// A pixel the masked operation's own stage does not have is an uncovered cell, the same absence
+    /// of a picture a cell outside the content stage reports — never a coverage read at a clamped
+    /// coordinate.
+    #[test]
+    fn a_cell_whose_operation_has_no_pixel_is_uncovered() {
+        let (width, height) = (64, 48);
+        let mut mask = Mask::new("Mask 1");
+        luminance_range(&mut mask, ComponentMode::Add);
+        let compiled = compiled(&mask, width, height);
+        // An operation on a stage a quarter the size: every cell past its last column and row has no
+        // pixel to read.
+        let narrow = Ramp {
+            stage: Stage {
+                width: width / 2,
+                height: height / 2,
+            },
+        };
+        let (cells_w, cells_h) = (4, 4);
+        let grid = coverage_grid(
+            &compiled,
+            &identity(width, height),
+            cells_w,
+            cells_h,
+            MaskPixels::Input(&narrow),
+            &Cancel::never(),
+        )
+        .unwrap()
+        .unwrap();
+        for cy in 0..cells_h {
+            let py = cell_pixel(cy, height, cells_h);
+            for cx in 0..cells_w {
+                let px = cell_pixel(cx, width, cells_w);
+                if px >= narrow.stage.width || py >= narrow.stage.height {
+                    assert_eq!(
+                        grid[(cy * cells_w + cx) as usize],
+                        MASK_COVERAGE_NONE,
+                        "cell ({cx}, {cy}) has no pixel at ({px}, {py})"
+                    );
+                }
+            }
+        }
     }
 }

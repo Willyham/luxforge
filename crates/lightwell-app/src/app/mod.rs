@@ -2373,8 +2373,9 @@ impl Editor {
                         self.mask_overlay_pending = Some((generation, overlay));
                     } else if let Some(reason) = result.mask_overlay_absent.take() {
                         // The overlay was asked for and the host will not draw it: a mask whose
-                        // coverage depends on the pixel it reads has no coverage grid at all. The
-                        // reason is the host's own and it is said rather than left as an absence —
+                        // coverage depends on the pixel it reads has no grid until there is an
+                        // operation whose input to read that pixel from, and one it can afford to
+                        // read. The reason is the host's own and it is said rather than an absence —
                         // an overlay switched on and silently not drawn is exactly what
                         // "never silently omit an effect" forbids.
                         self.mask_overlay_unavailable(generation, &reason);
