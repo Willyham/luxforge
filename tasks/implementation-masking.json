@@ -2097,7 +2097,7 @@
     {
       "id": "TASK-026",
       "description": "Complete masking with a full-editor acceptance pass on the M4 Mac: the whole feature against the pillars, with live agents, conflicts, recovery, unavailable providers and the recorded measurements.",
-      "status": "pending",
+      "status": "completed",
       "dependencies": [
         "TASK-025"
       ],
@@ -2203,7 +2203,8 @@
         "A mask no layer is bound to keeps today's refusal, with the host's own reason on the frame. That path is delivered and legible: analysis::coverage_grid names why and says the 100% view is where such a selection reads, the waiting evidence step ends on the refusal instead of running to its deadline, and the photograph is left untouched rather than going black. Do not weaken any of that.",
         "Cost is the reason this was the owner's call rather than an obvious fix: the grid is nearly free today and this pays one recipe-prefix evaluation per grid cell. Measure it on 24 and 60 MP before and after, and if the preview budget cannot carry it, report the figures and say so rather than shipping a slow overlay - falling back to the refusal is an acceptable outcome if the measurement says so.",
         "The overlay is a per-client view concern and must not become a second rasterization path: performance rule 4 says a point query never rasterizes, and rule 11 says a preview is rendered at display size. The grid is display-cell sized, so the prefix evaluation is per cell and not per pixel.",
-        "At proxy scale coverage of the average is not the average of coverages, measured by the range study, so the 100% view stays the truth whatever this task does. The panel already says so on the component's own row; keep that sentence rather than implying the overlay is now exact at Fit."
+        "At proxy scale coverage of the average is not the average of coverages, measured by the range study, so the 100% view stays the truth whatever this task does. The panel already says so on the component's own row; keep that sentence rather than implying the overlay is now exact at Fit.",
+        "The acceptance pass found that the panel's no-coverage-overlay line is a KIND's line, carried only by the two kinds the table marks value-based, so a brush row never shows it: a person who limits a stroke to a colour is told what the limit does and not that the overlay will go. If this task delivers the overlay for a first-bound-layer mask that line becomes wrong rather than missing, so fix it in the same change - it must follow whether the mask actually reads pixels, not which kind was registered."
       ],
       "context_links": [
         {
