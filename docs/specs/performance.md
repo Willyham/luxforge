@@ -470,11 +470,16 @@ an **`interval_ms`**, which hands its positions to a gated timer and sends one p
 time, exactly as a paced slider step does with its values: the first tick presses, each later one
 moves, the last releases, so one paced step is still one stroke and one history entry.
 
-The figures below are the `mask-range` scenario's own, recorded in its `result.json` beside the recipe
-they were taken on and the load the host was under. Twelve positions at a 24 ms interval — a little
-over the delivered masked-drag median of 16.8–17.9 ms, so each position has a round trip of its own to
-finish — painted down the middle of one flat patch of a 1440 × 960 fixture. Two runs, back to back, on
-a quiet host.
+There are two sets of figures, taken on two different recipes, and the second corrects the reading of
+the first. The pairing itself is one function, shared by the scenario and the measurement mode, so the
+two cannot drift apart.
+
+#### The four-layer figure, from the correctness run
+
+The `mask-range` scenario's own, recorded in its `result.json` beside the recipe they were taken on and
+the load the host was under. Twelve positions at a 24 ms interval — a little over the delivered
+masked-drag median of 16.8–17.9 ms, so each position has a round trip of its own to finish — painted
+down the middle of one flat patch of a 1440 × 960 fixture. Two runs, back to back, on a quiet host.
 
 | Painted stroke, `mask_draft_set` → `preview_displayed` | run 1 | run 2 |
 | --- | --- | --- |
@@ -487,25 +492,73 @@ a quiet host.
 bounds, stated plainly: the p50 alone is already at or past the acceptable p95.** The load average is
 well under the 8.0 a quotable figure needs, so it is not the host.
 
-**What most of it is, and why this is not comparable to the masked slider drag above.** The stroke is
-painted on the heaviest recipe that scenario builds: **four masked colour layers**, three of whose
-masks hold a luminance range or a colour range. A value-based component answers the *whole stage* for
-its conservative rectangle, by [P13](../design/range-study.md#proposals), so those three layers are
-evaluated at every pixel of the frame with no span skipped — which is exactly the cost the range study
-measured at 28–44 ns per pixel over 100% of the stage, against a placed gradient's 14.6–20.0 ns over
-40%. The masked drag figures above are one mask of one geometric component. These two numbers are
-therefore not the same measurement of the same thing, and the difference between them is mostly the
-recipe rather than the gesture.
+That recipe is also the heaviest the scenario builds: **four masked colour layers**, three of whose masks
+hold a luminance range or a colour range. A value-based component answers the *whole stage* for its
+conservative rectangle, by [P13](../design/range-study.md#proposals), so those three layers are
+evaluated at every pixel with no span skipped — the cost the range study measured at 28–44 ns per pixel
+over 100% of the stage, against a placed gradient's 14.6–20.0 ns over 40%. It was recorded here with
+the reading that most of the figure was that recipe. **The bare-recipe measurement below withdraws
+that reading**, and the correction is the more useful of the two results.
 
-**What is still unmeasured, named rather than implied.** There is no paint-gesture figure for a
-*bare* recipe — one brush mask on one layer — and none at 24 MP or 60 MP, because this one is taken
-during a correctness run on a 1.4 MP fixture rather than by a measurement harness with its own
-workloads. The machinery to take those now exists: `interval_ms` on a stroke step and
-`mask_draft_preview` are not scenario-specific, so a paced stroke over the large fixtures is a
-workload away. Until it is taken, **no figure here should be read as a paint-gesture baseline**, and
-the drafted-frames-per-second half of the original item — how many frames a hand sees per second
-during a continuous drag — is answered only in the ratio above: 10 to 11 of 17 inputs reached the
-screen, the rest superseded by the next position.
+#### The same gesture on a bare recipe, at 24 and 60 MP
+
+Taken with `editor-latency --mode paint`, which exists for this measurement: it builds one brush mask
+of one component and one masked Basic exposure layer — asserted in the captured state, not assumed —
+and paints one sixteen-position stroke at the same 24 ms pace, pairing `mask_draft_set` with the
+`preview_displayed` of the generation its own `mask_draft_preview` named. Background evidence launch of
+the release binary, warm cache, 120 Hz M4 MacBook Pro. Three runs per size, taken 24, 60, 60, 24, 24,
+60 so a drift over the sequence cannot be read as a difference between the sizes. The first run after
+the idle period is discarded by convention; on this sequence it read p50 25.4 ms and was **not** the
+slowest, so the doubling that convention exists for did not fire, and it is discarded anyway because
+that is the rule.
+
+| Bare recipe, `mask_draft_set` → `preview_displayed` | 24 MP a | 24 MP b | 24 MP c | 60 MP a | 60 MP b | 60 MP c |
+| --- | --- | --- | --- | --- | --- | --- |
+| p50 ms | 36.4 | 32.9 | 27.0 | 24.3 | 25.1 | 24.5 |
+| p95 ms | 64.2 | 53.4 | 54.0 | 104.8 | 97.1 | 50.4 |
+| fastest ms | 14.2 | 10.7 | 9.7 | 9.6 | 9.9 | 10.1 |
+| displayed / positions that queued a job | 17 / 19 | 17 / 19 | 18 / 19 | 12 / 17 | 14 / 19 | 16 / 19 |
+| one-minute load average | 3.90 | 4.34 | 4.34 | 5.67 | 4.63 | 4.31 |
+
+**Against the provisional target this is a miss at both bounds on both sizes, and the miss is larger
+than the four-layer one.** Every p95 is between 50.4 and 104.8 ms against a 16 ms bound and a 32 ms
+acceptable bound. Two of the three 24 MP p50s, 36.4 and 32.9 ms, are themselves past the acceptable
+p95. Every load average is between 3.90 and 5.67, well under the 8.0 a quotable figure needs, so none
+of it is the host.
+
+**The cost is the gesture, not the recipe.** The four-layer 1.4 MP figure was p50 32.2–32.6 and p95
+42.1–50.2; the bare 24 MP figure is p50 27.0–36.4 and p95 53.4–64.2. The bare recipe's p50 brackets the
+four-layer one and its p95 is *worse*. Whatever this gesture costs, three whole-stage value-based
+layers are not most of it, and the sentence above that said they were is withdrawn. What differs
+between the two measurements is mostly the **frame size** — 1.4 MP against 24 and 60 — and even that
+does not separate them cleanly, which the next paragraph is about.
+
+**60 MP is not slower than 24 MP at the median, and the reason matters.** Its p50 is *lower*
+(24.3–25.1 against 27.0–36.4) while its p95 is worse (up to 104.8 ms) and it shows fewer positions on
+screen (12–16 of 17–19 against 17–18 of 19). The positions a 60 MP run displays are the ones the queue
+had time for; the rest were superseded by the next position before their pixels were drawn. A median
+over the survivors of a longer queue is therefore not comparable with a median over nearly all of
+them, and the **displayed ratio is the honest primary result** for this gesture rather than either
+percentile: a hand sees 12 to 18 of 19 positions, and the ones it does not see are the expensive ones.
+
+**The distribution is quantized to the display frame, which says what kind of miss this is.** The
+samples cluster at integer multiples of the 120 Hz frame: 24 MP run b reads 10.7, 11.3, 16.3, 17.0,
+18.6, 24.2, 24.4, 26.7, 32.9, 33.2, 34.6, 46.4, 48.7, 49.2, 49.4, 49.7, 53.4 ms — two frames, then
+three, four, six. So the figure is not "a mask evaluation takes 33 ms"; it is "the frame carrying this
+position is the second to the sixth one after it", and the fastest sample in every run, 9.6 to 14.2 ms,
+is a single frame's worth and is inside the 16 ms bound. The bound is missed by a queue that falls
+behind a 24 ms pace, not by arithmetic per pixel.
+
+**Outliers, reported rather than averaged away.** 60 MP run a's slowest sample is 104.8 ms and run b's
+is 97.1 ms, against run c's 50.4 ms on the same size at a lower load. Those two are each one sample in
+twelve and fourteen; they are what makes the 60 MP p95 what it is, and a third run of the same size
+does not reproduce them. Nothing here is averaged with them and nothing is averaged without them.
+
+**What is still not measured.** Why the queue falls behind — which of the proxy phase, the mask
+compile, the masked colour run and the presentation owns those frames — is not decomposed here; the
+figures are end to end on purpose, and a decomposition is the work a fix would start from rather than
+the acceptance pass's. The drafted-frames-per-second half of the original item is answered by the
+displayed ratio above and not by a separate workload.
 
 ### Desktop slider-to-presented-frame and settled histogram
 

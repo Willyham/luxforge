@@ -739,9 +739,13 @@ fn control_menu_preset(
     parameter: Option<&str>,
     preset: Option<&Map<String, Value>>,
 ) -> Element<'static, Message> {
+    // A `mask.*` command is its own method and is not an `edit.<action>`, so the caption names the
+    // method the copied request actually carries. The mapping is the state layer's, because it is a
+    // fact about the host's command table and this layer holds no core dependency.
+    let method = crate::state::tools::published_method(action);
     let name = match parameter {
-        Some(parameter) => format!("edit.{action} · {parameter}"),
-        None => format!("edit.{action}"),
+        Some(parameter) => format!("{method} · {parameter}"),
+        None => method,
     };
     column![
         caption(name),

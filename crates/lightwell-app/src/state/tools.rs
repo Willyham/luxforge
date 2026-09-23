@@ -1935,6 +1935,21 @@ pub(crate) fn labelled_control<'a>(
     })
 }
 
+/// The JSON method an action id is published as: `edit.<id>` for a module action, and the id itself
+/// for a host `mask.*` command, whose method name *is* its action identity.
+///
+/// It lives here rather than in the view because "which method does this control send" is a fact about
+/// the host's command table, and the view layer holds no core dependency. Reading it from that table
+/// is also what keeps the caption a person copies and the method the request carries from drifting
+/// apart when a kind is registered.
+pub(crate) fn published_method(action: &str) -> String {
+    if lightwell_core::mask::commands::find(action).is_some() {
+        action.to_owned()
+    } else {
+        format!("edit.{action}")
+    }
+}
+
 /// The module that declares this id, when it is registered.
 pub(crate) fn module_of<'a>(
     modules: &'a [ModuleDescriptor],

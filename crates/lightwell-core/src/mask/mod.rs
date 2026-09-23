@@ -113,9 +113,12 @@ fn smooth(s: f64) -> f64 {
 /// are to a layer, so a kind no entry here claims is refused by name and its bytes are left exactly
 /// as they were read — and it is equally what makes a *known* kind reachable: the `mask.*` command
 /// family generates `mask.create-<kind>`, `mask.add-<kind>` and `mask.set-<kind>` from these rows,
-/// each declaring exactly the parameters [`ComponentKind::parameters`] returns. Registering a kind
-/// is therefore sufficient to make it evaluable, creatable, addable and patchable; there is no
-/// second table to remember.
+/// each declaring exactly the parameters [`ComponentKind::parameters`] returns. Registering a kind is
+/// therefore sufficient to make it evaluable, and sufficient to make it creatable, addable and
+/// patchable **when it declares geometry**; there is no second table to remember. A row whose
+/// `parameters` is `None` declares none and generates none, which is what [`declared_geometry_kinds`]
+/// filters on and what a brush is: registering is necessary, not sufficient, and the one kind that
+/// shows the difference is the one whose shape is drawn rather than typed.
 struct ComponentKind {
     kind: &'static str,
     parse: fn(&Component) -> Result<Geometry, Error>,

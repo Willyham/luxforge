@@ -427,9 +427,17 @@ pub fn run(root: &Path, out: &Path) -> Result {
         let presence_mixer_vignette = presence_mixer_vignette_acceptance::run(root, out)?;
         let pmv_ms = pmv_started.elapsed().as_secs_f64() * 1000.0;
 
+        // The masking chapter, likewise its own independent JSON client over its own catalogs. It is
+        // the parity half of the pillar: every mask gesture the panel offers is made here without a
+        // desktop, and the failure and recovery paths are exercised with masks in the recipe.
+        let masks_started = Instant::now();
+        let masks = mask_acceptance::run(root, out)?;
+        let masks_ms = masks_started.elapsed().as_secs_f64() * 1000.0;
+
         ensure(hash(&fixture)? == fixture_hash, "Original source changed")?;
         result["basic_and_histogram"] = basic;
         result["presence_mixer_vignette"] = presence_mixer_vignette;
+        result["masks"] = masks;
         result["status"] = json!("passed");
         result["asset_id"] = json!(asset);
         result["original_entry_id"] = json!(original);
@@ -476,6 +484,7 @@ pub fn run(root: &Path, out: &Path) -> Result {
             "current_render_full_stack":current_render_ms,
             "basic_and_histogram_chapter":basic_ms,
             "presence_mixer_vignette_chapter":pmv_ms,
+            "masks_chapter":masks_ms,
             "total":total.elapsed().as_secs_f64()*1000.0,
         });
         result["catalog_bytes"] = json!(fs::metadata(&catalog)?.len());
@@ -491,6 +500,7 @@ pub fn run(root: &Path, out: &Path) -> Result {
             "Module registry and descriptor discovery",
             "Basic and histogram: the whole chapter under basic_and_histogram, driven through the JSON method table",
             "Presence, mixer and vignette: the whole chapter under presence_mixer_vignette, driven through the JSON method table (Presence itself recorded as pending)",
+            "Masks: the whole chapter under masks, driven through the JSON method table as an independent client — every kind, every mode, inversion at both levels, amount, reorder, duplicate, delete, masked Basic/Presence/mixer, a live agent against an open gesture, Discard, Reapply, historical preview, Restore, undo, redo, a disabled maskable module, a missing and a changed original, and a reopen that returns the identities it wrote",
             "Source SHA-256 unchanged"
         ]);
         Ok(())

@@ -3081,7 +3081,13 @@ impl Editor {
                 else {
                     return Task::none();
                 };
-                self.status = format!("Copied the edit.{action} request");
+                // A `mask.*` command is its own method, so the status names the method the copied
+                // request actually carries rather than prefixing `edit.` to all of them. It reads the
+                // request's own method, so the line can only ever name what was copied.
+                self.status = match request["method"].as_str() {
+                    Some(method) => format!("Copied the {method} request"),
+                    None => format!("Copied the {} request", tools::published_method(&action)),
+                };
                 return iced::clipboard::write(
                     serde_json::to_string_pretty(&request).unwrap_or_default(),
                 );
@@ -3707,6 +3713,10 @@ impl Editor {
             return Task::none();
         };
         let method = declared.id.clone();
+        // Recorded exactly as a row control's is, so "what is copied is what is sent" is a comparison
+        // a test can make for a generated `mask.*` control and not only an argument about the two
+        // functions sharing `mask_request`.
+        self.last_mask_request = Some((method.clone(), request.clone()));
         self.command(method, request)
     }
 

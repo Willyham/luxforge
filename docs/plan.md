@@ -44,11 +44,11 @@ Outstanding work by area. What is delivered is in [feature status](features.md);
 - RAW white balance import through a calibrated conversion from Lightroom's Kelvin and tint
 - Copy and Paste Settings over the same composite action
 
-**Masks** ([design](design/masking.md), [plan](../tasks/implementation-masking.json)). Local adjustments. The linear gradient, the mask model and its persistence, the `mask.*` command family, the masked colour and spatial primitives, the Mask mode and panel, and the coverage overlay are delivered.
-- The radial gradient's handle editor, subtract and intersect, per-component and per-mask inversion, amount, reorder and duplicate
-- Brushes over the delivered path primitives and the content-addressed stroke store
-- Non-AI luminance and colour range selections
-- Full-editor acceptance with masks in the journey
+**Masks** ([design](design/masking.md)). Local adjustments. All four phases are delivered: the mask model and its persistence, the `mask.*` command family, the masked colour and spatial primitives, the Mask mode and panel, the coverage overlay, both gradients, brushes over the content-addressed stroke store, and the non-AI luminance and colour range selections with the colour-constrained brush.
+- The coverage overlay for a mask that reads pixels, decided as [proposal P16](design/range-study.md#proposals) and not yet built: the grid evaluates the recipe prefix up to the mask's first bound layer, and the refusal stands for a typed range and for a colour-limited stroke alike until it is built and its cost measured against the preview budget
+- A paint gesture's latency misses the provisional p95 bound on every recipe measured; the figures and their scope are in [performance](specs/performance.md#a-painted-strokes-own-latency)
+- The range selections have no photographic corpus: every figure in the [range study](design/range-study.md) is over flat synthetic patches
+- Density, edge-aware refinement, model-based selections, copying masks between photographs and mask presets are out of scope with their reasons recorded
 
 **Tuning delivered tools.** Refine the recorded defaults of Presence, the colour mixer and the vignette (decision pending).
 
