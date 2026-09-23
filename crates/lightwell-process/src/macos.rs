@@ -276,8 +276,8 @@ struct GpuClient {
 /// A full walk reads the creator of every client of every accelerator: 0.35 ms at the median and
 /// 1.1 ms at p95 over 84 clients on the owner's machine. So the entries that belong to this
 /// process are kept, with a reference each, and a warm read asks only them for `AppUsage`. The
-/// walk is repeated when nothing is cached, when a cached client that published stops doing so,
-/// and at least every [`REWALK`].
+/// walk is repeated every [`REWALK`], whether or not anything is cached, and sooner when a cached
+/// client that published stops doing so or a walk found the registry changing under it.
 struct GpuTime {
     clients: Vec<GpuClient>,
     /// Time spent by clients that have closed and queues that have gone.
@@ -314,7 +314,9 @@ impl GpuTime {
 
     fn read(&mut self) -> Result<u64, Unavailable> {
         let keys = UsageKeys::new();
-        let due = self.clients.is_empty() || self.walked.is_none_or(|at| at.elapsed() >= REWALK);
+        // A process with no client yet walks at most once per interval too: a headless owner has
+        // none at all, and walking every read would cost it a third of a millisecond each time.
+        let due = self.walked.is_none_or(|at| at.elapsed() >= REWALK);
         let mut walk = due;
         if !due {
             for client in &mut self.clients {
