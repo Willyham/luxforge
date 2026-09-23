@@ -85,15 +85,18 @@ pub(crate) struct Upload {
     pub(crate) render_ms: Option<f64>,
 }
 
-/// What one live-refresh poll found. One poll answers both kinds of change: the asset's state is
-/// read back when any event other than a preset one arrived, the preset library when a `preset.*`
-/// event did, and both after a gap in the log, which could have hidden either.
+/// What one live-refresh poll found. One poll answers every kind of change: the asset's state is
+/// read back when an event that is neither a preset nor a capability one arrived, the preset
+/// library when a `preset.*` event did, and `capabilities` says a capability method (`module.*` or
+/// `task.*`) was used, whose changes the asset state does not show; a gap in the log, which could
+/// have hidden any of them, asks for all three.
 #[derive(Clone, Debug)]
 pub(crate) struct SyncResult {
     pub(crate) sequence: u64,
     pub(crate) refresh: Option<Box<Refresh>>,
     /// The listing and the event sequence it was read at.
     pub(crate) presets: Option<(Vec<PresetSummary>, u64)>,
+    pub(crate) capabilities: bool,
 }
 
 #[cfg(test)]
@@ -104,10 +107,16 @@ impl SyncResult {
             sequence: refresh.sequence,
             refresh: Some(Box::new(refresh)),
             presets: None,
+            capabilities: false,
         }
     }
 }
 
+/// A capability method's event: it changes a module's settings, grants, resources, activation or
+/// jobs, never an asset's history.
+pub(crate) fn capability_event(method: &str) -> bool {
+    method.starts_with("module.") || method.starts_with("task.")
+}
 /// One library call of this desktop's and the listing read right after it, so the section shows
 /// the library the call left behind rather than the one before it.
 #[derive(Clone, Debug)]
@@ -929,11 +938,17 @@ pub(crate) fn sync_now(
             .events
             .iter()
             .any(|event| is_library_event(&event.method));
+    // A capability event changes a module, never the asset, so it alone renders nothing.
+    let capabilities = events.gap
+        || events
+            .events
+            .iter()
+            .any(|event| capability_event(&event.method));
     let asset = events.gap
         || events
             .events
             .iter()
-            .any(|event| !is_library_event(&event.method));
+            .any(|event| !is_library_event(&event.method) && !capability_event(&event.method));
     let presets = if library {
         let (presets, seen) = list_presets(owner, client)?;
         sequence = sequence.max(seen);
@@ -952,6 +967,7 @@ pub(crate) fn sync_now(
         sequence,
         refresh,
         presets,
+        capabilities,
     })
 }
 

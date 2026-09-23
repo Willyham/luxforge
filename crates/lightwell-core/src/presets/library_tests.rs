@@ -104,17 +104,17 @@ fn assert_error(result: Result<impl std::fmt::Debug, Error>, kind: ErrorKind, de
 // -------------------------------------------------------------------------------------------
 
 #[test]
-fn a_fresh_catalog_is_marked_format_5_and_starts_with_an_empty_library() {
+fn a_fresh_catalog_is_marked_format_6_and_starts_with_an_empty_library() {
     let path = catalog("fresh");
     let service = EditorService::open(&path).expect("a catalog");
     let marker: i64 = service
         .connection
         .pragma_query_value(None, "user_version", |row| row.get(0))
         .expect("a marker");
-    assert_eq!(marker, 5);
+    assert_eq!(marker, 6);
     assert!(service.presets().expect("a listing").is_empty());
     drop(service);
-    let reopened = EditorService::open(&path).expect("a format 5 catalog reopens");
+    let reopened = EditorService::open(&path).expect("a format 6 catalog reopens");
     assert!(reopened.presets().expect("a listing").is_empty());
     drop(reopened);
     std::fs::remove_file(path).expect("the catalog is removed");
@@ -136,7 +136,7 @@ fn a_format_4_catalog_is_refused_by_name_without_rewriting_it() {
     assert_eq!(error.kind, ErrorKind::Incompatible);
     assert_eq!(
         error.detail,
-        "catalog format 4 is not supported; expected 5; choose a new catalog path"
+        "catalog format 4 is not supported; expected 6; choose a new catalog path"
     );
     assert_eq!(
         std::fs::read(&path).expect("the bytes"),
@@ -1129,6 +1129,7 @@ fn capture_refuses_a_field_with_no_value_and_no_default() {
             format: EFFECT_FORMAT,
             stage: EffectStage::Pixel,
             order: 0,
+            artifacts: false,
         }],
         actions: vec![ActionDescriptor {
             id: "set-sketch".into(),
@@ -1149,6 +1150,7 @@ fn capture_refuses_a_field_with_no_value_and_no_default() {
         collapsed: false,
         layout: crate::ModuleLayout::Stacked,
         availability: Availability::Available,
+        ..ModuleDescriptor::default()
     });
     let mut registry = ModuleRegistry::builtin();
     registry.register(sketch).expect("the sketch module");

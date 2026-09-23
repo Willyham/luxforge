@@ -102,11 +102,13 @@ fn seed_controls(module: &ModuleDescriptor, controls: &[Control], fields: &mut F
                 }
             }
             // None carries a field of its own: an action button submits the fields already
-            // seeded, a picker only enters its module's canvas mode and a preset row submits a
-            // library preset's own settings, name and identity.
+            // seeded, a picker only enters its module's canvas mode, a preset row submits a library
+            // preset's own settings, name and identity, and a task sends the open asset and a
+            // profile.
             Rendered::Action { .. }
             | Rendered::Picker { .. }
             | Rendered::Presets { .. }
+            | Rendered::Task { .. }
             | Rendered::Unsupported(_) => {}
         }
     }
@@ -165,6 +167,8 @@ pub(crate) fn seed_text(parameter: &ParameterDescriptor) -> String {
             .and_then(Value::as_bool)
             .unwrap_or(false)
             .to_string(),
+        // An artifact identity has no default and nothing sensible to seed.
+        ParameterKind::Artifact => String::new(),
         ParameterKind::Curve {
             fixed_x,
             points_min,
@@ -230,6 +234,7 @@ pub(crate) fn decimals_for(parameter: &ParameterDescriptor) -> usize {
         ParameterKind::Color
         | ParameterKind::Enum { .. }
         | ParameterKind::Boolean
+        | ParameterKind::Artifact
         | ParameterKind::Curve { .. }
         | ParameterKind::String { .. }
         | ParameterKind::Settings => return 0,
@@ -338,6 +343,9 @@ pub(crate) fn parse_field(parameter: &ParameterDescriptor, text: &str) -> Result
             .parse::<bool>()
             .map(Value::from)
             .map_err(|_| format!("{name} must be a boolean")),
+        ParameterKind::Artifact => lightwell_core::ArtifactId::parse(text.trim())
+            .map(|id| Value::from(id.as_str()))
+            .map_err(|_| format!("{name} must be an artifact identity")),
         ParameterKind::Curve { .. } => serde_json::from_str::<Value>(text.trim())
             .map_err(|_| format!("{name} must be a JSON curve point list"))
             .and_then(|value| {
@@ -377,6 +385,7 @@ pub(crate) fn value_text(parameter: &ParameterDescriptor, value: &Value) -> Resu
             .collect::<Vec<_>>()
             .join(","),
         ParameterKind::Boolean => value.as_bool().unwrap().to_string(),
+        ParameterKind::Artifact => value.as_str().unwrap().to_owned(),
         ParameterKind::Curve { .. } | ParameterKind::Settings => value.to_string(),
         ParameterKind::String { .. } => value.as_str().unwrap().to_owned(),
     })

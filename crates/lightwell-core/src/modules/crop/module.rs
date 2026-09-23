@@ -149,6 +149,7 @@ impl CropModule {
                     format: EFFECT_FORMAT,
                     stage: EffectStage::Geometry,
                     order: 0,
+                    artifacts: false,
                 }],
                 actions: vec![
                     ActionDescriptor {
@@ -238,6 +239,7 @@ parameters: Vec::new(),
                 collapsed: true,
                 layout: crate::ModuleLayout::Stacked,
                 availability: Availability::Available,
+                ..ModuleDescriptor::default()
             },
         }
     }

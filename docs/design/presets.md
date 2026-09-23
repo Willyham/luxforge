@@ -99,7 +99,7 @@ CREATE TABLE presets (
 );
 ```
 
-A format 4 catalog is refused by name, as every earlier format change has been; choose a new catalog path. The desktop's default catalog lives in the configuration directory, so in practice the library is per installation.
+A catalog of an earlier format is refused by name, as every format change has been; choose a new catalog path. The current format is 6, which added the [derived-artifact](module-capabilities.md#derived-artifacts) tables after the library's format 5. The desktop's default catalog lives in the configuration directory, so in practice the library is per installation.
 
 **Record.** `{id, name, group, settings, origin, report, actor, created_ms, updated_ms, unavailable}`:
 

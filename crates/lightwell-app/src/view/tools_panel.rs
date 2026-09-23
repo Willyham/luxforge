@@ -8,6 +8,7 @@ use crate::{
         message::{ClipEndpoint, CropMessage, MenuTarget, Message, PresetMessage},
     },
     state::{
+        capabilities::CapabilityView,
         histogram::HistogramModel,
         presets::{PresetFormModel, PresetRow, PresetsModel},
         tools::{
@@ -193,7 +194,16 @@ fn section_view<'a>(
     // An unavailable module cannot expand, per the design; nothing under it is drawn. Otherwise a
     // disabled section (busy, a historical preview) still shows its values, just not interactive.
     let body = (section.expanded && section.unavailable.is_none()).then(|| {
-        let rows = match section.layout {
+        // A capability module's status sits above its controls; its settings are a sub-view of
+        // the section that stands in for them until Done.
+        let mut rows = Vec::new();
+        if let Some(capability) = &section.capability {
+            rows.push(PanelRow::Plain(super::capabilities::block(capability)));
+            if capability.view == CapabilityView::Settings && !capability.loading {
+                return finish_rows(rows, menu);
+            }
+        }
+        rows.extend(match section.layout {
             SectionLayout::Stacked => control_rows(
                 &section.module_id,
                 section.enabled,
@@ -203,7 +213,7 @@ fn section_view<'a>(
                 false,
             ),
             SectionLayout::Tabs { selected } => tabbed_rows(section, selected, menu, plot),
-        };
+        });
         finish_rows(rows, menu)
     });
     module_section(
@@ -495,6 +505,7 @@ fn control_view<'a>(
         .into(),
         ControlModel::Action(action) => action_view(action, ButtonSize::Regular, menu),
         ControlModel::Picker(picker) => picker_view(picker, ButtonSize::Compact, menu),
+        ControlModel::Task(task) => super::capabilities::task_view(task, enabled, menu),
         ControlModel::Unsupported(message) => error_caption(message.clone()),
         ControlModel::CropFrame(frame) => crop_section_view(frame, menu),
         ControlModel::Presets(presets) => presets_view(presets, menu),

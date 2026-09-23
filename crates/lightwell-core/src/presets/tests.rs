@@ -1027,6 +1027,7 @@ fn validate_settings_refuses_an_unavailable_provider() {
         availability: Availability::Unavailable {
             reason: "not installed".into(),
         },
+        ..ModuleDescriptor::default()
     };
     let mut registry = ModuleRegistry::builtin();
     registry

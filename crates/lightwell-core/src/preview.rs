@@ -2,6 +2,7 @@ use crate::{
     Cancel, EntryId, Error, ErrorKind, HistoryEntry, LinearImage, LinearSettings, ModuleRegistry,
     ProxyBounds, ProxyCache, ProxyKey, Raster, Recipe, SourceImage,
     analysis::{AnalysisIdentity, Report},
+    artifacts::PreparedArtifact,
     render, render_cancellable, render_linear, render_linear_cancellable,
 };
 use serde::{Deserialize, Serialize};
@@ -194,6 +195,26 @@ impl PreviewSource {
             }
         }
     }
+
+    /// The output pixels at the centres of a `side` × `side` grid, row by row from the top-left,
+    /// through the same two paths and one evaluation of the stack: `O(side² × layers)`, no frame.
+    /// `checkpoint` is asked before each point.
+    pub(crate) fn sample_grid(
+        &self,
+        registry: &ModuleRegistry,
+        recipe: &Recipe,
+        side: u32,
+        checkpoint: &dyn Fn() -> Result<(), Error>,
+    ) -> Result<Vec<[u8; 4]>, Error> {
+        match self {
+            Self::Jpeg(image) => {
+                crate::render::sample_grid(registry, image, recipe, side, checkpoint)
+            }
+            Self::Raw { image, settings } => crate::render::linear::sample_grid_linear(
+                registry, image, recipe, *settings, side, checkpoint,
+            ),
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -231,6 +252,10 @@ pub struct PreviewJob {
     /// or rendering the proxy declines it in [`PreviewResult::proxy_declined`] and the exact phase
     /// runs unchanged.
     pub proxy: Option<ProxyBounds>,
+    /// The verified bytes of every derived artifact [`PreviewJob::recipe`] references. The job
+    /// holds them for as long as it lives, so the worker compiles the stack whatever the owner's
+    /// cache evicts meanwhile.
+    pub artifacts: Vec<Arc<PreparedArtifact>>,
 }
 
 /// Which of a job's two phases produced a result.
@@ -755,6 +780,7 @@ mod tests {
             analyse,
             proxy: None,
             entry,
+            artifacts: Vec::new(),
         }
     }
 
@@ -928,6 +954,7 @@ mod tests {
                 effect_id: BASIC_EFFECT.into(),
                 effect_format: EFFECT_FORMAT,
                 payload: json!({"exposure": 0.5, "contrast": 20.0}),
+                artifacts: Vec::new(),
             },
             Layer::crop(fitted.normalized(&stage)),
         ]
@@ -991,6 +1018,7 @@ mod tests {
             analyse: false,
             proxy,
             entry,
+            artifacts: Vec::new(),
         }
     }
 
@@ -1580,6 +1608,7 @@ mod tests {
                 effect_id: PRESENCE_EFFECT.into(),
                 effect_format: EFFECT_FORMAT,
                 payload: json!({"clarity": 60.0}),
+                artifacts: Vec::new(),
             },
             Layer::crop(fitted.normalized(&stage)),
         ];

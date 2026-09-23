@@ -72,6 +72,7 @@ fn vignette_layer(payload: Value) -> Layer {
         effect_id: VIGNETTE_EFFECT.into(),
         effect_format: EFFECT_FORMAT,
         payload,
+        artifacts: Vec::new(),
     }
 }
 

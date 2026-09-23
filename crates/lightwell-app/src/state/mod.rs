@@ -2,6 +2,7 @@
 //! texture or calls the owner, and no framework type appears in any model, so every rule the screen
 //! follows is testable without a window.
 pub(crate) mod canvas;
+pub(crate) mod capabilities;
 pub(crate) mod histogram;
 pub(crate) mod palette;
 pub(crate) mod panel;
@@ -98,6 +99,9 @@ pub(crate) struct Inputs<'a> {
     pub(crate) presets: &'a presets::PresetLibrary,
     /// The Presets section's create form.
     pub(crate) preset_form: &'a presets::PresetForm,
+    /// What the desktop knows about every capability-declaring module, and the open consent
+    /// notice.
+    pub(crate) capabilities: &'a capabilities::CapabilityStore,
 }
 
 /// The whole screen as plain data. The tools panel keeps its sections across derivations so an
@@ -225,6 +229,7 @@ mod tests {
         presets: presets::PresetLibrary,
         preset_form: presets::PresetForm,
         slider_draft: Option<crate::app::slider::SliderDraft>,
+        capabilities: capabilities::CapabilityStore,
     }
 
     impl Scene {
@@ -260,6 +265,7 @@ mod tests {
                 presets: presets::PresetLibrary::default(),
                 preset_form: presets::PresetForm::default(),
                 slider_draft: None,
+                capabilities: capabilities::CapabilityStore::default(),
             }
         }
 
@@ -353,6 +359,7 @@ mod tests {
                 palette_selected: 0,
                 presets: &self.presets,
                 preset_form: &self.preset_form,
+                capabilities: &self.capabilities,
             }
         }
 
@@ -1201,6 +1208,7 @@ mod tests {
                 summary: "Whole image".into(),
                 values: serde_json::Map::new(),
                 available: true,
+                artifacts: Vec::new(),
             }],
         });
         let workspace = scene.derive();

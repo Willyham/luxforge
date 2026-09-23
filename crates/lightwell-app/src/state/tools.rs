@@ -12,6 +12,7 @@ use crate::{
     crop_draft::{AspectPreset, CropDraft, committed_aspect},
     state::{
         Inputs,
+        capabilities::{self, CapabilityModel, TaskControl},
         presets::{PresetsModel, presets_model},
     },
 };
@@ -168,6 +169,9 @@ pub(crate) struct SectionModel {
     pub(crate) active: bool,
     pub(crate) unavailable: Option<String>,
     pub(crate) reset: Option<ResetRef>,
+    /// The module's status and settings, above its controls, when it declares settings,
+    /// resources, an activation or tasks.
+    pub(crate) capability: Option<CapabilityModel>,
     pub(crate) controls: Vec<ControlModel>,
     pub(crate) layout: SectionLayout,
     /// A word for the section's own state, shown in its band while expanded: Draft while the
@@ -439,6 +443,9 @@ pub(crate) enum ControlModel {
     Group(GroupControl),
     Action(ActionControl),
     Picker(PickerControl),
+    /// A button that runs one of the module's worker tasks through consent and progress, and
+    /// offers Apply with its result when the task declares one.
+    Task(TaskControl),
     /// A control this build cannot draw keeps its name on screen rather than disappearing.
     Unsupported(String),
     /// The host's crop-frame editor, at the top of the declaring module's section.
@@ -610,6 +617,7 @@ fn section(
         // rather than dropping it, because a header that loses its icon changes height and every
         // control under it moves on each commit round trip. The disabled header offers no press.
         reset: ResetRef::of(module.reset.as_ref()),
+        capability: capabilities::section(module, inputs),
         controls,
         layout,
         status: (inputs.draft.is_some() && owns_mode(module, inputs)).then(|| "Draft".to_owned()),
@@ -851,6 +859,24 @@ fn digest(
             }
         }
     }
+    // What the desktop knows about this module's capabilities changes this section alone: its
+    // version moves on every answer, the consent notice names one module, and a task's run belongs
+    // to the asset it was started for.
+    if capabilities::declares(module) {
+        inputs
+            .capabilities
+            .modules
+            .get(&module.id)
+            .map(|state| state.version)
+            .hash(&mut hasher);
+        inputs
+            .capabilities
+            .consent
+            .as_ref()
+            .is_some_and(|open| open.consent.module_id == module.id)
+            .hash(&mut hasher);
+        inputs.state.map(|state| &state.asset.id).hash(&mut hasher);
+    }
     // The preset library, the create form and whether a draft holds the rows back reach the one
     // section that renders them, and no other.
     if contains_presets(&module.controls) {
@@ -1076,6 +1102,9 @@ fn control_model(
             },
             enabled,
         }),
+        Rendered::Task { task, label } => ControlModel::Task(capabilities::task_control(
+            module, task, label, inputs, enabled,
+        )),
         // The library is host data beside the recipe; the module declares only where it goes and
         // which of its actions a row submits.
         Rendered::Presets { action } => {
@@ -1300,6 +1329,10 @@ fn value_model(
         }),
         ParameterKind::Curve { .. } => ControlModel::Unsupported(format!(
             "curve parameter {parameter} of action {action} needs a curve control"
+        )),
+        // An artifact is published by a task and committed with its result, never typed.
+        ParameterKind::Artifact => ControlModel::Unsupported(format!(
+            "artifact parameter {parameter} of action {action} is filled by a task, not a control"
         )),
         ParameterKind::String { .. } => ControlModel::Unsupported(format!(
             "string parameter {parameter} of action {action} needs a text control"
@@ -1804,6 +1837,11 @@ pub(crate) enum Rendered<'a> {
     Picker {
         label: &'a str,
     },
+    /// One of the declaring module's worker tasks.
+    Task {
+        task: &'a str,
+        label: &'a str,
+    },
     /// The host's preset library, whose rows submit this action.
     Presets {
         action: &'a str,
@@ -1897,6 +1935,7 @@ pub(crate) fn classify(control: &Control) -> Rendered<'_> {
             icon: icon.as_deref(),
         },
         Control::Picker { label } => Rendered::Picker { label },
+        Control::Task { task, label } => Rendered::Task { task, label },
         Control::Presets { action } => Rendered::Presets { action },
         // A kind added to the descriptor later is reported, never dropped.
         #[allow(unreachable_patterns)]

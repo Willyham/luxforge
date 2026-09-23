@@ -149,6 +149,7 @@ impl RawPayload {
             effect_id: RAW_EFFECT.into(),
             effect_format: EFFECT_FORMAT,
             payload: serde_json::to_value(self).expect("validated RAW payload serializes"),
+            artifacts: Vec::new(),
         }
     }
 
@@ -270,6 +271,7 @@ impl RawModule {
                     format: EFFECT_FORMAT,
                     stage: EffectStage::Source,
                     order: 0,
+                    artifacts: false,
                 }],
                 actions: vec![
                     action(
@@ -393,6 +395,7 @@ impl RawModule {
                 collapsed: false,
                 layout: crate::ModuleLayout::Stacked,
                 availability: Availability::Available,
+                ..ModuleDescriptor::default()
             },
         }
     }
@@ -521,6 +524,7 @@ impl ToolModule for RawModule {
             effect_id: effect_id.into(),
             effect_format: format,
             payload: value.clone(),
+            artifacts: Vec::new(),
         })
         .map(|_| ())
     }
@@ -530,6 +534,7 @@ impl ToolModule for RawModule {
             effect_id: effect_id.into(),
             effect_format: format,
             payload: value.clone(),
+            artifacts: Vec::new(),
         })?;
         Ok(format!(
             "Exposure {:+.2} EV · {} WB",
@@ -557,6 +562,7 @@ impl ToolModule for RawModule {
             effect_id: effect_id.into(),
             effect_format: format,
             payload: value.clone(),
+            artifacts: Vec::new(),
         })?;
         let [kelvin, tint] = payload.white_balance_controls();
         Ok(Map::from_iter([

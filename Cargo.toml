@@ -20,10 +20,20 @@ rusqlite = { version = "=0.40.2", features = ["bundled"] }
 # Parses Lightroom XMP presets. Already in the lockfile through the Iced text stack, pinned to that
 # version so the importer adds no package.
 roxmltree = "=0.20.0"
+# The module transport's TLS: the `ring` provider only (no aws-lc-rs or CMake), TLS 1.2 and 1.3,
+# and the operating system's own certificate verifier for platform trust.
+rustls = { version = "=0.23.45", default-features = false, features = ["ring", "std", "tls12"] }
+rustls-platform-verifier = "=0.7.0"
+# The macOS Keychain for module secrets. Only the keychain item APIs are used, so no TLS feature is
+# asked for.
+security-framework = { version = "=3.7.0", default-features = false }
 serde = { version = "=1.0.229", features = ["derive"] }
 serde_json = "=1.0.149"
 sha2 = "=0.10.9"
+url = "=2.5.8"
 uuid = { version = "=1.26.1", features = ["v4"] }
+# Zeroes a module secret's buffer when the value is dropped.
+zeroize = "=1.9.0"
 # The exact `wgpu` Iced 0.14 resolves to, for the photo surface's own shader primitive. Iced 0.14
 # does not re-export it (`iced::widget::renderer` is hidden), so it is named here and pinned to the
 # version already in the lockfile; Cargo unifies it with Iced's own, so there is one `wgpu` in the

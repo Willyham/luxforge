@@ -1258,6 +1258,44 @@ pub fn sample(
     })
 }
 
+/// The centres of the cells of a `side` × `side` grid over a `width` × `height` stage, row by row
+/// from the top-left. Along an axis of `extent` pixels the centre of cell `i` is
+/// `floor((2i + 1) · extent / (2 · side))`, which lies inside every non-empty stage.
+pub(crate) fn grid_centres(side: u32, width: u32, height: u32) -> Vec<(u32, u32)> {
+    let centre = |index: u32, extent: u32| {
+        ((2 * u64::from(index) + 1) * u64::from(extent) / (2 * u64::from(side.max(1)))) as u32
+    };
+    (0..side)
+        .flat_map(|row| (0..side).map(move |column| (column, row)))
+        .map(|(column, row)| (centre(column, width), centre(row, height)))
+        .collect()
+}
+
+/// Point samples of a recipe's output stage at the centres of a `side` × `side` grid, row by row
+/// from the top-left. One compiled evaluation answers every point, so the cost is
+/// `O(side² × layers)` — a point through a spatial layer evaluates its tile, as any sample does —
+/// and no frame is allocated; each sample is the byte the render holds there. `checkpoint` is asked
+/// before each point, so a caller can stop between them.
+pub(crate) fn sample_grid(
+    registry: &ModuleRegistry,
+    source: &SourceImage,
+    recipe: &Recipe,
+    side: u32,
+    checkpoint: &dyn Fn() -> Result<(), Error>,
+) -> Result<Vec<[u8; 4]>, Error> {
+    let evaluation = Evaluation::new(registry, source, recipe)?;
+    let stage = evaluation.stage();
+    grid_centres(side, stage.width, stage.height)
+        .into_iter()
+        .map(|(x, y)| {
+            checkpoint()?;
+            evaluation.pixel(x, y)?.ok_or_else(|| {
+                Error::new(ErrorKind::Internal, "a grid centre lies outside the stage")
+            })
+        })
+        .collect()
+}
+
 /// Map one pixel of a recipe's output stage back to the content-stage pixel it shows: the source
 /// after EXIF orientation, the stage the first layer receives. A point outside the output stage is a
 /// validation error naming that stage. Cost is linear in the layer count and no frame is allocated,
@@ -1523,6 +1561,7 @@ mod tests {
                 effect_id: crate::BASIC_EFFECT.into(),
                 effect_format: EFFECT_FORMAT,
                 payload: json!({"exposure": 0.7, "contrast": 30.0, "vibrance": 40.0}),
+                artifacts: Vec::new(),
             },
             Layer::crop(rect.normalized(&stage)),
         ];
@@ -1738,6 +1777,7 @@ mod tests {
                         format: EFFECT_FORMAT,
                         stage: EffectStage::Geometry,
                         order: 0,
+                        artifacts: false,
                     })
                     .collect(),
                 actions: Vec::new(),
@@ -1749,6 +1789,7 @@ mod tests {
                 collapsed: false,
                 layout: crate::ModuleLayout::Stacked,
                 availability: Availability::Available,
+                ..ModuleDescriptor::default()
             }))
         }
     }
@@ -1841,6 +1882,7 @@ mod tests {
             effect_id: TEST_CROP_EFFECT.into(),
             effect_format: EFFECT_FORMAT,
             payload: serde_json::to_value(crop).unwrap(),
+            artifacts: Vec::new(),
         }
     }
 
@@ -1850,6 +1892,7 @@ mod tests {
             effect_id: TEST_OFFSET_EFFECT.into(),
             effect_format: EFFECT_FORMAT,
             payload: json!({"x": x, "y": y, "width": width, "height": height}),
+            artifacts: Vec::new(),
         }
     }
 
@@ -1859,6 +1902,7 @@ mod tests {
             effect_id: TEST_SCALE_EFFECT.into(),
             effect_format: EFFECT_FORMAT,
             payload: json!({"scale": scale}),
+            artifacts: Vec::new(),
         }
     }
 
@@ -2852,6 +2896,7 @@ mod tests {
                     format: EFFECT_FORMAT,
                     stage: EffectStage::Color,
                     order: 0,
+                    artifacts: false,
                 }],
                 actions: Vec::new(),
                 queries: Vec::new(),
@@ -2862,6 +2907,7 @@ mod tests {
                 collapsed: false,
                 layout: crate::ModuleLayout::Stacked,
                 availability: Availability::Available,
+                ..ModuleDescriptor::default()
             }))
         }
     }
@@ -2918,6 +2964,7 @@ mod tests {
             effect_id: TEST_COLOR_EFFECT.into(),
             effect_format: EFFECT_FORMAT,
             payload,
+            artifacts: Vec::new(),
         }
     }
 
@@ -3582,6 +3629,7 @@ mod tests {
                     effect_id: crate::BASIC_EFFECT.into(),
                     effect_format: EFFECT_FORMAT,
                     payload: json!({"exposure": 0.5, "contrast": 20.0, "vibrance": 30.0}),
+                    artifacts: Vec::new(),
                 },
                 Layer::crop(fitted_crop(height, width, 7.0, [0.05, 0.05, 0.9, 0.9])),
             ],

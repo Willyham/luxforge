@@ -1604,12 +1604,14 @@ pub fn run(root: &Path, out: &Path) -> Result<Value> {
                     effect_id: BASIC_EFFECT.into(),
                     effect_format: EFFECT_FORMAT,
                     payload: json!({"exposure": 1.0}),
+                    artifacts: Vec::new(),
                 },
                 Layer {
                     id: lightwell_core::LayerId::new(),
                     effect_id: BASIC_EFFECT.into(),
                     effect_format: EFFECT_FORMAT,
                     payload: json!({"exposure": -1.0}),
+                    artifacts: Vec::new(),
                 },
             ],
         };
@@ -1629,6 +1631,7 @@ pub fn run(root: &Path, out: &Path) -> Result<Value> {
                 effect_id: BASIC_EFFECT.into(),
                 effect_format: 2,
                 payload: json!({"exposure": 1.0}),
+                artifacts: Vec::new(),
             }],
         };
         let format_error = render(&source, &future_format)

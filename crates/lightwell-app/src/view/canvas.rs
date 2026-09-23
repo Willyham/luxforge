@@ -8,7 +8,7 @@
 use crate::{
     app::{
         crop::SURFACE_ID,
-        message::{CropMessage, Message},
+        message::{CapabilityMessage, CropMessage, Message},
     },
     crop_canvas::{CropCanvas, Mode, Part, View},
     state::canvas::{
@@ -178,6 +178,12 @@ fn notice_view(notice: &Notice) -> Element<'_, Message> {
                     NoticeAction::DiscardSliderDraft => Message::SliderDraftCancel,
                     NoticeAction::ReapplySliderDraft => Message::SliderDraftReapply,
                     NoticeAction::ReturnCurrent => Message::ReturnCurrent,
+                    NoticeAction::AllowConsent => {
+                        Message::Capability(CapabilityMessage::Consent(true))
+                    }
+                    NoticeAction::DenyConsent => {
+                        Message::Capability(CapabilityMessage::Consent(false))
+                    }
                 },
             )
         })

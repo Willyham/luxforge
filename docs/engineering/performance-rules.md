@@ -53,6 +53,10 @@ Accepted or pending decisions. Do not "fix" them without the referenced scope.
 | A point sample through a spatial layer evaluates one tile plus its halo, and one 1/16-per-side reduction of the stage on an estimate cache miss | Declared exception to rule 4, recorded in the [presence design](../design/presence-mixer-vignette.md#presence-the-spatial-primitive) | Refusing such samples would break readout and UI/API parity; any fix keeps the sampled byte equal to the rendered byte |
 | The RAW linear path materializes one f32 frame per spatial operation, for a point sample through that operation as well as for a render | Accepted: that path pulls single pixels and a neighbourhood cannot be pulled one pixel at a time, and one frame per operation is what makes `sample_linear` equal `render_linear` byte for byte | It is bounded by the 512 MiB frame limit; a bounded per-tile alternative for the sample path must keep that equality and must not reintroduce a full-frame float buffer on the byte path |
 
+| A module task that publishes a derived artifact spends about 9 ms syncing it and a few more committing its row (measured p50 15 ms for the whole proof task on the M4, `capability_timing`) | Accepted: an artifact must be durable before a commit can reference it | Durability stays; batching several artifacts of one task into one sync is the only allowed saving |
+| Cancelling a task or download stalled inside a network read waits for the transport's 100 ms read slice (measured p50 84 ms) | Accepted: the slice is what lets a blocking socket notice a cancel without a poll loop | A shorter slice costs wakeups on every in-flight request; change it only with a measurement |
+| Setting or clearing a module secret calls the macOS Keychain on the owner thread, which can wait while the OS shows its own prompt (a rebuilt executable reading an item an earlier build stored) | Accepted: rare, explicit settings actions | Moving them to a worker needs an asynchronous settings answer in every client |
+
 ## Anti-patterns already removed
 
 | Seen in this repository | Replacement |

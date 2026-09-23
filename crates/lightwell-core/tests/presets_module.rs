@@ -605,6 +605,7 @@ impl Composer {
             collapsed: false,
             layout: lightwell_core::ModuleLayout::Stacked,
             availability: Availability::Available,
+            ..ModuleDescriptor::default()
         }))
     }
 

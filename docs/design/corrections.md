@@ -1,6 +1,6 @@
 # Corrections: Clone, Heal and AI Remove
 
-Status: **proposal for owner review; planning only**. The owner has requested a corrections module with Clone and Heal as the free, offline baseline and AI Remove as a more ambitious option. This proposal revisits the roadmap's earlier exclusion of generative editing, but that exclusion remains in force until the owner accepts the new scope. The shared [module capabilities proposal](module-capabilities.md) supplies settings, permissions, resources, jobs and durable artifacts; the existing [module contract](modules-and-api.md) supplies discoverable actions and controls.
+Status: **proposal for owner review; planning only**. The owner has requested a corrections module with Clone and Heal as the free, offline baseline and AI Remove as a more ambitious option. This proposal revisits the roadmap's earlier exclusion of generative editing, but that exclusion remains in force until the owner accepts the new scope. The implemented [module capabilities](module-capabilities.md) supply settings, permissions, resources, jobs and durable artifacts; the existing [module contract](modules-and-api.md) supplies discoverable actions and controls.
 
 ## User result and staged delivery
 

@@ -204,6 +204,7 @@ pub(crate) fn crop_descriptor() -> ModuleDescriptor {
             format: 1,
             stage: EffectStage::Geometry,
             order: 0,
+            artifacts: false,
         }],
         actions: vec![
             ActionDescriptor {
@@ -264,6 +265,7 @@ pub(crate) fn crop_descriptor() -> ModuleDescriptor {
         collapsed: false,
         layout: lightwell_core::ModuleLayout::Stacked,
         availability: Availability::Available,
+        ..ModuleDescriptor::default()
     }
 }
 
@@ -274,6 +276,7 @@ pub(crate) fn crop_layer(payload: CropPayload) -> lightwell_core::Layer {
         effect_id: CROP_EFFECT.into(),
         effect_format: 1,
         payload: serde_json::to_value(payload).expect("a serializable payload"),
+        artifacts: Vec::new(),
     }
 }
 
@@ -348,6 +351,7 @@ pub(crate) fn refresh_for(
             .expect("a test analysis identity"),
             analyse: false,
             proxy: None,
+            artifacts: Vec::new(),
         },
         session: ClientSession::default(),
         sequence: 7,
@@ -405,6 +409,7 @@ pub(crate) fn raw_refresh(asset: &AssetId, current: &HistoryEntry) -> Refresh {
                 .values(&layer.effect_id, layer.effect_format, &layer.payload)
                 .expect("RAW values"),
             available: true,
+            artifacts: layer.artifacts.clone(),
         })
         .collect();
     refresh
@@ -430,21 +435,18 @@ pub(crate) fn opened(
     (editor, catalog, asset, entry_id)
 }
 
-/// An editor with an evidence run attached and a script queued, so steps can be driven without a
-/// window. Nothing is captured here: the capture itself needs a real renderer.
-pub(crate) fn scripted(steps: &str) -> (Editor, PathBuf, AssetId, PathBuf) {
-    let script = parse_script(steps).expect("a valid script");
-    let (mut editor, catalog, asset, _) = opened(Vec::new(), 4);
-    let dir = std::env::temp_dir().join(format!(
-        "lightwell-script-{}-{}",
-        std::process::id(),
-        REQUEST_NUMBER.fetch_add(1, Ordering::Relaxed)
-    ));
-    editor.evidence = Some(Evidence {
-        dir: dir.clone(),
+/// An evidence run with a script queued and one open frame already captured, for an editor built
+/// any way a test likes. Nothing is captured here: the capture itself needs a real renderer.
+pub(crate) fn scripted_evidence(steps: &str) -> Evidence {
+    Evidence {
+        dir: std::env::temp_dir().join(format!(
+            "lightwell-script-{}-{}",
+            std::process::id(),
+            REQUEST_NUMBER.fetch_add(1, Ordering::Relaxed)
+        )),
         queue: VecDeque::new(),
         opens: 1,
-        script,
+        script: parse_script(steps).expect("a valid script"),
         step: 0,
         awaiting: None,
         current: None,
@@ -456,9 +458,19 @@ pub(crate) fn scripted(steps: &str) -> (Editor, PathBuf, AssetId, PathBuf) {
         paced_slider: None,
         second_click: None,
         tools_scroll: None,
+        capability_wait: None,
         wait_until: None,
         sync: crate::app::evidence::CaptureSync::default(),
-    });
+    }
+}
+
+/// An editor with an evidence run attached and a script queued, so steps can be driven without a
+/// window. Nothing is captured here: the capture itself needs a real renderer.
+pub(crate) fn scripted(steps: &str) -> (Editor, PathBuf, AssetId, PathBuf) {
+    let evidence = scripted_evidence(steps);
+    let (mut editor, catalog, asset, _) = opened(Vec::new(), 4);
+    let dir = evidence.dir.clone();
+    editor.evidence = Some(evidence);
     editor.activity.requested = 1;
     (editor, catalog, asset, dir)
 }

@@ -1,6 +1,9 @@
 //! The Iced application: the editor's own state, the update function and the effects it starts.
 //! Every change to authoritative state goes through an owner call; the view models are re-derived
 //! after each message and the view renders those alone.
+pub(crate) mod capabilities;
+#[cfg(test)]
+mod capabilities_tests;
 pub(crate) mod controls;
 #[cfg(test)]
 mod controls_tests;
@@ -30,6 +33,7 @@ use crate::{
     paths::Paths,
     state::{
         self, Workspace,
+        capabilities::CapabilityStore,
         histogram::{Analysis, Readout},
         presets::{PresetForm, PresetLibrary},
         tools,
@@ -42,10 +46,11 @@ use fields::{Fields, action_params, number_text, submit_preset};
 use iced::{Element, Subscription, Task, widget::operation};
 use iced_runtime::image as image_memory;
 use lightwell_core::{
-    ActionInput, ActionPlan, Availability, ClientId, ClientSession, CropStage, EditorState, Error,
-    ErrorKind, HistoryPage, HistorySelection, LocalServer, ModuleDescriptor, ModuleRegistry,
-    OwnerHandle, POINTER_MODE, PreviewPhase, PreviewQueue, Processing, ProxyBounds,
-    RecipeDescription, StageContext, ToolModule, Version, Zoom,
+    ActionInput, ActionPlan, Availability, ClientAuthority, ClientId, ClientSession, CropStage,
+    EditorState, Error, ErrorKind, HistoryPage, HistorySelection, HostConfig, LocalServer,
+    ModuleDescriptor, ModuleRegistry, OwnerHandle, POINTER_MODE, PreviewPhase, PreviewQueue,
+    Processing, ProxyBounds, RecipeDescription, StageContext, ToolModule, Version, Zoom,
+    capabilities::secrets::{MemorySecretStore, SecretStore, platform_secret_store},
 };
 use message::{ClipEndpoint, CropMessage, MenuTarget, Message, PaletteAction, Panel};
 use overlay::{OverlayQueue, OverlayRequest};
@@ -159,8 +164,14 @@ impl ToolModule for Disabled {
     }
 }
 
-/// The providers this run serves, with any `--disable-module` built-in wrapped as unavailable.
-fn registry(disabled: &[String], developer: bool) -> Result<ModuleRegistry, String> {
+/// The providers this run serves, with any `--disable-module` built-in wrapped as unavailable. In
+/// developer mode the controls proof joins them, and the capability proof too when a proof endpoint
+/// is named.
+fn registry(
+    disabled: &[String],
+    developer: bool,
+    proof_endpoint: Option<&str>,
+) -> Result<ModuleRegistry, String> {
     let mut registry = ModuleRegistry::new();
     let mut unknown: Vec<&str> = disabled.iter().map(String::as_str).collect();
     let mut modules = vec![
@@ -176,6 +187,9 @@ fn registry(disabled: &[String], developer: bool) -> Result<ModuleRegistry, Stri
     ];
     if developer {
         modules.push(Arc::new(lightwell_core::ControlsModule::new()));
+        if let Some(base) = proof_endpoint {
+            modules.push(Arc::new(lightwell_core::CapabilitiesProofModule::new(base)));
+        }
     }
     for module in modules {
         let id = module.descriptor().id.clone();
@@ -195,6 +209,29 @@ fn registry(disabled: &[String], developer: bool) -> Result<ModuleRegistry, Stri
     }
 }
 
+/// Where the capability host keeps module settings, grants and resources, and which secret store
+/// it uses. An evidence run keeps all of it inside its evidence directory with an in-memory store,
+/// so it never touches the person's configuration or login keychain. Nothing is created here: the
+/// host creates a directory on its first write.
+fn host_config(config: &Config) -> HostConfig {
+    let (paths, secrets): (_, Arc<dyn SecretStore>) = match &config.evidence {
+        Some(evidence) => (
+            Paths::resolve(Some(&evidence.join("host"))),
+            Arc::new(MemorySecretStore::new()),
+        ),
+        None => (
+            Paths::resolve(config.data_root.as_ref()),
+            platform_secret_store(),
+        ),
+    };
+    HostConfig {
+        config_dir: paths.as_ref().map(Paths::module_config),
+        resource_dir: paths.as_ref().map(Paths::module_resources),
+        secrets,
+        ..HostConfig::unconfigured()
+    }
+}
+
 pub(crate) fn run(config: Config, size: (f32, f32)) -> Result<(), String> {
     // Evidence runs never touch a real catalog: theirs lives inside the new evidence directory.
     let catalog = match (&config.catalog, &config.evidence) {
@@ -205,9 +242,13 @@ pub(crate) fn run(config: Config, size: (f32, f32)) -> Result<(), String> {
             .config
             .join("catalog.sqlite"),
     };
-    let registry = Arc::new(registry(&config.disabled, config.developer)?);
-    let (owner, join) =
-        OwnerHandle::start_with(&catalog, registry).map_err(|error| match error.kind {
+    let registry = Arc::new(registry(
+        &config.disabled,
+        config.developer,
+        config.proof_endpoint.as_deref(),
+    )?);
+    let (owner, join) = OwnerHandle::start_with_host(&catalog, registry, host_config(&config))
+        .map_err(|error| match error.kind {
             ErrorKind::Conflict => format!(
                 "another Lightwell instance owns the catalog {}; close it or pass --catalog",
                 catalog.display()
@@ -519,6 +560,14 @@ pub(crate) struct Editor {
     /// session already reports it, so the mode strip shows Crop selected during every draft
     /// however it was opened, and pointer again however it ended.
     pub(crate) mode_sync: Option<String>,
+    /// What the desktop knows about every capability-declaring module: its last settings and
+    /// status reads, the jobs it follows, task runs and the open consent notice. The owner holds
+    /// the authoritative state; this is what was last read back.
+    pub(crate) capabilities: CapabilityStore,
+    /// Every capability operation the update function started, in order, so a test can run
+    /// exactly those through the owner and hand the answers back.
+    #[cfg(test)]
+    pub(crate) capability_started: Vec<(String, state::capabilities::Operation)>,
     /// The preset library as `preset.list` last answered it.
     pub(crate) presets: PresetLibrary,
     /// The Presets section's create form.
@@ -536,7 +585,9 @@ impl Editor {
             mut config,
             window,
         } = boot;
-        let client = owner.register();
+        // The desktop's own client may grant module permissions: it does so only after the person
+        // presses Allow in its consent notice.
+        let client = owner.register_with(ClientAuthority::Permissions);
         let script = std::mem::take(&mut config.script);
         let evidence = config.evidence.take().map(|dir| {
             let queue = std::mem::take(&mut config.files);
@@ -556,6 +607,7 @@ impl Editor {
                 paced_slider: None,
                 second_click: None,
                 tools_scroll: None,
+                capability_wait: None,
                 wait_until: None,
                 sync: evidence::CaptureSync::default(),
             }
@@ -678,6 +730,9 @@ impl Editor {
             crop_option: false,
             crop_space: false,
             mode_sync: None,
+            capabilities: CapabilityStore::default(),
+            #[cfg(test)]
+            capability_started: Vec::new(),
             presets: PresetLibrary::default(),
             preset_form: PresetForm::default(),
             workspace: Workspace::default(),
@@ -814,7 +869,7 @@ impl Editor {
                 entry.as_ref(),
             );
         }
-        json!({"run_id":self.run_id,"mode":if self.evidence.is_some() {"evidence"} else {"editor"},"selection":self.session.preview.selection,"orientation":self.activity.orientation,"phase":self.activity.phase,"requested_generation":self.activity.requested,"displayed_generation":self.activity.displayed,"displayed_draft_revision":self.displayed_draft_revision,"source_dimensions":self.activity.source_dimensions,"preview_dimensions":self.activity.preview_dimensions,"backend":self.activity.backend,"status":self.status,"error_code":self.activity.error_code,"modules":module_summary(&self.modules),"controls":self.fields.summary(),"control_ui":{"group_expanded":self.controls_ui.group_expanded,"selected_tab":self.controls_ui.selected_tab,"curve_channels":curve_channels,"curve_points":curve_points,"picker_open":picker_open,"curves":curves,"pickers":pickers},"gallery":gallery,"tools_scroll":tools_scroll,"crop":self.crop_summary(),"draft":self.draft_summary(),"stack":self.stack_summary(),"workspace":serde_json::to_value(&self.session.workspace).unwrap_or(Value::Null),"developer":self.developer,"expanded":self.workspace.expanded(),"active":self.workspace.active(),"pickers":self.workspace.pickers(),"notices":self.notice_titles(),"compare":self.compare_return.is_some(),"render_error":self.render_error_summary(),"palette":{"open":self.palette_open,"query":self.palette_query},"presets":self.presets_summary(),"histogram":self.histogram_summary(),"readout":self.readout_summary(),"status_bar":self.status_bar_summary(),"proxy":self.proxy_summary(),"approximate_white_balance":self.presented_approximate_white_balance,"surface":self.surface_summary(),"scratch":Self::scratch_summary()})
+        json!({"run_id":self.run_id,"mode":if self.evidence.is_some() {"evidence"} else {"editor"},"selection":self.session.preview.selection,"orientation":self.activity.orientation,"phase":self.activity.phase,"requested_generation":self.activity.requested,"displayed_generation":self.activity.displayed,"displayed_draft_revision":self.displayed_draft_revision,"source_dimensions":self.activity.source_dimensions,"preview_dimensions":self.activity.preview_dimensions,"backend":self.activity.backend,"status":self.status,"error_code":self.activity.error_code,"modules":module_summary(&self.modules),"controls":self.fields.summary(),"control_ui":{"group_expanded":self.controls_ui.group_expanded,"selected_tab":self.controls_ui.selected_tab,"curve_channels":curve_channels,"curve_points":curve_points,"picker_open":picker_open,"curves":curves,"pickers":pickers},"gallery":gallery,"tools_scroll":tools_scroll,"crop":self.crop_summary(),"draft":self.draft_summary(),"stack":self.stack_summary(),"workspace":serde_json::to_value(&self.session.workspace).unwrap_or(Value::Null),"developer":self.developer,"expanded":self.workspace.expanded(),"pickers":self.workspace.pickers(),"notices":self.notice_titles(),"compare":self.compare_return.is_some(),"render_error":self.render_error_summary(),"palette":{"open":self.palette_open,"query":self.palette_query},"presets":self.presets_summary(),"histogram":self.histogram_summary(),"readout":self.readout_summary(),"status_bar":self.status_bar_summary(),"proxy":self.proxy_summary(),"approximate_white_balance":self.presented_approximate_white_balance,"surface":self.surface_summary(),"active":self.workspace.active(),"scratch":Self::scratch_summary(),"capabilities":state::capabilities::summary(&self.capabilities,&self.modules,self.state.as_ref())})
     }
 
     /// The Presets section as the frame drew it: its rows, the create form and whether the section
@@ -988,14 +1043,14 @@ impl Editor {
                     .layers
                     .iter()
                     .map(|layer| {
-                        json!({"id":layer.id.as_str(),"effect":layer.effect_id,"payload":layer.payload})
+                        json!({"id":layer.id.as_str(),"effect":layer.effect_id,"payload":layer.payload,"artifacts":layer.artifacts})
                     })
                     .collect();
                 let displayed = self.rendered_entry.as_ref().map(|entry| json!({
                     "entry": entry.id.as_str(),
                     "snapshot": entry.snapshot.id.as_str(),
                     "dimensions": self.dimensions,
-                    "layers": entry.snapshot.recipe.layers.iter().map(|layer| json!({"id":layer.id.as_str(),"effect":layer.effect_id,"payload":layer.payload})).collect::<Vec<_>>(),
+                    "layers": entry.snapshot.recipe.layers.iter().map(|layer| json!({"id":layer.id.as_str(),"effect":layer.effect_id,"payload":layer.payload,"artifacts":layer.artifacts})).collect::<Vec<_>>(),
                 }));
                 json!({"revision":state.revision,"entry":state.current_entry.id.as_str(),"label":state.current_entry.label,"layers":layers,"displayed":displayed})
             }
@@ -1225,6 +1280,12 @@ impl Editor {
         self.refresh_overlay();
         let rederive_started = Instant::now();
         self.rederive();
+        // A capability section is read for the first time once it is on screen: its first read is
+        // what the section then shows, so the screen is derived again to show it loading.
+        let loads = self.request_capability_loads();
+        if loads.is_some() {
+            self.rederive();
+        }
         let mut timing = self.loop_timing.get();
         timing.last_rederive_ms = rederive_started.elapsed().as_secs_f64() * 1000.0;
         self.loop_timing.set(timing);
@@ -1236,7 +1297,7 @@ impl Editor {
         } else {
             Task::none()
         };
-        Task::batch([task, zoomed, refit, woken])
+        Task::batch([task, zoomed, refit, woken, loads.unwrap_or_else(Task::none)])
     }
 
     /// A newer frame has been requested than the one the histogram describes, so the plotted counts
@@ -2096,6 +2157,7 @@ impl Editor {
             palette_open: self.palette_open,
             palette_query: &self.palette_query,
             palette_selected: self.palette_selected,
+            capabilities: &self.capabilities,
             presets: &self.presets,
             preset_form: &self.preset_form,
         };
@@ -2475,7 +2537,8 @@ impl Editor {
                 match result {
                     Ok(sync) => {
                         // Another client's preset change reaches the library in the same poll that
-                        // brings its asset changes, and costs no asset refresh of its own.
+                        // brings its asset changes, and costs no asset refresh of its own; a
+                        // capability event re-reads the modules and renders nothing.
                         if let Some((presets, sequence)) = sync.presets {
                             self.adopt_presets(presets, sequence);
                         }
@@ -2483,6 +2546,9 @@ impl Editor {
                             self.accept(*refresh);
                         }
                         self.api_sequence = self.api_sequence.max(sync.sequence);
+                        if sync.capabilities {
+                            return self.reload_capabilities();
+                        }
                     }
                     Err(error) => self.status = format!("Live refresh failed: {error}"),
                 }
@@ -2808,6 +2874,7 @@ impl Editor {
             }
             Message::Resized(width, height) => self.window = (width, height),
             Message::Crop(message) => return self.crop_update(message),
+            Message::Capability(message) => return self.capability_update(message),
             Message::Preset(message) => return self.preset_update(message),
             Message::HostAnswered(result) => self.host_answered(result.map(|answer| *answer)),
             Message::ModulesLoaded(result) => {
@@ -3217,6 +3284,14 @@ impl Editor {
                     return Task::none();
                 };
                 self.status = format!("Copied the edit.{action} request");
+                // A copied request passes through the same redaction as every recorded one.
+                let request = json!({
+                    "method": request["method"],
+                    "params": lightwell_core::redact_params(
+                        request["method"].as_str().unwrap_or_default(),
+                        &request["params"],
+                    ),
+                });
                 return iced::clipboard::write(
                     serde_json::to_string_pretty(&request).unwrap_or_default(),
                 );
@@ -3759,6 +3834,9 @@ impl Editor {
         self.recipe_failed = false;
         let revision = refresh.state.revision;
         let entry = refresh.state.current_entry.id.clone();
+        if self.state.as_ref().map(|state| &state.asset.id) != Some(&refresh.state.asset.id) {
+            self.capabilities_asset_changed(&refresh.state.asset.id);
+        }
         self.state = Some(refresh.state);
         self.show_entry(refresh.job.entry.id.clone());
         self.requested_render_entry = Some(refresh.job.entry.clone());
@@ -4079,6 +4157,9 @@ impl Editor {
                 );
             }
         }
+        // Capability jobs are read while one the desktop follows is queued or running, and never
+        // otherwise; the interval is justified where it is declared.
+        subscriptions.extend(self.capability_poll_subscription());
         Subscription::batch(subscriptions)
     }
 }
@@ -5313,6 +5394,7 @@ mod tests {
                     summary: "Test".into(),
                     values: values.as_object().cloned().unwrap_or_default(),
                     available: true,
+                    artifacts: Vec::new(),
                 })
                 .collect();
             let _ = editor.update(Message::Refreshed(Ok(Box::new(refresh))));
@@ -5892,6 +5974,7 @@ mod tests {
                     .cloned()
                     .unwrap_or_default(),
                 available: true,
+                artifacts: Vec::new(),
             }];
             Box::new(refresh)
         };
@@ -7028,7 +7111,7 @@ mod tests {
 
     #[test]
     fn desktop_registry_contains_every_core_builtin_including_raw() {
-        let desktop = registry(&[], false).unwrap();
+        let desktop = registry(&[], false, None).unwrap();
         let core = ModuleRegistry::builtin();
         let ids = |registry: &ModuleRegistry| {
             registry
@@ -7039,11 +7122,12 @@ mod tests {
         };
         assert_eq!(ids(&desktop), ids(&core));
         assert!(!ids(&desktop).contains(&"lightwell.controls".to_owned()));
-        let developer = registry(&[], true).unwrap();
+        let developer = registry(&[], true, None).unwrap();
         assert!(ids(&developer).contains(&"lightwell.controls".to_owned()));
-        assert!(registry(&["lightwell.controls".into()], false).is_err());
+        assert!(!ids(&developer).contains(&"lightwell.capabilities".to_owned()));
+        assert!(registry(&["lightwell.controls".into()], false, None).is_err());
         assert!(
-            !registry(&["lightwell.controls".into()], true)
+            !registry(&["lightwell.controls".into()], true, None)
                 .unwrap()
                 .descriptors()
                 .iter()
@@ -7051,7 +7135,7 @@ mod tests {
                 .unwrap()
                 .is_available()
         );
-        let disabled = registry(&["lightwell.raw".into()], false).unwrap();
+        let disabled = registry(&["lightwell.raw".into()], false, None).unwrap();
         assert!(
             !disabled
                 .descriptors()
@@ -7060,6 +7144,24 @@ mod tests {
                 .unwrap()
                 .is_available()
         );
+        // The capability proof joins a developer run that names a proof endpoint, and no other.
+        let proof = registry(&[], true, Some("http://127.0.0.1:9")).unwrap();
+        let proof_module = proof
+            .descriptors()
+            .into_iter()
+            .find(|module| module.id == "lightwell.capabilities")
+            .expect("the capability proof is registered");
+        assert!(proof_module.developer);
+        assert_eq!(
+            proof_module.resources[0].url,
+            "http://127.0.0.1:9/proof-palette.bin"
+        );
+        assert!(
+            !ids(&registry(&[], false, Some("http://127.0.0.1:9")).unwrap())
+                .contains(&"lightwell.capabilities".to_owned())
+        );
+        let refused = registry(&[], true, Some("http://example.com")).unwrap_err();
+        assert!(refused.contains("proof-palette"), "{refused}");
     }
 
     #[test]
@@ -7900,6 +8002,45 @@ mod tests {
     }
 
     #[test]
+    fn an_evidence_run_keeps_module_state_in_its_directory_and_memory() {
+        let evidence = std::env::temp_dir().join("lightwell-evidence-host-paths");
+        let host = host_config(&Config {
+            evidence: Some(evidence.clone()),
+            data_root: Some(std::env::temp_dir().join("lightwell-ignored-root")),
+            ..Config::default()
+        });
+        assert_eq!(
+            host.config_dir,
+            Some(evidence.join("host").join("config").join("modules"))
+        );
+        assert_eq!(
+            host.resource_dir,
+            Some(
+                evidence
+                    .join("host")
+                    .join("data")
+                    .join("modules")
+                    .join("resources")
+            )
+        );
+        assert_eq!(host.secrets.name(), "in-memory secret store");
+        let root = std::env::temp_dir().join("lightwell-data-root");
+        let host = host_config(&Config {
+            data_root: Some(root.clone()),
+            ..Config::default()
+        });
+        assert_eq!(host.config_dir, Some(root.join("config").join("modules")));
+        assert_eq!(
+            host.resource_dir,
+            Some(root.join("data").join("modules").join("resources"))
+        );
+        assert!(
+            !evidence.exists() && !root.exists(),
+            "choosing directories creates none"
+        );
+    }
+
+    #[test]
     fn failed_discovery_is_reported_and_never_blocks_evidence() {
         let (mut editor, catalog) = boot();
         let _ = editor.update(Message::ModulesLoaded(Err("protocol: gone".into())));
@@ -8103,6 +8244,7 @@ mod tests {
             analyse: false,
             proxy: None,
             entry,
+            artifacts: Vec::new(),
         }
     }
 
