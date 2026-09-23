@@ -276,6 +276,9 @@ pub(crate) struct ProxyFrame {
     pub(crate) built: bool,
     /// The frame approximates the exact render at display size: the stack holds a spatial layer.
     pub(crate) approximate: bool,
+    /// The frame approximates a drafted RAW white balance on planes developed at another one, as
+    /// the exact phase of the same job does.
+    pub(crate) approximate_white_balance: bool,
     /// The proxy phase's own worker time, so a zoom that hands this frame back to the surface
     /// reports how long this picture took rather than whatever was presented last.
     pub(crate) render_ms: f64,
@@ -359,6 +362,10 @@ pub(crate) struct Editor {
     /// still rendering does not, so the mask always describes the photograph on screen — a drafted
     /// one during a gesture exactly as much as a committed one.
     pub(crate) raster: Option<(u64, Arc<lightwell_core::Raster>)>,
+    /// The retained raster approximates a drafted RAW white balance: it is the full-size phase of
+    /// such a job, which carries no report. A clipping overlay derived from it says `approximate`,
+    /// and it replaces no report.
+    pub(crate) raster_approximate_white_balance: bool,
     /// The exact phase's own worker time for the generation it names, recorded when that phase is
     /// taken up, so a zoom that hands the retained exact raster to the surface reports that
     /// picture's render time. Keyed by generation like [`Self::raster`], and only read for the
@@ -380,6 +387,9 @@ pub(crate) struct Editor {
     pub(crate) presented_generation: u64,
     /// The texture on screen is the display proxy rather than the exact render.
     pub(crate) presented_proxy: bool,
+    /// The frame on screen approximates a drafted RAW white balance on planes developed at another
+    /// one. The histogram is never adopted from such a frame.
+    pub(crate) presented_approximate_white_balance: bool,
     /// The bounds each requested job was given, by generation, until its frame is presented. The
     /// bounds are decided when the job is requested, on this thread, so the frame reflects the
     /// window, the panels and the display scale of that moment rather than of the moment its
@@ -584,11 +594,13 @@ impl Editor {
             preview_queue: PreviewQueue::default(),
             preview_generation: 0,
             raster: None,
+            raster_approximate_white_balance: false,
             exact_render_ms: None,
             analysis: None,
             incoming: None,
             presented_generation: 0,
             presented_proxy: false,
+            presented_approximate_white_balance: false,
             pending_bounds: BTreeMap::new(),
             presented_bounds: None,
             refit_pending: false,
@@ -787,7 +799,7 @@ impl Editor {
                 entry.as_ref(),
             );
         }
-        json!({"run_id":self.run_id,"mode":if self.evidence.is_some() {"evidence"} else {"editor"},"selection":self.session.preview.selection,"orientation":self.activity.orientation,"phase":self.activity.phase,"requested_generation":self.activity.requested,"displayed_generation":self.activity.displayed,"displayed_draft_revision":self.displayed_draft_revision,"source_dimensions":self.activity.source_dimensions,"preview_dimensions":self.activity.preview_dimensions,"backend":self.activity.backend,"status":self.status,"error_code":self.activity.error_code,"modules":module_summary(&self.modules),"controls":self.fields.summary(),"control_ui":{"group_expanded":self.controls_ui.group_expanded,"selected_tab":self.controls_ui.selected_tab,"curve_channels":curve_channels,"curve_points":curve_points,"picker_open":picker_open,"curves":curves,"pickers":pickers},"gallery":gallery,"tools_scroll":tools_scroll,"crop":self.crop_summary(),"draft":self.draft_summary(),"stack":self.stack_summary(),"workspace":serde_json::to_value(&self.session.workspace).unwrap_or(Value::Null),"developer":self.developer,"expanded":self.workspace.expanded(),"pickers":self.workspace.pickers(),"notices":self.notice_titles(),"compare":self.compare_return.is_some(),"render_error":self.render_error_summary(),"palette":{"open":self.palette_open,"query":self.palette_query},"presets":self.presets_summary(),"histogram":self.histogram_summary(),"readout":self.readout_summary(),"status_bar":self.status_bar_summary(),"proxy":self.proxy_summary(),"surface":self.surface_summary(),"scratch":Self::scratch_summary()})
+        json!({"run_id":self.run_id,"mode":if self.evidence.is_some() {"evidence"} else {"editor"},"selection":self.session.preview.selection,"orientation":self.activity.orientation,"phase":self.activity.phase,"requested_generation":self.activity.requested,"displayed_generation":self.activity.displayed,"displayed_draft_revision":self.displayed_draft_revision,"source_dimensions":self.activity.source_dimensions,"preview_dimensions":self.activity.preview_dimensions,"backend":self.activity.backend,"status":self.status,"error_code":self.activity.error_code,"modules":module_summary(&self.modules),"controls":self.fields.summary(),"control_ui":{"group_expanded":self.controls_ui.group_expanded,"selected_tab":self.controls_ui.selected_tab,"curve_channels":curve_channels,"curve_points":curve_points,"picker_open":picker_open,"curves":curves,"pickers":pickers},"gallery":gallery,"tools_scroll":tools_scroll,"crop":self.crop_summary(),"draft":self.draft_summary(),"stack":self.stack_summary(),"workspace":serde_json::to_value(&self.session.workspace).unwrap_or(Value::Null),"developer":self.developer,"expanded":self.workspace.expanded(),"pickers":self.workspace.pickers(),"notices":self.notice_titles(),"compare":self.compare_return.is_some(),"render_error":self.render_error_summary(),"palette":{"open":self.palette_open,"query":self.palette_query},"presets":self.presets_summary(),"histogram":self.histogram_summary(),"readout":self.readout_summary(),"status_bar":self.status_bar_summary(),"proxy":self.proxy_summary(),"approximate_white_balance":self.presented_approximate_white_balance,"surface":self.surface_summary(),"scratch":Self::scratch_summary()})
     }
 
     /// The Presets section as the frame drew it: its rows, the create form and whether the section
@@ -867,14 +879,15 @@ impl Editor {
         }
     }
 
-    /// The photograph's surface as a captured frame reports it: the view it is drawn at, the raster
-    /// it holds and that raster's version, how many rasters the surface has written into its
-    /// texture and how many times the view has been built. Two frames with the same version and
-    /// the same write count prove nothing was written between them, however often the view was
-    /// rebuilt meanwhile.
+    /// The photograph's surface as a captured frame reports it: the view it is drawn at, the preview
+    /// generation whose raster it holds, that raster's size and version, how many rasters the
+    /// surface has written into its texture and how many times the view has been built. Two frames
+    /// with the same version and the same write count prove nothing was written between them,
+    /// however often the view was rebuilt meanwhile.
     fn surface_summary(&self) -> Value {
         json!({
             "view": serde_json::to_value(&self.session.preview.view).unwrap_or(Value::Null),
+            "generation": self.presented_generation,
             "raster": self.photo.as_ref().map(|photo| {
                 let (width, height) = photo.size();
                 json!([width, height])
@@ -924,7 +937,7 @@ impl Editor {
     /// and the renderer's figure for the picture on screen.
     fn status_bar_summary(&self) -> Value {
         let model = &self.workspace.status;
-        json!({"readout":model.readout,"render":model.render,"render_ms":self.activity.render.map(|time| time.ms),"render_proxy":self.activity.render.map(|time| time.proxy)})
+        json!({"readout":model.readout,"render":model.render,"render_ms":self.activity.render.map(|time| time.ms),"render_proxy":self.activity.render.map(|time| time.proxy),"render_approximate":self.activity.render.map(|time| time.approximate)})
     }
 
     /// The notices the captured frame drew, by title, so a frame's chrome is observable.
@@ -1253,6 +1266,7 @@ impl Editor {
         report: Option<lightwell_core::analysis::Report>,
         raster: lightwell_core::Raster,
         render_ms: f64,
+        approximate_white_balance: bool,
     ) -> Task<Message> {
         let dimensions = (identity.width, identity.height);
         // Recorded beside the retained raster, so a zoom to 100% that hands it to the surface
@@ -1276,19 +1290,34 @@ impl Editor {
                 // not arrive.
                 self.adopt_analysis(generation);
             }
-            None => {
-                self.incoming = None;
-                self.analysis = None;
-                self.raster = Some((generation, retained));
-            }
+            None => self.retain_unreduced(generation, retained, approximate_white_balance),
         }
         self.event(
             "preview_exact_adopted",
-            json!({"generation":generation,"dimensions":[dimensions.0,dimensions.1],"render_ms":render_ms}),
+            json!({"generation":generation,"dimensions":[dimensions.0,dimensions.1],"render_ms":render_ms,"approximate_white_balance":approximate_white_balance}),
         );
         self.release_held(generation);
         // The queue may hold its next result; nothing else would ask for it.
         Task::done(Message::Poll)
+    }
+
+    /// Retain an exact-phase raster that carries no report. It replaces the retained raster now,
+    /// so no overlay is derived from an older image. A frame with no reduction for an ordinary
+    /// reason clears the report too; a frame that approximates a drafted RAW white balance never
+    /// had one to give, so the last exact report stays plotted, marked updating, until an exact
+    /// frame's report replaces it: the histogram is never adopted from an approximate frame.
+    fn retain_unreduced(
+        &mut self,
+        generation: u64,
+        raster: Arc<lightwell_core::Raster>,
+        approximate_white_balance: bool,
+    ) {
+        self.incoming = None;
+        if !approximate_white_balance {
+            self.analysis = None;
+        }
+        self.raster = Some((generation, raster));
+        self.raster_approximate_white_balance = approximate_white_balance;
     }
 
     /// Release what the presented proxy of this generation was holding back: the scripted step it
@@ -1379,12 +1408,13 @@ impl Editor {
             let Some(frame) = self.presented_proxy_frame() else {
                 return Task::none();
             };
-            let (generation, raster, dimensions, built, approximate, render_ms) = (
+            let (generation, raster, dimensions, built, approximate, white_balance, render_ms) = (
                 frame.generation,
                 frame.raster.clone(),
                 frame.dimensions,
                 frame.built,
                 frame.approximate,
+                frame.approximate_white_balance,
                 frame.render_ms,
             );
             return self.hand_retained(
@@ -1393,6 +1423,7 @@ impl Editor {
                 Some(dimensions),
                 built,
                 approximate,
+                white_balance,
                 Some(render_ms),
             );
         }
@@ -1404,7 +1435,16 @@ impl Editor {
             .exact_render_ms
             .filter(|(recorded, _)| *recorded == generation)
             .map(|(_, ms)| ms);
-        self.hand_retained(generation, raster, None, false, false, render_ms)
+        let white_balance = self.raster_approximate_white_balance;
+        self.hand_retained(
+            generation,
+            raster,
+            None,
+            false,
+            false,
+            white_balance,
+            render_ms,
+        )
     }
 
     /// One preview job for the entry on screen, at the bounds the view now asks for. The zoom rule
@@ -1489,6 +1529,7 @@ impl Editor {
     /// is the only caller: preferring a retained raster over a render whenever the pixels exist is
     /// what keeps a view change free. No write happens here at all — the next redraw's `prepare`
     /// puts these bytes in the texture — so a zoom costs the desktop one `Arc` clone.
+    #[allow(clippy::too_many_arguments)]
     fn hand_retained(
         &mut self,
         generation: u64,
@@ -1496,6 +1537,7 @@ impl Editor {
         proxy_dimensions: Option<(u32, u32)>,
         proxy_built: bool,
         proxy_approximate: bool,
+        approximate_white_balance: bool,
         render_ms: Option<f64>,
     ) -> Task<Message> {
         // The texture is a proxy exactly when there are proxy dimensions to describe it.
@@ -1515,6 +1557,7 @@ impl Editor {
             proxy_dimensions,
             proxy_built,
             proxy_approximate,
+            approximate_white_balance,
             reason: Some("zoom"),
             render_ms,
         };
@@ -1546,6 +1589,7 @@ impl Editor {
         self.dimensions = Some((upload.width, upload.height));
         self.presented_generation = upload.generation;
         self.presented_proxy = upload.proxy;
+        self.presented_approximate_white_balance = upload.approximate_white_balance;
         if let Some(bounds) = self.pending_bounds.remove(&upload.generation) {
             self.presented_bounds = bounds;
         }
@@ -1570,6 +1614,7 @@ impl Editor {
         self.activity.render = upload.render_ms.map(|ms| state::status::RenderTime {
             ms,
             proxy: upload.proxy,
+            approximate: upload.approximate_white_balance,
         });
         self.event(
             "preview_displayed",
@@ -1584,6 +1629,7 @@ impl Editor {
                 "proxy_dimensions":upload.proxy_dimensions.map(|(width,height)| json!([width,height])),
                 "proxy_built":upload.proxy_built,
                 "proxy_approximate":upload.proxy_approximate,
+                "approximate_white_balance":upload.approximate_white_balance,
                 "reason":upload.reason,
                 "render_ms":upload.render_ms,
             }),
@@ -1637,6 +1683,8 @@ impl Editor {
             return;
         }
         self.raster = Some((generation, raster));
+        // A reduced frame is exact: an approximate one is never reduced.
+        self.raster_approximate_white_balance = false;
         self.event(
             "analysis_adopted",
             json!({"generation":generation,"entry_id":analysis.identity.entry_id.as_str(),"draft_revision":analysis.identity.draft.as_ref().map(|draft| draft.draft_revision),"width":analysis.identity.width,"height":analysis.identity.height,"any_shadow":analysis.report.any_shadow,"any_highlight":analysis.report.any_highlight,"both":analysis.report.both}),
@@ -1715,15 +1763,17 @@ impl Editor {
         })
     }
 
-    /// The raster a clipping overlay is derived from, with whether it is the display proxy.
+    /// The raster a clipping overlay is derived from, with whether the mask is approximate: derived
+    /// from the display proxy, or from a frame that approximates a drafted RAW white balance.
     ///
     /// Only the frame on screen qualifies: a mask is never derived from an image the person is not
     /// looking at. The exact raster is preferred, and the proxy stands in for it until that phase
-    /// lands, at which point the request changes and the mask is re-derived exactly.
+    /// lands, at which point the request changes and the mask is re-derived exactly. The full-size
+    /// phase of an approximate white balance is still approximate, and says so.
     fn overlay_source(&self) -> Option<(u64, &Arc<lightwell_core::Raster>, bool)> {
         let generation = self.presented_generation;
         if let Some(raster) = self.presented_exact_raster() {
-            return Some((generation, raster, false));
+            return Some((generation, raster, self.raster_approximate_white_balance));
         }
         self.presented_proxy_frame()
             .map(|frame| (generation, &frame.raster, true))
@@ -2288,6 +2338,7 @@ impl Editor {
                     let proxy_dimensions = result.proxy_dimensions;
                     let proxy_built = result.proxy_built;
                     let proxy_approximate = result.proxy_approximate;
+                    let approximate_white_balance = result.approximate_white_balance;
                     let render_ms = result.render_ms;
                     if !for_draft {
                         if proxy {
@@ -2314,8 +2365,14 @@ impl Editor {
                                 && self.presented_proxy
                                 && self.proxy_bounds().is_some()
                             {
-                                return self
-                                    .adopt_exact(generation, identity, report, raster, render_ms);
+                                return self.adopt_exact(
+                                    generation,
+                                    identity,
+                                    report,
+                                    raster,
+                                    render_ms,
+                                    approximate_white_balance,
+                                );
                             }
                             if for_draft {
                                 // The crop draft's input stage is the one photo path left that
@@ -2361,6 +2418,7 @@ impl Editor {
                                         dimensions: proxy_dimensions.unwrap_or(stage),
                                         built: proxy_built,
                                         approximate: proxy_approximate,
+                                        approximate_white_balance,
                                         render_ms,
                                     });
                                 } else {
@@ -2378,11 +2436,11 @@ impl Editor {
                                         }
                                         // A frame with no reduction still replaces the retained
                                         // raster now, so no overlay is derived from an older image.
-                                        None => {
-                                            self.incoming = None;
-                                            self.analysis = None;
-                                            self.raster = Some((generation, retained));
-                                        }
+                                        None => self.retain_unreduced(
+                                            generation,
+                                            retained,
+                                            approximate_white_balance,
+                                        ),
                                     }
                                 }
                             }
@@ -2398,6 +2456,7 @@ impl Editor {
                                 proxy_dimensions,
                                 proxy_built,
                                 proxy_approximate,
+                                approximate_white_balance,
                                 reason: None,
                                 render_ms: Some(render_ms),
                             };
@@ -4454,10 +4513,12 @@ mod tests {
         finish(editor, catalog);
     }
 
-    /// A RAW white balance draft is accepted, but its preview job answers preparation-required: the
-    /// core renders no stale development and redevelops the mosaic for the committed value only.
-    /// The status bar says what the person will see rather than the error code, and the gesture
-    /// stays open and drained, so its release still commits.
+    /// A RAW draft is accepted, but its preview job answers preparation-required: the development
+    /// is not in memory, because a redevelopment or a source preparation is in flight, and the core
+    /// renders no stale frame. (A drafted temperature over a development that is in memory previews
+    /// approximately instead; this is what is left.) The status bar says what the person will see
+    /// rather than the error code, and the gesture stays open and drained, so its release still
+    /// commits.
     #[test]
     fn a_draft_the_core_cannot_preview_says_so_and_stays_open() {
         let (mut editor, catalog, log, asset, _, _) = drafting();
@@ -4472,7 +4533,7 @@ mod tests {
         )));
         assert_eq!(
             editor.status,
-            "Custom temperature shows on the photograph on release, once the RAW is redeveloped"
+            "Custom temperature cannot be previewed until the RAW development is ready; it shows on release"
         );
         assert!(
             editor
@@ -6303,6 +6364,7 @@ mod tests {
             dimensions: (1200, 900),
             built: true,
             approximate: false,
+            approximate_white_balance: false,
             render_ms: 12.0,
         });
         editor.raster = Some((7, pixels(2)));
@@ -6312,6 +6374,7 @@ mod tests {
         editor.activity.render = Some(state::status::RenderTime {
             ms: 12.0,
             proxy: true,
+            approximate: false,
         });
 
         // Fit to 100%: the retained exact raster becomes the surface's source and no job is
@@ -6328,7 +6391,8 @@ mod tests {
             editor.activity.render,
             Some(state::status::RenderTime {
                 ms: 85.0,
-                proxy: false
+                proxy: false,
+                approximate: false,
             }),
             "the exact raster on screen reports its own render time"
         );
@@ -6360,7 +6424,8 @@ mod tests {
             editor.activity.render,
             Some(state::status::RenderTime {
                 ms: 12.0,
-                proxy: true
+                proxy: true,
+                approximate: false,
             }),
             "the proxy on screen reports its own render time again"
         );
@@ -6368,6 +6433,155 @@ mod tests {
             editor.preview_generation, 7,
             "no preview job was requested: nothing was rendered for a view change"
         );
+        finish(editor, catalog);
+    }
+
+    /// A frame that approximates a drafted RAW white balance is presented like any frame and says
+    /// so — in the status bar, the `preview_displayed` event and the state summary, at Fit and at
+    /// 100% — but it is never taken for a report: the last exact report stays plotted, marked
+    /// updating, through both phases of the approximate job, and the next exact report replaces it.
+    /// An overlay derived from its full-size phase is approximate too.
+    #[test]
+    fn an_approximate_white_balance_frame_is_shown_and_labelled_but_never_replaces_the_report() {
+        let (mut editor, catalog, _, entry_id) = opened(Vec::new(), 4);
+        let log = attach_log(&mut editor);
+        editor.window = (1440.0, 900.0);
+        editor.dimensions = Some((4000, 3000));
+        editor.session.preview.view.zoom = Zoom::Fit;
+        editor.preview_queue = PreviewQueue::default();
+        let pixels = [
+            [0, 0, 0, 255],
+            [255, 255, 255, 255],
+            [0, 200, 255, 255],
+            [12, 34, 56, 255],
+        ];
+        let (analysis, raster) = analysed(&editor, 7, &pixels, 2, 2);
+        let identity = analysis.identity.clone();
+        editor.preview_generation = 7;
+        editor.incoming = Some((analysis, raster.clone()));
+        editor.adopt_analysis(7);
+
+        // The drafted job's proxy phase is presented.
+        editor.preview_generation = 8;
+        editor.proxy_frame = Some(ProxyFrame {
+            generation: 8,
+            raster: raster.clone(),
+            dimensions: (2, 2),
+            built: false,
+            approximate: false,
+            approximate_white_balance: true,
+            render_ms: 9.2,
+        });
+        let upload = Upload {
+            generation: 8,
+            draft_revision: Some(1),
+            width: 4000,
+            height: 3000,
+            entry_id: entry_id.clone(),
+            snapshot_id: raster.snapshot_id.to_string(),
+            source_fingerprint: raster.source_fingerprint.clone(),
+            proxy: true,
+            proxy_dimensions: Some((2, 2)),
+            proxy_built: false,
+            proxy_approximate: false,
+            approximate_white_balance: true,
+            reason: None,
+            render_ms: Some(9.2),
+        };
+        editor.present(upload, &raster);
+        editor.rederive();
+        assert_eq!(
+            editor.workspace.status.render,
+            "Rendered in 9 ms (proxy, approximate)"
+        );
+        let histogram = |editor: &Editor| {
+            let model = &editor.workspace.histogram;
+            (
+                model.status,
+                model.identity.as_ref().map(|identity| identity.generation),
+            )
+        };
+        assert_eq!(
+            histogram(&editor),
+            (HistogramStatus::Updating, Some(7)),
+            "the last exact report stays plotted and says it is updating"
+        );
+
+        // Its exact phase lands with no report, as an approximate job's always does.
+        let _ = editor.adopt_exact(8, identity, None, (*raster).clone(), 140.0, true);
+        editor.rederive();
+        assert_eq!(
+            histogram(&editor),
+            (HistogramStatus::Updating, Some(7)),
+            "an approximate frame never replaces the report, not even with nothing"
+        );
+        assert_eq!(
+            editor.raster.as_ref().map(|(generation, _)| *generation),
+            Some(8),
+            "its pixels are retained for the overlay and the 100% view"
+        );
+        assert_eq!(
+            editor
+                .overlay_source()
+                .map(|(_, _, approximate)| approximate),
+            Some(true),
+            "a mask derived from it is approximate"
+        );
+        let snapshot = editor.snapshot();
+        assert_eq!(snapshot["approximate_white_balance"], json!(true));
+        assert_eq!(snapshot["status_bar"]["render_approximate"], json!(true));
+        assert_eq!(snapshot["histogram"]["status"], json!("updating"));
+
+        // At 100% the retained full-size phase is shown, and says so.
+        editor.session.preview.view.zoom = Zoom::Percent { value: 100.0 };
+        let _ = editor.zoom_changed(&Zoom::Fit);
+        editor.rederive();
+        assert!(!editor.presented_proxy);
+        assert_eq!(
+            editor.workspace.status.render,
+            "Rendered in 140 ms (approximate)"
+        );
+        let records = logged(&mut editor, &log);
+        let displayed: Vec<_> = records
+            .iter()
+            .filter(|record| record["event"] == "preview_displayed")
+            .map(|record| record["detail"]["approximate_white_balance"].clone())
+            .collect();
+        assert_eq!(displayed, vec![json!(true), json!(true)]);
+        assert!(
+            !records
+                .iter()
+                .any(|record| record["event"] == "analysis_adopted"
+                    && record["detail"]["generation"] == json!(8)),
+            "no report was adopted for the approximate generation"
+        );
+
+        // The exact frame the release produces replaces the report, and the flag.
+        let (analysis, raster) = analysed(&editor, 9, &pixels, 2, 2);
+        editor.preview_generation = 9;
+        editor.incoming = Some((analysis, raster.clone()));
+        let upload = Upload {
+            generation: 9,
+            draft_revision: None,
+            width: 4000,
+            height: 3000,
+            entry_id,
+            snapshot_id: raster.snapshot_id.to_string(),
+            source_fingerprint: raster.source_fingerprint.clone(),
+            proxy: false,
+            proxy_dimensions: None,
+            proxy_built: false,
+            proxy_approximate: false,
+            approximate_white_balance: false,
+            reason: None,
+            render_ms: Some(150.0),
+        };
+        editor.present(upload, &raster);
+        editor.rederive();
+        assert_eq!(histogram(&editor), (HistogramStatus::Ready, Some(9)));
+        assert!(!editor.raster_approximate_white_balance);
+        assert_eq!(editor.snapshot()["approximate_white_balance"], json!(false));
+        assert_eq!(editor.workspace.status.render, "Rendered in 150 ms");
         finish(editor, catalog);
     }
 
@@ -6402,6 +6616,7 @@ mod tests {
             proxy_dimensions: proxy.then_some((240, 160)),
             proxy_built: false,
             proxy_approximate: false,
+            approximate_white_balance: false,
             reason: None,
             render_ms: Some(render_ms),
         };
@@ -7253,6 +7468,7 @@ mod tests {
             proxy_dimensions: None,
             proxy_built: false,
             proxy_approximate: false,
+            approximate_white_balance: false,
             reason: None,
             render_ms: Some(3.0),
         };

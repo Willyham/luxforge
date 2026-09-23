@@ -12,18 +12,27 @@ pub(crate) struct RenderTime {
     pub(crate) ms: f64,
     /// The frame is the display-size proxy rather than the exact full-resolution render.
     pub(crate) proxy: bool,
+    /// The frame approximates a drafted RAW white balance on planes developed at another one
+    /// ([`lightwell_core::PreviewResult::approximate_white_balance`]).
+    pub(crate) approximate: bool,
 }
 
 impl RenderTime {
-    /// "Rendered in 12 ms (proxy)", or "Rendered in 85 ms" for the exact render. A frame faster
-    /// than half a millisecond says so rather than claiming zero.
+    /// "Rendered in 12 ms (proxy)", "Rendered in 85 ms" for the exact render, and "(proxy,
+    /// approximate)" or "(approximate)" for a drafted RAW white balance approximated on the
+    /// developed planes. A frame faster than half a millisecond says so rather than claiming zero.
     pub(crate) fn text(self) -> String {
         let figure = if self.ms < 0.5 {
             "<1".to_owned()
         } else {
             format!("{}", self.ms.round() as i64)
         };
-        let phase = if self.proxy { " (proxy)" } else { "" };
+        let phase = match (self.proxy, self.approximate) {
+            (true, true) => " (proxy, approximate)",
+            (true, false) => " (proxy)",
+            (false, true) => " (approximate)",
+            (false, false) => "",
+        };
         format!("Rendered in {figure} ms{phase}")
     }
 }
@@ -75,38 +84,25 @@ mod tests {
 
     #[test]
     fn the_render_time_names_the_frame_it_describes() {
-        assert_eq!(
-            RenderTime {
-                ms: 12.4,
-                proxy: true
-            }
-            .text(),
-            "Rendered in 12 ms (proxy)"
-        );
-        assert_eq!(
-            RenderTime {
-                ms: 85.5,
-                proxy: false
-            }
-            .text(),
-            "Rendered in 86 ms"
-        );
+        let time = |ms: f64, proxy: bool, approximate: bool| RenderTime {
+            ms,
+            proxy,
+            approximate,
+        };
+        assert_eq!(time(12.4, true, false).text(), "Rendered in 12 ms (proxy)");
+        assert_eq!(time(85.5, false, false).text(), "Rendered in 86 ms");
         // A tiny frame is not "0 ms".
+        assert_eq!(time(0.2, true, false).text(), "Rendered in <1 ms (proxy)");
+        assert_eq!(time(0.5, false, false).text(), "Rendered in 1 ms");
+        // A drafted RAW white balance approximated on the developed planes says so, at Fit and
+        // at 100% alike.
         assert_eq!(
-            RenderTime {
-                ms: 0.2,
-                proxy: true
-            }
-            .text(),
-            "Rendered in <1 ms (proxy)"
+            time(9.2, true, true).text(),
+            "Rendered in 9 ms (proxy, approximate)"
         );
         assert_eq!(
-            RenderTime {
-                ms: 0.5,
-                proxy: false
-            }
-            .text(),
-            "Rendered in 1 ms"
+            time(140.0, false, true).text(),
+            "Rendered in 140 ms (approximate)"
         );
     }
 }

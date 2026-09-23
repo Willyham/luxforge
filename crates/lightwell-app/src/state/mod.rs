@@ -321,6 +321,7 @@ mod tests {
                 render: Some(status::RenderTime {
                     ms: 41.0,
                     proxy: false,
+                    approximate: false,
                 }),
                 render_error: self.render_error.as_ref(),
                 pointer: None,
@@ -1200,9 +1201,23 @@ mod tests {
         inputs.render = Some(status::RenderTime {
             ms: 7.6,
             proxy: true,
+            approximate: false,
         });
         workspace.derive(&inputs);
         assert_eq!(workspace.status.render, "Rendered in 8 ms (proxy)");
+
+        // A drafted RAW white balance approximated on the developed planes says that too.
+        let mut inputs = scene.inputs();
+        inputs.render = Some(status::RenderTime {
+            ms: 9.4,
+            proxy: true,
+            approximate: true,
+        });
+        workspace.derive(&inputs);
+        assert_eq!(
+            workspace.status.render,
+            "Rendered in 9 ms (proxy, approximate)"
+        );
 
         // No local server is a stated fact, never a client count of zero.
         let mut inputs = scene.inputs();

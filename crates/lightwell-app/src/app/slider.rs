@@ -307,17 +307,20 @@ impl Editor {
                 self.after_slider_round_trip()
             }
             Err(error) => {
-                // A RAW white balance the prepared image does not hold is not drafted onto the
-                // photograph: the core answers preparation-required rather than rendering a stale
-                // development, and the mosaic is redeveloped for the committed value only. The
-                // draft itself was accepted, so the gesture goes on; the status bar says what the
-                // person will see instead of showing the error code.
+                // The draft accepted the value but its preview job was refused, so no frame of its
+                // own is coming. A drafted RAW temperature or tint is not this: the core previews
+                // it approximately on the developed planes. What is left is a RAW whose
+                // development is not in memory at all — evicted while a redevelopment or a source
+                // preparation of an earlier request is in flight — which the core answers with
+                // preparation-required rather than a stale frame. The gesture goes on, its release
+                // commits and that commit's frame waits for the development; the status bar says
+                // so instead of showing the error code.
                 let label = draft.label.clone();
                 let (draft_revision, sent) = (draft.draft_revision, draft.sent.clone());
                 draft.unpreviewed = true;
                 self.status = if error.starts_with(ErrorKind::PreparationRequired.code()) {
                     format!(
-                        "{label} shows on the photograph on release, once the RAW is redeveloped"
+                        "{label} cannot be previewed until the RAW development is ready; it shows on release"
                     )
                 } else {
                     error.clone()
