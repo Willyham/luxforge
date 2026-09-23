@@ -40,8 +40,10 @@ mod command_contracts;
 /// The `mask.*` host command family: what each command declares, does and labels.
 pub mod commands;
 mod linear;
+mod radial;
 
 pub use linear::{LinearGradient, POSITION_MAX, POSITION_MIN};
+pub use radial::{ANGLE_MAX, ANGLE_MIN, FEATHER_MAX, FEATHER_MIN, RadialGradient};
 
 /// The smallest legal stored distance, in mask-space units, where one unit is the content stage's
 /// height. Every falloff divides by a stored distance, so this floor is what replaces a runtime
@@ -80,15 +82,25 @@ struct ComponentKind {
     parse: fn(&Component) -> Result<Geometry, Error>,
 }
 
-/// Every component kind this build knows. A later kind — the radial gradient, a brush, a range
-/// selection — is one more entry with its own module beside `linear`, and nothing else here changes.
-const COMPONENT_KINDS: &[ComponentKind] = &[ComponentKind {
-    kind: linear::KIND,
-    parse: parse_linear,
-}];
+/// Every component kind this build knows. A later kind — a brush, a range selection — is one more
+/// entry with its own module beside `linear` and `radial`, and nothing else here changes.
+const COMPONENT_KINDS: &[ComponentKind] = &[
+    ComponentKind {
+        kind: linear::KIND,
+        parse: parse_linear,
+    },
+    ComponentKind {
+        kind: radial::KIND,
+        parse: parse_radial,
+    },
+];
 
 fn parse_linear(component: &Component) -> Result<Geometry, Error> {
     linear::parse(component).map(Geometry::Linear)
+}
+
+fn parse_radial(component: &Component) -> Result<Geometry, Error> {
+    radial::parse(component).map(Geometry::Radial)
 }
 
 /// Whether this build can evaluate `kind`, which is the question the refusal below answers in the
@@ -105,6 +117,7 @@ pub fn knows_component_kind(kind: &str) -> bool {
 #[derive(Clone, Copy, Debug)]
 enum Geometry {
     Linear(LinearGradient),
+    Radial(RadialGradient),
 }
 
 impl Geometry {
@@ -113,6 +126,12 @@ impl Geometry {
             Self::Linear(gradient) => {
                 linear::Compiled::new(gradient, stage, name).map(CompiledGeometry::Linear)
             }
+            // Nothing about a radial's legality depends on the stage — a stored radius is a
+            // mask-space distance as written, unlike an axis whose length is a projection through
+            // the aspect ratio — so compiling one cannot fail and has nothing to name.
+            Self::Radial(gradient) => Ok(CompiledGeometry::Radial(radial::Compiled::new(
+                gradient, stage,
+            ))),
         }
     }
 }
@@ -122,6 +141,7 @@ impl Geometry {
 #[derive(Clone, Copy, Debug)]
 enum CompiledGeometry {
     Linear(linear::Compiled),
+    Radial(radial::Compiled),
 }
 
 impl CompiledGeometry {
@@ -131,6 +151,7 @@ impl CompiledGeometry {
     fn coverage(&self, u: f64, v: f64) -> f64 {
         match self {
             Self::Linear(linear) => linear.coverage(u, v),
+            Self::Radial(radial) => radial.coverage(u, v),
         }
     }
 
@@ -139,6 +160,7 @@ impl CompiledGeometry {
     fn support(&self, stage: Stage, inverted: bool) -> Region {
         match self {
             Self::Linear(linear) => linear.support(stage, inverted),
+            Self::Radial(radial) => radial.support(stage, inverted),
         }
     }
 
@@ -146,6 +168,7 @@ impl CompiledGeometry {
     fn feature_px(&self, stage: Stage) -> f64 {
         match self {
             Self::Linear(linear) => linear.feature_px(stage),
+            Self::Radial(radial) => radial.feature_px(stage),
         }
     }
 }
@@ -656,7 +679,10 @@ mod tests {
     #[test]
     fn an_unknown_component_kind_is_refused_by_name() {
         assert!(knows_component_kind("linear"));
-        assert!(!knows_component_kind("radial"));
+        assert!(knows_component_kind("radial"));
+        // The brush is named in the masking design and is not delivered, so it is the kind this
+        // build does not claim.
+        assert!(!knows_component_kind("brush"));
         let mask = mask_of(vec![component(
             "Future 1",
             ComponentMode::Add,
