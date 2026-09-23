@@ -155,7 +155,7 @@ fn number(
     min: f64,
     max: f64,
     default: f64,
-    unit: &str,
+    unit: Option<&str>,
     step: f64,
     precision: u8,
 ) -> ParameterDescriptor {
@@ -164,7 +164,7 @@ fn number(
         kind: ParameterKind::Number { min, max },
         required: true,
         default: Some(Value::from(default)),
-        unit: Some(unit.into()),
+        unit: unit.map(Into::into),
         step: Some(step),
         precision: Some(precision),
         notes: "finite value".into(),
@@ -239,7 +239,7 @@ impl RawModule {
                             MIN_EXPOSURE_EV,
                             MAX_EXPOSURE_EV,
                             0.0,
-                            "EV",
+                            Some("EV"),
                             0.01,
                             2,
                         )],
@@ -252,7 +252,7 @@ impl RawModule {
                             white_balance::MIN_TEMPERATURE_K,
                             white_balance::MAX_TEMPERATURE_K,
                             6504.0,
-                            "K",
+                            Some("K"),
                             10.0,
                             0,
                         )],
@@ -265,7 +265,7 @@ impl RawModule {
                             white_balance::MIN_TINT,
                             white_balance::MAX_TINT,
                             0.0,
-                            "Lightwell",
+                            None,
                             1.0,
                             0,
                         )],
@@ -273,12 +273,12 @@ impl RawModule {
                     action(
                         SET_RED,
                         "Red gain",
-                        vec![number("gain", 0.01, MAX_RAW_GAIN, 1.0, "×", 0.01, 2)],
+                        vec![number("gain", 0.01, MAX_RAW_GAIN, 1.0, Some("×"), 0.01, 2)],
                     ),
                     action(
                         SET_BLUE,
                         "Blue gain",
-                        vec![number("gain", 0.01, MAX_RAW_GAIN, 1.0, "×", 0.01, 2)],
+                        vec![number("gain", 0.01, MAX_RAW_GAIN, 1.0, Some("×"), 0.01, 2)],
                     ),
                     action(
                         PICK_NEUTRAL,
@@ -595,6 +595,12 @@ mod tests {
                 rail: Some(crate::RailDecoration::Tint),
             }
         );
+        // Tint is a unitless scale: the panel shows the bare number beside its label.
+        let tint_parameter = &descriptor
+            .action(SET_TINT)
+            .expect("custom tint action")
+            .parameters[0];
+        assert_eq!(tint_parameter.unit, None);
     }
 
     /// As shot names the crosshair raw.png draws beside its label; the picker beside it keeps the

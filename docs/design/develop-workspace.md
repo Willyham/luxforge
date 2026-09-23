@@ -128,7 +128,7 @@ Measured against the references on 2x captures; each is either something Iced ca
 - **Disclosure chevrons** follow what a group can do rather than the drawings: Transforms' and Pixel's groups keep theirs because they collapse, and crop's Ratio and Angle draw none because they cannot.
 - **Buttons.** The references draw Apply pixel 26 pt beside a 22 pt Pick pixel; the rule is per row, so it renders 22 pt and the Pixel section is 4 pt shorter.
 - **Crop.** The drafting section keeps the custom width and height fields as a row under the chips (the reference shows only the Custom chip), and the angle reads "2.4°" because the crop descriptor declares no display precision.
-- **RAW.** Its group is single actions, not a field patch, so it has no Original or Custom caption, and Custom tint shows its declared unit, "Lightwell".
+- **RAW.** Its group is single actions, not a field patch, so it has no Original or Custom caption.
 - **Whole screens.** The histogram inspector is 76 pt taller than in the default board, because its spec keeps the domain line and three count rows; the recipe rows stay two lines, as their own design records; the title bar and photograph are the fixture's.
 
 ## Panels
