@@ -888,14 +888,19 @@ pub(crate) mod tests {
             *self.shut.lock().expect("the render gate") = false;
             self.opened.notify_all();
         }
-    }
-
-    impl crate::PointwiseColor for RenderGate {
-        fn apply_row(&self, _: u32, _: u32, _: &mut [[f32; 3]]) {
+        /// Wait here while the gate is shut. A render reaches it through its colour unit; a test
+        /// that holds other work, such as a source preparation, calls it from a hook in that work.
+        pub(crate) fn pass(&self) {
             let mut shut = self.shut.lock().expect("the render gate");
             while *shut {
                 shut = self.opened.wait(shut).expect("the render gate");
             }
+        }
+    }
+
+    impl crate::PointwiseColor for RenderGate {
+        fn apply_row(&self, _: u32, _: u32, _: &mut [[f32; 3]]) {
+            self.pass();
         }
         fn is_finite(&self) -> bool {
             true
