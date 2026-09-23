@@ -2,9 +2,10 @@
 use super::{ApiEvent, ApiRequest, ApiResponse, ClientSession, EventsResult, methods};
 use crate::{
     AnalysisPlan, AnalysisSelection, AssetId, DraftId, EditorService, EditorState, EntryId, Error,
-    ErrorKind, JobId, ModuleRegistry, PreviewJob, ProxyBounds,
+    ErrorKind, HostConfig, JobId, ModuleRegistry, PreviewJob, ProxyBounds,
     analysis::{AnalysisIdentity, AnalysisJob, AnalysisQueue, AnalysisRead, AnalysisStore, Report},
     artifacts::{self, ArtifactId, ArtifactRead, Collected, Collection, VerifiedArtifact},
+    capabilities::host::CapabilityHost,
     editor::{PreparedFile, RawDevelopment, SourceSignature},
     source::RawPrepared,
 };
@@ -752,10 +753,21 @@ impl OwnerHandle {
     }
 
     /// Own a catalog served by a specific set of providers, which is how a client registers a
-    /// built-in wrapped as unavailable. Registration happens before any catalog work.
+    /// built-in wrapped as unavailable. Registration happens before any catalog work. The owner has
+    /// no settings directory or secure store, so every settings method reports `not-ready`.
     pub fn start_with(
         catalog: &Path,
         registry: Arc<ModuleRegistry>,
+    ) -> Result<(Self, JoinHandle<()>), Error> {
+        Self::start_with_host(catalog, registry, HostConfig::unconfigured())
+    }
+
+    /// Own a catalog with a capability host: where module settings live and which secret store
+    /// holds credentials. Starting touches neither; the first settings write creates the directory.
+    pub fn start_with_host(
+        catalog: &Path,
+        registry: Arc<ModuleRegistry>,
+        host: HostConfig,
     ) -> Result<(Self, JoinHandle<()>), Error> {
         let mut service = EditorService::open_with(catalog, registry)?;
         service.disable_sync_source();
@@ -768,8 +780,9 @@ impl OwnerHandle {
         // The analysis worker posts its results back through this same channel, so the owner needs
         // one clone of its own sender. The loop ends on `Stop`, never on the senders dropping.
         let completions = sender.clone();
+        let host = CapabilityHost::new(host);
         let join = std::thread::spawn(move || {
-            owner_loop(service, completions, receiver, source_sender, worker)
+            owner_loop(service, host, completions, receiver, source_sender, worker)
         });
         Ok((
             Self {
@@ -836,6 +849,7 @@ impl OwnerHandle {
 
 fn owner_loop(
     mut service: EditorService,
+    mut host: CapabilityHost,
     completions: SyncSender<OwnerMessage>,
     receiver: Receiver<OwnerMessage>,
     source_sender: SyncSender<SourceTask>,
@@ -1143,10 +1157,26 @@ fn owner_loop(
                 // Discovery and dispatch resolve through the same registry-aware lookup.
                 let method = methods::find(&service, &call.request.method);
                 let response = match method {
-                    // The methods the owner answers from its own state: the event log, and the
-                    // analysis jobs, whose store, worker slots and client drafts all live here.
+                    // The methods the owner answers from its own state: the event log, the
+                    // analysis jobs, whose store, worker slots and client drafts all live here,
+                    // and the capability host's settings.
                     Some(method) if method.owner_answered() => {
                         let request = &call.request;
+                        if let Some(result) = host.answer(service.registry(), call.client, request)
+                        {
+                            // A committed capability write is announced like an edit; a read, a
+                            // no-op and a retry answered from the request log commit nothing and
+                            // are not.
+                            if result.as_ref().is_ok_and(|value| {
+                                methods::mutates(&method, Some(value))
+                                    && value.get("deduplicated") != Some(&Value::Bool(true))
+                            }) {
+                                record_event(&mut events, &mut sequence, request);
+                            }
+                            let response = answer(request, sequence, result);
+                            let _ = call.response.send(response);
+                            continue;
+                        }
                         match request.method.as_str() {
                             "analysis.request" => {
                                 let requested = analysis_request(
@@ -1278,6 +1308,19 @@ fn owner_loop(
     drop(jobs);
     drop(receiver);
     let _ = worker.join();
+}
+
+/// Append one event for a committed mutation, dropping the oldest beyond the log's capacity.
+fn record_event(events: &mut VecDeque<ApiEvent>, sequence: &mut u64, request: &ApiRequest) {
+    *sequence = sequence.saturating_add(1);
+    if events.len() == EVENT_CAPACITY {
+        events.pop_front();
+    }
+    events.push_back(ApiEvent {
+        sequence: *sequence,
+        method: request.method.clone(),
+        request_id: request.id.clone(),
+    });
 }
 
 /// Wrap one owner-answered result in the shared response envelope.

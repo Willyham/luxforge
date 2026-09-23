@@ -13,10 +13,24 @@ use crate::{
     ParameterDescriptor, ParameterKind,
 };
 use serde_json::{Value, json};
+use std::{
+    path::PathBuf,
+    sync::atomic::{AtomicU64, Ordering},
+};
 
 pub(crate) const MODULE: &str = "test.capabilities";
 pub(crate) const TASK: &str = "generate-test-tint";
 pub(crate) const ADAPTER: &str = "echo-adapter";
+
+/// A fresh directory path under the system temporary directory; nothing is created.
+pub(crate) fn temp(name: &str) -> PathBuf {
+    static NEXT: AtomicU64 = AtomicU64::new(1);
+    std::env::temp_dir().join(format!(
+        "lightwell-capabilities-{}-{}-{name}",
+        std::process::id(),
+        NEXT.fetch_add(1, Ordering::Relaxed)
+    ))
+}
 
 pub(crate) fn setting(id: &str, kind: SettingKind, default: Option<Value>) -> SettingDescriptor {
     SettingDescriptor {

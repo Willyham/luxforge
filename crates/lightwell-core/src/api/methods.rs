@@ -140,6 +140,74 @@ pub(super) const METHODS: &[MethodSpec] = &[
         notes: "every registered module descriptor with its effects, actions, parameters and controls",
         handler: Some(module_list),
     },
+    // Module settings are answered by the catalog owner, which holds the capability host: the
+    // settings directory and the secret store. They are user-level, outside every catalog, and
+    // never create history entries.
+    MethodSpec {
+        name: "module.settings.read",
+        mutates: false,
+        required: &["module_id"],
+        optional: &[],
+        notes: "{module_id, schema, revision, state, fields, profiles}: each field's value, default, source (user or default) and validity, a secret field as {secret_present} only, and each profile's status (ready, incomplete, missing-credentials or incompatible); state is ready, incomplete or incompatible",
+        handler: None,
+    },
+    MethodSpec {
+        name: "module.settings.set",
+        mutates: true,
+        required: &["module_id", "values", "mutation"],
+        optional: &[(
+            "profile_id",
+            "the profile whose fields to set; default the module's own fields",
+        )],
+        notes: "validates the named non-secret fields against their kinds and commits them together; null returns a field to its default; an endpoint is stored as the URL the transport policy accepts and a file as its canonical path; a secret field is refused; mutation.expected_revision is the module's settings revision; returns {outcome, revision, changed, invalidates_activation, settings}",
+        handler: None,
+    },
+    MethodSpec {
+        name: "module.settings.set-secret",
+        mutates: true,
+        required: &["module_id", "setting", "value", "mutation"],
+        optional: &[(
+            "profile_id",
+            "the profile whose secret to set; default the module's own",
+        )],
+        notes: "stores one secret field's value in the secure store and never echoes it; a retry is matched by the setting alone; not-ready names a locked or unavailable store and nothing is kept in plain text",
+        handler: None,
+    },
+    MethodSpec {
+        name: "module.settings.clear-secret",
+        mutates: true,
+        required: &["module_id", "setting", "mutation"],
+        optional: &[(
+            "profile_id",
+            "the profile whose secret to clear; default the module's own",
+        )],
+        notes: "removes only that secret from the secure store; an absent secret is a no-op",
+        handler: None,
+    },
+    MethodSpec {
+        name: "module.settings.reset",
+        mutates: true,
+        required: &["module_id", "mutation"],
+        optional: &[],
+        notes: "deletes the module's stored values and profiles and clears their secrets; the one write an incompatible entry accepts; the revision keeps counting",
+        handler: None,
+    },
+    MethodSpec {
+        name: "module.profile.create",
+        mutates: true,
+        required: &["module_id", "adapter", "label", "mutation"],
+        optional: &[],
+        notes: "a new empty provider profile of a declared adapter with a host-generated profile-<uuid> identity, at most the module's declared maximum; returns it as profile",
+        handler: None,
+    },
+    MethodSpec {
+        name: "module.profile.remove",
+        mutates: true,
+        required: &["module_id", "profile_id", "mutation"],
+        optional: &[],
+        notes: "clears the profile's secrets and removes it and its values; returns the removed profile",
+        handler: None,
+    },
     MethodSpec {
         name: "history.undo",
         mutates: true,
@@ -1458,6 +1526,31 @@ mod tests {
                 "optional": {"entry_id": "entry to describe; default current"},
                 "notes": listed["recipe.describe"]["notes"],
             })
+        );
+        // The capability host's settings methods follow module.list in the table, are answered by
+        // the catalog owner and say which of them write.
+        let listing = METHODS
+            .iter()
+            .position(|spec| spec.name == "module.list")
+            .unwrap();
+        for (offset, name) in crate::capabilities::host::METHODS.iter().enumerate() {
+            let spec = &METHODS[listing + 1 + offset];
+            assert_eq!(spec.name, *name);
+            assert!(spec.handler.is_none(), "{name} is answered by the owner");
+            assert_eq!(spec.mutates, *name != "module.settings.read", "{name}");
+            assert!(listed.contains_key(*name));
+        }
+        assert_eq!(
+            listed["module.settings.set-secret"]["required"],
+            json!(["module_id", "setting", "value", "mutation"])
+        );
+        assert_eq!(
+            listed["module.settings.set"]["optional"]
+                .as_object()
+                .unwrap()
+                .keys()
+                .collect::<Vec<_>>(),
+            ["profile_id"]
         );
         assert_eq!(listed["workspace.set"]["required"], json!([]));
         assert_eq!(

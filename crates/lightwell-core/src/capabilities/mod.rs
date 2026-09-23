@@ -4,6 +4,7 @@
 //! See `docs/design/module-capabilities.md`.
 pub mod descriptor;
 pub mod files;
+pub mod host;
 pub mod redact;
 pub mod secrets;
 pub mod settings;

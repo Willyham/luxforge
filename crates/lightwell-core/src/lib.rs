@@ -17,6 +17,10 @@ mod render;
 mod source;
 pub use api::*;
 pub use artifacts::ArtifactId;
+pub use capabilities::{
+    host::HostConfig,
+    redact::{redact_params, redact_request},
+};
 pub use draft::Draft;
 pub use editor::*;
 pub use error::{Error, ErrorKind};
