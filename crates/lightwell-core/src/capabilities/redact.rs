@@ -23,10 +23,12 @@ pub fn redact_params(method: &str, params: &Value) -> Value {
     params
 }
 
-/// A copy of one request that is safe to log, capture as evidence or copy as JSON.
+/// A copy of one request that is safe to log, capture as evidence or copy as JSON. The live-session
+/// token is dropped too: it authenticates a loopback client, so a copied request must not carry it.
 pub fn redact_request(request: &ApiRequest) -> ApiRequest {
     ApiRequest {
         params: redact_params(&request.method, &request.params),
+        token: None,
         ..request.clone()
     }
 }
@@ -42,13 +44,14 @@ mod tests {
             id: "one".into(),
             method: SET_SECRET.into(),
             params: json!({"module_id": "test.module", "setting": "api-key", "value": "s3cret"}),
-            token: None,
+            token: Some("live-session-token".into()),
         };
         let redacted = redact_request(&request);
         assert_eq!(
             redacted.params,
             json!({"module_id": "test.module", "setting": "api-key", "value": "<redacted>"})
         );
+        assert_eq!(redacted.token, None, "the live-session token is never copied");
         assert_eq!(redacted.id, "one");
         assert_eq!(redacted.method, SET_SECRET);
         assert_eq!(
