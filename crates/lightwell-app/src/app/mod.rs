@@ -810,7 +810,11 @@ impl Editor {
     /// figure a resource measurement wants.
     fn scratch_summary() -> Value {
         let budget = lightwell_core::ScratchBudget::default();
-        json!({"limit_bytes":budget.limit(),"in_use_bytes":budget.in_use(),"peak_bytes":budget.peak()})
+        json!({
+            "target_bytes": budget.target(),
+            "in_use_bytes": budget.in_use(),
+            "peak_bytes": budget.peak(),
+        })
     }
 
     /// The core draft this client holds, as `session.state` reports it. The desktop adopts every
