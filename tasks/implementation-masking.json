@@ -251,7 +251,7 @@
     {
       "id": "TASK-004",
       "description": "Build CompiledMask and the linear gradient component: stage-bound evaluation at pixel centres, a conservative bounds rectangle, the minimum feature size, and compilation with no pixel access.",
-      "status": "pending",
+      "status": "completed",
       "dependencies": [
         "TASK-001",
         "TASK-002"
@@ -427,7 +427,8 @@
       "extra_context": [
         "Normalized geometry is what makes this work: the mask compiled against the proxy stage is the same field at a smaller scale, so a proxy render stays the exact recipe at proxy size.",
         "The caveat is sampling, not the equation. Below two pixels of minimum feature size the recorded default (proposal P5) is a 2x2 supersample of the mask field only, with the frame marked approximate, joining the existing spatial-layer approximation rather than inventing a second vocabulary.",
-        "Nothing here may add a hop to the input path; the proxy phase must stay the frame a gesture presents."
+        "Nothing here may add a hop to the input path; the proxy phase must stay the frame a gesture presents.",
+        "The delivered min_feature_px returns f32::INFINITY for a mask with no components, which is the right answer for a mask that draws no feature but must be confirmed to read correctly at the comparison against 2 rather than tripping the supersample path."
       ],
       "context_links": [
         {

@@ -315,6 +315,12 @@ It does **not** make storage linear, and the design does not claim that. An entr
 
 The store changes the catalog format again, to 6. Pre-release rules allow that: an unsupported format is refused explicitly without rewriting anything ([current shapes only](../../AGENTS.md)). It lands in phase C **before the first brush ships**, so no catalog ever holds embedded stroke points. Until it lands, the declared caps below are what bound the growth, and they refuse the excess with `resource-limit` rather than letting a catalog grow without limit.
 
+### An unknown component kind
+
+A stored component whose `kind` this build does not know is treated exactly as a layer whose effect has no available provider ([missing effects](modules-and-api.md#missing-effects)), because it is the same thing: a payload the host retains and cannot evaluate.
+
+It stays in every snapshot and entry unchanged, and `state`, `history.list`, `history.inspect`, `mask.list`, undo and redo keep working. Rendering, sampling, **appending an edit** and restoring such a stack fail with `incompatible: unknown mask component <kind>` naming it. Refusing an append is the delivered rule and not an oversight: the host compiles the resulting recipe before it persists one, so a stack it cannot evaluate is a stack it will not write, and the alternative — letting an edit land on a recipe whose mask cannot be computed — would produce a catalog whose renders silently omit part of a mask. Registering a kind again restores evaluation without touching stored data.
+
 ### One brush system
 
 A brush is a host primitive, not a feature of masking. Three things are defined in the core and shared:
