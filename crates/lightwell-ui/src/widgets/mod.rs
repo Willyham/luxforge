@@ -34,7 +34,7 @@ mod truncated_text;
 
 pub use button_row::{
     ButtonSize, ButtonTone, LabelledButtonModel, RowPlacement, button_row, button_row_height,
-    equal_button_row, icon_button_row, labelled_button, row_icon_button,
+    equal_button_row, icon_button_row, labelled_button, row_icon_button, text_button,
 };
 pub use chip::{ChipModel, chip, chip_row, chip_wrap};
 pub use color_picker::{
@@ -55,7 +55,7 @@ pub use histogram::{
 };
 pub use icon_button::{Icon, IconButtonModel, header_icon_button, icon, icon_button};
 pub use inline_menu::inline_menu;
-pub use list_row::{ListRowModel, Marker, list_row};
+pub use list_row::{ListRowModel, Marker, list_heading, list_row};
 pub use menu_choice::{MenuChoiceModel, menu_choice};
 pub use mode_strip::{ModeEntry, ToggleEntry, mode_strip};
 pub use notice_card::{NoticeCardModel, Tone, notice_card};

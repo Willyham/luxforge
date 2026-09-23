@@ -31,7 +31,7 @@ use lightwell_ui::{
     curve_editor, equal_button_row, error_caption, focus_control, histogram, icon_button,
     icon_button_row, inline_menu, label_line, labelled_button, menu_choice, module_section,
     number_field, readout_card, row_icon_button, section_label, segmented, slider, stepper,
-    sub_group_header, sub_group_header_with_actions, tab_row, theme, toggle,
+    sub_group_header, sub_group_header_with_actions, tab_row, text_button, theme, toggle,
 };
 use serde_json::{Map, Value};
 
@@ -1304,11 +1304,13 @@ fn crop_section_view<'a>(
                 text_button(
                     "Discard",
                     ButtonTone::Control,
+                    ButtonSize::Regular,
                     Some(Message::Crop(CropMessage::Cancel)),
                 ),
                 text_button(
                     "Reapply",
                     ButtonTone::Primary,
+                    ButtonSize::Regular,
                     model
                         .can_reapply
                         .then_some(Message::Crop(CropMessage::Reapply)),
@@ -1545,26 +1547,6 @@ fn angle_stepper(model: &CropSectionModel) -> Element<'_, Message> {
         }),
         _ => None,
     })
-}
-
-/// A labelled button with no icon or key hint.
-fn text_button<'a>(
-    label: &str,
-    tone: ButtonTone,
-    on_press: Option<Message>,
-) -> Element<'a, Message> {
-    labelled_button(
-        &LabelledButtonModel {
-            label: label.to_owned(),
-            icon: None,
-            key_hint: None,
-            tone,
-            size: ButtonSize::Regular,
-            fill: false,
-            enabled: on_press.is_some(),
-        },
-        on_press,
-    )
 }
 
 fn straighten_toggle(model: &CropSectionModel) -> Element<'_, Message> {

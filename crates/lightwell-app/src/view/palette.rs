@@ -26,7 +26,7 @@ pub(crate) fn palette(model: &PaletteModel) -> Option<Element<'_, Message>> {
         .size(theme::SIZE_CONTROL)
         .width(Length::Fill);
 
-    let mut rows = column![].spacing(2.0);
+    let mut rows = column![].spacing(theme::LIST_ROW_SPACING);
     for (index, entry) in model.entries.iter().take(MAX_ENTRIES).enumerate() {
         rows = rows.push(list_row(
             &ListRowModel {

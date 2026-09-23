@@ -24,6 +24,30 @@ pub enum ButtonTone {
     Primary,
     /// The accent tint: a picker whose mode is active.
     Selected,
+    /// No surface until the pointer is over it: a text action in a bar or a list, such as Open
+    /// image or Load older.
+    Quiet,
+}
+
+/// A labelled button with a label alone, as a bar or a list offers its text actions.
+pub fn text_button<'a, M: Clone + 'a>(
+    label: &str,
+    tone: ButtonTone,
+    size: ButtonSize,
+    on_press: Option<M>,
+) -> Element<'a, M> {
+    labelled_button(
+        &LabelledButtonModel {
+            label: label.to_owned(),
+            icon: None,
+            key_hint: None,
+            tone,
+            size,
+            fill: false,
+            enabled: on_press.is_some(),
+        },
+        on_press,
+    )
 }
 
 /// How tall a labelled button stands.
@@ -85,7 +109,7 @@ pub fn labelled_button<'a, M: Clone + 'a>(
         (_, false) => theme::TEXT_TERTIARY,
         (ButtonTone::Primary, true) => theme::CANVAS,
         (ButtonTone::Selected, true) => theme::ACCENT,
-        (ButtonTone::Control, true) => theme::TEXT_PRIMARY,
+        (ButtonTone::Control | ButtonTone::Quiet, true) => theme::TEXT_PRIMARY,
     };
     let hint_ink = theme::TEXT_TERTIARY;
     let mut content = Row::new().align_y(Alignment::Center);
@@ -121,6 +145,7 @@ pub fn labelled_button<'a, M: Clone + 'a>(
         ButtonTone::Control => theme::button_control,
         ButtonTone::Primary => theme::button_accent,
         ButtonTone::Selected => theme::button_selected,
+        ButtonTone::Quiet => theme::button_plain,
     };
     let inset = model.size.padding();
     button(content.height(Length::Fill))
@@ -311,6 +336,7 @@ mod tests {
             ButtonTone::Control,
             ButtonTone::Primary,
             ButtonTone::Selected,
+            ButtonTone::Quiet,
         ] {
             for (icon, key_hint) in [(None, None), (Some(Icon::Picker), Some("W".to_string()))] {
                 for (size, fill) in [(ButtonSize::Compact, false), (ButtonSize::Regular, true)] {

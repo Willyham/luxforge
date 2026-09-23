@@ -342,6 +342,19 @@ pub const PANEL_SCROLLBAR_WIDTH: f32 = 4.0;
 pub const PANEL_SCROLLBAR_MARGIN: f32 = 1.0;
 /// A history, version or recipe row.
 pub const LIST_ROW_HEIGHT: f32 = 26.0;
+/// Between consecutive list rows, and between a list's heading and its first row.
+pub const LIST_ROW_SPACING: f32 = 2.0;
+/// Under a list's heading, before its first row, on top of [`LIST_ROW_SPACING`].
+pub const LIST_HEADING_SPACING: f32 = 6.0;
+/// A list row's sequence number, right-aligned in this box.
+pub const LIST_LEADING_WIDTH: f32 = 14.0;
+/// A list row's marker circle.
+pub const MARKER_SIZE: f32 = 6.0;
+/// A hollow or previewed marker's ring.
+pub const MARKER_RING_WIDTH: f32 = 1.0;
+/// The current entry's row, tinted a step above the panel, opaque for the same reason as
+/// [`RULE`].
+pub const LIST_ROW_CURRENT: Color = Color::from_rgb8(47, 47, 50);
 
 /// Builds the dark, custom Lightwell theme from the tokens above. There is no light theme yet;
 /// see the [visual language](../../../docs/design/develop-workspace.md#visual-language) decision.
@@ -571,6 +584,22 @@ pub fn button_control(_theme: &Theme, status: button::Status) -> button::Style {
         shadow: Shadow::default(),
         snap: false,
     }
+}
+
+/// The current entry's list row: tinted, in every state.
+pub fn list_row_current(_theme: &Theme, status: button::Status) -> button::Style {
+    button::Style {
+        background: Some(Background::Color(LIST_ROW_CURRENT)),
+        text_color: TEXT_PRIMARY,
+        border: Border {
+            radius: RADIUS.into(),
+            width: 0.0,
+            color: Color::TRANSPARENT,
+        },
+        shadow: Shadow::default(),
+        snap: false,
+    }
+    .with_disabled(status)
 }
 
 /// A selected chip: the accent-tinted fill, borderless.
@@ -816,6 +845,10 @@ mod tests {
         );
         assert_eq!(TAB_ROW_HEIGHT, 24.0);
         assert_eq!(LIST_ROW_HEIGHT, 26.0);
+        // default.png: history rows on a 28 pt pitch, a 6 pt marker, the current row tinted.
+        assert_eq!(LIST_ROW_HEIGHT + LIST_ROW_SPACING, 28.0);
+        assert_eq!(MARKER_SIZE, 6.0);
+        assert_eq!(LIST_ROW_CURRENT, Color::from_rgb8(47, 47, 50));
     }
 
     #[test]
