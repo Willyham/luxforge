@@ -331,6 +331,7 @@ fn registered_proof_descriptor_generates_the_whole_vocabulary() {
             ControlModel::Task(_) => panic!("proof module declares no task"),
             ControlModel::Unsupported(kind) => panic!("unsupported proof control {kind}"),
             ControlModel::CropFrame(_) => panic!("proof module declares no crop frame"),
+            ControlModel::Presets(_) => panic!("proof module declares no preset library"),
         })
         .collect();
     let expected = BTreeSet::from([

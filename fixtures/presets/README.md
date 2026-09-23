@@ -1,0 +1,14 @@
+# Preset fixtures
+
+Synthetic presets for the importer tests in `crates/lightwell-core/src/presets/tests.rs`. Every file was written by hand for Lightwell, with its structure modelled on the [preset file formats](../../docs/research/lightroom/presets.md) chapter and its values invented. None is a copy of a third-party preset. The tests assert each file's exact settings, report and origin against the [presets design](../../docs/design/presets.md).
+
+| File | Exercises |
+| --- | --- |
+| `develop.xmp` | A Process 5 (`11.0`) develop preset: attribute scalars with and without `+`, lang-alt `Name` (another language first), `ShortName` and `Group`, a nested default `crs:Look`, a non-identity and an identity tone curve, HSL, all four vignette values plus neutral style and highlight contrast, sharpening, split-toning hues that are and are not qualified by a zero saturation, `WhiteBalance` carried by relative temperature, metadata, an attribute in another namespace and one unrecognised setting |
+| `develop-prefix.xmp` | The same settings under the prefix `cr`, some written as elements rather than attributes and the `Look` as an `rdf:parseType="Resource"` structure, with `crs` bound to another namespace as a decoy. It must import exactly as `develop.xmp` does |
+| `profile.xmp` | A creative profile, `PresetType="Look"`, which is refused |
+| `legacy.xmp` | A Process 2010 (`5.7`) preset with the earlier `Exposure`, `Contrast`, `Brightness`, `Shadows`, `FillLight`, `HighlightRecovery`, `Clarity`, `ToneCurve` and `Auto*` fields: every mapped value is refused, so it maps nothing |
+| `out-of-range.xmp` | Values outside Lightwell's hard ranges (`Exposure2012="+6.0"`, `Clarity2012="-100.5"`, `PostCropVignetteMidpoint="-10"`), one that is not a number, values at the range edges, RAW `Temperature` and `Tint`, and a `WhiteBalance` that Kelvin values keep refused. The name is an attribute, not a lang-alt |
+| `sidecar.xmp` | A photo's sidecar with a byte-order mark, `xpacket` wrappers, `tiff`, `exif`, `aux` and `dc` descriptions, `RawFileName`, `AlreadyApplied`, RAW white balance, `HasCrop="True"` with crop values, lens profile fields, noise reduction qualified and not qualified by a zero amount, a non-default camera profile and an empty mask group. It has no name, so the file name gives one |
+| `faded.lrtemplate` | A Process 2012 (`6.7`) legacy template: a `ZSTR` title, `id` and `value.uuid`, line and long comments, a long string with brackets, an escaped string, flat curve arrays on one line and across lines, a nested `Look` table, an empty table, trailing commas, `EnableColorAdjustments = false` with non-zero HSL, `EnableSplitToning = false` with non-zero split toning, and grain and a second vignette style under an enabled Effects panel |
+| `soft-film.lwpreset` | A Lightwell preset document, byte for byte what `export_document` writes for its name, group and settings |

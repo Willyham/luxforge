@@ -323,7 +323,8 @@ fn every_unit_at_zero_is_omitted_and_the_neutral_payload_compiles_to_nothing() {
 
 /// The host reserves what the units declare, and the declaration covers what they actually take:
 /// a unit that asked for more than it declared fails with an internal error instead of reading
-/// somebody else's memory, and no case here does.
+/// somebody else's memory, and no case here does. The budget is a target that never refuses a
+/// tile, so this is the performance claim that the frozen declarations keep one tile inside it.
 #[test]
 fn one_tile_of_a_large_stage_fits_the_spatial_budget() {
     let _guard = spatial_guard();
@@ -344,7 +345,7 @@ fn one_tile_of_a_large_stage_fits_the_spatial_budget() {
         let plan = SpatialPlan::new(&operation, stage, crate::modules::SPATIAL_TILE)
             .unwrap_or_else(|error| panic!("{width}x{height}: {error}"));
         assert!(
-            plan.working_set() <= SpatialBudget::default().limit(),
+            plan.working_set() <= SpatialBudget::default().target(),
             "{width}x{height}: one tile needs {} bytes",
             plan.working_set()
         );
@@ -538,14 +539,14 @@ fn presence_timing() {
             println!(
                 "{width}x{height} presence {name}: p50 {p50:.0} ms, p95 {p95:.0} ms over {} runs; \
                  halo {} px, tiles {}, working set {:.1} MiB, concurrency {}, budget peak \
-                 {:.1} MiB of {:.1} MiB",
+                 {:.1} MiB, target {:.1} MiB",
                 samples.len(),
                 operation.summed_halo(stage),
                 plan.tiles().len(),
                 plan.working_set() as f64 / mib,
                 plan.concurrency(),
                 SpatialBudget::default().peak() as f64 / mib,
-                SpatialBudget::default().limit() as f64 / mib,
+                SpatialBudget::default().target() as f64 / mib,
             );
         }
     }

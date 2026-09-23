@@ -115,6 +115,18 @@ impl Orientation {
     }
 }
 
+/// The icon a client may draw for one exact transform's control, from the shared icon vocabulary.
+/// Each transform is a single exact operation whose label is its icon, so a client that knows the
+/// names can draw the four as a row of icon buttons with the labels as tooltips.
+fn icon_name(transform: Transform) -> &'static str {
+    match transform {
+        Transform::RotateLeft => "rotate-left",
+        Transform::RotateRight => "rotate-right",
+        Transform::MirrorHorizontal => "mirror",
+        Transform::FlipVertical => "flip",
+    }
+}
+
 fn control(transform: Transform, label: &str) -> Control {
     let mut preset = Map::new();
     preset.insert("transform".into(), Value::from(transform.action_id()));
@@ -123,7 +135,7 @@ fn control(transform: Transform, label: &str) -> Control {
         label: label.into(),
         preset,
         style: crate::ActionStyle::Default,
-        icon: None,
+        icon: Some(icon_name(transform).into()),
     }
 }
 
@@ -194,7 +206,8 @@ notes: "the exact transform to compose into the stack's orientation".into(),
                 reset: None,
                 canvas: None,
                 developer: false,
-                collapsed: false,
+                collapsed: true,
+                layout: crate::ModuleLayout::Stacked,
                 availability: Availability::Available,
                 ..ModuleDescriptor::default()
             },
@@ -396,6 +409,7 @@ mod tests {
         match plan {
             ActionPlan::Commit(layer) | ActionPlan::Update(layer) => layer,
             ActionPlan::NoOp => panic!("a transform is never a no-op"),
+            ActionPlan::Compose(_) => panic!("a transform is never a composite"),
         }
     }
 
@@ -422,6 +436,7 @@ mod tests {
         let descriptor = module.descriptor();
         descriptor.validate().expect("a valid transform descriptor");
         assert_eq!(descriptor.id, "lightwell.transform");
+        assert!(descriptor.collapsed, "the section starts collapsed");
         assert_eq!(
             descriptor.effects,
             vec![EffectDescriptor {
@@ -460,6 +475,23 @@ mod tests {
                 other => panic!("a transform control invokes an action, not {other:?}"),
             })
             .collect();
+        // Every control names its icon, so a client can draw the group as one row of icon buttons.
+        let icons: Vec<Option<&str>> = controls
+            .iter()
+            .map(|control| match control {
+                Control::Action { icon, .. } => icon.as_deref(),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            icons,
+            [
+                Some("rotate-left"),
+                Some("rotate-right"),
+                Some("mirror"),
+                Some("flip")
+            ]
+        );
         assert_eq!(
             invoked,
             options

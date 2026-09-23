@@ -195,7 +195,7 @@ fn vignette_field<'a>(frame: &'a Value, name: &str) -> Result<&'a str> {
 /// the tallest run, the same way for the vertical extent. This works whether the zoom centres the
 /// photograph (Fit) or anchors it to the photo surface's own top-left corner, which 100% does for
 /// a photograph smaller than the canvas.
-fn bright_bounds(path: &Path, frame: &Value) -> Result<[u32; 4]> {
+pub fn bright_bounds(path: &Path, frame: &Value) -> Result<[u32; 4]> {
     const BRIGHT: u32 = 60;
     let image = image::open(path)?.to_rgb8();
     let (width, height) = image.dimensions();

@@ -1,6 +1,6 @@
 # UI components for modules
 
-Status: first slice implemented and verified on the M4 Mac. The five accepted decisions remain as recorded in [product decisions](../decisions.md#ui-components). The delivered widgets are listed in the [Develop workspace](develop-workspace.md#architecture); `text`, `pad` and `string` remain the second slice. This is the contract for the closed set of controls a tool module may declare and the widgets the desktop renders them with. It exists so that Tone Curve, Detail, the colour mixer and every later module can be generated from a descriptor without a desktop change, and so that the widget crate stays pure. The task plan is [UI components](../../tasks/implementation-ui-components.json).
+Status: first slice implemented and verified on the M4 Mac. The five accepted decisions remain as recorded in [product decisions](../decisions.md#ui-components). The delivered widgets are listed in the [Develop workspace](develop-workspace.md#architecture); `text` and `pad` remain the second slice. The `string` parameter kind exists for the [presets module](presets.md#the-presets-module), whose strings no text field edits. This is the contract for the closed set of controls a tool module may declare and the widgets the desktop renders them with. It exists so that Tone Curve, Detail, the colour mixer and every later module can be generated from a descriptor without a desktop change, and so that the widget crate stays pure. The task plan is [UI components](../../tasks/implementation-ui-components.json).
 
 ## The three vocabularies
 
@@ -50,7 +50,7 @@ The closed set a module may declare. Names are the JSON `kind` in `controls[]`. 
 
 A module declares at most one `picker`, a `picker` needs a pick canvas (a `crop-frame` takes the whole photograph over and has its own controls, so it is not a pick), and a module that declares a pick canvas declares exactly one `picker`, so no pick mode is reachable only by its letter. Registration refuses each of the three.
 
-`text` and `pad` are specified here so the vocabulary is closed, but they are the second slice: no built-in module needs them before the colour mixer's grading wheels, and the core has no `string` parameter yet. They are not built before then ([decision 2](#decisions)).
+`text` and `pad` are specified here so the vocabulary is closed, but they are the second slice: no built-in module needs them before the colour mixer's grading wheels. The core's `string` kind carries the presets module's name and library identity, which a client sends from the library rather than a text field. They are not built before then ([decision 2](#decisions)).
 
 Kinds deliberately left out, with the reason:
 
@@ -63,7 +63,7 @@ Kinds deliberately left out, with the reason:
 
 ### Parameter kinds and hints
 
-The implemented additions are boolean and curve, plus numeric hints. String remains deferred. The host validates and stores exactly what it is sent, as today; hints change what a client draws and never what the host accepts.
+The implemented additions are boolean, curve and string, plus numeric hints. No widget edits a string yet: that is the `text` control of the second slice. The host validates and stores exactly what it is sent, as today; hints change what a client draws and never what the host accepts.
 
 | Kind | Shape | Validation at registration and on every request |
 | --- | --- | --- |
@@ -87,7 +87,7 @@ Every widget is a function from a plain-data model and messages to an `Element`,
 | --- | --- | --- |
 | `slider` (changed) | Adds `soft_min`, `soft_max`, `over_range: Option<Side>`, `rail: RailDecoration` (plain or colour stops), `fine_step` | Unchanged |
 | `number_field` (new) | Label, `ValueEdit`, unit, enabled, invalid message. Factored out of the slider's value field so the slider and the stepper share it | Edit start, text, submit, reset |
-| `stepper` (new) | A `number_field` plus minus and plus enablement and their tooltips | Decrement, increment, and the field's messages |
+| `stepper` (new) | A `number_field` plus minus and plus enablement and their tooltips, and an optional rail (soft range, value, step, zero, dragging) drawn between minus and plus by the slider's own rail line, so its geometry, fill, handle and halo are the slider's | Decrement, increment, the field's messages, and the rail's fractions and release |
 | `toggle` (new) | Label, `on`, enabled | Toggled |
 | `menu_choice` (new) | Options, selected index, enabled; wraps Iced's pick list in the theme | Selected index |
 | `color_swatch` (new) | An `[u8; 3]`, enabled, `open` | Press |
@@ -97,6 +97,7 @@ Every widget is a function from a plain-data model and messages to an `Element`,
 | `text_field` (new, second slice) | Label, text, placeholder, invalid message, enabled | Text, submit |
 | `icon` (new) | An `Icon` and a size | Nothing; a drawing |
 | `double_click` (delivered) | Any content and one message | That message on the second click of a run over the content, which it does not forward. The slider already wraps its rail in it, which is what makes a double-click on the rail reset the field: iced's slider captures the press itself, so a `mouse_area` around it never sees one |
+| `truncated_text` (delivered) | A string, size, font and colour | Nothing; one line that ends in "…" at the longest character-boundary prefix that fits the width its row leaves it. A collapsed band's hint or unavailable reason, a history row's label (the actor keeps its full width) and a recipe row's summary use it. The prefix search is a pure function over a width-measuring closure, tested without a renderer, and the measurement is cached against the content, width, size and font |
 
 Fractions everywhere: a widget maps pointer positions to `0..=1` on its own axes and the view model maps fractions to values with the parameter's range, step and precision. The pure mapping functions (`geometry::value_from_fraction` today, the picker's HSV and hex conversions, the curve editor's hit test and the pad's polar mapping) are tested without a renderer. Canvas-drawn widgets (the curve editor, the picker plane, the pad, icons) cache their tessellated geometry the way the histogram plot does, keyed on the model's version, so an unchanged model costs no re-tessellation per frame.
 
@@ -107,7 +108,7 @@ The components board gains a row per new widget and state, `gallery_states()` bu
 ## Developer gallery
 
 The title bar exposes **Developer** in debug builds and in optimized builds started with
-`--developer`. It opens the existing 64 reference states across ten component pages, using the
+`--developer`. It opens the existing 74 reference states across ten component pages, using the
 same widget constructors as the editor. A page menu and Previous/Next buttons browse the board;
 Back to editor or Escape restores the workspace. No photograph is required. The examples display
 reference states and do not edit the photograph; the Controls proof provides live editing tests.
@@ -132,7 +133,7 @@ The generated tools panel maps a declared control to a view model with the rules
 - **Disabled means explained.** A control is disabled only when the core disables the section, and the section names the reason. No control is hidden because of state.
 - **Keyboard.** Tab order follows control order. A focused slider, stepper or field steps with arrows, Shift ×10 and Option ÷10; a curve editor moves its selected point; a toggle flips on Space; a choice moves on arrows. Iced's slider takes arrows only while the pointer is over its rail, as recorded in the workspace design, and that limitation is stated, not hidden.
 
-The crop section keeps its own draft and panel. Its ratio chips, custom ratio fields, angle stepper and straighten toggle are rebuilt on the generic `chip`, `number_field`, `stepper` and `toggle` widgets so the desktop has one implementation of each, but its messages stay crop's own because its draft is desktop-local.
+The crop section keeps its own draft and panel. Its ratio chips, custom ratio fields, angle stepper and straighten toggle are rebuilt on the generic `chip`, `number_field`, `stepper` and `toggle` widgets so the desktop has one implementation of each, but its messages stay crop's own because its draft is desktop-local. The angle's rail is a stepper drag: each move sets the draft's angle on the rail's 0.05° step (the Option nudge, a tenth of the 0.5° button step, since the crop descriptor declares no step for its angle) and refits the rectangle, and only the release is a draft change. The rail's handle is accent for as long as the draft is open, as the crop reference draws it. The value box shows the angle with its `°` and opens for typing when pressed; the descriptor declares the unit as `deg` and no precision, so the angle reads `2.4°`, not the reference's `2.40°`.
 
 ## Controls proof module
 

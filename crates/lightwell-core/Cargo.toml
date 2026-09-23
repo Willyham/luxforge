@@ -11,6 +11,7 @@ image.workspace = true
 lightwell-raw = { path = "../lightwell-raw" }
 moxcms.workspace = true
 rayon.workspace = true
+roxmltree.workspace = true
 rusqlite.workspace = true
 rustls.workspace = true
 rustls-platform-verifier.workspace = true

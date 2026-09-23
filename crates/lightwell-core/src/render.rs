@@ -132,15 +132,20 @@ fn linear_to_srgb(linear: f64) -> u8 {
     (encoded * 255.0).round() as u8
 }
 
-/// The default aggregate limit on transient float scratch: 64 MiB across every active render.
+/// The default aggregate target for transient float scratch: 64 MiB across every active render.
 const DEFAULT_SCRATCH_BYTES: u64 = 64 * 1024 * 1024;
 
-/// A process-wide bound on the transient float buffers a render streams through. Frames have their
-/// own 512 MiB limit; this bounds everything that is neither a frame nor the source, so a colour
-/// pass can never trade a bounded frame for unbounded scratch. Reservations are taken before the
-/// allocation they pay for and released when it is dropped.
+/// A process-wide account of the transient float buffers a render streams through. Frames have
+/// their own 512 MiB limit; this covers everything that is neither a frame nor the source, so a
+/// colour pass never trades a bounded frame for scratch nobody counts. Reservations are taken
+/// before the allocation they pay for and released when it is dropped.
+///
+/// It is a target, not a limit. What keeps scratch inside it is the row chunk, sized so one chunk
+/// per pool worker stays well below the target; a chunk that finds the target taken — because more
+/// renders overlap than the sizing assumed, or the target was lowered — still runs, and
+/// [`Self::peak`] shows the overshoot. Nothing here refuses work.
 pub struct ScratchBudget {
-    limit: AtomicU64,
+    target: AtomicU64,
     used: AtomicU64,
     /// The largest `used` any reservation ever reached, so a process that is idle when it is asked
     /// can still report what the budget actually had to carry. It is only ever raised.
@@ -148,7 +153,7 @@ pub struct ScratchBudget {
 }
 
 static SCRATCH_BUDGET: ScratchBudget = ScratchBudget {
-    limit: AtomicU64::new(DEFAULT_SCRATCH_BYTES),
+    target: AtomicU64::new(DEFAULT_SCRATCH_BYTES),
     used: AtomicU64::new(0),
     peak: AtomicU64::new(0),
 };
@@ -161,14 +166,14 @@ impl ScratchBudget {
         &SCRATCH_BUDGET
     }
 
-    pub fn limit(&self) -> u64 {
-        self.limit.load(Ordering::Relaxed)
+    pub fn target(&self) -> u64 {
+        self.target.load(Ordering::Relaxed)
     }
 
-    /// Set the limit and return the previous one. Lowering it below what is already reserved does
-    /// not free anything; the next reservation is what fails.
-    pub fn set_limit(&self, bytes: u64) -> u64 {
-        self.limit.swap(bytes, Ordering::SeqCst)
+    /// Set the target and return the previous one. It changes nothing a reservation does; it is
+    /// the figure the high-water mark is read against.
+    pub fn set_target(&self, bytes: u64) -> u64 {
+        self.target.swap(bytes, Ordering::SeqCst)
     }
 
     pub fn in_use(&self) -> u64 {
@@ -177,37 +182,27 @@ impl ScratchBudget {
 
     /// The high-water mark of [`Self::in_use`] since the process started. A render's scratch is
     /// released as soon as its chunk is done, so `in_use` observed from outside a pass is almost
-    /// always zero; this is what makes the budget observable after the fact.
+    /// always zero; this is what makes the budget observable after the fact, including a peak
+    /// above the target.
     pub fn peak(&self) -> u64 {
         self.peak.load(Ordering::Relaxed)
     }
 
-    /// Reserve `bytes` or fail with `ResourceLimit`. The reservation is released when the returned
-    /// guard is dropped, including on an early return from the work it covers.
-    fn reserve(&self, bytes: usize) -> Result<Reservation<'_>, Error> {
+    /// Reserve `bytes`. It never fails. The reservation is released when the returned guard is
+    /// dropped, including on an early return from the work it covers.
+    fn reserve(&self, bytes: usize) -> Reservation<'_> {
         let bytes = bytes as u64;
-        let limit = self.limit();
         let total = self
             .used
-            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |used| {
-                used.checked_add(bytes).filter(|total| *total <= limit)
-            })
-            .map_err(|used| {
-                Error::new(
-                    ErrorKind::ResourceLimit,
-                    format!(
-                        "colour processing needs {bytes} bytes of scratch, and {used} of the {limit} byte budget is in use"
-                    ),
-                )
-            })?
-            + bytes;
+            .fetch_add(bytes, Ordering::SeqCst)
+            .saturating_add(bytes);
         // One relaxed maximum beside the reservation that already happened: the counter is only
         // read by diagnostics, so no other value depends on the order it becomes visible in.
         self.peak.fetch_max(total, Ordering::Relaxed);
-        Ok(Reservation {
+        Reservation {
             budget: self,
             bytes,
-        })
+        }
     }
 }
 
@@ -395,7 +390,7 @@ fn apply_color_run(
         cancel.check()?;
         let count = chunk.len() / 4;
         let _reservation =
-            ScratchBudget::default().reserve(count * std::mem::size_of::<[f32; 3]>())?;
+            ScratchBudget::default().reserve(count * std::mem::size_of::<[f32; 3]>());
         let mut linear: Vec<[f32; 3]> = chunk
             .chunks_exact(4)
             .map(|pixel| decode_pixel([pixel[0], pixel[1], pixel[2]]))
@@ -783,7 +778,7 @@ impl Entry {
 /// existing sRGB table, runs its unit chain over stage-aligned tiles and quantizes each tile into a
 /// new frame of the same size with the existing exact-threshold quantizer. Alpha is copied from the
 /// input; no full-frame float buffer exists at any point, only one tile's working set per tile in
-/// flight, charged to the spatial budget before the first tile allocates.
+/// flight, charged to the spatial budget before each batch of tiles allocates.
 #[allow(clippy::too_many_arguments)]
 fn spatial_frame(
     input: &[u8],
@@ -807,7 +802,6 @@ fn spatial_frame(
         build_reduction(stage, read)
     })?;
     let mut output = vec![0; Raster::expected_len(stage.width, stage.height)?];
-    let _reservation = spatial::reserve_batch(&plan)?;
     run_batches(
         &plan,
         cancel,
@@ -1197,7 +1191,7 @@ impl<'a> Evaluation<'a> {
             || build_reduction(stage, read),
         )?;
         let tile = plan.tile_containing(x, y);
-        let _reservation = spatial::reserve_one(&plan)?;
+        let _reservation = spatial::reserve_one(&plan);
         let (region, values) = run_tile(&plan, operation, &globals, tile, |region, planes| {
             fill_planes(region, planes, read)
         })?;
@@ -1792,6 +1786,7 @@ mod tests {
                 canvas: None,
                 developer: false,
                 collapsed: false,
+                layout: crate::ModuleLayout::Stacked,
                 availability: Availability::Available,
                 ..ModuleDescriptor::default()
             }))
@@ -2794,8 +2789,8 @@ mod tests {
     // The pointwise colour stage.
     // ---------------------------------------------------------------------------------------
 
-    /// The scratch budget is process-wide, so the test that shrinks it and every test that reserves
-    /// from it hold this lock instead of racing.
+    /// The scratch budget is process-wide, so the test that lowers its target and every test that
+    /// reserves from it hold this lock instead of racing.
     static SCRATCH_TESTS: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     fn scratch_guard() -> std::sync::MutexGuard<'static, ()> {
@@ -2909,6 +2904,7 @@ mod tests {
                 canvas: None,
                 developer: false,
                 collapsed: false,
+                layout: crate::ModuleLayout::Stacked,
                 availability: Availability::Available,
                 ..ModuleDescriptor::default()
             }))
@@ -3545,7 +3541,7 @@ mod tests {
         let source = gradient(64, 48);
         let recipe = colour_recipe(vec![exposure_layer(&[1.0])]);
         let budget = ScratchBudget::default();
-        assert_eq!(budget.limit(), 64 * 1024 * 1024, "the declared default");
+        assert_eq!(budget.target(), 64 * 1024 * 1024, "the declared default");
         // The budget is process-wide and other tests' preview workers reserve from it on their
         // own threads, so "nothing is held between renders" is read once those renders have
         // finished, not at an arbitrary instant.
@@ -3561,26 +3557,28 @@ mod tests {
             }
         };
         idle();
-        let previous = budget.set_limit(16);
-        let error = render(&registry, &source, SnapshotId::new(), &recipe)
-            .expect_err("one row chunk is larger than 16 bytes");
-        budget.set_limit(previous);
-        assert_eq!(error.kind, ErrorKind::ResourceLimit);
-        assert!(error.detail.contains("scratch"), "{error}");
+        let expected = render(&registry, &source, SnapshotId::new(), &recipe).unwrap();
         idle();
-        // The same stack renders again once the budget is back.
-        assert!(render(&registry, &source, SnapshotId::new(), &recipe).is_ok());
-        // A point sample streams nothing, so it answers whatever the budget is.
-        let previous = budget.set_limit(0);
+        // The target is a target: a render whose row chunk is larger than all of it still
+        // completes, with the same bytes, and the high-water mark shows it went past.
+        let previous = budget.set_target(16);
+        let rendered = render(&registry, &source, SnapshotId::new(), &recipe);
+        budget.set_target(previous);
+        let rendered = rendered.expect("a chunk past the target still runs");
+        assert_eq!(rendered.rgba, expected.rgba);
+        assert!(budget.peak() > 16, "the chunk was reserved and counted");
+        idle();
+        // A point sample streams nothing, so it reserves nothing whatever the target is.
+        let previous = budget.set_target(0);
         let sampled = sample(&registry, &source, &recipe, 1, 1).unwrap();
-        budget.set_limit(previous);
+        budget.set_target(previous);
         assert!(sampled.rgba.is_some());
     }
 
     #[test]
     fn a_row_chunk_stays_inside_the_scratch_budget_at_every_supported_width() {
         // 16 workers, one chunk each: the byte cap decides for wide frames and the row cap for
-        // narrow ones, and neither reaches the 64 MiB budget.
+        // narrow ones, and neither reaches the 64 MiB target.
         for width in [1_u32, 64, 6000, 10_000, 16_384] {
             let rows = color_chunk_rows(width);
             let bytes = rows * width as usize * std::mem::size_of::<[f32; 3]>();

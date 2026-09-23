@@ -22,12 +22,14 @@ pub const WINDOW: [&str; 2] = ["1440", "900"];
 /// and height swapped.
 const ROTATED: u8 = 6;
 const CROP_MODULE: &str = "lightwell.crop";
+const BASIC_MODULE: &str = "lightwell.basic";
+const TRANSFORM_MODULE: &str = "lightwell.transform";
 const POINTER_MODE: &str = "pointer";
 
 /// How many frames the `workspace` scenario captures: one open frame plus one per script step.
 pub fn frames(scenario: &str) -> Option<usize> {
     match scenario {
-        "workspace" => Some(11),
+        "workspace" => Some(13),
         _ => None,
     }
 }
@@ -43,6 +45,10 @@ pub fn script(scenario: &str) -> Option<Value> {
             {"workspace":{"tools_panel":true,"thirds":true}},
             {"preview":{"sequence":0}},
             {"preview":"current"},
+            // Transforms, collapsed by its own default, expanded under a collapsed Basic: its four
+            // exact operations as one row of icon buttons.
+            {"section":{"module":BASIC_MODULE,"expanded":false}},
+            {"section":{"module":TRANSFORM_MODULE,"expanded":true}},
             {"draft":{"start":true}},
             {"api":{"method":"edit.transform","params":{"transform":"rotate-left"}}},
             {"palette":{"query":"rotate"}},
@@ -266,20 +272,37 @@ pub fn verify(evidence: &Path, app: &Value, _events: &[Value]) -> Result {
         )?,
     );
 
-    // Frame 7: starting a crop draft, by the `draft.start` route, enters the crop mode.
+    // Frames 7 and 8: Basic collapsed, then Transforms expanded, both view state alone.
     ensure(
-        frames[7]["state"]["crop"]["drafting"] == json!(true),
-        "draft.start did not open a draft",
+        frames[7]["state"]["expanded"][BASIC_MODULE] == json!(false)
+            && frames[8]["state"]["expanded"][TRANSFORM_MODULE] == json!(true)
+            && frames[8]["state"]["expanded"][BASIC_MODULE] == json!(false)
+            && frames[8]["state"]["stack"]["revision"] == frames[6]["state"]["stack"]["revision"],
+        format!(
+            "Transforms was not expanded under a collapsed Basic without a commit: {}",
+            frames[8]["state"]["expanded"]
+        ),
     )?;
-    expect_workspace(&frames[7], true, true, CROP_MODULE, true)?;
     record(
-        &frames[7],
-        "a crop draft open; the mode strip shows Crop",
-        json!({"workspace": workspace_state(&frames[7])}),
+        &frames[8],
+        "Transforms expanded under a collapsed Basic: its four actions as one icon-button row",
+        json!({"expanded": frames[8]["state"]["expanded"]}),
     );
 
-    // Frame 8: a commit while the draft is open is the conflict, whoever made it.
-    let notices: Vec<String> = frames[8]["state"]["notices"]
+    // Frame 9: starting a crop draft, by the `draft.start` route, enters the crop mode.
+    ensure(
+        frames[9]["state"]["crop"]["drafting"] == json!(true),
+        "draft.start did not open a draft",
+    )?;
+    expect_workspace(&frames[9], true, true, CROP_MODULE, true)?;
+    record(
+        &frames[9],
+        "a crop draft open; the mode strip shows Crop",
+        json!({"workspace": workspace_state(&frames[9])}),
+    );
+
+    // Frame 10: a commit while the draft is open is the conflict, whoever made it.
+    let notices: Vec<String> = frames[10]["state"]["notices"]
         .as_array()
         .ok_or("Missing notices")?
         .iter()
@@ -287,46 +310,46 @@ pub fn verify(evidence: &Path, app: &Value, _events: &[Value]) -> Result {
         .collect();
     ensure(
         notices.iter().any(|n| n == "Changed elsewhere"),
-        format!("Frame 8's notices do not include the conflict: {notices:?}"),
+        format!("Frame 10's notices do not include the conflict: {notices:?}"),
     )?;
     ensure(
-        frames[8]["state"]["crop"]["conflicted"] == json!(true),
+        frames[10]["state"]["crop"]["conflicted"] == json!(true),
         "The draft was not marked conflicted",
     )?;
     ensure(
-        frames[8]["state"]["stack"]["revision"] == json!(2),
+        frames[10]["state"]["stack"]["revision"] == json!(2),
         "rotate-left during the draft did not commit revision 2",
     )?;
     record(
-        &frames[8],
+        &frames[10],
         "rotate-left during the draft: Changed elsewhere",
-        json!({"notices": notices, "crop": frames[8]["state"]["crop"]}),
+        json!({"notices": notices, "crop": frames[10]["state"]["crop"]}),
     );
 
-    // Frame 9: the palette, opened and queried by the script.
+    // Frame 11: the palette, opened and queried by the script.
     ensure(
-        frames[9]["state"]["palette"] == json!({"open":true,"query":"rotate"}),
+        frames[11]["state"]["palette"] == json!({"open":true,"query":"rotate"}),
         format!(
             "The palette state was not recorded as open with its query: {}",
-            frames[9]["state"]["palette"]
+            frames[11]["state"]["palette"]
         ),
     )?;
     record(
-        &frames[9],
+        &frames[11],
         "the command palette open, queried for \"rotate\"",
-        frames[9]["state"]["palette"].clone(),
+        frames[11]["state"]["palette"].clone(),
     );
 
-    // Frame 10: cancelling the draft returns the session to pointer.
+    // Frame 12: cancelling the draft returns the session to pointer.
     ensure(
-        frames[10]["state"]["crop"]["drafting"] == json!(false),
+        frames[12]["state"]["crop"]["drafting"] == json!(false),
         "draft.cancel did not end the draft",
     )?;
-    expect_workspace(&frames[10], true, true, POINTER_MODE, true)?;
+    expect_workspace(&frames[12], true, true, POINTER_MODE, true)?;
     record(
-        &frames[10],
+        &frames[12],
         "the draft cancelled; the mode strip returns to Pointer",
-        json!({"workspace": workspace_state(&frames[10])}),
+        json!({"workspace": workspace_state(&frames[12])}),
     );
 
     write_json(&evidence.join("workspace-checks.json"), &json!(checks))?;

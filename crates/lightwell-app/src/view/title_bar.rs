@@ -13,10 +13,11 @@ use crate::{
 };
 use iced::{
     Alignment, Element, Length,
-    widget::{button, mouse_area, row, text},
+    widget::{mouse_area, row, text},
 };
 use lightwell_ui::{
-    Icon, IconButtonModel, SegmentedModel, icon_button, segmented, theme, value_input,
+    ButtonSize, ButtonTone, Icon, IconButtonModel, LabelledButtonModel, SegmentedModel,
+    icon_button, labelled_button, segmented, text_button, theme, value_input,
 };
 
 /// How wide the typed-percentage field is: enough for four digits and the caret.
@@ -38,12 +39,12 @@ pub(crate) fn identity(model: &TitleBarModel) -> Element<'_, Message> {
     if let Some((width, height)) = model.dimensions {
         content = content.push(lightwell_ui::caption(format!("{width} × {height}")));
     }
-    content = content.push(
-        button(lightwell_ui::label("Open image"))
-            .padding([4.0, 10.0])
-            .style(theme::button_plain)
-            .on_press_maybe(model.can_open.then_some(Message::Open)),
-    );
+    content = content.push(text_button(
+        "Open image",
+        ButtonTone::Quiet,
+        ButtonSize::Compact,
+        model.can_open.then_some(Message::Open),
+    ));
     content.into()
 }
 
@@ -91,21 +92,24 @@ pub(crate) fn view_controls(model: &Workspace) -> Element<'_, Message> {
 /// the `mouse_area` around it needs; its style maps the resulting disabled status back to the
 /// resting one, so a held-not-clicked control still reads as a live control.
 fn compare(held: bool, can_view: bool) -> Element<'static, Message> {
-    let face = button(lightwell_ui::label("Compare"))
-        .padding([4.0, 10.0])
-        .style(move |theme: &iced::Theme, status: button::Status| {
-            let status = match status {
-                button::Status::Disabled => button::Status::Active,
-                other => other,
-            };
-            if held {
-                theme::button_selected(theme, status)
+    let face = labelled_button(
+        &LabelledButtonModel {
+            label: "Compare".into(),
+            icon: None,
+            key_hint: None,
+            tone: if held {
+                ButtonTone::Selected
             } else {
-                theme::button_plain(theme, status)
-            }
-        });
+                ButtonTone::Quiet
+            },
+            size: ButtonSize::Compact,
+            fill: false,
+            enabled: true,
+        },
+        None,
+    );
     if !can_view {
-        return face.into();
+        return face;
     }
     mouse_area(face)
         .on_press(Message::CompareBegin)
@@ -165,15 +169,15 @@ pub(crate) fn actions(model: &TitleBarModel) -> Element<'_, Message> {
             Some(Message::TogglePanel(Panel::Tools)),
         ),
     ]
-    .spacing(4.0)
+    .spacing(theme::SPACING / 2.0)
     .align_y(Alignment::Center);
     if model.developer {
-        actions = actions.push(
-            button(lightwell_ui::label("Developer"))
-                .padding([4.0, 10.0])
-                .style(theme::button_plain)
-                .on_press_maybe(model.can_open_gallery.then_some(Message::Gallery(Some(0)))),
-        );
+        actions = actions.push(text_button(
+            "Developer",
+            ButtonTone::Quiet,
+            ButtonSize::Compact,
+            model.can_open_gallery.then_some(Message::Gallery(Some(0))),
+        ));
     }
     actions.into()
 }

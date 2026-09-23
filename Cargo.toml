@@ -17,6 +17,9 @@ iced = { version = "=0.14.0", default-features = false, features = ["advanced", 
 rfd = { version = "=0.15.4", default-features = false, features = ["xdg-portal", "async-std"] }
 rayon = "=1.12.0"
 rusqlite = { version = "=0.40.2", features = ["bundled"] }
+# Parses Lightroom XMP presets. Already in the lockfile through the Iced text stack, pinned to that
+# version so the importer adds no package.
+roxmltree = "=0.20.0"
 # The module transport's TLS: the `ring` provider only (no aws-lc-rs or CMake), TLS 1.2 and 1.3,
 # and the operating system's own certificate verifier for platform trust.
 rustls = { version = "=0.23.45", default-features = false, features = ["ring", "std", "tls12"] }

@@ -5,7 +5,7 @@ use crate::{
     app::{
         fields::{
             action_params, channel_text, decimals_for, field_id, format_number, labelled,
-            number_text, parse_field, undeclared_label, unsupported_label,
+            parse_field, undeclared_label, unsupported_label,
         },
         message::{MenuTarget, PaletteAction},
     },
@@ -13,13 +13,14 @@ use crate::{
     state::{
         Inputs,
         capabilities::{self, CapabilityModel, TaskControl},
+        presets::{PresetsModel, presets_model},
     },
 };
 use lightwell_core::{
     ActionDescriptor, ActionStyle, AssetId, CanvasInteraction, ChoiceStyle, ColorStyle, Control,
-    CropPayload, CurveBackground, EffectStage, EntryId, Layer, ModuleDescriptor, NumberStyle,
-    ORIENTATION_EFFECT, Orientation, ParameterDescriptor, ParameterKind, RailDecoration,
-    ResetAction,
+    CropPayload, CurveBackground, EffectStage, EntryId, Layer, MAX_ANGLE, MIN_ANGLE,
+    ModuleDescriptor, NumberStyle, ORIENTATION_EFFECT, Orientation, ParameterDescriptor,
+    ParameterKind, RailDecoration, ResetAction,
 };
 use serde_json::{Map, Value};
 use std::{
@@ -33,6 +34,9 @@ use std::{
 #[derive(Clone, Debug, Default, PartialEq)]
 pub(crate) struct ControlsUi {
     pub(crate) group_expanded: BTreeMap<String, bool>,
+    /// The tab selected in a module whose descriptor declares `layout: tabs`, keyed by module id.
+    /// Per-client view state exactly like `group_expanded`: it changes no recipe and is never sent.
+    pub(crate) selected_tab: BTreeMap<String, usize>,
     pub(crate) curve_channels: BTreeMap<(String, String), usize>,
     pub(crate) curve_points: BTreeMap<(String, String), usize>,
     pub(crate) curve_edits: BTreeMap<(String, String, usize, usize), String>,
@@ -138,6 +142,21 @@ impl ResetRef {
     }
 }
 
+/// How the view arranges a section's top-level groups, derived from the module's declared
+/// `layout` exactly like a group's `expanded` is derived from `collapsed`. The view draws the
+/// groups of a `Tabs` section as a segmented row, one group visible at a time, instead of the
+/// stacked sections a `Stacked` layout draws; that rendering is built elsewhere and this model
+/// only carries the selection.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum SectionLayout {
+    #[default]
+    Stacked,
+    Tabs {
+        /// The index into the section's top-level groups, clamped to the group count.
+        selected: usize,
+    },
+}
+
 /// One registered module's section. `version` increases only when the section's own inputs change.
 #[allow(dead_code)]
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -154,6 +173,10 @@ pub(crate) struct SectionModel {
     /// resources, an activation or tasks.
     pub(crate) capability: Option<CapabilityModel>,
     pub(crate) controls: Vec<ControlModel>,
+    pub(crate) layout: SectionLayout,
+    /// A word for the section's own state, shown in its band while expanded: Draft while the
+    /// module's canvas draft is open.
+    pub(crate) status: Option<String>,
     pub(crate) version: u64,
     pub(crate) enabled: bool,
     /// Why editing is disabled, in the words the status bar would use.
@@ -163,6 +186,18 @@ pub(crate) struct SectionModel {
 }
 
 impl SectionModel {
+    /// The preset library this section renders, when its module declares the `presets` control.
+    pub(crate) fn presets(&self) -> Option<&PresetsModel> {
+        fn walk(controls: &[ControlModel]) -> Option<&PresetsModel> {
+            controls.iter().find_map(|control| match control {
+                ControlModel::Presets(presets) => Some(presets.as_ref()),
+                ControlModel::Group(group) => walk(&group.controls),
+                _ => None,
+            })
+        }
+        walk(&self.controls)
+    }
+
     /// Every picker this section holds, at any depth. A module declares at most one, so this is
     /// nought or one entry; it walks the tree rather than assuming where the module put it.
     pub(crate) fn pickers(&self) -> Vec<&PickerControl> {
@@ -415,6 +450,8 @@ pub(crate) enum ControlModel {
     Unsupported(String),
     /// The host's crop-frame editor, at the top of the declaring module's section.
     CropFrame(Box<CropSectionModel>),
+    /// The host's preset library, where the module declares its `presets` control.
+    Presets(Box<PresetsModel>),
 }
 
 /// One generated ratio preset button.
@@ -423,6 +460,18 @@ pub(crate) struct PresetChip {
     pub(crate) index: usize,
     pub(crate) label: String,
     pub(crate) chosen: bool,
+}
+
+/// The angle's rail while a crop draft is open: the angle's range, the draft's angle on it and
+/// the step a drag moves in. The rail's gesture is live for the whole draft, so its handle reads
+/// accent while the draft is open, as the crop reference draws it.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct AngleRailModel {
+    pub(crate) min: f64,
+    pub(crate) max: f64,
+    pub(crate) value: f64,
+    pub(crate) step: f64,
+    pub(crate) live: bool,
 }
 
 /// The crop draft's own controls, rendered by the host for a declared crop-frame interaction.
@@ -441,14 +490,26 @@ pub(crate) struct CropSectionModel {
     pub(crate) custom: (String, String),
     pub(crate) custom_ids: (String, String),
     pub(crate) lock_label: String,
+    /// The ratio is locked: the lock reads selected.
+    pub(crate) locked: bool,
     pub(crate) can_swap: bool,
     pub(crate) angle: String,
     pub(crate) angle_id: String,
+    /// The crop action and its angle parameter, which name the angle field for editing.
+    pub(crate) angle_action: String,
+    pub(crate) angle_parameter: String,
+    /// The angle's box is open for typing; otherwise it shows the angle with its unit.
+    pub(crate) angle_editing: bool,
+    /// The angle's rail, while a draft is open.
+    pub(crate) angle_rail: Option<AngleRailModel>,
     pub(crate) guide: bool,
     /// How far one nudge button moves the angle, in degrees.
     pub(crate) nudge: f64,
-    /// The draft's own numbers, so what is on screen is observable without a debugger.
-    pub(crate) readout: Vec<String>,
+    /// The draft's own numbers, so what is on screen is observable without a debugger: each a
+    /// name and its value.
+    pub(crate) readout: Vec<(String, String)>,
+    /// The mode's declared letter, shown on the idle Crop button.
+    pub(crate) shortcut: Option<String>,
     pub(crate) can_start: bool,
     pub(crate) can_apply: bool,
     pub(crate) can_reapply: bool,
@@ -513,7 +574,8 @@ fn section(
     let disabled_reason = disabled_reason(unavailable.as_deref(), inputs);
     let enabled = disabled_reason.is_none();
     let active = active(module, inputs);
-    let digest = digest(module, inputs, expanded, enabled, active);
+    let layout = section_layout(module, inputs);
+    let digest = digest(module, inputs, expanded, enabled, active, layout);
     if let Some(previous) = previous
         && previous.digest == digest
     {
@@ -544,6 +606,8 @@ fn section(
         reset: ResetRef::of(module.reset.as_ref()),
         capability: capabilities::section(module, inputs),
         controls,
+        layout,
+        status: (inputs.draft.is_some() && owns_mode(module, inputs)).then(|| "Draft".to_owned()),
         version: previous.map(|previous| previous.version + 1).unwrap_or(1),
         enabled,
         disabled_reason,
@@ -562,6 +626,30 @@ fn expanded(module: &ModuleDescriptor, inputs: &Inputs<'_>) -> bool {
         .get(&module.id)
         .copied()
         .unwrap_or(!(module.developer || module.collapsed))
+}
+
+/// A tabbed section's selected tab, per client and keyed by module id exactly like a group's
+/// expansion is keyed by its path: 0 unless a client chose otherwise, clamped to the section's
+/// top-level group count so a stale selection from a differently shaped descriptor cannot point
+/// past the end.
+fn section_layout(module: &ModuleDescriptor, inputs: &Inputs<'_>) -> SectionLayout {
+    if module.layout != lightwell_core::ModuleLayout::Tabs {
+        return SectionLayout::Stacked;
+    }
+    let groups = module.controls.len();
+    let selected = inputs
+        .control_ui
+        .selected_tab
+        .get(&module.id)
+        .copied()
+        .unwrap_or(0);
+    SectionLayout::Tabs {
+        selected: if groups == 0 {
+            0
+        } else {
+            selected.min(groups - 1)
+        },
+    }
 }
 
 /// This module owns the active canvas mode.
@@ -629,11 +717,16 @@ fn digest(
     expanded: bool,
     enabled: bool,
     active: bool,
+    layout: SectionLayout,
 ) -> u64 {
     let mut hasher = DefaultHasher::new();
     module.id.hash(&mut hasher);
     format!("{:?}", module.availability).hash(&mut hasher);
     (expanded, enabled, active, inputs.developer).hash(&mut hasher);
+    match layout {
+        SectionLayout::Stacked => 0u8.hash(&mut hasher),
+        SectionLayout::Tabs { selected } => (1u8, selected).hash(&mut hasher),
+    }
     // Sampled curves may depend on the query's entry context even when their point fields are
     // unchanged. Other modules retain their section version across an unrelated entry switch.
     if contains_curve(&module.controls) {
@@ -745,6 +838,23 @@ fn digest(
             .hash(&mut hasher);
         inputs.state.map(|state| &state.asset.id).hash(&mut hasher);
     }
+    // The preset library, the create form and whether a draft holds the rows back reach the one
+    // section that renders them, and no other.
+    if contains_presets(&module.controls) {
+        let presets = inputs.presets;
+        (presets.version, presets.pending).hash(&mut hasher);
+        inputs.preset_form.hash(&mut hasher);
+        (
+            inputs.slider_draft.is_some(),
+            inputs.draft.is_some(),
+            inputs.draft_pending,
+            inputs.display_entry,
+            inputs.state.is_some(),
+            inputs.session.preview.can_edit(),
+            inputs.busy,
+        )
+            .hash(&mut hasher);
+    }
     // This module's picker reads selected while its own canvas mode is active, so entering and
     // leaving that mode re-derives this section and nothing else.
     owns_mode(module, inputs).hash(&mut hasher);
@@ -754,6 +864,14 @@ fn digest(
         draft_digest(inputs).hash(&mut hasher);
     }
     hasher.finish()
+}
+
+fn contains_presets(controls: &[Control]) -> bool {
+    controls.iter().any(|control| match control {
+        Control::Presets { .. } => true,
+        Control::Group { controls, .. } => contains_presets(controls),
+        _ => false,
+    })
 }
 
 fn contains_curve(controls: &[Control]) -> bool {
@@ -769,10 +887,11 @@ fn contains_curve(controls: &[Control]) -> bool {
 fn draft_digest(inputs: &Inputs<'_>) -> String {
     match inputs.draft {
         Some(draft) => format!(
-            "{}|{}|{}|{}|{}|{}|{}",
+            "{}|{}|{}|{:?}|{}|{}|{}|{}",
             draft.summary(),
             draft.preset,
             inputs.crop_angle,
+            inputs.editing,
             inputs.crop_custom.0,
             inputs.crop_custom.1,
             inputs.crop_guide,
@@ -939,6 +1058,21 @@ fn control_model(
         Rendered::Task { task, label } => ControlModel::Task(capabilities::task_control(
             module, task, label, inputs, enabled,
         )),
+        // The library is host data beside the recipe; the module declares only where it goes and
+        // which of its actions a row submits.
+        Rendered::Presets { action } => {
+            let unavailable = match &module.availability {
+                lightwell_core::Availability::Available => None,
+                lightwell_core::Availability::Unavailable { reason } => Some(reason.as_str()),
+            };
+            let reason = disabled_reason(unavailable, inputs);
+            ControlModel::Presets(Box::new(presets_model(
+                action,
+                inputs,
+                enabled,
+                reason.as_deref(),
+            )))
+        }
         Rendered::Unsupported(kind) => ControlModel::Unsupported(unsupported_label(&kind)),
     }
 }
@@ -1152,6 +1286,12 @@ fn value_model(
         // An artifact is published by a task and committed with its result, never typed.
         ParameterKind::Artifact => ControlModel::Unsupported(format!(
             "artifact parameter {parameter} of action {action} is filled by a task, not a control"
+        )),
+        ParameterKind::String { .. } => ControlModel::Unsupported(format!(
+            "string parameter {parameter} of action {action} needs a text control"
+        )),
+        ParameterKind::Settings => ControlModel::Unsupported(format!(
+            "settings parameter {parameter} of action {action} needs a presets control"
         )),
     }
 }
@@ -1388,8 +1528,19 @@ fn crop_section(frame: &CropFrame<'_>, inputs: &Inputs<'_>, enabled: bool) -> Cr
         ),
         angle: inputs.crop_angle.to_owned(),
         angle_id: field_id(frame.action, frame.angle, None),
+        angle_action: frame.action.to_owned(),
+        angle_parameter: frame.angle.to_owned(),
+        angle_editing: inputs
+            .editing
+            .is_some_and(|(action, parameter)| action == frame.action && parameter == frame.angle),
         guide: inputs.crop_guide,
         nudge: crate::app::crop::ANGLE_STEP,
+        shortcut: frame
+            .module
+            .canvas
+            .as_ref()
+            .and_then(|canvas| canvas.shortcut())
+            .map(str::to_owned),
         enabled,
         ..CropSectionModel::default()
     };
@@ -1416,40 +1567,56 @@ fn crop_section(frame: &CropFrame<'_>, inputs: &Inputs<'_>, enabled: bool) -> Cr
             Some(_) => "Unlock ratio".into(),
             None => "Lock ratio".into(),
         },
+        locked: draft.aspect.ratio().is_some(),
         can_swap: enabled && draft.aspect.ratio().is_some(),
         can_apply: enabled && !draft.conflicted,
         can_reapply: !inputs.busy,
-        readout: readout(draft),
+        readout: readout(draft, frame.action),
+        angle_rail: Some(AngleRailModel {
+            min: MIN_ANGLE,
+            max: MAX_ANGLE,
+            value: draft.stage.angle,
+            step: crate::app::crop::ANGLE_RAIL_STEP,
+            live: true,
+        }),
         ..base
     }
 }
 
-/// The draft's own numbers, in the order the panel prints them.
-fn readout(draft: &CropDraft) -> Vec<String> {
-    let payload = draft.payload();
+/// The draft's own numbers, in the order the panel prints them: the input stage, the rectangle in
+/// the rotated stage's box, the whole-pixel output, and the request Apply commits.
+fn readout(draft: &CropDraft, action: &str) -> Vec<(String, String)> {
+    let (box_width, box_height) = draft.stage.bounding_box();
+    let stage = if (box_width, box_height)
+        == (f64::from(draft.stage.width), f64::from(draft.stage.height))
+    {
+        format!("{} × {}", draft.stage.width, draft.stage.height)
+    } else {
+        format!(
+            "{} × {} · box {:.0} × {:.0}",
+            draft.stage.width, draft.stage.height, box_width, box_height
+        )
+    };
     let output = match draft.output() {
-        Ok(rect) => format!(
-            "{} × {} px at ({}, {})",
-            rect.width, rect.height, rect.x, rect.y
-        ),
+        Ok(rect) => format!("{} × {}", rect.width, rect.height),
         Err(error) => error.detail.clone(),
     };
-    vec![format!(
-        "Input stage {} × {} · box {:.0} × {:.0}\nRect {:.0}, {:.0}, {:.0} × {:.0} box px\nOutput {output}\nPayload angle {} x {:.6} y {:.6} w {:.6} h {:.6}",
-        draft.stage.width,
-        draft.stage.height,
-        draft.stage.bounding_box().0,
-        draft.stage.bounding_box().1,
-        draft.rect.x,
-        draft.rect.y,
-        draft.rect.width,
-        draft.rect.height,
-        number_text(payload.angle),
-        payload.x,
-        payload.y,
-        payload.width,
-        payload.height,
-    )]
+    let layer = match draft.layer {
+        Some(_) => format!("layer {}", draft.layer_index + 1),
+        None => "new layer".to_owned(),
+    };
+    vec![
+        ("Input stage".to_owned(), stage),
+        (
+            "Rectangle".to_owned(),
+            format!(
+                "{:.0}, {:.0} · {:.0} × {:.0}",
+                draft.rect.x, draft.rect.y, draft.rect.width, draft.rect.height
+            ),
+        ),
+        ("Output".to_owned(), output),
+        ("Commits".to_owned(), format!("edit.{action} · {layer}")),
+    ]
 }
 
 // ---- descriptor mapping ------------------------------------------------------------------------
@@ -1509,6 +1676,10 @@ pub(crate) enum Rendered<'a> {
     Task {
         task: &'a str,
         label: &'a str,
+    },
+    /// The host's preset library, whose rows submit this action.
+    Presets {
+        action: &'a str,
     },
     Unsupported(String),
 }
@@ -1598,6 +1769,7 @@ pub(crate) fn classify(control: &Control) -> Rendered<'_> {
         },
         Control::Picker { label } => Rendered::Picker { label },
         Control::Task { task, label } => Rendered::Task { task, label },
+        Control::Presets { action } => Rendered::Presets { action },
         // A kind added to the descriptor later is reported, never dropped.
         #[allow(unreachable_patterns)]
         other => Rendered::Unsupported(control_kind(other)),

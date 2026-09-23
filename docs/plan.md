@@ -19,7 +19,7 @@ Outstanding work by area. What is delivered is in [feature status](features.md);
 - Multi-image import and virtualized browsing
 - Filtering, tagging and collections
 - Multi-selection and stacking
-- Catalog portability and backup (decision pending)
+- Catalog portability and backup, carrying each catalog's derived-artifact directory with it (decision pending)
 
 ## RAW
 
@@ -38,17 +38,15 @@ Outstanding work by area. What is delivered is in [feature status](features.md);
 - Offline Clone and Heal: numerical contract, repair stage, brush masks, desktop workflow
 - AI Remove: provider qualification, local and remote adapters, candidate review and acceptance
 
+**Presets follow-ups** ([design](design/presets.md#later)). The library, apply, create and Lightroom import are delivered.
+- Owner review of the recorded defaults
+- An Amount slider and a hover preview
+- RAW white balance import through a calibrated conversion from Lightroom's Kelvin and tint
+- Copy and Paste Settings over the same composite action
+
 **Masks.** Local adjustments; not yet scoped.
 
 **Tuning delivered tools.** Refine the recorded defaults of Presence, the colour mixer and the vignette (decision pending).
-
-## Workspace
-
-**Module panel redesign** (proposal, [design](design/develop-workspace.md#module-panels)). A denser, clearer tools panel.
-- Tighter density and a three-level hierarchy
-- `layout: tabs` descriptor hint, used by the colour mixer
-- Temperature and tint rails on the white-balance sliders
-- Icon-button row for the transforms
 
 ## Programmability
 
@@ -56,13 +54,16 @@ Outstanding work by area. What is delivered is in [feature status](features.md);
 
 **Shared editing** (future, [design](design/shared-editing.md)). One host, one invited collaborator or agent, one photograph. No milestone.
 
-**Lightroom preset import** (future). Convert only calibrated fields and report the rest ([constraints](research/lightroom/slider-parity.md)).
-
 ## Extensibility
 
-**Shared module capabilities** (implemented, [design](design/module-capabilities.md)). Host services modules can rely on: settings and secrets, consent, transports, activation and resources, tasks and derived artifacts.
-- Windows Credential Manager and Linux Secret Service, verified natively
-- The first reviewed provider adapters and data classes, with Corrections
+**Shared module capabilities follow-ups** ([design](design/module-capabilities.md)). Settings and secrets, consent, the transport, activation and resources, tasks and derived artifacts are delivered on macOS.
+- Owner review of the recorded defaults: per-asset photo consent, who may grant, loopback-only plain HTTP ([decisions](decisions.md#module-capabilities))
+- Windows Credential Manager and Linux Secret Service for module secrets, verified natively; both refuse with `not-ready` today
+- Native Windows and Linux checks of the transport's certificate verification and of resource removal, which on Windows must release a module's files before deleting them
+- The first reviewed provider adapters and their crop and mask data classes, with Corrections
+- Resumable, hash-checked downloads for large model files; an interrupted download restarts today
+- Setting and clearing secrets off the catalog owner, so an OS keychain prompt never holds other clients
+- `managed-storage` and `local-runtime` capabilities, when a module first needs them
 
 **External modules.** Load separately authored modules.
 - Measure optional-module activation cost

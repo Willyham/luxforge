@@ -236,7 +236,8 @@ parameters: Vec::new(),
                     shortcut: Some("R".into()),
                 }),
                 developer: false,
-                collapsed: false,
+                collapsed: true,
+                layout: crate::ModuleLayout::Stacked,
                 availability: Availability::Available,
                 ..ModuleDescriptor::default()
             },
@@ -705,6 +706,7 @@ mod tests {
         let layer = match plan {
             ActionPlan::Commit(layer) | ActionPlan::Update(layer) => layer,
             ActionPlan::NoOp => panic!("expected a committed layer, not a no-op"),
+            ActionPlan::Compose(_) => panic!("expected a committed layer, not a composite"),
         };
         assert_eq!(layer.effect_id, CROP_EFFECT);
         assert_eq!(layer.effect_format, EFFECT_FORMAT);
@@ -725,6 +727,7 @@ mod tests {
         descriptor.validate().expect("a valid crop descriptor");
         assert_eq!(descriptor.id, "lightwell.crop");
         assert_eq!(descriptor.title, "Crop and straighten");
+        assert!(descriptor.collapsed, "the section starts collapsed");
         assert_eq!(
             descriptor
                 .actions

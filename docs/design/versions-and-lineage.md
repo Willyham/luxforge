@@ -26,9 +26,9 @@ Restoring a version is the existing `history.restore` on the version's entry. Th
 
 `history.lineage` walks `undo_parent` from an entry (default current) newest first, returning entry id, sequence, action and parent per step, at most one hundred steps per call with `next_entry_id` to continue. It reads the `undo_parent_id` column rather than parsing entry JSON, so the desktop can afford it after every change. The desktop marks loaded entries that are not on the current lineage as branches; when the chain was truncated it marks nothing at or below the oldest returned step, because it cannot know.
 
-## Storage: catalog format 5
+## Storage
 
-Entry JSON is the authoritative stored recipe snapshot; each entry also has an `undo_parent_id` for bounded lineage queries. The `versions` table holds named references to entries. Format 5 adds the catalog's identity and the [derived-artifact](module-capabilities.md#derived-artifacts) tables, whose per-entry references keep every artifact a version or branch reaches alive. History inserts name their columns explicitly.
+Entry JSON is the authoritative stored recipe snapshot; each entry also has an `undo_parent_id` for bounded lineage queries. The `versions` table holds named references to entries. The current catalog format is 6: format 5 added the [preset library](presets.md#library), and format 6 the catalog's identity and the [derived-artifact](module-capabilities.md#derived-artifacts) tables, whose per-entry references keep every artifact a version or branch reaches alive. History inserts name their columns explicitly.
 
 An empty, unmarked database is initialized with the current schema. Existing catalogs must use the current format marker. Unsupported or nonempty unmarked catalogs are refused without rewriting their data, with an error directing the user to a new catalog path. Only current shapes are supported during pre-release development.
 

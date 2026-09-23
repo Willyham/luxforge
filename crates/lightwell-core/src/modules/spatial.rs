@@ -21,9 +21,11 @@ pub const MAX_SPATIAL_HALO: u32 = 512;
 /// payload into one operation, so this bounds the chain one layer can ask the host to run.
 pub const MAX_SPATIAL_UNITS: usize = 4;
 
-/// The default process-wide bound on spatial working sets: 256 MiB, separate from the 64 MiB float
-/// scratch budget the colour run streams through, because one tile of a 60 MP stage with the frozen
-/// presence halos needs about 57 MiB on its own.
+/// The default process-wide target for spatial working sets: 256 MiB, separate from the 64 MiB
+/// float scratch target the colour run streams through, because one tile of a 60 MP stage with the
+/// frozen presence halos needs about 57 MiB on its own. It sets how many tiles run at once; it
+/// never refuses a render or a sample, so one tile always runs even when that takes the process
+/// past it.
 pub const SPATIAL_BUDGET_BYTES: u64 = 256 * 1024 * 1024;
 
 /// The per-side factor of the reduction a global estimate is prepared from. The reduced frame is at

@@ -392,6 +392,9 @@ impl MixerModule {
                 developer: false,
                 // A Presence module will later be registered between Basic and the mixer.
                 collapsed: true,
+                // The three groups are parallel views of the same eight ranges, so the desktop
+                // draws them as one segmented row instead of stacked sections.
+                layout: crate::ModuleLayout::Tabs,
                 availability: Availability::Available,
                 ..ModuleDescriptor::default()
             },
@@ -621,6 +624,7 @@ mod tests {
         match plan {
             ActionPlan::Commit(layer) | ActionPlan::Update(layer) => layer,
             ActionPlan::NoOp => panic!("expected a layer, not a no-op"),
+            ActionPlan::Compose(_) => panic!("expected a layer, not a composite"),
         }
     }
 

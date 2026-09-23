@@ -15,7 +15,7 @@
 | [Scale-sensitive detail](detail-and-local-contrast.md) and AI support differ at proxy size | Inspect noise/sharpening at appropriate resolution; validate approximate previews against final output | Never present a proxy measurement as full-resolution quality evidence |
 | Masks and AI have dependencies | Track auxiliary assets and invalidation; expose pending/recompute/failure states to both UI and agents | Future work; no mask/AI runtime added to M1 |
 | Rendered pixels and editable state are different artifacts | Export should capture an explicit committed revision and immutable job inputs | Already consistent with accepted history/export intent |
-| XMP syntax does not specify the processor | Separate metadata import from recipe interpretation and rendered equivalence | No Lightroom importer is promised |
+| XMP syntax does not specify the processor | Separate metadata import from recipe interpretation and rendered equivalence | The [preset importer](../../design/presets.md#mapping) transfers values and reports the rest; it claims no rendered equivalence |
 
 All recommendations above are **P**, not claims about hidden Lightroom internals. Lightroom demonstrates useful behaviors; it is not proof that Lightwell needs the same architecture.
 

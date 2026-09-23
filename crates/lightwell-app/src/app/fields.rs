@@ -154,10 +154,12 @@ fn seed_controls(module: &ModuleDescriptor, controls: &[Control], fields: &mut F
                 }
             }
             // None carries a field of its own: an action button submits the fields already
-            // seeded, a picker only enters its module's canvas mode, and a task sends the open
-            // asset and a profile.
+            // seeded, a picker only enters its module's canvas mode, a preset row submits a library
+            // preset's own settings, name and identity, and a task sends the open asset and a
+            // profile.
             Rendered::Action { .. }
             | Rendered::Picker { .. }
+            | Rendered::Presets { .. }
             | Rendered::Task { .. }
             | Rendered::Unsupported(_) => {}
         }
@@ -236,6 +238,17 @@ pub(crate) fn seed_text(parameter: &ParameterDescriptor) -> String {
                 Value::Array(xs.into_iter().map(|x| serde_json::json!([x, x])).collect())
                     .to_string()
             }),
+        ParameterKind::String { .. } => parameter
+            .default
+            .as_ref()
+            .and_then(Value::as_str)
+            .map(str::to_owned)
+            .unwrap_or_default(),
+        ParameterKind::Settings => parameter
+            .default
+            .as_ref()
+            .map(Value::to_string)
+            .unwrap_or_else(|| "{}".into()),
     }
 }
 
@@ -274,7 +287,9 @@ pub(crate) fn decimals_for(parameter: &ParameterDescriptor) -> usize {
         | ParameterKind::Enum { .. }
         | ParameterKind::Boolean
         | ParameterKind::Artifact
-        | ParameterKind::Curve { .. } => return 0,
+        | ParameterKind::Curve { .. }
+        | ParameterKind::String { .. }
+        | ParameterKind::Settings => return 0,
     };
     if let Some(precision) = parameter.precision {
         return usize::from(precision).min(lightwell_ui::geometry::MAX_DECIMALS);
@@ -288,7 +303,7 @@ pub(crate) fn decimals_for(parameter: &ParameterDescriptor) -> usize {
 
 /// The decimals one increment needs: `0.01` → 2, `0.5` → 1, `10` → 0. Capped at the largest
 /// precision a descriptor may declare, so an unrepresentable step cannot ask for endless digits.
-fn decimals_of(step: f64) -> usize {
+pub(crate) fn decimals_of(step: f64) -> usize {
     if !step.is_finite() || step <= 0.0 {
         return 0;
     }
@@ -390,6 +405,20 @@ pub(crate) fn parse_field(parameter: &ParameterDescriptor, text: &str) -> Result
                     .map_err(|error| error.detail)
                     .map(|_| value)
             }),
+        // Text is taken as typed, untrimmed: the parameter's own check decides what it accepts.
+        ParameterKind::String { .. } => {
+            let value = Value::from(text);
+            check_value(parameter, &value)
+                .map_err(|error| error.detail)
+                .map(|_| value)
+        }
+        ParameterKind::Settings => serde_json::from_str::<Value>(text.trim())
+            .map_err(|_| format!("{name} must be a JSON settings object"))
+            .and_then(|value| {
+                check_value(parameter, &value)
+                    .map_err(|error| error.detail)
+                    .map(|_| value)
+            }),
     }
 }
 
@@ -409,7 +438,8 @@ pub(crate) fn value_text(parameter: &ParameterDescriptor, value: &Value) -> Resu
             .join(","),
         ParameterKind::Boolean => value.as_bool().unwrap().to_string(),
         ParameterKind::Artifact => value.as_str().unwrap().to_owned(),
-        ParameterKind::Curve { .. } => value.to_string(),
+        ParameterKind::Curve { .. } | ParameterKind::Settings => value.to_string(),
+        ParameterKind::String { .. } => value.as_str().unwrap().to_owned(),
     })
 }
 
@@ -1153,6 +1183,15 @@ mod tests {
                 "{kind} is rendered"
             );
         }
+        // The host renders the preset library where a module declares its presets control.
+        let presets = Control::Presets {
+            action: "apply-preset".into(),
+        };
+        assert_eq!(control_kind(&presets), "presets");
+        assert!(matches!(
+            classify(&presets),
+            Rendered::Presets { action } if action == "apply-preset"
+        ));
         // Every control the registered modules declare has a real rendering.
         for module in descriptors() {
             let mut queue: Vec<&Control> = module.controls.iter().collect();

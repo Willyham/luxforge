@@ -33,6 +33,8 @@ Private originals for local diagnostics go in ignored `fixtures/jpg/`, `fixtures
 
 [`vignette/`](vignette/README.md) holds the frozen post-crop vignette mask and amount equations' oracle: discrete `(pixel, parameters)` mask samples and full `apply` output cases, computed by the independent `f64` reference in `crates/lightwell-core/tests/reference/vignette.rs` and reloaded and checked against a fresh computation by `crates/lightwell-core/tests/vignette_reference.rs`. See [docs/design/vignette-study.md](../docs/design/vignette-study.md) for the frozen equations, worked examples and tolerance this fixture proves.
 
+[`presets/`](presets/README.md) holds hand-written synthetic presets for the importer: Lightroom XMP develop presets, a profile, a sidecar, a legacy `.lrtemplate` and a Lightwell preset document. None is a copy of a third-party preset. The importer tests assert each one's exact settings, report and origin.
+
 ## RAW preparation fixtures
 
 [Public provenance](raw-public.json) identifies four CC0 files from raw.pixls.us covering Z6 12/14-bit lossless and X100VI uncompressed/lossless capture. No photograph bytes are checked in. Paths resolve from the manifest directory; obtain the individual files from their recorded URLs and verify hashes before decoder experiments. The owner originals have a separate ignored local manifest with explicit permission for local testing only.
