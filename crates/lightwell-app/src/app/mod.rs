@@ -26,6 +26,7 @@ pub(crate) mod waker;
 use crate::{
     Config,
     diagnostics::Diagnostics,
+    draft_photo,
     paths::Paths,
     state::{
         self, Workspace,
@@ -498,9 +499,11 @@ pub(crate) struct Editor {
     pub(crate) crop: Option<crate::crop_draft::CropDraft>,
     /// What a started or reapplied draft still needs from its truncated preview.
     pub(crate) crop_pending: Option<PendingDraft>,
-    /// The crop layer's input stage on the GPU: one extra texture, bounded like the main preview
-    /// and dropped as soon as the draft ends.
-    pub(crate) draft_photo: Option<image_memory::Allocation>,
+    /// The crop layer's input stage on the GPU: one extra picture, bounded like the main preview,
+    /// held in tiles of at most one atlas layer and dropped as soon as the draft ends.
+    pub(crate) draft_photo: Option<draft_photo::DraftPhoto>,
+    /// The input stage's tiles while they are uploaded; the draft opens once all have arrived.
+    pub(crate) draft_assembly: Option<draft_photo::Assembly>,
     /// The preview generation that belongs to the draft rather than to the displayed state.
     pub(crate) draft_generation: Option<u64>,
     /// This desktop's own Apply is in flight, so the revision it produces is not a conflict.
@@ -666,6 +669,7 @@ impl Editor {
             crop: None,
             crop_pending: None,
             draft_photo: None,
+            draft_assembly: None,
             draft_generation: None,
             crop_applying: None,
             crop_angle: "0".into(),
@@ -1019,6 +1023,16 @@ impl Editor {
                         Value::from(self.draft_photo.is_some()),
                     );
                     object.insert("section".into(), self.crop_section_summary());
+                    // How many atlas-sized tiles hold the input stage on the GPU: one up to 2048
+                    // px a side, more for any photograph-sized stage.
+                    object.insert(
+                        "input_stage_tiles".into(),
+                        Value::from(
+                            self.draft_photo
+                                .as_ref()
+                                .map(draft_photo::DraftPhoto::allocated),
+                        ),
+                    );
                 }
                 summary
             }
@@ -1462,6 +1476,26 @@ impl Editor {
         self.readout = None;
         self.pending_sample = None;
         self.activity.render = None;
+    }
+
+    /// Upload the crop layer's input stage, tile by tile, and hold the queue until every tile is on
+    /// the GPU: the draft opens on the whole stage or not at all.
+    fn upload_draft(
+        &mut self,
+        upload: Upload,
+        tiles: Vec<(draft_photo::TileRect, iced::widget::image::Handle)>,
+    ) -> Task<Message> {
+        self.draft_assembly = Some(draft_photo::Assembly {
+            generation: upload.generation,
+            width: upload.width,
+            height: upload.height,
+            tiles: tiles.iter().map(|(rect, _)| (*rect, None)).collect(),
+        });
+        Task::batch(tiles.into_iter().enumerate().map(|(index, (_, handle))| {
+            let upload = upload.clone();
+            image_memory::allocate(handle)
+                .map(move |result| Message::DraftUploaded(upload.clone(), index, result))
+        }))
     }
 
     /// The crop layer's input stage could not be rendered, so the draft it was for cannot open or
@@ -2622,14 +2656,17 @@ impl Editor {
                                 render_ms: Some(render_ms),
                             };
                             if for_draft {
-                                let handle = iced::widget::image::Handle::from_rgba(
-                                    raster.width,
-                                    raster.height,
-                                    iced_runtime::core::Bytes::from_owner(raster.rgba),
+                                // A stage within one atlas layer is uploaded as it is; a larger
+                                // one is cut into layer-sized tiles off this thread first, because
+                                // the toolkit draws its own fragments of a rotated image wrongly.
+                                if !draft_photo::needs_cutting(raster.width, raster.height) {
+                                    return self
+                                        .upload_draft(upload, vec![draft_photo::whole(raster)]);
+                                }
+                                return Task::perform(
+                                    async move { draft_photo::handles(draft_photo::cut(&raster)) },
+                                    move |tiles| Message::DraftCut(upload.clone(), tiles),
                                 );
-                                return image_memory::allocate(handle).map(move |result| {
-                                    Message::DraftUploaded(upload.clone(), result)
-                                });
                             }
                             // The photograph reaches the screen from here: the raster becomes the
                             // surface's source now and is drawn by the redraw this update requests,
@@ -2660,14 +2697,39 @@ impl Editor {
                     }
                 }
             }
-            Message::DraftUploaded(upload, result) => {
-                self.uploading = false;
+            Message::DraftCut(upload, tiles) => {
                 if Some(upload.generation) != self.draft_generation {
-                    return Task::none();
+                    self.uploading = false;
+                    return Task::done(Message::Poll);
+                }
+                return self.upload_draft(upload, tiles);
+            }
+            Message::DraftUploaded(upload, index, result) => {
+                let current = Some(upload.generation) == self.draft_generation
+                    && self
+                        .draft_assembly
+                        .as_ref()
+                        .is_some_and(|assembly| assembly.generation == upload.generation);
+                if !current {
+                    // A tile of a stage the draft no longer waits for: nothing is assembled, and
+                    // the upload gate opens.
+                    self.draft_assembly = None;
+                    self.uploading = false;
+                    return Task::done(Message::Poll);
                 }
                 match result {
                     Ok(allocation) => {
-                        self.draft_photo = Some(allocation);
+                        let Some(photo) = self
+                            .draft_assembly
+                            .as_mut()
+                            .and_then(|assembly| assembly.arrived(index, allocation))
+                        else {
+                            // More tiles are still on their way.
+                            return Task::none();
+                        };
+                        self.draft_assembly = None;
+                        self.uploading = false;
+                        self.draft_photo = Some(photo);
                         self.open_draft(CropStage {
                             width: upload.width,
                             height: upload.height,
@@ -2675,6 +2737,8 @@ impl Editor {
                         });
                     }
                     Err(_) => {
+                        self.draft_assembly = None;
+                        self.uploading = false;
                         self.crop_pending = None;
                         self.draft_generation = None;
                         self.status = "Could not upload the crop's input stage".into();

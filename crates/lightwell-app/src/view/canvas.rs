@@ -53,7 +53,7 @@ pub(crate) fn surface<'a>(model: &'a CanvasModel, surfaces: Surfaces<'a>) -> Ele
 /// scrollable owns the space instead, so the padding would fight the pan.
 fn photo_area<'a>(model: &'a CanvasModel, surfaces: Surfaces<'a>) -> Element<'a, Message> {
     let content = match (&model.photo, surfaces.draft, surfaces.draft_photo) {
-        (PhotoView::Draft, Some(draft), Some(allocation)) => crop_surface(model, draft, allocation),
+        (PhotoView::Draft, Some(draft), Some(photo)) => crop_surface(model, draft, photo),
         (PhotoView::Plain, _, _) => match (surfaces.photo, model.dimensions) {
             (Some(raster), Some(dimensions)) => plain(model, raster, surfaces.overlay, dimensions),
             _ => empty("Open a photograph"),
@@ -390,9 +390,9 @@ fn plain<'a>(
 fn crop_surface<'a>(
     model: &'a CanvasModel,
     draft: &'a crate::crop_draft::CropDraft,
-    allocation: &'a image_memory::Allocation,
+    photo: &'a crate::draft_photo::DraftPhoto,
 ) -> Element<'a, Message> {
-    let handle = allocation.handle().clone();
+    let handle = photo.clone();
     let box_size = draft.stage.bounding_box();
     let mode = match model.surface_mode {
         SurfaceMode::Pan => Mode::Pan,
@@ -402,21 +402,22 @@ fn crop_surface<'a>(
     let option = model.option;
     // Two stacked canvases: the toolkit paints every image of one layer over every mesh of that
     // layer, so the frame, thirds, handles and guide need the layer the stack gives its second child.
-    let parts = move |handle: image::Handle, view: View, width: Length, height: Length| {
-        stack([Part::Photo, Part::Overlay].map(|part| {
-            canvas(CropCanvas::new(
-                draft,
-                handle.clone(),
-                view,
-                mode,
-                option,
-                part,
-            ))
-            .width(width)
-            .height(height)
-            .into()
-        }))
-    };
+    let parts =
+        move |handle: crate::draft_photo::DraftPhoto, view: View, width: Length, height: Length| {
+            stack([Part::Photo, Part::Overlay].map(|part| {
+                canvas(CropCanvas::new(
+                    draft,
+                    handle.clone(),
+                    view,
+                    mode,
+                    option,
+                    part,
+                ))
+                .width(width)
+                .height(height)
+                .into()
+            }))
+        };
     match model.zoom {
         ZoomView::Fit => responsive(move |available| match View::fit(box_size, available) {
             Some(view) => parts(handle.clone(), view, Length::Fill, Length::Fill).into(),

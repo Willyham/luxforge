@@ -244,9 +244,15 @@ pub(crate) enum Message {
     /// The window's logical size, which decides how large a fitted photograph is drawn and so how
     /// fine a clipping overlay's cell grid can be.
     Resized(f32, f32),
-    /// The truncated preview of a crop layer's input stage reached the GPU.
+    /// The crop layer's input stage, cut into tiles the toolkit's image atlas holds whole.
+    DraftCut(
+        Upload,
+        Vec<(crate::draft_photo::TileRect, iced::widget::image::Handle)>,
+    ),
+    /// One tile of the truncated preview of a crop layer's input stage reached the GPU.
     DraftUploaded(
         Upload,
+        usize,
         Result<image_memory::Allocation, image_memory::Error>,
     ),
     /// One crop draft change.

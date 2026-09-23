@@ -2,6 +2,7 @@ mod app;
 mod crop_canvas;
 mod crop_draft;
 mod diagnostics;
+mod draft_photo;
 mod paths;
 mod state;
 mod view;
