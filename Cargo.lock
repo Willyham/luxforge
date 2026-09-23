@@ -1897,11 +1897,13 @@ dependencies = [
  "rusqlite",
  "rustls",
  "rustls-platform-verifier",
+ "security-framework",
  "serde",
  "serde_json",
  "sha2",
  "url",
  "uuid",
+ "zeroize",
 ]
 
 [[package]]
