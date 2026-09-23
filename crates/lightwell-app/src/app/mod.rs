@@ -779,7 +779,7 @@ impl Editor {
                 entry.as_ref(),
             );
         }
-        json!({"run_id":self.run_id,"mode":if self.evidence.is_some() {"evidence"} else {"editor"},"selection":self.session.preview.selection,"orientation":self.activity.orientation,"phase":self.activity.phase,"requested_generation":self.activity.requested,"displayed_generation":self.activity.displayed,"displayed_draft_revision":self.displayed_draft_revision,"source_dimensions":self.activity.source_dimensions,"preview_dimensions":self.activity.preview_dimensions,"backend":self.activity.backend,"status":self.status,"error_code":self.activity.error_code,"modules":module_summary(&self.modules),"controls":self.fields.summary(),"control_ui":{"group_expanded":self.controls_ui.group_expanded,"selected_tab":self.controls_ui.selected_tab,"curve_channels":curve_channels,"curve_points":curve_points,"picker_open":picker_open,"curves":curves,"pickers":pickers},"gallery":gallery,"tools_scroll":tools_scroll,"crop":self.crop_summary(),"draft":self.draft_summary(),"stack":self.stack_summary(),"workspace":serde_json::to_value(&self.session.workspace).unwrap_or(Value::Null),"developer":self.developer,"expanded":self.workspace.expanded(),"pickers":self.workspace.pickers(),"notices":self.notice_titles(),"compare":self.compare_return.is_some(),"render_error":self.render_error_summary(),"palette":{"open":self.palette_open,"query":self.palette_query},"presets":self.presets_summary(),"histogram":self.histogram_summary(),"readout":self.readout_summary(),"proxy":self.proxy_summary(),"scratch":Self::scratch_summary()})
+        json!({"run_id":self.run_id,"mode":if self.evidence.is_some() {"evidence"} else {"editor"},"selection":self.session.preview.selection,"orientation":self.activity.orientation,"phase":self.activity.phase,"requested_generation":self.activity.requested,"displayed_generation":self.activity.displayed,"displayed_draft_revision":self.displayed_draft_revision,"source_dimensions":self.activity.source_dimensions,"preview_dimensions":self.activity.preview_dimensions,"backend":self.activity.backend,"status":self.status,"error_code":self.activity.error_code,"modules":module_summary(&self.modules),"controls":self.fields.summary(),"control_ui":{"group_expanded":self.controls_ui.group_expanded,"selected_tab":self.controls_ui.selected_tab,"curve_channels":curve_channels,"curve_points":curve_points,"picker_open":picker_open,"curves":curves,"pickers":pickers},"gallery":gallery,"tools_scroll":tools_scroll,"crop":self.crop_summary(),"draft":self.draft_summary(),"stack":self.stack_summary(),"workspace":serde_json::to_value(&self.session.workspace).unwrap_or(Value::Null),"developer":self.developer,"expanded":self.workspace.expanded(),"pickers":self.workspace.pickers(),"notices":self.notice_titles(),"compare":self.compare_return.is_some(),"render_error":self.render_error_summary(),"palette":{"open":self.palette_open,"query":self.palette_query},"presets":self.presets_summary(),"histogram":self.histogram_summary(),"readout":self.readout_summary(),"status_bar":self.status_bar_summary(),"proxy":self.proxy_summary(),"scratch":Self::scratch_summary()})
     }
 
     /// The Presets section as the frame drew it: its rows, the create form and whether the section
@@ -827,7 +827,10 @@ impl Editor {
 
     /// The histogram inspector as a captured frame reports it: its status, the render identity the
     /// counts belong to, all ten endpoint counters and the count one full-height bin stands for, so
-    /// a frame's plot can be checked against an independent reduction of the same fixture.
+    /// a frame's plot can be checked against an independent reduction of the same fixture. Beside
+    /// them, where the inspector's words are drawn: `caption` is the domain the plot states on
+    /// hover, `notice` the text drawn inside the plot's own area (null while there is a report),
+    /// and `tooltips` what the plot and the two triangles state on hover.
     fn histogram_summary(&self) -> Value {
         let model = &self.workspace.histogram;
         let counters = &model.counters;
@@ -837,7 +840,8 @@ impl Editor {
             }
             None => Value::Null,
         };
-        json!({"status":model.status.as_str(),"stale":model.stale,"caption":model.caption,"identity":identity,"plotted_max":model.plotted_max,"reason":model.reason,"counters":{"r0":counters.r0,"g0":counters.g0,"b0":counters.b0,"r255":counters.r255,"g255":counters.g255,"b255":counters.b255,"any_shadow":counters.any_shadow,"any_highlight":counters.any_highlight,"all_shadow":counters.all_shadow,"all_highlight":counters.all_highlight,"both":counters.both},"overlay":self.overlay_summary()})
+        let tooltips = json!({"plot":model.caption,"shadow":model.shadow_tooltip(),"highlight":model.highlight_tooltip()});
+        json!({"status":model.status.as_str(),"stale":model.stale,"caption":model.caption,"notice":model.notice(),"tooltips":tooltips,"identity":identity,"plotted_max":model.plotted_max,"reason":model.reason,"counters":{"r0":counters.r0,"g0":counters.g0,"b0":counters.b0,"r255":counters.r255,"g255":counters.g255,"b255":counters.b255,"any_shadow":counters.any_shadow,"any_highlight":counters.any_highlight,"all_shadow":counters.all_shadow,"all_highlight":counters.all_highlight,"both":counters.both},"overlay":self.overlay_summary()})
     }
 
     /// The clipping overlay a captured frame was drawn with: its cell grid, which flags it covers
@@ -884,6 +888,13 @@ impl Editor {
             }
             None => Value::Null,
         }
+    }
+
+    /// The status bar as the captured frame drew it: the pointer readout's slot (null when empty)
+    /// and the renderer's figure for the picture on screen.
+    fn status_bar_summary(&self) -> Value {
+        let model = &self.workspace.status;
+        json!({"readout":model.readout,"render":model.render,"render_ms":self.activity.render.map(|time| time.ms),"render_proxy":self.activity.render.map(|time| time.proxy)})
     }
 
     /// The notices the captured frame drew, by title, so a frame's chrome is observable.
@@ -5463,7 +5474,8 @@ mod tests {
         assert_eq!(model.status, HistogramStatus::Updating);
         assert!(model.stale);
         assert!(model.bins.is_some(), "the previous plot is still shown");
-        assert_eq!(model.notice().as_deref(), Some("Updating\u{2026}"));
+        // The dimmed plot is the stale label; no words are drawn over it.
+        assert_eq!(model.notice(), None);
         finish(editor, catalog);
     }
 
@@ -5787,20 +5799,30 @@ mod tests {
         assert_eq!(readout.rgba, [128, 64, 255, 255]);
         assert!(!editor.sample_in_flight);
         editor.rederive();
-        // No frame has been analysed in this test, so the caption row carries the pending notice
-        // as well as the readout: both share that one row rather than taking one each.
+        // The readout is the status bar's. No frame has been analysed in this test, so the plot
+        // draws its pending notice inside its own area, and neither reaches the other.
         assert_eq!(
-            editor.workspace.histogram.caption_line(),
-            "Output \u{b7} sRGB \u{b7} after crop \u{b7} R 128 \u{b7} G 64 \u{b7} B 255 \u{b7} 7, 8 \u{b7} No analysis yet"
+            editor.workspace.status.readout.as_deref(),
+            Some("R 128 \u{b7} G 64 \u{b7} B 255 \u{b7} 7, 8")
         );
         assert_eq!(
-            editor.snapshot()["readout"]["rgba"],
-            json!([128, 64, 255, 255])
+            editor.workspace.histogram.notice().as_deref(),
+            Some("No analysis yet")
         );
+        let snapshot = editor.snapshot();
+        assert_eq!(snapshot["readout"]["rgba"], json!([128, 64, 255, 255]));
+        assert_eq!(
+            snapshot["status_bar"]["readout"],
+            json!("R 128 \u{b7} G 64 \u{b7} B 255 \u{b7} 7, 8")
+        );
+        assert_eq!(snapshot["histogram"]["notice"], json!("No analysis yet"));
 
         // The pointer leaving clears the readout and any waiting position.
         let _ = editor.update(Message::PointerMoved(None));
         assert!(editor.readout.is_none() && editor.pending_sample.is_none());
+        editor.rederive();
+        assert_eq!(editor.workspace.status.readout, None);
+        assert_eq!(editor.snapshot()["status_bar"]["readout"], Value::Null);
         finish(editor, catalog);
     }
 

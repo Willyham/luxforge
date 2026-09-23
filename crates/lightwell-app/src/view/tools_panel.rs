@@ -8,7 +8,7 @@ use crate::{
         message::{ClipEndpoint, CropMessage, MenuTarget, Message, PresetMessage},
     },
     state::{
-        histogram::{HIGHLIGHT_RULE, HistogramModel, SHADOW_RULE},
+        histogram::HistogramModel,
         presets::{PresetFormModel, PresetRow, PresetsModel},
         tools::{
             ActionControl, ActionControlStyle, ChoiceControlStyle, ColorControl, ColorControlStyle,
@@ -29,10 +29,10 @@ use lightwell_ui::{
     NumberFieldModel, RailDecoration, RowPlacement, SectionHeaderModel, SegmentedModel,
     SliderModel, StepperModel, StepperRail, StepperRailMessages, SubGroupHeaderModel, Tab,
     TabRowModel, ToggleModel, badge, boxed_input, button_row, caption, channel_row, chip, chip_row,
-    chip_wrap, clip_triangle, color_picker, color_swatch, curve_editor, equal_button_row,
-    error_caption, focus_control, histogram, icon_button, icon_button_row, inline_menu, label_line,
-    labelled_button, list_heading, menu_choice, module_section, number_field, readout_card,
-    row_icon_button, section_label, segmented, slider, stepper, sub_group_header,
+    chip_wrap, clip_triangle, color_picker, color_swatch, curve_editor, described_histogram,
+    equal_button_row, error_caption, focus_control, icon_button, icon_button_row, inline_menu,
+    label_line, labelled_button, list_heading, menu_choice, module_section, number_field,
+    readout_card, row_icon_button, section_label, segmented, slider, stepper, sub_group_header,
     sub_group_header_with_actions, tab_row, text_button, theme, toggle,
 };
 use serde_json::{Map, Value};
@@ -82,17 +82,19 @@ pub(crate) fn tools_panel<'a>(
         .into()
 }
 
-/// The histogram inspector: the plot, the two clipping triangles in its bottom corners, the
-/// caption row (the domain, the pointer readout and any status notice), and three count rows.
+/// The histogram inspector: the plot and the row of two clipping triangles under it, and nothing
+/// else.
 ///
-/// The row count is fixed and unconditional, which is the point: every control in the panel sits
-/// under this block, so a row that appeared or vanished with the analysis status would make the
-/// whole tools panel jump while a slider is dragged. The model decides what each of those rows
-/// says, including what a row says when there is nothing to count.
+/// Its height is fixed and unconditional, which is the point: every control in the panel sits under
+/// this block, so anything in it that grew, wrapped or came and went with the pointer, the analysis
+/// status or the counts would make the whole tools panel jump while a slider is dragged. What
+/// varies is placed where it cannot move anything: the domain is the plot's tooltip, a status with
+/// no report is drawn inside the plot's own area, the endpoint counts are the triangles' tooltips,
+/// and the pointer readout is in the status bar.
 ///
 /// The view decides nothing here. Which channel is which colour, what the counts say, which
-/// triangle is tinted and what its tooltip states are all in the model; this turns them into
-/// widgets and publishes one semantic message per triangle.
+/// triangle is tinted and what each tooltip and notice states are all in the model; this turns them
+/// into widgets and publishes one semantic message per triangle.
 fn inspector(model: &HistogramModel) -> Element<'_, Message> {
     let colours = [
         theme::CHANNEL_RED,
@@ -106,16 +108,20 @@ fn inspector(model: &HistogramModel) -> Element<'_, Message> {
             channel.bins = bins[index];
         }
     }
-    let plot = histogram(&lightwell_ui::HistogramModel {
-        channels,
-        stale: model.stale,
-        version: plot_version(model),
-    });
+    let plot = described_histogram(
+        &lightwell_ui::HistogramModel {
+            channels,
+            stale: model.stale,
+            version: plot_version(model),
+        },
+        model.caption.to_owned(),
+        model.notice(),
+    );
     let triangles = row![
         clip_triangle(
             &ClipTriangleModel {
                 icon: Icon::ShadowClipping,
-                tooltip: SHADOW_RULE.into(),
+                tooltip: model.shadow_tooltip(),
                 tint: theme::CLIPPING_SHADOW,
                 tinted: model.shadow.tinted,
                 active: model.shadow.active,
@@ -127,7 +133,7 @@ fn inspector(model: &HistogramModel) -> Element<'_, Message> {
         clip_triangle(
             &ClipTriangleModel {
                 icon: Icon::HighlightClipping,
-                tooltip: HIGHLIGHT_RULE.into(),
+                tooltip: model.highlight_tooltip(),
                 tint: theme::CLIPPING_HIGHLIGHT,
                 tinted: model.highlight.tinted,
                 active: model.highlight.active,
@@ -137,23 +143,13 @@ fn inspector(model: &HistogramModel) -> Element<'_, Message> {
         ),
     ]
     .align_y(Alignment::Center);
-    // Four rows, always: the caption (the domain — so an output endpoint count is never read as
-    // sensor clipping — plus the readout and the status), then the counters in words, for a reader
-    // who cannot measure the plot's heights.
-    // The readout lines sit on the caption's own line pitch, as one block of text.
-    let readout = column![
-        caption(model.caption_line()),
-        caption(model.shadow_text()),
-        caption(model.highlight_text()),
-        caption(model.both_text()),
-    ];
-    let block = column![plot, triangles, readout].spacing(theme::SPACING / 2.0);
+    let block = column![plot, triangles].spacing(theme::SPACING / 2.0);
     debug_assert_eq!(BINS, 256, "one bin per 8-bit output code");
     block.into()
 }
 
 /// A cheap identity for the plot's geometry: it moves exactly when the bins or the dimming would,
-/// and holds steady across everything else a re-derive touches (a pointer move, a counter update,
+/// and holds steady across everything else a re-derive touches (a pointer move, a notice,
 /// the periodic desktop sync that redraws the panel every 500 ms while an asset is open). The
 /// histogram widget hashes nothing itself — it takes this number and rebuilds its cached polygons
 /// only when it changes — so a redraw with nothing new to plot reuses the tessellated geometry
@@ -1781,7 +1777,7 @@ mod tests {
 
     /// The plot's cache key changes exactly when the bins or the dimming would: a new render
     /// identity or a toggled `stale` flag. It holds steady across everything else a re-derive
-    /// touches (the readout, the counters, the triangles), which is what lets the histogram widget
+    /// touches (the counters, the triangles, the notice), which is what lets the histogram widget
     /// skip re-tessellating its polygons on a redraw the periodic desktop sync causes but nothing
     /// visible changed.
     #[test]
@@ -1798,12 +1794,20 @@ mod tests {
             stale: false,
             ..HistogramModel::default()
         };
-        // A pointer move re-derives the readout only: same identity, same stale, same version.
-        let moved_pointer = HistogramModel {
-            readout: Some("R 1 \u{b7} G 2 \u{b7} B 3 \u{b7} 4, 5".into()),
+        // New counters or a changed triangle re-derive around the plot, not the plot: same
+        // identity, same stale, same version.
+        let recounted = HistogramModel {
+            counters: crate::state::histogram::Counters {
+                both: 3,
+                ..Default::default()
+            },
+            shadow: crate::state::histogram::Triangle {
+                active: true,
+                ..Default::default()
+            },
             ..base.clone()
         };
-        assert_eq!(plot_version(&base), plot_version(&moved_pointer));
+        assert_eq!(plot_version(&base), plot_version(&recounted));
         // A newer generation is a different render: the version moves.
         let newer = HistogramModel {
             identity: Some(RenderIdentity {

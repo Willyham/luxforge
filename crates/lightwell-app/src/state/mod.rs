@@ -1213,6 +1213,34 @@ mod tests {
         assert_eq!(workspace.status.render, "Idle");
     }
 
+    /// The pointer readout is the status bar's, and only the status bar's: moving the pointer onto
+    /// the photograph changes nothing in the histogram inspector, so no control in the tools panel
+    /// can move, and nothing else in the bar changes either.
+    #[test]
+    fn the_pointer_readout_is_in_the_status_bar_and_leaves_the_inspector_unchanged() {
+        let mut scene = Scene::new(vec![crop_descriptor()]).opened(Vec::new());
+        let without = scene.derive();
+        assert_eq!(without.status.readout, None);
+        scene.readout = Some(histogram::Readout {
+            x: 360,
+            y: 240,
+            rgba: [0, 128, 255, 255],
+        });
+        let with = scene.derive();
+        assert_eq!(
+            with.status.readout.as_deref(),
+            Some("R 0 \u{b7} G 128 \u{b7} B 255 \u{b7} 360, 240")
+        );
+        assert_eq!(with.histogram, without.histogram);
+        assert_eq!(
+            status::StatusBarModel {
+                readout: None,
+                ..with.status.clone()
+            },
+            without.status
+        );
+    }
+
     #[test]
     fn a_historical_preview_disables_every_control_and_dims_the_reset() {
         let crop = crop_descriptor();

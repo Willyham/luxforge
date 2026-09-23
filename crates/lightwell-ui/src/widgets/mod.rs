@@ -52,8 +52,8 @@ pub use double_click::double_click;
 pub use floating_bar::floating_bar;
 pub use focus_control::{ControlKey, ControlKeyEvent, focus_control};
 pub use histogram::{
-    BINS, ClipTriangleModel, HistogramChannel, HistogramModel, bin_x, clip_triangle, histogram,
-    polygon_points,
+    BINS, ClipTriangleModel, HistogramChannel, HistogramModel, bin_x, clip_triangle,
+    described_histogram, histogram, polygon_points,
 };
 pub use icon_button::{Icon, IconButtonModel, header_icon_button, icon, icon_button};
 pub use inline_menu::inline_menu;

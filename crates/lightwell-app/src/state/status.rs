@@ -1,5 +1,6 @@
-//! The status bar model: the last message, who else is connected and what the renderer is doing.
-use crate::state::Inputs;
+//! The status bar model: the last message, the pointer readout, who else is connected and what the
+//! renderer is doing.
+use crate::state::{Inputs, histogram};
 use lightwell_core::Zoom;
 
 /// How long the frame on the photo surface took to render, as the preview worker measured it for
@@ -30,6 +31,10 @@ impl RenderTime {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct StatusBarModel {
     pub(crate) message: String,
+    /// The three output codes under the pointer and their pixel, while the pointer is over the
+    /// photograph; `None` otherwise. The view keeps a fixed slot for it either way, so nothing else
+    /// in the bar moves as it comes and goes.
+    pub(crate) readout: Option<String>,
     /// Live API clients, so an agent's presence is visible, or why the count is unknown.
     pub(crate) clients: String,
     /// What the renderer is doing, or how long the displayed frame took.
@@ -42,6 +47,7 @@ pub(crate) struct StatusBarModel {
 pub(crate) fn derive(inputs: &Inputs<'_>) -> StatusBarModel {
     StatusBarModel {
         message: inputs.status.to_owned(),
+        readout: inputs.readout.map(histogram::readout_text),
         clients: match inputs.clients {
             Some(1) => "1 client".into(),
             Some(count) => format!("{count} clients"),
