@@ -1112,6 +1112,15 @@ impl Editor {
             // drained, so the pixels belong to the newest value it sent.
             SliderEnd::Open => {
                 self.await_step(Settle::SliderDraft);
+                // A value whose preview job was refused has already drained with no frame of its
+                // own to wait for, so the frame on screen is the step's evidence.
+                if self
+                    .slider_draft
+                    .as_ref()
+                    .is_some_and(|draft| draft.drained() && draft.unpreviewed)
+                {
+                    self.settle_step(Settle::SliderDraft);
+                }
                 Task::none()
             }
         }

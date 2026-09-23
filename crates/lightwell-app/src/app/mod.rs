@@ -4450,6 +4450,50 @@ mod tests {
         finish(editor, catalog);
     }
 
+    /// A RAW white balance draft is accepted, but its preview job answers preparation-required: the
+    /// core renders no stale development and redevelops the mosaic for the committed value only.
+    /// The status bar says what the person will see rather than the error code, and the gesture
+    /// stays open and drained, so its release still commits.
+    #[test]
+    fn a_draft_the_core_cannot_preview_says_so_and_stays_open() {
+        let (mut editor, catalog, log, asset, _, _) = drafting();
+        let _ = editor.update(Message::SliderMoved {
+            action: "set-raw-temperature".into(),
+            parameter: "kelvin".into(),
+            value: 5000.0,
+        });
+        begun(&mut editor, &asset, "set-raw-temperature", 4);
+        let _ = editor.update(Message::SliderDraftSet(Err(
+            "preparation-required: source-job-7".into(),
+        )));
+        assert_eq!(
+            editor.status,
+            "Custom temperature shows on the photograph on release, once the RAW is redeveloped"
+        );
+        assert!(
+            editor
+                .slider_draft
+                .as_ref()
+                .is_some_and(slider::SliderDraft::drained),
+            "the gesture is still open and has nothing in flight"
+        );
+        assert!(
+            editor
+                .slider_draft
+                .as_ref()
+                .is_some_and(|draft| draft.unpreviewed),
+            "and no frame of its own is coming for the value it holds"
+        );
+        let records = logged(&mut editor, &log);
+        let unpreviewed = draft_events(&records, "slider_draft_unpreviewed");
+        assert_eq!(
+            unpreviewed.last().map(|detail| &detail["error"]),
+            Some(&json!("preparation-required: source-job-7"))
+        );
+        assert_eq!(unpreviewed.last().unwrap()["value"], json!(5000.0));
+        finish(editor, catalog);
+    }
+
     /// A drafting slider opens its draft on its first change, so a release with no draft open
     /// changed nothing and sends nothing — not the unchanged field, which would hold the section
     /// busy through the moment a double-click's second press arrives, and which for a RAW custom

@@ -68,6 +68,9 @@ pub(crate) struct SliderDraft {
     pub(crate) sent: Option<Value>,
     /// The gesture ended while a round trip was in flight.
     pub(crate) finish: Option<Finish>,
+    /// The last accepted value's preview job was refused, so no frame of its own is coming: the
+    /// frame on screen is what that value shows until release.
+    pub(crate) unpreviewed: bool,
 }
 
 impl SliderDraft {
@@ -180,6 +183,7 @@ impl Editor {
             pending: Some(value),
             sent: None,
             finish: None,
+            unpreviewed: false,
         });
         self.status = format!("Drafting {label}…");
         self.event(
@@ -285,6 +289,7 @@ impl Editor {
                     "since_update_end_ms": since(timing.last_update_end),
                 });
                 draft.draft_revision = set.draft_revision;
+                draft.unpreviewed = false;
                 draft.conflicted = set.conflicted;
                 let label = draft.label.clone();
                 let (draft_revision, sent) = (set.draft_revision, draft.sent.clone());
@@ -302,8 +307,32 @@ impl Editor {
                 self.after_slider_round_trip()
             }
             Err(error) => {
-                self.status = error;
-                self.after_slider_round_trip()
+                // A RAW white balance the prepared image does not hold is not drafted onto the
+                // photograph: the core answers preparation-required rather than rendering a stale
+                // development, and the mosaic is redeveloped for the committed value only. The
+                // draft itself was accepted, so the gesture goes on; the status bar says what the
+                // person will see instead of showing the error code.
+                let label = draft.label.clone();
+                let (draft_revision, sent) = (draft.draft_revision, draft.sent.clone());
+                draft.unpreviewed = true;
+                self.status = if error.starts_with(ErrorKind::PreparationRequired.code()) {
+                    format!(
+                        "{label} shows on the photograph on release, once the RAW is redeveloped"
+                    )
+                } else {
+                    error.clone()
+                };
+                self.event(
+                    "slider_draft_unpreviewed",
+                    json!({"draft_revision":draft_revision,"value":sent,"error":error}),
+                );
+                let task = self.after_slider_round_trip();
+                // A drained gesture whose newest value has no frame of its own is still drained:
+                // the frame on screen is the evidence of that, so a scripted step settles on it.
+                if self.slider_draft.as_ref().is_some_and(SliderDraft::drained) {
+                    self.settle_step(Settle::SliderDraft);
+                }
+                task
             }
         }
     }
