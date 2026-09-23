@@ -40,7 +40,7 @@ pub use processing::{
     ColorOperation, ExactGeometry, MAX_COLOR_UNITS, PointwiseColor, Processing, Resample, Stage,
 };
 pub use raw::neutral::{SensorMosaic, sensor_neutral_gains, sensor_neutral_gains_mapped};
-pub use raw::white_balance::gains_from_temperature_tint;
+pub use raw::white_balance::{gains_from_temperature_tint, temperature_tint_from_gains};
 pub use raw::{RawModule, RawPayload, WhiteBalanceMode};
 pub use registry::ModuleRegistry;
 #[cfg(test)]
