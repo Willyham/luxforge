@@ -246,20 +246,26 @@ pub(crate) fn gallery_components() -> Vec<Element<'static, ()>> {
         },
         |_| (),
     ));
-    let mut icons = iced::widget::column![].spacing(6.0);
-    for (name, symbol) in Icon::NAMED {
-        icons = icons.push(
-            iced::widget::row![
-                iced::widget::text(name)
-                    .size(theme::SIZE_CAPTION)
-                    .width(180.0),
-                icon::<()>(symbol, 12.0, theme::TEXT_PRIMARY),
-                icon::<()>(symbol, 16.0, theme::TEXT_PRIMARY),
-            ]
-            .spacing(12.0)
-            .align_y(iced::Alignment::Center),
-        );
+    // The icons in two columns, so the whole board fits one gallery page beside a curve.
+    let half = Icon::NAMED.len().div_ceil(2);
+    let mut columns = iced::widget::row![].spacing(24.0);
+    for chunk in Icon::NAMED.chunks(half) {
+        let mut icons = iced::widget::column![].spacing(6.0);
+        for &(name, symbol) in chunk {
+            icons = icons.push(
+                iced::widget::row![
+                    iced::widget::text(name)
+                        .size(theme::SIZE_CAPTION)
+                        .width(120.0),
+                    icon::<()>(symbol, 12.0, theme::TEXT_PRIMARY),
+                    icon::<()>(symbol, 16.0, theme::TEXT_PRIMARY),
+                ]
+                .spacing(12.0)
+                .align_y(iced::Alignment::Center),
+            );
+        }
+        columns = columns.push(icons);
     }
-    states.push(icons.into());
+    states.push(columns.into());
     states
 }

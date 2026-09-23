@@ -110,19 +110,24 @@ pub fn icon_button<'a, M: Clone + 'a>(
 }
 
 /// The compact icon button a module band or a sub-group header carries at its right end, such as
-/// its reset: a [`theme::HEADER_ICON_SIZE`] icon in the secondary text colour inside a
-/// [`theme::HEADER_BUTTON_SIZE`] square.
+/// its reset: a [`theme::HEADER_ICON_SIZE`] icon in the secondary text colour, or the accent when
+/// selected, inside a [`theme::HEADER_BUTTON_SIZE`] square.
 pub fn header_icon_button<'a, M: Clone + 'a>(
     model: &IconButtonModel,
     on_press: Option<M>,
 ) -> Element<'a, M> {
-    let color = if model.enabled {
-        theme::TEXT_SECONDARY
-    } else {
-        theme::TEXT_TERTIARY
+    let color = match (model.enabled, model.selected) {
+        (false, _) => theme::TEXT_TERTIARY,
+        (true, true) => theme::ACCENT,
+        (true, false) => theme::TEXT_SECONDARY,
+    };
+    // A header's selected action (a locked ratio) reads by its accent ink alone, with no surface.
+    let bare = IconButtonModel {
+        selected: false,
+        ..model.clone()
     };
     sized_icon_button(
-        model,
+        &bare,
         on_press,
         theme::HEADER_BUTTON_SIZE,
         theme::HEADER_ICON_SIZE,
@@ -287,12 +292,14 @@ fn draw_path(frame: &mut canvas::Frame, icon: Icon, color: Color) {
         }
         // The Return key: down from the top right, then left to an arrowhead.
         Icon::Return => {
-            poly(frame, &[(12.5, 3.5), (12.5, 10.0), (3.5, 10.0)]);
-            poly(frame, &[(6.5, 7.0), (3.5, 10.0), (6.5, 13.0)]);
+            poly(frame, &[(12.5, 4.0), (12.5, 8.5), (3.5, 8.5)]);
+            poly(frame, &[(6.0, 6.0), (3.5, 8.5), (6.0, 11.0)]);
         }
+        // Two overlapping corners, as the crop reference draws them: one down and right, one
+        // right and down.
         Icon::Crop => {
-            poly(frame, &[(3.0, 2.0), (3.0, 11.0), (13.0, 11.0)]);
-            poly(frame, &[(13.0, 14.0), (13.0, 5.0), (3.0, 5.0)]);
+            poly(frame, &[(4.6, 0.6), (4.6, 11.4), (15.4, 11.4)]);
+            poly(frame, &[(0.6, 4.6), (11.4, 4.6), (11.4, 15.4)]);
         }
         Icon::Picker => {
             poly(
@@ -308,26 +315,32 @@ fn draw_path(frame: &mut canvas::Frame, icon: Icon, color: Color) {
             line(frame, (9.5, 4.0), (12.0, 6.5));
             line(frame, (11.0, 2.5), (13.5, 5.0));
         }
+        // A padlock: a rounded body and a round shackle.
         Icon::Lock => {
             frame.stroke(
-                &canvas::Path::rectangle(p(4.0, 7.0), iced::Size::new(8.0 * s, 7.0 * s)),
+                &canvas::Path::rounded_rectangle(
+                    p(3.2, 7.2),
+                    iced::Size::new(9.6 * s, 7.4 * s),
+                    (1.6 * s).into(),
+                ),
                 stroke,
             );
-            poly(
-                frame,
-                &[
-                    (5.5, 7.0),
-                    (5.5, 4.5),
-                    (7.0, 3.0),
-                    (9.0, 3.0),
-                    (10.5, 4.5),
-                    (10.5, 7.0),
-                ],
-            );
+            let mut shackle = canvas::path::Builder::new();
+            shackle.move_to(p(5.4, 7.2));
+            shackle.line_to(p(5.4, 5.0));
+            shackle.arc(canvas::path::Arc {
+                center: p(8.0, 5.0),
+                radius: 2.6 * s,
+                start_angle: iced::Radians(std::f32::consts::PI),
+                end_angle: iced::Radians(2.0 * std::f32::consts::PI),
+            });
+            shackle.line_to(p(10.6, 7.2));
+            frame.stroke(&shackle.build(), stroke);
         }
+        // Two opposed arrows, each with one barb, as the crop reference draws the swap.
         Icon::Swap => {
-            poly(frame, &[(2.0, 5.0), (13.0, 5.0), (10.5, 2.5)]);
-            poly(frame, &[(14.0, 11.0), (3.0, 11.0), (5.5, 13.5)]);
+            poly(frame, &[(2.5, 5.5), (13.5, 5.5), (10.5, 2.8)]);
+            poly(frame, &[(13.5, 10.5), (2.5, 10.5), (5.5, 13.2)]);
         }
         Icon::Guide => {
             frame.stroke(

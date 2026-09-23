@@ -248,18 +248,12 @@ pub const OVER_RANGE_MARK: iced::Size = iced::Size {
 pub const BUTTON_HEIGHT: f32 = 26.0;
 /// A labelled button in a row under a group's sliders that holds a picker.
 pub const COMPACT_BUTTON_HEIGHT: f32 = 22.0;
-/// A button that shares its row equally with another (Cancel, Apply): its inset on either side,
-/// the label at the left and the key hint at the right.
-pub const WIDE_BUTTON_PADDING: f32 = 10.0;
-/// A key hint on the accent fill of a primary button: the Canvas ink at reduced strength, so the
-/// label reads first.
-pub const PRIMARY_HINT: Color = Color::from_rgb8(0x5c, 0x4a, 0x2e);
+/// A [`BUTTON_HEIGHT`] button's inset on either side of its content.
+pub const BUTTON_PADDING: f32 = 10.0;
+/// A [`COMPACT_BUTTON_HEIGHT`] button's inset on either side of its content.
+pub const COMPACT_BUTTON_PADDING: f32 = 7.0;
 /// The inset of a tooltip's text inside its Bar surface.
 pub const TOOLTIP_PADDING: f32 = 6.0;
-/// A labelled button's inset before its icon or label.
-pub const BUTTON_PADDING_LEFT: f32 = 7.0;
-/// A labelled button's inset after its label or key hint.
-pub const BUTTON_PADDING_RIGHT: f32 = 7.0;
 /// Between a labelled button's icon and label.
 pub const BUTTON_ICON_SPACING: f32 = 5.0;
 /// Between a labelled button's label and its key hint.
@@ -275,6 +269,62 @@ pub const HEADER_BUTTON_ROW_MARGIN: f32 = 2.0;
 pub const BUTTON_ROW_BOTTOM: f32 = 2.0;
 /// Between buttons in one row.
 pub const BUTTON_ROW_SPACING: f32 = 6.0;
+/// A chip: a ratio preset or a version.
+pub const CHIP_HEIGHT: f32 = 22.0;
+/// A chip's inset on either side of its label.
+pub const CHIP_PADDING: f32 = 8.0;
+/// Between a chip's label and its trailing caption.
+pub const CHIP_TRAILING_SPACING: f32 = 4.0;
+/// Between chips, across a row and between wrapped rows.
+pub const CHIP_SPACING: f32 = 4.0;
+/// The margin under a row of chips that another row follows, on top of [`ROW_SPACING`].
+pub const CHIP_ROW_BOTTOM: f32 = 4.0;
+/// An unselected chip's label, a step under the label colour, as the crop reference draws the
+/// ratios not chosen.
+pub const CHIP_LABEL: Color = Color::from_rgb8(176, 176, 182);
+/// A selected chip's fill: the accent laid over the panel at about 16%, opaque so Iced's linear
+/// blending does not lighten it, as the crop reference draws the chosen ratio.
+pub const SELECTED_FILL: Color = Color::from_rgb8(62, 55, 46);
+/// A number field's row: the label, the value box and any unit.
+pub const FIELD_ROW_HEIGHT: f32 = 24.0;
+/// A number field's value box.
+pub const FIELD_WIDTH: f32 = 56.0;
+/// A value box's height.
+pub const FIELD_HEIGHT: f32 = 20.0;
+/// A colour channel's value box, three to a row after the swatch.
+pub const CHANNEL_FIELD_WIDTH: f32 = 40.0;
+/// Between colour channel boxes.
+pub const CHANNEL_FIELD_SPACING: f32 = 4.0;
+/// Between a colour row's swatch and its first channel box.
+pub const SWATCH_SPACING: f32 = 3.0;
+/// A colour swatch in a field row, its ring included.
+pub const SWATCH_SIZE: f32 = 16.0;
+/// A colour swatch's corner radius.
+pub const SWATCH_RADIUS: f32 = 3.0;
+/// A value box's text inset from its right edge.
+pub const FIELD_INSET: f32 = 6.0;
+/// A value box's inset above and below the editing input's line.
+pub const FIELD_PADDING_Y: f32 = 2.0;
+/// Between a field's box, its unit and a stepper's buttons.
+pub const FIELD_UNIT_SPACING: f32 = 6.0;
+/// A toggle's row: its label and the switch.
+pub const TOGGLE_ROW_HEIGHT: f32 = 26.0;
+/// A switch's track.
+pub const SWITCH_WIDTH: f32 = 26.0;
+/// A switch's track height; its ends are round.
+pub const SWITCH_HEIGHT: f32 = 14.0;
+/// A switch's knob.
+pub const SWITCH_KNOB: f32 = 10.0;
+/// The knob's inset from the track's end.
+pub const SWITCH_INSET: f32 = 2.0;
+/// A readout card's line: a caption on a 16 pt pitch.
+pub const READOUT_LINE_HEIGHT: f32 = 16.0;
+/// A readout card's inset above its first line and below its last.
+pub const READOUT_PADDING_Y: f32 = 5.5;
+/// A readout card's inset at either side.
+pub const READOUT_PADDING_X: f32 = 10.0;
+/// The margin above a readout card, on top of [`ROW_SPACING`].
+pub const READOUT_MARGIN: f32 = 4.0;
 /// A segmented tab row that stands in for a module's group headers.
 pub const TAB_ROW_HEIGHT: f32 = 24.0;
 /// The margin above and below a tab row, on top of [`ROW_SPACING`].
@@ -451,6 +501,23 @@ pub fn text_input_style(invalid: bool) -> impl Fn(&Theme, text_input::Status) ->
     }
 }
 
+/// A field box's text input: the Control surface with no outline at rest, as the module
+/// references draw a value box, the accent outline while focused and the clipping red while
+/// invalid.
+pub fn field_input_style(
+    invalid: bool,
+) -> impl Fn(&Theme, text_input::Status) -> text_input::Style {
+    move |theme, status| {
+        let mut style = text_input_style(invalid)(theme, status);
+        if !invalid && !matches!(status, text_input::Status::Focused { .. }) {
+            // No outline at all: a transparent one would still inset the surface by its width.
+            style.border.color = Color::TRANSPARENT;
+            style.border.width = 0.0;
+        }
+        style
+    }
+}
+
 /// The tools panel's thin overlay scrollbar.
 pub fn panel_scrollbar() -> iced::widget::scrollable::Direction {
     iced::widget::scrollable::Direction::Vertical(
@@ -503,6 +570,52 @@ pub fn button_control(_theme: &Theme, status: button::Status) -> button::Style {
         },
         shadow: Shadow::default(),
         snap: false,
+    }
+}
+
+/// A selected chip: the accent-tinted fill, borderless.
+pub fn chip_selected(_theme: &Theme, status: button::Status) -> button::Style {
+    button::Style {
+        background: Some(Background::Color(SELECTED_FILL)),
+        text_color: ACCENT,
+        border: Border {
+            radius: RADIUS.into(),
+            width: 0.0,
+            color: Color::TRANSPARENT,
+        },
+        shadow: Shadow::default(),
+        snap: false,
+    }
+    .with_disabled(status)
+}
+
+/// A number field's value box: the Control surface, borderless, a press opens it for typing.
+pub fn button_field(theme: &Theme, status: button::Status) -> button::Style {
+    button_control(theme, status)
+}
+
+/// A readout card: the Canvas surface, rounded, borderless.
+pub fn readout_surface(_theme: &Theme) -> container::Style {
+    surface(CANVAS).border(Border {
+        color: Color::TRANSPARENT,
+        width: 0.0,
+        radius: RADIUS.into(),
+    })
+}
+
+trait DisabledStyle {
+    fn with_disabled(self, status: button::Status) -> Self;
+}
+
+impl DisabledStyle for button::Style {
+    fn with_disabled(self, status: button::Status) -> Self {
+        match status {
+            button::Status::Disabled => button::Style {
+                text_color: TEXT_TERTIARY,
+                ..self
+            },
+            _ => self,
+        }
     }
 }
 

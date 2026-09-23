@@ -39,7 +39,7 @@ pub fn gallery_states() -> Vec<iced::Element<'static, ()>> {
 /// Names the exact gallery states in draw order for the real-app evidence board.
 #[doc(hidden)]
 pub fn gallery_named_states() -> Vec<(&'static str, iced::Element<'static, ()>)> {
-    const NAMES: [&str; 68] = [
+    const NAMES: [&str; 72] = [
         "Highlights · resting slider",
         "Exposure · dragging slider",
         "Contrast · editing slider value",
@@ -108,6 +108,10 @@ pub fn gallery_named_states() -> Vec<(&'static str, iced::Element<'static, ()>)>
         "Module bands · collapsed, unavailable, collapsed group",
         "Colour mixer · tab row per selected tab",
         "Neutral picker · labelled buttons",
+        "Transforms · icon-button row",
+        "Crop and straighten · drafting",
+        "Crop and straighten · idle",
+        "Pixel · field rows",
     ];
     let states = gallery_states();
     assert_eq!(
@@ -123,6 +127,6 @@ mod tests {
     #[test]
     fn gallery_builds_every_widget_state_without_panicking() {
         let states = super::gallery_named_states();
-        assert_eq!(states.len(), 68);
+        assert_eq!(states.len(), 72);
     }
 }

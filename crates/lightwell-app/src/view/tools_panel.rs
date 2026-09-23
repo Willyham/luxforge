@@ -19,18 +19,19 @@ use crate::{
 };
 use iced::{
     Alignment, Color, Element, Length,
-    widget::{Row, column, mouse_area, row, scrollable},
+    widget::{column, mouse_area, row, scrollable},
 };
 use lightwell_ui::{
     BINS, ButtonSize, ButtonTone, ChipModel, ClipTriangleModel, ColorPickerModel, ColorSwatchModel,
     ControlKey, ControlKeyEvent, CurveEditorModel, CurvePointRow, HistogramChannel, Icon,
     IconButtonModel, LabelledButtonModel, MenuChoiceModel, NumberFieldModel, RailDecoration,
     RowPlacement, SectionHeaderModel, SegmentedModel, SliderModel, StepperModel,
-    SubGroupHeaderModel, Tab, TabRowModel, ToggleModel, button_row, caption, chip, clip_triangle,
-    color_picker, color_swatch, curve_editor, error_caption, focus_control, histogram, icon_button,
-    icon_button_row, inline_menu, labelled_button, menu_choice, module_section, number_field,
-    row_icon_button, section_label, segmented, slider, stepper, sub_group_header, tab_row, theme,
-    toggle, value_input,
+    SubGroupHeaderModel, Tab, TabRowModel, ToggleModel, boxed_input, button_row, caption,
+    channel_row, chip, chip_row, chip_wrap, clip_triangle, color_picker, color_swatch,
+    curve_editor, equal_button_row, error_caption, focus_control, histogram, icon_button,
+    icon_button_row, inline_menu, label_line, labelled_button, menu_choice, module_section,
+    number_field, readout_card, row_icon_button, section_label, segmented, slider, stepper,
+    sub_group_header, sub_group_header_with_actions, tab_row, theme, toggle,
 };
 use serde_json::{Map, Value};
 
@@ -215,6 +216,7 @@ fn section_view<'a>(
             hint: section.hint.clone(),
             unavailable: section.unavailable.clone(),
             reset: section.reset.is_some(),
+            status: section.status.clone(),
             enabled: section.enabled,
         },
         Message::ToggleSection(section.module_id.clone()),
@@ -855,7 +857,7 @@ fn enum_view<'a>(
         choice.parameter.clone(),
         choice.options.clone(),
     );
-    let mut field = column![lightwell_ui::label(choice.label.clone())].spacing(4.0);
+    let mut field = column![label_line(choice.label.clone(), enabled)].spacing(theme::SLIDER_GAP);
     match choice.style {
         ChoiceControlStyle::Segmented => {
             field = field.push(segmented(
@@ -888,7 +890,7 @@ fn enum_view<'a>(
                     None,
                 )
             });
-            field = field.push(Row::new().spacing(4.0).extend(chips).wrap());
+            field = field.push(chip_wrap(chips.collect()));
         }
         ChoiceControlStyle::Menu => {
             let action = choice.action.clone();
@@ -956,43 +958,43 @@ fn color_view<'a>(
             })
         },
     );
-    let mut body = column![
-        row![lightwell_ui::label(color.label.clone()), swatch]
-            .spacing(4.0)
-            .align_y(Alignment::Center)
-    ]
-    .spacing(4.0);
-    match color.style {
-        ColorControlStyle::Fields => {
-            let mut channels = row![].spacing(4.0).align_y(Alignment::Center);
-            for (index, value) in color.channels.iter().enumerate() {
+    let channels: Vec<Element<'a, Message>> = match color.style {
+        ColorControlStyle::Fields => color
+            .channels
+            .iter()
+            .enumerate()
+            .map(|(index, value)| {
                 let (action, parameter, current) = (
                     color.action.clone(),
                     color.parameter.clone(),
                     color.text.clone(),
                 );
-                channels = channels.push(
-                    value_input(
-                        fields::CHANNELS[index],
-                        value,
-                        color.invalid.is_some(),
-                        enabled,
-                        move |text| Message::Field {
-                            action: action.clone(),
-                            parameter: parameter.clone(),
-                            text: fields::replace_channel(&current, index, &text),
-                        },
-                        Message::Submit {
-                            action: color.action.clone(),
-                            parameter: Some(color.parameter.clone()),
-                        },
-                    )
-                    .id(color.ids[index].clone())
-                    .width(Length::Fixed(48.0)),
-                );
-            }
-            body = body.push(channels);
-        }
+                boxed_input(
+                    fields::CHANNELS[index],
+                    value,
+                    theme::CHANNEL_FIELD_WIDTH,
+                    color.invalid.is_some(),
+                    enabled,
+                    move |text| Message::Field {
+                        action: action.clone(),
+                        parameter: parameter.clone(),
+                        text: fields::replace_channel(&current, index, &text),
+                    },
+                    Message::Submit {
+                        action: color.action.clone(),
+                        parameter: Some(color.parameter.clone()),
+                    },
+                )
+                .id(color.ids[index].clone())
+                .into()
+            })
+            .collect(),
+        ColorControlStyle::Picker => Vec::new(),
+    };
+    let mut body = column![channel_row(color.label.clone(), enabled, swatch, channels)]
+        .spacing(theme::SLIDER_GAP);
+    match color.style {
+        ColorControlStyle::Fields => {}
         ColorControlStyle::Picker if color.picker_open => {
             let hsv = color
                 .picker_hsv
@@ -1087,14 +1089,14 @@ fn curve_view<'a>(
     let action = curve.action.clone();
     let parameter = channel.parameter.clone();
     let widget = column![
-        lightwell_ui::label(curve.label.clone()),
+        label_line(curve.label.clone(), enabled),
         curve_editor(&model, move |event| Message::ControlCurve {
             action: action.clone(),
             parameter: parameter.clone(),
             event,
         })
     ]
-    .spacing(4.0);
+    .spacing(theme::SLIDER_GAP);
     with_control_menu(widget.into(), &curve.action, Some(&channel.parameter), menu)
 }
 
@@ -1266,27 +1268,39 @@ fn picker_view<'a>(
 }
 
 /// The crop draft's own panel, driven by [`CropMessage`]: the API-equivalent path and this panel
-/// share the same state machine.
+/// share the same state machine. Idle, it is one Crop button; drafting, it is the Ratio group
+/// (chips, custom ratio, lock and swap), the Angle group (stepper and straighten guide), the
+/// draft's exact readout and Cancel and Apply, every row a widget of the library.
 fn crop_section_view<'a>(
     model: &'a CropSectionModel,
     menu: Option<&'a MenuTarget>,
 ) -> Element<'a, Message> {
-    let mut panel = column![lightwell_ui::title(model.title.clone())].spacing(theme::SPACING);
+    let mut rows: Vec<Element<'a, Message>> = Vec::new();
     if !model.drafting {
-        panel = panel.push(text_button(
-            "Crop & straighten",
-            ButtonTone::Control,
-            model.can_start.then_some(Message::Crop(CropMessage::Start)),
+        rows.push(button_row(
+            vec![labelled_button(
+                &LabelledButtonModel {
+                    label: "Crop".into(),
+                    icon: Some(Icon::Crop),
+                    key_hint: model.shortcut.clone(),
+                    tone: ButtonTone::Control,
+                    size: ButtonSize::Regular,
+                    fill: false,
+                    enabled: model.can_start,
+                },
+                model.can_start.then_some(Message::Crop(CropMessage::Start)),
+            )],
+            RowPlacement::default(),
         ));
         if model.pending {
-            panel = panel.push(caption("Preparing the crop's input stage…"));
+            rows.push(caption("Preparing the crop's input stage…"));
         }
-        return panel.into();
+        return column(rows).spacing(theme::ROW_SPACING).into();
     }
     if model.conflicted {
-        panel = panel.push(error_caption("Changed elsewhere · Discard or Reapply"));
-        panel = panel.push(
-            row![
+        rows.push(error_caption("Changed elsewhere · Discard or Reapply"));
+        rows.push(button_row(
+            vec![
                 text_button(
                     "Discard",
                     ButtonTone::Control,
@@ -1299,170 +1313,238 @@ fn crop_section_view<'a>(
                         .can_reapply
                         .then_some(Message::Crop(CropMessage::Reapply)),
                 ),
-            ]
-            .spacing(theme::SPACING / 2.0),
-        );
+            ],
+            RowPlacement {
+                after_header: false,
+                followed: true,
+            },
+        ));
     }
     if model.paused {
-        panel = panel.push(caption(
+        rows.push(caption(
             "Draft paused during history preview · Return to current",
         ));
     }
-    if !model.presets.is_empty() {
-        let chips = model.presets.iter().map(|preset| {
-            let control = chip(
-                &ChipModel {
-                    label: preset.label.clone(),
-                    trailing: None,
-                    selected: preset.chosen,
+    rows.push(sub_group_header_with_actions(
+        &crop_group("Ratio", model.enabled),
+        None,
+        Message::CloseMenu,
+        vec![
+            (
+                IconButtonModel {
+                    icon: Icon::Lock,
+                    tooltip: model.lock_label.clone(),
                     enabled: model.enabled,
+                    selected: model.locked,
                 },
-                model
-                    .enabled
-                    .then_some(Message::Crop(CropMessage::Preset(preset.index))),
-                None,
-            );
-            let index = preset.index;
-            focus_control(control, model.enabled, move |event| {
-                activates(event).then(|| Message::Crop(CropMessage::Preset(index)))
-            })
-        });
-        panel = panel.push(Row::new().spacing(4.0).extend(chips).wrap());
-    }
-    panel = panel.push(
-        row![
-            number_field(
-                &NumberFieldModel {
-                    label: "W".into(),
-                    display: model.custom.0.clone(),
-                    edit: lightwell_ui::ValueEdit::Editing {
-                        text: model.custom.0.clone(),
-                        invalid: None
-                    },
-                    unit: None,
-                    enabled: model.enabled,
-                    id: Some(model.custom_ids.0.clone()),
-                },
-                Message::Crop(CropMessage::CustomWidth(model.custom.0.clone())),
-                |text| Message::Crop(CropMessage::CustomWidth(text)),
-                Message::Crop(CropMessage::CustomWidth(model.custom.0.clone())),
-                Message::Crop(CropMessage::CustomWidth(model.custom.0.clone()))
-            ),
-            number_field(
-                &NumberFieldModel {
-                    label: "H".into(),
-                    display: model.custom.1.clone(),
-                    edit: lightwell_ui::ValueEdit::Editing {
-                        text: model.custom.1.clone(),
-                        invalid: None
-                    },
-                    unit: None,
-                    enabled: model.enabled,
-                    id: Some(model.custom_ids.1.clone()),
-                },
-                Message::Crop(CropMessage::CustomHeight(model.custom.1.clone())),
-                |text| Message::Crop(CropMessage::CustomHeight(text)),
-                Message::Crop(CropMessage::CustomHeight(model.custom.1.clone())),
-                Message::Crop(CropMessage::CustomHeight(model.custom.1.clone()))
-            ),
-            text_button(
-                &model.lock_label,
-                ButtonTone::Control,
                 model.enabled.then_some(Message::Crop(CropMessage::Lock)),
             ),
-            text_button(
-                "Swap",
-                ButtonTone::Control,
+            (
+                IconButtonModel {
+                    icon: Icon::Swap,
+                    tooltip: "Swap".into(),
+                    enabled: model.can_swap,
+                    selected: false,
+                },
                 model.can_swap.then_some(Message::Crop(CropMessage::Swap)),
             ),
-        ]
-        .spacing(theme::SPACING / 2.0)
-        .align_y(Alignment::Center),
-    );
-    panel = panel.push(
-        row![
-            focus_control(
-                stepper(
-                    &StepperModel {
-                        field: NumberFieldModel {
-                            label: "Angle".into(),
-                            display: model.angle.clone(),
-                            edit: lightwell_ui::ValueEdit::Editing {
-                                text: model.angle.clone(),
-                                invalid: None
-                            },
-                            unit: Some("°".into()),
-                            enabled: model.enabled,
-                            id: Some(model.angle_id.clone()),
-                        },
-                        decrement_enabled: model.enabled,
-                        increment_enabled: model.enabled,
-                        decrement_tooltip: format!("−{}°", model.nudge),
-                        increment_tooltip: format!("+{}°", model.nudge),
+        ],
+    ));
+    if !model.presets.is_empty() {
+        let chips = model
+            .presets
+            .iter()
+            .map(|preset| {
+                let control = chip(
+                    &ChipModel {
+                        label: preset.label.clone(),
+                        trailing: None,
+                        selected: preset.chosen,
+                        enabled: model.enabled,
                     },
-                    Message::Crop(CropMessage::NudgeAngle(-model.nudge)),
-                    Message::Crop(CropMessage::NudgeAngle(model.nudge)),
-                    Message::Crop(CropMessage::AngleText(model.angle.clone())),
-                    |text| Message::Crop(CropMessage::AngleText(text)),
-                    Message::Crop(CropMessage::SubmitAngle),
-                    Message::Crop(CropMessage::AngleText("0".into()))
-                ),
+                    model
+                        .enabled
+                        .then_some(Message::Crop(CropMessage::Preset(preset.index))),
+                    None,
+                );
+                let index = preset.index;
+                focus_control(control, model.enabled, move |event| {
+                    activates(event).then(|| Message::Crop(CropMessage::Preset(index)))
+                })
+            })
+            .collect();
+        rows.push(chip_row(
+            chips,
+            RowPlacement {
+                after_header: true,
+                followed: true,
+            },
+        ));
+    }
+    rows.push(
+        row![
+            custom_field(
+                "W",
+                &model.custom.0,
+                &model.custom_ids.0,
                 model.enabled,
-                {
-                    let step = model.nudge;
-                    move |event| match event {
-                        ControlKeyEvent::Pressed { key, shift, option } => {
-                            key_direction(key).map(|direction| {
-                                let factor = if shift {
-                                    10.0
-                                } else if option {
-                                    0.1
-                                } else {
-                                    1.0
-                                };
-                                Message::Crop(CropMessage::NudgeAngle(
-                                    f64::from(direction) * step * factor,
-                                ))
-                            })
-                        }
-                        _ => None,
-                    }
-                }
+                CropMessage::CustomWidth
             ),
-            straighten_toggle(model),
+            custom_field(
+                "H",
+                &model.custom.1,
+                &model.custom_ids.1,
+                model.enabled,
+                CropMessage::CustomHeight
+            ),
         ]
-        .spacing(theme::SPACING / 2.0)
-        .align_y(Alignment::Center),
+        .spacing(theme::BUTTON_ROW_SPACING)
+        .into(),
     );
-    let apply = text_button(
-        "Apply",
-        ButtonTone::Primary,
+    rows.push(sub_group_header(
+        &crop_group("Angle", model.enabled),
+        None,
+        Message::CloseMenu,
+    ));
+    rows.push(angle_stepper(model));
+    rows.push(straighten_toggle(model));
+    rows.push(readout_card(
+        &model.readout,
+        RowPlacement {
+            after_header: false,
+            followed: true,
+        },
+    ));
+    let cancel = labelled_button(
+        &LabelledButtonModel {
+            label: "Cancel".into(),
+            icon: None,
+            key_hint: Some("esc".into()),
+            tone: ButtonTone::Control,
+            size: ButtonSize::Regular,
+            fill: true,
+            enabled: true,
+        },
+        Some(Message::Crop(CropMessage::Cancel)),
+    );
+    let apply = labelled_button(
+        &LabelledButtonModel {
+            label: "Apply".into(),
+            icon: None,
+            key_hint: Some("return".into()),
+            tone: ButtonTone::Primary,
+            size: ButtonSize::Regular,
+            fill: true,
+            enabled: model.can_apply,
+        },
         model.can_apply.then_some(Message::Crop(CropMessage::Apply)),
     );
     let apply: Element<'a, Message> = mouse_area(apply)
         .on_right_press(Message::OpenMenu(MenuTarget::Draft))
         .into();
-    panel = panel.push(button_row(
-        vec![
-            text_button(
-                "Cancel",
-                ButtonTone::Control,
-                Some(Message::Crop(CropMessage::Cancel)),
-            ),
-            apply,
-        ],
-        RowPlacement::default(),
+    let draft_menu = matches!(menu, Some(MenuTarget::Draft));
+    rows.push(equal_button_row(
+        vec![cancel, apply],
+        RowPlacement {
+            after_header: false,
+            followed: draft_menu,
+        },
     ));
-    if matches!(menu, Some(MenuTarget::Draft)) {
-        panel = panel.push(inline_menu(vec![
+    if draft_menu {
+        rows.push(inline_menu(vec![
             ("Copy as JSON request".to_owned(), Message::CopyDraftRequest),
             ("Cancel".to_owned(), Message::CloseMenu),
         ]));
     }
-    for line in &model.readout {
-        panel = panel.push(caption(line.clone()));
+    column(rows).spacing(theme::ROW_SPACING).into()
+}
+
+/// A crop group's header: a label and its rule, with no disclosure, caption or reset of its own,
+/// because the crop panel's groups are the host's, not a descriptor's.
+fn crop_group(label: &str, enabled: bool) -> SubGroupHeaderModel {
+    SubGroupHeaderModel {
+        label: label.to_owned(),
+        state: None,
+        state_accent: false,
+        expanded: None,
+        reset: false,
+        enabled,
     }
-    panel.into()
+}
+
+/// One of the custom ratio's two fields, always open for typing.
+fn custom_field<'a>(
+    label: &str,
+    value: &str,
+    id: &str,
+    enabled: bool,
+    message: fn(String) -> CropMessage,
+) -> Element<'a, Message> {
+    let current = Message::Crop(message(value.to_owned()));
+    iced::widget::container(number_field(
+        &NumberFieldModel {
+            label: label.to_owned(),
+            display: value.to_owned(),
+            edit: lightwell_ui::ValueEdit::Editing {
+                text: value.to_owned(),
+                invalid: None,
+            },
+            unit: None,
+            enabled,
+            id: Some(id.to_owned()),
+        },
+        current.clone(),
+        move |text| Message::Crop(message(text)),
+        current.clone(),
+        current,
+    ))
+    .width(Length::Fill)
+    .into()
+}
+
+/// The straightening angle: its value box with the ± nudges, and the arrow keys while focused.
+fn angle_stepper(model: &CropSectionModel) -> Element<'_, Message> {
+    let control = stepper(
+        &StepperModel {
+            field: NumberFieldModel {
+                label: String::new(),
+                display: model.angle.clone(),
+                edit: lightwell_ui::ValueEdit::Editing {
+                    text: model.angle.clone(),
+                    invalid: None,
+                },
+                unit: Some("°".into()),
+                enabled: model.enabled,
+                id: Some(model.angle_id.clone()),
+            },
+            decrement_enabled: model.enabled,
+            increment_enabled: model.enabled,
+            decrement_tooltip: format!("−{}°", model.nudge),
+            increment_tooltip: format!("+{}°", model.nudge),
+        },
+        Message::Crop(CropMessage::NudgeAngle(-model.nudge)),
+        Message::Crop(CropMessage::NudgeAngle(model.nudge)),
+        Message::Crop(CropMessage::AngleText(model.angle.clone())),
+        |text| Message::Crop(CropMessage::AngleText(text)),
+        Message::Crop(CropMessage::SubmitAngle),
+        Message::Crop(CropMessage::AngleText("0".into())),
+    );
+    let step = model.nudge;
+    focus_control(control, model.enabled, move |event| match event {
+        ControlKeyEvent::Pressed { key, shift, option } => key_direction(key).map(|direction| {
+            let factor = if shift {
+                10.0
+            } else if option {
+                0.1
+            } else {
+                1.0
+            };
+            Message::Crop(CropMessage::NudgeAngle(
+                f64::from(direction) * step * factor,
+            ))
+        }),
+        _ => None,
+    })
 }
 
 /// A labelled button with no icon or key hint.

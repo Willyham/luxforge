@@ -14,6 +14,9 @@ use lightwell_core::{BoxRect, CROP_EFFECT, CropPayload, CropStage};
 
 /// The fixture both scenarios open, and therefore the crop layer's input stage.
 const STAGE: (u32, u32) = (480, 320);
+/// Expanded by its own default: `crop-draft` collapses it so the crop section is on screen.
+const BASIC_MODULE: &str = "lightwell.basic";
+const CROP_MODULE: &str = "lightwell.crop";
 /// The straightening angle the scripted `edit.crop` commits.
 const ANGLE: f64 = 7.0;
 /// How much one scripted nudge adds to it before Apply.
@@ -50,7 +53,7 @@ fn off_centre() -> Result<CropPayload> {
 pub fn frames(scenario: &str) -> Option<usize> {
     match scenario {
         "crop" => Some(9),
-        "crop-draft" => Some(7),
+        "crop-draft" => Some(10),
         _ => None,
     }
 }
@@ -70,11 +73,16 @@ pub fn script(scenario: &str) -> Result<Option<Value>> {
             {"draft":{"nudge":NUDGE}},
             {"draft":{"apply":true}},
         ])),
-        // The draft's own gestures and controls, at Fit and at 100%.
+        // The draft's own gestures and controls, at Fit and at 100%. Basic is collapsed and the
+        // section expanded first, so the idle section is on screen, and the panel is scrolled to
+        // its end once the draft is open, so the drafting section is too.
         "crop-draft" => Some(json!([
+            {"section":{"module":BASIC_MODULE,"expanded":false}},
+            {"section":{"module":CROP_MODULE,"expanded":true}},
             {"draft":{"start":true}},
             {"draft":{"rect":[40.0,24.0,300.0,200.0]}},
             {"draft":{"preset":"1:1"}},
+            {"tools_scroll":1.0},
             {"view":{"zoom":"100"}},
             {"view":{"zoom":"fit"}},
             {"draft":{"apply":true}},
@@ -606,8 +614,15 @@ pub fn verify(evidence: &Path, scenario: &str, app: &Value, events: &[Value]) ->
             );
         }
         "crop-draft" => {
+            // The idle section, expanded, with no draft yet.
+            ensure(
+                frames[2]["state"]["expanded"][CROP_MODULE] == json!(true)
+                    && frames[2]["state"]["expanded"][BASIC_MODULE] == json!(false)
+                    && frames[2]["state"]["crop"]["drafting"] != json!(true),
+                "The idle crop section is not expanded under a collapsed Basic",
+            )?;
             // A neutral draft on a stack without a crop layer: the whole stage.
-            let draft = &frames[1]["state"]["crop"];
+            let draft = &frames[3]["state"]["crop"];
             ensure(
                 draft["layer"] == Value::Null
                     && draft["angle"] == json!(0.0)
@@ -615,63 +630,75 @@ pub fn verify(evidence: &Path, scenario: &str, app: &Value, events: &[Value]) ->
                 format!("A neutral draft is not the whole stage: {draft}"),
             )?;
             record(
-                &frames[1],
+                &frames[3],
                 "a neutral draft over the whole stage",
-                shows_draft(&paths[1], &frames[1])?,
+                shows_draft(&paths[3], &frames[3])?,
             );
             // Two corner gestures reach the rectangle exactly in Free mode.
             ensure(
-                frames[2]["state"]["crop"]["rect"] == json!([40.0, 24.0, 300.0, 200.0]),
+                frames[4]["state"]["crop"]["rect"] == json!([40.0, 24.0, 300.0, 200.0]),
                 format!(
                     "The scripted corner gestures produced {}",
-                    frames[2]["state"]["crop"]["rect"]
+                    frames[4]["state"]["crop"]["rect"]
                 ),
             )?;
             record(
-                &frames[2],
+                &frames[4],
                 "an off-centre rectangle from two corner gestures",
-                shows_draft(&paths[2], &frames[2])?,
+                shows_draft(&paths[4], &frames[4])?,
             );
             // The declared 1:1 preset keeps the centre and fits inside that rectangle.
-            let square = &frames[3]["state"]["crop"];
+            let square = &frames[5]["state"]["crop"];
             ensure(
                 square["preset"] == json!("1:1")
                     && square["rect"] == json!([90.0, 24.0, 200.0, 200.0]),
                 format!("The 1:1 preset produced {}", square["rect"]),
             )?;
             record(
-                &frames[3],
+                &frames[5],
                 "the declared 1:1 preset, centred on the same rectangle",
-                shows_draft(&paths[3], &frames[3])?,
+                shows_draft(&paths[5], &frames[5])?,
+            );
+            // Scrolling the panel to the drafting section leaves the draft as it was.
+            ensure(
+                frames[6]["state"]["crop"]["rect"] == frames[5]["state"]["crop"]["rect"]
+                    && frames[6]["state"]["crop"]["preset"] == frames[5]["state"]["crop"]["preset"]
+                    && frames[6]["state"]["tools_scroll"] == json!(1.0),
+                "Scrolling the tools panel changed the draft",
+            )?;
+            record(
+                &frames[6],
+                "the drafting section scrolled into view",
+                shows_draft(&paths[6], &frames[6])?,
             );
             // The overlay follows the view: 100% draws the box at one input pixel per physical pixel.
             record(
-                &frames[4],
+                &frames[7],
                 "the same draft at 100%",
-                shows_draft(&paths[4], &frames[4])?,
+                shows_draft(&paths[7], &frames[7])?,
             );
             record(
-                &frames[5],
+                &frames[8],
                 "the same draft back at Fit",
-                shows_draft(&paths[5], &frames[5])?,
+                shows_draft(&paths[8], &frames[8])?,
             );
-            let (_, applied, output) = committed(&frames[6])?;
+            let (_, applied, output) = committed(&frames[9])?;
             ensure(
                 applied.angle == 0.0 && output == [200, 200],
                 format!("Apply committed {output:?} at angle {}", applied.angle),
             )?;
             ensure(
-                frames[6]["state"]["crop"]["drafting"] == json!(false)
-                    && revision(&frames[6])? == revision(&frames[0])? + 1,
+                frames[9]["state"]["crop"]["drafting"] == json!(false)
+                    && revision(&frames[9])? == revision(&frames[0])? + 1,
                 "Apply did not commit exactly one new revision and end the draft",
             )?;
-            correlated(events, "crop_draft_applied", &frames[5])?;
+            correlated(events, "crop_draft_applied", &frames[8])?;
             // The square crop's own quarter points straddle the fixture's centre line, so this frame
             // proves the four quadrants are present rather than sampling their corners.
             record(
-                &frames[6],
+                &frames[9],
                 "the applied square crop",
-                shows_committed(&paths[6], &frames[6], false)?,
+                shows_committed(&paths[9], &frames[9], false)?,
             );
         }
         other => return Err(format!("Unknown crop scenario {other}").into()),

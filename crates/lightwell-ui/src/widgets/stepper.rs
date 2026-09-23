@@ -1,11 +1,13 @@
-//! A value field with explicit decrement and increment buttons.
+//! A value field with explicit decrement and increment buttons: one [`theme::FIELD_ROW_HEIGHT`]
+//! row, the label at the left, then the decrement and increment buttons and the value box at the
+//! right, as a number field has it.
 
-use super::icon_button::{Icon, IconButtonModel, icon_button};
-use super::number_field::{NumberFieldModel, ValueEdit, field_header};
+use super::icon_button::{Icon, IconButtonModel, header_icon_button};
+use super::number_field::{NumberFieldModel, ValueEdit, field_box, field_label, outside_unit};
 use crate::theme;
 use crate::widgets::text::error_caption;
-use iced::widget::{column, row};
-use iced::{Alignment, Element};
+use iced::widget::{Row, column, container};
+use iced::{Alignment, Element, Length};
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct StepperModel {
@@ -26,8 +28,11 @@ pub fn stepper<'a, M: Clone + 'a>(
     on_submit: M,
     on_reset: M,
 ) -> Element<'a, M> {
-    let (field, invalid) = field_header(&model.field, on_edit_start, on_text, on_submit, on_reset);
-    let minus = icon_button(
+    let invalid = match &model.field.edit {
+        ValueEdit::Editing { invalid, .. } => invalid.clone(),
+        ValueEdit::Display => None,
+    };
+    let minus = header_icon_button(
         &IconButtonModel {
             icon: Icon::Minus,
             tooltip: model.decrement_tooltip.clone(),
@@ -36,7 +41,7 @@ pub fn stepper<'a, M: Clone + 'a>(
         },
         Some(on_decrement),
     );
-    let plus = icon_button(
+    let plus = header_icon_button(
         &IconButtonModel {
             icon: Icon::Plus,
             tooltip: model.increment_tooltip.clone(),
@@ -45,17 +50,22 @@ pub fn stepper<'a, M: Clone + 'a>(
         },
         Some(on_increment),
     );
-    let mut body = column![
-        row![field, minus, plus]
-            .spacing(theme::SPACING)
-            .align_y(Alignment::Center)
-    ]
-    .spacing(4.0);
+    let mut line = Row::new()
+        .push(container(field_label(&model.field, on_reset)).width(Length::Fill))
+        .push(minus)
+        .push(plus)
+        .push(field_box(&model.field, on_edit_start, on_text, on_submit));
+    if let Some(unit) = outside_unit(&model.field.unit) {
+        line = line.push(unit);
+    }
+    let line = line
+        .spacing(theme::FIELD_UNIT_SPACING)
+        .align_y(Alignment::Center)
+        .height(Length::Fixed(theme::FIELD_ROW_HEIGHT))
+        .width(Length::Fill);
+    let mut body = column![line];
     if let Some(message) = invalid {
         body = body.push(error_caption(message));
     }
     body.into()
 }
-
-// Keep these imports visible in generated API documentation.
-const _: Option<ValueEdit> = None;

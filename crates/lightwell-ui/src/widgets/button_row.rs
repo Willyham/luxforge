@@ -44,6 +44,14 @@ impl ButtonSize {
             Self::Compact => theme::COMPACT_BUTTON_HEIGHT,
         }
     }
+
+    /// The button's inset on either side of its content.
+    pub const fn padding(self) -> f32 {
+        match self {
+            Self::Regular => theme::BUTTON_PADDING,
+            Self::Compact => theme::COMPACT_BUTTON_PADDING,
+        }
+    }
 }
 
 /// Plain data for one labelled button.
@@ -79,10 +87,7 @@ pub fn labelled_button<'a, M: Clone + 'a>(
         (ButtonTone::Selected, true) => theme::ACCENT,
         (ButtonTone::Control, true) => theme::TEXT_PRIMARY,
     };
-    let hint_ink = match (model.tone, model.enabled) {
-        (ButtonTone::Primary, true) => theme::PRIMARY_HINT,
-        _ => theme::TEXT_TERTIARY,
-    };
+    let hint_ink = theme::TEXT_TERTIARY;
     let mut content = Row::new().align_y(Alignment::Center);
     if let Some(glyph) = model.icon {
         content = content.push(
@@ -117,17 +122,13 @@ pub fn labelled_button<'a, M: Clone + 'a>(
         ButtonTone::Primary => theme::button_accent,
         ButtonTone::Selected => theme::button_selected,
     };
-    let (left, right) = if model.fill {
-        (theme::WIDE_BUTTON_PADDING, theme::WIDE_BUTTON_PADDING)
-    } else {
-        (theme::BUTTON_PADDING_LEFT, theme::BUTTON_PADDING_RIGHT)
-    };
+    let inset = model.size.padding();
     button(content.height(Length::Fill))
         .padding(Padding {
             top: 0.0,
-            right,
+            right: inset,
             bottom: 0.0,
-            left,
+            left: inset,
         })
         .width(if model.fill {
             Length::Fill
@@ -152,7 +153,7 @@ pub struct RowPlacement {
 }
 
 impl RowPlacement {
-    const fn padding(self) -> Padding {
+    pub(crate) const fn padding(self) -> Padding {
         Padding {
             top: if self.after_header {
                 theme::HEADER_BUTTON_ROW_MARGIN
@@ -292,6 +293,9 @@ mod tests {
         );
         assert_eq!(ButtonSize::Compact.height(), 22.0);
         assert_eq!(ButtonSize::Regular.height(), 26.0);
+        // Inset: 10 pt on a regular button (Crop, Apply pixel), 7 pt on a compact one.
+        assert_eq!(ButtonSize::Regular.padding(), 10.0);
+        assert_eq!(ButtonSize::Compact.padding(), 7.0);
     }
 
     #[test]

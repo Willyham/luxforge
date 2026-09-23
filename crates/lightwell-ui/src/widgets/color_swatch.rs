@@ -17,8 +17,8 @@ pub struct ColorSwatchModel {
 pub fn color_swatch<'a, M: Clone + 'a>(model: &ColorSwatchModel, on_press: M) -> Element<'a, M> {
     button(
         canvas::Canvas::new(Swatch { model: *model })
-            .width(Length::Fixed(28.0))
-            .height(Length::Fixed(20.0)),
+            .width(Length::Fixed(theme::SWATCH_SIZE))
+            .height(Length::Fixed(theme::SWATCH_SIZE)),
     )
     .padding(0)
     .style(if model.open {
@@ -63,7 +63,23 @@ impl<M> canvas::Program<M> for Swatch {
             state
                 .cache
                 .draw(renderer, Size::new(bounds.width, bounds.height), |frame| {
-                    frame.fill_rectangle(iced::Point::ORIGIN, frame.size(), color);
+                    // The dark ring separates any colour, even the panel's own, from the panel.
+                    let size = frame.size();
+                    let ring = canvas::Path::rounded_rectangle(
+                        iced::Point::ORIGIN,
+                        size,
+                        theme::SWATCH_RADIUS.into(),
+                    );
+                    frame.fill(&ring, theme::THUMB_OUTLINE);
+                    let inset = theme::BORDER_WIDTH;
+                    frame.fill(
+                        &canvas::Path::rounded_rectangle(
+                            iced::Point::new(inset, inset),
+                            Size::new(size.width - 2.0 * inset, size.height - 2.0 * inset),
+                            (theme::SWATCH_RADIUS - inset).into(),
+                        ),
+                        color,
+                    );
                 }),
         ]
     }

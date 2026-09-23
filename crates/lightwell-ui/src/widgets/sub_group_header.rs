@@ -42,6 +42,17 @@ pub fn sub_group_header<'a, M: Clone + 'a>(
     on_toggle: Option<M>,
     on_reset: M,
 ) -> Element<'a, M> {
+    sub_group_header_with_actions(model, on_toggle, on_reset, Vec::new())
+}
+
+/// A sub-group header with icon actions of its own at the right, before any reset, such as the
+/// crop Ratio group's lock and swap. A selected action draws its icon in the accent.
+pub fn sub_group_header_with_actions<'a, M: Clone + 'a>(
+    model: &SubGroupHeaderModel,
+    on_toggle: Option<M>,
+    on_reset: M,
+    actions: Vec<(IconButtonModel, Option<M>)>,
+) -> Element<'a, M> {
     let expanded = model.expanded.unwrap_or(true);
     let leading: Element<'a, M> = match model.expanded {
         Some(open) => {
@@ -100,6 +111,15 @@ pub fn sub_group_header<'a, M: Clone + 'a>(
         .spacing(theme::GROUP_RESET_SPACING)
         .align_y(Alignment::Center)
         .height(Length::Fixed(theme::GROUP_HEADER_HEIGHT));
+    for (action, on_press) in actions {
+        let key = on_press.clone().filter(|_| action.enabled);
+        let enabled = action.enabled;
+        header = header.push(focus_control(
+            header_icon_button(&action, on_press),
+            enabled && key.is_some(),
+            move |event| activates(event).then(|| key.clone()).flatten(),
+        ));
+    }
     if model.reset {
         let reset = header_icon_button(
             &IconButtonModel {

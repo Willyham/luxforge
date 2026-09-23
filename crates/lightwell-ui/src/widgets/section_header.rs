@@ -27,6 +27,9 @@ pub struct SectionHeaderModel {
     pub unavailable: Option<String>,
     /// Whether a reset action is offered. It is shown while the section is expanded.
     pub reset: bool,
+    /// A short word for the section's own state while expanded, drawn in the accent before the
+    /// reset, such as Draft while its canvas draft is open.
+    pub status: Option<String>,
     pub enabled: bool,
 }
 
@@ -100,6 +103,18 @@ pub fn section_header<'a, M: Clone + 'a>(
         Space::new().width(Length::Fill).into()
     };
     header = header.push(trailing);
+
+    if model.expanded
+        && model.unavailable.is_none()
+        && let Some(status) = &model.status
+    {
+        header = header.push(
+            text(status.clone())
+                .size(theme::SIZE_CAPTION)
+                .wrapping(Wrapping::None)
+                .color(theme::ACCENT),
+        );
+    }
 
     if model.reset && model.expanded && model.unavailable.is_none() {
         header = header.push(header_icon_button(

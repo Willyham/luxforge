@@ -3,9 +3,13 @@
 //! exactly as a generated section composes them.
 
 use crate::{
-    ButtonSize, ButtonTone, Icon, LabelledButtonModel, RailDecoration, RowPlacement,
-    SectionHeaderModel, SliderModel, SubGroupHeaderModel, Tab, TabRowModel, ValueEdit, button_row,
-    labelled_button, module_section, section_header, slider, sub_group_header, tab_row, theme,
+    ButtonSize, ButtonTone, ChipModel, ColorSwatchModel, Icon, IconButtonModel,
+    LabelledButtonModel, NumberFieldModel, RailDecoration, RowPlacement, SectionHeaderModel,
+    SliderModel, StepperModel, SubGroupHeaderModel, Tab, TabRowModel, ToggleModel, ValueEdit,
+    boxed_input, button_row, channel_row, chip, chip_row, color_swatch, equal_button_row,
+    icon_button_row, labelled_button, module_section, number_field, readout_card, row_icon_button,
+    section_body, section_header, slider, stepper, sub_group_header, sub_group_header_with_actions,
+    tab_row, theme, toggle,
 };
 use iced::widget::{Column, Row, column, container};
 use iced::{Element, Length};
@@ -34,6 +38,7 @@ fn band(
         hint: hint.map(Into::into),
         unavailable: unavailable.map(Into::into),
         reset: true,
+        status: None,
         enabled: true,
     }
 }
@@ -247,4 +252,282 @@ pub(crate) fn gallery_panels() -> Vec<Element<'static, ()>> {
             .into(),
     );
     states
+}
+
+/// The later module-panel states, in gallery order: the icon-button row, the crop section drafting
+/// (in its band, for the Draft status) and idle, and the field rows. All but the drafting section
+/// are section bodies, so the last gallery page keeps every state on screen.
+pub(crate) fn gallery_panel_rows() -> Vec<Element<'static, ()>> {
+    let mut states = Vec::new();
+
+    // -- Transforms: actions that each name an icon, as one row of equal icon buttons.
+    let cell = |icon, tooltip: &str| {
+        row_icon_button(
+            &IconButtonModel {
+                icon,
+                tooltip: tooltip.into(),
+                enabled: true,
+                selected: false,
+            },
+            Some(()),
+        )
+    };
+    let transforms = section_body(vec![
+        group_plain("Exact transforms"),
+        icon_button_row(
+            vec![
+                cell(Icon::RotateLeft, "Rotate left"),
+                cell(Icon::RotateRight, "Rotate right"),
+                cell(Icon::Mirror, "Mirror horizontal"),
+                cell(Icon::Flip, "Flip vertical"),
+            ],
+            RowPlacement {
+                after_header: true,
+                followed: false,
+            },
+        ),
+    ]);
+    states.push(panel(transforms));
+
+    // -- Crop and straighten, drafting: Draft in the band, the Ratio group's lock (selected) and
+    // -- swap, the ratio chips, the angle stepper, the guide switch, the readout and Cancel/Apply.
+    let ratio = |label: &str| SubGroupHeaderModel {
+        label: label.into(),
+        state: None,
+        state_accent: false,
+        expanded: None,
+        reset: false,
+        enabled: true,
+    };
+    let action = |icon, tooltip: &str, selected| {
+        (
+            IconButtonModel {
+                icon,
+                tooltip: tooltip.into(),
+                enabled: true,
+                selected,
+            },
+            Some(()),
+        )
+    };
+    let chips = [
+        "Free",
+        "Original",
+        "1:1",
+        "3:2",
+        "4:3",
+        "16:9",
+        "Custom\u{2026}",
+    ]
+    .into_iter()
+    .map(|label| {
+        chip(
+            &ChipModel {
+                label: label.into(),
+                trailing: None,
+                selected: label == "Original",
+                enabled: true,
+            },
+            Some(()),
+            None,
+        )
+    })
+    .collect();
+    let wide = |label: &str, hint: &str, tone| {
+        labelled_button(
+            &LabelledButtonModel {
+                label: label.into(),
+                icon: None,
+                key_hint: Some(hint.into()),
+                tone,
+                size: ButtonSize::Regular,
+                fill: true,
+                enabled: true,
+            },
+            Some(()),
+        )
+    };
+    let drafting = module_section(
+        &SectionHeaderModel {
+            status: Some("Draft".into()),
+            ..band("Crop and straighten", true, None, None)
+        },
+        (),
+        (),
+        Some(vec![
+            sub_group_header_with_actions(
+                &ratio("Ratio"),
+                None,
+                (),
+                vec![
+                    action(Icon::Lock, "Unlock ratio", true),
+                    action(Icon::Swap, "Swap", false),
+                ],
+            ),
+            chip_row(
+                chips,
+                RowPlacement {
+                    after_header: true,
+                    followed: true,
+                },
+            ),
+            sub_group_header(&ratio("Angle"), None, ()),
+            stepper(
+                &StepperModel {
+                    field: NumberFieldModel {
+                        id: None,
+                        label: String::new(),
+                        display: "2.40".into(),
+                        edit: ValueEdit::Display,
+                        unit: Some("\u{b0}".into()),
+                        enabled: true,
+                    },
+                    decrement_enabled: true,
+                    increment_enabled: true,
+                    decrement_tooltip: "\u{2212}0.5\u{b0}".into(),
+                    increment_tooltip: "+0.5\u{b0}".into(),
+                },
+                (),
+                (),
+                (),
+                |_| (),
+                (),
+                (),
+            ),
+            toggle(
+                &ToggleModel {
+                    label: "Straighten guide".into(),
+                    on: false,
+                    enabled: true,
+                },
+                |_| (),
+            ),
+            readout_card(
+                &[
+                    ("Input stage".into(), "3389 \u{d7} 4236".into()),
+                    (
+                        "Rectangle".into(),
+                        "258, 326 \u{b7} 2872 \u{d7} 3590".into(),
+                    ),
+                    ("Output".into(), "2872 \u{d7} 3590".into()),
+                    ("Commits".into(), "edit.crop \u{b7} layer 2".into()),
+                ],
+                RowPlacement {
+                    after_header: false,
+                    followed: true,
+                },
+            ),
+            equal_button_row(
+                vec![
+                    wide("Cancel", "esc", ButtonTone::Control),
+                    wide("Apply", "return", ButtonTone::Primary),
+                ],
+                RowPlacement::default(),
+            ),
+        ]),
+    );
+    states.push(panel(drafting));
+
+    // -- Crop and straighten, idle: one regular button with its icon and letter.
+    let idle = section_body(vec![button_row(
+        vec![labelled_button(
+            &LabelledButtonModel {
+                label: "Crop".into(),
+                icon: Some(Icon::Crop),
+                key_hint: Some("R".into()),
+                tone: ButtonTone::Control,
+                size: ButtonSize::Regular,
+                fill: false,
+                enabled: true,
+            },
+            Some(()),
+        )],
+        RowPlacement::default(),
+    )]);
+    states.push(panel(idle));
+
+    // -- Field rows, as the pixel proof's request inputs are drawn: a boxed value with a word unit
+    // -- outside, a colour's swatch and channel boxes, and a compact picker row with an action.
+    let field = |label: &str, display: &str| {
+        number_field(
+            &NumberFieldModel {
+                id: None,
+                label: label.into(),
+                display: display.into(),
+                edit: ValueEdit::Display,
+                unit: Some("px".into()),
+                enabled: true,
+            },
+            (),
+            |_| (),
+            (),
+            (),
+        )
+    };
+    let channel = |value: &str| -> Element<'static, ()> {
+        boxed_input(
+            "",
+            value,
+            theme::CHANNEL_FIELD_WIDTH,
+            false,
+            true,
+            |_| (),
+            (),
+        )
+        .into()
+    };
+    let fields = section_body(vec![
+        group_plain("Pixel proof"),
+        field("X", "1204"),
+        field("Y", "877"),
+        channel_row(
+            "RGB".into(),
+            true,
+            color_swatch(
+                &ColorSwatchModel {
+                    rgb: [220, 40, 40],
+                    enabled: false,
+                    open: false,
+                },
+                (),
+            ),
+            vec![channel("220"), channel("40"), channel("40")],
+        ),
+        button_row(
+            vec![
+                picker(ButtonTone::Control, true),
+                labelled_button(
+                    &LabelledButtonModel {
+                        label: "Apply pixel".into(),
+                        icon: None,
+                        key_hint: None,
+                        tone: ButtonTone::Control,
+                        size: ButtonSize::Compact,
+                        fill: false,
+                        enabled: true,
+                    },
+                    Some(()),
+                ),
+            ],
+            RowPlacement::default(),
+        ),
+    ]);
+    states.push(panel(fields));
+    states
+}
+
+/// A group of request inputs: its label and rule, with no state caption or reset.
+fn group_plain(label: &str) -> Element<'static, ()> {
+    sub_group_header(
+        &SubGroupHeaderModel {
+            label: label.into(),
+            state: None,
+            state_accent: false,
+            expanded: Some(true),
+            reset: false,
+            enabled: true,
+        },
+        Some(()),
+        (),
+    )
 }

@@ -5,7 +5,7 @@ use crate::{
     app::{
         fields::{
             action_params, channel_text, decimals_for, field_id, format_number, labelled,
-            number_text, parse_field, undeclared_label, unsupported_label,
+            parse_field, undeclared_label, unsupported_label,
         },
         message::{MenuTarget, PaletteAction},
     },
@@ -167,6 +167,9 @@ pub(crate) struct SectionModel {
     pub(crate) reset: Option<ResetRef>,
     pub(crate) controls: Vec<ControlModel>,
     pub(crate) layout: SectionLayout,
+    /// A word for the section's own state, shown in its band while expanded: Draft while the
+    /// module's canvas draft is open.
+    pub(crate) status: Option<String>,
     pub(crate) version: u64,
     pub(crate) enabled: bool,
     /// Why editing is disabled, in the words the status bar would use.
@@ -451,14 +454,19 @@ pub(crate) struct CropSectionModel {
     pub(crate) custom: (String, String),
     pub(crate) custom_ids: (String, String),
     pub(crate) lock_label: String,
+    /// The ratio is locked: the lock reads selected.
+    pub(crate) locked: bool,
     pub(crate) can_swap: bool,
     pub(crate) angle: String,
     pub(crate) angle_id: String,
     pub(crate) guide: bool,
     /// How far one nudge button moves the angle, in degrees.
     pub(crate) nudge: f64,
-    /// The draft's own numbers, so what is on screen is observable without a debugger.
-    pub(crate) readout: Vec<String>,
+    /// The draft's own numbers, so what is on screen is observable without a debugger: each a
+    /// name and its value.
+    pub(crate) readout: Vec<(String, String)>,
+    /// The mode's declared letter, shown on the idle Crop button.
+    pub(crate) shortcut: Option<String>,
     pub(crate) can_start: bool,
     pub(crate) can_apply: bool,
     pub(crate) can_reapply: bool,
@@ -555,6 +563,7 @@ fn section(
         reset: ResetRef::of(module.reset.as_ref()),
         controls,
         layout,
+        status: (inputs.draft.is_some() && owns_mode(module, inputs)).then(|| "Draft".to_owned()),
         version: previous.map(|previous| previous.version + 1).unwrap_or(1),
         enabled,
         disabled_reason,
@@ -1405,6 +1414,12 @@ fn crop_section(frame: &CropFrame<'_>, inputs: &Inputs<'_>, enabled: bool) -> Cr
         angle_id: field_id(frame.action, frame.angle, None),
         guide: inputs.crop_guide,
         nudge: crate::app::crop::ANGLE_STEP,
+        shortcut: frame
+            .module
+            .canvas
+            .as_ref()
+            .and_then(|canvas| canvas.shortcut())
+            .map(str::to_owned),
         enabled,
         ..CropSectionModel::default()
     };
@@ -1431,40 +1446,49 @@ fn crop_section(frame: &CropFrame<'_>, inputs: &Inputs<'_>, enabled: bool) -> Cr
             Some(_) => "Unlock ratio".into(),
             None => "Lock ratio".into(),
         },
+        locked: draft.aspect.ratio().is_some(),
         can_swap: enabled && draft.aspect.ratio().is_some(),
         can_apply: enabled && !draft.conflicted,
         can_reapply: !inputs.busy,
-        readout: readout(draft),
+        readout: readout(draft, frame.action),
         ..base
     }
 }
 
-/// The draft's own numbers, in the order the panel prints them.
-fn readout(draft: &CropDraft) -> Vec<String> {
-    let payload = draft.payload();
+/// The draft's own numbers, in the order the panel prints them: the input stage, the rectangle in
+/// the rotated stage's box, the whole-pixel output, and the request Apply commits.
+fn readout(draft: &CropDraft, action: &str) -> Vec<(String, String)> {
+    let (box_width, box_height) = draft.stage.bounding_box();
+    let stage = if (box_width, box_height)
+        == (f64::from(draft.stage.width), f64::from(draft.stage.height))
+    {
+        format!("{} × {}", draft.stage.width, draft.stage.height)
+    } else {
+        format!(
+            "{} × {} · box {:.0} × {:.0}",
+            draft.stage.width, draft.stage.height, box_width, box_height
+        )
+    };
     let output = match draft.output() {
-        Ok(rect) => format!(
-            "{} × {} px at ({}, {})",
-            rect.width, rect.height, rect.x, rect.y
-        ),
+        Ok(rect) => format!("{} × {}", rect.width, rect.height),
         Err(error) => error.detail.clone(),
     };
-    vec![format!(
-        "Input stage {} × {} · box {:.0} × {:.0}\nRect {:.0}, {:.0}, {:.0} × {:.0} box px\nOutput {output}\nPayload angle {} x {:.6} y {:.6} w {:.6} h {:.6}",
-        draft.stage.width,
-        draft.stage.height,
-        draft.stage.bounding_box().0,
-        draft.stage.bounding_box().1,
-        draft.rect.x,
-        draft.rect.y,
-        draft.rect.width,
-        draft.rect.height,
-        number_text(payload.angle),
-        payload.x,
-        payload.y,
-        payload.width,
-        payload.height,
-    )]
+    let layer = match draft.layer {
+        Some(_) => format!("layer {}", draft.layer_index + 1),
+        None => "new layer".to_owned(),
+    };
+    vec![
+        ("Input stage".to_owned(), stage),
+        (
+            "Rectangle".to_owned(),
+            format!(
+                "{:.0}, {:.0} · {:.0} × {:.0}",
+                draft.rect.x, draft.rect.y, draft.rect.width, draft.rect.height
+            ),
+        ),
+        ("Output".to_owned(), output),
+        ("Commits".to_owned(), format!("edit.{action} · {layer}")),
+    ]
 }
 
 // ---- descriptor mapping ------------------------------------------------------------------------

@@ -178,6 +178,7 @@ pub fn gallery() -> Vec<Element<'static, ()>> {
             hint: None,
             unavailable: None,
             reset: true,
+            status: None,
             enabled: true,
         },
         (),
@@ -191,6 +192,7 @@ pub fn gallery() -> Vec<Element<'static, ()>> {
             hint: Some("Sharpen \u{b7} Noise".into()),
             unavailable: None,
             reset: false,
+            status: None,
             enabled: true,
         },
         (),
@@ -204,6 +206,7 @@ pub fn gallery() -> Vec<Element<'static, ()>> {
             hint: None,
             unavailable: Some("Unavailable \u{b7} no provider".into()),
             reset: false,
+            status: None,
             enabled: true,
         },
         (),
@@ -467,5 +470,6 @@ pub fn gallery() -> Vec<Element<'static, ()>> {
 
     states.extend(crate::gallery_components::gallery_components());
     states.extend(crate::gallery_panels::gallery_panels());
+    states.extend(crate::gallery_panels::gallery_panel_rows());
     states
 }
