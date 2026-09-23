@@ -4,6 +4,7 @@
 //! `Element`. None stores state or validates input; the caller (the app's view layer) supplies
 //! values already validated and formatted.
 
+mod badge;
 mod chip;
 mod color_picker;
 mod color_swatch;
@@ -28,6 +29,7 @@ mod sub_group_header;
 mod text;
 mod toggle;
 
+pub use badge::{BadgeModel, badge};
 pub use chip::{ChipModel, chip};
 pub use color_picker::{
     ColorPickerEvent, ColorPickerModel, color_picker, hex_to_rgb, hsv_to_rgb, hue_fraction,
