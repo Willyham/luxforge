@@ -168,6 +168,15 @@ Nesting deeper than 16 levels or more than 100,000 values is a `resource-limit` 
 
 **Values.** Numbers are accepted with or without a leading `+`. Booleans are accepted as `True` and `False` in any case, as `0` and `1`, and as Lua `true` and `false`.
 
+**Bounds and duplicates.** The XML parser compares every attribute of an element with every other one, so its cost grows with the square of an element's attribute count. A linear scan before parsing therefore refuses the following with `resource-limit`:
+
+- nesting deeper than 64 levels;
+- more than 2,000,000 attribute comparisons summed over the elements, which is about 2,000 attributes on one element; Lightroom writes a few hundred;
+- more than 128 namespace declarations;
+- more than 200,000 nodes.
+
+The measured worst case within these bounds is in [performance](../specs/performance.md#preset-import-parse). A setting written twice, whether in two descriptions or as two keys of a template, is `unsupported-input` rather than one copy silently winning. An XML error names its line and column, and a template error names its byte offset. A Lightwell document of another version is `unsupported-input`.
+
 **Name and group.** The name comes from `crs:Name`, then the template's `title`, then the file name without its extension, then the literal `Imported preset`. The group comes from `crs:Group`, then the request's `group`, then `Imported`. The request's `name` and `group` override both, which is how a client resolves a duplicate.
 
 ### Mapping
@@ -216,6 +225,8 @@ A value is parsed as Lightroom writes it (`0.5`, `+0.50`, `-12`, `True`). A valu
 - `neutral`: the setting is unsupported but at its neutral value, so nothing is lost.
 - `unsupported`: the effect is not reproduced because Lightwell has no such tool.
 - `refused`: Lightwell has a related control, but this value cannot be carried. It is out of range, belongs to another process version or has no calibrated conversion.
+
+A qualifying rule applies only when the preset holds the amount it depends on. A hue whose saturation the preset does not hold is reported on its own value, because the photo's saturation, not the preset's, would decide whether it has an effect.
 
 `value` is the text as written, and a structured value (a curve or a sequence) is its items joined with `; `, up to 256 characters. A preset is **partial** when `unsupported` or `refused` is non-empty. An import that maps nothing is refused with `unsupported-input`, a message giving the four counts and nothing stored; `preset.inspect` returns the full report for such a file.
 

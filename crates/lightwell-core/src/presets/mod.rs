@@ -20,7 +20,10 @@ pub use lrtemplate::{MAX_TEMPLATE_DEPTH, MAX_TEMPLATE_VALUES};
 pub use report::{ImportReport, MappedSetting, ReportCounts, ReportedSetting};
 pub use xmp::{MAX_XMP_ATTRIBUTE_PAIRS, MAX_XMP_DEPTH, MAX_XMP_NAMESPACES, MAX_XMP_NODES};
 
-use crate::{Error, ErrorKind, ModuleRegistry, check_parameters, valid_name};
+use crate::{
+    Error, ErrorKind, MAX_SETTINGS_ACTIONS, MAX_SETTINGS_FIELDS, ModuleRegistry, check_parameters,
+    valid_name,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
@@ -30,10 +33,6 @@ pub const MAX_PRESET_BYTES: usize = 1024 * 1024;
 pub const PRESET_DOCUMENT_FORMAT: &str = "lightwell.preset";
 /// The only preset document version this build reads and writes.
 pub const PRESET_DOCUMENT_VERSION: u64 = 1;
-/// The most actions one settings set may name.
-pub const MAX_SETTINGS_ACTIONS: usize = 16;
-/// The most fields one action of a settings set may name.
-pub const MAX_SETTINGS_FIELDS: usize = 64;
 /// The name an import takes when neither the file nor its file name gives one.
 pub const IMPORTED_PRESET_NAME: &str = "Imported preset";
 
