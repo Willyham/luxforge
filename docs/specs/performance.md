@@ -647,6 +647,45 @@ The settled-histogram column is the exact phase's cost and stays where the full-
 
 Rendered evidence is the `presence`, `mixer` and `vignette` smoke scenarios (15, 8 and 12 correlated frames at Fit and 100% with the module's own controls visible), and the acceptance chapter's ten checks per module through the JSON method table. A reviewer's render of the owner's 14 MP Sapa drone JPEG through the core alone (release, in memory: dehaze 65 ms, clarity 104 ms, texture 127 ms, all three at +50 672 ms) showed Dehaze +60 and +100 lifting the veil and deepening colour plausibly, Clarity +100 adding local contrast without visible halos at fit and at 100%, and Texture +100 sharpening fine detail with the expected crunch; it is a visual check, not a measurement. On a synthetic haze-free flat field Dehaze +100 drives the field toward black, because the dark-channel prior reads a uniform patch darker than the atmosphere as pure veil and the frozen `OMEGA_MAX = 1` removes all of it; the study records this and real photographs, whose windows contain dark pixels, do not show it.
 
+## Module capabilities qualification
+
+Native Apple M4 Pro (14 cores, 48 GiB), macOS 26.5.2, Metal, release `--locked`, on 23 September 2026, on a host shared with other sessions: the one-minute load average was 3 to 11 during these runs and is given per row. "Before" is `ca8eaef`, the last commit without the framework; "after" is `5f77f58`. No figure here is a p95 claim beyond its stated sample count.
+
+### The framework's own costs
+
+`cargo test --release --locked -p lightwell-core --lib capability_timing -- --ignored --nocapture`, isolated directories, an in-memory secret store and the loopback proof endpoint; load 10.9 at the start.
+
+| Measurement | p50 / p95 | Samples |
+| --- | --- | --- |
+| Registration, the eight built-ins | 0.020 / 0.022 ms | 200 |
+| Registration, built-ins and the proof module | 0.031 / 0.035 ms | 200 |
+| `module.status` owner round trip | 0.013 / 0.023 ms | 30 |
+| `module.settings.read` owner round trip | 0.009 / 0.012 ms | 30 |
+| `module.activate` to active (the proof reads and checks its palette) | 0.27 / 0.31 ms | 30 |
+| Cancel a running activation to `cancelled` (the proof's slow loader checks every ~10 ms) | 10.2 / 15.1 ms | 10 |
+| A whole `task.generate-proof-tint`: request to `succeeded`, including the 64 samples, the file read, the loopback request, the artifact publish and its row | 14.9 / 15.8 ms | 30 |
+| … of which publishing one 12-byte artifact (synced, renamed) | 9.1 / 9.9 ms | 30 |
+| Cancel a task stalled inside its request to `cancelled` (100 ms read slice) | 84.8 / 89.6 ms | 10 |
+| Installed proof resource on disk, `installed.json` included; staging left behind | 448 bytes; none | 1 |
+
+Discovery, registration and catalog reopen start no worker thread and create no directory: `schema.list` and `module.list` against a fresh data root leave it empty, and the owner tests assert that no lane has started and the secret store saw no call. The two lanes block on their channels while idle.
+
+### Editor before and after
+
+`measure` (5 launches per workload, background bundle) and `editor-performance` (24 MP, 30 samples), before and after, run back to back.
+
+| Measurement | Before | After | Load |
+| --- | --- | --- | --- |
+| Launch to first frame, empty (p50 / p95) | 963 / 1084 ms | 1012 / 1072 ms | 3.2 |
+| … of which until the process runs (median of the empty and 24 MP launches) | 419 ms | 465 ms | 3.2 |
+| … of which process start to first frame (median) | 597 ms | 589 ms | 3.2 |
+| Launch to first frame, 24 MP / 60 MP (p50) | 1022 / 1136 ms | 1081 / 1191 ms | 3.2 |
+| Sampled peak RSS, empty / 24 MP / 60 MP (median) | 158 / 419 / 850 MiB | 139 / 392 / 853 MiB | 3.2 |
+| Idle CPU over 30 s | 0.53% of one core | 0.50% of one core | 3.2 |
+| Executable size | 20.4 MB | 24.8 MB | — |
+
+The whole launch difference is in the part before the process runs, which for these background launches includes copying the executable into a temporary bundle: the executable is 4.3 MB larger (rustls, ring and the platform verifier) and now links Security.framework. Process start to first frame is unchanged. The core `editor-performance` rows (transforms, crop, Basic colour stacks, proxy renders, the histogram and the picker) moved by a few percent in either direction depending on which build ran second while the load rose from 5 to 11.6, so they show no difference attributable to the framework; the render path gained only an early return for stacks without artifacts. The full `verify` tier on `5f77f58` passed every provisional target except the empty-shell launch p95 (1012 ms against 1 s), which the baseline also misses under the same bundle copy.
+
 ## Method
 
 Optimized builds only, with commit, lockfile, OS, CPU/GPU, RAM, display and storage recorded. Report cold and warm runs separately and say which cold is meant. Keep at least 30 samples and never drop failures or tails silently. Measure user event to presented frame, not shader time, and account CPU RSS, cache bytes, GPU allocations and transient copies without double-counting unified memory. Capture idle after all background work stops. No timing gates in CI; CI enforces exactness, deterministic bounds and coverage. VM checks record hypervisor, guest graphics path and software versus accelerated rendering, and never stand in for native timings.
