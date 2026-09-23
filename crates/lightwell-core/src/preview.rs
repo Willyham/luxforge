@@ -5,9 +5,12 @@ use crate::{
     render, render_cancellable, render_linear, render_linear_cancellable,
 };
 use serde::{Deserialize, Serialize};
-use std::sync::{
-    Arc,
-    mpsc::{Receiver, SyncSender, TryRecvError, sync_channel},
+use std::{
+    sync::{
+        Arc,
+        mpsc::{Receiver, SyncSender, TryRecvError, sync_channel},
+    },
+    time::Instant,
 };
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -259,6 +262,22 @@ pub struct PreviewResult {
     /// holds a spatial-stage layer whose neighbourhoods scale with the stage. Always `false` on the
     /// exact phase, which is the frame every number comes from.
     pub proxy_approximate: bool,
+    /// Milliseconds of wall-clock time the preview worker spent producing this phase's result, and
+    /// nothing else.
+    ///
+    /// - [`PreviewPhase::Proxy`]: building the proxy source when this job built it
+    ///   ([`Self::proxy_built`]), plus rendering the recipe against it. A cache hit costs only the
+    ///   render.
+    /// - [`PreviewPhase::Exact`]: rendering the prepared source, plus reducing the frame into
+    ///   [`Self::report`] when the job asked for one. A proxy phase that was attempted and declined
+    ///   is not counted here; it produced no frame.
+    ///
+    /// It excludes everything outside the worker's own work on this phase: the wait in the queue's
+    /// pending slot, preparing or redeveloping the source on the source worker, the other phase of
+    /// the same job, and handing the result to the display. It is measured on a failed or cancelled
+    /// phase too, up to the moment it stopped. So it answers "how long did this picture take to
+    /// render", not "how long after the request did it appear".
+    pub render_ms: f64,
 }
 
 /// What the worker sends back: one result, and the proxy source it built for it, which the queue
@@ -542,6 +561,8 @@ fn run(
         ProxyStep::Skipped => None,
         ProxyStep::Declined(reason) => Some(reason),
         ProxyStep::Planned { key, cached } => {
+            // The proxy phase's own clock: the build when this job builds, then the render.
+            let started = Instant::now();
             let built = match cached {
                 Some(source) => Ok((source, false)),
                 None => job.source.proxy(key.plan).map(|source| (source, true)),
@@ -573,6 +594,7 @@ fn run(
                                     proxy_declined: None,
                                     proxy_built: fresh,
                                     proxy_approximate: job.registry.proxy_approximate(&job.recipe),
+                                    render_ms: milliseconds_since(started),
                                 },
                                 built: fresh.then_some((key, source)),
                             };
@@ -588,6 +610,9 @@ fn run(
         }
     };
 
+    // The exact phase's own clock starts here, after the proxy phase has sent its frame, so the
+    // two phases' times never overlap and neither includes the other.
+    let started = Instant::now();
     let rendered = job
         .source
         .render_cancellable(&job.registry, snapshot_id, recipe, &exact_cancel);
@@ -605,6 +630,7 @@ fn run(
         }
         rendered => (rendered, None),
     };
+    let render_ms = milliseconds_since(started);
     let sent = sender.send(WorkerMessage {
         result: PreviewResult {
             generation,
@@ -618,12 +644,18 @@ fn run(
             proxy_declined: declined,
             proxy_built: false,
             proxy_approximate: false,
+            render_ms,
         },
         built: None,
     });
     if sent.is_ok() {
         wake();
     }
+}
+
+/// Wall-clock milliseconds since `started`, as [`PreviewResult::render_ms`] reports them.
+fn milliseconds_since(started: Instant) -> f64 {
+    started.elapsed().as_secs_f64() * 1000.0
 }
 
 #[cfg(test)]
@@ -1001,10 +1033,28 @@ mod tests {
             .expect("a proxy is worthwhile");
 
         let mut queue = PreviewQueue::default();
+        let requested = Instant::now();
         let generation = queue.request(job);
         let results = drain_all(&mut queue);
+        let lifetime_ms = requested.elapsed().as_secs_f64() * 1000.0;
         assert_eq!(results.len(), 2, "one proxy frame and one exact frame");
         let [proxy, exact] = <[PreviewResult; 2]>::try_from(results).ok().unwrap();
+
+        // Each phase reports its own worker time: finite, and inside the job's own lifetime. The
+        // two clocks run one after the other on the worker, so together they fit inside it too —
+        // neither phase counts the other, and neither counts anything before the request.
+        for (phase, ms) in [("proxy", proxy.render_ms), ("exact", exact.render_ms)] {
+            assert!(
+                ms.is_finite() && ms >= 0.0 && ms <= lifetime_ms,
+                "the {phase} phase reports {ms} ms of a {lifetime_ms} ms job"
+            );
+        }
+        assert!(
+            proxy.render_ms + exact.render_ms <= lifetime_ms,
+            "the phases overlap: {} + {} ms of a {lifetime_ms} ms job",
+            proxy.render_ms,
+            exact.render_ms
+        );
 
         assert_eq!(proxy.generation, generation);
         assert_eq!(exact.generation, generation);
