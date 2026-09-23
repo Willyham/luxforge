@@ -380,6 +380,27 @@ impl ModuleRegistry {
         Ok(())
     }
 
+    /// A component's `kind` is the host's business, not a module's: `crate::mask` owns the table of
+    /// kinds this build can evaluate, and a stored kind outside it is incompatible data rather than a
+    /// component to skip. Parsing every stored mask's components here — stage-free, so it costs
+    /// `O(components)` and reads no pixels — is what makes an unknown kind, a malformed payload or an
+    /// out-of-range position fail compiling, rendering, sampling and planning alike, with the stored
+    /// bytes left exactly as they were read. Every mask in the table is checked, not only the ones a
+    /// layer currently names, because a stack this build cannot draw whole is refused whole.
+    ///
+    /// It belongs to compiling and not to [`Self::validate_recipe`] on purpose. A kind this build
+    /// cannot evaluate is a fact about the build, not a defect in the stack: the stack is well
+    /// formed, so reading it, listing it, undoing through it and carrying its mask table forward
+    /// through an unrelated edit all keep working, and only the paths that would have to *draw* the
+    /// mask refuse. Refusing a write as well would make a newer build's catalog unopenable and lose
+    /// the bytes the retention rule exists to keep.
+    fn validate_mask_kinds(&self, recipe: &Recipe) -> Result<(), Error> {
+        for mask in &recipe.masks {
+            crate::mask::validate_component_kinds(mask)?;
+        }
+        Ok(())
+    }
+
     fn unavailable_in(&self, layers: &[Layer], effect_id: &str) -> Error {
         unavailable(
             effect_id,
@@ -401,12 +422,14 @@ impl ModuleRegistry {
         recipe: &Recipe,
     ) -> Result<Compiled, Error> {
         // The whole-recipe checks every evaluation path shares: the format marker, and the mask
-        // table with the references into it. They cost `O(layers + components)` and read no pixels,
-        // so compiling here is what makes a stack that names a mask it does not carry, or attaches
-        // one to the geometry tail, fail rendering, sampling, proxy planning and module planning
-        // alike rather than only at the catalog boundary.
+        // table with the references into it and the kinds inside it. They cost
+        // `O(layers + components)` and read no pixels, so compiling here is what makes a stack that
+        // names a mask it does not carry, attaches one to the geometry tail, or holds a component of
+        // a kind this build cannot evaluate, fail rendering, sampling, proxy planning and module
+        // planning alike rather than only at the catalog boundary.
         recipe.validate()?;
         self.validate_masked_stages(recipe)?;
+        self.validate_mask_kinds(recipe)?;
         self.compile_layers(source_width, source_height, &recipe.layers)
     }
 
@@ -1479,6 +1502,53 @@ pub(crate) mod tests {
             assert_eq!(error.detail, expected);
         }
         assert_eq!(recipe.layers, vec![layer], "the refused stack is kept");
+    }
+
+    /// A component of a kind this build cannot evaluate is refused by name wherever the mask would
+    /// have to be drawn, and nothing about the stored mask is rewritten: the host keeps every byte
+    /// and says what it could not draw, rather than rendering the layer unmasked or dropping the
+    /// component. Validation is deliberately not one of those paths — the stack is well formed, so it
+    /// still reads, still lists and can still be carried forward by an unrelated edit.
+    #[test]
+    fn a_component_kind_this_build_does_not_know_is_refused_by_every_compile() {
+        let registry = ModuleRegistry::builtin();
+        let mut mask = Mask::new("Mask 1");
+        let name = mask.next_component_name("future-kind");
+        mask.components.push(Component::new(
+            name,
+            ComponentMode::Add,
+            "future-kind",
+            json!({"nested": {"points": [[0.25, 0.5], [0.75, 0.5]]}, "flag": true, "n": 3.5}),
+        ));
+        let layer = Layer {
+            mask: Some(mask.id.clone()),
+            ..Layer::pixel(0, 0, [1, 2, 3])
+        };
+        let recipe = Recipe {
+            format: RECIPE_FORMAT,
+            layers: vec![layer],
+            masks: vec![mask.clone()],
+        };
+        for error in [
+            registry
+                .compile(2, 1, &recipe)
+                .err()
+                .expect("an unknown component kind never compiles"),
+            render(&registry, &source(), SnapshotId::new(), &recipe).unwrap_err(),
+            sample(&registry, &source(), &recipe, 0, 0).unwrap_err(),
+            crate::render::extents(&registry, &source(), &recipe).unwrap_err(),
+        ] {
+            assert_eq!(error.kind, ErrorKind::Incompatible);
+            assert_eq!(error.detail, "unknown mask component future-kind");
+        }
+        // The structural model never asks what a kind means, so writing and reading the stack still
+        // work and the refused stack still reads back byte for byte through the persisted shape.
+        registry.validate_recipe(&recipe).unwrap();
+        recipe.validate().unwrap();
+        let reopened: Recipe =
+            serde_json::from_slice(&serde_json::to_vec(&recipe).unwrap()).unwrap();
+        assert_eq!(reopened, recipe, "the refused stack is kept");
+        assert_eq!(reopened.masks[0].components[0].kind, "future-kind");
     }
 
     #[test]
