@@ -14,6 +14,8 @@ pub(crate) mod presets;
 #[cfg(test)]
 mod presets_tests;
 #[cfg(test)]
+mod preview_failure_tests;
+#[cfg(test)]
 mod proof_controls_tests;
 pub(crate) mod slider;
 pub(crate) mod tasks;
@@ -337,6 +339,11 @@ pub(crate) struct Editor {
     /// Oldest lineage sequence when the chain was truncated; entries at or below it are unknown.
     pub(crate) lineage_floor: Option<u64>,
     pub(crate) display_entry: Option<lightwell_core::EntryId>,
+    /// The entry whose pixels the photo surface holds: the entry the presented generation was
+    /// rendered for. [`Self::display_entry`] moves to a newly requested entry as soon as its job is
+    /// asked for; this moves only when that entry's frame is on screen, and is cleared when a
+    /// failure withdraws the frame.
+    pub(crate) presented_entry: Option<lightwell_core::EntryId>,
     requested_render_entry: Option<lightwell_core::HistoryEntry>,
     rendered_entry: Option<lightwell_core::HistoryEntry>,
     /// The Original entry, so Compare needs no search.
@@ -586,6 +593,7 @@ impl Editor {
             lineage: HashSet::new(),
             lineage_floor: None,
             display_entry: None,
+            presented_entry: None,
             requested_render_entry: None,
             rendered_entry: None,
             original_entry: None,
@@ -1377,6 +1385,107 @@ impl Editor {
         }
     }
 
+    /// A preview of the displayed target failed: say so on the canvas, and never leave another
+    /// entry's picture on screen as though it were this one.
+    ///
+    /// The frame on screen stays only when it is the target that failed — the display proxy of the
+    /// same entry and draft revision, whose full-resolution phase is what failed — because then it
+    /// still shows that state. Any other frame belongs to an earlier entry or draft revision: after
+    /// a commit whose render failed it is the picture from before the edit, while history and the
+    /// recipe already name the edit, so it is withdrawn with everything derived from it and the
+    /// canvas shows the failure in its place. The edit itself is untouched; the next frame that
+    /// renders puts a picture back.
+    fn preview_failed(
+        &mut self,
+        generation: u64,
+        proxy: bool,
+        entry: &lightwell_core::EntryId,
+        draft_revision: Option<u64>,
+        error: &lightwell_core::Error,
+    ) {
+        self.refit_pending = false;
+        self.status = error.to_string();
+        // The canvas explains the failure: the kind and the detail are all the view model needs to
+        // name the cause and offer the allowed actions.
+        self.render_error = Some((error.kind, error.detail.clone()));
+        let shows_target = self.presented_entry.as_ref() == Some(entry)
+            && self.displayed_draft_revision == draft_revision;
+        if !shows_target && self.photo.is_some() {
+            self.withdraw_photo(generation, entry, error);
+        }
+        // A failed exact phase releases whatever its proxy was holding, so a scripted step ends on
+        // the failure rather than waiting for a frame that will never arrive.
+        if !proxy {
+            self.release_held(generation);
+        }
+        if self.activity.pending {
+            self.activity.pending = false;
+            self.activity.phase = "error";
+            self.activity.error_code = Some(error.kind.code().into());
+            self.event("render_failed", json!({"error_code":error.kind.code()}));
+            self.outcome_ready(true);
+        }
+    }
+
+    /// Take the picture of an earlier entry or draft revision off the surface, with everything
+    /// that describes it — the retained rasters, the histogram, the overlay's source, the readout
+    /// and the render time — so nothing on screen claims to show a state it does not.
+    fn withdraw_photo(
+        &mut self,
+        generation: u64,
+        target: &lightwell_core::EntryId,
+        error: &lightwell_core::Error,
+    ) {
+        let shown = self.presented_entry.take();
+        self.event(
+            "preview_withdrawn",
+            json!({
+                "generation": generation,
+                "presented_generation": self.presented_generation,
+                "target_entry": target,
+                "withdrawn_entry": shown,
+                "error_code": error.kind.code(),
+            }),
+        );
+        self.photo = None;
+        self.proxy_frame = None;
+        self.raster = None;
+        self.raster_approximate_white_balance = false;
+        self.exact_render_ms = None;
+        self.incoming = None;
+        self.analysis = None;
+        self.held_by_proxy = None;
+        self.presented_proxy = false;
+        self.presented_approximate_white_balance = false;
+        self.rendered_entry = None;
+        self.displayed_draft_revision = None;
+        self.readout = None;
+        self.pending_sample = None;
+        self.activity.render = None;
+    }
+
+    /// The crop layer's input stage could not be rendered, so the draft it was for cannot open or
+    /// rebase. A start that was waiting ends explicitly, back in the pointer mode; a reapply keeps
+    /// the draft it was rebasing, still conflicted. The photograph on screen is the current state
+    /// and stays.
+    fn draft_preview_failed(&mut self, error: &lightwell_core::Error) {
+        let reapply = self
+            .crop_pending
+            .as_ref()
+            .is_some_and(|pending| pending.reapply);
+        self.crop_pending = None;
+        self.draft_generation = None;
+        if !reapply {
+            self.end_draft();
+        }
+        self.status = format!("The crop's input stage could not be rendered: {error}");
+        self.event(
+            "crop_draft_failed",
+            json!({"reapply": reapply, "error_code": error.kind.code(), "detail": error.detail}),
+        );
+        self.settle_step(Settle::Draft);
+    }
+
     /// The zoom changed. This is the **one** place a view change can ask for a render, and it only
     /// does so when the pixels it needs do not exist yet.
     ///
@@ -1404,6 +1513,11 @@ impl Editor {
         // step from Fit to 50% keeps the proxy it has, and the rule that a view change re-renders
         // nothing survives every zoom but the one crossing between proxy and exact.
         if self.presented_generation == 0 || wants_proxy == self.presented_proxy {
+            return Task::none();
+        }
+        // A failure withdrew the picture: nothing retained may be handed over in its place, and a
+        // view change asks for no render. The next frame of the target puts a picture back.
+        if self.photo.is_none() && self.render_error.is_some() {
             return Task::none();
         }
         if wants_proxy && self.presented_proxy_frame().is_none() {
@@ -1575,7 +1689,11 @@ impl Editor {
     ) -> Task<Message> {
         // The texture is a proxy exactly when there are proxy dimensions to describe it.
         let proxy = proxy_dimensions.is_some();
-        let Some((stage, entry)) = self.dimensions.zip(self.displayed_entry()) else {
+        // Every retained frame belongs to the generation on screen, so it is stamped with the entry
+        // that generation rendered — never with the entry the desktop has asked for since, whose
+        // frame may still be rendering or may have failed. Handing an older picture over under a
+        // newer entry would present it as that entry's result.
+        let Some((stage, entry)) = self.dimensions.zip(self.presented_entry.clone()) else {
             return Task::none();
         };
         let upload = Upload {
@@ -1629,7 +1747,12 @@ impl Editor {
         self.pending_bounds
             .retain(|generation, _| *generation > upload.generation);
         self.refit_pending = false;
-        self.show_entry(upload.entry_id.clone());
+        // A zoom hands over a retained frame of the entry already on screen; the entry the desktop
+        // is waiting for stays the one picks, readouts and the next request are addressed to.
+        if upload.reason.is_none() {
+            self.show_entry(upload.entry_id.clone());
+        }
+        self.presented_entry = Some(upload.entry_id.clone());
         self.displayed_draft_revision = upload.draft_revision;
         self.adopt_analysis(upload.generation);
         if self
@@ -2521,26 +2644,16 @@ impl Editor {
                             ]);
                         }
                         Err(error) => {
-                            self.refit_pending = false;
-                            self.status = error.to_string();
-                            // The canvas explains the failure: the kind and the detail are all the
-                            // view model needs to name the cause and offer the allowed actions.
-                            self.render_error = Some((error.kind, error.detail.clone()));
-                            // A failed exact phase releases whatever its proxy was holding, so a
-                            // scripted step ends on the failure rather than waiting for a frame
-                            // that will never arrive.
-                            if !proxy && !for_draft {
-                                self.release_held(generation);
-                            }
-                            if self.activity.pending {
-                                self.activity.pending = false;
-                                self.activity.phase = "error";
-                                self.activity.error_code = Some(error.kind.code().into());
-                                self.event(
-                                    "render_failed",
-                                    json!({"error_code":error.kind.code()}),
+                            if for_draft {
+                                self.draft_preview_failed(&error);
+                            } else {
+                                self.preview_failed(
+                                    generation,
+                                    proxy,
+                                    &entry_id,
+                                    result.draft_revision,
+                                    &error,
                                 );
-                                self.outcome_ready(true);
                             }
                             return Task::done(Message::Poll);
                         }
@@ -6511,7 +6624,7 @@ mod tests {
     /// written once and a pan writes nothing.
     #[test]
     fn a_zoom_hands_the_retained_raster_to_the_surface_and_asks_for_no_preview() {
-        let (mut editor, catalog, _, _) = opened(Vec::new(), 4);
+        let (mut editor, catalog, _, entry_id) = opened(Vec::new(), 4);
         editor.window = (1440.0, 900.0);
         editor.dimensions = Some((4000, 3000));
         editor.session.preview.view.zoom = Zoom::Fit;
@@ -6526,6 +6639,7 @@ mod tests {
             })
         };
         editor.presented_generation = 7;
+        editor.presented_entry = Some(entry_id);
         editor.presented_proxy = true;
         editor.preview_generation = 7;
         editor.proxy_frame = Some(ProxyFrame {
