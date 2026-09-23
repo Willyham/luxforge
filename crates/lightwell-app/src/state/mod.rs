@@ -74,8 +74,9 @@ pub(crate) struct Inputs<'a> {
     pub(crate) clients: Option<usize>,
     /// A preview job is in flight or its pixels are still being uploaded.
     pub(crate) rendering: bool,
-    /// How long the displayed preview took from request to upload.
-    pub(crate) render_ms: Option<f64>,
+    /// How long the frame on the photo surface took to render, measured on the preview worker for
+    /// that frame's own phase. `None` before any frame is on screen.
+    pub(crate) render: Option<status::RenderTime>,
     /// The last preview failure, cleared by the next successful upload.
     pub(crate) render_error: Option<&'a (ErrorKind, String)>,
     pub(crate) pointer: Option<(u32, u32)>,
@@ -317,7 +318,10 @@ mod tests {
                 photo: true,
                 clients: Some(1),
                 rendering: false,
-                render_ms: Some(41.0),
+                render: Some(status::RenderTime {
+                    ms: 41.0,
+                    proxy: false,
+                }),
                 render_error: self.render_error.as_ref(),
                 pointer: None,
                 analysis: self.analysis.as_ref(),
@@ -1191,10 +1195,19 @@ mod tests {
         assert_eq!(workspace.status.clients, "3 clients");
         assert_eq!(workspace.status.render, "Rendering…");
 
+        // A display-size proxy on screen says so beside its own time.
+        let mut inputs = scene.inputs();
+        inputs.render = Some(status::RenderTime {
+            ms: 7.6,
+            proxy: true,
+        });
+        workspace.derive(&inputs);
+        assert_eq!(workspace.status.render, "Rendered in 8 ms (proxy)");
+
         // No local server is a stated fact, never a client count of zero.
         let mut inputs = scene.inputs();
         inputs.clients = None;
-        inputs.render_ms = None;
+        inputs.render = None;
         workspace.derive(&inputs);
         assert_eq!(workspace.status.clients, "live API unavailable");
         assert_eq!(workspace.status.render, "Idle");

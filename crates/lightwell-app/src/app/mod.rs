@@ -77,10 +77,15 @@ pub(crate) struct Activity {
     pub(crate) preview_dimensions: Option<(u32, u32)>,
     pub(crate) orientation: Option<u8>,
     pub(crate) backend: Option<Value>,
+    /// When the newest open or commit-style request began. Only the events that measure a request
+    /// end to end read it (`open_to_raster_ms`, `request_to_capture_ms`); a frame's own render time
+    /// is [`Self::render`], because slider drafts, zoom hand-overs, refits and exact phases all
+    /// present frames long after this was last reset.
     pub(crate) request_started: Instant,
-    /// How long the displayed preview took from its request to reaching the screen, for the
-    /// status bar.
-    pub(crate) render_ms: Option<f64>,
+    /// How long the frame on the photo surface took to render, as the preview worker measured that
+    /// frame's own phase, for the status bar. Set by every presented frame, including a retained
+    /// one a zoom hands back, which brings the time recorded with it.
+    pub(crate) render: Option<state::status::RenderTime>,
 }
 
 /// Catalog ownership and the live service start before the window so failures are reported, not panics.
@@ -271,6 +276,9 @@ pub(crate) struct ProxyFrame {
     pub(crate) built: bool,
     /// The frame approximates the exact render at display size: the stack holds a spatial layer.
     pub(crate) approximate: bool,
+    /// The proxy phase's own worker time, so a zoom that hands this frame back to the surface
+    /// reports how long this picture took rather than whatever was presented last.
+    pub(crate) render_ms: f64,
 }
 
 /// What a presented proxy frame holds back until its generation's exact phase lands.
@@ -349,6 +357,11 @@ pub(crate) struct Editor {
     /// still rendering does not, so the mask always describes the photograph on screen — a drafted
     /// one during a gesture exactly as much as a committed one.
     pub(crate) raster: Option<(u64, Arc<lightwell_core::Raster>)>,
+    /// The exact phase's own worker time for the generation it names, recorded when that phase is
+    /// taken up, so a zoom that hands the retained exact raster to the surface reports that
+    /// picture's render time. Keyed by generation like [`Self::raster`], and only read for the
+    /// generation on screen.
+    pub(crate) exact_render_ms: Option<(u64, f64)>,
     /// The displayed frame's histogram report, adopted with the pixels under the same generation.
     pub(crate) analysis: Option<Analysis>,
     /// The report and raster of a frame whose pixels have not reached the GPU yet. The histogram
@@ -538,7 +551,7 @@ impl Editor {
                 orientation: None,
                 backend: None,
                 request_started: Instant::now(),
-                render_ms: None,
+                render: None,
             },
             evidence,
             diagnostics: config.diagnostics.clone(),
@@ -564,6 +577,7 @@ impl Editor {
             preview_queue: PreviewQueue::default(),
             preview_generation: 0,
             raster: None,
+            exact_render_ms: None,
             analysis: None,
             incoming: None,
             presented_generation: 0,
@@ -1191,8 +1205,13 @@ impl Editor {
         identity: lightwell_core::analysis::AnalysisIdentity,
         report: Option<lightwell_core::analysis::Report>,
         raster: lightwell_core::Raster,
+        render_ms: f64,
     ) -> Task<Message> {
         let dimensions = (identity.width, identity.height);
+        // Recorded beside the retained raster, so a zoom to 100% that hands it to the surface
+        // reports this render's time. The status bar keeps the proxy's figure meanwhile: the proxy
+        // is the picture on screen.
+        self.exact_render_ms = Some((generation, render_ms));
         // Shares the render's own `Arc<[u8]>`: retaining it copies no pixels.
         let retained = Arc::new(raster);
         match report {
@@ -1218,7 +1237,7 @@ impl Editor {
         }
         self.event(
             "preview_exact_adopted",
-            json!({"generation":generation,"dimensions":[dimensions.0,dimensions.1]}),
+            json!({"generation":generation,"dimensions":[dimensions.0,dimensions.1],"render_ms":render_ms}),
         );
         self.release_held(generation);
         // The queue may hold its next result; nothing else would ask for it.
@@ -1312,20 +1331,32 @@ impl Editor {
             let Some(frame) = self.presented_proxy_frame() else {
                 return Task::none();
             };
-            let (generation, raster, dimensions, built, approximate) = (
+            let (generation, raster, dimensions, built, approximate, render_ms) = (
                 frame.generation,
                 frame.raster.clone(),
                 frame.dimensions,
                 frame.built,
                 frame.approximate,
+                frame.render_ms,
             );
-            return self.hand_retained(generation, raster, Some(dimensions), built, approximate);
+            return self.hand_retained(
+                generation,
+                raster,
+                Some(dimensions),
+                built,
+                approximate,
+                Some(render_ms),
+            );
         }
         let Some(raster) = self.presented_exact_raster().cloned() else {
             return Task::none();
         };
         let generation = self.presented_generation;
-        self.hand_retained(generation, raster, None, false, false)
+        let render_ms = self
+            .exact_render_ms
+            .filter(|(recorded, _)| *recorded == generation)
+            .map(|(_, ms)| ms);
+        self.hand_retained(generation, raster, None, false, false, render_ms)
     }
 
     /// One preview job for the entry on screen, at the bounds the view now asks for. The zoom rule
@@ -1409,6 +1440,7 @@ impl Editor {
         proxy_dimensions: Option<(u32, u32)>,
         proxy_built: bool,
         proxy_approximate: bool,
+        render_ms: Option<f64>,
     ) -> Task<Message> {
         // The texture is a proxy exactly when there are proxy dimensions to describe it.
         let proxy = proxy_dimensions.is_some();
@@ -1428,6 +1460,7 @@ impl Editor {
             proxy_built,
             proxy_approximate,
             reason: Some("zoom"),
+            render_ms,
         };
         self.present(upload, &raster);
         Task::none()
@@ -1475,8 +1508,13 @@ impl Editor {
         }
         // A frame on screen is the proof the last failure is over.
         self.render_error = None;
-        self.activity.render_ms =
-            Some(self.activity.request_started.elapsed().as_secs_f64() * 1000.);
+        // The status bar's figure is this frame's own render time, measured on the worker for the
+        // phase that produced it — never the time since the last open or commit, which a drag, a
+        // zoom hand-over or a refit presents long after.
+        self.activity.render = upload.render_ms.map(|ms| state::status::RenderTime {
+            ms,
+            proxy: upload.proxy,
+        });
         self.event(
             "preview_displayed",
             json!({
@@ -1491,6 +1529,7 @@ impl Editor {
                 "proxy_built":upload.proxy_built,
                 "proxy_approximate":upload.proxy_approximate,
                 "reason":upload.reason,
+                "render_ms":upload.render_ms,
             }),
         );
         // A scripted preview selection settles on these same pixels, whether or not this frame also
@@ -1738,7 +1777,7 @@ impl Editor {
             photo: self.photo.is_some(),
             clients: self.live_server.as_ref().map(LocalServer::connected),
             rendering: self.preview_queue.is_busy() || self.uploading,
-            render_ms: self.activity.render_ms,
+            render: self.activity.render,
             render_error: self.render_error.as_ref(),
             pointer: self.pointer,
             analysis: self.analysis.as_ref(),
@@ -2170,6 +2209,7 @@ impl Editor {
                     let proxy_dimensions = result.proxy_dimensions;
                     let proxy_built = result.proxy_built;
                     let proxy_approximate = result.proxy_approximate;
+                    let render_ms = result.render_ms;
                     if !for_draft {
                         if proxy {
                             self.awaiting_exact = Some(generation);
@@ -2195,7 +2235,8 @@ impl Editor {
                                 && self.presented_proxy
                                 && self.proxy_bounds().is_some()
                             {
-                                return self.adopt_exact(generation, identity, report, raster);
+                                return self
+                                    .adopt_exact(generation, identity, report, raster, render_ms);
                             }
                             if for_draft {
                                 // The crop draft's input stage is the one photo path left that
@@ -2241,8 +2282,10 @@ impl Editor {
                                         dimensions: proxy_dimensions.unwrap_or(stage),
                                         built: proxy_built,
                                         approximate: proxy_approximate,
+                                        render_ms,
                                     });
                                 } else {
+                                    self.exact_render_ms = Some((generation, render_ms));
                                     match report {
                                         Some(report) => {
                                             self.incoming = Some((
@@ -2277,6 +2320,7 @@ impl Editor {
                                 proxy_built,
                                 proxy_approximate,
                                 reason: None,
+                                render_ms: Some(render_ms),
                             };
                             if for_draft {
                                 let handle = iced::widget::image::Handle::from_rgba(
@@ -5909,8 +5953,16 @@ mod tests {
             dimensions: (1200, 900),
             built: true,
             approximate: false,
+            render_ms: 12.0,
         });
         editor.raster = Some((7, pixels(2)));
+        editor.exact_render_ms = Some((7, 85.0));
+        // What the status bar reports is the time of the picture on screen, and each retained
+        // frame brings its own: the proxy's while the proxy is shown, the exact render's at 100%.
+        editor.activity.render = Some(state::status::RenderTime {
+            ms: 12.0,
+            proxy: true,
+        });
 
         // Fit to 100%: the retained exact raster becomes the surface's source and no job is
         // queued. Nothing is written here; the next redraw's `prepare` writes it once.
@@ -5922,6 +5974,14 @@ mod tests {
         );
         let exact = editor.photo_version;
         assert!(exact > 0, "the exact raster was handed to the surface");
+        assert_eq!(
+            editor.activity.render,
+            Some(state::status::RenderTime {
+                ms: 85.0,
+                proxy: false
+            }),
+            "the exact raster on screen reports its own render time"
+        );
         assert_eq!(
             editor.preview_generation, 7,
             "no preview job was requested: nothing was rendered for a view change"
@@ -5947,9 +6007,75 @@ mod tests {
             "the retained proxy was handed to the surface"
         );
         assert_eq!(
+            editor.activity.render,
+            Some(state::status::RenderTime {
+                ms: 12.0,
+                proxy: true
+            }),
+            "the proxy on screen reports its own render time again"
+        );
+        assert_eq!(
             editor.preview_generation, 7,
             "no preview job was requested: nothing was rendered for a view change"
         );
+        finish(editor, catalog);
+    }
+
+    /// The status bar's "Rendered in" figure is the presented frame's own worker time, not the
+    /// time since the last open or commit. A drafted frame, a zoom hand-over or a refit is
+    /// presented long after that request; before this was measured on the worker, a frame
+    /// presented minutes after the open reported minutes.
+    #[test]
+    fn the_render_figure_is_the_presented_frames_own_time_not_the_time_since_the_request() {
+        let (mut editor, catalog, _, entry_id) = opened(Vec::new(), 4);
+        let log = attach_log(&mut editor);
+        // The last open or commit began long ago, as it has in any real session after a while.
+        editor.activity.request_started = Instant::now()
+            .checked_sub(std::time::Duration::from_secs(500))
+            .unwrap_or_else(Instant::now);
+        let raster = lightwell_core::Raster {
+            width: 2,
+            height: 2,
+            rgba: vec![7; 16].into(),
+            source_fingerprint: "source-1".into(),
+            snapshot_id: lightwell_core::SnapshotId::new(),
+        };
+        let upload = |generation: u64, proxy: bool, render_ms: f64| Upload {
+            generation,
+            draft_revision: None,
+            width: 480,
+            height: 320,
+            entry_id: entry_id.clone(),
+            snapshot_id: raster.snapshot_id.to_string(),
+            source_fingerprint: raster.source_fingerprint.clone(),
+            proxy,
+            proxy_dimensions: proxy.then_some((240, 160)),
+            proxy_built: false,
+            proxy_approximate: false,
+            reason: None,
+            render_ms: Some(render_ms),
+        };
+        // The renderer is idle, so the bar reports a figure rather than "Rendering…".
+        editor.preview_queue = PreviewQueue::default();
+        editor.present(upload(5, true, 12.4), &raster);
+        editor.rederive();
+        assert_eq!(
+            editor.workspace.status.render, "Rendered in 12 ms (proxy)",
+            "the proxy's own time, not the 500 s since the request"
+        );
+        // An exact frame presented later (a 100% view) reports its own time and says nothing of a
+        // proxy.
+        editor.present(upload(6, false, 85.2), &raster);
+        editor.rederive();
+        assert_eq!(editor.workspace.status.render, "Rendered in 85 ms");
+        // The evidence event carries the same figure, so a run can assert it is plausible.
+        let records = logged(&mut editor, &log);
+        let displayed: Vec<_> = records
+            .iter()
+            .filter(|record| record["event"] == "preview_displayed")
+            .map(|record| record["detail"]["render_ms"].clone())
+            .collect();
+        assert_eq!(displayed, vec![json!(12.4), json!(85.2)]);
         finish(editor, catalog);
     }
 
@@ -6778,6 +6904,7 @@ mod tests {
             proxy_built: false,
             proxy_approximate: false,
             reason: None,
+            render_ms: Some(3.0),
         };
         assert!(
             editor.displayed_status(&upload).starts_with("Current · "),

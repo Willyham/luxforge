@@ -2,6 +2,31 @@
 use crate::state::Inputs;
 use lightwell_core::Zoom;
 
+/// How long the frame on the photo surface took to render, as the preview worker measured it for
+/// that frame's own phase ([`lightwell_core::PreviewResult::render_ms`]). It travels with the
+/// frame: a zoom that hands a retained frame back to the surface brings that frame's own time with
+/// it, so the figure is always the picture on screen and never the time since some earlier request.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct RenderTime {
+    pub(crate) ms: f64,
+    /// The frame is the display-size proxy rather than the exact full-resolution render.
+    pub(crate) proxy: bool,
+}
+
+impl RenderTime {
+    /// "Rendered in 12 ms (proxy)", or "Rendered in 85 ms" for the exact render. A frame faster
+    /// than half a millisecond says so rather than claiming zero.
+    pub(crate) fn text(self) -> String {
+        let figure = if self.ms < 0.5 {
+            "<1".to_owned()
+        } else {
+            format!("{}", self.ms.round() as i64)
+        };
+        let phase = if self.proxy { " (proxy)" } else { "" };
+        format!("Rendered in {figure} ms{phase}")
+    }
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct StatusBarModel {
     pub(crate) message: String,
@@ -25,8 +50,8 @@ pub(crate) fn derive(inputs: &Inputs<'_>) -> StatusBarModel {
         render: if inputs.rendering {
             "Rendering…".into()
         } else {
-            match inputs.render_ms {
-                Some(ms) => format!("Rendered in {} ms", ms.round() as i64),
+            match inputs.render {
+                Some(time) => time.text(),
                 None => "Idle".into(),
             }
         },
@@ -35,5 +60,47 @@ pub(crate) fn derive(inputs: &Inputs<'_>) -> StatusBarModel {
             Zoom::Percent { value } => format!("{value}%"),
         },
         scale_text: format!("@{:.2}×", inputs.scale_factor),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_render_time_names_the_frame_it_describes() {
+        assert_eq!(
+            RenderTime {
+                ms: 12.4,
+                proxy: true
+            }
+            .text(),
+            "Rendered in 12 ms (proxy)"
+        );
+        assert_eq!(
+            RenderTime {
+                ms: 85.5,
+                proxy: false
+            }
+            .text(),
+            "Rendered in 86 ms"
+        );
+        // A tiny frame is not "0 ms".
+        assert_eq!(
+            RenderTime {
+                ms: 0.2,
+                proxy: true
+            }
+            .text(),
+            "Rendered in <1 ms (proxy)"
+        );
+        assert_eq!(
+            RenderTime {
+                ms: 0.5,
+                proxy: false
+            }
+            .text(),
+            "Rendered in 1 ms"
+        );
     }
 }
