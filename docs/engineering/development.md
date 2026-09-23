@@ -191,9 +191,13 @@ the **display proxy**: the whole recipe rendered against a source downscaled onc
 which is the size the display was going to minify the exact render down to anyway. `preview_displayed`
 therefore carries `proxy`, `proxy_dimensions` (the proxy source's own size, null when there is none),
 `proxy_built` (the proxy source was built for this frame rather than taken from the queue's cache)
-and `reason` (`"zoom"` when the frame is a retained raster a zoom change needed rather than a
-render). Its `dimensions` stay the exact output stage's, which is what picks, the percent-zoom box
-and the overlay cell grid map through.
+`reason` (`"zoom"` when the frame is a retained raster a zoom change needed rather than a
+render) and `render_ms`: the preview worker's own time for the phase that produced those pixels —
+the proxy build when that frame built it plus the render, or the exact render plus the reduction —
+excluding the queue wait, source preparation and the hand-over, and for a `"zoom"` frame the time
+recorded with that retained raster. It is the figure the status bar states as "Rendered in N ms",
+with "(proxy)" for a proxy. Its `dimensions` stay the exact output stage's, which is what picks, the
+percent-zoom box and the overlay cell grid map through.
 
 The photograph is drawn by a **photo surface**: a shader primitive that owns one wgpu texture,
 writes the raster it is given into that texture during the frame that draws it, and recreates the
@@ -204,11 +208,15 @@ and no upload message to wait for. It therefore carries no `upload_ms`, and neit
 `render_ready`: there is no upload step to time. The clipping overlay and the crop draft's input
 stage keep the toolkit's image widget and still upload, which is what `clipping_overlay` and the
 draft's own settle report. `preview_exact_adopted` records the exact phase of such a job
-being taken up without an upload, `preview_exact_cancelled` records one a newer value superseded, and
+being taken up without an upload, with that phase's own `render_ms`, `preview_exact_cancelled` records one a newer value superseded, and
 `clipping_overlay` carries `approximate` while the mask is derived from the proxy on screen rather
 than from that exact raster. `state.json` carries `proxy: {eligible, declined, approximate, dimensions, bounds,
 presented}`, so a stack that took the exact path — an ineligible layer, a stage already inside the
-bounds, a failed build — says so rather than being silently identical.
+bounds, a failed build — says so rather than being silently identical, and `status_bar: {readout,
+render, render_ms, render_proxy}`, what the bar drew and the figure behind it. The `histogram`,
+`basic`, `large24` and `large60` scenarios check that every `preview_displayed` carries a finite
+`render_ms` below 5 s and that each captured status bar states one of those figures in the editor's
+own wording, with `(proxy)` exactly when the frame on screen is the proxy.
 
 ### The Basic and histogram acceptance chapter
 
@@ -413,16 +421,21 @@ reset and discarded frames match the committed stack within the same tolerance. 
 brightness read back from the renderer, not a colorimetric claim.
 
 `histogram` opens the same fixture at 1440 × 900 and drives the inspector, both clipping overlays and
-the pointer readout over nine frames: the default screen, one `edit.set-pixel` of `(0, 128, 255)` at
-content pixel 360, 240, a hover over that pixel, the shadow overlay alone, both overlays, 100%, Fit
-again, both overlays off, and a preview of the Original. The fixture's clipped pixels are known from
+the pointer readout over twelve frames: the default screen, one `edit.set-pixel` of `(0, 128, 255)`
+at content pixel 360, 240, a hover over that pixel, the shadow overlay alone, both overlays, 100%,
+Fit again, both overlays off, a preview of the Original, the return to current, an Exposure drag
+left open and the same gesture released. The fixture's clipped pixels are known from
 its generator rather than guessed — the quadrant colours reach neither endpoint, the white centre
 line and arrow are at code 255 in every channel and the dash band across the middle is at code 0 in
 every channel — and the set pixel is the only one in the run with a channel at each endpoint, which
 is both the magenta case and the isolated-clipped-pixel case a Fit overlay must survive. The runner
-checks every frame's eleven counters and the plot's shared maximum against `analysis::reduce_raster`
-of an **independent** core render of the same fixture through the same recipe, exactly; that the
-readout reports the codes of the pixel just set and clears when the displayed entry changes; that the
+checks every frame's eleven counters, the plot's shared maximum and the counts the triangles'
+tooltips state in words against `analysis::reduce_raster` of an **independent** core render of the
+same fixture through the same recipe, exactly, and that the plot's tooltip names the domain and a
+frame with a report draws no notice over the plot; that the readout reports the codes of the pixel
+just set, is shown in the status bar and clears when the displayed entry changes; that across the
+hover the tools panel is pixel for pixel the frame before it and the status bar changed only inside
+one readout-slot-wide span short of its trailing facts, so the readout moved nothing; that the
 overlay's cell grid is one cell per source pixel at Fit and at 100%, where the photograph also
 measures 480 physical pixels wide; and, by differencing each overlay frame against the overlay-off
 frame of the same stack and zoom, that blue appears over the code-0 dashes, red over the code-255
@@ -432,10 +445,11 @@ the fixture's own red quadrant is as red as a highlight mask is, so only the cha
 frame without the mask identifies one. Each overlay frame's `state.stack` is compared with the frame
 before it, which is how the run proves a view flag commits nothing. Its last three frames return to
 current, drive an Exposure drag left open and then release it: the drafted frame must display the
-draft revision it names in `state.draft` and must report an explicit non-ready inspector state
-carrying no counts, and the released frame must advance the revision by exactly one and carry counts
-equal to an independent reduction of the composed stack it says it displays. It writes
-`app/histogram-checks.json`.
+draft revision it names in `state.draft`, and its plot must name that revision and carry counts equal
+to an independent reduction of the drafted stack; the released frame must advance the revision by
+exactly one and carry counts equal to an independent reduction of the composed stack it says it
+displays. It writes `app/histogram-checks.json`. `unavailable`'s second launch checks that the
+histogram is unavailable and that its reason is the notice drawn inside the plot.
 
 `basic-crop` opens the same fixture at 1440 × 900 and commits `edit.set-basic` at +1.00 EV, then a
 16:9 `edit.crop-fit` at angle zero and the same ratio straightened by 7°. Every one of its four
