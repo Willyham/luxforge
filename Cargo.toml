@@ -29,6 +29,12 @@ uuid = { version = "=1.26.1", features = ["v4"] }
 # version already in the lockfile; Cargo unifies it with Iced's own, so there is one `wgpu` in the
 # build and no second GPU stack. Only `wgsl` is asked for, which is the shader language used.
 wgpu = { version = "=27.0.1", default-features = false, features = ["wgsl"] }
+# The renderer crate behind `iced::Renderer`, for one trait: `primitive::Renderer`, through which the
+# photo surface's own widget hands the renderer only the visible part of the photograph instead of
+# its whole zoomed box. Iced 0.14 hides it for the same reason as `wgpu` above, so it is named here
+# and pinned to the version already in the lockfile; Cargo unifies it with Iced's own and no
+# feature is added.
+iced_wgpu = { version = "=0.14.0", default-features = false }
 
 [workspace.lints.rust]
 unsafe_code = "forbid"
