@@ -22,6 +22,11 @@
 //!    reads its input row by row instead of column by column. Same arithmetic, cache-friendly
 //!    order.
 //!
+//! Every pass takes the [`Parallelism`] the host chose for the tile. Under
+//! [`Parallelism::Pool`] a pass runs its independent rows, or the vertical pass its strips, on the
+//! shared pool; each value is still the same arithmetic in the same order, so the choice changes
+//! when a value is computed and never a bit of it.
+//!
 //! Every plane below carries the frame it belongs to and the sub-rectangle it actually holds.
 //! Reads clamp to the frame, exactly as the host's [`Planes::sample`](crate::modules::Planes) does,
 //! and a read whose clamped coordinate is outside the held rectangle is a halo bug that panics in a
@@ -30,10 +35,11 @@
 use crate::{
     Error, ErrorKind,
     modules::{
-        Stage,
+        Parallelism, Stage,
         basic::tone::{decode_srgb_extended, encode_srgb_extended},
     },
 };
+use rayon::prelude::*;
 
 // ---------------------------------------------------------------------------------------------
 // Frozen constants shared by more than one unit.
@@ -380,11 +386,6 @@ impl<'a> PlaneMut<'a> {
         self.geometry
     }
 
-    pub(super) fn get(&self, x: i64, y: i64) -> f32 {
-        let (x, y) = self.geometry.clamp(x, y);
-        self.data[self.geometry.index(x, y)]
-    }
-
     pub(super) fn set(&mut self, x: i64, y: i64, value: f32) {
         let index = self.geometry.index(x, y);
         self.data[index] = value;
@@ -396,6 +397,63 @@ impl<'a> PlaneMut<'a> {
             data: self.data,
         }
     }
+
+    /// Write the plane row by row: `body` receives a row's `y` and its values, which start at the
+    /// rectangle's `x0`. On the pool under [`Parallelism::Pool`], in order otherwise.
+    pub(super) fn for_rows(
+        &mut self,
+        parallelism: Parallelism,
+        body: impl Fn(i64, &mut [f32]) + Sync + Send,
+    ) {
+        let rect = self.geometry.rect;
+        if rect.is_empty() {
+            return;
+        }
+        let (data, width) = (&mut self.data[..rect.pixels()], rect.width() as usize);
+        match parallelism {
+            Parallelism::Pool => data
+                .par_chunks_mut(width)
+                .enumerate()
+                .for_each(|(row, values)| body(rect.y0 + row as i64, values)),
+            Parallelism::Serial => data
+                .chunks_mut(width)
+                .enumerate()
+                .for_each(|(row, values)| body(rect.y0 + row as i64, values)),
+        }
+    }
+}
+
+/// Write several planes over one rectangle row by row: `body` receives a row's `y` and that row of
+/// each plane, which start at the rectangle's `x0`. On the pool under [`Parallelism::Pool`], in
+/// order otherwise.
+pub(super) fn for_rows_of<const N: usize>(
+    parallelism: Parallelism,
+    planes: [&mut PlaneMut<'_>; N],
+    body: impl Fn(i64, &mut [&mut [f32]; N]) + Sync + Send,
+) {
+    let rect = planes[0].geometry.rect;
+    debug_assert!(
+        planes.iter().all(|plane| plane.geometry.rect == rect),
+        "planes written row by row together hold the same rectangle"
+    );
+    if rect.is_empty() {
+        return;
+    }
+    let width = rect.width() as usize;
+    let mut chunks = planes.map(|plane| plane.data[..rect.pixels()].chunks_mut(width));
+    let mut rows: Vec<[&mut [f32]; N]> = (0..rect.height())
+        .map(|_| std::array::from_fn(|plane| chunks[plane].next().expect("a row of each plane")))
+        .collect();
+    match parallelism {
+        Parallelism::Pool => rows
+            .par_iter_mut()
+            .enumerate()
+            .for_each(|(row, values)| body(rect.y0 + row as i64, values)),
+        Parallelism::Serial => rows
+            .iter_mut()
+            .enumerate()
+            .for_each(|(row, values)| body(rect.y0 + row as i64, values)),
+    }
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -404,56 +462,98 @@ impl<'a> PlaneMut<'a> {
 
 /// The horizontal mean over `2r + 1` columns, as a running `f64` sum along each row seeded by a
 /// direct sum at the row's first column.
-fn horizontal_mean(src: &Plane<'_>, r: i64, dst: &mut PlaneMut<'_>) {
+fn horizontal_mean(src: &Plane<'_>, r: i64, dst: &mut PlaneMut<'_>, parallelism: Parallelism) {
     let out = dst.rect();
     if out.is_empty() {
         return;
     }
     let n = (2 * r + 1) as f64;
-    for y in out.y0..out.y1 {
+    dst.for_rows(parallelism, |y, row| {
         let mut sum = 0.0_f64;
         for dx in -r..=r {
             sum += f64::from(src.get(out.x0 + dx, y));
         }
-        dst.set(out.x0, y, (sum / n) as f32);
+        row[0] = (sum / n) as f32;
         for x in (out.x0 + 1)..out.x1 {
             sum += f64::from(src.get(x + r, y)) - f64::from(src.get(x - 1 - r, y));
-            dst.set(x, y, (sum / n) as f32);
+            row[(x - out.x0) as usize] = (sum / n) as f32;
         }
-    }
+    });
 }
 
 /// The vertical mean over `2r + 1` rows, in strips of [`STRIP`] columns so the reads run along rows
-/// rather than down columns. One `f64` accumulator per column of the strip.
-fn vertical_mean(src: &Plane<'_>, r: i64, dst: &mut PlaneMut<'_>) {
+/// rather than down columns. One `f64` accumulator per column. The strips are independent, so under
+/// [`Parallelism::Pool`] they run on the pool, each writing its own columns of every row.
+fn vertical_mean(src: &Plane<'_>, r: i64, dst: &mut PlaneMut<'_>, parallelism: Parallelism) {
     let out = dst.rect();
     if out.is_empty() {
         return;
     }
-    let n = (2 * r + 1) as f64;
-    let mut x0 = out.x0;
-    while x0 < out.x1 {
-        let x1 = (x0 + STRIP as i64).min(out.x1);
-        let columns = (x1 - x0) as usize;
-        let mut accumulator = [0.0_f64; STRIP];
-        for dy in -r..=r {
-            for (column, slot) in accumulator.iter_mut().take(columns).enumerate() {
-                *slot += f64::from(src.get(x0 + column as i64, out.y0 + dy));
+    match parallelism {
+        Parallelism::Serial => {
+            let mut x0 = out.x0;
+            while x0 < out.x1 {
+                let columns = ((out.x1 - x0) as usize).min(STRIP);
+                vertical_strip(src, r, out, x0, columns, |row, column, value| {
+                    dst.set(x0 + column as i64, out.y0 + row as i64, value);
+                });
+                x0 += columns as i64;
             }
+        }
+        Parallelism::Pool => {
+            // Each strip's own segment of every row, so the strips can be written concurrently.
+            let width = out.width() as usize;
+            let mut strips: Vec<Vec<&mut [f32]>> = (0..width.div_ceil(STRIP))
+                .map(|_| Vec::with_capacity(out.height() as usize))
+                .collect();
+            for row in dst.data[..out.pixels()].chunks_mut(width) {
+                for (strip, segment) in row.chunks_mut(STRIP).enumerate() {
+                    strips[strip].push(segment);
+                }
+            }
+            strips
+                .par_iter_mut()
+                .enumerate()
+                .for_each(|(strip, segments)| {
+                    let columns = segments[0].len();
+                    let x0 = out.x0 + (strip * STRIP) as i64;
+                    vertical_strip(src, r, out, x0, columns, |row, column, value| {
+                        segments[row][column] = value;
+                    });
+                });
+        }
+    }
+}
+
+/// One strip of the vertical mean: `columns` columns from `x0`, over every row of `out`, each with
+/// its own `f64` running sum seeded by a direct sum at the rectangle's first row. `write` places
+/// the value of a row (counted from `out.y0`) and column (counted from `x0`).
+fn vertical_strip(
+    src: &Plane<'_>,
+    r: i64,
+    out: Rect,
+    x0: i64,
+    columns: usize,
+    mut write: impl FnMut(usize, usize, f32),
+) {
+    let n = (2 * r + 1) as f64;
+    let mut accumulator = [0.0_f64; STRIP];
+    for dy in -r..=r {
+        for (column, slot) in accumulator.iter_mut().take(columns).enumerate() {
+            *slot += f64::from(src.get(x0 + column as i64, out.y0 + dy));
+        }
+    }
+    for (column, slot) in accumulator.iter().take(columns).enumerate() {
+        write(0, column, (*slot / n) as f32);
+    }
+    for (row, y) in ((out.y0 + 1)..out.y1).enumerate() {
+        for (column, slot) in accumulator.iter_mut().take(columns).enumerate() {
+            let x = x0 + column as i64;
+            *slot += f64::from(src.get(x, y + r)) - f64::from(src.get(x, y - 1 - r));
         }
         for (column, slot) in accumulator.iter().take(columns).enumerate() {
-            dst.set(x0 + column as i64, out.y0, (*slot / n) as f32);
+            write(row + 1, column, (*slot / n) as f32);
         }
-        for y in (out.y0 + 1)..out.y1 {
-            for (column, slot) in accumulator.iter_mut().take(columns).enumerate() {
-                let x = x0 + column as i64;
-                *slot += f64::from(src.get(x, y + r)) - f64::from(src.get(x, y - 1 - r));
-            }
-            for (column, slot) in accumulator.iter().take(columns).enumerate() {
-                dst.set(x0 + column as i64, y, (*slot / n) as f32);
-            }
-        }
-        x0 = x1;
     }
 }
 
@@ -465,12 +565,13 @@ pub(super) fn box_mean(
     r: i64,
     dst: &mut PlaneMut<'_>,
     temp: &mut [f32],
+    parallelism: Parallelism,
 ) -> Result<(), Error> {
     let geometry = dst.geometry();
     let mid = dst.rect().expand_y(r).clip(geometry.frame());
     let mut horizontal = PlaneMut::over(temp, geometry, mid)?;
-    horizontal_mean(src, r, &mut horizontal);
-    vertical_mean(&horizontal.as_plane(), r, dst);
+    horizontal_mean(src, r, &mut horizontal, parallelism);
+    vertical_mean(&horizontal.as_plane(), r, dst, parallelism);
     Ok(())
 }
 
@@ -482,38 +583,31 @@ pub(super) fn box_min(
     r: i64,
     dst: &mut PlaneMut<'_>,
     temp: &mut [f32],
+    parallelism: Parallelism,
 ) -> Result<(), Error> {
     let geometry = dst.geometry();
     let mid = dst.rect().expand_y(r).clip(geometry.frame());
     let mut horizontal = PlaneMut::over(temp, geometry, mid)?;
-    for y in mid.y0..mid.y1 {
+    horizontal.for_rows(parallelism, |y, row| {
         for x in mid.x0..mid.x1 {
             let mut value = f32::INFINITY;
             for dx in -r..=r {
                 value = value.min(src.get(x + dx, y));
             }
-            horizontal.set(x, y, value);
+            row[(x - mid.x0) as usize] = value;
         }
-    }
+    });
     let source = horizontal.as_plane();
     let out = dst.rect();
-    let mut x0 = out.x0;
-    while x0 < out.x1 {
-        let x1 = (x0 + STRIP as i64).min(out.x1);
-        let columns = (x1 - x0) as usize;
-        for y in out.y0..out.y1 {
-            let mut accumulator = [f32::INFINITY; STRIP];
+    dst.for_rows(parallelism, |y, row| {
+        for x in out.x0..out.x1 {
+            let mut value = f32::INFINITY;
             for dy in -r..=r {
-                for (column, slot) in accumulator.iter_mut().take(columns).enumerate() {
-                    *slot = slot.min(source.get(x0 + column as i64, y + dy));
-                }
+                value = value.min(source.get(x, y + dy));
             }
-            for (column, slot) in accumulator.iter().take(columns).enumerate() {
-                dst.set(x0 + column as i64, y, *slot);
-            }
+            row[(x - out.x0) as usize] = value;
         }
-        x0 = x1;
-    }
+    });
     Ok(())
 }
 
@@ -539,6 +633,7 @@ pub(super) fn guided_self(
     eps: f32,
     dst: &mut PlaneMut<'_>,
     scratch: &mut Scratch<'_>,
+    parallelism: Parallelism,
 ) -> Result<(), Error> {
     let geometry = dst.geometry();
     let frame = geometry.frame();
@@ -557,40 +652,54 @@ pub(super) fn guided_self(
     let temp_buffer = scratch.take(inner.expand_y(r).clip(frame).pixels())?;
 
     let mut squared = PlaneMut::over(squared_buffer, geometry, source)?;
-    for y in source.y0..source.y1 {
+    squared.for_rows(parallelism, |y, row| {
         for x in source.x0..source.x1 {
             let value = src.get(x, y);
-            squared.set(x, y, value * value);
+            row[(x - source.x0) as usize] = value * value;
         }
-    }
+    });
 
     let mut mean = PlaneMut::over(mean_buffer, geometry, inner)?;
-    box_mean(src, r, &mut mean, temp_buffer)?;
+    box_mean(src, r, &mut mean, temp_buffer, parallelism)?;
     let mut mean_squared = PlaneMut::over(mean_squared_buffer, geometry, inner)?;
-    box_mean(&squared.as_plane(), r, &mut mean_squared, temp_buffer)?;
+    box_mean(
+        &squared.as_plane(),
+        r,
+        &mut mean_squared,
+        temp_buffer,
+        parallelism,
+    )?;
 
     // `a` replaces `mean(I*I)` and `b` replaces `mean(I)`: both are read once, at this pixel.
-    for y in inner.y0..inner.y1 {
-        for x in inner.x0..inner.x1 {
-            let m = mean.get(x, y);
-            let variance = (mean_squared.get(x, y) - m * m).max(0.0);
+    for_rows_of(parallelism, [&mut mean, &mut mean_squared], |_, rows| {
+        let [mean, mean_squared] = rows;
+        for column in 0..mean.len() {
+            let m = mean[column];
+            let variance = (mean_squared[column] - m * m).max(0.0);
             let a = variance / (variance + eps);
-            mean_squared.set(x, y, a);
-            mean.set(x, y, (1.0 - a) * m);
+            mean_squared[column] = a;
+            mean[column] = (1.0 - a) * m;
         }
-    }
+    });
 
     // `mean(b)` goes straight into the result and `mean(a)` into the one remaining plane, so the
     // combination below needs no third buffer.
-    box_mean(&mean.as_plane(), r, dst, temp_buffer)?;
+    box_mean(&mean.as_plane(), r, dst, temp_buffer, parallelism)?;
     let mut mean_a = PlaneMut::over(coefficient_buffer, geometry, out)?;
-    box_mean(&mean_squared.as_plane(), r, &mut mean_a, temp_buffer)?;
-    for y in out.y0..out.y1 {
+    box_mean(
+        &mean_squared.as_plane(),
+        r,
+        &mut mean_a,
+        temp_buffer,
+        parallelism,
+    )?;
+    let mean_a = mean_a.as_plane();
+    dst.for_rows(parallelism, |y, row| {
         for x in out.x0..out.x1 {
-            let value = mean_a.get(x, y) * src.get(x, y) + dst.get(x, y);
-            dst.set(x, y, value);
+            let column = (x - out.x0) as usize;
+            row[column] += mean_a.get(x, y) * src.get(x, y);
         }
-    }
+    });
     Ok(())
 }
 
@@ -614,6 +723,7 @@ pub(super) fn guided_filter(
     eps: f32,
     dst: &mut PlaneMut<'_>,
     scratch: &mut Scratch<'_>,
+    parallelism: Parallelism,
 ) -> Result<(), Error> {
     let geometry = dst.geometry();
     let frame = geometry.frame();
@@ -636,24 +746,31 @@ pub(super) fn guided_filter(
 
     let mut guide_squared = PlaneMut::over(guide_squared_buffer, geometry, source)?;
     let mut guide_input = PlaneMut::over(guide_input_buffer, geometry, source)?;
-    for y in source.y0..source.y1 {
-        for x in source.x0..source.x1 {
-            let g = guide.get(x, y);
-            guide_squared.set(x, y, g * g);
-            guide_input.set(x, y, g * input.get(x, y));
-        }
-    }
+    for_rows_of(
+        parallelism,
+        [&mut guide_squared, &mut guide_input],
+        |y, rows| {
+            let [guide_squared, guide_input] = rows;
+            for x in source.x0..source.x1 {
+                let column = (x - source.x0) as usize;
+                let g = guide.get(x, y);
+                guide_squared[column] = g * g;
+                guide_input[column] = g * input.get(x, y);
+            }
+        },
+    );
 
     let mut mean_guide = PlaneMut::over(mean_guide_buffer, geometry, inner)?;
-    box_mean(guide, r, &mut mean_guide, temp_buffer)?;
+    box_mean(guide, r, &mut mean_guide, temp_buffer, parallelism)?;
     let mut mean_input = PlaneMut::over(mean_input_buffer, geometry, inner)?;
-    box_mean(input, r, &mut mean_input, temp_buffer)?;
+    box_mean(input, r, &mut mean_input, temp_buffer, parallelism)?;
     let mut mean_guide_squared = PlaneMut::over(mean_guide_squared_buffer, geometry, inner)?;
     box_mean(
         &guide_squared.as_plane(),
         r,
         &mut mean_guide_squared,
         temp_buffer,
+        parallelism,
     )?;
     let mut mean_guide_input = PlaneMut::over(mean_guide_input_buffer, geometry, inner)?;
     box_mean(
@@ -661,30 +778,45 @@ pub(super) fn guided_filter(
         r,
         &mut mean_guide_input,
         temp_buffer,
+        parallelism,
     )?;
 
     // `a` replaces `mean(G*I)` and `b` replaces `mean(I)`.
-    for y in inner.y0..inner.y1 {
-        for x in inner.x0..inner.x1 {
-            let mg = mean_guide.get(x, y);
-            let mi = mean_input.get(x, y);
-            let variance = (mean_guide_squared.get(x, y) - mg * mg).max(0.0);
-            let covariance = mean_guide_input.get(x, y) - mg * mi;
-            let a = covariance / (variance + eps);
-            mean_guide_input.set(x, y, a);
-            mean_input.set(x, y, mi - a * mg);
-        }
-    }
+    let (mean_guide, mean_guide_squared) = (mean_guide.as_plane(), mean_guide_squared.as_plane());
+    for_rows_of(
+        parallelism,
+        [&mut mean_guide_input, &mut mean_input],
+        |y, rows| {
+            let [mean_guide_input, mean_input] = rows;
+            for x in inner.x0..inner.x1 {
+                let column = (x - inner.x0) as usize;
+                let mg = mean_guide.get(x, y);
+                let mi = mean_input[column];
+                let variance = (mean_guide_squared.get(x, y) - mg * mg).max(0.0);
+                let covariance = mean_guide_input[column] - mg * mi;
+                let a = covariance / (variance + eps);
+                mean_guide_input[column] = a;
+                mean_input[column] = mi - a * mg;
+            }
+        },
+    );
 
-    box_mean(&mean_input.as_plane(), r, dst, temp_buffer)?;
+    box_mean(&mean_input.as_plane(), r, dst, temp_buffer, parallelism)?;
     let mut mean_a = PlaneMut::over(coefficient_buffer, geometry, out)?;
-    box_mean(&mean_guide_input.as_plane(), r, &mut mean_a, temp_buffer)?;
-    for y in out.y0..out.y1 {
+    box_mean(
+        &mean_guide_input.as_plane(),
+        r,
+        &mut mean_a,
+        temp_buffer,
+        parallelism,
+    )?;
+    let mean_a = mean_a.as_plane();
+    dst.for_rows(parallelism, |y, row| {
         for x in out.x0..out.x1 {
-            let value = mean_a.get(x, y) * guide.get(x, y) + dst.get(x, y);
-            dst.set(x, y, value);
+            let column = (x - out.x0) as usize;
+            row[column] += mean_a.get(x, y) * guide.get(x, y);
         }
-    }
+    });
     Ok(())
 }
 
@@ -697,10 +829,15 @@ pub(super) fn guided_filter(
 /// right or bottom edge is averaged over its actual pixels and never over clamped copies. The block
 /// grid is anchored at the *stage* origin, which is what makes a tile's reduced pixels identical to
 /// the whole frame's.
-pub(super) fn downsample(src: &Plane<'_>, reduction: i64, dst: &mut PlaneMut<'_>) {
+pub(super) fn downsample(
+    src: &Plane<'_>,
+    reduction: i64,
+    dst: &mut PlaneMut<'_>,
+    parallelism: Parallelism,
+) {
     let full = src.geometry().frame();
     let out = dst.rect();
-    for j in out.y0..out.y1 {
+    dst.for_rows(parallelism, |j, row| {
         let y0 = j * reduction;
         let y1 = ((j + 1) * reduction).min(full.y1);
         for i in out.x0..out.x1 {
@@ -714,19 +851,24 @@ pub(super) fn downsample(src: &Plane<'_>, reduction: i64, dst: &mut PlaneMut<'_>
                     count += 1.0;
                 }
             }
-            dst.set(i, j, (sum / count) as f32);
+            row[(i - out.x0) as usize] = (sum / count) as f32;
         }
-    }
+    });
 }
 
 /// Bilinear upsample from a reduced plane back to full resolution. A full pixel `x` samples the
 /// reduced coordinate `u = (x + 0.5)/s - 0.5`, blending reduced indices `floor(u)` and
 /// `floor(u) + 1`, each clamped to the reduced frame, so a full pixel reaches at most one reduced
 /// index beyond its own block.
-pub(super) fn upsample(reduced: &Plane<'_>, reduction: i64, dst: &mut PlaneMut<'_>) {
+pub(super) fn upsample(
+    reduced: &Plane<'_>,
+    reduction: i64,
+    dst: &mut PlaneMut<'_>,
+    parallelism: Parallelism,
+) {
     let out = dst.rect();
     let s = reduction as f32;
-    for y in out.y0..out.y1 {
+    dst.for_rows(parallelism, |y, row| {
         let v = ((y as f32) + 0.5) / s - 0.5;
         let j0 = v.floor();
         let fy = v - j0;
@@ -738,9 +880,9 @@ pub(super) fn upsample(reduced: &Plane<'_>, reduction: i64, dst: &mut PlaneMut<'
             let i0 = i0 as i64;
             let top = reduced.get(i0, j0) * (1.0 - fx) + reduced.get(i0 + 1, j0) * fx;
             let bottom = reduced.get(i0, j0 + 1) * (1.0 - fx) + reduced.get(i0 + 1, j0 + 1) * fx;
-            dst.set(x, y, top * (1.0 - fy) + bottom * fy);
+            row[(x - out.x0) as usize] = top * (1.0 - fy) + bottom * fy;
         }
-    }
+    });
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -783,10 +925,13 @@ mod tests {
         let mut out = vec![0.0; 16 * 16];
         let mut temp = vec![0.0; 16 * 16];
         let mut dst = PlaneMut::over(&mut out, geometry, geometry.rect).unwrap();
-        box_mean(&src.as_plane(), 3, &mut dst, &mut temp).unwrap();
+        box_mean(&src.as_plane(), 3, &mut dst, &mut temp, Parallelism::Serial).unwrap();
         for y in 0..16 {
             for x in 0..16 {
-                assert!((dst.get(x, y) - 0.375).abs() < 1e-6, "at ({x}, {y})");
+                assert!(
+                    (dst.as_plane().get(x, y) - 0.375).abs() < 1e-6,
+                    "at ({x}, {y})"
+                );
             }
         }
     }
@@ -801,9 +946,9 @@ mod tests {
         let mut reduced = vec![0.0; 2];
         let mut dst =
             PlaneMut::over(&mut reduced, reduced_geometry, reduced_geometry.rect).unwrap();
-        downsample(&src.as_plane(), 4, &mut dst);
-        assert!((dst.get(0, 0) - 1.5).abs() < 1e-6);
-        assert!((dst.get(1, 0) - 4.5).abs() < 1e-6);
+        downsample(&src.as_plane(), 4, &mut dst, Parallelism::Serial);
+        assert!((dst.as_plane().get(0, 0) - 1.5).abs() < 1e-6);
+        assert!((dst.as_plane().get(1, 0) - 4.5).abs() < 1e-6);
     }
 
     #[test]

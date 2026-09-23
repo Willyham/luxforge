@@ -1,8 +1,8 @@
 use crate::{
     Error, ErrorKind, Layer, Recipe, SnapshotId, SourceImage,
     modules::{
-        ColorOperation, ExactGeometry, ModuleRegistry, PointwiseColor, Processing, Resample,
-        SpatialOperation, Stage,
+        ColorOperation, ExactGeometry, ModuleRegistry, Parallelism, PointwiseColor, Processing,
+        Resample, SpatialOperation, Stage,
     },
 };
 use rayon::prelude::*;
@@ -806,15 +806,27 @@ fn spatial_frame(
     run_batches(
         &plan,
         cancel,
-        |tile| -> Result<Vec<u8>, Error> {
-            let (region, values) = run_tile(&plan, operation, &globals, tile, |region, planes| {
-                fill_planes(region, planes, read)
-            })?;
-            let mut bytes = Vec::with_capacity((tile.pixels() * 3) as usize);
-            for y in tile.y0..tile.y1() {
-                for x in tile.x0..tile.x1() {
-                    bytes.extend(quantize_pixel(spatial::plane_pixel(region, &values, x, y)));
+        |tile, parallelism| -> Result<Vec<u8>, Error> {
+            let (region, values) = run_tile(
+                &plan,
+                operation,
+                &globals,
+                tile,
+                parallelism,
+                |region, planes| fill_planes(region, planes, parallelism, read),
+            )?;
+            let mut bytes = vec![0; (tile.pixels() * 3) as usize];
+            let row = |(row, bytes): (usize, &mut [u8])| {
+                let y = tile.y0 + row as u32;
+                for (column, x) in (tile.x0..tile.x1()).enumerate() {
+                    let rgb = quantize_pixel(spatial::plane_pixel(region, &values, x, y));
+                    bytes[column * 3..column * 3 + 3].copy_from_slice(&rgb);
                 }
+            };
+            let row_bytes = tile.width as usize * 3;
+            match parallelism {
+                Parallelism::Pool => bytes.par_chunks_mut(row_bytes).enumerate().for_each(row),
+                Parallelism::Serial => bytes.chunks_mut(row_bytes).enumerate().for_each(row),
             }
             Ok(bytes)
         },
@@ -1193,9 +1205,15 @@ impl<'a> Evaluation<'a> {
         )?;
         let tile = plan.tile_containing(x, y);
         let _reservation = spatial::reserve_one(&plan);
-        let (region, values) = run_tile(&plan, operation, &globals, tile, |region, planes| {
-            fill_planes(region, planes, read)
-        })?;
+        // Serial on the calling thread: on the pool a sample would queue behind a render.
+        let (region, values) = run_tile(
+            &plan,
+            operation,
+            &globals,
+            tile,
+            Parallelism::Serial,
+            |region, planes| fill_planes(region, planes, Parallelism::Serial, read),
+        )?;
         let rgb = quantize_pixel(spatial::plane_pixel(region, &values, x, y));
         // Alpha is never touched by a unit; it is the input frame's, exactly as the render copies
         // it.

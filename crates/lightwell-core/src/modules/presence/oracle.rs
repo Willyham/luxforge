@@ -16,7 +16,7 @@ use super::{PRESENCE_EFFECT, PresenceModule, presence_halo};
 use crate::{
     EFFECT_FORMAT, Error, Layer, LayerId, ModuleRegistry, RECIPE_FORMAT, Recipe, SnapshotId,
     SourceImage,
-    modules::{Global, Region, SpatialOperation, Stage, ToolModule},
+    modules::{Global, Parallelism, Region, SpatialOperation, Stage, ToolModule},
     render::{
         render_tiled,
         spatial::{
@@ -178,9 +178,14 @@ fn evaluate(
         .collect();
     let mut output = vec![[0.0_f32; 3]; pixels.len()];
     for tile in plan.tiles() {
-        let (region, values) = run_tile(&plan, operation, &globals, tile, |region, planes| {
-            fill_planes(region, planes, read)
-        })?;
+        let (region, values) = run_tile(
+            &plan,
+            operation,
+            &globals,
+            tile,
+            Parallelism::Serial,
+            |region, planes| fill_planes(region, planes, Parallelism::Serial, read),
+        )?;
         for y in tile.y0..tile.y1() {
             for x in tile.x0..tile.x1() {
                 output[(y * stage.width + x) as usize] =
@@ -485,6 +490,67 @@ fn a_render_at_tile_128_and_at_tile_512_agree_on_every_code() {
     assert_eq!(worst, 0, "the tile size changed a code");
 }
 
+/// Every Presence unit fills every tile with the same bits whether the host lets its passes run on
+/// the pool or keeps them on the calling thread: alone, in both directions of each amount, and
+/// chained, over interior and edge tiles of a textured stage.
+#[test]
+fn a_tile_evaluated_on_the_pool_is_bit_identical_to_a_serial_one() {
+    let module = PresenceModule::new();
+    let (width, height) = (700_u32, 460_u32);
+    let stage = Stage { width, height };
+    let source = textured_source(width, height);
+    let pixels: Vec<[f32; 3]> = source
+        .rgba
+        .chunks_exact(4)
+        .map(|rgba| crate::render::decode_pixel([rgba[0], rgba[1], rgba[2]]))
+        .collect();
+    let read = |x: u32, y: u32| -> Result<[f32; 3], Error> { Ok(pixels[(y * width + x) as usize]) };
+    let reduction = build_reduction(stage, read).expect("a reduction");
+    for payload in [
+        json!({"texture": 100.0}),
+        json!({"texture": -70.0}),
+        json!({"clarity": 100.0}),
+        json!({"clarity": -60.0}),
+        json!({"dehaze": 100.0}),
+        json!({"dehaze": -40.0}),
+        json!({"texture": 60.0, "clarity": -40.0, "dehaze": 35.0}),
+    ] {
+        let crate::modules::Processing::Spatial(operation) = module
+            .compile(PRESENCE_EFFECT, 1, &payload, stage)
+            .expect("a compiled operation")
+        else {
+            panic!("a spatial operation");
+        };
+        let globals: Vec<Option<Global>> = operation
+            .units()
+            .iter()
+            .map(|unit| unit.prepare(&reduction))
+            .collect();
+        let plan = SpatialPlan::new(&operation, stage, 256).expect("a plan");
+        for tile in plan.tiles() {
+            let [serial, pooled] = [Parallelism::Serial, Parallelism::Pool].map(|parallelism| {
+                run_tile(
+                    &plan,
+                    &operation,
+                    &globals,
+                    tile,
+                    parallelism,
+                    |region, planes| fill_planes(region, planes, parallelism, read),
+                )
+                .expect("a tile")
+            });
+            assert_eq!(serial.0, pooled.0, "{payload}: the same rectangle");
+            let differing = serial
+                .1
+                .iter()
+                .zip(&pooled.1)
+                .filter(|(serial, pooled)| serial.to_bits() != pooled.to_bits())
+                .count();
+            assert_eq!(differing, 0, "{payload}, tile {tile:?}: values differ");
+        }
+    }
+}
+
 /// Release-only measurement, run explicitly:
 ///
 /// ```sh
@@ -492,8 +558,9 @@ fn a_render_at_tile_128_and_at_tile_512_agree_on_every_code() {
 /// ```
 ///
 /// Each unit alone at `+100` and all three together, on in-memory 24 MP and 60 MP frames with a
-/// warm source, p50 and p95 over ten runs, with the plan's working set and concurrency and the
-/// spatial budget's high-water mark.
+/// warm source, p50 and p95 over ten runs, with the process's CPU time over each run as a
+/// percentage of one core, the plan's working set and concurrency and the spatial budget's
+/// high-water mark.
 #[test]
 #[ignore = "measurement, run explicitly in release"]
 fn presence_timing() {
@@ -525,22 +592,30 @@ fn presence_timing() {
             // Warm the source and the estimate store, then measure.
             crate::render(&registry, &source, SnapshotId::new(), &stack).expect("a warm render");
             SpatialBudget::default().reset_peak();
+            let mut sampler = lightwell_process::Sampler::new();
             let mut samples = Vec::new();
+            let mut cpu = Vec::new();
             for _ in 0..10 {
+                let before = sampler.read().cpu_time_ns.expect("this process's CPU time");
                 let started = std::time::Instant::now();
                 let raster =
                     crate::render(&registry, &source, SnapshotId::new(), &stack).expect("a render");
-                samples.push(started.elapsed().as_secs_f64() * 1000.0);
+                let elapsed = started.elapsed();
+                let after = sampler.read().cpu_time_ns.expect("this process's CPU time");
+                samples.push(elapsed.as_secs_f64() * 1000.0);
+                cpu.push((after - before) as f64 / elapsed.as_nanos() as f64 * 100.0);
                 assert_eq!((raster.width, raster.height), (width, height));
             }
             samples.sort_by(f64::total_cmp);
+            cpu.sort_by(f64::total_cmp);
             let p50 = samples[samples.len() / 2];
             let p95 = samples[(samples.len() as f64 * 0.95).ceil() as usize - 1];
             println!(
-                "{width}x{height} presence {name}: p50 {p50:.0} ms, p95 {p95:.0} ms over {} runs; \
-                 halo {} px, tiles {}, working set {:.1} MiB, concurrency {}, budget peak \
-                 {:.1} MiB, target {:.1} MiB",
+                "{width}x{height} presence {name}: p50 {p50:.0} ms, p95 {p95:.0} ms over {} runs, \
+                 CPU p50 {:.0}% of one core; halo {} px, tiles {}, working set {:.1} MiB, \
+                 concurrency {}, budget peak {:.1} MiB, target {:.1} MiB",
                 samples.len(),
+                cpu[cpu.len() / 2],
                 operation.summed_halo(stage),
                 plan.tiles().len(),
                 plan.working_set() as f64 / mib,

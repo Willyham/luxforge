@@ -22,7 +22,7 @@ use super::filters::{
 };
 use crate::{
     Error,
-    modules::{Global, Planes, PlanesMut, Reduction, SpatialUnit, Stage},
+    modules::{Global, Parallelism, Planes, PlanesMut, Reduction, SpatialUnit, Stage},
 };
 
 /// Texture: the fine and coarse guided-filter radii in pixels at the reference long side.
@@ -119,6 +119,7 @@ impl SpatialUnit for Texture {
         output: &mut PlanesMut<'_>,
         _: Option<&Global>,
         scratch: &mut [f32],
+        parallelism: Parallelism,
     ) -> Result<(), Error> {
         let stage = input.stage();
         let frame = Rect::frame(i64::from(stage.width), i64::from(stage.height));
@@ -135,15 +136,23 @@ impl SpatialUnit for Texture {
         let coarse_buffer = scratch.take(out.pixels())?;
 
         let mut encoded = PlaneMut::over(encoded_buffer, geometry, encoded_rect)?;
-        for y in encoded_rect.y0..encoded_rect.y1 {
+        encoded.for_rows(parallelism, |y, row| {
             for x in encoded_rect.x0..encoded_rect.x1 {
-                encoded.set(x, y, filters::encoded_luminance(input.sample(x, y)));
+                row[(x - encoded_rect.x0) as usize] =
+                    filters::encoded_luminance(input.sample(x, y));
             }
-        }
+        });
         let encoded: Plane<'_> = encoded.as_plane();
 
         let mut fine = PlaneMut::over(fine_buffer, geometry, out)?;
-        guided_self(&encoded, self.r_fine, EPS_TEXTURE, &mut fine, &mut scratch)?;
+        guided_self(
+            &encoded,
+            self.r_fine,
+            EPS_TEXTURE,
+            &mut fine,
+            &mut scratch,
+            parallelism,
+        )?;
         let mut coarse = PlaneMut::over(coarse_buffer, geometry, out)?;
         guided_self(
             &encoded,
@@ -151,9 +160,12 @@ impl SpatialUnit for Texture {
             EPS_TEXTURE,
             &mut coarse,
             &mut scratch,
+            parallelism,
         )?;
 
-        for y in out.y0..out.y1 {
+        let (fine, coarse) = (fine.as_plane(), coarse.as_plane());
+        output.for_rows(parallelism, |y, red, green, blue| {
+            let y = i64::from(y);
             for x in out.x0..out.x1 {
                 let rgb = input.sample(x, y);
                 let e = encoded.get(x, y);
@@ -166,9 +178,10 @@ impl SpatialUnit for Texture {
                     let l_in = filters::luminance(rgb);
                     filters::reconstruct(rgb, l_in, filters::decode(e + delta))
                 };
-                output.set(x as u32, y as u32, value);
+                let column = (x - out.x0) as usize;
+                [red[column], green[column], blue[column]] = value;
             }
-        }
+        });
         Ok(())
     }
 

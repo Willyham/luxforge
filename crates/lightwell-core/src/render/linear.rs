@@ -14,7 +14,7 @@ use super::{
 };
 use crate::{
     Error, ErrorKind, Recipe, SnapshotId,
-    modules::{Global, ModuleRegistry, Region, SpatialOperation, Stage},
+    modules::{Global, ModuleRegistry, Parallelism, Region, SpatialOperation, Stage},
 };
 use rayon::prelude::*;
 use std::sync::{Arc, Mutex, Weak};
@@ -803,10 +803,15 @@ impl<'a> LinearEvaluation<'a> {
         run_batches(
             &plan,
             cancel,
-            |tile| {
-                run_tile(&plan, operation, &globals, tile, |region, planes| {
-                    fill_planes(region, planes, read)
-                })
+            |tile, parallelism| {
+                run_tile(
+                    &plan,
+                    operation,
+                    &globals,
+                    tile,
+                    parallelism,
+                    |region, planes| fill_planes(region, planes, parallelism, read),
+                )
             },
             |tile, (region, tile_values)| -> Result<(), Error> {
                 for y in tile.y0..tile.y1() {
@@ -930,9 +935,19 @@ impl<'a> LinearEvaluation<'a> {
         let tile = plan.tile_containing(x, y);
         let (region, values) = {
             let _reservation = spatial::reserve_one(plan);
-            run_tile(plan, operation, globals, tile, |region, planes| {
-                fill_planes(region, planes, |x, y| self.spatial_read(index, x, y))
-            })?
+            // Serial: a tile's input pulled on the shared pool waited behind a render holding it.
+            run_tile(
+                plan,
+                operation,
+                globals,
+                tile,
+                Parallelism::Serial,
+                |region, planes| {
+                    fill_planes(region, planes, Parallelism::Serial, |x, y| {
+                        self.spatial_read(index, x, y)
+                    })
+                },
+            )?
         };
         let pixel = spatial::plane_pixel(region, &values, x, y).map(f64::from);
         let mut state = lock();

@@ -313,13 +313,15 @@
     },
     {
       "id": "TASK-007",
-      "description": "Make Presence exact renders on large images use the cores they have.",
-      "status": "in_progress",
+      "description": "Decide whether a spatial operation with a large summed halo runs in larger tiles, so Texture and Dehaze stop recomputing the margin Clarity needs around every tile.",
+      "status": "blocked",
       "dependencies": [],
       "extra_context": [
-        "Measured by the performance smoke scenario and the Performance section on the owner's M4 Pro (14 cores) on 2026-09-23, at load 10 to 30: on the generated 60 MP JPEG an exact render with Clarity 100 took about 0.6 s, Texture and Clarity 7.2 s and all three Presence fields 17.8 s, while the process used only 135 to 190% of one core.",
-        "Suspects to measure first: tile batches held to one or two by the 256 MiB spatial target once each tile's working set carries every unit's halo, serial global estimates, or stages that run one after another with little parallel work in each. The spatial budget's peak is reported by `resources.read` under `budgets.spatial`.",
-        "A separate session is investigating this."
+        "Blocked on the owner's decision; measured, not implemented.",
+        "A render the spatial target holds to fewer tiles than the pool has workers already spreads each tile's passes over the pool, so a 60 MP render with all three Presence fields uses about twelve cores and takes about 3.4 s. What remains is work repeated in the halo: in 512 px tiles Dehaze computes 5.2 times the stage and Texture 4.9 times, because each tile carries Clarity's 327 px halo, and the render spends about twice the CPU time it did when two tiles ran with serial passes.",
+        "Measured with 1024 px tiles and pooled passes on the generated 60 MP JPEG (5 samples, load 8 to 12): all three fields 2.09 s against 3.67 s in 512 px tiles on the same run, Texture and Clarity 1.62 s against 2.63 s, with total CPU time back to the serial-pass figure. One tile's working set is then 208.5 MiB, so batches hold one tile inside the 256 MiB target. The frame was byte-identical to the 512 px render for Texture with Clarity and for all three fields on the 24 MP and 60 MP fixtures.",
+        "Costs to weigh: a point sample through the layer evaluates a 1024 px tile, so the pointer readout on the owner goes from 104 to 107 ms to 217 to 218 ms with all three fields at 60 MP and from 13 to 50 ms with Texture alone (9 interior points, each equal to the rendered byte), until samples are answered off the owner. Byte identity across tile sizes is asserted by tests and held on these fixtures, but the box passes' running sums start at each rectangle's edge, so it rests on evidence rather than construction.",
+        "A tile size chosen from the summed halo (512 px for a small one, 1024 px once it passes some bound) would keep samples through a small-halo stack as cheap as today."
       ],
       "context_links": [
         {
@@ -344,20 +346,20 @@
         }
       ],
       "acceptance_criteria": [
-        "The cause is measured on 24 MP and 60 MP with each Presence combination: wall time, CPU use and the spatial budget's peak, with host load and sample counts.",
-        "A fix or a proposal with its memory and latency trade-off for the owner; exactness tests keep passing and output bytes do not change."
+        "The owner decides the tile size rule, or declines it; the decision is recorded in docs/decisions.md.",
+        "If adopted: rendered bytes stay identical to the 512 px render on the generated 24 MP and 60 MP fixtures with each Presence combination, a sample still equals the rendered byte, and the before and after render, CPU time and sample cost are recorded with load and sample counts."
       ],
       "test_strategy": {
         "approach": "mixed",
         "steps": [
-          "Release measurements of Presence exact renders on the generated 24 MP and 60 MP JPEGs before and after, back to back and reversed on the shared host."
+          "`presence_timing` and the tile-size render comparison at 24 MP and 60 MP before and after, back to back and reversed on the shared host.",
+          "A point-sample timing through the layer at both tile sizes, on the owner's path."
         ],
         "commands": [
-          "cargo xtask generate-fixtures --output fixtures/generated",
           "cargo xtask check"
         ],
         "expected_results": [
-          "Presence renders on large images use most of the machine's cores, or the owner has a measured proposal."
+          "The owner has chosen, with the render, CPU time and sample cost of each option measured."
         ]
       }
     },

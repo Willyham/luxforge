@@ -618,22 +618,38 @@ Native Apple M4 Pro (14 cores, 48 GiB), macOS 26.5.2, Metal, release `--locked`,
 
 ### Core cost of the units
 
-`cargo test --release -- --ignored presence_timing` and the spatial primitive's own timing test, p50 / p95 over 10 runs, one operation over a textured frame. Working set is one tile's reserved bytes; concurrency is how many tiles the 256 MiB spatial target allows in flight at once when no other evaluation holds any of it.
+`cargo test --release -- --ignored presence_timing` and the spatial primitive's own timing test, p50 / p95 over 10 runs, one operation over a textured frame, with the process's CPU time over each run as a percentage of one core (p50). Working set is one tile's reserved bytes; concurrency is how many tiles the 256 MiB spatial target allows in flight at once when no other evaluation holds any of it. The Presence rows ran on 23 September 2026 at a one-minute load of 9.6 to 13; the box-blur rows are the primitive's own earlier run, whose test unit ignores the scheduling below.
 
-| Stage | Operation | p50 / p95 ms | Summed halo | Working set | Concurrency | Budget peak |
-| --- | --- | --- | --- | --- | --- | --- |
-| 6000 × 4000 | Texture +100 | 212 / 225 | 8 px | 14.7 MiB | 14 | 205.8 MiB |
-| 6000 × 4000 | Clarity +100 | 191 / 202 | 199 px | 20.2 MiB | 12 | 242.5 MiB |
-| 6000 × 4000 | Dehaze +100 | 129 / 133 | 67 px | 11.0 MiB | 14 | 154.1 MiB |
-| 6000 × 4000 | All three +100 | 1670 / 1708 | 274 px | 61.3 MiB | 4 | 245.3 MiB |
-| 10000 × 6000 | Texture +100 | 588 / 609 | 14 px | 15.2 MiB | 14 | 213.3 MiB |
-| 10000 × 6000 | Clarity +100 | 690 / 731 | 327 px | 31.2 MiB | 8 | 249.9 MiB |
-| 10000 × 6000 | Dehaze +100 | 339 / 353 | 107 px | 13.1 MiB | 14 | 183.5 MiB |
-| 10000 × 6000 | All three +100 | 12447 / 12561 | 448 px | 101.1 MiB | 2 | 202.1 MiB |
-| 6000 × 4000 | Host box blur r = 137 (test unit, naive) | 2528 / 2694 | 137 px | 17.1 MiB | 14 | 240.0 MiB |
-| 10000 × 6000 | Host box blur r = 224 (test unit, naive) | 14970 / 15074 | 224 px | 24.1 MiB | 10 | 240.9 MiB |
+| Stage | Operation | p50 / p95 ms | CPU | Summed halo | Working set | Concurrency | Budget peak |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| 6000 × 4000 | Texture +100 | 241 / 248 | 896% | 8 px | 14.7 MiB | 14 | 205.8 MiB |
+| 6000 × 4000 | Clarity +100 | 193 / 198 | 1090% | 199 px | 20.2 MiB | 12 | 242.5 MiB |
+| 6000 × 4000 | Dehaze +100 | 128 / 134 | 771% | 67 px | 11.0 MiB | 14 | 154.1 MiB |
+| 6000 × 4000 | All three +100 | 942 / 1004 | 1232% | 274 px | 61.3 MiB | 4 | 245.3 MiB |
+| 10000 × 6000 | Texture +100 | 629 / 656 | 858% | 14 px | 15.2 MiB | 14 | 213.3 MiB |
+| 10000 × 6000 | Clarity +100 | 620 / 644 | 1105% | 327 px | 31.2 MiB | 8 | 249.9 MiB |
+| 10000 × 6000 | Dehaze +100 | 355 / 374 | 713% | 107 px | 13.1 MiB | 14 | 183.5 MiB |
+| 10000 × 6000 | All three +100 | 3999 / 4116 | 1221% | 448 px | 101.1 MiB | 2 | 202.1 MiB |
+| 6000 × 4000 | Host box blur r = 137 (test unit, naive) | 2528 / 2694 | not measured | 137 px | 17.1 MiB | 14 | 240.0 MiB |
+| 10000 × 6000 | Host box blur r = 224 (test unit, naive) | 14970 / 15074 | not measured | 224 px | 24.1 MiB | 10 | 240.9 MiB |
 
-The three units together cost about eight times the sum of the singles. That is structural, not a hot loop: with a summed halo of 448 px a 512 px tile reads a 1408 px input region, dehaze fills 1194 px and texture 1166 px of it to deliver 512 px, and the 101 MiB working set cuts concurrency to two tiles. Larger tiles amortise the halo better but a 2048 px tile's input region does not fit the spatial target with the frozen declarations; tiling each unit separately would need an intermediate frame between units. Both are open proposals for the owner, with these figures as the baseline. The vignette's unit alone, single-threaded over 6000 × 4000: 57 ms at amount −50, 505 ms at +50 (the positive branch encodes and decodes each channel), 164 ms at roundness −100.
+The three units together cost more than the sum of the singles, and that is the halo, not a hot loop: with a summed halo of 448 px a 512 px tile reads a 1408 px input region, dehaze fills 1194 px and texture 1166 px of it to deliver 512 px, so over the stage dehaze computes 5.2 times its pixels and texture 4.9 times, and the 101 MiB working set holds a batch to two tiles. Each of those tiles now runs its own passes on the pool (`Parallelism::Pool`, see the [architecture](../design/architecture.md#rendering-and-limits)), so the render uses about twelve cores instead of two; on the previous build the same test took 12447 / 12561 ms at 60 MP and 1670 / 1708 ms at 24 MP. Larger tiles would repeat less of the halo, measured below; tiling each unit separately would need an intermediate float frame between units, 687 MiB at 60 MP, over the JPEG frame limit. The vignette's unit alone, single-threaded over 6000 × 4000: 57 ms at amount −50, 505 ms at +50 (the positive branch encodes and decodes each channel), 164 ms at roundness −100.
+
+#### Presence exact renders on the generated JPEGs
+
+The core render of the generated 24 MP and 60 MP JPEGs with one Presence layer at +100 in each field it names, warm source and estimates, the 256 MiB target, timed by an uncommitted release probe that calls `render` as `presence_timing` does and reads the process's CPU time around each render; `presence_timing` above is the committed measurement to repeat. The previous build and this one ran four times alternately — previous, this, this, previous — 5 samples per stack and run, at a one-minute load of 5 to 14; every rendered frame of this build had the same SHA-256 as the previous build's for all five stacks at both sizes. p50 of each run:
+
+| Stack | Previous build | This build | Concurrency |
+| --- | --- | --- | --- |
+| 60 MP, all three | 12758 · 10708 ms, 182 · 192% | 3868 · 3854 ms, 1165 · 1191% | 2 |
+| 60 MP, Texture and Clarity | 5605 · 5613 ms, 282 · 280% | 2923 · 2889 ms, 1139 · 1175% | 3 |
+| 60 MP, Clarity | 576 · 600 ms | 609 · 636 ms | 8 |
+| 24 MP, all three | 1358 · 1414 ms, 371 · 369% | 944 · 929 ms, 1137 · 1166% | 4 |
+| 24 MP, Texture and Clarity | 879 · 951 ms | 695 · 682 ms | 5 |
+
+On the previous build the process used at most one core per tile in flight whatever the host's load (182 to 192% for two tiles, at one-minute loads from 5 to 29 across the investigation), which is what the Performance section showed as 135 to 190%; the batches themselves were 93% efficient and the one Dehaze reduction took 6 to 34 ms, so neither was the cause. Where a batch is as wide as the pool (Texture or Dehaze alone) its tiles keep their passes serial, and the two builds agree within 5% in both orders at a target wide enough to make every batch fill the pool. The Clarity row, whose eight-tile batches now spread over the pool, moved by about 5% in either direction across runs. The cost is CPU time: the two runs of this build used 697 and 700 CPU-seconds against 370 and 360 for the previous one over the same renders, because fourteen workers on two tiles' memory-bound passes each run slower and the pool spins between short passes.
+
+Two alternatives were measured and not taken. Raising the spatial target to 4 GiB lets fourteen tiles run at once: all three at 60 MP took 3326 ms at 834% (10 samples, load 10 to 22) but the budget peaked at 1415 MiB, against 202 MiB. Counting only the two plane buffers a tile holds at once would lower the all-three working set from 101.1 to 82.5 MiB, three tiles instead of two. Tiles of 1024 px with pooled passes took 2093 ms for all three at 60 MP and 1616 ms for Texture and Clarity (5 samples, load 8 to 12) with the same bytes on these fixtures and the previous build's CPU time, and are the owner's decision, tracked in [known bugs](../../tasks/known-bugs.json), because a point sample through the layer evaluates the whole tile: 217 ms against 105 ms with all three at 60 MP, on the catalog owner.
 
 ### Desktop slider-to-presented-frame
 

@@ -21,7 +21,7 @@ use super::filters::{
 };
 use crate::{
     Error,
-    modules::{Global, Planes, PlanesMut, Reduction, SpatialUnit, Stage},
+    modules::{Global, Parallelism, Planes, PlanesMut, Reduction, SpatialUnit, Stage},
 };
 
 /// The integer reduction factor per axis the base is computed on.
@@ -105,6 +105,7 @@ impl SpatialUnit for Clarity {
         output: &mut PlanesMut<'_>,
         _: Option<&Global>,
         scratch: &mut [f32],
+        parallelism: Parallelism,
     ) -> Result<(), Error> {
         let stage = input.stage();
         let frame = Rect::frame(i64::from(stage.width), i64::from(stage.height));
@@ -136,15 +137,16 @@ impl SpatialUnit for Clarity {
         let base_reduced_buffer = scratch.take(base_rect.pixels())?;
 
         let mut encoded = PlaneMut::over(encoded_buffer, geometry, encoded_rect)?;
-        for y in encoded_rect.y0..encoded_rect.y1 {
+        encoded.for_rows(parallelism, |y, row| {
             for x in encoded_rect.x0..encoded_rect.x1 {
-                encoded.set(x, y, filters::encoded_luminance(input.sample(x, y)));
+                row[(x - encoded_rect.x0) as usize] =
+                    filters::encoded_luminance(input.sample(x, y));
             }
-        }
+        });
         let encoded: Plane<'_> = encoded.as_plane();
 
         let mut encoded_reduced = PlaneMut::over(reduced_buffer, reduced_geometry, reduced_source)?;
-        downsample(&encoded, REDUCTION, &mut encoded_reduced);
+        downsample(&encoded, REDUCTION, &mut encoded_reduced, parallelism);
         let mut base_reduced = PlaneMut::over(base_reduced_buffer, reduced_geometry, base_rect)?;
         guided_self(
             &encoded_reduced.as_plane(),
@@ -152,11 +154,14 @@ impl SpatialUnit for Clarity {
             EPS_CLARITY,
             &mut base_reduced,
             &mut scratch,
+            parallelism,
         )?;
         let mut base = PlaneMut::over(base_buffer, geometry, out)?;
-        upsample(&base_reduced.as_plane(), REDUCTION, &mut base);
+        upsample(&base_reduced.as_plane(), REDUCTION, &mut base, parallelism);
 
-        for y in out.y0..out.y1 {
+        let base = base.as_plane();
+        output.for_rows(parallelism, |y, red, green, blue| {
+            let y = i64::from(y);
             for x in out.x0..out.x1 {
                 let rgb = input.sample(x, y);
                 let e = encoded.get(x, y);
@@ -168,9 +173,10 @@ impl SpatialUnit for Clarity {
                     let l_in = filters::luminance(rgb);
                     filters::reconstruct(rgb, l_in, filters::decode(e + delta))
                 };
-                output.set(x as u32, y as u32, value);
+                let column = (x - out.x0) as usize;
+                [red[column], green[column], blue[column]] = value;
             }
-        }
+        });
         Ok(())
     }
 

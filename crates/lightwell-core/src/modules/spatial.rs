@@ -22,9 +22,9 @@ pub const MAX_SPATIAL_HALO: u32 = 512;
 pub const MAX_SPATIAL_UNITS: usize = 4;
 
 /// The default process-wide target for spatial working sets: 256 MiB, separate from the 64 MiB
-/// float scratch target the colour run streams through, because one tile of a 60 MP stage with the
-/// frozen presence halos needs about 57 MiB on its own. It sets how many tiles run at once; it
-/// never refuses a render or a sample, so one tile always runs even when that takes the process
+/// float scratch target the colour run streams through, because one tile of a 60 MP stage with all
+/// three frozen presence units needs about 101 MiB on its own. It sets how many tiles run at once;
+/// it never refuses a render or a sample, so one tile always runs even when that takes the process
 /// past it.
 pub const SPATIAL_BUDGET_BYTES: u64 = 256 * 1024 * 1024;
 
@@ -394,6 +394,54 @@ impl<'a> PlanesMut<'a> {
         let len = self.region.pixels() as usize;
         &mut self.values[channel * len..(channel + 1) * len]
     }
+
+    /// Write the rectangle row by row: `body` receives a row's `y` and that row of the red, green
+    /// and blue planes, each starting at the rectangle's `x0`. Rows run on the shared pool under
+    /// [`Parallelism::Pool`] and in order on the calling thread otherwise, so `body` must compute
+    /// each row from nothing but its inputs.
+    pub fn for_rows(
+        &mut self,
+        parallelism: Parallelism,
+        body: impl Fn(u32, &mut [f32], &mut [f32], &mut [f32]) + Sync + Send,
+    ) {
+        use rayon::prelude::*;
+        if self.region.is_empty() {
+            return;
+        }
+        let y0 = self.region.y0;
+        let width = self.region.width as usize;
+        let len = self.region.pixels() as usize;
+        let (red, rest) = self.values.split_at_mut(len);
+        let (green, blue) = rest.split_at_mut(len);
+        match parallelism {
+            Parallelism::Pool => red
+                .par_chunks_mut(width)
+                .zip(green.par_chunks_mut(width))
+                .zip(blue.par_chunks_mut(width))
+                .enumerate()
+                .for_each(|(row, ((red, green), blue))| body(y0 + row as u32, red, green, blue)),
+            Parallelism::Serial => red
+                .chunks_mut(width)
+                .zip(green.chunks_mut(width))
+                .zip(blue.chunks_mut(width))
+                .enumerate()
+                .for_each(|(row, ((red, green), blue))| body(y0 + row as u32, red, green, blue)),
+        }
+    }
+}
+
+/// How one tile's own work may be scheduled. The host chooses it per tile and a unit honours it
+/// for its loops; it decides when a value is computed and never what the value is, so a unit
+/// computes every value with the same arithmetic in the same order under both.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Parallelism {
+    /// Every loop on the calling thread: a point sample, a stage below the host's parallel
+    /// threshold, or a batch that already gives every worker of the pool a tile of its own.
+    Serial,
+    /// Independent rows, or column strips, of each pass on the shared Rayon pool: a render's tile
+    /// when the spatial budget, not the pool, limits how many tiles run at once, so the tiles in
+    /// flight would otherwise leave workers idle.
+    Pool,
 }
 
 fn check_planes(stage: Stage, region: Region, len: usize) -> Result<(), Error> {
@@ -449,6 +497,12 @@ fn check_planes(stage: Stage, region: Region, len: usize) -> Result<(), Error> {
 /// own coefficients. Evaluate a filter by direct summation in a fixed order rather than by a
 /// running sum, or the value will depend on where evaluation started.
 ///
+/// **Scheduling.** [`Self::apply`] receives a [`Parallelism`]. Under [`Parallelism::Pool`] a unit
+/// may spread the independent rows or column strips of each of its passes over the shared pool;
+/// under [`Parallelism::Serial`] it runs them on the calling thread. The value at every pixel must
+/// be the same bits either way: only the order in which independent values are computed may
+/// change, never the order of the arithmetic inside one.
+///
 /// **Values.** Planes are linear sRGB (D65) and may hold values outside `[0, 1]`: the host clamps
 /// and quantizes once, after the last unit, at the output boundary. Alpha is the host's and is
 /// never passed in. A non-finite value after any unit fails the render or the sample with
@@ -471,13 +525,15 @@ pub trait SpatialUnit: Send + Sync {
     /// unit's position in the operation.
     fn prepare(&self, reduction: &Reduction) -> Option<Global>;
 
-    /// Fill `output.region()` from `input`, reading no further than [`Self::halo`] beyond it.
+    /// Fill `output.region()` from `input`, reading no further than [`Self::halo`] beyond it, with
+    /// its loops scheduled as `parallelism` allows.
     fn apply(
         &self,
         input: &Planes<'_>,
         output: &mut PlanesMut<'_>,
         global: Option<&Global>,
         scratch: &mut [f32],
+        parallelism: Parallelism,
     ) -> Result<(), Error>;
 
     /// Whether this unit's own coefficients are finite. Compilation refuses a unit that says no, so

@@ -117,6 +117,7 @@ The owner asked on 2026-09-23 for presets, with native presets and Lightroom imp
 ## Rendering memory
 
 - A shared working-memory budget is a target that keeps memory low, not a limit that refuses the user's work (owner, 2026-09-23). Work that needs more than the target has left still runs and completes. The 256 MiB spatial budget lowers how many tiles run at once, down to one. The 64 MiB colour scratch budget's row chunks are sized so the pool's workers stay well inside it, and a chunk past it still runs. Both keep a high-water mark that the timing tier reads against the target. Size limits on what is accepted — source and frame sizes, the halo and unit bounds a module declares — still refuse with `resource-limit`.
+- When the spatial target holds a render's batch to fewer tiles than the pool has workers, each tile's own passes run on the pool rather than the target being raised (owner, 2026-09-23): the same bytes and the same memory, all three Presence fields at 60 MP in about 3.9 s instead of 11 s, for about twice the CPU time. Larger tiles for a large summed halo remain a proposal.
 
 ## Open product questions
 

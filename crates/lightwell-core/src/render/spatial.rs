@@ -11,8 +11,8 @@ use crate::{
     Error, ErrorKind,
     modules::{
         ESTIMATE_REDUCTION, ESTIMATE_STORE_ENTRIES, Global, MAX_REDUCTION_PIXELS, MAX_SPATIAL_HALO,
-        Planes, PlanesMut, Reduction, Region, SPATIAL_BUDGET_BYTES, SPATIAL_TILE, SpatialOperation,
-        Stage,
+        Parallelism, Planes, PlanesMut, Reduction, Region, SPATIAL_BUDGET_BYTES, SPATIAL_TILE,
+        SpatialOperation, Stage,
     },
 };
 use rayon::prelude::*;
@@ -30,9 +30,9 @@ const MIB: f64 = (1024 * 1024) as f64;
 
 /// A process-wide target for the working sets of spatial tiles, separate from the colour run's
 /// [`ScratchBudget`](super::ScratchBudget) because one tile is orders of magnitude larger than one
-/// row chunk: a 512 × 512 tile of a 60 MP stage with the frozen presence halos reads a 1408 × 1408
-/// input region and needs about 57 MiB, which would leave the 64 MiB scratch target no room for a
-/// second tile.
+/// row chunk: a 512 × 512 tile of a 60 MP stage with all three frozen presence units reads a
+/// 1408 × 1408 input region and needs about 101 MiB, which the 64 MiB scratch target could not hold
+/// at all.
 ///
 /// It is a target, not a limit. It decides how many tiles run at once: a batch takes as many
 /// working sets as fit beside what other evaluations hold, and never fewer than one. So a render
@@ -313,7 +313,9 @@ fn scratch_values(operation: &SpatialOperation, regions: &[Region]) -> usize {
 const NON_FINITE_SPATIAL: &str = "spatial processing produced a non-finite value";
 
 /// Run one tile's unit chain. `fill` writes the input region's three planes; the result is the last
-/// unit's rectangle and its planar values, which always contains `tile`.
+/// unit's rectangle and its planar values, which always contains `tile`. `parallelism` is handed to
+/// every unit and decides whether this function's own finiteness check runs on the pool; it never
+/// changes a value.
 ///
 /// Every path uses this one function: the byte render, the RAW float frame and the point sample.
 /// That is what makes a sample equal to the rendered byte by construction rather than by
@@ -323,6 +325,7 @@ pub(crate) fn run_tile(
     operation: &SpatialOperation,
     globals: &[Option<Global>],
     tile: Region,
+    parallelism: Parallelism,
     fill: impl FnOnce(Region, &mut [f32]) -> Result<(), Error>,
 ) -> Result<(Region, Vec<f32>), Error> {
     let stage = plan.stage;
@@ -339,8 +342,13 @@ pub(crate) fn run_tile(
             &mut output,
             globals.get(index).and_then(Option::as_ref),
             &mut scratch,
+            parallelism,
         )?;
-        if !next.iter().all(|value| value.is_finite()) {
+        let finite = match parallelism {
+            Parallelism::Pool => next.par_iter().all(|value| value.is_finite()),
+            Parallelism::Serial => next.iter().all(|value| value.is_finite()),
+        };
+        if !finite {
             return Err(Error::new(ErrorKind::ResourceLimit, NON_FINITE_SPATIAL));
         }
         values = next;
@@ -358,17 +366,22 @@ pub(crate) fn run_tile(
 /// Each batch reserves its working sets from the budget before any of its tiles allocates, asking
 /// for the plan's concurrency and running as many tiles as the reservation covers, so a render that
 /// overlaps another slows down rather than failing and speeds up again once the other releases.
+/// When that leaves the batch narrower than the pool, each tile's own passes run on the pool as
+/// well (see [`tile_parallelism`]), so an operation whose working set holds the batch to two tiles
+/// still uses every worker without taking more memory.
 ///
-/// `work` computes one tile's result and `write` places it, so the tiles themselves never share a
-/// mutable frame: a batch's results are bounded by its concurrency times one tile.
+/// `work` computes one tile's result under the parallelism it is given and `write` places it, so
+/// the tiles themselves never share a mutable frame: a batch's results are bounded by its
+/// concurrency times one tile.
 pub(crate) fn run_batches<T: Send>(
     plan: &SpatialPlan,
     cancel: &Cancel,
-    work: impl Fn(Region) -> Result<T, Error> + Sync,
+    work: impl Fn(Region, Parallelism) -> Result<T, Error> + Sync,
     mut write: impl FnMut(Region, T) -> Result<(), Error>,
 ) -> Result<(), Error> {
     let tiles = plan.tiles();
     let large = plan.stage.width as u64 * plan.stage.height as u64 >= super::PARALLEL_RENDER_PIXELS;
+    let workers = rayon::current_num_threads();
     let mut start = 0;
     while start < tiles.len() {
         // Before the reservation, so a cancelled render never takes working sets it will not use.
@@ -377,15 +390,16 @@ pub(crate) fn run_batches<T: Send>(
             .reserve(plan.working_set, plan.concurrency.min(tiles.len() - start));
         let batch = &tiles[start..start + reservation.tiles()];
         start += batch.len();
+        let parallelism = tile_parallelism(large, batch.len(), workers);
         let results: Vec<T> = if large && batch.len() > 1 {
             batch
                 .par_iter()
-                .map(|tile| work(*tile))
+                .map(|tile| work(*tile, parallelism))
                 .collect::<Result<Vec<T>, Error>>()?
         } else {
             batch
                 .iter()
-                .map(|tile| work(*tile))
+                .map(|tile| work(*tile, parallelism))
                 .collect::<Result<Vec<T>, Error>>()?
         };
         for (tile, result) in batch.iter().zip(results) {
@@ -393,6 +407,20 @@ pub(crate) fn run_batches<T: Send>(
         }
     }
     Ok(())
+}
+
+/// How a batch's tiles schedule their own passes: on the pool only for a stage at or above the
+/// parallel threshold whose batch holds fewer tiles than the pool has workers, which is when the
+/// budget rather than the pool limits the batch. A batch as wide as the pool already occupies every
+/// worker, and splitting its tiles' passes as well measured 20 to 40% slower (Texture or Dehaze
+/// alone at 24 and 60 MP). A point sample never comes through here; it runs serially on its calling
+/// thread, where a pass on the pool would queue behind a render holding it.
+pub(crate) fn tile_parallelism(large: bool, tiles: usize, workers: usize) -> Parallelism {
+    if large && tiles < workers {
+        Parallelism::Pool
+    } else {
+        Parallelism::Serial
+    }
 }
 
 /// Reserve the one working set a point sample needs.
@@ -587,24 +615,45 @@ pub(crate) fn prefix_hash(layers: &[crate::Layer]) -> Result<String, Error> {
 }
 
 /// Read one rectangle of a stage into three planar `f32` planes, in the layout
-/// [`crate::modules::Planes`] expects.
+/// [`crate::modules::Planes`] expects: row by row, on the pool under [`Parallelism::Pool`]. Each
+/// value is one `read` wherever it runs.
 pub(crate) fn fill_planes(
     region: Region,
     planes: &mut [f32],
-    read: impl Fn(u32, u32) -> Result<[f32; 3], Error>,
+    parallelism: Parallelism,
+    read: impl Fn(u32, u32) -> Result<[f32; 3], Error> + Sync,
 ) -> Result<(), Error> {
-    let len = region.pixels() as usize;
-    let mut index = 0;
-    for y in region.y0..region.y1() {
-        for x in region.x0..region.x1() {
-            let pixel = read(x, y)?;
-            planes[index] = pixel[0];
-            planes[len + index] = pixel[1];
-            planes[2 * len + index] = pixel[2];
-            index += 1;
-        }
+    if region.is_empty() {
+        return Ok(());
     }
-    Ok(())
+    let len = region.pixels() as usize;
+    let width = region.width as usize;
+    let (red, rest) = planes[..3 * len].split_at_mut(len);
+    let (green, blue) = rest.split_at_mut(len);
+    let row = |row: usize, red: &mut [f32], green: &mut [f32], blue: &mut [f32]| {
+        let y = region.y0 + row as u32;
+        for (column, x) in (region.x0..region.x1()).enumerate() {
+            let pixel = read(x, y)?;
+            red[column] = pixel[0];
+            green[column] = pixel[1];
+            blue[column] = pixel[2];
+        }
+        Ok(())
+    };
+    match parallelism {
+        Parallelism::Pool => red
+            .par_chunks_mut(width)
+            .zip(green.par_chunks_mut(width))
+            .zip(blue.par_chunks_mut(width))
+            .enumerate()
+            .try_for_each(|(index, ((red, green), blue))| row(index, red, green, blue)),
+        Parallelism::Serial => red
+            .chunks_mut(width)
+            .zip(green.chunks_mut(width))
+            .zip(blue.chunks_mut(width))
+            .enumerate()
+            .try_for_each(|(index, ((red, green), blue))| row(index, red, green, blue)),
+    }
 }
 
 /// One pixel of a finished tile's planes, in the rectangle the last unit filled.
@@ -697,6 +746,7 @@ pub(crate) mod tests {
             output: &mut PlanesMut<'_>,
             _: Option<&Global>,
             scratch: &mut [f32],
+            _: Parallelism,
         ) -> Result<(), Error> {
             let stage = input.stage();
             let out = output.region();
@@ -783,6 +833,7 @@ pub(crate) mod tests {
             output: &mut PlanesMut<'_>,
             global: Option<&Global>,
             _: &mut [f32],
+            _: Parallelism,
         ) -> Result<(), Error> {
             let mean = global.map_or([0.0; 3], |global| {
                 let values = global.values();
@@ -831,6 +882,7 @@ pub(crate) mod tests {
             _: &mut PlanesMut<'_>,
             _: Option<&Global>,
             _: &mut [f32],
+            _: Parallelism,
         ) -> Result<(), Error> {
             unreachable!("a non-finite unit never reaches a pixel")
         }
@@ -2037,6 +2089,81 @@ pub(crate) mod tests {
             };
         assert_eq!(error.kind, ErrorKind::Cancelled);
         budget.set_target(previous);
+    }
+
+    #[test]
+    fn a_tile_spreads_its_passes_over_the_pool_only_when_the_budget_narrows_its_batch() {
+        assert_eq!(tile_parallelism(true, 2, 14), Parallelism::Pool);
+        assert_eq!(tile_parallelism(true, 13, 14), Parallelism::Pool);
+        assert_eq!(
+            tile_parallelism(true, 14, 14),
+            Parallelism::Serial,
+            "a batch as wide as the pool already occupies every worker"
+        );
+        assert_eq!(
+            tile_parallelism(false, 1, 14),
+            Parallelism::Serial,
+            "a stage below the parallel threshold stays on its thread"
+        );
+        assert_eq!(tile_parallelism(true, 1, 1), Parallelism::Serial);
+    }
+
+    /// A render whose batches the budget narrows to one tile fills, checks and quantizes each tile
+    /// on the pool; one whose batches are as wide as the pool does all of that serially. Both paths
+    /// give the same frame to the byte.
+    #[test]
+    fn a_render_with_pooled_tiles_equals_one_with_serial_tiles() {
+        let _guard = spatial_guard();
+        clear_estimates();
+        let registry = spatial_registry();
+        // At the one-megapixel threshold, in 64 px tiles so that a batch as wide as the pool
+        // exists whatever the pool's size.
+        let (width, height) = (1000, 1000);
+        let tile = 64;
+        let source = gradient(width, height);
+        let linear = linear_source(width, height);
+        let stack = recipe(vec![spatial_layer(&["blur:2", "shift"])]);
+        let operation =
+            SpatialOperation::new(vec![Arc::new(BoxBlur { radius: 2 }), Arc::new(MeanShift)])
+                .unwrap();
+        let plan = SpatialPlan::new(&operation, Stage { width, height }, tile).unwrap();
+        let budget = SpatialBudget::default();
+        let mut frames = Vec::new();
+        // One working set: batches of one tile, pooled. Unbounded: batches as wide as the pool,
+        // serial.
+        for target in [plan.working_set(), u64::MAX / 2] {
+            let previous = budget.set_target(target);
+            let bytes = render_tiled(
+                &registry,
+                &source,
+                SnapshotId::new(),
+                &stack,
+                &Cancel::new(),
+                tile,
+            );
+            let floats = render_linear_tiled(
+                &registry,
+                &linear,
+                SnapshotId::new(),
+                &stack,
+                LinearSettings::default(),
+                &Cancel::new(),
+                tile,
+            );
+            budget.set_target(previous);
+            frames.push((
+                bytes.unwrap().rgba.as_ref().to_vec(),
+                floats.unwrap().rgba.as_ref().to_vec(),
+            ));
+        }
+        assert_eq!(
+            frames[0].0, frames[1].0,
+            "byte path: pooled and serial tiles agree"
+        );
+        assert_eq!(
+            frames[0].1, frames[1].1,
+            "linear path: pooled and serial tiles agree"
+        );
     }
 
     #[test]
