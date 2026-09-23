@@ -97,14 +97,14 @@ notes: "three 8-bit sRGB channels".into(),
                             action: SET_PIXEL.into(),
                             parameter: "x".into(),
                             label: "X".into(),
-                            style: crate::NumberStyle::Slider,
+                            style: crate::NumberStyle::Field,
                             rail: None,
                         },
                         Control::Number {
                             action: SET_PIXEL.into(),
                             parameter: "y".into(),
                             label: "Y".into(),
-                            style: crate::NumberStyle::Slider,
+                            style: crate::NumberStyle::Field,
                             rail: None,
                         },
                         Control::Color {
@@ -138,6 +138,7 @@ notes: "three 8-bit sRGB channels".into(),
                 // A proof tool, not a photo-editing one.
                 developer: true,
                 collapsed: false,
+                layout: crate::ModuleLayout::Stacked,
                 availability: Availability::Available,
             },
         }
@@ -274,5 +275,48 @@ impl ToolModule for PixelModule {
             y: pixel.y,
             rgb: pixel.rgb,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::NumberStyle;
+
+    /// The Module panels design draws X and Y as labelled px fields: a coordinate has no useful
+    /// rail. Both are integer pixels with the `px` unit, and the descriptor still validates.
+    #[test]
+    fn the_coordinates_are_labelled_px_fields() {
+        let module = PixelModule::new();
+        let descriptor = module.descriptor();
+        descriptor.validate().expect("a valid descriptor");
+        let Control::Group { controls, .. } = &descriptor.controls[0] else {
+            panic!("the pixel proof is one group");
+        };
+        for (index, name, label) in [(0, "x", "X"), (1, "y", "Y")] {
+            let Control::Number {
+                parameter,
+                label: shown,
+                style,
+                rail,
+                ..
+            } = &controls[index]
+            else {
+                panic!("{name} is a number control");
+            };
+            assert_eq!((parameter.as_str(), shown.as_str()), (name, label));
+            assert_eq!(
+                *style,
+                NumberStyle::Field,
+                "{name} is a field, not a slider"
+            );
+            assert_eq!(*rail, None);
+            let declared = descriptor
+                .action(SET_PIXEL)
+                .and_then(|action| action.parameter(name))
+                .expect("a declared coordinate");
+            assert_eq!(declared.unit.as_deref(), Some("px"));
+            assert!(matches!(declared.kind, ParameterKind::Integer { .. }));
+        }
     }
 }

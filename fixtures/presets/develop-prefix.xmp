@@ -1,0 +1,119 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<x:xmpmeta xmlns:x="adobe:ns:meta/">
+ <rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
+  <!-- The same settings as develop.xmp, bound to the prefix "cr". The prefix "crs" is bound to
+       another namespace here, so its attributes are not Camera Raw settings and are ignored. -->
+  <rdf:Description rdf:about=""
+    xmlns:cr="http://ns.adobe.com/camera-raw-settings/1.0/"
+    xmlns:crs="http://example.invalid/not-camera-raw/"
+    crs:Sharpness="90"
+    crs:Exposure2012="+4.00"
+    cr:PresetType="Normal"
+    cr:Cluster=""
+    cr:UUID="5E1F0A2B3C4D4E5F8091A2B3C4D5E6F7"
+    cr:SupportsAmount="True"
+    cr:SupportsColor="True"
+    cr:SupportsMonochrome="True"
+    cr:SupportsHighDynamicRange="True"
+    cr:SupportsNormalDynamicRange="True"
+    cr:SupportsSceneReferred="True"
+    cr:SupportsOutputReferred="True"
+    cr:RequiresRGBTables="False"
+    cr:CameraModelRestriction=""
+    cr:Copyright=""
+    cr:ContactInfo=""
+    cr:Version="16.0"
+    cr:ProcessVersion="11.0"
+    cr:IncrementalTemperature="+7"
+    cr:IncrementalTint="-3"
+    cr:Contrast2012="+12"
+    cr:Highlights2012="-40"
+    cr:Shadows2012="+25"
+    cr:Whites2012="+8"
+    cr:Blacks2012="-6"
+    cr:Clarity2012="+10"
+    cr:Dehaze="+5"
+    cr:Vibrance="+20"
+    cr:Saturation="-5"
+    cr:HueAdjustmentRed="+4"
+    cr:HueAdjustmentOrange="0"
+    cr:SaturationAdjustmentBlue="-20"
+    cr:LuminanceAdjustmentOrange="+6"
+    cr:LuminanceAdjustmentGreen="-12.5"
+    cr:PostCropVignetteAmount="-18"
+    cr:PostCropVignetteMidpoint="40"
+    cr:PostCropVignetteRoundness="0"
+    cr:PostCropVignetteFeather="60"
+    cr:PostCropVignetteStyle="1"
+    cr:PostCropVignetteHighlightContrast="0"
+    cr:Sharpness="40"
+    cr:SharpenRadius="+1.0"
+    cr:SharpenDetail="25"
+    cr:SharpenEdgeMasking="0"
+    cr:GrainAmount="0"
+    cr:GrainSize="25"
+    cr:GrainFrequency="50"
+    cr:SplitToningShadowHue="220"
+    cr:SplitToningShadowSaturation="0"
+    cr:SplitToningHighlightHue="45"
+    cr:SplitToningHighlightSaturation="12"
+    cr:SplitToningBalance="0"
+    cr:ConvertToGrayscale="False"
+    cr:LensProfileEnable="0"
+    cr:AutoLateralCA="0"
+    cr:CameraProfile="Adobe Standard"
+    cr:ToneCurveName2012="Custom"
+    cr:HasSettings="True"
+    cr:SyntheticFutureControl="3">
+   <cr:WhiteBalance>Custom</cr:WhiteBalance>
+   <cr:Exposure2012>+0.35</cr:Exposure2012>
+   <cr:Texture>
+    +15
+   </cr:Texture>
+   <cr:Name>
+    <rdf:Alt>
+     <rdf:li xml:lang="fr-FR">Film doux</rdf:li>
+     <rdf:li xml:lang="x-default">Soft Film</rdf:li>
+    </rdf:Alt>
+   </cr:Name>
+   <cr:ShortName>
+    <rdf:Alt>
+     <rdf:li xml:lang="x-default"/>
+    </rdf:Alt>
+   </cr:ShortName>
+   <cr:Group>
+    <rdf:Alt>
+     <rdf:li xml:lang="x-default">Synthetic Looks</rdf:li>
+    </rdf:Alt>
+   </cr:Group>
+   <cr:Look rdf:parseType="Resource">
+    <cr:Name>Adobe Color</cr:Name>
+    <cr:Amount>1</cr:Amount>
+    <cr:UUID>0A1B2C3D4E5F60718293A4B5C6D7E8F9</cr:UUID>
+    <cr:SupportsAmount>false</cr:SupportsAmount>
+    <cr:SupportsMonochrome>false</cr:SupportsMonochrome>
+    <cr:SupportsOutputReferred>false</cr:SupportsOutputReferred>
+    <cr:Stubbed>true</cr:Stubbed>
+    <cr:Group>
+     <rdf:Alt>
+      <rdf:li xml:lang="x-default">Profiles</rdf:li>
+     </rdf:Alt>
+    </cr:Group>
+   </cr:Look>
+   <cr:ToneCurvePV2012>
+    <rdf:Seq>
+     <rdf:li>0, 0</rdf:li>
+     <rdf:li>64, 56</rdf:li>
+     <rdf:li>192, 200</rdf:li>
+     <rdf:li>255, 255</rdf:li>
+    </rdf:Seq>
+   </cr:ToneCurvePV2012>
+   <cr:ToneCurvePV2012Red>
+    <rdf:Seq>
+     <rdf:li>0, 0</rdf:li>
+     <rdf:li>255, 255</rdf:li>
+    </rdf:Seq>
+   </cr:ToneCurvePV2012Red>
+  </rdf:Description>
+ </rdf:RDF>
+</x:xmpmeta>

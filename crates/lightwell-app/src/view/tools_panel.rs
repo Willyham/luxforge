@@ -5,30 +5,35 @@
 use crate::{
     app::{
         fields,
-        message::{ClipEndpoint, CropMessage, MenuTarget, Message},
+        message::{ClipEndpoint, CropMessage, MenuTarget, Message, PresetMessage},
     },
     state::{
         histogram::{HIGHLIGHT_RULE, HistogramModel, SHADOW_RULE},
+        presets::{PresetFormModel, PresetRow, PresetsModel},
         tools::{
             ActionControl, ActionControlStyle, ChoiceControlStyle, ColorControl, ColorControlStyle,
-            ControlModel, CropSectionModel, CurveControl, EnumControl, GroupControl,
-            NumberControlStyle, PickerControl, RailStyle, SectionModel, SliderControl,
-            ToggleControl, ToolsModel, ValueEdit,
+            ControlModel, CropSectionModel, CurveControl, EnumControl, GroupControl, GroupState,
+            NumberControlStyle, PickerControl, RailStyle, SectionLayout, SectionModel,
+            SliderControl, ToggleControl, ToolsModel, ValueEdit,
         },
     },
 };
 use iced::{
     Alignment, Color, Element, Length,
-    widget::{Row, button, column, mouse_area, row, scrollable},
+    widget::{Space, button, column, mouse_area, row, scrollable, text_input},
 };
 use lightwell_ui::{
-    BINS, ChipModel, ClipTriangleModel, ColorPickerModel, ColorSwatchModel, ControlKey,
-    ControlKeyEvent, CurveEditorModel, CurvePointRow, HistogramChannel, Icon, IconButtonModel,
-    MenuChoiceModel, NumberFieldModel, RailDecoration, SectionHeaderModel, SegmentedModel,
-    SliderModel, StepperModel, SubGroupHeaderModel, ToggleModel, caption, chip, clip_triangle,
-    color_picker, color_swatch, curve_editor, error_caption, focus_control, histogram, icon_button,
-    inline_menu, menu_choice, number_field, section_header, section_label, segmented, slider,
-    stepper, sub_group_header, theme, toggle, value_input,
+    BINS, BadgeModel, ButtonSize, ButtonTone, ChipModel, ClipTriangleModel, ColorPickerModel,
+    ColorSwatchModel, ControlKey, ControlKeyEvent, CurveEditorModel, CurvePointRow,
+    HistogramChannel, Icon, IconButtonModel, LabelledButtonModel, MenuChoiceModel,
+    NumberFieldModel, RailDecoration, RowPlacement, SectionHeaderModel, SegmentedModel,
+    SliderModel, StepperModel, StepperRail, StepperRailMessages, SubGroupHeaderModel, Tab,
+    TabRowModel, ToggleModel, badge, boxed_input, button_row, caption, channel_row, chip, chip_row,
+    chip_wrap, clip_triangle, color_picker, color_swatch, curve_editor, equal_button_row,
+    error_caption, focus_control, histogram, icon_button, icon_button_row, inline_menu, label_line,
+    labelled_button, list_heading, menu_choice, module_section, number_field, readout_card,
+    row_icon_button, section_label, segmented, slider, stepper, sub_group_header,
+    sub_group_header_with_actions, tab_row, text_button, theme, toggle,
 };
 use serde_json::{Map, Value};
 
@@ -53,31 +58,26 @@ pub(crate) fn tools_panel<'a>(
         .into();
     }
     let menu = model.menu.as_ref();
-    let mut panel = column![]
-        .spacing(theme::SPACING)
-        // The scroll handle overlays the content edge. Reserve its width so the number fields
-        // remain legible even at the panel's narrowest supported width.
-        .padding(iced::Padding {
-            right: theme::SPACING * 3.0,
-            top: theme::SPACING,
-            bottom: theme::SPACING,
-            left: theme::SPACING,
-        })
-        .width(Length::Fill);
+    // Module sections are full-width bands stacked edge to edge; each owns its border, header and
+    // body padding, so the panel adds no spacing or padding of its own around them.
+    let mut panel = column![].width(Length::Fill);
     // The histogram sits above the first module section with no header of its own, as the Develop
     // workspace layout reserves.
-    panel = panel.push(inspector(plot));
+    panel = panel.push(iced::widget::container(inspector(plot)).padding(theme::SPACING));
     for section in &model.sections {
         panel = panel.push(section_view(section, menu, plot));
     }
     if !model.developer.is_empty() {
-        panel = panel.push(section_label("Developer"));
+        panel = panel.push(
+            iced::widget::container(section_label("Developer")).padding(theme::SECTION_PADDING),
+        );
         for section in &model.developer {
             panel = panel.push(section_view(section, menu, plot));
         }
     }
     scrollable(panel)
         .id(scroll_id())
+        .direction(theme::panel_scrollbar())
         .height(Length::Fill)
         .into()
 }
@@ -140,15 +140,14 @@ fn inspector(model: &HistogramModel) -> Element<'_, Message> {
     // Four rows, always: the caption (the domain — so an output endpoint count is never read as
     // sensor clipping — plus the readout and the status), then the counters in words, for a reader
     // who cannot measure the plot's heights.
-    let block = column![
-        plot,
-        triangles,
+    // The readout lines sit on the caption's own line pitch, as one block of text.
+    let readout = column![
         caption(model.caption_line()),
         caption(model.shadow_text()),
         caption(model.highlight_text()),
         caption(model.both_text()),
-    ]
-    .spacing(theme::SPACING / 2.0);
+    ];
+    let block = column![plot, triangles, readout].spacing(theme::SPACING / 2.0);
     debug_assert_eq!(BINS, 256, "one bin per 8-bit output code");
     block.into()
 }
@@ -195,7 +194,23 @@ fn section_view<'a>(
     menu: Option<&'a MenuTarget>,
     plot: &HistogramModel,
 ) -> Element<'a, Message> {
-    let header = section_header(
+    // An unavailable module cannot expand, per the design; nothing under it is drawn. Otherwise a
+    // disabled section (busy, a historical preview) still shows its values, just not interactive.
+    let body = (section.expanded && section.unavailable.is_none()).then(|| {
+        let rows = match section.layout {
+            SectionLayout::Stacked => control_rows(
+                &section.module_id,
+                section.enabled,
+                &section.controls,
+                menu,
+                plot,
+                false,
+            ),
+            SectionLayout::Tabs { selected } => tabbed_rows(section, selected, menu, plot),
+        };
+        finish_rows(rows, menu)
+    });
+    module_section(
         &SectionHeaderModel {
             title: section.title.clone(),
             expanded: section.expanded,
@@ -203,26 +218,264 @@ fn section_view<'a>(
             hint: section.hint.clone(),
             unavailable: section.unavailable.clone(),
             reset: section.reset.is_some(),
+            status: section.status.clone(),
             enabled: section.enabled,
         },
         Message::ToggleSection(section.module_id.clone()),
         Message::ResetModule(section.module_id.clone()),
+        body,
+    )
+}
+
+/// The rows of a section whose module declares `layout: tabs`: one tab per top-level group, a dot
+/// on each Custom group, the visible group's reset at the row's right, then only that group's
+/// controls. Any top-level control that is not a group follows as usual.
+fn tabbed_rows<'a>(
+    section: &'a SectionModel,
+    selected: usize,
+    menu: Option<&'a MenuTarget>,
+    plot: &HistogramModel,
+) -> Vec<PanelRow<'a>> {
+    let module_id = section.module_id.as_str();
+    let enabled = section.enabled;
+    let groups: Vec<&GroupControl> = section
+        .controls
+        .iter()
+        .filter_map(|control| match control {
+            ControlModel::Group(group) => Some(group),
+            _ => None,
+        })
+        .collect();
+    let Some(visible) = groups.get(selected).or_else(|| groups.first()).copied() else {
+        return control_rows(module_id, enabled, &section.controls, menu, plot, false);
+    };
+    let tabs = tab_row(
+        &TabRowModel {
+            tabs: groups
+                .iter()
+                .map(|group| Tab {
+                    label: group.label.clone(),
+                    custom: group.state == Some(GroupState::Custom),
+                })
+                .collect(),
+            selected: groups
+                .iter()
+                .position(|group| std::ptr::eq(*group, visible))
+                .unwrap_or(0),
+            reset: visible.reset.is_some(),
+            enabled,
+        },
+        {
+            let module_id = module_id.to_owned();
+            move |index| Message::SelectTab {
+                module_id: module_id.clone(),
+                index,
+            }
+        },
+        Message::ResetGroup {
+            module_id: module_id.to_owned(),
+            path: visible.path.clone(),
+        },
     );
-    let mut block = column![header].spacing(theme::SPACING);
-    // An unavailable module cannot expand, per the design; nothing under it is drawn. Otherwise a
-    // disabled section (busy, a historical preview) still shows its values, just not interactive.
-    if section.expanded && section.unavailable.is_none() {
-        for control in &section.controls {
-            block = block.push(control_view(
-                &section.module_id,
-                section.enabled,
-                control,
-                menu,
-                plot,
-            ));
+    let tabs = match &visible.reset {
+        Some(reset) => {
+            with_control_menu_preset(tabs, &reset.action, None, Some(&reset.preset), menu)
+        }
+        None => tabs,
+    };
+    let mut rows = vec![PanelRow::Plain(tabs)];
+    rows.extend(control_rows(
+        module_id,
+        enabled,
+        &visible.controls,
+        menu,
+        plot,
+        false,
+    ));
+    for control in &section.controls {
+        if !matches!(control, ControlModel::Group(_)) {
+            rows.push(PanelRow::Plain(control_view(
+                module_id, enabled, control, menu, plot,
+            )));
         }
     }
-    block.into()
+    rows
+}
+
+/// A button-like control: a picker, or an action drawn as a button.
+fn is_button(control: &ControlModel) -> bool {
+    matches!(control, ControlModel::Action(_) | ControlModel::Picker(_))
+}
+
+/// One row of a section body before it is laid out. A run of buttons stays as its controls until
+/// the whole body is known, because a button row's margins depend on what is above and below it.
+enum PanelRow<'a> {
+    Plain(Element<'a, Message>),
+    Buttons {
+        controls: Vec<&'a ControlModel>,
+        /// The run comes straight under its group's header.
+        after_header: bool,
+    },
+}
+
+/// The rows a list of controls occupies in a section body. A group contributes its header and
+/// its own rows flush with its siblings, so every row in a section sits on one pitch; consecutive
+/// pickers and actions share one button row under the sliders they follow. `under_header` says the
+/// list is a group's, directly under that group's header.
+fn control_rows<'a>(
+    module_id: &str,
+    enabled: bool,
+    controls: &'a [ControlModel],
+    menu: Option<&'a MenuTarget>,
+    plot: &HistogramModel,
+    under_header: bool,
+) -> Vec<PanelRow<'a>> {
+    let mut rows = Vec::new();
+    let mut buttons: Vec<&'a ControlModel> = Vec::new();
+    let flush = |rows: &mut Vec<PanelRow<'a>>, buttons: &mut Vec<&'a ControlModel>| {
+        if !buttons.is_empty() {
+            let after_header = under_header && rows.is_empty();
+            rows.push(PanelRow::Buttons {
+                controls: std::mem::take(buttons),
+                after_header,
+            });
+        }
+    };
+    for control in controls {
+        if is_button(control) {
+            buttons.push(control);
+            continue;
+        }
+        flush(&mut rows, &mut buttons);
+        match control {
+            ControlModel::Group(group) => {
+                rows.extend(group_rows(module_id, enabled, group, menu, plot));
+            }
+            other => rows.push(PanelRow::Plain(control_view(
+                module_id, enabled, other, menu, plot,
+            ))),
+        }
+    }
+    flush(&mut rows, &mut buttons);
+    rows
+}
+
+/// Lays out a section body's rows: each run of buttons becomes its row, knowing whether it sits
+/// under a group header and whether anything follows it in the section.
+fn finish_rows<'a>(
+    rows: Vec<PanelRow<'a>>,
+    menu: Option<&'a MenuTarget>,
+) -> Vec<Element<'a, Message>> {
+    let count = rows.len();
+    let mut finished = Vec::with_capacity(count);
+    for (index, row) in rows.into_iter().enumerate() {
+        match row {
+            PanelRow::Plain(element) => finished.push(element),
+            PanelRow::Buttons {
+                controls,
+                after_header,
+            } => {
+                let placement = RowPlacement {
+                    after_header,
+                    followed: index + 1 < count,
+                };
+                finished.extend(buttons_row(&controls, placement, menu));
+            }
+        }
+    }
+    finished
+}
+
+/// One run of buttons as its row. A run of actions that all name an icon this build draws is one
+/// row of equal-width icon buttons, the labels as tooltips, since each is a single operation whose
+/// label is its icon; its open context menu, if any, follows the row. Any other run is a row of
+/// labelled buttons, compact when it holds a picker, as a row under a group's sliders does.
+fn buttons_row<'a>(
+    controls: &[&'a ControlModel],
+    placement: RowPlacement,
+    menu: Option<&'a MenuTarget>,
+) -> Vec<Element<'a, Message>> {
+    if let Some(icons) = icon_run(controls) {
+        let cells = icons
+            .iter()
+            .map(|(action, icon)| icon_action_cell(action, *icon))
+            .collect();
+        let mut rows = vec![icon_button_row(cells, placement)];
+        rows.extend(icons.iter().find_map(|(action, _)| {
+            menu_open_for_preset(menu, &action.action, None, Some(&action.preset))
+                .then(|| control_menu_preset(&action.action, None, Some(&action.preset)))
+        }));
+        return rows;
+    }
+    let size = if controls
+        .iter()
+        .any(|control| matches!(control, ControlModel::Picker(_)))
+    {
+        ButtonSize::Compact
+    } else {
+        ButtonSize::Regular
+    };
+    let buttons = controls
+        .iter()
+        .map(|control| match control {
+            ControlModel::Action(action) => action_view(action, size, menu),
+            ControlModel::Picker(picker) => picker_view(picker, size, menu),
+            _ => unreachable!("a button run holds only actions and pickers"),
+        })
+        .collect();
+    vec![button_row(buttons, placement)]
+}
+
+/// The run's icons when it is an icon row: every control an action naming an icon this build
+/// draws. A picker, or any action without an icon, keeps the whole run labelled, so an action that
+/// names an icon beside a picker (RAW's As shot) is a labelled button with that icon.
+fn icon_run<'a>(controls: &[&'a ControlModel]) -> Option<Vec<(&'a ActionControl, Icon)>> {
+    controls
+        .iter()
+        .map(|control| match control {
+            ControlModel::Action(action) => action
+                .icon
+                .as_deref()
+                .and_then(Icon::from_name)
+                .map(|icon| (action, icon)),
+            _ => None,
+        })
+        .collect()
+}
+
+/// One action as a cell of an icon row: focusable, and right-clickable for its request.
+fn icon_action_cell<'a>(action: &'a ActionControl, icon: Icon) -> Element<'a, Message> {
+    let press = action.runnable.then(|| Message::RunAction {
+        action: action.action.clone(),
+        preset: action.preset.clone(),
+    });
+    let control = row_icon_button(
+        &IconButtonModel {
+            icon,
+            tooltip: match &action.reason {
+                Some(reason) if !action.runnable => format!("{} \u{00b7} {reason}", action.label),
+                _ => action.label.clone(),
+            },
+            enabled: action.runnable,
+            selected: false,
+        },
+        press,
+    );
+    let action_name = action.action.clone();
+    let preset = action.preset.clone();
+    let control = focus_control(control, action.runnable, move |event| {
+        activates(event).then(|| Message::RunAction {
+            action: action_name.clone(),
+            preset: preset.clone(),
+        })
+    });
+    mouse_area(control)
+        .on_right_press(Message::OpenMenu(control_target_preset(
+            &action.action,
+            None,
+            Some(&action.preset),
+        )))
+        .into()
 }
 
 fn control_view<'a>(
@@ -238,12 +491,195 @@ fn control_view<'a>(
         ControlModel::Enum(choice) => enum_view(enabled, choice, menu),
         ControlModel::Color(color) => color_view(enabled, color, menu),
         ControlModel::Curve(curve) => curve_view(enabled, curve, menu, plot),
-        ControlModel::Group(group) => group_view(module_id, enabled, group, menu, plot),
-        ControlModel::Action(action) => action_view(action, menu),
-        ControlModel::Picker(picker) => picker_view(picker, menu),
+        ControlModel::Group(group) => column(finish_rows(
+            group_rows(module_id, enabled, group, menu, plot),
+            menu,
+        ))
+        .spacing(theme::ROW_SPACING)
+        .into(),
+        ControlModel::Action(action) => action_view(action, ButtonSize::Regular, menu),
+        ControlModel::Picker(picker) => picker_view(picker, ButtonSize::Compact, menu),
         ControlModel::Unsupported(message) => error_caption(message.clone()),
         ControlModel::CropFrame(frame) => crop_section_view(frame, menu),
+        ControlModel::Presets(presets) => presets_view(presets, menu),
     }
+}
+
+/// The Presets section body: New preset and Import, the create form while it is open, then the
+/// library under its group headings. A row's click is the section's own action with that preset's
+/// fields, exactly as a declared action button runs its action; everything else is a
+/// [`PresetMessage`].
+fn presets_view<'a>(model: &'a PresetsModel, menu: Option<&'a MenuTarget>) -> Element<'a, Message> {
+    let preset = |message: PresetMessage| Message::Preset(message);
+    let header = row![
+        Space::new().width(Length::Fill),
+        icon_button(
+            &IconButtonModel {
+                icon: Icon::Plus,
+                tooltip: "New preset from the displayed settings".into(),
+                enabled: true,
+                selected: model.form.open,
+            },
+            Some(preset(PresetMessage::ToggleForm)),
+        ),
+        text_button(
+            "Import…",
+            ButtonTone::Control,
+            ButtonSize::Compact,
+            model.can_import.then_some(preset(PresetMessage::Import)),
+        ),
+    ]
+    .spacing(theme::SPACING / 2.0)
+    .align_y(Alignment::Center);
+    let mut body = column![header].spacing(theme::SPACING / 2.0);
+    if model.form.open {
+        body = body.push(preset_form_view(&model.form));
+    }
+    if model.loading {
+        body = body.push(caption("Loading presets…"));
+    }
+    if let Some(error) = &model.error {
+        body = body.push(error_caption(error.clone()));
+    }
+    if model.empty {
+        body = body.push(caption(
+            "No presets yet. Import a Lightroom or Lightwell preset, or keep the displayed settings with +.",
+        ));
+    }
+    for group in &model.groups {
+        body = body.push(list_heading(&group.name));
+        for row in &group.rows {
+            body = body.push(preset_row_view(&model.action, row, menu));
+        }
+    }
+    body.into()
+}
+
+/// The create form: the name, the group, one checkbox per presettable group, Cancel and Create.
+fn preset_form_view(form: &PresetFormModel) -> Element<'_, Message> {
+    let mut block = column![
+        text_input("Preset name", &form.name)
+            .on_input(|text| Message::Preset(PresetMessage::Name(text)))
+            .on_submit(Message::Preset(PresetMessage::Create))
+            .style(theme::text_input_style(false))
+            .size(theme::SIZE_CONTROL)
+            .width(Length::Fill),
+        text_input("Group", &form.group)
+            .on_input(|text| Message::Preset(PresetMessage::Group(text)))
+            .on_submit(Message::Preset(PresetMessage::Create))
+            .style(theme::text_input_style(false))
+            .size(theme::SIZE_CONTROL)
+            .width(Length::Fill),
+        caption("Keep these settings"),
+    ]
+    .spacing(theme::SPACING / 2.0);
+    for check in &form.checks {
+        let label = check.label.clone();
+        block = block.push(toggle(
+            &ToggleModel {
+                label: check.label.clone(),
+                on: check.checked,
+                enabled: true,
+            },
+            move |checked| {
+                Message::Preset(PresetMessage::Check {
+                    label: label.clone(),
+                    checked,
+                })
+            },
+        ));
+    }
+    if let Some(error) = &form.error {
+        block = block.push(error_caption(error.clone()));
+    }
+    block = block.push(
+        row![
+            Space::new().width(Length::Fill),
+            text_button(
+                "Cancel",
+                ButtonTone::Control,
+                ButtonSize::Compact,
+                Some(Message::Preset(PresetMessage::Cancel)),
+            ),
+            text_button(
+                "Create",
+                ButtonTone::Primary,
+                ButtonSize::Compact,
+                form.can_create
+                    .then_some(Message::Preset(PresetMessage::Create)),
+            ),
+        ]
+        .spacing(theme::BUTTON_ROW_SPACING),
+    );
+    iced::widget::container(block)
+        .padding(theme::SPACING)
+        .style(theme::control_surface)
+        .into()
+}
+
+/// One library row: the name and, for a partial import, its badge; a click applies it, a
+/// right-click opens its menu, and a preset this build cannot apply says why under its name.
+fn preset_row_view<'a>(
+    action: &str,
+    row: &'a PresetRow,
+    menu: Option<&'a MenuTarget>,
+) -> Element<'a, Message> {
+    let mut content = row![
+        iced::widget::text(row.name.clone())
+            .size(theme::SIZE_CONTROL)
+            .width(Length::Fill)
+    ]
+    .spacing(theme::SPACING / 2.0)
+    .align_y(Alignment::Center);
+    if row.partial {
+        content = content.push(badge(&BadgeModel {
+            label: "Partial".into(),
+            tooltip: row.counts.clone(),
+        }));
+    }
+    let press = row
+        .apply
+        .clone()
+        .filter(|_| row.enabled)
+        .map(|preset| Message::RunAction {
+            action: action.to_owned(),
+            preset,
+        });
+    let target = MenuTarget::Preset(row.id.clone());
+    let control: Element<'a, Message> = mouse_area(
+        button(content)
+            .padding([4.0, theme::SPACING])
+            .width(Length::Fill)
+            .style(theme::button_plain)
+            .on_press_maybe(press),
+    )
+    .on_right_press(Message::OpenMenu(target.clone()))
+    .into();
+    let mut block = column![control].spacing(2.0);
+    if let Some(reason) = &row.unavailable {
+        block = block.push(
+            iced::widget::container(error_caption(reason.clone())).padding([0.0, theme::SPACING]),
+        );
+    }
+    if menu == Some(&target) {
+        let mut items = vec![(
+            "Export…".to_owned(),
+            Message::Preset(PresetMessage::Export(row.id.clone())),
+        )];
+        if row.imported {
+            items.push((
+                "Copy import report".to_owned(),
+                Message::Preset(PresetMessage::CopyReport(row.id.clone())),
+            ));
+        }
+        items.push((
+            "Delete".to_owned(),
+            Message::Preset(PresetMessage::Delete(row.id.clone())),
+        ));
+        items.push(("Cancel".to_owned(), Message::CloseMenu));
+        block = block.push(inline_menu(items));
+    }
+    block.into()
 }
 
 /// Whether this control is the one whose context menu is open. A patch action's controls are one
@@ -351,8 +787,8 @@ fn rail_decoration(rail: &RailStyle) -> RailDecoration {
         RailStyle::Hue => (0..=6)
             .map(|index| lightwell_ui::hsv_to_rgb([index as f64 / 6.0, 1.0, 1.0]))
             .collect(),
-        RailStyle::Temperature => vec![[72, 132, 235], [225, 225, 225], [236, 163, 70]],
-        RailStyle::Tint => vec![[87, 168, 96], [225, 225, 225], [207, 99, 168]],
+        RailStyle::Temperature => return RailDecoration::Colors(theme::TEMPERATURE_RAIL.to_vec()),
+        RailStyle::Tint => return RailDecoration::Colors(theme::TINT_RAIL.to_vec()),
         RailStyle::Gradient(stops) => stops.clone(),
     };
     RailDecoration::Colors(
@@ -452,6 +888,7 @@ fn number_view<'a>(
                 increment_enabled: field.value < field.max,
                 decrement_tooltip: "Decrease".into(),
                 increment_tooltip: "Increase".into(),
+                rail: None,
             },
             Message::ControlStep {
                 action: action.clone(),
@@ -467,6 +904,7 @@ fn number_view<'a>(
             on_text,
             submit,
             reset,
+            None,
         ),
     };
     let control = match field.style {
@@ -607,7 +1045,7 @@ fn enum_view<'a>(
         choice.parameter.clone(),
         choice.options.clone(),
     );
-    let mut field = column![lightwell_ui::label(choice.label.clone())].spacing(4.0);
+    let mut field = column![label_line(choice.label.clone(), enabled)].spacing(theme::SLIDER_GAP);
     match choice.style {
         ChoiceControlStyle::Segmented => {
             field = field.push(segmented(
@@ -640,7 +1078,7 @@ fn enum_view<'a>(
                     None,
                 )
             });
-            field = field.push(Row::new().spacing(4.0).extend(chips).wrap());
+            field = field.push(chip_wrap(chips.collect()));
         }
         ChoiceControlStyle::Menu => {
             let action = choice.action.clone();
@@ -708,43 +1146,43 @@ fn color_view<'a>(
             })
         },
     );
-    let mut body = column![
-        row![lightwell_ui::label(color.label.clone()), swatch]
-            .spacing(4.0)
-            .align_y(Alignment::Center)
-    ]
-    .spacing(4.0);
-    match color.style {
-        ColorControlStyle::Fields => {
-            let mut channels = row![].spacing(4.0).align_y(Alignment::Center);
-            for (index, value) in color.channels.iter().enumerate() {
+    let channels: Vec<Element<'a, Message>> = match color.style {
+        ColorControlStyle::Fields => color
+            .channels
+            .iter()
+            .enumerate()
+            .map(|(index, value)| {
                 let (action, parameter, current) = (
                     color.action.clone(),
                     color.parameter.clone(),
                     color.text.clone(),
                 );
-                channels = channels.push(
-                    value_input(
-                        fields::CHANNELS[index],
-                        value,
-                        color.invalid.is_some(),
-                        enabled,
-                        move |text| Message::Field {
-                            action: action.clone(),
-                            parameter: parameter.clone(),
-                            text: fields::replace_channel(&current, index, &text),
-                        },
-                        Message::Submit {
-                            action: color.action.clone(),
-                            parameter: Some(color.parameter.clone()),
-                        },
-                    )
-                    .id(color.ids[index].clone())
-                    .width(Length::Fixed(48.0)),
-                );
-            }
-            body = body.push(channels);
-        }
+                boxed_input(
+                    fields::CHANNELS[index],
+                    value,
+                    theme::CHANNEL_FIELD_WIDTH,
+                    color.invalid.is_some(),
+                    enabled,
+                    move |text| Message::Field {
+                        action: action.clone(),
+                        parameter: parameter.clone(),
+                        text: fields::replace_channel(&current, index, &text),
+                    },
+                    Message::Submit {
+                        action: color.action.clone(),
+                        parameter: Some(color.parameter.clone()),
+                    },
+                )
+                .id(color.ids[index].clone())
+                .into()
+            })
+            .collect(),
+        ColorControlStyle::Picker => Vec::new(),
+    };
+    let mut body = column![channel_row(color.label.clone(), enabled, swatch, channels)]
+        .spacing(theme::SLIDER_GAP);
+    match color.style {
+        ColorControlStyle::Fields => {}
         ColorControlStyle::Picker if color.picker_open => {
             let hsv = color
                 .picker_hsv
@@ -839,93 +1277,66 @@ fn curve_view<'a>(
     let action = curve.action.clone();
     let parameter = channel.parameter.clone();
     let widget = column![
-        lightwell_ui::label(curve.label.clone()),
+        label_line(curve.label.clone(), enabled),
         curve_editor(&model, move |event| Message::ControlCurve {
             action: action.clone(),
             parameter: parameter.clone(),
             event,
         })
     ]
-    .spacing(4.0);
+    .spacing(theme::SLIDER_GAP);
     with_control_menu(widget.into(), &curve.action, Some(&channel.parameter), menu)
 }
 
-fn group_view<'a>(
+/// A group's rows: its header, then (while expanded) its controls flush under it.
+fn group_rows<'a>(
     module_id: &str,
     enabled: bool,
     group: &'a GroupControl,
     menu: Option<&'a MenuTarget>,
     plot: &HistogramModel,
-) -> Element<'a, Message> {
+) -> Vec<PanelRow<'a>> {
     let header = sub_group_header(
         &SubGroupHeaderModel {
             label: group.label.clone(),
             state: group.state.map(|state| state.caption().to_owned()),
+            state_accent: group.state == Some(GroupState::Custom),
+            expanded: Some(group.expanded),
             reset: group.reset.is_some(),
             enabled,
         },
+        Some(Message::ToggleGroup {
+            module_id: module_id.to_owned(),
+            path: group.path.clone(),
+        }),
         Message::ResetGroup {
             module_id: module_id.to_owned(),
             path: group.path.clone(),
         },
     );
-    let header = if let Some(reset) = &group.reset {
-        let module_id = module_id.to_owned();
-        let path = group.path.clone();
-        let header = focus_control(header, enabled, move |event| {
-            activates(event).then(|| Message::ResetGroup {
-                module_id: module_id.clone(),
-                path: path.clone(),
-            })
-        });
-        with_control_menu_preset(header, &reset.action, None, Some(&reset.preset), menu)
-    } else {
-        header
+    let header = match &group.reset {
+        Some(reset) => {
+            with_control_menu_preset(header, &reset.action, None, Some(&reset.preset), menu)
+        }
+        None => header,
     };
-    let indent = iced::Padding::default().left(theme::SPACING);
-    let mut inner = column![].spacing(theme::SPACING).padding(indent);
+    let mut rows = vec![PanelRow::Plain(header)];
     if group.expanded {
-        for control in &group.controls {
-            inner = inner.push(control_view(module_id, enabled, control, menu, plot));
-        }
-    }
-    let toggle = icon_button(
-        &IconButtonModel {
-            icon: if group.expanded {
-                Icon::ChevronDown
-            } else {
-                Icon::ChevronRight
-            },
-            tooltip: format!(
-                "{} {}",
-                if group.expanded { "Collapse" } else { "Expand" },
-                group.label
-            ),
+        rows.extend(control_rows(
+            module_id,
             enabled,
-            selected: false,
-        },
-        enabled.then_some(Message::ToggleGroup {
-            module_id: module_id.to_owned(),
-            path: group.path.clone(),
-        }),
-    );
-    let toggle = focus_control(toggle, enabled, {
-        let module_id = module_id.to_owned();
-        let path = group.path.clone();
-        move |event| {
-            activates(event).then(|| Message::ToggleGroup {
-                module_id: module_id.clone(),
-                path: path.clone(),
-            })
-        }
-    });
-    column![row![toggle, header].align_y(Alignment::Center), inner]
-        .spacing(theme::SPACING / 2.0)
-        .into()
+            &group.controls,
+            menu,
+            plot,
+            true,
+        ));
+    }
+    rows
 }
 
 fn action_view<'a>(
     action: &'a ActionControl,
+    size: ButtonSize,
     menu: Option<&'a MenuTarget>,
 ) -> Element<'a, Message> {
     let press = action.runnable.then(|| Message::RunAction {
@@ -945,15 +1356,22 @@ fn action_view<'a>(
             },
             press,
         ),
-        (style, _) => button(lightwell_ui::label(action.label.clone()))
-            .padding([4.0, 10.0])
-            .style(if style == ActionControlStyle::Primary {
-                theme::button_accent
-            } else {
-                theme::button_plain
-            })
-            .on_press_maybe(press)
-            .into(),
+        (style, icon) => labelled_button(
+            &LabelledButtonModel {
+                label: action.label.clone(),
+                icon,
+                key_hint: None,
+                tone: if style == ActionControlStyle::Primary {
+                    ButtonTone::Primary
+                } else {
+                    ButtonTone::Control
+                },
+                size,
+                fill: false,
+                enabled: action.runnable,
+            },
+            press,
+        ),
     };
     let action_name = action.action.clone();
     let preset = action.preset.clone();
@@ -969,7 +1387,7 @@ fn action_view<'a>(
         Some(reason) if !action.runnable => iced::widget::tooltip(
             control,
             iced::widget::container(caption(reason.clone()))
-                .padding(6.0)
+                .padding(theme::TOOLTIP_PADDING)
                 .style(theme::bar_surface),
             iced::widget::tooltip::Position::Top,
         )
@@ -984,32 +1402,36 @@ fn action_view<'a>(
 /// nothing: the gesture is one `workspace.set`, which is what its context menu copies.
 fn picker_view<'a>(
     picker: &'a PickerControl,
+    size: ButtonSize,
     menu: Option<&'a MenuTarget>,
 ) -> Element<'a, Message> {
-    let style = if picker.selected {
-        theme::button_selected
-    } else {
-        theme::button_plain
-    };
-    let control = button(lightwell_ui::label(picker.label.clone()))
-        .padding([4.0, 10.0])
-        .style(style)
-        .on_press_maybe(
-            picker
-                .enabled
-                .then(|| Message::SetMode(picker.target.clone())),
-        );
+    let control = labelled_button(
+        &LabelledButtonModel {
+            label: picker.label.clone(),
+            icon: Some(Icon::Picker),
+            key_hint: picker.shortcut.clone(),
+            tone: if picker.selected {
+                ButtonTone::Selected
+            } else {
+                ButtonTone::Control
+            },
+            size,
+            fill: false,
+            enabled: picker.enabled,
+        },
+        Some(Message::SetMode(picker.target.clone())),
+    );
     // The mode strip named the mode and its letter in a tooltip; the panel says the same thing.
     let control: Element<'a, Message> = match &picker.shortcut {
         Some(key) => iced::widget::tooltip(
             control,
             iced::widget::container(caption(format!("{} \u{00b7} {key}", picker.title)))
-                .padding(6.0)
+                .padding(theme::TOOLTIP_PADDING)
                 .style(theme::bar_surface),
             iced::widget::tooltip::Position::Top,
         )
         .into(),
-        None => control.into(),
+        None => control,
     };
     let target = MenuTarget::Mode(picker.module_id.clone());
     let area: Element<'a, Message> = mouse_area(control)
@@ -1034,200 +1456,307 @@ fn picker_view<'a>(
 }
 
 /// The crop draft's own panel, driven by [`CropMessage`]: the API-equivalent path and this panel
-/// share the same state machine.
+/// share the same state machine. Idle, it is one Crop button; drafting, it is the Ratio group
+/// (chips, custom ratio, lock and swap), the Angle group (stepper and straighten guide), the
+/// draft's exact readout and Cancel and Apply, every row a widget of the library.
 fn crop_section_view<'a>(
     model: &'a CropSectionModel,
     menu: Option<&'a MenuTarget>,
 ) -> Element<'a, Message> {
-    let mut panel = column![lightwell_ui::title(model.title.clone())].spacing(theme::SPACING);
+    let mut rows: Vec<Element<'a, Message>> = Vec::new();
     if !model.drafting {
-        panel = panel.push(
-            button(lightwell_ui::label("Crop & straighten"))
-                .padding([4.0, 10.0])
-                .style(theme::button_plain)
-                .on_press_maybe(model.can_start.then_some(Message::Crop(CropMessage::Start))),
-        );
+        rows.push(button_row(
+            vec![labelled_button(
+                &LabelledButtonModel {
+                    label: "Crop".into(),
+                    icon: Some(Icon::Crop),
+                    key_hint: model.shortcut.clone(),
+                    tone: ButtonTone::Control,
+                    size: ButtonSize::Regular,
+                    fill: false,
+                    enabled: model.can_start,
+                },
+                model.can_start.then_some(Message::Crop(CropMessage::Start)),
+            )],
+            RowPlacement::default(),
+        ));
         if model.pending {
-            panel = panel.push(caption("Preparing the crop's input stage…"));
+            rows.push(caption("Preparing the crop's input stage…"));
         }
-        return panel.into();
+        return column(rows).spacing(theme::ROW_SPACING).into();
     }
     if model.conflicted {
-        panel = panel.push(error_caption("Changed elsewhere · Discard or Reapply"));
-        panel = panel.push(
-            row![
-                button(lightwell_ui::label("Discard"))
-                    .padding([4.0, 10.0])
-                    .style(theme::button_plain)
-                    .on_press(Message::Crop(CropMessage::Cancel)),
-                button(lightwell_ui::label("Reapply"))
-                    .padding([4.0, 10.0])
-                    .style(theme::button_accent)
-                    .on_press_maybe(
-                        model
-                            .can_reapply
-                            .then_some(Message::Crop(CropMessage::Reapply))
-                    ),
-            ]
-            .spacing(theme::SPACING / 2.0),
-        );
+        rows.push(error_caption("Changed elsewhere · Discard or Reapply"));
+        rows.push(button_row(
+            vec![
+                text_button(
+                    "Discard",
+                    ButtonTone::Control,
+                    ButtonSize::Regular,
+                    Some(Message::Crop(CropMessage::Cancel)),
+                ),
+                text_button(
+                    "Reapply",
+                    ButtonTone::Primary,
+                    ButtonSize::Regular,
+                    model
+                        .can_reapply
+                        .then_some(Message::Crop(CropMessage::Reapply)),
+                ),
+            ],
+            RowPlacement {
+                after_header: false,
+                followed: true,
+            },
+        ));
     }
     if model.paused {
-        panel = panel.push(caption(
+        rows.push(caption(
             "Draft paused during history preview · Return to current",
         ));
     }
+    rows.push(sub_group_header_with_actions(
+        &crop_group("Ratio", model.enabled),
+        None,
+        Message::CloseMenu,
+        vec![
+            (
+                IconButtonModel {
+                    icon: Icon::Lock,
+                    tooltip: model.lock_label.clone(),
+                    enabled: model.enabled,
+                    selected: model.locked,
+                },
+                model.enabled.then_some(Message::Crop(CropMessage::Lock)),
+            ),
+            (
+                IconButtonModel {
+                    icon: Icon::Swap,
+                    tooltip: "Swap".into(),
+                    enabled: model.can_swap,
+                    selected: false,
+                },
+                model.can_swap.then_some(Message::Crop(CropMessage::Swap)),
+            ),
+        ],
+    ));
     if !model.presets.is_empty() {
-        let chips = model.presets.iter().map(|preset| {
-            let control = chip(
-                &ChipModel {
-                    label: preset.label.clone(),
-                    trailing: None,
-                    selected: preset.chosen,
-                    enabled: model.enabled,
-                },
-                model
-                    .enabled
-                    .then_some(Message::Crop(CropMessage::Preset(preset.index))),
-                None,
-            );
-            let index = preset.index;
-            focus_control(control, model.enabled, move |event| {
-                activates(event).then(|| Message::Crop(CropMessage::Preset(index)))
+        let chips = model
+            .presets
+            .iter()
+            .map(|preset| {
+                let control = chip(
+                    &ChipModel {
+                        label: preset.label.clone(),
+                        trailing: None,
+                        selected: preset.chosen,
+                        enabled: model.enabled,
+                    },
+                    model
+                        .enabled
+                        .then_some(Message::Crop(CropMessage::Preset(preset.index))),
+                    None,
+                );
+                let index = preset.index;
+                focus_control(control, model.enabled, move |event| {
+                    activates(event).then(|| Message::Crop(CropMessage::Preset(index)))
+                })
             })
-        });
-        panel = panel.push(Row::new().spacing(4.0).extend(chips).wrap());
+            .collect();
+        rows.push(chip_row(
+            chips,
+            RowPlacement {
+                after_header: true,
+                followed: true,
+            },
+        ));
     }
-    panel = panel.push(
+    rows.push(
         row![
-            number_field(
-                &NumberFieldModel {
-                    label: "W".into(),
-                    display: model.custom.0.clone(),
-                    edit: lightwell_ui::ValueEdit::Editing {
-                        text: model.custom.0.clone(),
-                        invalid: None
-                    },
-                    unit: None,
-                    enabled: model.enabled,
-                    id: Some(model.custom_ids.0.clone()),
-                },
-                Message::Crop(CropMessage::CustomWidth(model.custom.0.clone())),
-                |text| Message::Crop(CropMessage::CustomWidth(text)),
-                Message::Crop(CropMessage::CustomWidth(model.custom.0.clone())),
-                Message::Crop(CropMessage::CustomWidth(model.custom.0.clone()))
-            ),
-            number_field(
-                &NumberFieldModel {
-                    label: "H".into(),
-                    display: model.custom.1.clone(),
-                    edit: lightwell_ui::ValueEdit::Editing {
-                        text: model.custom.1.clone(),
-                        invalid: None
-                    },
-                    unit: None,
-                    enabled: model.enabled,
-                    id: Some(model.custom_ids.1.clone()),
-                },
-                Message::Crop(CropMessage::CustomHeight(model.custom.1.clone())),
-                |text| Message::Crop(CropMessage::CustomHeight(text)),
-                Message::Crop(CropMessage::CustomHeight(model.custom.1.clone())),
-                Message::Crop(CropMessage::CustomHeight(model.custom.1.clone()))
-            ),
-            button(lightwell_ui::label(model.lock_label.clone()))
-                .padding([4.0, 10.0])
-                .style(theme::button_plain)
-                .on_press_maybe(model.enabled.then_some(Message::Crop(CropMessage::Lock))),
-            button(lightwell_ui::label("Swap"))
-                .padding([4.0, 10.0])
-                .style(theme::button_plain)
-                .on_press_maybe(model.can_swap.then_some(Message::Crop(CropMessage::Swap))),
-        ]
-        .spacing(theme::SPACING / 2.0)
-        .align_y(Alignment::Center),
-    );
-    panel = panel.push(
-        row![
-            focus_control(
-                stepper(
-                    &StepperModel {
-                        field: NumberFieldModel {
-                            label: "Angle".into(),
-                            display: model.angle.clone(),
-                            edit: lightwell_ui::ValueEdit::Editing {
-                                text: model.angle.clone(),
-                                invalid: None
-                            },
-                            unit: Some("°".into()),
-                            enabled: model.enabled,
-                            id: Some(model.angle_id.clone()),
-                        },
-                        decrement_enabled: model.enabled,
-                        increment_enabled: model.enabled,
-                        decrement_tooltip: format!("−{}°", model.nudge),
-                        increment_tooltip: format!("+{}°", model.nudge),
-                    },
-                    Message::Crop(CropMessage::NudgeAngle(-model.nudge)),
-                    Message::Crop(CropMessage::NudgeAngle(model.nudge)),
-                    Message::Crop(CropMessage::AngleText(model.angle.clone())),
-                    |text| Message::Crop(CropMessage::AngleText(text)),
-                    Message::Crop(CropMessage::SubmitAngle),
-                    Message::Crop(CropMessage::AngleText("0".into()))
-                ),
+            custom_field(
+                "W",
+                &model.custom.0,
+                &model.custom_ids.0,
                 model.enabled,
-                {
-                    let step = model.nudge;
-                    move |event| match event {
-                        ControlKeyEvent::Pressed { key, shift, option } => {
-                            key_direction(key).map(|direction| {
-                                let factor = if shift {
-                                    10.0
-                                } else if option {
-                                    0.1
-                                } else {
-                                    1.0
-                                };
-                                Message::Crop(CropMessage::NudgeAngle(
-                                    f64::from(direction) * step * factor,
-                                ))
-                            })
-                        }
-                        _ => None,
-                    }
-                }
+                CropMessage::CustomWidth
             ),
-            straighten_toggle(model),
+            custom_field(
+                "H",
+                &model.custom.1,
+                &model.custom_ids.1,
+                model.enabled,
+                CropMessage::CustomHeight
+            ),
         ]
-        .spacing(theme::SPACING / 2.0)
-        .align_y(Alignment::Center),
+        .spacing(theme::BUTTON_ROW_SPACING)
+        .into(),
     );
-    let apply = button(lightwell_ui::label("Apply"))
-        .padding([4.0, 10.0])
-        .style(theme::button_accent)
-        .on_press_maybe(model.can_apply.then_some(Message::Crop(CropMessage::Apply)));
+    rows.push(sub_group_header(
+        &crop_group("Angle", model.enabled),
+        None,
+        Message::CloseMenu,
+    ));
+    rows.push(angle_stepper(model));
+    rows.push(straighten_toggle(model));
+    rows.push(readout_card(
+        &model.readout,
+        RowPlacement {
+            after_header: false,
+            followed: true,
+        },
+    ));
+    let cancel = labelled_button(
+        &LabelledButtonModel {
+            label: "Cancel".into(),
+            icon: None,
+            key_hint: Some("esc".into()),
+            tone: ButtonTone::Control,
+            size: ButtonSize::Regular,
+            fill: true,
+            enabled: true,
+        },
+        Some(Message::Crop(CropMessage::Cancel)),
+    );
+    let apply = labelled_button(
+        &LabelledButtonModel {
+            label: "Apply".into(),
+            icon: None,
+            key_hint: Some("return".into()),
+            tone: ButtonTone::Primary,
+            size: ButtonSize::Regular,
+            fill: true,
+            enabled: model.can_apply,
+        },
+        model.can_apply.then_some(Message::Crop(CropMessage::Apply)),
+    );
     let apply: Element<'a, Message> = mouse_area(apply)
         .on_right_press(Message::OpenMenu(MenuTarget::Draft))
         .into();
-    panel = panel.push(
-        row![
-            button(lightwell_ui::label("Cancel"))
-                .padding([4.0, 10.0])
-                .style(theme::button_plain)
-                .on_press(Message::Crop(CropMessage::Cancel)),
-            apply,
-        ]
-        .spacing(theme::SPACING / 2.0),
-    );
-    if matches!(menu, Some(MenuTarget::Draft)) {
-        panel = panel.push(inline_menu(vec![
+    let draft_menu = matches!(menu, Some(MenuTarget::Draft));
+    rows.push(equal_button_row(
+        vec![cancel, apply],
+        RowPlacement {
+            after_header: false,
+            followed: draft_menu,
+        },
+    ));
+    if draft_menu {
+        rows.push(inline_menu(vec![
             ("Copy as JSON request".to_owned(), Message::CopyDraftRequest),
             ("Cancel".to_owned(), Message::CloseMenu),
         ]));
     }
-    for line in &model.readout {
-        panel = panel.push(caption(line.clone()));
+    column(rows).spacing(theme::ROW_SPACING).into()
+}
+
+/// A crop group's header: a label and its rule, with no disclosure, caption or reset of its own,
+/// because the crop panel's groups are the host's, not a descriptor's.
+fn crop_group(label: &str, enabled: bool) -> SubGroupHeaderModel {
+    SubGroupHeaderModel {
+        label: label.to_owned(),
+        state: None,
+        state_accent: false,
+        expanded: None,
+        reset: false,
+        enabled,
     }
-    panel.into()
+}
+
+/// One of the custom ratio's two fields, always open for typing.
+fn custom_field<'a>(
+    label: &str,
+    value: &str,
+    id: &str,
+    enabled: bool,
+    message: fn(String) -> CropMessage,
+) -> Element<'a, Message> {
+    let current = Message::Crop(message(value.to_owned()));
+    iced::widget::container(number_field(
+        &NumberFieldModel {
+            label: label.to_owned(),
+            display: value.to_owned(),
+            edit: lightwell_ui::ValueEdit::Editing {
+                text: value.to_owned(),
+                invalid: None,
+            },
+            unit: None,
+            enabled,
+            id: Some(id.to_owned()),
+        },
+        current.clone(),
+        move |text| Message::Crop(message(text)),
+        current.clone(),
+        current,
+    ))
+    .width(Length::Fill)
+    .into()
+}
+
+/// The straightening angle: the ± nudges either side of its rail, its value box, which opens for
+/// typing when pressed, and the arrow keys while focused.
+fn angle_stepper(model: &CropSectionModel) -> Element<'_, Message> {
+    let edit = if model.angle_editing {
+        lightwell_ui::ValueEdit::Editing {
+            text: model.angle.clone(),
+            invalid: None,
+        }
+    } else {
+        lightwell_ui::ValueEdit::Display
+    };
+    let rail = model.angle_rail.as_ref().map(|rail| StepperRail {
+        soft_min: rail.min,
+        soft_max: rail.max,
+        value: rail.value,
+        step: rail.step,
+        zero: Some(0.0),
+        dragging: rail.live,
+    });
+    let control = stepper(
+        &StepperModel {
+            field: NumberFieldModel {
+                label: String::new(),
+                display: model.angle.clone(),
+                edit,
+                unit: Some("°".into()),
+                enabled: model.enabled,
+                id: Some(model.angle_id.clone()),
+            },
+            decrement_enabled: model.enabled,
+            increment_enabled: model.enabled,
+            decrement_tooltip: format!("−{}°", model.nudge),
+            increment_tooltip: format!("+{}°", model.nudge),
+            rail,
+        },
+        Message::Crop(CropMessage::NudgeAngle(-model.nudge)),
+        Message::Crop(CropMessage::NudgeAngle(model.nudge)),
+        Message::EditValue {
+            action: model.angle_action.clone(),
+            parameter: model.angle_parameter.clone(),
+        },
+        |text| Message::Crop(CropMessage::AngleText(text)),
+        Message::Crop(CropMessage::SubmitAngle),
+        Message::Crop(CropMessage::AngleText("0".into())),
+        Some(StepperRailMessages {
+            on_change: Box::new(|fraction| Message::Crop(CropMessage::AngleRail(fraction))),
+            on_release: Message::Crop(CropMessage::AngleRailReleased),
+        }),
+    );
+    let step = model.nudge;
+    focus_control(control, model.enabled, move |event| match event {
+        ControlKeyEvent::Pressed { key, shift, option } => key_direction(key).map(|direction| {
+            let factor = if shift {
+                10.0
+            } else if option {
+                0.1
+            } else {
+                1.0
+            };
+            Message::Crop(CropMessage::NudgeAngle(
+                f64::from(direction) * step * factor,
+            ))
+        }),
+        _ => None,
+    })
 }
 
 fn straighten_toggle(model: &CropSectionModel) -> Element<'_, Message> {
@@ -1326,5 +1855,45 @@ mod tests {
             curve_version(7, false, &base),
             curve_version(7, false, &newer)
         );
+    }
+
+    fn action(name: &str, icon: Option<&str>) -> ControlModel {
+        ControlModel::Action(ActionControl {
+            action: name.into(),
+            label: name.into(),
+            preset: serde_json::Map::new(),
+            runnable: true,
+            reason: None,
+            style: crate::state::tools::ActionControlStyle::Default,
+            icon: icon.map(str::to_owned),
+        })
+    }
+
+    /// A run is an icon row only when every control in it is an action naming a known icon: the
+    /// four transforms are, RAW's Neutral WB picker beside As shot is not, so As shot keeps its
+    /// label beside its crosshair.
+    #[test]
+    fn only_a_run_of_icon_actions_becomes_an_icon_row() {
+        let transforms: Vec<ControlModel> = ["rotate-left", "rotate-right", "mirror", "flip"]
+            .into_iter()
+            .map(|icon| action(icon, Some(icon)))
+            .collect();
+        let run: Vec<&ControlModel> = transforms.iter().collect();
+        assert_eq!(icon_run(&run).map(|icons| icons.len()), Some(4));
+
+        let picker = ControlModel::Picker(crate::state::tools::PickerControl {
+            module_id: "lightwell.raw".into(),
+            label: "Neutral WB".into(),
+            title: "Pick neutral".into(),
+            shortcut: Some("N".into()),
+            selected: false,
+            target: "lightwell.raw".into(),
+            enabled: true,
+        });
+        let as_shot = action("use-as-shot-wb", Some("target"));
+        assert!(icon_run(&[&picker, &as_shot]).is_none());
+        let unnamed = action("apply", None);
+        assert!(icon_run(&[&as_shot, &unnamed]).is_none());
+        assert_eq!(Icon::from_name("target"), Some(Icon::Target));
     }
 }

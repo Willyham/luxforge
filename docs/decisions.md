@@ -19,7 +19,7 @@ Accepted owner decisions and the questions still open. Proposals stay proposals 
 
 - Originals are read-only. Import references existing files with a stable asset ID, a verified content fingerprint and a changeable locator. SQLite is the local catalog. Folder relinking, sidecars, portability, backups and sync need their own workflow decisions.
 - A "layer" is an ordered edit operation in a recipe. Each committed action stores a complete immutable recipe snapshot and one attributed history entry. Bitmap compositing, blend modes and arbitrary layer reordering are not selected.
-- History is a graph: entries keep their undo parent and nothing is truncated. A named **version** (the owner's name for the Lightroom-style saved state) is a reference to one retained entry, not a branch. The catalog uses internal format 5; unsupported formats are refused. See [versions and lineage](design/versions-and-lineage.md).
+- History is a graph: entries keep their undo parent and nothing is truncated. A named **version** (the owner's name for the Lightroom-style saved state) is a reference to one retained entry, not a branch. The catalog uses internal format 6; unsupported formats are refused. See [versions and lineage](design/versions-and-lineage.md).
 - Undo and redo navigate saved entries without appending rows. Preview is read-only. Restore appends an action and keeps all later entries. A new edit clears shortcut redo, but every entry stays available. Committed state survives restart; drafts do not.
 - One workspace: centered photo, collapsible controls, visible history, Fit, numeric zoom and true 100%. No library grid during the editor milestones. Cmd/Ctrl+O imports; Cmd/Ctrl+Z and Shift+Cmd/Ctrl+Z navigate history.
 - Geometry: the visible composition travels with mirror and quarter-turns, and a locked ratio swaps orientation on a quarter-turn. Fine angle is limited to ±45°. Space-drag pans.
@@ -94,6 +94,10 @@ The owner edits local files and syncs them to an external drive, so moved-origin
 | Bracket and panorama identification | Research detection separately; merging is not selected |
 | Confusing export controls | One clear JPEG export path with explicit metadata behavior |
 
+## Presets
+
+The owner asked on 2026-09-23 for presets, with native presets and Lightroom import through a presets module whose apply is a history entry, and for the work to proceed without blocking on questions. It is delivered on the defaults recorded in the [presets design](design/presets.md#decisions-taken-on-defaults), each a proposal the owner reviews: presets as catalog data (format 6), only field-patch actions presettable, `apply-preset` carrying its settings, Lightroom values transferred for the controls Lightwell has and never clamped with RAW Kelvin and tint refused, the section first in the tools panel, and white balance unchecked when creating a preset.
+
 ## Open product questions
 
 Tracked in [product decisions](../tasks/product-decisions.json).
@@ -105,6 +109,7 @@ Tracked in [product decisions](../tasks/product-decisions.json).
 - What is the first external module the owner would use, and what enablement and recovery behavior does it need?
 - For the proposed [Corrections module](design/corrections.md), should AI Remove enter the accepted scope, should a changed RAW source-development prefix require regeneration of a saved AI patch, and should remote-photo consent be per asset or remembered?
 - Which measured workloads and responsiveness budgets become acceptance requirements?
+- Which of the [presets defaults](design/presets.md#decisions-taken-on-defaults) stand, and should RAW white balance import get a calibrated conversion?
 - Which of the [Presence, colour mixer and vignette proposals](design/presence-mixer-vignette.md#proposals-with-recorded-defaults) (section names, stage order, mixer layout, vignette style, JPEG spatial precision, spatial gesture latency, sample cost) stand? Implementation was authorized on 2026-09-22 on the recorded defaults and is delivered; the owner refines the defaults after review, including whether spatial sliders should draft at a bounded resolution now that the measured misses are recorded.
 
 The Basic and histogram product choices were decided on 2026-09-21 and implementation was authorized the same day; see [Basic adjustments and histogram](#basic-adjustments-and-histogram).

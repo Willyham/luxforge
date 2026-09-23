@@ -420,7 +420,7 @@
     {
       "id": "TASK-006",
       "description": "Keep a masked recipe proxy eligible, and handle features thinner than a proxy pixel explicitly rather than silently.",
-      "status": "pending",
+      "status": "completed",
       "dependencies": [
         "TASK-005"
       ],
@@ -851,7 +851,9 @@
       "extra_context": [
         "A phase is not complete without the evidence its claims need, and a skipped check is not a pass. This task is where the phase-A claims become defensible or are reported as misses with figures.",
         "Documentation is current behaviour only: the feature status row, the user guide section and the design's status line change together, with no change log and no planning history.",
-        "The masking design's status line must stop saying that nothing is implemented, and must say exactly what is."
+        "The masking design's status line must stop saying that nothing is implemented, and must say exactly what is.",
+        "An end-to-end masked-drag latency figure could not be taken during the proxy work for two reasons, both this task's to remove: the desktop has no mask control, and an evidence script cannot name a mask an earlier step in the same script created, because mask.create assigns the identity. The script needs a way to carry a created mask's id forward, or to resolve one by the name it was given.",
+        "The catalog is format 6, not 5: this branch and main each bumped to 5 for a different shape (masks here, the preset library there), so the merged shape is neither and a catalog written by either is refused by name."
       ],
       "context_links": [
         {

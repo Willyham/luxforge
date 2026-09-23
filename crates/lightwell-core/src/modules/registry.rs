@@ -3,8 +3,8 @@
 use super::{
     ActionDescriptor, BasicModule, CanvasInteraction, CropModule, EffectDescriptor, EffectStage,
     MAX_COLOR_UNITS, MAX_MASKED_SPATIAL_LAYERS, MixerModule, ModuleDescriptor, PixelModule,
-    PresenceModule, Processing, RawModule, SPATIAL_TILE, Stage, ToolModule, TransformModule,
-    VignetteModule,
+    PresenceModule, PresetsModule, Processing, RawModule, SPATIAL_TILE, Stage, ToolModule,
+    TransformModule, VignetteModule,
 };
 use crate::{
     Error, ErrorKind, Layer, Mask, MaskId, ProxyApproximation, Recipe,
@@ -84,10 +84,12 @@ impl ModuleRegistry {
     }
 
     /// The linked built-in providers. External loading is a later, separately measured step.
+    /// Presets come first: the module owns no layer, and its section leads the tools panel.
     pub fn builtin() -> Self {
         let mut registry = Self::new();
         for module in [
-            Arc::new(PixelModule::new()) as Arc<dyn ToolModule>,
+            Arc::new(PresetsModule::new()) as Arc<dyn ToolModule>,
+            Arc::new(PixelModule::new()),
             Arc::new(RawModule::new()),
             Arc::new(BasicModule::new()),
             Arc::new(PresenceModule::new()),
@@ -937,6 +939,7 @@ pub(crate) mod tests {
                 canvas: None,
                 developer: false,
                 collapsed: false,
+                layout: crate::ModuleLayout::Stacked,
                 availability,
             })
         }
@@ -1032,6 +1035,7 @@ pub(crate) mod tests {
                 canvas: None,
                 developer: false,
                 collapsed: false,
+                layout: crate::ModuleLayout::Stacked,
                 availability: Availability::Available,
             }))
         }
@@ -1190,6 +1194,7 @@ pub(crate) mod tests {
                 canvas: None,
                 developer: false,
                 collapsed: false,
+                layout: crate::ModuleLayout::Stacked,
                 availability: Availability::Available,
             }))
         }
@@ -1269,7 +1274,8 @@ pub(crate) mod tests {
         assert!(registry.action("set-presence").is_some());
         assert!(registry.action("reset-presence").is_some());
         assert!(registry.effect(crate::PRESENCE_EFFECT).is_some());
-        assert_eq!(registry.descriptors().len(), 8);
+        assert!(registry.action("apply-preset").is_some());
+        assert_eq!(registry.descriptors().len(), 9);
         assert!(registry.action("edit.set-pixel").is_none());
 
         for (case, module) in [
@@ -1315,7 +1321,7 @@ pub(crate) mod tests {
         }
         assert_eq!(
             registry.descriptors().len(),
-            8,
+            9,
             "nothing was half-registered"
         );
         assert!(
@@ -1328,7 +1334,32 @@ pub(crate) mod tests {
                 ))
                 .is_ok()
         );
-        assert_eq!(registry.descriptors().len(), 9);
+        assert_eq!(registry.descriptors().len(), 10);
+    }
+
+    /// A module that declares no effects owns no layer and claims no effect identity, so it
+    /// registers like any other and its actions dispatch. The presets module is one.
+    #[test]
+    fn a_module_that_declares_no_effects_registers() {
+        let mut registry = ModuleRegistry::builtin();
+        let (presets, _) = registry.action("apply-preset").expect("the presets module");
+        assert!(presets.descriptor().effects.is_empty());
+        let mut descriptor = TestModule::new(
+            "test.effectless",
+            "test.unused",
+            "test-effectless",
+            Availability::Available,
+        )
+        .0;
+        descriptor.effects.clear();
+        registry
+            .register(TestModule::from_descriptor(descriptor))
+            .expect("a module without effects registers");
+        let (module, _) = registry
+            .action("test-effectless")
+            .expect("its action is dispatched");
+        assert_eq!(module.descriptor().id, "test.effectless");
+        assert!(registry.effect("test.unused").is_none());
     }
 
     /// A module whose canvas claims one mode-strip letter.
@@ -1844,6 +1875,7 @@ pub(crate) mod tests {
             canvas: None,
             developer: false,
             collapsed: false,
+            layout: crate::ModuleLayout::Stacked,
             availability: Availability::Available,
         };
         for stage in [EffectStage::Geometry, EffectStage::Finish] {

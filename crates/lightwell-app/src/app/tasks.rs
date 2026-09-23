@@ -1,17 +1,21 @@
 //! The owner tasks. Every desktop request goes through `call`, which is the same method table the
 //! JSON API dispatches; there is no desktop-only mutation path. Each task takes the narrowest
 //! completion path the performance rules allow.
-use crate::{app::message::Message, state::histogram::Readout};
+use crate::{
+    app::message::{Message, PresetMessage},
+    state::histogram::Readout,
+};
 use iced::Task;
 use lightwell_core::{
     ApiRequest, AssetId, ClientId, ClientSession, ContentPoint, Draft, DraftId, EditorState,
-    EntryId, EventsResult, HistoryEntry, HistoryPage, HistorySelection, Lineage, ModuleDescriptor,
-    Mutation, MutationOutcome, MutationResult, OwnerHandle, PreviewJob, PreviewRequest,
-    ProxyBounds, RecipeDescription, Version,
+    EntryId, ErrorKind, EventsResult, HistoryEntry, HistoryPage, HistorySelection, Lineage,
+    MAX_PRESET_BYTES, ModuleDescriptor, Mutation, MutationOutcome, MutationResult, OwnerHandle,
+    PresetSummary, PreviewJob, PreviewRequest, ProxyBounds, RecipeDescription, Version,
 };
 use serde_json::{Value, json};
 use std::{
-    path::PathBuf,
+    io::Read,
+    path::{Path, PathBuf},
     sync::{
         Arc,
         atomic::{AtomicU64, Ordering},
@@ -75,10 +79,47 @@ pub(crate) struct Upload {
     pub(crate) reason: Option<&'static str>,
 }
 
+/// What one live-refresh poll found. One poll answers both kinds of change: the asset's state is
+/// read back when any event other than a preset one arrived, the preset library when a `preset.*`
+/// event did, and both after a gap in the log, which could have hidden either.
 #[derive(Clone, Debug)]
-pub(crate) enum SyncResult {
-    Unchanged { sequence: u64 },
-    Changed(Box<Refresh>),
+pub(crate) struct SyncResult {
+    pub(crate) sequence: u64,
+    pub(crate) refresh: Option<Box<Refresh>>,
+    /// The listing and the event sequence it was read at.
+    pub(crate) presets: Option<(Vec<PresetSummary>, u64)>,
+}
+
+#[cfg(test)]
+impl SyncResult {
+    /// A poll that saw an asset event and read the state back.
+    pub(crate) fn changed(refresh: Refresh) -> Self {
+        Self {
+            sequence: refresh.sequence,
+            refresh: Some(Box::new(refresh)),
+            presets: None,
+        }
+    }
+}
+
+/// One library call of this desktop's and the listing read right after it, so the section shows
+/// the library the call left behind rather than the one before it.
+#[derive(Clone, Debug)]
+pub(crate) struct PresetChange {
+    /// What the call itself answered.
+    pub(crate) result: Value,
+    pub(crate) presets: Vec<PresetSummary>,
+    pub(crate) sequence: u64,
+}
+
+/// A host method an evidence script called directly, and what it answered.
+#[derive(Clone, Debug)]
+pub(crate) struct HostAnswer {
+    pub(crate) method: String,
+    pub(crate) result: Value,
+    /// The library listed after the call, when the method is one of the library's own.
+    pub(crate) presets: Option<Vec<PresetSummary>>,
+    pub(crate) sequence: u64,
 }
 
 /// Offer a job the display bounds the caller computed, when there are any.
@@ -855,18 +896,288 @@ pub(crate) fn sync_task(
     proxy: Option<ProxyBounds>,
 ) -> Task<Message> {
     Task::perform(
-        async move {
-            let (events, sequence) = call(&owner, client, "events.since", json!({"after":after}))?;
-            let events: EventsResult = parse(events)?;
-            if events.events.is_empty() && !events.gap {
-                Ok(SyncResult::Unchanged { sequence })
-            } else {
-                refresh(&owner, client, asset_id, true, sequence, proxy)
-                    .map(Box::new)
-                    .map(SyncResult::Changed)
-            }
-        },
+        async move { sync_now(&owner, client, asset_id, after, proxy) },
         Message::Synced,
+    )
+}
+
+/// A method whose event changes the preset library rather than an asset.
+fn is_library_event(method: &str) -> bool {
+    method.starts_with("preset.")
+}
+
+/// One poll: the events since `after`, then only the reads they call for. A poll that saw nothing
+/// reads nothing else, and a preset event from another client costs one `preset.list` and no asset
+/// refresh or preview.
+pub(crate) fn sync_now(
+    owner: &OwnerHandle,
+    client: ClientId,
+    asset_id: AssetId,
+    after: u64,
+    proxy: Option<ProxyBounds>,
+) -> Result<SyncResult, String> {
+    let (events, mut sequence) = call(owner, client, "events.since", json!({"after":after}))?;
+    let events: EventsResult = parse(events)?;
+    let library = events.gap
+        || events
+            .events
+            .iter()
+            .any(|event| is_library_event(&event.method));
+    let asset = events.gap
+        || events
+            .events
+            .iter()
+            .any(|event| !is_library_event(&event.method));
+    let presets = if library {
+        let (presets, seen) = list_presets(owner, client)?;
+        sequence = sequence.max(seen);
+        Some((presets, seen))
+    } else {
+        None
+    };
+    let refresh = if asset {
+        let refreshed = refresh(owner, client, asset_id, true, sequence, proxy)?;
+        sequence = sequence.max(refreshed.sequence);
+        Some(Box::new(refreshed))
+    } else {
+        None
+    };
+    Ok(SyncResult {
+        sequence,
+        refresh,
+        presets,
+    })
+}
+
+/// The whole library, as `preset.list` lists it: record reads only, no render and no source.
+pub(crate) fn list_presets(
+    owner: &OwnerHandle,
+    client: ClientId,
+) -> Result<(Vec<PresetSummary>, u64), String> {
+    let (mut listed, sequence) = call(owner, client, "preset.list", json!({}))?;
+    Ok((parse(listed["presets"].take())?, sequence))
+}
+
+/// Load the library, at startup and whenever this desktop needs the listing again.
+pub(crate) fn presets_task(owner: OwnerHandle, client: ClientId) -> Task<Message> {
+    Task::perform(async move { list_presets(&owner, client) }, |result| {
+        Message::Preset(PresetMessage::Listed(result))
+    })
+}
+
+/// One library method and the listing after it.
+fn preset_change(
+    owner: &OwnerHandle,
+    client: ClientId,
+    method: &str,
+    params: Value,
+) -> Result<PresetChange, String> {
+    let (result, sequence) = call(owner, client, method, params)?;
+    let (presets, seen) = list_presets(owner, client)?;
+    Ok(PresetChange {
+        result,
+        presets,
+        sequence: sequence.max(seen),
+    })
+}
+
+/// Capture the checked fields from one entry, store them as a preset and list the library, as one
+/// task: `capture` is the whole `preset.capture` request and `create` the `preset.create` request
+/// the captured settings complete.
+pub(crate) fn preset_create_now(
+    owner: &OwnerHandle,
+    client: ClientId,
+    capture: Value,
+    mut create: Value,
+) -> Result<PresetChange, String> {
+    let (mut captured, _) = call(owner, client, "preset.capture", capture)?;
+    create["settings"] = captured["settings"].take();
+    preset_change(owner, client, "preset.create", create)
+}
+
+pub(crate) fn preset_create_task(
+    owner: OwnerHandle,
+    client: ClientId,
+    capture: Value,
+    create: Value,
+) -> Task<Message> {
+    Task::perform(
+        async move { preset_create_now(&owner, client, capture, create) },
+        |result| Message::Preset(PresetMessage::Created(result.map(Box::new))),
+    )
+}
+
+/// Read one chosen preset file as text, on the task's thread. A file larger than the importer
+/// accepts is refused from its length before a byte is read, the read itself is bounded in case the
+/// file grows meanwhile, and text that is not UTF-8 is refused rather than guessed at.
+pub(crate) fn read_preset_file(path: &Path) -> Result<String, String> {
+    let name = path
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let too_large = |length: u64| {
+        format!(
+            "{}: {name} is {length} bytes; a preset file is at most 1 MiB ({MAX_PRESET_BYTES} bytes)",
+            ErrorKind::ResourceLimit.code()
+        )
+    };
+    let unreadable = |error: std::io::Error| {
+        format!(
+            "{}: cannot read {name}: {error}",
+            ErrorKind::FileAccess.code()
+        )
+    };
+    let file = std::fs::File::open(path).map_err(unreadable)?;
+    let length = file.metadata().map_err(unreadable)?.len();
+    if length > MAX_PRESET_BYTES as u64 {
+        return Err(too_large(length));
+    }
+    let mut bytes = Vec::with_capacity(length as usize);
+    file.take(MAX_PRESET_BYTES as u64 + 1)
+        .read_to_end(&mut bytes)
+        .map_err(unreadable)?;
+    if bytes.len() > MAX_PRESET_BYTES {
+        return Err(too_large(bytes.len() as u64));
+    }
+    String::from_utf8(bytes).map_err(|_| {
+        format!(
+            "{}: {name} is not UTF-8 text",
+            ErrorKind::UnsupportedInput.code()
+        )
+    })
+}
+
+/// Import one preset file: read it here, send its text and name to `preset.import`, and list the
+/// library. The owner thread never touches the file.
+pub(crate) fn preset_import_now(
+    owner: &OwnerHandle,
+    client: ClientId,
+    path: &Path,
+) -> Result<PresetChange, String> {
+    let content = read_preset_file(path)?;
+    let file_name = path
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned());
+    preset_change(
+        owner,
+        client,
+        "preset.import",
+        json!({"content": content, "file_name": file_name, "actor": ACTOR}),
+    )
+}
+
+pub(crate) fn preset_import_task(
+    owner: OwnerHandle,
+    client: ClientId,
+    path: PathBuf,
+) -> Task<Message> {
+    Task::perform(
+        async move { preset_import_now(&owner, client, &path) },
+        |result| Message::Preset(PresetMessage::Imported(result.map(Box::new))),
+    )
+}
+
+pub(crate) fn preset_delete_now(
+    owner: &OwnerHandle,
+    client: ClientId,
+    id: &str,
+) -> Result<PresetChange, String> {
+    preset_change(owner, client, "preset.delete", json!({"preset_id": id}))
+}
+
+pub(crate) fn preset_delete_task(
+    owner: OwnerHandle,
+    client: ClientId,
+    id: String,
+) -> Task<Message> {
+    Task::perform(
+        async move { preset_delete_now(&owner, client, &id) },
+        |result| Message::Preset(PresetMessage::Deleted(result.map(Box::new))),
+    )
+}
+
+/// One imported preset's whole import report, as the text Copy puts on the clipboard.
+pub(crate) fn preset_report_task(
+    owner: OwnerHandle,
+    client: ClientId,
+    id: String,
+) -> Task<Message> {
+    Task::perform(
+        async move {
+            let (read, _) = call(&owner, client, "preset.read", json!({"preset_id": id}))?;
+            serde_json::to_string_pretty(&read["preset"]["report"])
+                .map_err(|error| error.to_string())
+        },
+        |result| Message::Preset(PresetMessage::ReportRead(result)),
+    )
+}
+
+/// Export one preset: `preset.export` writes the document, the native save dialog chooses where,
+/// suggesting the document's own file name, and the file is written here once the dialog has
+/// answered. Replacing an existing file is the dialog's own question; nothing is written without
+/// it, and a cancelled dialog writes nothing.
+pub(crate) fn preset_export_task(
+    owner: OwnerHandle,
+    client: ClientId,
+    id: String,
+) -> Task<Message> {
+    Task::perform(
+        async move {
+            let (exported, _) = call(&owner, client, "preset.export", json!({"preset_id": id}))?;
+            let file_name = exported["file_name"]
+                .as_str()
+                .ok_or("preset.export returned no file name")?
+                .to_owned();
+            let content = exported["content"]
+                .as_str()
+                .ok_or("preset.export returned no content")?
+                .to_owned();
+            let Some(file) = rfd::AsyncFileDialog::new()
+                .set_file_name(&file_name)
+                .add_filter("Lightwell preset", &["lwpreset"])
+                .save_file()
+                .await
+            else {
+                return Ok(None);
+            };
+            std::fs::write(file.path(), content).map_err(|error| {
+                format!(
+                    "{}: cannot write {}: {error}",
+                    ErrorKind::FileAccess.code(),
+                    file.file_name()
+                )
+            })?;
+            Ok(Some(file.file_name()))
+        },
+        |result| Message::Preset(PresetMessage::Exported(result)),
+    )
+}
+
+/// One host method as an evidence script names it, with the library listed after it when the
+/// method is one of the library's own, exactly as the section refreshes after its own calls.
+pub(crate) fn host_task(
+    owner: OwnerHandle,
+    client: ClientId,
+    method: String,
+    params: Value,
+) -> Task<Message> {
+    Task::perform(
+        async move {
+            let (result, sequence) = call(&owner, client, &method, params)?;
+            let (presets, sequence) = if is_library_event(&method) {
+                let (presets, seen) = list_presets(&owner, client)?;
+                (Some(presets), sequence.max(seen))
+            } else {
+                (None, sequence)
+            };
+            Ok(HostAnswer {
+                method,
+                result,
+                presets,
+                sequence,
+            })
+        },
+        |result| Message::HostAnswered(result.map(Box::new)),
     )
 }
 

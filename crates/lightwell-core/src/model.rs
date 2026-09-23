@@ -101,6 +101,7 @@ identifier!(SnapshotId, "snapshot-");
 identifier!(EntryId, "entry-");
 identifier!(DraftId, "draft-");
 identifier!(JobId, "job-");
+identifier!(PresetId, "preset-");
 identifier!(MaskId, "mask-");
 identifier!(ComponentId, "component-");
 
@@ -626,6 +627,17 @@ impl Snapshot {
             id: SnapshotId::new(),
             asset_id: self.asset_id.clone(),
             recipe: self.recipe.with_layer_replaced(layer)?,
+        })
+    }
+    /// A new snapshot of the same asset holding this stack, which the host resolved from this one:
+    /// the result of one plan or of every step of a composite. Earlier snapshots keep their own
+    /// recipe, so history stays immutable.
+    pub fn with_recipe(&self, recipe: Recipe) -> Result<Self, Error> {
+        recipe.validate()?;
+        Ok(Self {
+            id: SnapshotId::new(),
+            asset_id: self.asset_id.clone(),
+            recipe,
         })
     }
 }

@@ -15,12 +15,12 @@ const PAGES: [(&str, usize, usize); 10] = [
     ("Actions and history", 9, 19),
     ("Notices and menus", 19, 25),
     ("Histogram and typography", 25, 38),
-    ("Rails and number fields", 38, 47),
-    ("Toggles, choices and swatches", 47, 56),
-    ("Colour picker", 56, 59),
-    ("Curve points", 59, 61),
-    ("Curve channels", 61, 63),
-    ("Named vector icons", 63, 64),
+    ("Rails and number fields", 38, 48),
+    ("Toggles, choices and swatches", 48, 57),
+    ("Colour picker", 57, 60),
+    ("Curve points", 60, 62),
+    ("Curve channels, named vector icons and Basic", 62, 66),
+    ("Module panels", 66, 74),
 ];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

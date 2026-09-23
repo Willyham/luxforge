@@ -1,42 +1,12 @@
 //! Pure geometry for the slider widget.
 //!
-//! Iced's slider draws its rail as exactly two quads, split at the handle. To grow a fill from a
-//! zero tick that generally sits somewhere other than the handle, one of those two quads needs a
-//! second, internal split. These functions compute that geometry as plain fractions with no
-//! dependency on layout, pixels or a renderer, so they are tested here directly; [`crate::theme`]
-//! turns the result into the [`iced::widget::slider::Style`] the widget actually draws.
-
-/// Whether a rail segment is empty (no fill) or filled, at a point along the rail.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Fill {
-    /// No fill: the plain rail colour.
-    Empty,
-    /// Filled: the portion between the zero tick and the current value.
-    Filled,
-}
-
-/// The fill of one rail segment (the half of the rail to one side of the handle).
-///
-/// `Split`'s `at` is a fraction local to the segment: `0.0` at the end of the segment nearest the
-/// rail's minimum, `1.0` at the end nearest its maximum. `before` fills `0.0..at`, `after` fills
-/// `at..1.0`.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub enum Segment {
-    /// The whole segment has one fill.
-    Solid(Fill),
-    /// The segment has a hard edge at `at`.
-    Split { at: f64, before: Fill, after: Fill },
-}
-
-/// The rail's two background segments, split at the handle, exactly as
-/// [`iced::widget::slider`] draws `Rail::backgrounds`.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct FillStops {
-    /// The segment from the rail's minimum end to the handle.
-    pub left: Segment,
-    /// The segment from the handle to the rail's maximum end.
-    pub right: Segment,
-}
+//! The slider row draws its own rail line: the plain or decorated rail, the fill from the zero
+//! tick (or from the rail's start, for a unipolar slider) to the handle's centre, and the zero
+//! tick, all under Iced's handle. Iced places the handle's centre at `radius + (width - 2 *
+//! radius) * fraction`; [`rail_geometry`] computes every other position on the same scale, in
+//! points from the rail's left edge, so the fill always meets the handle and the tick always sits
+//! where the handle rests at zero. These functions have no dependency on a renderer and are
+//! tested here directly.
 
 /// The side of a soft rail that contains a valid hard-range value.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -64,69 +34,93 @@ pub fn fraction_from_value(min: f64, max: f64, value: f64) -> f64 {
     ((value - min) / (max - min)).clamp(0.0, 1.0)
 }
 
-/// Evenly spaced colour-stop positions, including both endpoints.
-pub fn rail_stop_positions(count: usize) -> Vec<f32> {
-    match count {
-        0 => Vec::new(),
-        1 => vec![0.0],
-        count => (0..count).map(|i| i as f32 / (count - 1) as f32).collect(),
-    }
-}
-
-/// Computes the rail fill geometry for a slider spanning `min..=max`, currently at `value`, whose
-/// fill grows from `zero` (or from `min` when `zero` is `None`, for a unipolar slider).
-///
-/// Values outside `min..=max` are clamped, matching the slider widget's own clamping of `value`
-/// and `on_change` results.
-pub fn fill_stops(min: f64, max: f64, zero: Option<f64>, value: f64) -> FillStops {
-    if max <= min {
-        return FillStops {
-            left: Segment::Solid(Fill::Empty),
-            right: Segment::Solid(Fill::Empty),
-        };
-    }
-
-    let fraction = |v: f64| (v.clamp(min, max) - min) / (max - min);
-    let value_frac = fraction(value);
-    let zero_frac = zero.map_or(0.0, fraction);
-
-    if value_frac >= zero_frac {
-        // The fill spans [zero, value], entirely inside the left segment (min..handle).
-        let left = if value_frac <= 0.0 {
-            Segment::Solid(Fill::Empty)
-        } else {
-            split_or_solid(zero_frac / value_frac, Fill::Empty, Fill::Filled)
-        };
-        FillStops {
-            left,
-            right: Segment::Solid(Fill::Empty),
-        }
-    } else {
-        // The fill spans [value, zero], entirely inside the right segment (handle..max).
-        let span = 1.0 - value_frac;
-        let at = if span <= 0.0 {
-            1.0
-        } else {
-            (zero_frac - value_frac) / span
-        };
-        let right = split_or_solid(at, Fill::Filled, Fill::Empty);
-        FillStops {
-            left: Segment::Solid(Fill::Empty),
-            right,
+/// The colour a declared colour rail shows at `t` of its length: the stops evenly spaced along it
+/// and mixed in sRGB, as the module references draw a gradient, rather than in the linear light
+/// Iced's own gradient interpolates in (which lightens every midpoint). Channels are sRGB values
+/// in `0.0..=1.0`.
+pub fn rail_colour_at(stops: &[[f32; 3]], t: f32) -> [f32; 3] {
+    match stops {
+        [] => [0.0; 3],
+        [only] => *only,
+        _ => {
+            let span = (stops.len() - 1) as f32;
+            let position = t.clamp(0.0, 1.0) * span;
+            let index = (position.floor() as usize).min(stops.len() - 2);
+            let local = position - index as f32;
+            let (from, to) = (stops[index], stops[index + 1]);
+            std::array::from_fn(|channel| from[channel] + (to[channel] - from[channel]) * local)
         }
     }
 }
 
-/// Builds a [`Segment`], collapsing to `Solid` when the split falls at or beyond either end.
-fn split_or_solid(at: f64, before: Fill, after: Fill) -> Segment {
-    let at = at.clamp(0.0, 1.0);
-    if at <= 0.0 {
-        Segment::Solid(after)
-    } else if at >= 1.0 {
-        Segment::Solid(before)
-    } else {
-        Segment::Split { at, before, after }
+/// `colour` laid over `background` at `opacity`, mixed in sRGB as the references composite it.
+/// Iced would blend a translucent fill in linear light, which renders it brighter, so a widget
+/// that needs the reference's result draws this opaque colour instead.
+pub fn over(colour: [f32; 3], background: [f32; 3], opacity: f32) -> [f32; 3] {
+    std::array::from_fn(|channel| {
+        background[channel] + (colour[channel] - background[channel]) * opacity
+    })
+}
+
+/// The fractions at which a colour rail `width` points long is cut into pieces no longer than
+/// `piece` points, both ends included. Each piece is drawn as a two-stop gradient between the
+/// exact colours at its ends, so the rail follows [`rail_colour_at`] to well under one 8-bit code
+/// while Iced draws only a handful of gradients.
+pub fn rail_pieces(width: f32, piece: f32) -> Vec<f32> {
+    if width <= 0.0 || piece <= 0.0 {
+        return vec![0.0, 1.0];
     }
+    let count = (width / piece).ceil().max(1.0) as usize;
+    (0..=count).map(|i| i as f32 / count as f32).collect()
+}
+
+/// Where Iced draws a slider handle's centre, in points from the rail's left edge, for a rail
+/// `width` wide whose round handle has `radius`, at `fraction` of the rail.
+pub fn handle_center(width: f32, radius: f32, fraction: f64) -> f32 {
+    radius + (width - 2.0 * radius).max(0.0) * fraction.clamp(0.0, 1.0) as f32
+}
+
+/// The zero tick's rail fraction for a slider whose fill grows from `zero`, or `None` for a
+/// unipolar slider: one with no zero, or a zero at either end of the rail (a fill from the minimum
+/// has no midpoint to mark).
+pub fn zero_fraction(min: f64, max: f64, zero: Option<f64>) -> Option<f64> {
+    zero.filter(|zero| *zero > min && *zero < max)
+        .map(|zero| fraction_from_value(min, max, zero))
+}
+
+/// What one rail line draws, in points from the rail's left edge.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct RailGeometry {
+    /// The handle's centre.
+    pub handle: f32,
+    /// The filled span `(from, to)`, `from <= to`, or `None` when nothing is filled.
+    pub fill: Option<(f32, f32)>,
+    /// The zero tick's centre, for a slider with a zero inside its rail.
+    pub tick: Option<f32>,
+}
+
+/// The rail geometry of a slider whose value sits at `value` of its rail and whose fill grows
+/// from `zero` of its rail, or from the rail's start (unipolar, no tick) when `zero` is `None`.
+/// Both are rail fractions; the caller maps declared values to them.
+pub fn rail_geometry(width: f32, radius: f32, value: f64, zero: Option<f64>) -> RailGeometry {
+    let handle = handle_center(width, radius, value);
+    let tick = zero.map(|zero| handle_center(width, radius, zero));
+    let from = tick.unwrap_or(0.0);
+    let fill = if (handle - from).abs() < f32::EPSILON {
+        None
+    } else {
+        Some((from.min(handle), from.max(handle)))
+    };
+    RailGeometry { handle, fill, tick }
+}
+
+/// The clip `(x, y, width, height)` a rail line `width` × `height` points draws into, relative to
+/// its own origin: the line itself, grown above and below to hold a halo of `halo_radius` centred
+/// on it when the halo is taller than the line. Only the drawing reaches past the line; its layout
+/// does not.
+pub fn rail_clip(width: f32, height: f32, halo_radius: f32) -> (f32, f32, f32, f32) {
+    let reach = (halo_radius - height / 2.0).max(0.0);
+    (0.0, -reach, width, height + 2.0 * reach)
 }
 
 /// Maps a pointer fraction along the rail (`0.0` at `min`, `1.0` at `max`) to a value, snapped to
@@ -202,66 +196,54 @@ mod tests {
     use super::*;
 
     #[test]
-    fn bipolar_positive_fills_left_segment_from_zero() {
-        let stops = fill_stops(-100.0, 100.0, Some(0.0), 62.0);
-        assert_eq!(stops.right, Segment::Solid(Fill::Empty));
-        match stops.left {
-            Segment::Split { at, before, after } => {
-                assert!((at - (0.5 / 0.81)).abs() < 1e-9);
-                assert_eq!(before, Fill::Empty);
-                assert_eq!(after, Fill::Filled);
-            }
-            other => panic!("expected a split left segment, got {other:?}"),
-        }
+    fn the_handle_travels_inside_its_own_radius() {
+        assert_eq!(handle_center(276.0, 7.0, 0.0), 7.0);
+        assert_eq!(handle_center(276.0, 7.0, 1.0), 269.0);
+        assert_eq!(handle_center(276.0, 7.0, 0.5), 138.0);
+        assert_eq!(handle_center(276.0, 7.0, 2.0), 269.0, "clamped to the rail");
+    }
+
+    /// The 18 pt halo reaches 3 pt above and below the 12 pt rail line; a line taller than the
+    /// halo keeps its own bounds.
+    #[test]
+    fn the_rail_clip_holds_the_halo_centred_on_the_line() {
+        assert_eq!(rail_clip(160.0, 12.0, 9.0), (0.0, -3.0, 160.0, 18.0));
+        assert_eq!(rail_clip(160.0, 24.0, 9.0), (0.0, 0.0, 160.0, 24.0));
     }
 
     #[test]
-    fn bipolar_negative_fills_right_segment_up_to_zero() {
-        let stops = fill_stops(-100.0, 100.0, Some(0.0), -40.0);
-        assert_eq!(stops.left, Segment::Solid(Fill::Empty));
-        match stops.right {
-            Segment::Split { at, before, after } => {
-                assert!((at - (0.2 / 0.7)).abs() < 1e-9);
-                assert_eq!(before, Fill::Filled);
-                assert_eq!(after, Fill::Empty);
-            }
-            other => panic!("expected a split right segment, got {other:?}"),
-        }
+    fn bipolar_fill_runs_from_the_tick_to_the_handle_on_either_side() {
+        let up = rail_geometry(276.0, 7.0, 0.81, Some(0.5));
+        assert_eq!(up.tick, Some(138.0));
+        assert_eq!(up.fill, Some((138.0, handle_center(276.0, 7.0, 0.81))));
+        let down = rail_geometry(276.0, 7.0, 0.3, Some(0.5));
+        assert_eq!(down.fill, Some((handle_center(276.0, 7.0, 0.3), 138.0)));
     }
 
     #[test]
-    fn value_at_zero_has_no_fill() {
-        let stops = fill_stops(-100.0, 100.0, Some(0.0), 0.0);
-        assert_eq!(stops.left, Segment::Solid(Fill::Empty));
-        assert_eq!(stops.right, Segment::Solid(Fill::Empty));
+    fn value_at_zero_has_a_tick_and_no_fill() {
+        let rail = rail_geometry(276.0, 7.0, 0.5, Some(0.5));
+        assert_eq!(rail.fill, None);
+        assert_eq!(rail.tick, Some(rail.handle));
     }
 
     #[test]
-    fn unipolar_fills_from_the_minimum() {
-        let stops = fill_stops(0.0, 100.0, None, 40.0);
-        assert_eq!(stops.left, Segment::Solid(Fill::Filled));
-        assert_eq!(stops.right, Segment::Solid(Fill::Empty));
+    fn only_a_zero_inside_the_rail_draws_a_tick() {
+        assert_eq!(zero_fraction(-100.0, 100.0, Some(0.0)), Some(0.5));
+        assert_eq!(
+            zero_fraction(0.0, 100.0, Some(0.0)),
+            None,
+            "unipolar from the minimum"
+        );
+        assert_eq!(zero_fraction(0.0, 100.0, Some(100.0)), None);
+        assert_eq!(zero_fraction(0.0, 100.0, None), None);
     }
 
     #[test]
-    fn unipolar_at_minimum_has_no_fill() {
-        let stops = fill_stops(0.0, 100.0, None, 0.0);
-        assert_eq!(stops.left, Segment::Solid(Fill::Empty));
-        assert_eq!(stops.right, Segment::Solid(Fill::Empty));
-    }
-
-    #[test]
-    fn zero_outside_range_clamps_to_the_nearest_end() {
-        // A zero tick above the range behaves like a unipolar slider filling from the minimum.
-        let stops = fill_stops(10.0, 100.0, Some(0.0), 40.0);
-        assert_eq!(stops.left, Segment::Solid(Fill::Filled));
-    }
-
-    #[test]
-    fn degenerate_range_is_a_solid_empty_rail() {
-        let stops = fill_stops(5.0, 5.0, Some(0.0), 5.0);
-        assert_eq!(stops.left, Segment::Solid(Fill::Empty));
-        assert_eq!(stops.right, Segment::Solid(Fill::Empty));
+    fn unipolar_fills_from_the_rail_start_without_a_tick() {
+        let rail = rail_geometry(276.0, 7.0, 0.5, None);
+        assert_eq!(rail.tick, None);
+        assert_eq!(rail.fill, Some((0.0, 138.0)));
     }
 
     #[test]
@@ -290,11 +272,54 @@ mod tests {
         assert_eq!(fraction_from_value(-2.0, 2.0, 3.0), 1.0);
     }
 
+    fn codes(colour: [f32; 3]) -> [u8; 3] {
+        colour.map(|channel| (channel * 255.0).round() as u8)
+    }
+
+    fn unit(colour: [u8; 3]) -> [f32; 3] {
+        colour.map(|channel| f32::from(channel) / 255.0)
+    }
+
     #[test]
-    fn rail_stops_span_the_full_rail() {
-        assert_eq!(rail_stop_positions(0), Vec::<f32>::new());
-        assert_eq!(rail_stop_positions(1), vec![0.0]);
-        assert_eq!(rail_stop_positions(4), vec![0.0, 1.0 / 3.0, 2.0 / 3.0, 1.0]);
+    fn a_colour_rail_mixes_its_evenly_spaced_stops_in_srgb() {
+        let stops = [unit([255, 0, 255]), unit([255, 0, 0]), unit([255, 128, 0])];
+        assert_eq!(codes(rail_colour_at(&stops, 0.0)), [255, 0, 255]);
+        assert_eq!(codes(rail_colour_at(&stops, 0.5)), [255, 0, 0]);
+        assert_eq!(codes(rail_colour_at(&stops, 1.0)), [255, 128, 0]);
+        // A fifth of the way along the second half: sRGB 0.4 × 128, not linear light's 83.
+        assert_eq!(codes(rail_colour_at(&stops, 0.7)), [255, 51, 0]);
+        assert_eq!(codes(rail_colour_at(&[], 0.3)), [0, 0, 0]);
+        assert_eq!(codes(rail_colour_at(&stops[..1], 0.3)), [255, 0, 255]);
+    }
+
+    /// Sampled from colour-mixer.png's Red hue, Red saturation and Red luminance rails: the declared
+    /// stops mixed in sRGB and laid over the panel at 85%, to within two 8-bit codes.
+    #[test]
+    fn colour_rails_match_the_mixer_reference_samples() {
+        let panel = unit([0x20, 0x20, 0x23]);
+        let drawn = |stops: &[[u8; 3]], t: f32| {
+            let stops: Vec<[f32; 3]> = stops.iter().copied().map(unit).collect();
+            codes(over(rail_colour_at(&stops, t), panel, 0.85))
+        };
+        let close = |a: [u8; 3], b: [u8; 3]| a.iter().zip(b).all(|(a, b)| a.abs_diff(b) <= 2);
+        let hue = [[255, 0, 255], [255, 0, 0], [255, 128, 0]];
+        assert!(close(drawn(&hue, 0.2), [221, 5, 134]));
+        assert!(close(drawn(&hue, 0.8), [222, 69, 5]));
+        let saturation = [[128, 128, 128], [255, 0, 0]];
+        assert!(close(drawn(&saturation, 0.0), [114, 113, 114]));
+        assert!(close(drawn(&saturation, 0.3), [146, 81, 81]));
+        let luminance = [[63, 0, 0], [255, 0, 0], [255, 153, 153]];
+        assert!(close(drawn(&luminance, 0.2), [125, 5, 5]));
+        assert!(close(drawn(&luminance, 0.8), [222, 82, 83]));
+    }
+
+    #[test]
+    fn a_rail_is_cut_into_pieces_no_longer_than_asked() {
+        assert_eq!(rail_pieces(16.0, 8.0), vec![0.0, 0.5, 1.0]);
+        let pieces = rail_pieces(276.0, 8.0);
+        assert_eq!(pieces.len(), 36);
+        assert_eq!((pieces[0], pieces[35]), (0.0, 1.0));
+        assert_eq!(rail_pieces(0.0, 8.0), vec![0.0, 1.0]);
     }
 
     /// The exact complaint this exists for: iced's own snapping to a 0.01 step lands next to the

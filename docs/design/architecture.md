@@ -4,7 +4,7 @@ One application service, used by the desktop UI and by external clients alike, o
 
 ## Workspace
 
-Rust 1.94 workspace: Iced 0.14 on wgpu, `image` for JPEG and PNG, `moxcms` for conservative sRGB profile recognition, `rfd` for native and portal dialogs, pinned bundled LibRaw/librtprocess behind the private `lightwell-raw` adapter, bundled SQLite through `rusqlite`, Rayon for the parallel raster pass. Exact versions are pinned in `Cargo.lock`.
+Rust 1.94 workspace: Iced 0.14 on wgpu, `image` for JPEG and PNG, `moxcms` for conservative sRGB profile recognition, `rfd` for native and portal dialogs, pinned bundled LibRaw/librtprocess behind the private `lightwell-raw` adapter, bundled SQLite through `rusqlite`, Rayon for the parallel raster pass, `roxmltree` for Lightroom XMP presets. Exact versions are pinned in `Cargo.lock`.
 
 - `crates/lightwell-core`: images, recipes, rendering, SQLite catalog and history, preview scheduling, JSON API.
 - `crates/lightwell-ui`: the widget library and theme tokens of the Develop workspace; depends on Iced only, never on the core, so a widget cannot hold editing logic.
@@ -35,7 +35,7 @@ A mask is a host object beside the layers — an ordered list of components with
 
 ## Persistence
 
-Local SQLite holds current state, action entries with their snapshots, a monotonic revision, redo navigation and request results, written atomically in short transactions with an internal format marker. Originals and disposable pixel caches stay outside the database. A failed write preserves the prior durable state. Entry records are the only stored copy of a stack (catalog format 5). Only the current catalog and payload shapes are supported; unsupported formats fail explicitly without rewriting data. Every history entry is retained: undo and redo navigate without adding inverse rows, and Restore copies a snapshot into a new action. Versions are named references to entries and lineage follows the stored undo-parent column; see [versions and lineage](versions-and-lineage.md). Reopen recovers the same IDs, current snapshot and navigation state. Backups need a consistent SQLite snapshot, not a copy of a live file. Unknown payloads and missing providers are retained and reported, never dropped.
+Local SQLite holds current state, action entries with their snapshots, a monotonic revision, redo navigation and request results, written atomically in short transactions with an internal format marker. Originals and disposable pixel caches stay outside the database. A failed write preserves the prior durable state. Entry records are the only stored copy of a stack (catalog format 6). Only the current catalog and payload shapes are supported; unsupported formats fail explicitly without rewriting data. Every history entry is retained: undo and redo navigate without adding inverse rows, and Restore copies a snapshot into a new action. Versions are named references to entries and lineage follows the stored undo-parent column; see [versions and lineage](versions-and-lineage.md). The preset library is a table of named settings sets beside them, not tied to any asset; see [presets](presets.md#library). Reopen recovers the same IDs, current snapshot and navigation state. Backups need a consistent SQLite snapshot, not a copy of a live file. Unknown payloads and missing providers are retained and reported, never dropped.
 
 ## Rendering and limits
 

@@ -102,6 +102,7 @@ pub(crate) fn gallery_components() -> Vec<Element<'static, ()>> {
             increment_enabled: true,
             decrement_tooltip: "Decrease".into(),
             increment_tooltip: "Increase".into(),
+            rail: None,
         },
         (),
         (),
@@ -109,6 +110,7 @@ pub(crate) fn gallery_components() -> Vec<Element<'static, ()>> {
         |_| (),
         (),
         (),
+        None,
     ));
     states.push(stepper(
         &StepperModel {
@@ -117,6 +119,7 @@ pub(crate) fn gallery_components() -> Vec<Element<'static, ()>> {
             increment_enabled: false,
             decrement_tooltip: "Decrease".into(),
             increment_tooltip: "Increase".into(),
+            rail: None,
         },
         (),
         (),
@@ -124,6 +127,40 @@ pub(crate) fn gallery_components() -> Vec<Element<'static, ()>> {
         |_| (),
         (),
         (),
+        None,
+    ));
+    // The angle as crop-and-straighten.png draws it while drafting: minus, the rail with its
+    // accent handle in its halo, plus, and the value with its symbol unit in the box.
+    states.push(stepper(
+        &StepperModel {
+            field: NumberFieldModel {
+                label: String::new(),
+                display: "2.4".into(),
+                ..field("Angle", ValueEdit::Display, true)
+            },
+            decrement_enabled: true,
+            increment_enabled: true,
+            decrement_tooltip: "\u{2212}0.5\u{b0}".into(),
+            increment_tooltip: "+0.5\u{b0}".into(),
+            rail: Some(StepperRail {
+                soft_min: -45.0,
+                soft_max: 45.0,
+                value: 2.4,
+                step: 0.05,
+                zero: Some(0.0),
+                dragging: true,
+            }),
+        },
+        (),
+        (),
+        (),
+        |_| (),
+        (),
+        (),
+        Some(StepperRailMessages {
+            on_change: Box::new(|_| ()),
+            on_release: (),
+        }),
     ));
     for (on, enabled) in [(false, true), (true, true), (true, false)] {
         states.push(toggle(
@@ -246,47 +283,26 @@ pub(crate) fn gallery_components() -> Vec<Element<'static, ()>> {
         },
         |_| (),
     ));
-    let mut icons = iced::widget::column![].spacing(6.0);
-    for name in [
-        "rotate-left",
-        "rotate-right",
-        "flip",
-        "mirror",
-        "crop",
-        "picker",
-        "reset",
-        "plus",
-        "minus",
-        "lock",
-        "swap",
-        "guide",
-        "pointer",
-        "versions",
-        "undo",
-        "redo",
-        "before",
-        "after",
-        "clipping",
-        "shadow-clipping",
-        "highlight-clipping",
-        "state-panel",
-        "tools-panel",
-        "chevron-down",
-        "chevron-right",
-    ] {
-        let symbol = Icon::from_name(name).expect("named gallery icon");
-        icons = icons.push(
-            iced::widget::row![
-                iced::widget::text(name)
-                    .size(theme::SIZE_CAPTION)
-                    .width(180.0),
-                icon::<()>(symbol, 12.0, theme::TEXT_PRIMARY),
-                icon::<()>(symbol, 16.0, theme::TEXT_PRIMARY),
-            ]
-            .spacing(12.0)
-            .align_y(iced::Alignment::Center),
-        );
+    // The icons in two columns, so the whole board fits one gallery page beside a curve.
+    let half = Icon::NAMED.len().div_ceil(2);
+    let mut columns = iced::widget::row![].spacing(24.0);
+    for chunk in Icon::NAMED.chunks(half) {
+        let mut icons = iced::widget::column![].spacing(6.0);
+        for &(name, symbol) in chunk {
+            icons = icons.push(
+                iced::widget::row![
+                    iced::widget::text(name)
+                        .size(theme::SIZE_CAPTION)
+                        .width(120.0),
+                    icon::<()>(symbol, 12.0, theme::TEXT_PRIMARY),
+                    icon::<()>(symbol, 16.0, theme::TEXT_PRIMARY),
+                ]
+                .spacing(12.0)
+                .align_y(iced::Alignment::Center),
+            );
+        }
+        columns = columns.push(icons);
     }
-    states.push(icons.into());
+    states.push(columns.into());
     states
 }

@@ -4,7 +4,7 @@ use crate::{
     app::{
         Editor,
         evidence::Settle,
-        fields::number_text,
+        fields::{decimals_of, number_text},
         message::{CropMessage, CropPointer, Message},
         tasks::{crop_preview_task, mutation},
     },
@@ -13,10 +13,15 @@ use crate::{
 };
 use iced::{Task, widget::operation};
 use lightwell_core::{CropPayload, CropStage, LayerId, MAX_ANGLE, MIN_ANGLE, POINTER_MODE};
+use lightwell_ui::geometry::{quantize, value_from_fraction};
 use serde_json::{Value, json};
 
 /// How far one nudge button moves the straightening angle, in degrees.
 pub(crate) const ANGLE_STEP: f64 = 0.5;
+/// How finely a drag on the angle's rail moves the angle: the fine nudge (Option with an arrow),
+/// a tenth of [`ANGLE_STEP`], so the rail reaches exactly the angles the keyboard does. The crop
+/// descriptor declares no step or precision for its angle, so this is the host's own.
+pub(crate) const ANGLE_RAIL_STEP: f64 = ANGLE_STEP / 10.0;
 /// The scrollable around the photo, so a Space drag can scroll it while drafting a crop.
 pub(crate) const SURFACE_ID: &str = "lightwell.surface";
 
@@ -75,12 +80,34 @@ impl Editor {
                 }
             }
             CropMessage::AngleText(text) => self.crop_angle = text,
+            // A drag on the angle's rail: the fraction becomes an angle on the rail's step and the
+            // draft follows it, rectangle and all, but a move logs nothing. The release is the one
+            // draft change, as a frame gesture's end is.
+            CropMessage::AngleRail(fraction) => {
+                let Some(draft) = &mut self.crop else {
+                    return Task::none();
+                };
+                let angle = value_from_fraction(MIN_ANGLE, MAX_ANGLE, ANGLE_RAIL_STEP, fraction);
+                draft.set_angle(quantize(
+                    angle,
+                    MIN_ANGLE,
+                    MAX_ANGLE,
+                    ANGLE_RAIL_STEP,
+                    decimals_of(ANGLE_RAIL_STEP),
+                ));
+                self.crop_angle = number_text(draft.stage.angle);
+            }
+            CropMessage::AngleRailReleased => self.crop_changed("crop_draft_changed"),
             CropMessage::SubmitAngle => {
+                // Text that is not a number stays open for correcting; a number closes the box.
                 let Ok(value) = self.crop_angle.trim().parse::<f64>() else {
                     self.status =
                         format!("Angle must be a number from {MIN_ANGLE} to {MAX_ANGLE} degrees");
                     return Task::none();
                 };
+                if self.editing_angle() {
+                    self.editing = None;
+                }
                 if let Some(draft) = &mut self.crop {
                     draft.set_angle(value);
                 }
@@ -248,6 +275,15 @@ impl Editor {
         self.event(event, summary);
     }
 
+    /// The crop angle's box is open for typing.
+    fn editing_angle(&self) -> bool {
+        crop_frame(&self.modules).is_some_and(|frame| {
+            self.editing.as_ref().is_some_and(|(action, parameter)| {
+                action == frame.action && parameter == frame.angle
+            })
+        })
+    }
+
     /// Drop the draft and the extra texture it displayed. Ending a draft by any route — Apply,
     /// Cancel or a scripted `draft.cancel`/`draft.apply` — returns the session to pointer.
     pub(crate) fn end_draft(&mut self) {
@@ -257,6 +293,9 @@ impl Editor {
         self.draft_generation = None;
         self.crop_applying = None;
         self.crop_guide = false;
+        if self.editing_angle() {
+            self.editing = None;
+        }
         self.mode_sync = Some(POINTER_MODE.into());
     }
 
@@ -374,6 +413,61 @@ mod tests {
             payload.output_rect(&reopened).expect("a valid payload")
         );
         assert_eq!(editor.snapshot()["crop"]["layer_index"], json!(1));
+        finish(editor, catalog);
+    }
+
+    /// The angle's rail is a continuous gesture on the draft: every move follows the rail on its
+    /// step and refits the rectangle, only the release logs a draft change, and nothing commits.
+    #[test]
+    fn a_drag_on_the_angle_rail_drafts_the_angle_and_logs_once_on_release() {
+        let (mut editor, catalog, _, _) =
+            opened(vec![lightwell_core::Layer::pixel(0, 0, [9, 9, 9])], 2);
+        let _ = editor.update(Message::Crop(CropMessage::Start));
+        editor.open_draft(stage());
+        let log = crate::app::testing::attach_log(&mut editor);
+        // 2.4° is 47.4 of the rail's 90°; a fraction a hair off it snaps to the rail's 0.05° step.
+        for fraction in [0.6, 0.5 + 2.4 / 90.0 + 1e-4] {
+            let _ = editor.update(Message::Crop(CropMessage::AngleRail(fraction)));
+        }
+        let draft = editor.crop.as_ref().expect("the draft stays open");
+        assert_eq!(draft.stage.angle, 2.4);
+        assert_eq!(editor.crop_angle, "2.4");
+        let rect = draft.rect;
+        let _ = editor.update(Message::Crop(CropMessage::AngleRailReleased));
+        assert_eq!(editor.crop.as_ref().expect("still drafting").rect, rect);
+        assert_eq!(editor.state.as_ref().expect("a state").revision, 2);
+        let changes: Vec<Value> = crate::app::testing::logged(&mut editor, &log)
+            .into_iter()
+            .filter(|record| record["event"] == "crop_draft_changed")
+            .collect();
+        assert_eq!(changes.len(), 1, "one draft change, at the release");
+        assert_eq!(changes[0]["detail"]["angle"], json!(2.4));
+        finish(editor, catalog);
+    }
+
+    /// The angle's box shows the angle with its unit until it is pressed; a submitted number closes
+    /// it again, and text that is not a number keeps it open for correcting.
+    #[test]
+    fn the_angle_box_opens_for_typing_and_closes_on_a_submitted_number() {
+        let (mut editor, catalog, _, _) =
+            opened(vec![lightwell_core::Layer::pixel(0, 0, [9, 9, 9])], 2);
+        let _ = editor.update(Message::Crop(CropMessage::Start));
+        editor.open_draft(stage());
+        let frame = crop_frame(&editor.modules).expect("a crop frame");
+        let key = (frame.action.to_owned(), frame.angle.to_owned());
+        assert!(!editor.editing_angle());
+        let _ = editor.update(Message::EditValue {
+            action: key.0.clone(),
+            parameter: key.1.clone(),
+        });
+        assert!(editor.editing_angle());
+        let _ = editor.update(Message::Crop(CropMessage::AngleText("two".into())));
+        let _ = editor.update(Message::Crop(CropMessage::SubmitAngle));
+        assert!(editor.editing_angle(), "invalid text stays open");
+        let _ = editor.update(Message::Crop(CropMessage::AngleText("3.5".into())));
+        let _ = editor.update(Message::Crop(CropMessage::SubmitAngle));
+        assert!(!editor.editing_angle());
+        assert_eq!(editor.crop.as_ref().expect("a draft").stage.angle, 3.5);
         finish(editor, catalog);
     }
 
@@ -552,7 +646,7 @@ mod tests {
         // Somebody else committed: the draft survives and says so, and Apply is refused.
         let newer = entry(&asset, 9, None);
         let refresh = refresh_for(&asset, &newer, vec![newer.clone()], &[&newer], false);
-        let _ = editor.update(Message::Synced(Ok(SyncResult::Changed(Box::new(refresh)))));
+        let _ = editor.update(Message::Synced(Ok(SyncResult::changed(refresh))));
         let draft = editor.crop.as_ref().expect("the draft is kept");
         assert!(draft.conflicted);
         assert_eq!(draft.rect, composed, "the composition is untouched");

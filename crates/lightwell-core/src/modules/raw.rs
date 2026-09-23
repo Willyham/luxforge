@@ -157,7 +157,7 @@ fn number(
     min: f64,
     max: f64,
     default: f64,
-    unit: &str,
+    unit: Option<&str>,
     step: f64,
     precision: u8,
 ) -> ParameterDescriptor {
@@ -166,7 +166,7 @@ fn number(
         kind: ParameterKind::Number { min, max },
         required: true,
         default: Some(Value::from(default)),
-        unit: Some(unit.into()),
+        unit: unit.map(Into::into),
         step: Some(step),
         precision: Some(precision),
         notes: "finite value".into(),
@@ -242,7 +242,7 @@ impl RawModule {
                             MIN_EXPOSURE_EV,
                             MAX_EXPOSURE_EV,
                             0.0,
-                            "EV",
+                            Some("EV"),
                             0.01,
                             2,
                         )],
@@ -255,7 +255,7 @@ impl RawModule {
                             white_balance::MIN_TEMPERATURE_K,
                             white_balance::MAX_TEMPERATURE_K,
                             6504.0,
-                            "K",
+                            Some("K"),
                             10.0,
                             0,
                         )],
@@ -268,7 +268,7 @@ impl RawModule {
                             white_balance::MIN_TINT,
                             white_balance::MAX_TINT,
                             0.0,
-                            "Lightwell",
+                            None,
                             1.0,
                             0,
                         )],
@@ -276,12 +276,12 @@ impl RawModule {
                     action(
                         SET_RED,
                         "Red gain",
-                        vec![number("gain", 0.01, MAX_RAW_GAIN, 1.0, "×", 0.01, 2)],
+                        vec![number("gain", 0.01, MAX_RAW_GAIN, 1.0, Some("×"), 0.01, 2)],
                     ),
                     action(
                         SET_BLUE,
                         "Blue gain",
-                        vec![number("gain", 0.01, MAX_RAW_GAIN, 1.0, "×", 0.01, 2)],
+                        vec![number("gain", 0.01, MAX_RAW_GAIN, 1.0, Some("×"), 0.01, 2)],
                     ),
                     action(
                         PICK_NEUTRAL,
@@ -311,14 +311,14 @@ impl RawModule {
                             parameter: "kelvin".into(),
                             label: "Custom temperature".into(),
                             style: crate::NumberStyle::Slider,
-                            rail: None,
+                            rail: Some(crate::RailDecoration::Temperature),
                         },
                         Control::Number {
                             action: SET_TINT.into(),
                             parameter: "tint".into(),
                             label: "Custom tint".into(),
                             style: crate::NumberStyle::Slider,
-                            rail: None,
+                            rail: Some(crate::RailDecoration::Tint),
                         },
                         // The sensor neutral pick, beside the temperature and tint it sets.
                         Control::Picker {
@@ -329,7 +329,7 @@ impl RawModule {
                             label: "As shot".into(),
                             preset: Map::new(),
                             style: crate::ActionStyle::Default,
-                            icon: None,
+                            icon: Some("target".into()),
                         },
                     ],
                     collapsed: false,
@@ -347,6 +347,7 @@ impl RawModule {
                 }),
                 developer: false,
                 collapsed: false,
+                layout: crate::ModuleLayout::Stacked,
                 availability: Availability::Available,
             },
         }
@@ -551,6 +552,86 @@ mod tests {
             ActionPlan::Update(next) => RawPayload::from_layer(&next),
             _ => Err(validation("expected RAW update")),
         }
+    }
+
+    /// The custom temperature and tint sliders declare the same rail hints as Basic's white
+    /// balance, so a client colours both consistently.
+    #[test]
+    fn custom_temperature_and_tint_declare_their_rail_hints() {
+        let module = RawModule::new();
+        let descriptor = module.descriptor();
+        descriptor.validate().expect("a valid descriptor");
+        let group = descriptor
+            .controls
+            .first()
+            .expect("the RAW development group");
+        let Control::Group { controls, .. } = group else {
+            panic!("expected a group");
+        };
+        let temperature = controls
+            .iter()
+            .find(
+                |control| matches!(control, Control::Number { parameter, .. } if parameter == "kelvin"),
+            )
+            .expect("custom temperature control");
+        assert_eq!(
+            temperature,
+            &Control::Number {
+                action: SET_TEMPERATURE.into(),
+                parameter: "kelvin".into(),
+                label: "Custom temperature".into(),
+                style: crate::NumberStyle::Slider,
+                rail: Some(crate::RailDecoration::Temperature),
+            }
+        );
+        let tint = controls
+            .iter()
+            .find(
+                |control| matches!(control, Control::Number { parameter, .. } if parameter == "tint"),
+            )
+            .expect("custom tint control");
+        assert_eq!(
+            tint,
+            &Control::Number {
+                action: SET_TINT.into(),
+                parameter: "tint".into(),
+                label: "Custom tint".into(),
+                style: crate::NumberStyle::Slider,
+                rail: Some(crate::RailDecoration::Tint),
+            }
+        );
+        // Tint is a unitless scale: the panel shows the bare number beside its label.
+        let tint_parameter = &descriptor
+            .action(SET_TINT)
+            .expect("custom tint action")
+            .parameters[0];
+        assert_eq!(tint_parameter.unit, None);
+    }
+
+    /// As shot names the crosshair raw.png draws beside its label; the picker beside it keeps the
+    /// run a row of labelled buttons, so the label stays.
+    #[test]
+    fn as_shot_names_its_icon_beside_the_picker() {
+        let module = RawModule::new();
+        let descriptor = module.descriptor();
+        descriptor.validate().expect("a valid descriptor");
+        let Control::Group { controls, .. } = &descriptor.controls[0] else {
+            panic!("expected a group");
+        };
+        let as_shot = controls
+            .iter()
+            .position(
+                |control| matches!(control, Control::Action { action, .. } if action == AS_SHOT),
+            )
+            .expect("the As shot control");
+        assert!(matches!(
+            &controls[as_shot],
+            Control::Action { label, icon: Some(icon), .. } if label == "As shot" && icon == "target"
+        ));
+        assert!(matches!(
+            &controls[as_shot - 1],
+            Control::Picker { label } if label == "Neutral WB"
+        ));
     }
 
     #[test]

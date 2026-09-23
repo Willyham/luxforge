@@ -7,7 +7,8 @@ use crate::{
         MaskChange, MaskCommand, MaskCommandResult, MaskListing, MaskOutcome, MaskTarget,
     },
     modules::{
-        ActionInput, ActionPlan, EffectStage, Stage, StageContext, action_label, check_parameters,
+        ActionInput, ActionPlan, EffectStage, MAX_COMPOSE_STEPS, Stage, StageContext, action_label,
+        check_parameters,
     },
     open_source_bytes, read_bounded_file, render,
     render::{Evaluation, locate_dimensions, stage_transform},
@@ -28,15 +29,19 @@ use std::{
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
-/// Recipes carry a mask table and layers carry a mask reference, so a catalog written before
-/// format 5 stores stacks in a shape whose masks are unknown and is refused by name.
-const CATALOG_FORMAT: i64 = 5;
+/// Format 6 is the merged shape: recipes carry a mask table and layers a mask reference, and the
+/// catalog carries the preset library. Two branches each claimed format 5 for one of those halves,
+/// so a catalog written by either is refused by name rather than read as the other. Format 4 made
+/// entry records the only stored copy of a stack and format 3 stored each entry's rendered label.
+/// Every other marker, earlier or later, is refused by name and left as it is; choose a new
+/// catalog path.
+const CATALOG_FORMAT: i64 = 6;
 const MAX_HISTORY_PAGE: usize = 100;
 const MAX_VERSION_NAME: usize = 64;
 const ASSET_COLUMNS: &str =
     "id,source_root,locator,fingerprint,file_identity,byte_len,width,height,source_json";
 
-fn catalog_error(error: rusqlite::Error) -> Error {
+pub(crate) fn catalog_error(error: rusqlite::Error) -> Error {
     let kind = match &error {
         rusqlite::Error::SqliteFailure(problem, _)
             if matches!(
@@ -55,15 +60,15 @@ fn json_error(context: &str, error: impl std::fmt::Display) -> Error {
     Error::new(ErrorKind::Incompatible, format!("{context}: {error}"))
 }
 
-fn encode<T: Serialize>(value: &T) -> Result<String, Error> {
+pub(crate) fn encode<T: Serialize>(value: &T) -> Result<String, Error> {
     serde_json::to_string(value).map_err(|e| json_error("cannot encode catalog value", e))
 }
 
-fn decode<T: DeserializeOwned>(context: &str, value: String) -> Result<T, Error> {
+pub(crate) fn decode<T: DeserializeOwned>(context: &str, value: String) -> Result<T, Error> {
     serde_json::from_str(&value).map_err(|e| json_error(context, e))
 }
 
-fn now_ms() -> i64 {
+pub(crate) fn now_ms() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
@@ -278,7 +283,8 @@ struct CachedSource {
 
 #[derive(Debug)]
 pub struct EditorService {
-    connection: Connection,
+    /// The catalog. The preset library in `presets::library` keeps its own table here.
+    pub(crate) connection: Connection,
     source_cache: RefCell<Option<CachedSource>>,
     allow_sync_source: bool,
     registry: Arc<ModuleRegistry>,
@@ -397,6 +403,14 @@ impl EditorService {
                     actor TEXT NOT NULL,
                     created_ms INTEGER NOT NULL,
                     PRIMARY KEY(asset_id, name)
+                 );
+                 CREATE TABLE presets (
+                    id TEXT PRIMARY KEY,
+                    name TEXT NOT NULL COLLATE NOCASE,
+                    group_name TEXT NOT NULL COLLATE NOCASE,
+                    record_json TEXT NOT NULL,
+                    source_text TEXT,
+                    UNIQUE(group_name, name)
                  );
                  CREATE TRIGGER entries_are_immutable BEFORE UPDATE ON entries BEGIN
                     SELECT RAISE(ABORT, 'history entries are immutable');
@@ -1300,6 +1314,15 @@ impl EditorService {
         let (module, action) = registry.action(action_id).ok_or_else(|| {
             Error::new(ErrorKind::Validation, format!("unknown action {action_id}"))
         })?;
+        // An unavailable provider keeps its descriptor so its stored layers stay readable, but it
+        // changes nothing. A module with effects would be refused by the whole-stack compile at
+        // commit anyway; one with none, such as presets, would otherwise commit through it.
+        if !module.descriptor().is_available() {
+            return Err(Error::new(
+                ErrorKind::Incompatible,
+                format!("unavailable module {}", module.descriptor().id),
+            ));
+        }
         // The host's one optional target field, taken before the action's own parameters are checked
         // so the module receives exactly its declared fields and never learns a mask was involved.
         let mut parameters = parameters;
@@ -1382,7 +1405,7 @@ impl EditorService {
                 ActionPlan::Update(layer) => {
                     state.current_entry.snapshot.with_layer_replaced(layer)?
                 }
-                ActionPlan::Commit(_) => {
+                ActionPlan::Commit(_) | ActionPlan::Compose(_) => {
                     return Err(Error::new(
                         ErrorKind::Validation,
                         "RAW source action may only update its required layer",
@@ -1399,46 +1422,18 @@ impl EditorService {
             );
         }
         let source = self.verified_prepared(&state.asset)?;
-        let snapshot = match self.plan_input(
+        let plan = self.plan_input(
             &state,
             &source,
             module,
             &input,
             registry.action_accepts_mask(action_id),
             mask.as_ref(),
-        )? {
-            ActionPlan::NoOp => {
-                return self.persist_noop(asset_id, &mutation, &request, &state);
-            }
-            // The host places the layer by the effect's declared stage and order: a pixel-stage
-            // effect goes before the geometry tail, so a later crop change carries it instead of
-            // moving or invalidating it. An effect no provider declares is placed as a geometry one
-            // would be and rejected by the whole-stack compile below. Within that region a masked
-            // layer follows the global layer of its effect and the masked layers of earlier masks,
-            // so overlapping masks apply in the order the mask list shows.
-            ActionPlan::Commit(layer) => {
-                let recipe = &state.current_entry.snapshot.recipe;
-                let index = registry.insertion_index_for_target(
-                    &recipe.layers,
-                    &layer.effect_id,
-                    mask.as_ref(),
-                    &recipe.masks,
-                );
-                // The target is the host's to write: a module returns a layer without one, because it
-                // never saw the field.
-                let layer = Layer {
-                    mask: mask.clone(),
-                    ..layer
-                };
-                state
-                    .current_entry
-                    .snapshot
-                    .with_layer_inserted(index, layer)?
-            }
-            // An update keeps the layer's identity and position; a missing identity is rejected
-            // before anything is written.
-            ActionPlan::Update(layer) => state.current_entry.snapshot.with_layer_replaced(layer)?,
+        )?;
+        let Some(recipe) = self.resolve_plan(&source, recipe, plan, mask.as_ref())? else {
+            return self.persist_noop(asset_id, &mutation, &request, &state);
         };
+        let snapshot = state.current_entry.snapshot.with_recipe(recipe)?;
         self.commit_snapshot(
             asset_id,
             mutation,
@@ -1794,39 +1789,125 @@ impl EditorService {
         let state = self.state(asset_id)?;
         validate_source_recipe(&state.asset, &state.current_entry.snapshot.recipe)?;
         let source = self.verified_prepared(&state.asset)?;
-        // A draft carries no mask target, so it is a draft of the global layer: the target view hides
-        // the masked layers of the drafted module's effect, which is what lets a global slider drag
-        // keep working on a stack that also holds masked layers of the same effect.
-        let recipe = match self.plan_input(
+        // A draft carries no mask target, so it is a draft of the global layer: the target view
+        // hides the masked layers of the drafted module's effect, which is what lets a global
+        // slider drag keep working on a stack that also holds masked layers of the same effect.
+        let current = &state.current_entry.snapshot.recipe;
+        let plan = self.plan_input(
             &state,
             &source,
             module,
             &input,
             registry.action_accepts_mask(&draft.action),
             None,
-        )? {
-            ActionPlan::NoOp => state.current_entry.snapshot.recipe.clone(),
+        )?;
+        let recipe = self
+            .resolve_plan(&source, current, plan, None)?
+            .unwrap_or_else(|| current.clone());
+        Ok((recipe, state))
+    }
+
+    /// The stack one plan produces from `recipe`, or `None` when it changes nothing. A commit and a
+    /// draft's effective recipe both resolve their plan here, so a drafted preview is exactly what
+    /// committing it would produce, composites included.
+    ///
+    /// `Commit` places the new layer by its effect's declared stage and order: a pixel-stage effect
+    /// goes before the geometry tail, so a later crop change carries it instead of moving or
+    /// invalidating it, and an effect no provider declares is placed as a geometry one would be and
+    /// refused by the whole-stack compile at commit. `Update` keeps the layer's identity and
+    /// position, and a missing identity is refused before anything is written.
+    ///
+    /// `Compose` runs each step exactly as that action would run alone, against the stack the steps
+    /// before it produced: the registry finds the action, which must be a field patch of an
+    /// available module; the generic check and the module's `parse` take its fields; and the module
+    /// plans against the intermediate stack through the same [`StageContext`] construction. A step
+    /// that is itself a composite is refused, and so is any refused step, before anything is
+    /// written. The final stack is `None` when it equals the starting one. Each step plans by
+    /// comparing payloads, so a composite costs `O(steps × layers)` and rasterizes nothing.
+    fn resolve_plan(
+        &self,
+        source: &PreparedSource,
+        recipe: &Recipe,
+        plan: ActionPlan,
+        mask: Option<&MaskId>,
+    ) -> Result<Option<Recipe>, Error> {
+        let steps = match plan {
+            ActionPlan::Compose(steps) => steps,
+            plan => return self.apply_plan(recipe, plan, mask),
+        };
+        if steps.len() > MAX_COMPOSE_STEPS {
+            return Err(Error::new(
+                ErrorKind::Validation,
+                format!(
+                    "a composite action holds {} steps, more than {MAX_COMPOSE_STEPS}",
+                    steps.len()
+                ),
+            ));
+        }
+        let registry = self.registry.clone();
+        let mut resolved = recipe.clone();
+        for step in steps {
+            let action_id = step.action_id.as_str();
+            let (module, action) = registry.action(action_id).ok_or_else(|| {
+                Error::new(ErrorKind::Validation, format!("unknown action {action_id}"))
+            })?;
+            if !action.patch {
+                return Err(Error::new(
+                    ErrorKind::Validation,
+                    format!("{action_id} is not a field-patch action"),
+                ));
+            }
+            let descriptor = module.descriptor();
+            if !descriptor.is_available() {
+                return Err(Error::new(
+                    ErrorKind::Incompatible,
+                    format!("unavailable module {}", descriptor.id),
+                ));
+            }
+            let checked = check_parameters(action, &Value::Object(step.parameters))?;
+            let input = module.parse(action_id, &checked)?;
+            let plan =
+                self.with_stage_context(source, &resolved, |context| module.plan(&input, context))?;
+            if let Some(next) = self.apply_plan(&resolved, plan, mask)? {
+                resolved = next;
+            }
+        }
+        Ok((resolved != *recipe).then_some(resolved))
+    }
+
+    /// One step's plan applied to a stack: the placement rules of [`Self::resolve_plan`] for a
+    /// single layer. A composite here is a step of another composite, which the host refuses.
+    fn apply_plan(
+        &self,
+        recipe: &Recipe,
+        plan: ActionPlan,
+        mask: Option<&MaskId>,
+    ) -> Result<Option<Recipe>, Error> {
+        match plan {
+            ActionPlan::NoOp => Ok(None),
+            // Within the region the effect's stage and order choose, a masked layer follows the
+            // global layer of its effect and the masked layers of earlier masks, so overlapping
+            // masks apply in the order the mask list shows. The target is the host's to write: a
+            // module returns a layer without one, because it never saw the field.
             ActionPlan::Commit(layer) => {
-                let recipe = &state.current_entry.snapshot.recipe;
-                let index = registry.insertion_index_for_target(
+                let index = self.registry.insertion_index_for_target(
                     &recipe.layers,
                     &layer.effect_id,
-                    None,
+                    mask,
                     &recipe.masks,
                 );
-                state
-                    .current_entry
-                    .snapshot
-                    .recipe
-                    .with_layer_inserted(index, layer)?
+                let layer = Layer {
+                    mask: mask.cloned(),
+                    ..layer
+                };
+                Ok(Some(recipe.with_layer_inserted(index, layer)?))
             }
-            ActionPlan::Update(layer) => state
-                .current_entry
-                .snapshot
-                .recipe
-                .with_layer_replaced(layer)?,
-        };
-        Ok((recipe, state))
+            ActionPlan::Update(layer) => Ok(Some(recipe.with_layer_replaced(layer)?)),
+            ActionPlan::Compose(_) => Err(Error::new(
+                ErrorKind::Validation,
+                "composite actions do not nest",
+            )),
+        }
     }
 
     pub fn apply_pixel(
@@ -3826,7 +3907,7 @@ mod tests {
         assert_eq!(error.kind, ErrorKind::Incompatible);
         assert_eq!(
             error.detail,
-            "catalog format 2 is not supported; expected 5; choose a new catalog path"
+            "catalog format 2 is not supported; expected 6; choose a new catalog path"
         );
         assert_eq!(
             std::fs::read(&catalog).unwrap(),
@@ -4716,6 +4797,7 @@ mod tests {
                 canvas: None,
                 developer: false,
                 collapsed: false,
+                layout: crate::ModuleLayout::Stacked,
                 availability: Availability::Available,
             })
         }

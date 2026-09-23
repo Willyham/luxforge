@@ -1338,6 +1338,7 @@ impl crate::ToolModule for Colliding {
                 canvas: None,
                 developer: true,
                 collapsed: false,
+                layout: crate::ModuleLayout::Stacked,
                 availability: crate::Availability::Available,
             });
         &DESCRIPTOR

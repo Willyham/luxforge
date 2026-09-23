@@ -6,13 +6,12 @@ use crate::{
 };
 use iced::{
     Alignment, Element, Length, Padding,
-    widget::{
-        Row, Space, button, column, container, row, scrollable, text, text::Wrapping, text_input,
-    },
+    widget::{Space, column, container, row, scrollable, text, text::Wrapping, text_input},
 };
 use lightwell_ui::{
-    ChipModel, Icon, IconButtonModel, ListRowModel, Marker, chip, icon_button, inline_menu,
-    list_row, section_label, theme,
+    ButtonSize, ButtonTone, ChipModel, Icon, IconButtonModel, ListRowModel, Marker, chip,
+    chip_wrap, icon_button, inline_menu, list_heading, list_row, section_label, text_button, theme,
+    truncated_text,
 };
 
 pub(crate) fn state_panel(model: &StatePanelModel) -> Element<'_, Message> {
@@ -44,10 +43,7 @@ fn versions(model: &StatePanelModel) -> Element<'_, Message> {
             Some(Message::OpenMenu(MenuTarget::Version(version.name.clone()))),
         )
     });
-    let chip_row = Row::new()
-        .spacing(theme::SPACING / 2.0)
-        .extend(chips)
-        .wrap();
+    let chip_row = chip_wrap(chips.collect());
 
     let mut block = column![
         row![
@@ -95,15 +91,16 @@ fn versions(model: &StatePanelModel) -> Element<'_, Message> {
 }
 
 fn save_button(can_save: bool) -> Element<'static, Message> {
-    button(text("Save").size(theme::SIZE_CONTROL))
-        .padding([4.0, 10.0])
-        .style(theme::button_plain)
-        .on_press_maybe(can_save.then_some(Message::SaveVersion))
-        .into()
+    text_button(
+        "Save",
+        ButtonTone::Control,
+        ButtonSize::Compact,
+        can_save.then_some(Message::SaveVersion),
+    )
 }
 
 fn history(model: &StatePanelModel) -> Element<'_, Message> {
-    let mut block = column![section_label("History")].spacing(4.0);
+    let mut block = column![list_heading("History")].spacing(theme::LIST_ROW_SPACING);
     let editable = !model.busy;
     for entry in &model.history {
         block = block.push(list_row(
@@ -121,33 +118,37 @@ fn history(model: &StatePanelModel) -> Element<'_, Message> {
         ));
     }
     if model.can_load_older {
-        block = block.push(
-            button(text("Load older").size(theme::SIZE_CONTROL))
-                .padding([4.0, 10.0])
-                .style(theme::button_plain)
-                .on_press_maybe(editable.then_some(Message::LoadOlder)),
-        );
+        block = block.push(text_button(
+            "Load older",
+            ButtonTone::Quiet,
+            ButtonSize::Compact,
+            editable.then_some(Message::LoadOlder),
+        ));
     }
     if let Some(preview) = model.preview {
         block = block.push(
             row![
-                button(text("Return to current").size(theme::SIZE_CONTROL))
-                    .padding([4.0, 10.0])
-                    .style(theme::button_plain)
-                    .on_press_maybe(preview.can_return.then_some(Message::ReturnCurrent)),
-                button(text("Restore").size(theme::SIZE_CONTROL))
-                    .padding([4.0, 10.0])
-                    .style(theme::button_accent)
-                    .on_press_maybe(preview.can_restore.then_some(Message::Restore)),
+                text_button(
+                    "Return to current",
+                    ButtonTone::Control,
+                    ButtonSize::Compact,
+                    preview.can_return.then_some(Message::ReturnCurrent),
+                ),
+                text_button(
+                    "Restore",
+                    ButtonTone::Primary,
+                    ButtonSize::Compact,
+                    preview.can_restore.then_some(Message::Restore),
+                ),
             ]
-            .spacing(theme::SPACING / 2.0),
+            .spacing(theme::BUTTON_ROW_SPACING),
         );
     }
     block.into()
 }
 
 fn recipe(model: &StatePanelModel) -> Element<'_, Message> {
-    let mut block = column![section_label("Recipe")].spacing(4.0);
+    let mut block = column![list_heading("Recipe")].spacing(theme::LIST_ROW_SPACING);
     if let Some(message) = &model.recipe_caption {
         block = block.push(lightwell_ui::caption(message.clone()));
         return block.into();
@@ -166,8 +167,8 @@ fn recipe(model: &StatePanelModel) -> Element<'_, Message> {
 /// One recipe row: the sequence and the module title on their own line, the layer's payload
 /// summary as a caption underneath. Two short lines read better here than a trailing caption,
 /// which a long summary ("unavailable: disabled by --disable-module") would otherwise squeeze
-/// into a sliver next to a title that keeps the rest of the row. Both lines stay on one line each
-/// (`Wrapping::None`) and clip rather than grow the row to fit an unbounded summary.
+/// into a sliver next to a title that keeps the rest of the row. Both lines stay on one line each:
+/// the title clips (`Wrapping::None`) and the unbounded summary ends in an ellipsis.
 fn recipe_row(
     index: usize,
     title: String,
@@ -192,13 +193,12 @@ fn recipe_row(
     ]
     .spacing(theme::SPACING)
     .align_y(Alignment::Center);
-    let detail = container(
-        text(summary)
-            .size(theme::SIZE_CAPTION)
-            .color(theme::TEXT_TERTIARY)
-            .wrapping(Wrapping::None),
-    )
-    .clip(true)
+    let detail = container(truncated_text(
+        summary,
+        theme::SIZE_CAPTION,
+        theme::FONT,
+        theme::TEXT_TERTIARY,
+    ))
     .width(Length::Fill)
     .padding(Padding {
         left: 32.0,

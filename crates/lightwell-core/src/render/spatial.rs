@@ -1021,6 +1021,7 @@ pub(crate) mod tests {
                 canvas: None,
                 developer: false,
                 collapsed: false,
+                layout: crate::ModuleLayout::Stacked,
                 availability: Availability::Available,
             }))
         }

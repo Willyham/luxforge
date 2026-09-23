@@ -11,6 +11,7 @@ pub mod mask;
 mod mask_field;
 mod model;
 mod modules;
+mod presets;
 mod preview;
 mod profile;
 mod proxy;
@@ -23,6 +24,7 @@ pub use error::{Error, ErrorKind};
 use image::{ImageDecoder, ImageReader, Limits};
 pub use model::*;
 pub use modules::*;
+pub use presets::*;
 pub use preview::*;
 pub use proxy::{ProxyApproximation, ProxyBounds, ProxyCache, ProxyIdentity, ProxyKey, ProxyPlan};
 pub use render::{

@@ -8,6 +8,21 @@ use std::collections::HashSet;
 /// Groups nest for layout only; a descriptor deeper than this is rejected rather than walked.
 const MAX_CONTROL_DEPTH: usize = 8;
 
+/// The longest text a `string` parameter may declare, in characters.
+const MAX_STRING_LENGTH: usize = 256;
+
+/// The most field-patch actions one `settings` value names.
+pub const MAX_SETTINGS_ACTIONS: usize = 16;
+
+/// The most fields one action of a `settings` value sets.
+pub const MAX_SETTINGS_FIELDS: usize = 64;
+
+/// The parameters a `presets` control submits its action with: the settings set, the preset's name
+/// and, optionally, the library identity it came from.
+pub(crate) const PRESET_SETTINGS: &str = "settings";
+pub(crate) const PRESET_NAME: &str = "name";
+pub(crate) const PRESET_ID: &str = "preset-id";
+
 fn validation(detail: impl Into<String>) -> Error {
     Error::new(ErrorKind::Validation, detail)
 }
@@ -136,6 +151,15 @@ pub enum ParameterKind {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         fixed_x: Option<Vec<f64>>,
     },
+    /// UTF-8 text of at most `max_length` characters (at most 256) with no control characters.
+    /// Whether an empty string means anything is the module's to decide.
+    String {
+        max_length: usize,
+    },
+    /// A settings set: an object whose keys are field-patch action identities and whose values are
+    /// non-empty objects of that action's fields. The generic check validates only this shape; the
+    /// host checks every action and field against its own descriptor when the set is applied.
+    Settings,
 }
 
 /// Serialized flat: `{"name": "x", "kind": "integer", "min": 0, "max": 16383, ...}`. Flattening
@@ -334,6 +358,12 @@ pub enum Control {
     /// module declares at most one, and a module that declares a pick canvas declares exactly one,
     /// so every pick mode is reachable from the panel.
     Picker { label: String },
+    /// The host's preset library. Choosing a preset submits `action` once with that preset's
+    /// `settings`, `name` and `preset-id`, so applying one is the same API call every client makes.
+    /// The action is this module's own, with a required `settings` parameter of kind `settings`, a
+    /// required `name` of kind `string`, optionally a `preset-id` of kind `string` and nothing
+    /// else. A module declares at most one.
+    Presets { action: String },
 }
 
 /// How a module lets the canvas drive its action. Neither kind commits by itself.
@@ -402,6 +432,21 @@ impl CanvasInteraction {
     }
 }
 
+/// How a client lays out a module's top-level controls. A hint for clients: it changes only what
+/// a client draws, never what the host accepts, the vocabulary's rule for every hint.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ModuleLayout {
+    /// Each top-level group renders as its own stacked section. Right for a module whose groups
+    /// are different controls, such as Basic's white balance, tone and colour.
+    #[default]
+    Stacked,
+    /// The top-level groups render as one segmented row, one group visible at a time, for a
+    /// module whose groups are parallel views of the same controls, such as the colour mixer's
+    /// Hue, Saturation and Luminance over the same eight ranges.
+    Tabs,
+}
+
 /// An unavailable provider keeps its descriptor and effect identities so stored data stays readable.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "kebab-case")]
@@ -439,6 +484,10 @@ pub struct ModuleDescriptor {
     /// still wins. A hint for clients, never a rule for the API.
     #[serde(default)]
     pub collapsed: bool,
+    /// How a client arranges this module's top-level controls: stacked sections (the default) or
+    /// one tab row. Validated at registration; see [`ModuleLayout`].
+    #[serde(default)]
+    pub layout: ModuleLayout,
     pub availability: Availability,
 }
 
@@ -519,14 +568,39 @@ impl ModuleDescriptor {
         }
         // One picker stands for one pick mode, so two would be two ways into the same mode and a
         // panel could not say which is selected.
-        let pickers = Self::pickers(&self.controls);
+        let pickers = Self::count(&self.controls, &|control| {
+            matches!(control, Control::Picker { .. })
+        });
         if pickers > 1 {
             return Err(validation(format!(
                 "module {} declares {pickers} picker controls; a module declares at most one",
                 self.id
             )));
         }
+        // One library per module: two would show the same presets twice with no way to say which
+        // one a client should render.
+        let presets = Self::count(&self.controls, &|control| {
+            matches!(control, Control::Presets { .. })
+        });
+        if presets > 1 {
+            return Err(validation(format!(
+                "module {} declares {presets} presets controls; a module declares at most one",
+                self.id
+            )));
+        }
         self.check_reset(self.reset.as_ref())?;
+        if self.layout == ModuleLayout::Tabs {
+            let all_groups = self
+                .controls
+                .iter()
+                .all(|control| matches!(control, Control::Group { .. }));
+            if self.controls.len() < 2 || !all_groups {
+                return Err(validation(format!(
+                    "module {} declares layout: tabs but needs at least two top-level groups",
+                    self.id
+                )));
+            }
+        }
         match &self.canvas {
             Some(CanvasInteraction::PointPick {
                 action,
@@ -868,18 +942,64 @@ impl ModuleDescriptor {
                     }
                 }
             }
+            Control::Presets { action } => {
+                let declared = self.declared_action(action)?;
+                self.check_presets_action(declared)?;
+            }
         }
         Ok(())
     }
 
-    /// How many picker controls this module declares, at any depth.
-    fn pickers(controls: &[Control]) -> usize {
+    /// A presets control submits its action with a preset's settings set, name and library
+    /// identity, and nothing else, so the action declares exactly those parameters with the kinds
+    /// that carry them. A field patch makes every parameter optional, so it cannot require them.
+    fn check_presets_action(&self, action: &ActionDescriptor) -> Result<(), Error> {
+        let id = &action.id;
+        if action.patch {
+            return Err(validation(format!(
+                "presets control action {id} is a field patch, so it cannot require its settings and name"
+            )));
+        }
+        let required = |name: &str, kind: &str, matches: fn(&ParameterKind) -> bool| {
+            let parameter = self.declared_parameter(action, name)?;
+            if !matches(&parameter.kind) || !parameter.required || parameter.default.is_some() {
+                return Err(validation(format!(
+                    "presets control action {id} needs a required {kind} parameter {name}"
+                )));
+            }
+            Ok(())
+        };
+        required(PRESET_SETTINGS, "settings", |kind| {
+            matches!(kind, ParameterKind::Settings)
+        })?;
+        required(PRESET_NAME, "string", |kind| {
+            matches!(kind, ParameterKind::String { .. })
+        })?;
+        if let Some(parameter) = action.parameter(PRESET_ID)
+            && (!matches!(parameter.kind, ParameterKind::String { .. }) || parameter.required)
+        {
+            return Err(validation(format!(
+                "presets control action {id} may declare only an optional string parameter {PRESET_ID}"
+            )));
+        }
+        if let Some(extra) = action.parameters.iter().find(|parameter| {
+            ![PRESET_SETTINGS, PRESET_NAME, PRESET_ID].contains(&&*parameter.name)
+        }) {
+            return Err(validation(format!(
+                "presets control action {id} declares parameter {} beyond {PRESET_SETTINGS}, {PRESET_NAME} and {PRESET_ID}",
+                extra.name
+            )));
+        }
+        Ok(())
+    }
+
+    /// How many controls of one kind this module declares, at any depth.
+    fn count(controls: &[Control], kind: &dyn Fn(&Control) -> bool) -> usize {
         controls
             .iter()
             .map(|control| match control {
-                Control::Picker { .. } => 1,
-                Control::Group { controls, .. } => Self::pickers(controls),
-                _ => 0,
+                Control::Group { controls, .. } => Self::count(controls, kind),
+                control => usize::from(kind(control)),
             })
             .sum()
     }
@@ -967,6 +1087,14 @@ fn check_declared<'a>(
             ParameterKind::Enum { options } if options.is_empty() => {
                 return Err(validation(format!(
                     "parameter {} declares no options",
+                    parameter.name
+                )));
+            }
+            ParameterKind::String { max_length }
+                if *max_length == 0 || *max_length > MAX_STRING_LENGTH =>
+            {
+                return Err(validation(format!(
+                    "parameter {} declares a max_length {max_length} outside 1..={MAX_STRING_LENGTH}",
                     parameter.name
                 )));
             }
@@ -1303,6 +1431,64 @@ pub fn check_value(parameter: &ParameterDescriptor, value: &Value) -> Result<(),
                 }
                 previous = Some((x, y));
             }
+        }
+        ParameterKind::String { max_length } => {
+            let text = value
+                .as_str()
+                .ok_or_else(|| validation(format!("parameter {name} must be a string")))?;
+            // Characters, not bytes: the bound is what a person reads and types.
+            if text.chars().count() > *max_length {
+                return Err(validation(format!(
+                    "parameter {name} must be at most {max_length} characters"
+                )));
+            }
+            if text.chars().any(char::is_control) {
+                return Err(validation(format!(
+                    "parameter {name} must not contain control characters"
+                )));
+            }
+        }
+        ParameterKind::Settings => check_settings(name, value)?,
+    }
+    Ok(())
+}
+
+/// The shape of a settings set, and nothing more: 1 to 16 action identities, each giving a
+/// non-empty object of at most 64 fields with valid parameter names. Whether each action exists,
+/// is a field patch and accepts each value is the host's check against the registry, made when the
+/// set is applied, because a descriptor cannot see other modules.
+fn check_settings(name: &str, value: &Value) -> Result<(), Error> {
+    let actions = value
+        .as_object()
+        .ok_or_else(|| validation(format!("parameter {name} must be a settings object")))?;
+    if actions.is_empty() || actions.len() > MAX_SETTINGS_ACTIONS {
+        return Err(validation(format!(
+            "parameter {name} must name 1..={MAX_SETTINGS_ACTIONS} actions"
+        )));
+    }
+    for (action, fields) in actions {
+        if !valid_name(action) {
+            return Err(validation(format!(
+                "parameter {name} names invalid action identity {action}"
+            )));
+        }
+        let fields = fields
+            .as_object()
+            .filter(|fields| !fields.is_empty())
+            .ok_or_else(|| {
+                validation(format!(
+                    "parameter {name} must give action {action} a non-empty object of fields"
+                ))
+            })?;
+        if fields.len() > MAX_SETTINGS_FIELDS {
+            return Err(validation(format!(
+                "parameter {name} gives action {action} more than {MAX_SETTINGS_FIELDS} fields"
+            )));
+        }
+        if let Some(field) = fields.keys().find(|field| !valid_name(field)) {
+            return Err(validation(format!(
+                "parameter {name} gives action {action} invalid field name {field}"
+            )));
         }
     }
     Ok(())
@@ -1645,6 +1831,7 @@ mod tests {
             canvas: None,
             developer: false,
             collapsed: false,
+            layout: ModuleLayout::Stacked,
             availability: Availability::Available,
         }
     }
@@ -2356,12 +2543,473 @@ mod tests {
                 "a precision on an enum parameter",
                 with_hints(None, Some(2), enumerated("mode")),
             ),
+            (
+                "a string that declares no characters",
+                with_hints(None, None, string("name", 0, true)),
+            ),
+            (
+                "a string longer than 256 characters",
+                with_hints(None, None, string("name", 257, true)),
+            ),
+            (
+                "a string default longer than its bound",
+                with_hints(
+                    None,
+                    None,
+                    ParameterDescriptor {
+                        default: Some(json!("abcde")),
+                        ..string("name", 4, false)
+                    },
+                ),
+            ),
+            (
+                "a string default with a control character",
+                with_hints(
+                    None,
+                    None,
+                    ParameterDescriptor {
+                        default: Some(json!("a\tb")),
+                        ..string("name", 4, false)
+                    },
+                ),
+            ),
+            (
+                "a step on a string parameter",
+                with_hints(Some(1.0), None, string("name", 4, true)),
+            ),
+            (
+                "a settings default that is not a settings set",
+                with_hints(
+                    None,
+                    None,
+                    ParameterDescriptor {
+                        default: Some(json!({})),
+                        ..settings("settings")
+                    },
+                ),
+            ),
         ];
+        let cases = cases.into_iter().chain(
+            presets_cases()
+                .into_iter()
+                .map(|(case, descriptor, _)| (case, descriptor)),
+        );
         for (case, descriptor) in cases {
             let error = descriptor
                 .validate()
                 .expect_err(&format!("{case} must be rejected"));
             assert_eq!(error.kind, ErrorKind::Validation, "{case}");
+        }
+    }
+
+    fn string(name: &str, max_length: usize, required: bool) -> ParameterDescriptor {
+        ParameterDescriptor {
+            kind: ParameterKind::String { max_length },
+            required,
+            unit: None,
+            ..integer(name)
+        }
+    }
+
+    fn settings(name: &str) -> ParameterDescriptor {
+        ParameterDescriptor {
+            kind: ParameterKind::Settings,
+            unit: None,
+            ..integer(name)
+        }
+    }
+
+    /// A module shaped like the presets module: one action taking a settings set, a name and an
+    /// optional library identity, and the one presets control that submits it.
+    fn presets_descriptor() -> ModuleDescriptor {
+        ModuleDescriptor {
+            effects: Vec::new(),
+            actions: vec![ActionDescriptor {
+                id: "apply-thing".into(),
+                title: "Apply thing".into(),
+                notes: "test".into(),
+                summary: None,
+                patch: false,
+                parameters: vec![
+                    settings("settings"),
+                    string("name", 128, true),
+                    string("preset-id", 96, false),
+                ],
+            }],
+            controls: vec![Control::Presets {
+                action: "apply-thing".into(),
+            }],
+            reset: None,
+            ..descriptor()
+        }
+    }
+
+    /// The presets descriptor with its action's parameters replaced.
+    fn presets_with(parameters: Vec<ParameterDescriptor>) -> ModuleDescriptor {
+        let mut descriptor = presets_descriptor();
+        descriptor.actions[0].parameters = parameters;
+        descriptor
+    }
+
+    /// Every way a presets control can be bound wrongly, with the fragment its error names.
+    fn presets_cases() -> Vec<(&'static str, ModuleDescriptor, &'static str)> {
+        vec![
+            (
+                "a presets control naming an undeclared action",
+                ModuleDescriptor {
+                    controls: vec![Control::Presets {
+                        action: "missing".into(),
+                    }],
+                    ..presets_descriptor()
+                },
+                "references undeclared action missing",
+            ),
+            (
+                "a presets action without settings",
+                presets_with(vec![string("name", 128, true)]),
+                "action apply-thing has no parameter settings",
+            ),
+            (
+                "a presets action whose settings is another kind",
+                presets_with(vec![
+                    ParameterDescriptor {
+                        kind: ParameterKind::Curve {
+                            points_min: 2,
+                            points_max: 4,
+                            monotone: false,
+                            fixed_x: None,
+                        },
+                        unit: None,
+                        ..integer("settings")
+                    },
+                    string("name", 128, true),
+                ]),
+                "needs a required settings parameter settings",
+            ),
+            (
+                "a presets action whose settings is optional",
+                presets_with(vec![
+                    ParameterDescriptor {
+                        required: false,
+                        ..settings("settings")
+                    },
+                    string("name", 128, true),
+                ]),
+                "needs a required settings parameter settings",
+            ),
+            (
+                "a presets action without a name",
+                presets_with(vec![settings("settings")]),
+                "action apply-thing has no parameter name",
+            ),
+            (
+                "a presets action whose name is not a string",
+                presets_with(vec![settings("settings"), enumerated("name")]),
+                "needs a required string parameter name",
+            ),
+            (
+                "a presets action whose name has a default",
+                presets_with(vec![
+                    settings("settings"),
+                    ParameterDescriptor {
+                        default: Some(json!("Preset")),
+                        ..string("name", 128, true)
+                    },
+                ]),
+                "needs a required string parameter name",
+            ),
+            (
+                "a presets action whose library identity is required",
+                presets_with(vec![
+                    settings("settings"),
+                    string("name", 128, true),
+                    string("preset-id", 96, true),
+                ]),
+                "may declare only an optional string parameter preset-id",
+            ),
+            (
+                "a presets action whose library identity is not a string",
+                presets_with(vec![
+                    settings("settings"),
+                    string("name", 128, true),
+                    ParameterDescriptor {
+                        required: false,
+                        ..integer("preset-id")
+                    },
+                ]),
+                "may declare only an optional string parameter preset-id",
+            ),
+            (
+                "a presets action with another parameter",
+                presets_with(vec![
+                    settings("settings"),
+                    string("name", 128, true),
+                    integer("x"),
+                ]),
+                "declares parameter x beyond settings, name and preset-id",
+            ),
+            (
+                "a presets control on a field patch",
+                ModuleDescriptor {
+                    actions: vec![ActionDescriptor {
+                        patch: true,
+                        ..presets_descriptor().actions[0].clone()
+                    }],
+                    ..presets_descriptor()
+                },
+                "is a field patch",
+            ),
+            (
+                "two presets controls in one module",
+                ModuleDescriptor {
+                    controls: vec![
+                        Control::Presets {
+                            action: "apply-thing".into(),
+                        },
+                        Control::Group {
+                            label: "Nested".into(),
+                            reset: None,
+                            controls: vec![Control::Presets {
+                                action: "apply-thing".into(),
+                            }],
+                            collapsed: false,
+                        },
+                    ],
+                    ..presets_descriptor()
+                },
+                "declares 2 presets controls; a module declares at most one",
+            ),
+        ]
+    }
+
+    /// A presets control binds to an action shaped exactly for it, at most once per module, and
+    /// keeps the serialized form a client discovers it by.
+    #[test]
+    fn a_presets_control_needs_its_own_action_with_exactly_the_preset_parameters() {
+        let valid = presets_descriptor();
+        valid.validate().expect("the presets shape is accepted");
+        assert!(
+            presets_with(vec![settings("settings"), string("name", 128, true)])
+                .validate()
+                .is_ok(),
+            "the library identity is optional"
+        );
+        let nested = ModuleDescriptor {
+            controls: vec![Control::Group {
+                label: "Library".into(),
+                reset: None,
+                controls: vec![Control::Presets {
+                    action: "apply-thing".into(),
+                }],
+                collapsed: false,
+            }],
+            ..presets_descriptor()
+        };
+        nested
+            .validate()
+            .expect("one presets control inside a group is still one");
+        assert_eq!(
+            serde_json::to_value(&valid.controls[0]).unwrap(),
+            json!({"kind": "presets", "action": "apply-thing"})
+        );
+        assert_eq!(
+            ModuleDescriptor::parse(&serde_json::to_value(&valid).unwrap()).unwrap(),
+            valid,
+            "a presets descriptor round-trips through JSON"
+        );
+        for (case, descriptor, fragment) in presets_cases() {
+            let error = descriptor
+                .validate()
+                .expect_err(&format!("{case} must be rejected"));
+            assert_eq!(error.kind, ErrorKind::Validation, "{case}");
+            assert!(error.detail.contains(fragment), "{case}: {error}");
+        }
+    }
+
+    /// A string is bounded in characters, not bytes, refuses control characters and leaves
+    /// emptiness to the module; it serializes flat like every other kind.
+    #[test]
+    fn string_parameters_bound_characters_and_refuse_control_characters() {
+        let parameter = string("name", 4, true);
+        assert_eq!(
+            serde_json::to_value(string("name", 128, true)).unwrap(),
+            json!({
+                "name": "name",
+                "kind": "string",
+                "max_length": 128,
+                "required": true,
+                "default": null,
+                "unit": null,
+                "step": null,
+                "precision": null,
+                "notes": "test",
+            })
+        );
+        assert_eq!(
+            serde_json::from_value::<ParameterDescriptor>(
+                serde_json::to_value(&parameter).unwrap()
+            )
+            .unwrap(),
+            parameter
+        );
+        assert!(
+            with_hints(None, None, string("name", 256, true))
+                .validate()
+                .is_ok(),
+            "256 characters is the longest bound"
+        );
+        for accepted in ["", "abcd", "ééé", "日本語だ", "a b "] {
+            check_value(&parameter, &json!(accepted))
+                .unwrap_or_else(|error| panic!("{accepted:?}: {error}"));
+        }
+        assert_eq!("日本語だ".len(), 12, "four characters are twelve bytes");
+        for (case, value, fragment) in [
+            ("a number", json!(4), "parameter name must be a string"),
+            ("null", Value::Null, "parameter name must be a string"),
+            (
+                "an array",
+                json!(["abcd"]),
+                "parameter name must be a string",
+            ),
+            (
+                "five characters",
+                json!("abcde"),
+                "parameter name must be at most 4 characters",
+            ),
+            (
+                "five two-byte characters",
+                json!("ééééé"),
+                "parameter name must be at most 4 characters",
+            ),
+            (
+                "a newline",
+                json!("a\nb"),
+                "parameter name must not contain control characters",
+            ),
+            (
+                "a bell",
+                json!("\u{7}"),
+                "parameter name must not contain control characters",
+            ),
+            (
+                "a C1 control",
+                json!("a\u{85}"),
+                "parameter name must not contain control characters",
+            ),
+        ] {
+            let error = check_value(&parameter, &value).expect_err(case);
+            assert_eq!(error.kind, ErrorKind::Validation, "{case}");
+            assert_eq!(error.detail, fragment, "{case}");
+        }
+    }
+
+    /// The generic settings check validates the shape of a set and nothing else: the actions and
+    /// fields it names are the host's to check against the registry.
+    #[test]
+    fn settings_parameters_check_only_the_shape_of_a_settings_set() {
+        let parameter = settings("settings");
+        assert_eq!(
+            serde_json::to_value(&parameter).unwrap()["kind"],
+            json!("settings")
+        );
+        assert!(
+            serde_json::to_value(&parameter)
+                .unwrap()
+                .get("max_length")
+                .is_none(),
+            "a settings kind carries nothing but its tag"
+        );
+        assert_eq!(
+            serde_json::from_value::<ParameterDescriptor>(
+                serde_json::to_value(&parameter).unwrap()
+            )
+            .unwrap(),
+            parameter
+        );
+        let fields = |count: usize| -> Value {
+            Value::Object(
+                (0..count)
+                    .map(|index| (format!("field-{index}"), json!(index)))
+                    .collect(),
+            )
+        };
+        let actions = |count: usize| -> Value {
+            Value::Object(
+                (0..count)
+                    .map(|index| (format!("set-thing-{index}"), fields(MAX_SETTINGS_FIELDS)))
+                    .collect(),
+            )
+        };
+        for (case, accepted) in [
+            ("one action", json!({"set-basic": {"exposure": 0.35}})),
+            (
+                "an action no module declares, which is the host's to refuse",
+                json!({"set-anything": {"any-field": "any value"}}),
+            ),
+            ("the most actions and fields", actions(MAX_SETTINGS_ACTIONS)),
+        ] {
+            check_value(&parameter, &accepted).unwrap_or_else(|error| panic!("{case}: {error}"));
+        }
+        for (case, value, fragment) in [
+            (
+                "an array",
+                json!([]),
+                "parameter settings must be a settings object",
+            ),
+            (
+                "a string",
+                json!("set-basic"),
+                "parameter settings must be a settings object",
+            ),
+            (
+                "null",
+                Value::Null,
+                "parameter settings must be a settings object",
+            ),
+            (
+                "no actions",
+                json!({}),
+                "parameter settings must name 1..=16 actions",
+            ),
+            (
+                "seventeen actions",
+                actions(MAX_SETTINGS_ACTIONS + 1),
+                "parameter settings must name 1..=16 actions",
+            ),
+            (
+                "a dotted action identity",
+                json!({"set.basic": {"exposure": 1}}),
+                "parameter settings names invalid action identity set.basic",
+            ),
+            (
+                "an upper-case action identity",
+                json!({"Set-Basic": {"exposure": 1}}),
+                "parameter settings names invalid action identity Set-Basic",
+            ),
+            (
+                "an empty field object",
+                json!({"set-basic": {}}),
+                "parameter settings must give action set-basic a non-empty object of fields",
+            ),
+            (
+                "fields that are not an object",
+                json!({"set-basic": 1}),
+                "parameter settings must give action set-basic a non-empty object of fields",
+            ),
+            (
+                "sixty-five fields",
+                json!({ "set-basic": fields(MAX_SETTINGS_FIELDS + 1) }),
+                "parameter settings gives action set-basic more than 64 fields",
+            ),
+            (
+                "an invalid field name",
+                json!({"set-basic": {"Exposure": 1}}),
+                "parameter settings gives action set-basic invalid field name Exposure",
+            ),
+        ] {
+            let error = check_value(&parameter, &value).expect_err(case);
+            assert_eq!(error.kind, ErrorKind::Validation, "{case}");
+            assert_eq!(error.detail, fragment, "{case}");
         }
     }
 
@@ -3142,5 +3790,92 @@ mod tests {
                 "{case}: {error}"
             );
         }
+    }
+
+    /// A descriptor with two top-level groups, each one slider, over the base descriptor's own
+    /// declared action: the minimal shape `layout: tabs` accepts.
+    fn two_group_descriptor() -> ModuleDescriptor {
+        let group = |label: &str| Control::Group {
+            label: label.into(),
+            reset: None,
+            controls: vec![Control::Number {
+                action: "set-thing".into(),
+                parameter: "x".into(),
+                label: "X".into(),
+                style: crate::NumberStyle::Slider,
+                rail: None,
+            }],
+            collapsed: false,
+        };
+        ModuleDescriptor {
+            controls: vec![group("First"), group("Second")],
+            ..descriptor()
+        }
+    }
+
+    #[test]
+    fn layout_defaults_to_stacked_and_tabs_needs_at_least_two_top_level_groups() {
+        let stacked = descriptor();
+        assert_eq!(
+            stacked.layout,
+            ModuleLayout::Stacked,
+            "the default is stacked"
+        );
+        stacked.validate().expect("stacked is always accepted");
+
+        let tabs = ModuleDescriptor {
+            layout: ModuleLayout::Tabs,
+            ..two_group_descriptor()
+        };
+        tabs.validate()
+            .expect("tabs is accepted over at least two top-level groups");
+
+        let one_group = ModuleDescriptor {
+            layout: ModuleLayout::Tabs,
+            ..descriptor()
+        };
+        let error = one_group
+            .validate()
+            .expect_err("tabs needs at least two top-level groups");
+        assert!(error.detail.contains("layout: tabs"), "{error}");
+
+        let mut non_group = two_group_descriptor();
+        non_group.layout = ModuleLayout::Tabs;
+        non_group.controls.push(Control::Number {
+            action: "set-thing".into(),
+            parameter: "x".into(),
+            label: "X".into(),
+            style: crate::NumberStyle::Slider,
+            rail: None,
+        });
+        let error = non_group
+            .validate()
+            .expect_err("tabs needs every top-level control to be a group");
+        assert!(error.detail.contains("layout: tabs"), "{error}");
+    }
+
+    #[test]
+    fn layout_round_trips_through_json_and_rejects_an_unknown_value() {
+        let tabs = ModuleDescriptor {
+            layout: ModuleLayout::Tabs,
+            ..two_group_descriptor()
+        };
+        let serialized = serde_json::to_value(&tabs).unwrap();
+        assert_eq!(serialized["layout"], json!("tabs"));
+        assert_eq!(ModuleDescriptor::parse(&serialized).unwrap(), tabs);
+        assert_eq!(
+            serde_json::to_value(descriptor())
+                .unwrap()
+                .get("layout")
+                .cloned(),
+            Some(json!("stacked")),
+            "an absent layout serializes as stacked, never omitted"
+        );
+
+        let mut malformed = serialized.clone();
+        malformed["layout"] = json!("floating");
+        let error =
+            ModuleDescriptor::parse(&malformed).expect_err("an unknown layout value is rejected");
+        assert_eq!(error.kind, ErrorKind::Validation);
     }
 }

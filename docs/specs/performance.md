@@ -799,6 +799,22 @@ The settled-histogram column is the exact phase's cost and stays where the full-
 
 Rendered evidence is the `presence`, `mixer` and `vignette` smoke scenarios (15, 8 and 12 correlated frames at Fit and 100% with the module's own controls visible), and the acceptance chapter's ten checks per module through the JSON method table. A reviewer's render of the owner's 14 MP Sapa drone JPEG through the core alone (release, in memory: dehaze 65 ms, clarity 104 ms, texture 127 ms, all three at +50 672 ms) showed Dehaze +60 and +100 lifting the veil and deepening colour plausibly, Clarity +100 adding local contrast without visible halos at fit and at 100%, and Texture +100 sharpening fine detail with the expected crunch; it is a visual check, not a measurement. On a synthetic haze-free flat field Dehaze +100 drives the field toward black, because the dark-channel prior reads a uniform patch darker than the atmosphere as pure veil and the frozen `OMEGA_MAX = 1` removes all of it; the study records this and real photographs, whose windows contain dark pixels, do not show it.
 
+## Preset import parse
+
+Native Apple M4 Pro (14 cores, 48 GiB), macOS 26.5.2, Rust 1.94.0, release `--locked`, in memory, 20 runs each: `cargo test --release --package lightwell-core --lib measure_preset_parse -- --ignored --nocapture`. Each synthetic document is filled to the 1 MiB request limit in the shape that presses one bound, and `inspect_preset` runs detection, parsing, mapping and the report. It reads no file and renders nothing.
+
+| Shape (1 MiB) | p50 / max ms | Outcome |
+| --- | --- | --- |
+| XMP, one element with every attribute (48,661) | 0.97 / 0.99 | `resource-limit` from the prescan |
+| XMP, 1,999 attributes on one element and a curve | 12.57 / 13.75 | 1 mapped, 1,997 unsupported |
+| XMP, 199,000 empty elements | 6.51 / 6.73 | 1 mapped, 1 unsupported |
+| XMP, 128 namespaces in scope and a 43,000-point curve | 7.06 / 7.55 | 1 mapped, 1 unsupported |
+| XMP, 1,748 nested structures of 40 fields | 12.89 / 13.14 | 1 mapped, 1 unsupported |
+| Template, 59,482 unrecognised settings | 11.82 / 12.12 | 1 mapped, 59,482 unsupported |
+| Template, one flat curve just under 100,000 values | 5.90 / 6.15 | 1 mapped, 1 unsupported |
+
+The XML parser checks each element's attributes against each other, so its cost grows with the square of an element's attribute count. Before the prescan bounded that work to 2,000,000 comparisons, the first shape took 4.1 s p50 and 7.4 s max. The prescan also bounds nesting, which the parser descends recursively, and namespace declarations, which it scans for every prefix.
+
 ## Method
 
 Optimized builds only, with commit, lockfile, OS, CPU/GPU, RAM, display and storage recorded. Report cold and warm runs separately and say which cold is meant. Keep at least 30 samples and never drop failures or tails silently. Measure user event to presented frame, not shader time, and account CPU RSS, cache bytes, GPU allocations and transient copies without double-counting unified memory. Capture idle after all background work stops. No timing gates in CI; CI enforces exactness, deterministic bounds and coverage. VM checks record hypervisor, guest graphics path and software versus accelerated rendering, and never stand in for native timings.

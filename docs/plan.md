@@ -38,30 +38,21 @@ Outstanding work by area. What is delivered is in [feature status](features.md);
 - Offline Clone and Heal: numerical contract, repair stage, brush masks, desktop workflow
 - AI Remove: provider qualification, local and remote adapters, candidate review and acceptance
 
-**Masks.** Local adjustments through gradients, brushes and non-AI range selections, authorized on
-2026-09-23 and in progress ([design](design/masking.md), [plan](../tasks/implementation-masking.json)).
-- Phase A: the mask model in the recipe, mask targeting of the delivered modules, the masked colour primitive and the linear gradient
-- Phase B: the radial gradient, add/subtract/intersect, inversion and amount, and masked spatial layers
-- Phase C: brushes on the shared host path primitives and the content-addressed stroke store
-- Phase D: deterministic luminance and colour range selections; no model-based selection
+**Presets follow-ups** ([design](design/presets.md#later)). The library, apply, create and Lightroom import are delivered.
+- Owner review of the recorded defaults
+- An Amount slider and a hover preview
+- RAW white balance import through a calibrated conversion from Lightroom's Kelvin and tint
+- Copy and Paste Settings over the same composite action
+
+**Masks.** Local adjustments; not yet scoped.
 
 **Tuning delivered tools.** Refine the recorded defaults of Presence, the colour mixer and the vignette (decision pending).
-
-## Workspace
-
-**Module panel redesign** (proposal, [design](design/develop-workspace.md#module-panels)). A denser, clearer tools panel.
-- Tighter density and a three-level hierarchy
-- `layout: tabs` descriptor hint, used by the colour mixer
-- Temperature and tint rails on the white-balance sliders
-- Icon-button row for the transforms
 
 ## Programmability
 
 **MCP adapter.** Expose the whole operation registry to agents through a standards-compliant MCP server over the existing command service.
 
 **Shared editing** (future, [design](design/shared-editing.md)). One host, one invited collaborator or agent, one photograph. No milestone.
-
-**Lightroom preset import** (future). Convert only calibrated fields and report the rest ([constraints](research/lightroom/slider-parity.md)).
 
 ## Extensibility
 

@@ -270,6 +270,7 @@ impl PresenceModule {
                 canvas: None,
                 developer: false,
                 collapsed: true,
+                layout: crate::ModuleLayout::Stacked,
                 availability: Availability::Available,
             },
         }
@@ -525,6 +526,7 @@ mod tests {
         match plan {
             ActionPlan::Commit(layer) | ActionPlan::Update(layer) => layer,
             ActionPlan::NoOp => panic!("expected a layer, not a no-op"),
+            ActionPlan::Compose(_) => panic!("expected a layer, not a composite"),
         }
     }
 

@@ -1,8 +1,9 @@
 //! A notice card shown over the canvas: a title, a body and its actions.
 
+use super::button_row::{ButtonSize, ButtonTone, text_button};
 use super::text::caption;
 use crate::theme;
-use iced::widget::{Row, button, column, container, row, text};
+use iced::widget::{Row, column, container, row, text};
 use iced::{Alignment, Element, Length};
 
 /// A notice's tone, which affects its title colour.
@@ -22,8 +23,9 @@ pub struct NoticeCardModel {
     pub tone: Tone,
 }
 
-/// Renders one notice card. Each of `actions` is a `(label, message)` pair, rendered as a button
-/// in order.
+/// Renders one notice card. Each of `actions` is a `(label, message)` pair, rendered as a regular
+/// labelled button in order; in a notice that needs a decision the last action, the one that
+/// keeps the work (Reapply), is the primary one.
 pub fn notice_card<'a, M: Clone + 'a>(
     model: &NoticeCardModel,
     actions: Vec<(String, M)>,
@@ -38,14 +40,20 @@ pub fn notice_card<'a, M: Clone + 'a>(
         .color(title_color);
     let body = caption(model.body.clone());
 
-    let mut action_row = Row::new().spacing(theme::SPACING / 2.0);
-    for (label, message) in actions {
-        action_row = action_row.push(
-            button(text(label).size(theme::SIZE_CONTROL))
-                .padding([4.0, 10.0])
-                .style(theme::button_plain)
-                .on_press(message),
-        );
+    let count = actions.len();
+    let mut action_row = Row::new().spacing(theme::BUTTON_ROW_SPACING);
+    for (index, (label, message)) in actions.into_iter().enumerate() {
+        let tone = if model.tone == Tone::Warning && index + 1 == count {
+            ButtonTone::Primary
+        } else {
+            ButtonTone::Control
+        };
+        action_row = action_row.push(text_button(
+            &label,
+            tone,
+            ButtonSize::Regular,
+            Some(message),
+        ));
     }
 
     let content = row![
