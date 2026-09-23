@@ -2307,22 +2307,44 @@ mod tests {
     /// One active job plus one replaceable pending job, globally: a third request displaces the
     /// pending one, which reads `superseded` and carries no counts. Cancel and disconnect release
     /// only the withdrawing client's interest.
+    ///
+    /// Every entry here carries a held colour layer and the gate is shut for the whole first half,
+    /// so the job the worker picked up cannot finish while the test fills, displaces and empties
+    /// the one pending slot: what each request does to that slot is the queue's rule, not a race
+    /// with the renderer. The gate opens for the second half, where the work actually completes.
     #[test]
     fn racing_requests_supersede_the_pending_job_and_withdrawal_releases_only_its_own_interest() {
         let catalog = temp("analysis-race.sqlite");
         let _ = std::fs::remove_file(&catalog);
-        let (owner, join) = OwnerHandle::start(&catalog).unwrap();
+        let gate = crate::modules::RenderGate::open_gate();
+        let mut registry = ModuleRegistry::builtin();
+        registry
+            .register(crate::modules::HeldModule::shared(gate.clone()))
+            .expect("a valid holding module");
+        let (owner, join) = OwnerHandle::start_with(&catalog, Arc::new(registry)).unwrap();
         let viewer = owner.register();
         let agent = owner.register();
+        let partner = owner.register();
         let imported = import_asset(&owner, viewer, &fixture());
         let asset = imported["asset"]["id"].clone();
-        let mut entries = vec![imported["current_entry"]["id"].clone()];
-        for (index, channel) in [10u8, 20, 30, 40, 50, 60].into_iter().enumerate() {
+        // The held layer is committed first, so every entry after it carries one.
+        ok(
+            &owner,
+            viewer,
+            "hold",
+            &format!("edit.{}", crate::modules::HELD_ACTION),
+            json!({
+                "asset_id": asset,
+                "mutation": {"expected_revision": 0, "request_id": "hold", "actor": "test"},
+            }),
+        );
+        let mut entries = Vec::new();
+        for (index, channel) in [10u8, 20, 30, 40, 50, 60, 70].into_iter().enumerate() {
             let edited = pixel_edit(
                 &owner,
                 viewer,
                 &asset,
-                index as u64,
+                index as u64 + 1,
                 &format!("edit-{channel}"),
                 [channel, channel, channel],
             );
@@ -2337,40 +2359,22 @@ mod tests {
                 json!({"asset_id": asset, "target": {"kind": "entry", "entry_id": entry}}),
             )
         };
-        // A requester of a superseded job simply asks again, which is what the contract says a
-        // client does. Retrying here keeps the test independent of which job the one worker
-        // happened to be running when a later request took the pending slot.
-        let settle_ready = |client: ClientId, id: &str, entry: &Value| -> Value {
-            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
-            loop {
-                let requested = entry_request(client, id, entry);
-                let read = settled(&owner, client, &requested["job_id"]);
-                if read["status"] == json!("ready") {
-                    assert!(read["report"].is_object());
-                    return read;
-                }
-                assert_eq!(read["status"], json!("superseded"), "{read}");
-                assert!(
-                    std::time::Instant::now() < deadline,
-                    "a retried request never ran"
-                );
-            }
+        let read = |client: ClientId, id: &str, job: &Value| {
+            ok(&owner, client, id, "analysis.read", json!({"job_id": job}))
         };
 
-        // Three requests back to back. The owner is single-threaded and each of these costs only a
-        // state read and an O(layers) plan, while the worker is rendering and reducing 153,600
-        // pixels, so the second request lands in the pending slot and the third displaces it.
+        // From here until the gate opens, whichever job the worker started stays on it.
+        gate.shut();
+
+        // Three requests: the first takes the worker, the second the one pending slot and the
+        // third displaces the second out of it.
         let active = entry_request(viewer, "a", &entries[0]);
+        assert_eq!(active["status"], json!("pending"));
         let displaced = entry_request(viewer, "b", &entries[1]);
-        let winner = entry_request(viewer, "c", &entries[2]);
         assert_eq!(displaced["status"], json!("pending"));
-        let superseded = ok(
-            &owner,
-            viewer,
-            "read-b",
-            "analysis.read",
-            json!({"job_id": displaced["job_id"]}),
-        );
+        let winner = entry_request(viewer, "c", &entries[2]);
+        assert_eq!(winner["status"], json!("pending"));
+        let superseded = read(viewer, "read-b", &displaced["job_id"]);
         assert_eq!(
             superseded["status"],
             json!("superseded"),
@@ -2381,95 +2385,42 @@ mod tests {
             "a superseded job carries no counts"
         );
         assert!(superseded.get("error").is_none());
-        // Re-requesting a superseded identity is allowed and gets fresh work.
+
+        // Re-requesting a superseded identity is allowed and gets fresh work, which takes the slot
+        // from the request that displaced it: the newest request always holds it.
         let again = entry_request(viewer, "b-again", &entries[1]);
         assert_ne!(again["job_id"], displaced["job_id"]);
-        // The job that was already running finishes; the other two are whatever the single pending
-        // slot left them, and a requester of a superseded job simply asks again until it runs.
+        assert_eq!(again["status"], json!("pending"));
         assert_eq!(
-            settled(&owner, viewer, &active["job_id"])["status"],
-            json!("ready")
-        );
-        settle_ready(viewer, "retry-b", &entries[1]);
-        settle_ready(viewer, "retry-c", &entries[2]);
-        let _ = (&again, &winner);
-
-        // Cancelling one client's interest in a shared job leaves the other client's result intact.
-        let shared_viewer = entry_request(viewer, "shared-v", &entries[3]);
-        let shared_agent = entry_request(agent, "shared-a", &entries[3]);
-        assert_eq!(shared_viewer["job_id"], shared_agent["job_id"]);
-        assert_eq!(
-            ok(
-                &owner,
-                viewer,
-                "cancel",
-                "analysis.cancel",
-                json!({"job_id": shared_viewer["job_id"]}),
-            ),
-            json!({"cancelled": true})
-        );
-        let kept = settled(&owner, agent, &shared_agent["job_id"]);
-        assert_eq!(
-            kept["status"],
-            json!("ready"),
-            "the other client still wants it"
-        );
-        assert!(kept["report"].is_object());
-        assert_eq!(
-            ok(
-                &owner,
-                viewer,
-                "read-shared",
-                "analysis.read",
-                json!({"job_id": shared_viewer["job_id"]}),
-            )["report"],
-            kept["report"],
-            "one client's cancel did not invalidate the shared result"
+            read(viewer, "read-c", &winner["job_id"])["status"],
+            json!("superseded"),
+            "the third request lost the slot to the fourth"
         );
 
         // The last interest withdrawing drops a job that had not started yet: it reads `cancelled`
         // and carries no counts, and the requester may still read the outcome it asked for.
-        let running = entry_request(agent, "running", &entries[4]);
-        let queued = entry_request(agent, "queued", &entries[5]);
-        assert_eq!(queued["status"], json!("pending"));
-        ok(
-            &owner,
-            agent,
-            "cancel-queued",
-            "analysis.cancel",
-            json!({"job_id": queued["job_id"]}),
+        assert_eq!(
+            ok(
+                &owner,
+                viewer,
+                "cancel-queued",
+                "analysis.cancel",
+                json!({"job_id": again["job_id"]}),
+            ),
+            json!({"cancelled": true})
         );
-        let withdrawn = ok(
-            &owner,
-            agent,
-            "read-queued",
-            "analysis.read",
-            json!({"job_id": queued["job_id"]}),
-        );
+        let withdrawn = read(viewer, "read-queued", &again["job_id"]);
         assert_eq!(withdrawn["status"], json!("cancelled"), "{withdrawn}");
         assert!(
             withdrawn.get("report").is_none(),
             "a cancelled job carries no counts"
         );
-        let _ = &running;
-        settle_ready(agent, "running-again", &entries[4]);
 
         // A disconnect releases every interest that client held, exactly as a cancel does: the
-        // identity becomes re-requestable and a later request gets a fresh job.
+        // identity becomes re-requestable and the gone client owns no job.
         let before = entry_request(agent, "before", &entries[6]);
+        assert_eq!(before["status"], json!("pending"));
         owner.disconnect(agent);
-        let reconnected = owner.register();
-        let after = ok(
-            &owner,
-            reconnected,
-            "after",
-            "analysis.request",
-            json!({"asset_id": asset, "target": {"kind": "entry", "entry_id": entries[6]}}),
-        );
-        assert_ne!(
-            after["job_id"], before["job_id"],
-            "the released identity is re-requestable"
-        );
         assert_eq!(
             failure(
                 &owner,
@@ -2482,8 +2433,58 @@ mod tests {
             "validation",
             "a disconnected client owns no job"
         );
-        let _ = &after;
-        settle_ready(reconnected, "after-again", &entries[6]);
+
+        // Two clients on one identity share one job. Cancelling one interest leaves the work for
+        // the other, so the job stays where it is instead of being dropped from the slot.
+        let shared_viewer = entry_request(viewer, "shared-v", &entries[3]);
+        let shared_partner = entry_request(partner, "shared-p", &entries[3]);
+        assert_eq!(shared_viewer["job_id"], shared_partner["job_id"]);
+        assert_eq!(
+            ok(
+                &owner,
+                viewer,
+                "cancel",
+                "analysis.cancel",
+                json!({"job_id": shared_viewer["job_id"]}),
+            ),
+            json!({"cancelled": true})
+        );
+        assert_eq!(
+            read(partner, "read-shared-held", &shared_partner["job_id"])["status"],
+            json!("pending"),
+            "the other client still wants it"
+        );
+
+        // The gate opens: the held job finishes, the queue starts the one in the slot, and the
+        // requests below are made one at a time, so nothing displaces anything from here on.
+        gate.open();
+        let finished = settled(&owner, viewer, &active["job_id"]);
+        assert_eq!(finished["status"], json!("ready"), "{finished}");
+        assert!(finished["report"].is_object());
+        let kept = settled(&owner, partner, &shared_partner["job_id"]);
+        assert_eq!(kept["status"], json!("ready"), "{kept}");
+        assert!(kept["report"].is_object());
+        assert_eq!(
+            read(viewer, "read-shared", &shared_viewer["job_id"])["report"],
+            kept["report"],
+            "one client's cancel did not invalidate the shared result"
+        );
+
+        // Every identity the first half superseded or cancelled is re-requestable and runs.
+        for (id, entry) in [("retry-b", 1), ("retry-c", 2)] {
+            let requested = entry_request(viewer, id, &entries[entry]);
+            let ready = settled(&owner, viewer, &requested["job_id"]);
+            assert_eq!(ready["status"], json!("ready"), "{ready}");
+            assert!(ready["report"].is_object());
+        }
+        let reconnected = owner.register();
+        let after = entry_request(reconnected, "after", &entries[6]);
+        assert_ne!(
+            after["job_id"], before["job_id"],
+            "the released identity is re-requestable"
+        );
+        let ready = settled(&owner, reconnected, &after["job_id"]);
+        assert_eq!(ready["status"], json!("ready"), "{ready}");
         owner.stop();
         join.join().unwrap();
         std::fs::remove_file(catalog).unwrap();
