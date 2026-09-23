@@ -1,4 +1,4 @@
-use crate::{Error, ErrorKind, modules::CropPayload};
+use crate::{ArtifactId, Error, ErrorKind, artifacts::MAX_LAYER_ARTIFACTS, modules::CropPayload};
 use serde::{Deserialize, Deserializer, Serialize, Serializer, de};
 use serde_json::{Value, json};
 use std::collections::HashSet;
@@ -101,6 +101,12 @@ pub struct Layer {
     pub effect_id: String,
     pub effect_format: u32,
     pub payload: Value,
+    /// The derived artifacts this layer's payload is evaluated with, in the order the module
+    /// receives them. Host-owned: only a layer of an effect that declares `artifacts` may list any,
+    /// the commit checks each one is published in the catalog, and evaluation binds their verified
+    /// bytes. Omitted when empty, so a layer without artifacts is stored exactly as before.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub artifacts: Vec<ArtifactId>,
 }
 
 impl Layer {
@@ -110,6 +116,7 @@ impl Layer {
             effect_id: PIXEL_EFFECT.into(),
             effect_format: EFFECT_FORMAT,
             payload: json!({"x": x, "y": y, "rgb": rgb}),
+            artifacts: Vec::new(),
         }
     }
     /// The one orientation layer of a stage: the composed quarter turns and reflections that every
@@ -120,6 +127,7 @@ impl Layer {
             effect_id: ORIENTATION_EFFECT.into(),
             effect_format: EFFECT_FORMAT,
             payload: serde_json::to_value(orientation).expect("orientation is serializable"),
+            artifacts: Vec::new(),
         }
     }
     /// The one crop layer of a stack: straightening and a rectangle over its own input stage.
@@ -129,15 +137,33 @@ impl Layer {
             effect_id: CROP_EFFECT.into(),
             effect_format: EFFECT_FORMAT,
             payload: serde_json::to_value(payload).expect("crop payload is serializable"),
+            artifacts: Vec::new(),
         }
     }
-    /// Structural only: effect availability and payload shape belong to the providing module,
-    /// reached through [`crate::ModuleRegistry`].
+    /// Structural only: effect availability, payload shape and whether the effect may reference
+    /// artifacts at all belong to the providing module, reached through [`crate::ModuleRegistry`].
     pub fn validate(&self) -> Result<(), Error> {
         if self.effect_id.is_empty() {
             return Err(Error::new(
                 ErrorKind::Validation,
                 "layer has no effect identity",
+            ));
+        }
+        if self.artifacts.len() > MAX_LAYER_ARTIFACTS {
+            return Err(Error::new(
+                ErrorKind::Validation,
+                format!(
+                    "layer {} references {} artifacts, more than {MAX_LAYER_ARTIFACTS}",
+                    self.id,
+                    self.artifacts.len()
+                ),
+            ));
+        }
+        let mut seen = HashSet::with_capacity(self.artifacts.len());
+        if let Some(duplicate) = self.artifacts.iter().find(|id| !seen.insert(*id)) {
+            return Err(Error::new(
+                ErrorKind::Validation,
+                format!("layer {} references artifact {duplicate} twice", self.id),
             ));
         }
         Ok(())
@@ -402,6 +428,7 @@ mod tests {
             effect_id: String::new(),
             effect_format: EFFECT_FORMAT,
             payload: json!({}),
+            artifacts: Vec::new(),
         };
         assert_eq!(nameless.validate().unwrap_err().kind, ErrorKind::Validation);
         // Payload shape and effect format are the providing module's business, not the model's.
@@ -453,6 +480,47 @@ mod tests {
             recipe.with_layer_inserted(0, duplicate).unwrap_err().kind,
             ErrorKind::Validation,
             "a duplicate identity is rejected wherever it is inserted"
+        );
+    }
+
+    #[test]
+    fn a_layer_lists_each_artifact_once_and_at_most_sixteen() {
+        let artifact = |index: usize| ArtifactId::for_hash(&format!("{index:064x}")).unwrap();
+        let plain = Layer::pixel(0, 0, [1, 2, 3]);
+        assert_eq!(
+            serde_json::to_value(&plain).unwrap().get("artifacts"),
+            None,
+            "a layer without artifacts serializes exactly as before"
+        );
+        let full = Layer {
+            artifacts: (0..MAX_LAYER_ARTIFACTS).map(artifact).collect(),
+            ..plain.clone()
+        };
+        full.validate().unwrap();
+        let encoded = serde_json::to_value(&full).unwrap();
+        assert_eq!(encoded["artifacts"][0], json!(artifact(0).as_str()));
+        assert_eq!(serde_json::from_value::<Layer>(encoded).unwrap(), full);
+        let excess = Layer {
+            artifacts: (0..=MAX_LAYER_ARTIFACTS).map(artifact).collect(),
+            ..plain.clone()
+        };
+        let error = excess.validate().unwrap_err();
+        assert_eq!(error.kind, ErrorKind::Validation);
+        assert!(
+            error.detail.contains("17 artifacts, more than 16"),
+            "{error}"
+        );
+        let repeated = Layer {
+            artifacts: vec![artifact(1), artifact(2), artifact(1)],
+            ..plain
+        };
+        let error = repeated.validate().unwrap_err();
+        assert_eq!(error.kind, ErrorKind::Validation);
+        assert!(
+            error
+                .detail
+                .ends_with(&format!("references artifact {} twice", artifact(1))),
+            "{error}"
         );
     }
 }

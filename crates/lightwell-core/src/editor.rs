@@ -3,6 +3,7 @@ use crate::{
     ModuleRegistry, Mutation, PreviewJob, PreviewSource, ProxyBounds, Raster, Recipe, Snapshot,
     SnapshotId, Transform,
     analysis::AnalysisIdentity,
+    artifacts::{ArtifactId, LiveArtifacts, PreparedArtifact, PreparedArtifacts},
     modules::{
         ActionInput, ActionPlan, EffectStage, Stage, StageContext, action_label, check_parameters,
     },
@@ -25,8 +26,13 @@ use std::{
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
-/// Entries store their rendered label, so a catalog written before format 3 is refused by name.
-const CATALOG_FORMAT: i64 = 4;
+mod artifact_store;
+#[cfg(test)]
+mod artifact_tests;
+
+/// Format 5 adds the catalog identity and the derived-artifact tables, so a catalog written before
+/// it is refused by name and kept intact.
+const CATALOG_FORMAT: i64 = 5;
 const MAX_HISTORY_PAGE: usize = 100;
 const MAX_VERSION_NAME: usize = 64;
 const ASSET_COLUMNS: &str =
@@ -154,6 +160,8 @@ pub struct AnalysisPlan {
     pub registry: Arc<ModuleRegistry>,
     pub recipe: Recipe,
     pub failure: Option<Error>,
+    /// The verified bytes of every artifact `recipe` references, which the job holds while it runs.
+    pub artifacts: Vec<Arc<PreparedArtifact>>,
 }
 
 /// Which draft, at which revision, a sample, a preview or an analysis was evaluated against.
@@ -206,6 +214,9 @@ pub struct LayerDescription {
     #[serde(default)]
     pub values: Map<String, Value>,
     pub available: bool,
+    /// The derived artifacts the stored layer references, in its order. Omitted when it has none.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub artifacts: Vec<ArtifactId>,
 }
 
 /// One entry's ordered layers with their provider and summary. Reading only: no source, no render.
@@ -273,6 +284,17 @@ pub struct EditorService {
     source_cache: RefCell<Option<CachedSource>>,
     allow_sync_source: bool,
     registry: Arc<ModuleRegistry>,
+    /// This catalog's own identity, which its artifact root's manifest must name.
+    catalog_id: String,
+    /// Where this catalog's artifacts live: `<catalog stem>.artifacts` beside the catalog file, or
+    /// the directory `artifact.relocate` verified and recorded.
+    artifact_root: PathBuf,
+    /// Verified artifact bytes kept ready for evaluation, bounded and least recently used first out.
+    prepared_artifacts: RefCell<PreparedArtifacts>,
+    /// The manifest signature the root was last checked under, so an unchanged root costs one stat.
+    checked_manifest: RefCell<Option<SourceSignature>>,
+    /// Artifacts published while this service is open, which no collection removes.
+    live_artifacts: LiveArtifacts,
 }
 
 impl EditorService {
@@ -319,11 +341,48 @@ impl EditorService {
                 ));
             }
         }
+        let meta = |key: &str| -> Result<Option<String>, Error> {
+            connection
+                .query_row(
+                    "SELECT value FROM catalog_meta WHERE key=?1",
+                    [key],
+                    |row| row.get(0),
+                )
+                .optional()
+                .map_err(catalog_error)
+        };
+        let catalog_id = meta("catalog_id")?.ok_or_else(|| {
+            Error::new(
+                ErrorKind::Incompatible,
+                "catalog has no identity; choose a new catalog path",
+            )
+        })?;
+        // The default root follows the catalog file, so moving both together keeps it; a relocated
+        // root is recorded as the canonical directory the relocation verified.
+        let artifact_root = match meta("artifact_root")? {
+            Some(root) => PathBuf::from(root),
+            None => {
+                let canonical = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+                let stem = canonical
+                    .file_stem()
+                    .map(|stem| stem.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| "catalog".into());
+                canonical
+                    .parent()
+                    .unwrap_or(Path::new(""))
+                    .join(format!("{stem}.artifacts"))
+            }
+        };
         Ok(Self {
             connection,
             source_cache: RefCell::new(None),
             allow_sync_source: true,
             registry,
+            catalog_id,
+            artifact_root,
+            prepared_artifacts: RefCell::new(PreparedArtifacts::default()),
+            checked_manifest: RefCell::new(None),
+            live_artifacts: LiveArtifacts::default(),
         })
     }
 
@@ -392,8 +451,34 @@ impl EditorService {
                  CREATE TRIGGER entries_are_immutable BEFORE UPDATE ON entries BEGIN
                     SELECT RAISE(ABORT, 'history entries are immutable');
                  END;
+                 CREATE TABLE catalog_meta (
+                    key TEXT PRIMARY KEY,
+                    value TEXT NOT NULL
+                 );
+                 CREATE TABLE artifacts (
+                    id TEXT PRIMARY KEY,
+                    sha256 TEXT NOT NULL,
+                    bytes INTEGER NOT NULL,
+                    kind TEXT NOT NULL,
+                    width INTEGER,
+                    height INTEGER,
+                    colour TEXT,
+                    module_id TEXT NOT NULL,
+                    created_ms INTEGER NOT NULL
+                 );
+                 CREATE TABLE artifact_refs (
+                    entry_id TEXT NOT NULL REFERENCES entries(id),
+                    artifact_id TEXT NOT NULL REFERENCES artifacts(id),
+                    PRIMARY KEY(entry_id, artifact_id)
+                 );
+                 CREATE INDEX artifact_refs_by_artifact ON artifact_refs(artifact_id);
+                 CREATE TRIGGER artifact_refs_are_permanent BEFORE DELETE ON artifact_refs BEGIN
+                    SELECT RAISE(ABORT, 'artifact references are permanent');
+                 END;
+                 INSERT INTO catalog_meta VALUES ('catalog_id', '{catalog_id}');
                  PRAGMA user_version={CATALOG_FORMAT};
-                 COMMIT;"
+                 COMMIT;",
+                catalog_id = uuid::Uuid::new_v4()
             ))
             .map_err(catalog_error)
     }
@@ -811,7 +896,7 @@ impl EditorService {
             ],
         )
         .map_err(catalog_error)?;
-        insert_entry(&self.registry, &tx, &entry)?;
+        insert_entry(&self.registry, &tx, &self.artifact_root, &entry)?;
         tx.execute(
             "INSERT INTO asset_state VALUES (?1,?2,0,'[]')",
             params![asset.id.as_str(), entry.id.as_str()],
@@ -918,6 +1003,7 @@ impl EditorService {
                     summary: "no provider".into(),
                     values: Map::new(),
                     available: false,
+                    artifacts: layer.artifacts.clone(),
                 },
                 Some((module, _)) => {
                     let descriptor = module.descriptor();
@@ -958,6 +1044,7 @@ impl EditorService {
                         summary,
                         values,
                         available,
+                        artifacts: layer.artifacts.clone(),
                     }
                 }
             };
@@ -1014,6 +1101,9 @@ impl EditorService {
                 format!("preview layer count {count} exceeds the {layers} layers of this entry"),
             ));
         }
+        // The artifacts the rendered stack references are bound before anything compiles it, and
+        // the job holds their verified bytes, so a cache eviction never breaks it on the worker.
+        let artifacts = self.require_artifacts(&recipe)?;
         // A draft's effective recipe decides the RAW development settings too, so a drafted
         // exposure previews the value the gesture holds rather than the committed one.
         let source = self.preview_source(&state.asset, &recipe)?;
@@ -1044,13 +1134,16 @@ impl EditorService {
             // whole stack does not describe, and the desktop shows it only as a drafting aid. It
             // therefore never has a proxy phase, whatever bounds the caller offered.
             proxy: proxy.filter(|_| layer_count.is_none()),
+            artifacts,
         })
     }
 
     /// The identity of the analysis of one evaluated stack, and the reason that stack has no output
     /// stage when the host cannot compile it. `O(layers)`: it compiles the stack to learn its output
     /// dimensions and hashes the recipe, and it reads no pixels and rasterizes nothing, so the
-    /// catalog owner may call it while building a job.
+    /// catalog owner may call it while building a job. A stack whose artifacts are missing or not
+    /// prepared is an error rather than a stack without an output stage: it is not unevaluable,
+    /// only not evaluable yet.
     pub fn analysis_identity(
         &self,
         asset_id: &AssetId,
@@ -1060,6 +1153,7 @@ impl EditorService {
         recipe: &Recipe,
         draft: Option<DraftStamp>,
     ) -> Result<(AnalysisIdentity, Option<Error>), Error> {
+        let _artifacts = self.require_artifacts(recipe)?;
         let stage = self
             .registry
             .compile(source_dimensions.0, source_dimensions.1, recipe)
@@ -1135,6 +1229,9 @@ impl EditorService {
                 (drafted.current_entry, recipe, Some(stamp))
             }
         };
+        // The job holds the verified bytes of every artifact its stack references, so a cache
+        // eviction never breaks it on the worker.
+        let artifacts = self.require_artifacts(&recipe)?;
         // The identity and the output stage come from the asset record, so a stack the host cannot
         // evaluate at all is reported failed without decoding or developing the original: there is
         // no frame for that job to render. Only an evaluable stack asks for the prepared source.
@@ -1156,12 +1253,14 @@ impl EditorService {
             registry: self.registry.clone(),
             recipe,
             failure,
+            artifacts,
         })
     }
 
     pub fn render_entry(&self, asset_id: &AssetId, entry_id: &EntryId) -> Result<Raster, Error> {
         let state = self.state(asset_id)?;
         let entry = self.entry(asset_id, entry_id)?;
+        let _artifacts = self.require_artifacts(&entry.snapshot.recipe)?;
         match self.verified_prepared(&state.asset)? {
             PreparedSource::Jpeg(source) => {
                 validate_source_recipe(&state.asset, &entry.snapshot.recipe)?;
@@ -1197,6 +1296,7 @@ impl EditorService {
     ) -> Result<PixelSample, Error> {
         let state = self.state(asset_id)?;
         let entry = self.entry(asset_id, entry_id)?;
+        let _artifacts = self.require_artifacts(&entry.snapshot.recipe)?;
         let source = self.preview_source(&state.asset, &entry.snapshot.recipe)?;
         let sampled = source.sample(&self.registry, &entry.snapshot.recipe, x, y)?;
         pixel_sample(entry, &state.asset.fingerprint, sampled, x, y, None)
@@ -1213,6 +1313,7 @@ impl EditorService {
         y: u32,
     ) -> Result<PixelSample, Error> {
         let (recipe, state) = self.draft_recipe(asset_id, draft)?;
+        let _artifacts = self.require_artifacts(&recipe)?;
         let source = self.preview_source(&state.asset, &recipe)?;
         let sampled = source.sample(&self.registry, &recipe, x, y)?;
         let fingerprint = state.asset.fingerprint.clone();
@@ -1242,6 +1343,7 @@ impl EditorService {
         let state = self.state(asset_id)?;
         let entry = self.entry(asset_id, entry_id)?;
         validate_source_recipe(&state.asset, &entry.snapshot.recipe)?;
+        let _artifacts = self.require_artifacts(&entry.snapshot.recipe)?;
         locate_dimensions(
             &self.registry,
             state.asset.width,
@@ -1282,6 +1384,8 @@ impl EditorService {
         ensure_revision(&state, mutation.expected_revision)?;
         let recipe = &state.current_entry.snapshot.recipe;
         validate_source_recipe(&state.asset, recipe)?;
+        // Both planning paths compile the current stack, so its artifacts are bound first.
+        let _artifacts = self.require_artifacts(recipe)?;
         if module.descriptor().id == "lightwell.raw" {
             let (width, height) = (state.asset.width, state.asset.height);
             let stage = registry.compile(width, height, recipe)?.stage();
@@ -1541,6 +1645,7 @@ impl EditorService {
         let state = self.state(asset_id)?;
         let entry = self.entry(asset_id, entry_id)?;
         validate_source_recipe(&state.asset, &entry.snapshot.recipe)?;
+        let _artifacts = self.require_artifacts(&entry.snapshot.recipe)?;
         let source = self.verified_prepared(&state.asset)?;
         self.with_stage_context(&source, &entry.snapshot.recipe, |context| {
             module.query(query_id, &checked, context)
@@ -1573,6 +1678,9 @@ impl EditorService {
         let input = module.parse(&draft.action, &checked)?;
         let state = self.state(asset_id)?;
         validate_source_recipe(&state.asset, &state.current_entry.snapshot.recipe)?;
+        // Planning compiles the current stack. The effective recipe may reference an artifact the
+        // current one does not, so each caller binds that recipe's artifacts before evaluating it.
+        let _artifacts = self.require_artifacts(&state.current_entry.snapshot.recipe)?;
         let source = self.verified_prepared(&state.asset)?;
         let recipe = match self.plan_input(&state, &source, module, &input)? {
             ActionPlan::NoOp => state.current_entry.snapshot.recipe.clone(),
@@ -1697,6 +1805,8 @@ impl EditorService {
     /// resulting recipe is validated and compiled against the cached verified source first, so a
     /// stack that leaves a later layer addressing a stage that no longer exists is rejected with
     /// the compile error and nothing is written. Compiling is O(layers) and rasterizes nothing.
+    /// Every artifact the stack lists must be recorded with a present file before it is bound and
+    /// compiled; the transaction checks that again and records the entry's references with it.
     fn commit_snapshot(
         &mut self,
         asset_id: &AssetId,
@@ -1710,6 +1820,12 @@ impl EditorService {
         ensure_revision(&state, mutation.expected_revision)?;
         self.registry.validate_recipe(&snapshot.recipe)?;
         validate_source_recipe(asset, &snapshot.recipe)?;
+        artifact_store::recorded_artifacts(
+            &self.connection,
+            &self.artifact_root,
+            &snapshot.recipe,
+        )?;
+        let _artifacts = self.require_artifacts(&snapshot.recipe)?;
         self.registry
             .compile(asset.width, asset.height, &snapshot.recipe)?;
         let entry = HistoryEntry {
@@ -1740,7 +1856,7 @@ impl EditorService {
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(catalog_error)?;
         ensure_request_absent(&tx, asset_id, &mutation.request_id)?;
-        insert_entry(&self.registry, &tx, &entry)?;
+        insert_entry(&self.registry, &tx, &self.artifact_root, &entry)?;
         tx.execute("UPDATE asset_state SET current_entry_id=?2,revision=?3,redo_json='[]' WHERE asset_id=?1", params![asset_id.as_str(), entry.id.as_str(), entry.result_revision as i64]).map_err(catalog_error)?;
         insert_request(&tx, asset_id, &mutation.request_id, &request, &result)?;
         tx.commit().map_err(catalog_error)?;
@@ -1876,7 +1992,7 @@ impl EditorService {
             .connection
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(catalog_error)?;
-        insert_entry(&self.registry, &tx, &entry)?;
+        insert_entry(&self.registry, &tx, &self.artifact_root, &entry)?;
         tx.execute("UPDATE asset_state SET current_entry_id=?2,revision=?3,redo_json='[]' WHERE asset_id=?1", params![asset_id.as_str(), entry.id.as_str(), entry.result_revision as i64]).map_err(catalog_error)?;
         insert_request(&tx, asset_id, &mutation.request_id, &input, &result)?;
         tx.commit().map_err(catalog_error)?;
@@ -2381,9 +2497,13 @@ fn raw_payload(recipe: &crate::Recipe) -> Result<crate::RawPayload, Error> {
     crate::RawPayload::from_layer(layer)
 }
 
+/// Every path that writes a history entry comes through here, inside its own transaction, so the
+/// entry's artifact references are checked and recorded with it or not at all: a snapshot can
+/// never point at an artifact the catalog does not hold.
 fn insert_entry(
     registry: &ModuleRegistry,
     tx: &Transaction<'_>,
+    artifact_root: &Path,
     entry: &HistoryEntry,
 ) -> Result<(), Error> {
     registry.validate_recipe(&entry.snapshot.recipe)?;
@@ -2400,7 +2520,7 @@ fn insert_entry(
         ],
     )
     .map_err(catalog_error)?;
-    Ok(())
+    artifact_store::link_artifacts(tx, artifact_root, entry)
 }
 
 fn next_sequence(connection: &Connection, asset_id: &AssetId) -> Result<u64, Error> {
@@ -3472,13 +3592,51 @@ mod tests {
         assert_eq!(error.kind, ErrorKind::Incompatible);
         assert_eq!(
             error.detail,
-            "catalog format 2 is not supported; expected 4; choose a new catalog path"
+            "catalog format 2 is not supported; expected 5; choose a new catalog path"
         );
         assert_eq!(
             std::fs::read(&catalog).unwrap(),
             before,
             "a refused catalog is left byte for byte as it was"
         );
+        std::fs::remove_file(catalog).unwrap();
+    }
+
+    #[test]
+    fn a_format_4_catalog_is_refused_by_name_and_left_untouched() {
+        let catalog = temp("format-4.sqlite");
+        let mut service = EditorService::open(&catalog).unwrap();
+        let asset = service.import(&fixture()).unwrap().asset.id;
+        service
+            .apply_pixel(&asset, mutation(0, "pixel"), 1, 1, [9, 8, 7])
+            .unwrap();
+        drop(service);
+        // A format 4 catalog is this schema without the catalog identity and the artifact tables.
+        let connection = Connection::open(&catalog).unwrap();
+        connection
+            .execute_batch(
+                "DROP TRIGGER artifact_refs_are_permanent;
+                 DROP TABLE artifact_refs;
+                 DROP TABLE artifacts;
+                 DROP TABLE catalog_meta;
+                 PRAGMA user_version=4;",
+            )
+            .unwrap();
+        drop(connection);
+        let before = std::fs::read(&catalog).unwrap();
+        let error = EditorService::open(&catalog).unwrap_err();
+        assert_eq!(error.kind, ErrorKind::Incompatible);
+        assert_eq!(
+            error.detail,
+            "catalog format 4 is not supported; expected 5; choose a new catalog path"
+        );
+        assert_eq!(
+            std::fs::read(&catalog).unwrap(),
+            before,
+            "the refused catalog keeps every byte, and no artifact directory is created"
+        );
+        let stem = catalog.file_stem().unwrap().to_string_lossy().into_owned();
+        assert!(!catalog.with_file_name(format!("{stem}.artifacts")).exists());
         std::fs::remove_file(catalog).unwrap();
     }
 
@@ -3901,6 +4059,7 @@ mod tests {
                 effect_id: effect_id.into(),
                 effect_format: EFFECT_FORMAT,
                 payload: json!({"width": width, "height": height}),
+                artifacts: Vec::new(),
             }
         }
 

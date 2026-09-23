@@ -57,6 +57,7 @@ fn basic_layer(payload: Value) -> Layer {
         effect_id: BASIC_EFFECT.into(),
         effect_format: EFFECT_FORMAT,
         payload,
+        artifacts: Vec::new(),
     }
 }
 

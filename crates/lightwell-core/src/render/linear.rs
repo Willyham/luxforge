@@ -948,6 +948,7 @@ mod tests {
                 effect_id: crate::BASIC_EFFECT.into(),
                 effect_format: crate::EFFECT_FORMAT,
                 payload: serde_json::json!({"exposure": 1.0}),
+                artifacts: Vec::new(),
             }],
         };
         let raster = render_linear(
@@ -1328,6 +1329,7 @@ mod tests {
                 effect_id: crate::BASIC_EFFECT.into(),
                 effect_format: crate::EFFECT_FORMAT,
                 payload: serde_json::json!({"exposure": 0.5, "contrast": 20.0, "vibrance": 30.0}),
+                artifacts: Vec::new(),
             }],
         }
     }

@@ -249,6 +249,7 @@ pub(crate) fn crop_layer(payload: CropPayload) -> lightwell_core::Layer {
         effect_id: CROP_EFFECT.into(),
         effect_format: 1,
         payload: serde_json::to_value(payload).expect("a serializable payload"),
+        artifacts: Vec::new(),
     }
 }
 
@@ -323,6 +324,7 @@ pub(crate) fn refresh_for(
             .expect("a test analysis identity"),
             analyse: false,
             proxy: None,
+            artifacts: Vec::new(),
         },
         session: ClientSession::default(),
         sequence: 7,

@@ -759,6 +759,7 @@ impl ToolModule for BasicModule {
                 effect_id: BASIC_EFFECT.into(),
                 effect_format: EFFECT_FORMAT,
                 payload: payload_of(&merged),
+                artifacts: Vec::new(),
             })),
             // The host inserts a colour-stage layer before the geometry tail; a neutral first set
             // has nothing to store, so it adds no layer at all.
@@ -768,6 +769,7 @@ impl ToolModule for BasicModule {
                 effect_id: BASIC_EFFECT.into(),
                 effect_format: EFFECT_FORMAT,
                 payload: payload_of(&merged),
+                artifacts: Vec::new(),
             })),
         }
     }
@@ -979,6 +981,7 @@ mod tests {
             effect_id: BASIC_EFFECT.into(),
             effect_format: EFFECT_FORMAT,
             payload,
+            artifacts: Vec::new(),
         }
     }
 

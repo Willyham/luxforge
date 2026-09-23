@@ -5,8 +5,8 @@ use super::{
     ApiRequest, ApiResponse, COMPONENT_GALLERY_PAGE_COUNT, ClientSession, POINTER_MODE, PROTOCOL,
 };
 use crate::{
-    ActionDescriptor, AssetId, Draft, DraftId, EditorService, EntryId, Error, ErrorKind,
-    HistorySelection, ModuleRegistry, Mutation, Zoom,
+    ActionDescriptor, ArtifactId, AssetId, Draft, DraftId, EditorService, EntryId, Error,
+    ErrorKind, HistorySelection, ModuleRegistry, Mutation, Zoom,
 };
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::{Map, Value, json};
@@ -351,6 +351,40 @@ pub(super) const METHODS: &[MethodSpec] = &[
         required: &["job_id"],
         optional: &[],
         notes: "drops this client's interest in the job and cancels the work only when no other client holds it; returns {cancelled: true}",
+        handler: None,
+    },
+    MethodSpec {
+        name: "artifact.status",
+        mutates: false,
+        required: &[],
+        optional: &[],
+        notes: "the catalog's derived-artifact root and its state (absent, ready, missing or foreign), the catalog_id its manifest must name, and how many artifacts entries reference, how many a collection would remove and their recorded bytes; reads the manifest and counts rows only",
+        handler: Some(artifact_status),
+    },
+    MethodSpec {
+        name: "artifact.inspect",
+        mutates: false,
+        required: &["artifact_id"],
+        optional: &[],
+        notes: "one artifact's record (hash, bytes, kind, dimensions, colour, publishing module, time), whether its file is present, missing or of the wrong length, how many entries reference it and whether a task of this process published it; stats only",
+        handler: Some(artifact_inspect),
+    },
+    // Relocation and collection run on the source worker and are read with job.status, so the
+    // catalog owner answers them. Both emit their event when the request is accepted.
+    MethodSpec {
+        name: "artifact.relocate",
+        mutates: true,
+        required: &["directory"],
+        optional: &[],
+        notes: "queues a source job that checks the directory's manifest names this catalog and every referenced artifact's hash there, then records it as the artifact root; any mismatch fails the job naming the first bad artifact and changes nothing; returns {job_id, status}",
+        handler: None,
+    },
+    MethodSpec {
+        name: "artifact.collect",
+        mutates: true,
+        required: &[],
+        optional: &[],
+        notes: "removes the rows of artifacts no entry references and no task of this process published, then queues a source job that removes their files, object files without a row and staged files older than an hour; nothing an entry references is touched; returns {job_id, status} and the job result counts {rows, objects, temporary}",
         handler: None,
     },
 ];
@@ -1204,6 +1238,34 @@ fn render_locate(
     value(service.locate_entry(&p.asset_id, &entry_id, p.x, p.y)?)
 }
 
+fn artifact_status(
+    service: &mut EditorService,
+    _: &mut ClientSession,
+    params: &Value,
+) -> Result<Value, Error> {
+    #[derive(Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct P {}
+    if !params.is_null() {
+        parse::<P>(params)?;
+    }
+    service.artifact_status()
+}
+
+fn artifact_inspect(
+    service: &mut EditorService,
+    _: &mut ClientSession,
+    params: &Value,
+) -> Result<Value, Error> {
+    #[derive(Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct P {
+        artifact_id: ArtifactId,
+    }
+    let p = parse::<P>(params)?;
+    service.inspect_artifact(&p.artifact_id)
+}
+
 fn require_current(session: &ClientSession) -> Result<(), Error> {
     if session.preview.can_edit() {
         Ok(())
@@ -1800,6 +1862,7 @@ mod tests {
                 effect_id: MARK_EFFECT.into(),
                 effect_format: EFFECT_FORMAT,
                 payload: json!({}),
+                artifacts: Vec::new(),
             }))
         }
         fn validate_payload(&self, _: &str, _: u32, _: &Value) -> Result<(), Error> {

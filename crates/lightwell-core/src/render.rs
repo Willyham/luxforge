@@ -1528,6 +1528,7 @@ mod tests {
                 effect_id: crate::BASIC_EFFECT.into(),
                 effect_format: EFFECT_FORMAT,
                 payload: json!({"exposure": 0.7, "contrast": 30.0, "vibrance": 40.0}),
+                artifacts: Vec::new(),
             },
             Layer::crop(rect.normalized(&stage)),
         ];
@@ -1846,6 +1847,7 @@ mod tests {
             effect_id: TEST_CROP_EFFECT.into(),
             effect_format: EFFECT_FORMAT,
             payload: serde_json::to_value(crop).unwrap(),
+            artifacts: Vec::new(),
         }
     }
 
@@ -1855,6 +1857,7 @@ mod tests {
             effect_id: TEST_OFFSET_EFFECT.into(),
             effect_format: EFFECT_FORMAT,
             payload: json!({"x": x, "y": y, "width": width, "height": height}),
+            artifacts: Vec::new(),
         }
     }
 
@@ -1864,6 +1867,7 @@ mod tests {
             effect_id: TEST_SCALE_EFFECT.into(),
             effect_format: EFFECT_FORMAT,
             payload: json!({"scale": scale}),
+            artifacts: Vec::new(),
         }
     }
 
@@ -2923,6 +2927,7 @@ mod tests {
             effect_id: TEST_COLOR_EFFECT.into(),
             effect_format: EFFECT_FORMAT,
             payload,
+            artifacts: Vec::new(),
         }
     }
 
@@ -3585,6 +3590,7 @@ mod tests {
                     effect_id: crate::BASIC_EFFECT.into(),
                     effect_format: EFFECT_FORMAT,
                     payload: json!({"exposure": 0.5, "contrast": 20.0, "vibrance": 30.0}),
+                    artifacts: Vec::new(),
                 },
                 Layer::crop(fitted_crop(height, width, 7.0, [0.05, 0.05, 0.9, 0.9])),
             ],

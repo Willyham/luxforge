@@ -614,6 +614,7 @@ mod tests {
             effect_id: BASIC_EFFECT.into(),
             effect_format: EFFECT_FORMAT,
             payload,
+            artifacts: Vec::new(),
         }
     }
 
@@ -1101,6 +1102,7 @@ mod tests {
             effect_id: "test.absent".into(),
             effect_format: EFFECT_FORMAT,
             payload: json!({}),
+            artifacts: Vec::new(),
         }]);
         let error = registry
             .proxy_eligible(&unknown)
@@ -1121,6 +1123,7 @@ mod tests {
                 effect_id: crate::VIGNETTE_EFFECT.into(),
                 effect_format: EFFECT_FORMAT,
                 payload: json!({ "amount": -40 }),
+                artifacts: Vec::new(),
             },
         ]);
         registry
@@ -1135,6 +1138,7 @@ mod tests {
                 effect_id: crate::PRESENCE_EFFECT.into(),
                 effect_format: EFFECT_FORMAT,
                 payload: json!({ "clarity": 60 }),
+                artifacts: Vec::new(),
             },
         ]);
         registry

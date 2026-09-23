@@ -2,6 +2,7 @@ use crate::{
     Cancel, EntryId, Error, ErrorKind, HistoryEntry, LinearImage, LinearSettings, ModuleRegistry,
     ProxyBounds, ProxyCache, ProxyKey, Raster, Recipe, SourceImage,
     analysis::{AnalysisIdentity, Report},
+    artifacts::PreparedArtifact,
     render, render_cancellable, render_linear, render_linear_cancellable,
 };
 use serde::{Deserialize, Serialize};
@@ -215,6 +216,10 @@ pub struct PreviewJob {
     /// or rendering the proxy declines it in [`PreviewResult::proxy_declined`] and the exact phase
     /// runs unchanged.
     pub proxy: Option<ProxyBounds>,
+    /// The verified bytes of every derived artifact [`PreviewJob::recipe`] references. The job
+    /// holds them for as long as it lives, so the worker compiles the stack whatever the owner's
+    /// cache evicts meanwhile.
+    pub artifacts: Vec<Arc<PreparedArtifact>>,
 }
 
 /// Which of a job's two phases produced a result.
@@ -693,6 +698,7 @@ mod tests {
             analyse,
             proxy: None,
             entry,
+            artifacts: Vec::new(),
         }
     }
 
@@ -866,6 +872,7 @@ mod tests {
                 effect_id: BASIC_EFFECT.into(),
                 effect_format: EFFECT_FORMAT,
                 payload: json!({"exposure": 0.5, "contrast": 20.0}),
+                artifacts: Vec::new(),
             },
             Layer::crop(fitted.normalized(&stage)),
         ]
@@ -929,6 +936,7 @@ mod tests {
             analyse: false,
             proxy,
             entry,
+            artifacts: Vec::new(),
         }
     }
 

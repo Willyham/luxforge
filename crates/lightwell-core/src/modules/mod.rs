@@ -52,8 +52,9 @@ pub use spatial::{
 pub use transform::TransformModule;
 pub use vignette::VignetteModule;
 
-use crate::{Error, Layer};
+use crate::{Error, Layer, artifacts::PreparedArtifact};
 use serde_json::{Map, Value};
+use std::sync::Arc;
 
 /// A normalized action request: the durable history action identity and the parameter object
 /// stored on the history entry.
@@ -191,4 +192,21 @@ pub trait ToolModule: Send + Sync {
         payload: &Value,
         stage: Stage,
     ) -> Result<Processing, Error>;
+    /// Compile a layer that references derived artifacts: the same as [`ToolModule::compile`], with
+    /// the verified bytes of every artifact the layer lists, in the layer's order. The host calls
+    /// this instead of `compile` only for a layer whose `artifacts` list is not empty, which only an
+    /// effect declaring `artifacts: true` may have. The bytes are immutable and already checked
+    /// against their hash; the module decides what they mean and refuses what it cannot use. The
+    /// default ignores them, so a module that declares no such effect never implements it.
+    fn compile_bound(
+        &self,
+        effect_id: &str,
+        format: u32,
+        payload: &Value,
+        stage: Stage,
+        artifacts: &[Arc<PreparedArtifact>],
+    ) -> Result<Processing, Error> {
+        let _ = artifacts;
+        self.compile(effect_id, format, payload, stage)
+    }
 }

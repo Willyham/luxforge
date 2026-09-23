@@ -493,6 +493,7 @@ impl ToolModule for VignetteModule {
                 effect_id: VIGNETTE_EFFECT.into(),
                 effect_format: EFFECT_FORMAT,
                 payload: payload_of(&merged),
+                artifacts: Vec::new(),
             })),
             // The host inserts a finish-stage layer at the end of the stack; a first set whose
             // merged amount is still 0 has nothing visible to store, so it adds no layer at all.
@@ -502,6 +503,7 @@ impl ToolModule for VignetteModule {
                 effect_id: VIGNETTE_EFFECT.into(),
                 effect_format: EFFECT_FORMAT,
                 payload: payload_of(&merged),
+                artifacts: Vec::new(),
             })),
         }
     }
@@ -608,6 +610,7 @@ mod tests {
             effect_id: VIGNETTE_EFFECT.into(),
             effect_format: EFFECT_FORMAT,
             payload,
+            artifacts: Vec::new(),
         }
     }
 

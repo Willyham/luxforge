@@ -917,6 +917,7 @@ mod tests {
                 summary: "Whole image".into(),
                 values: serde_json::Map::new(),
                 available: true,
+                artifacts: Vec::new(),
             }],
         });
         let workspace = scene.derive();

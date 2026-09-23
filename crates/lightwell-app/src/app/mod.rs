@@ -4432,6 +4432,7 @@ mod tests {
                     summary: "Test".into(),
                     values: values.as_object().cloned().unwrap_or_default(),
                     available: true,
+                    artifacts: Vec::new(),
                 })
                 .collect();
             let _ = editor.update(Message::Refreshed(Ok(Box::new(refresh))));
@@ -5011,6 +5012,7 @@ mod tests {
                     .cloned()
                     .unwrap_or_default(),
                 available: true,
+                artifacts: Vec::new(),
             }];
             Box::new(refresh)
         };
@@ -6614,6 +6616,7 @@ mod tests {
             analyse: false,
             proxy: None,
             entry,
+            artifacts: Vec::new(),
         };
         editor.editing = Some(("set-raw-exposure".into(), "ev".into()));
         let mut session = editor.session.clone();
@@ -6923,6 +6926,7 @@ mod tests {
             analyse: false,
             proxy: None,
             entry,
+            artifacts: Vec::new(),
         }
     }
 

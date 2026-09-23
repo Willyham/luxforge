@@ -205,6 +205,7 @@ impl ToolModule for ControlsModule {
             effect_id: CONTROLS_EFFECT.into(),
             effect_format: EFFECT_FORMAT,
             payload: Value::Object(merged),
+            artifacts: Vec::new(),
         };
         Ok(if old.is_some() {
             ActionPlan::Update(layer)

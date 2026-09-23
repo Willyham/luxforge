@@ -139,6 +139,7 @@ fn displayed_recipe(frame: &Value) -> Result<Recipe> {
                         .to_owned(),
                     effect_format: lightwell_core::EFFECT_FORMAT,
                     payload: layer["payload"].clone(),
+                    artifacts: Vec::new(),
                 })
             })
             .collect::<Result<Vec<_>>>()?,
@@ -178,6 +179,7 @@ fn drafted_recipe(frame: &Value) -> Result<Recipe> {
             effect_id: BASIC_EFFECT.into(),
             effect_format: EFFECT_FORMAT,
             payload: fields,
+            artifacts: Vec::new(),
         },
     );
     Ok(recipe)

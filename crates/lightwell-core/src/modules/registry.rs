@@ -6,7 +6,7 @@ use super::{
     RawModule, SPATIAL_TILE, Stage, ToolModule, TransformModule, VignetteModule,
 };
 use crate::{
-    Error, ErrorKind, Layer, RECIPE_FORMAT, Recipe,
+    Error, ErrorKind, Layer, RECIPE_FORMAT, Recipe, artifacts,
     render::{
         Compiled, Entry, Segment,
         spatial::{SpatialPlan, prefix_hash},
@@ -333,13 +333,14 @@ impl ModuleRegistry {
         module.descriptor().is_available().then_some(module)
     }
 
-    /// Structural validation stays in the model; effect availability and payload validation are
-    /// the registry's.
+    /// Structural validation stays in the model; effect availability, whether the effect may
+    /// reference artifacts and payload validation are the registry's.
     pub fn validate_layer(&self, layer: &Layer) -> Result<(), Error> {
         layer.validate()?;
         let module = self
             .provider(&layer.effect_id)
             .ok_or_else(|| unavailable(&layer.effect_id, vec![layer.id.as_str()]))?;
+        self.check_artifacts(layer)?;
         module.validate_payload(&layer.effect_id, layer.effect_format, &layer.payload)
     }
 
@@ -349,9 +350,26 @@ impl ModuleRegistry {
             let module = self
                 .provider(&layer.effect_id)
                 .ok_or_else(|| self.unavailable_in(&recipe.layers, &layer.effect_id))?;
+            self.check_artifacts(layer)?;
             module.validate_payload(&layer.effect_id, layer.effect_format, &layer.payload)?;
         }
         Ok(())
+    }
+
+    /// Only a layer of an effect that declares `artifacts` may reference any. The host owns the
+    /// list, so this is the host's rule, checked before the module sees the payload.
+    fn check_artifacts(&self, layer: &Layer) -> Result<(), Error> {
+        let declared = self
+            .effect(&layer.effect_id)
+            .is_some_and(|(_, effect)| effect.artifacts);
+        if layer.artifacts.is_empty() || declared {
+            Ok(())
+        } else {
+            Err(validation(format!(
+                "layer {} of effect {} references artifacts, which its effect does not declare",
+                layer.id, layer.effect_id
+            )))
+        }
     }
 
     fn unavailable_in(&self, layers: &[Layer], effect_id: &str) -> Error {
@@ -437,8 +455,32 @@ impl ModuleRegistry {
                 width: segment.width,
                 height: segment.height,
             };
-            let processing =
-                module.compile(&layer.effect_id, layer.effect_format, &layer.payload, stage)?;
+            let processing = if layer.artifacts.is_empty() {
+                module.compile(&layer.effect_id, layer.effect_format, &layer.payload, stage)?
+            } else {
+                // The caller that planned this evaluation holds the verified bytes, so resolving
+                // them is a lookup; an artifact nobody prepared is refused, never skipped.
+                self.check_artifacts(layer)?;
+                let bound = layer
+                    .artifacts
+                    .iter()
+                    .map(|id| {
+                        artifacts::prepared(id).ok_or_else(|| {
+                            Error::new(
+                                ErrorKind::SourceUnavailable,
+                                format!("artifact {id} is not prepared"),
+                            )
+                        })
+                    })
+                    .collect::<Result<Vec<_>, Error>>()?;
+                module.compile_bound(
+                    &layer.effect_id,
+                    layer.effect_format,
+                    &layer.payload,
+                    stage,
+                    &bound,
+                )?
+            };
             match processing {
                 Processing::ExactGeometry(step) => {
                     if !step.reads_inside(segment.width, segment.height) {
@@ -724,6 +766,7 @@ pub(crate) mod tests {
                     effect_id: PATCH_EFFECT.into(),
                     effect_format: EFFECT_FORMAT,
                     payload,
+                    artifacts: Vec::new(),
                 })),
             }
         }
@@ -841,6 +884,7 @@ pub(crate) mod tests {
                 effect_id: self.0.effects[0].id.clone(),
                 effect_format: EFFECT_FORMAT,
                 payload: json!({}),
+                artifacts: Vec::new(),
             }))
         }
         fn validate_payload(&self, _: &str, _: u32, _: &Value) -> Result<(), Error> {
@@ -860,6 +904,7 @@ pub(crate) mod tests {
             effect_id: effect.into(),
             effect_format: EFFECT_FORMAT,
             payload: json!({}),
+            artifacts: Vec::new(),
         }
     }
 
@@ -1340,6 +1385,7 @@ pub(crate) mod tests {
             effect_id: "lightwell.geometry.transform".into(),
             effect_format: EFFECT_FORMAT,
             payload: json!("rotate-right"),
+            artifacts: Vec::new(),
         };
         assert!(registry.effect("lightwell.geometry.transform").is_none());
         let recipe = Recipe {
@@ -1706,5 +1752,143 @@ pub(crate) mod tests {
                 .is_ok()
         );
         assert!(registry.compile_layers(2, 1, &[finish]).is_ok());
+    }
+
+    const BOUND_EFFECT: &str = "test.bound.effect";
+
+    /// An identity colour unit that names the artifact it was compiled with, so a compiled stack
+    /// shows which artifacts its module received and in what order.
+    struct Named(String);
+
+    impl crate::PointwiseColor for Named {
+        fn apply_row(&self, _: u32, _: u32, _: &mut [[f32; 3]]) {}
+        fn is_finite(&self) -> bool {
+            true
+        }
+        fn describe(&self) -> String {
+            self.0.clone()
+        }
+    }
+
+    /// A colour effect that declares artifacts and compiles one named unit per bound artifact.
+    struct BoundModule(ModuleDescriptor);
+
+    impl ToolModule for BoundModule {
+        fn descriptor(&self) -> &ModuleDescriptor {
+            &self.0
+        }
+        fn parse(&self, action_id: &str, _: &Map<String, Value>) -> Result<ActionInput, Error> {
+            Ok(ActionInput {
+                action_id: action_id.into(),
+                parameters: Map::new(),
+            })
+        }
+        fn plan(&self, _: &ActionInput, _: &StageContext<'_>) -> Result<ActionPlan, Error> {
+            Ok(ActionPlan::NoOp)
+        }
+        fn validate_payload(&self, _: &str, _: u32, _: &Value) -> Result<(), Error> {
+            Ok(())
+        }
+        fn describe_layer(&self, _: &str, _: u32, _: &Value) -> Result<String, Error> {
+            Ok("bound".into())
+        }
+        fn compile(&self, _: &str, _: u32, _: &Value, _: Stage) -> Result<Processing, Error> {
+            Ok(Processing::Color(crate::ColorOperation::neutral()))
+        }
+        fn compile_bound(
+            &self,
+            _: &str,
+            _: u32,
+            _: &Value,
+            _: Stage,
+            artifacts: &[Arc<crate::artifacts::PreparedArtifact>],
+        ) -> Result<Processing, Error> {
+            Ok(Processing::Color(crate::ColorOperation::new(
+                artifacts
+                    .iter()
+                    .map(|artifact| {
+                        Arc::new(Named(artifact.id.to_string())) as Arc<dyn crate::PointwiseColor>
+                    })
+                    .collect(),
+            )))
+        }
+    }
+
+    #[test]
+    fn compile_binds_artifacts_in_listed_order_and_refuses_unprepared_ones() {
+        let descriptor = ModuleDescriptor::parse(&json!({
+            "id": "test.bound",
+            "title": "Bound",
+            "effects": [{"id": BOUND_EFFECT, "format": EFFECT_FORMAT, "stage": "color", "artifacts": true}],
+            "actions": [],
+            "controls": [],
+            "availability": {"kind": "available"},
+        }))
+        .unwrap();
+        let mut registry = ModuleRegistry::builtin();
+        registry
+            .register(Arc::new(BoundModule(descriptor)))
+            .unwrap();
+        let artifact = |digit: &str| {
+            let id = crate::ArtifactId::for_hash(&format!("{digit}{}", "d".repeat(63))).unwrap();
+            let meta = crate::artifacts::ArtifactMeta {
+                kind: "test".into(),
+                width: None,
+                height: None,
+                colour: None,
+            };
+            crate::artifacts::register_prepared(Arc::new(crate::artifacts::PreparedArtifact::new(
+                id,
+                &meta,
+                vec![0].into(),
+            )))
+        };
+        let (first, second) = (artifact("1"), artifact("2"));
+        let layer = Layer {
+            artifacts: vec![second.id.clone(), first.id.clone()],
+            ..test_layer(BOUND_EFFECT)
+        };
+        let compiled = registry
+            .compile_layers(2, 1, std::slice::from_ref(&layer))
+            .unwrap();
+        let Processing::Color(operation) = &compiled.segments[0].operations[0] else {
+            panic!("a colour operation");
+        };
+        let named: Vec<String> = operation
+            .units()
+            .iter()
+            .map(|unit| unit.describe())
+            .collect();
+        assert_eq!(
+            named,
+            [second.id.to_string(), first.id.to_string()],
+            "the module receives the layer's order"
+        );
+        // A layer without artifacts is compiled exactly as before, through `compile`.
+        let plain = registry
+            .compile_layers(2, 1, &[test_layer(BOUND_EFFECT)])
+            .unwrap();
+        assert!(plain.segments[0].operations.is_empty());
+        // Bytes nobody holds are not prepared, and the stack is refused rather than evaluated
+        // without them.
+        let missing = second.id.clone();
+        drop(second);
+        let error = registry
+            .compile_layers(2, 1, std::slice::from_ref(&layer))
+            .err()
+            .expect("an unprepared artifact never compiles");
+        assert_eq!(error.kind, ErrorKind::SourceUnavailable);
+        assert_eq!(error.detail, format!("artifact {missing} is not prepared"));
+        // An effect that does not declare artifacts cannot be compiled with any.
+        let pixel = Layer {
+            artifacts: vec![first.id.clone()],
+            ..Layer::pixel(0, 0, [1, 2, 3])
+        };
+        let error = registry
+            .compile_layers(2, 1, &[pixel])
+            .err()
+            .expect("a pixel layer never binds an artifact");
+        assert_eq!(error.kind, ErrorKind::Validation);
+        assert!(error.detail.contains("which its effect does not declare"));
     }
 }

@@ -910,6 +910,7 @@ pub(crate) mod tests {
             effect_id: TEST_SPATIAL_EFFECT.into(),
             effect_format: EFFECT_FORMAT,
             payload: json!({ "units": units }),
+            artifacts: Vec::new(),
         }
     }
 

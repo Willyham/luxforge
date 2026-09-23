@@ -72,6 +72,7 @@ fn mixer_layer(payload: Value) -> Layer {
         effect_id: MIXER_EFFECT.into(),
         effect_format: EFFECT_FORMAT,
         payload,
+        artifacts: Vec::new(),
     }
 }
 

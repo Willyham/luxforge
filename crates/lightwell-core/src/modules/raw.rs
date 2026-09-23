@@ -144,6 +144,7 @@ impl RawPayload {
             effect_id: RAW_EFFECT.into(),
             effect_format: EFFECT_FORMAT,
             payload: serde_json::to_value(self).expect("validated RAW payload serializes"),
+            artifacts: Vec::new(),
         }
     }
 }
@@ -471,6 +472,7 @@ impl ToolModule for RawModule {
             effect_id: effect_id.into(),
             effect_format: format,
             payload: value.clone(),
+            artifacts: Vec::new(),
         })
         .map(|_| ())
     }
@@ -480,6 +482,7 @@ impl ToolModule for RawModule {
             effect_id: effect_id.into(),
             effect_format: format,
             payload: value.clone(),
+            artifacts: Vec::new(),
         })?;
         Ok(format!(
             "Exposure {:+.2} EV · {} WB",
