@@ -261,6 +261,9 @@ pub(crate) struct RawDevelopment {
     pub(crate) fingerprint: String,
     pub(crate) sensor: Arc<lightwell_raw::RawSource>,
     pub(crate) gains: [f32; 3],
+    /// The original's file name, which the activity board shows beside the development; the
+    /// development itself reads only the retained sensor data.
+    pub(crate) file_name: Option<String>,
 }
 
 #[derive(Debug)]
@@ -601,6 +604,11 @@ impl EditorService {
             fingerprint: state.asset.fingerprint,
             sensor: raw.sensor.clone(),
             gains,
+            file_name: state
+                .asset
+                .locator
+                .file_name()
+                .map(|name| name.to_string_lossy().into_owned()),
         }))
     }
 

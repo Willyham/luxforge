@@ -464,8 +464,7 @@ impl SourceHold {
     }
 }
 
-/// The activity one source task publishes. A development request names its asset but carries no
-/// file name, so it has no detail line.
+/// The activity one source task publishes, with the original's file name as its detail line.
 fn source_activity(task: &SourceTask) -> ActivitySpec {
     match &task.kind {
         SourceTaskKind::File => ActivitySpec {
@@ -482,7 +481,7 @@ fn source_activity(task: &SourceTask) -> ActivitySpec {
         SourceTaskKind::Develop(request) => ActivitySpec {
             kind: "source.develop",
             label: "Developing RAW",
-            detail: None,
+            detail: request.file_name.clone(),
             asset_id: Some(request.asset_id.clone()),
             job_id: Some(task.id.clone()),
         },
@@ -1635,6 +1634,7 @@ mod tests {
             fingerprint: "test".into(),
             gains: sensor.metadata().as_shot_gains,
             sensor,
+            file_name: None,
         };
         let a = request(&first_path, first_sensor);
         let b = request(&second_path, second_sensor);
