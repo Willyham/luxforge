@@ -963,14 +963,14 @@ impl Editor {
                     .layers
                     .iter()
                     .map(|layer| {
-                        json!({"id":layer.id.as_str(),"effect":layer.effect_id,"payload":layer.payload})
+                        json!({"id":layer.id.as_str(),"effect":layer.effect_id,"payload":layer.payload,"mask":layer.mask.as_ref().map(lightwell_core::MaskId::as_str)})
                     })
                     .collect();
                 let displayed = self.rendered_entry.as_ref().map(|entry| json!({
                     "entry": entry.id.as_str(),
                     "snapshot": entry.snapshot.id.as_str(),
                     "dimensions": self.dimensions,
-                    "layers": entry.snapshot.recipe.layers.iter().map(|layer| json!({"id":layer.id.as_str(),"effect":layer.effect_id,"payload":layer.payload})).collect::<Vec<_>>(),
+                    "layers": entry.snapshot.recipe.layers.iter().map(|layer| json!({"id":layer.id.as_str(),"effect":layer.effect_id,"payload":layer.payload,"mask":layer.mask.as_ref().map(lightwell_core::MaskId::as_str)})).collect::<Vec<_>>(),
                 }));
                 json!({"revision":state.revision,"entry":state.current_entry.id.as_str(),"label":state.current_entry.label,"layers":layers,"displayed":displayed})
             }
