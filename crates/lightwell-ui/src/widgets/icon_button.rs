@@ -14,6 +14,7 @@ pub enum Icon {
     Mirror,
     Crop,
     Picker,
+    Target,
     Reset,
     Plus,
     Minus,
@@ -38,13 +39,14 @@ pub enum Icon {
 
 impl Icon {
     /// Every icon with its name, in the order the gallery's icon board lists them.
-    pub const NAMED: [(&'static str, Icon); 26] = [
+    pub const NAMED: [(&'static str, Icon); 27] = [
         ("rotate-left", Self::RotateLeft),
         ("rotate-right", Self::RotateRight),
         ("flip", Self::Flip),
         ("mirror", Self::Mirror),
         ("crop", Self::Crop),
         ("picker", Self::Picker),
+        ("target", Self::Target),
         ("reset", Self::Reset),
         ("plus", Self::Plus),
         ("minus", Self::Minus),
@@ -314,6 +316,14 @@ fn draw_path(frame: &mut canvas::Frame, icon: Icon, color: Color) {
             );
             line(frame, (9.5, 4.0), (12.0, 6.5));
             line(frame, (11.0, 2.5), (13.5, 5.0));
+        }
+        // A crosshair, as raw.png draws As shot: a small ring with a tick out from it on each side.
+        Icon::Target => {
+            frame.stroke(&canvas::Path::circle(p(8.0, 8.0), 2.5 * s), stroke);
+            line(frame, (8.0, 1.4), (8.0, 4.4));
+            line(frame, (8.0, 11.6), (8.0, 14.6));
+            line(frame, (1.4, 8.0), (4.4, 8.0));
+            line(frame, (11.6, 8.0), (14.6, 8.0));
         }
         // A padlock: a rounded body and a round shackle.
         Icon::Lock => {

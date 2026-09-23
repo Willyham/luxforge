@@ -326,7 +326,7 @@ impl RawModule {
                             label: "As shot".into(),
                             preset: Map::new(),
                             style: crate::ActionStyle::Default,
-                            icon: None,
+                            icon: Some("target".into()),
                         },
                     ],
                     collapsed: false,
@@ -595,6 +595,32 @@ mod tests {
                 rail: Some(crate::RailDecoration::Tint),
             }
         );
+    }
+
+    /// As shot names the crosshair raw.png draws beside its label; the picker beside it keeps the
+    /// run a row of labelled buttons, so the label stays.
+    #[test]
+    fn as_shot_names_its_icon_beside_the_picker() {
+        let module = RawModule::new();
+        let descriptor = module.descriptor();
+        descriptor.validate().expect("a valid descriptor");
+        let Control::Group { controls, .. } = &descriptor.controls[0] else {
+            panic!("expected a group");
+        };
+        let as_shot = controls
+            .iter()
+            .position(
+                |control| matches!(control, Control::Action { action, .. } if action == AS_SHOT),
+            )
+            .expect("the As shot control");
+        assert!(matches!(
+            &controls[as_shot],
+            Control::Action { label, icon: Some(icon), .. } if label == "As shot" && icon == "target"
+        ));
+        assert!(matches!(
+            &controls[as_shot - 1],
+            Control::Picker { label } if label == "Neutral WB"
+        ));
     }
 
     #[test]

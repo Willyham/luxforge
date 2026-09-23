@@ -393,18 +393,7 @@ fn buttons_row<'a>(
     placement: RowPlacement,
     menu: Option<&'a MenuTarget>,
 ) -> Vec<Element<'a, Message>> {
-    let icons: Option<Vec<(&'a ActionControl, Icon)>> = controls
-        .iter()
-        .map(|control| match control {
-            ControlModel::Action(action) => action
-                .icon
-                .as_deref()
-                .and_then(Icon::from_name)
-                .map(|icon| (action, icon)),
-            _ => None,
-        })
-        .collect();
-    if let Some(icons) = icons {
+    if let Some(icons) = icon_run(controls) {
         let cells = icons
             .iter()
             .map(|(action, icon)| icon_action_cell(action, *icon))
@@ -433,6 +422,23 @@ fn buttons_row<'a>(
         })
         .collect();
     vec![button_row(buttons, placement)]
+}
+
+/// The run's icons when it is an icon row: every control an action naming an icon this build
+/// draws. A picker, or any action without an icon, keeps the whole run labelled, so an action that
+/// names an icon beside a picker (RAW's As shot) is a labelled button with that icon.
+fn icon_run<'a>(controls: &[&'a ControlModel]) -> Option<Vec<(&'a ActionControl, Icon)>> {
+    controls
+        .iter()
+        .map(|control| match control {
+            ControlModel::Action(action) => action
+                .icon
+                .as_deref()
+                .and_then(Icon::from_name)
+                .map(|icon| (action, icon)),
+            _ => None,
+        })
+        .collect()
 }
 
 /// One action as a cell of an icon row: focusable, and right-clickable for its request.
@@ -1669,5 +1675,45 @@ mod tests {
             curve_version(7, false, &base),
             curve_version(7, false, &newer)
         );
+    }
+
+    fn action(name: &str, icon: Option<&str>) -> ControlModel {
+        ControlModel::Action(ActionControl {
+            action: name.into(),
+            label: name.into(),
+            preset: serde_json::Map::new(),
+            runnable: true,
+            reason: None,
+            style: crate::state::tools::ActionControlStyle::Default,
+            icon: icon.map(str::to_owned),
+        })
+    }
+
+    /// A run is an icon row only when every control in it is an action naming a known icon: the
+    /// four transforms are, RAW's Neutral WB picker beside As shot is not, so As shot keeps its
+    /// label beside its crosshair.
+    #[test]
+    fn only_a_run_of_icon_actions_becomes_an_icon_row() {
+        let transforms: Vec<ControlModel> = ["rotate-left", "rotate-right", "mirror", "flip"]
+            .into_iter()
+            .map(|icon| action(icon, Some(icon)))
+            .collect();
+        let run: Vec<&ControlModel> = transforms.iter().collect();
+        assert_eq!(icon_run(&run).map(|icons| icons.len()), Some(4));
+
+        let picker = ControlModel::Picker(crate::state::tools::PickerControl {
+            module_id: "lightwell.raw".into(),
+            label: "Neutral WB".into(),
+            title: "Pick neutral".into(),
+            shortcut: Some("N".into()),
+            selected: false,
+            target: "lightwell.raw".into(),
+            enabled: true,
+        });
+        let as_shot = action("use-as-shot-wb", Some("target"));
+        assert!(icon_run(&[&picker, &as_shot]).is_none());
+        let unnamed = action("apply", None);
+        assert!(icon_run(&[&as_shot, &unnamed]).is_none());
+        assert_eq!(Icon::from_name("target"), Some(Icon::Target));
     }
 }
