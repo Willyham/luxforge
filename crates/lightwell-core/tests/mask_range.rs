@@ -854,6 +854,7 @@ fn a_range_a_gradient_and_a_subtract_brush_compose_as_the_algebra_says() {
     let oracle_band = compile_luminance_range(&band);
     let oracle_brush = RefBrush {
         strokes: vec![BrushStroke {
+            colour: None,
             points: stroke.points().collect(),
             size: stroke.size(),
             feather: stroke.feather(),
@@ -918,7 +919,7 @@ fn a_range_a_gradient_and_a_subtract_brush_compose_as_the_algebra_says() {
             let mut m: f64 = 0.0;
             m = m.max(linear_coverage(&gradient, &reference_stage, u, v));
             m = m.min(luminance_coverage(&oracle_band, input));
-            m = m.min(1.0 - brush_coverage(&oracle_brush, &reference_stage, u, v));
+            m = m.min(1.0 - brush_coverage(&oracle_brush, &reference_stage, u, v, input));
             let m = 0.8 * m;
             if m > 0.0 && m < 0.8 {
                 partial += 1;

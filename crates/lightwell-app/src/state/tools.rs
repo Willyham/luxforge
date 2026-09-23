@@ -17,8 +17,8 @@ use crate::{
 };
 use lightwell_core::{
     ActionDescriptor, ActionStyle, AssetId, CanvasInteraction, ChoiceStyle, ColorStyle, Control,
-    CropPayload, CurveBackground, EffectStage, EntryId, Layer, MASK_MODE, MAX_ANGLE, MIN_ANGLE,
-    MaskId, ModuleDescriptor, NumberStyle, ORIENTATION_EFFECT, Orientation, ParameterDescriptor,
+    CropPayload, CurveBackground, EffectStage, EntryId, Layer, MAX_ANGLE, MIN_ANGLE, MaskId,
+    ModuleDescriptor, NumberStyle, ORIENTATION_EFFECT, Orientation, ParameterDescriptor,
     ParameterKind, RailDecoration, ResetAction,
 };
 use serde_json::{Map, Value};
@@ -523,7 +523,7 @@ impl ToolsModel {
         // Mask mode replaces the module sections with the Masks panel and the adjustments that can
         // apply through a mask: a module with no maskable effect has nothing to offer a mask, so
         // offering its controls there would be offering an edit the mask cannot carry.
-        let masking = inputs.session.workspace.mode == MASK_MODE;
+        let masking = crate::state::canvas::mask_workspace(&inputs.session.workspace.mode);
         for module in inputs.modules {
             if masking && !module.effects.iter().any(|effect| effect.maskable) {
                 continue;
@@ -1960,7 +1960,8 @@ pub(crate) fn point_pick(modules: &[ModuleDescriptor]) -> Option<(&str, &str, &s
     })
 }
 
-/// What a click on the photograph does in one canvas mode, as that mode's module declares it.
+/// What a click on the photograph does in one canvas mode, as that mode's module — or the host —
+/// declares it.
 ///
 /// A pick belongs to the mode the session is in, never to "whichever module declares one first":
 /// several modules declare a canvas pick, and only the one whose canvas is on screen may answer
@@ -1974,9 +1975,20 @@ pub(crate) enum CanvasPick<'a> {
         x: &'a str,
         y: &'a str,
     },
-    /// Run this query at the located content pixel and submit the fields it answers with to the
-    /// action once. A refused query commits nothing and its reason is shown.
+    /// Run this module query at the located content pixel and submit the fields it answers with to
+    /// the module action once. A refused query commits nothing and its reason is shown.
     Sample {
+        query: &'a str,
+        x: &'a str,
+        y: &'a str,
+        action: &'a str,
+    },
+    /// The same interaction with the **host's** own pair: a `mask.*` read answers the pixel and a
+    /// `mask.*` command receives it. A mask is a host object and no module declares one, so a pick
+    /// that fills part of a mask reaches the host's declarations instead of a module's; everything
+    /// else about it — the query first, the numeric fields the action declares, the refusal that
+    /// commits nothing — is identical, which is why it is the same enum and not a second mechanism.
+    HostSample {
         query: &'a str,
         x: &'a str,
         y: &'a str,
@@ -1985,10 +1997,28 @@ pub(crate) enum CanvasPick<'a> {
 }
 
 /// The pick the active canvas mode declares, if that mode declares one at all.
+///
+/// The host's own picks are consulted first and by the same key: a pick's mode is its action's method
+/// name, which carries a dot and therefore can never be a module id.
 pub(crate) fn canvas_pick<'a>(
     modules: &'a [ModuleDescriptor],
     mode: &str,
 ) -> Option<CanvasPick<'a>> {
+    if let Some(CanvasInteraction::SampleApply {
+        query,
+        x,
+        y,
+        action,
+        ..
+    }) = lightwell_core::mask::commands::canvas_pick(mode)
+    {
+        return Some(CanvasPick::HostSample {
+            query: query.as_str(),
+            x: x.as_str(),
+            y: y.as_str(),
+            action: action.as_str(),
+        });
+    }
     let module = module_of(modules, mode).filter(|module| module.is_available())?;
     match module.canvas.as_ref()? {
         CanvasInteraction::PointPick { action, x, y, .. } => Some(CanvasPick::Point {

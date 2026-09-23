@@ -519,6 +519,22 @@ pub fn refine_radius(refine: f64) -> f64 {
     RADIUS_MAX * (RADIUS_MIN / RADIUS_MAX).powf(refine / 100.0)
 }
 
+/// The colour-constrained brush's similarity, compiled: **this kind's own falloff at one sample.**
+///
+/// It exists so the [brush](super::brush) reaches the frozen colour metric, the frozen plateau and
+/// span and the frozen [`refine_radius`] mapping by *evaluating this kind* rather than by carrying a
+/// second copy of them (`docs/design/mask-study.md#the-colour-constraint`). Folding one sample by
+/// `min` against `+infinity` returns that sample's own squared distance exactly, so a one-sample
+/// component is the similarity bit for bit and not merely within tolerance of it. There is no second
+/// colour space, no second radius mapping and no second constant in the editor because of that
+/// feature.
+pub(super) fn similarity(seed: [f64; 3], refine: f64) -> CompiledColour {
+    CompiledColour::new(&ColourRange {
+        samples: vec![seed],
+        refine,
+    })
+}
+
 /// One colour range compiled once per component: each sample's Oklab `(a, b)` pair and the radius
 /// the refine slider maps to. The samples' own conversions happen here, never per pixel.
 #[derive(Clone, Debug)]

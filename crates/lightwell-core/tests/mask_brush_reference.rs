@@ -18,10 +18,19 @@
 mod reference;
 
 use reference::mask::{
-    Brush, BrushStroke, DISTANCE_MAX, DISTANCE_MIN, Stage, accumulate, brush_bounds,
-    brush_coverage, brush_segments, brush_size_is_legal, capsule_profile, segment_distance2,
-    smooth, stroke_coverage, stroke_coverage_max_form,
+    Brush, BrushStroke, ColourLimit, DISTANCE_MAX, DISTANCE_MIN, Stage, accumulate, brush_bounds,
+    brush_coverage, brush_segments, brush_size_is_legal, capsule_profile, colour_similarity,
+    colour_similarity_as_range, segment_distance2, smooth, stroke_coverage,
+    stroke_coverage_max_form,
 };
+use reference::range::{PLATEAU, RADIUS_MIN, refine_radius};
+
+/// The pixel a stroke with no colour constraint is handed and ignores. Every
+/// geometric claim below is made on unconstrained strokes, so the value is
+/// arbitrary and the same at every call — exactly as the range study's
+/// `a_geometric_component_ignores_the_pixel_it_is_handed` establishes for the
+/// position-only component kinds.
+const ANY_PIXEL: [f64; 3] = [0.25, 0.5, 0.75];
 
 // ---------------------------------------------------------------------------
 // Test-only helpers, kept local to this file per the reference tree's
@@ -74,6 +83,7 @@ fn random_stroke(rng: &mut SplitMix64, erase: bool) -> BrushStroke {
         feather: rng.next_range(0.0, 100.0),
         flow: rng.next_range(1.0, 100.0),
         erase,
+        colour: None,
     }
 }
 
@@ -114,8 +124,8 @@ fn the_minimum_distance_form_equals_the_maximum_profile_form_bit_for_bit() {
                 let u =
                     rng.next_range(-0.2, f64::from(stage.width) / f64::from(stage.height) + 0.2);
                 let v = rng.next_range(-0.2, 1.2);
-                let frozen = stroke_coverage(&stroke, &segments, u, v);
-                let design = stroke_coverage_max_form(&stroke, &segments, u, v);
+                let frozen = stroke_coverage(&stroke, &segments, u, v, ANY_PIXEL);
+                let design = stroke_coverage_max_form(&stroke, &segments, u, v, ANY_PIXEL);
                 assert_eq!(
                     frozen.to_bits(),
                     design.to_bits(),
@@ -171,6 +181,7 @@ fn feather_zero_is_a_hard_edge_and_no_vanishing_band_is_divided_by() {
         feather: 0.0,
         flow: 100.0,
         erase: false,
+        colour: None,
     };
     // `0.0` is the ordinary route; `1e-323` is the other one — a feather whose
     // band `R · f/100` underflows to exactly zero, so the branch is taken by the
@@ -208,6 +219,7 @@ fn a_one_point_stroke_is_the_distance_to_the_point_with_no_branch() {
         feather: 50.0,
         flow: 100.0,
         erase: false,
+        colour: None,
     };
     let segments = brush_segments(&stroke, &stage);
     assert_eq!(segments.len(), 1);
@@ -228,8 +240,8 @@ fn a_one_point_stroke_is_the_distance_to_the_point_with_no_branch() {
     }
     // A capsule around a single point is a disc: the same coverage in every
     // direction at the same distance.
-    let north = stroke_coverage(&stroke, &segments, cu, cv - 0.05);
-    let east = stroke_coverage(&stroke, &segments, cu + 0.05, cv);
+    let north = stroke_coverage(&stroke, &segments, cu, cv - 0.05, ANY_PIXEL);
+    let east = stroke_coverage(&stroke, &segments, cu + 0.05, cv, ANY_PIXEL);
     assert!((north - east).abs() < 1e-15, "{north} against {east}");
 }
 
@@ -246,6 +258,7 @@ fn a_doubled_back_path_covers_exactly_what_the_single_pass_covers() {
         feather: 60.0,
         flow: 70.0,
         erase: false,
+        colour: None,
     };
     let back = BrushStroke {
         points: vec![[0.3, 0.5], [0.7, 0.5], [0.3, 0.5]],
@@ -259,8 +272,8 @@ fn a_doubled_back_path_covers_exactly_what_the_single_pass_covers() {
         let u = rng.next_range(0.0, 1.5);
         let v = rng.next_range(0.0, 1.0);
         assert_eq!(
-            stroke_coverage(&out, &out_segments, u, v).to_bits(),
-            stroke_coverage(&back, &back_segments, u, v).to_bits(),
+            stroke_coverage(&out, &out_segments, u, v, ANY_PIXEL).to_bits(),
+            stroke_coverage(&back, &back_segments, u, v, ANY_PIXEL).to_bits(),
             "doubling back changed coverage at ({u}, {v})"
         );
     }
@@ -299,8 +312,8 @@ fn a_strokes_density_does_not_depend_on_its_point_sampling() {
         for _ in 0..200 {
             let u = rng.next_range(-0.1, 1.6);
             let v = rng.next_range(-0.1, 1.1);
-            let a = stroke_coverage(&coarse, &coarse_segments, u, v);
-            let b = stroke_coverage(&fine, &fine_segments, u, v);
+            let a = stroke_coverage(&coarse, &coarse_segments, u, v, ANY_PIXEL);
+            let b = stroke_coverage(&fine, &fine_segments, u, v, ANY_PIXEL);
             worst = worst.max((a - b).abs());
         }
     }
@@ -375,6 +388,7 @@ fn a_second_pass_of_the_same_stroke_builds_up() {
         feather: 60.0,
         flow: 40.0,
         erase: false,
+        colour: None,
     };
     let once = Brush {
         strokes: vec![stroke.clone()],
@@ -385,8 +399,8 @@ fn a_second_pass_of_the_same_stroke_builds_up() {
     let mut grew = 0usize;
     let mut worst = 0.0f64;
     for (u, v) in sample_points(&stage, 137) {
-        let a = brush_coverage(&once, &stage, u, v);
-        let b = brush_coverage(&twice, &stage, u, v);
+        let a = brush_coverage(&once, &stage, u, v, ANY_PIXEL);
+        let b = brush_coverage(&twice, &stage, u, v, ANY_PIXEL);
         assert!(b >= a, "a second pass removed coverage at ({u}, {v})");
         if b > a {
             grew += 1;
@@ -424,8 +438,8 @@ fn add_strokes_commute_under_the_frozen_rule() {
             for _ in 0..40 {
                 let u = rng.next_range(0.0, 1.5);
                 let v = rng.next_range(0.0, 1.0);
-                let a = brush_coverage(&ordered, &stage, u, v);
-                let b = brush_coverage(&permuted, &stage, u, v);
+                let a = brush_coverage(&ordered, &stage, u, v, ANY_PIXEL);
+                let b = brush_coverage(&permuted, &stage, u, v, ANY_PIXEL);
                 if a.to_bits() == b.to_bits() {
                     identical += 1;
                 }
@@ -456,6 +470,7 @@ fn an_erase_stroke_does_not_commute_with_an_add() {
         feather: 50.0,
         flow: 100.0,
         erase: false,
+        colour: None,
     };
     let erase = BrushStroke {
         points: vec![[0.5, 0.35], [0.5, 0.65]],
@@ -463,6 +478,7 @@ fn an_erase_stroke_does_not_commute_with_an_add() {
         feather: 50.0,
         flow: 100.0,
         erase: true,
+        colour: None,
     };
     let painted_then_erased = Brush {
         strokes: vec![add.clone(), erase.clone()],
@@ -472,8 +488,8 @@ fn an_erase_stroke_does_not_commute_with_an_add() {
     };
     let mut worst = 0.0f64;
     for (u, v) in sample_points(&stage, 37) {
-        let a = brush_coverage(&painted_then_erased, &stage, u, v);
-        let b = brush_coverage(&erased_then_painted, &stage, u, v);
+        let a = brush_coverage(&painted_then_erased, &stage, u, v, ANY_PIXEL);
+        let b = brush_coverage(&erased_then_painted, &stage, u, v, ANY_PIXEL);
         worst = worst.max((a - b).abs());
     }
     assert!(
@@ -513,8 +529,8 @@ fn deleting_a_stroke_leaves_the_others_bit_identical() {
             let u = rng.next_range(0.0, 1.0);
             let v = rng.next_range(0.0, 1.0);
             assert_eq!(
-                brush_coverage(&with_gap, &stage, u, v).to_bits(),
-                brush_coverage(&never_made, &stage, u, v).to_bits()
+                brush_coverage(&with_gap, &stage, u, v, ANY_PIXEL).to_bits(),
+                brush_coverage(&never_made, &stage, u, v, ANY_PIXEL).to_bits()
             );
         }
     }
@@ -544,7 +560,7 @@ fn dropping_strokes_that_cover_nothing_is_bit_identical() {
                 .iter()
                 .filter(|stroke| {
                     let segments = brush_segments(stroke, &stage);
-                    stroke_coverage(stroke, &segments, u, v) != 0.0
+                    stroke_coverage(stroke, &segments, u, v, ANY_PIXEL) != 0.0
                 })
                 .cloned()
                 .collect();
@@ -553,8 +569,8 @@ fn dropping_strokes_that_cover_nothing_is_bit_identical() {
             }
             let pruned = Brush { strokes: near };
             assert_eq!(
-                brush_coverage(&whole, &stage, u, v).to_bits(),
-                brush_coverage(&pruned, &stage, u, v).to_bits(),
+                brush_coverage(&whole, &stage, u, v, ANY_PIXEL).to_bits(),
+                brush_coverage(&pruned, &stage, u, v, ANY_PIXEL).to_bits(),
                 "pruning zero strokes changed coverage at ({u}, {v})"
             );
         }
@@ -589,7 +605,7 @@ fn coverage_is_exactly_zero_outside_the_conservative_box() {
                 };
                 if outside {
                     assert_eq!(
-                        brush_coverage(&brush, stage, u, v),
+                        brush_coverage(&brush, stage, u, v, ANY_PIXEL),
                         0.0,
                         "coverage outside the box at ({u}, {v})"
                     );
@@ -610,6 +626,7 @@ fn a_stroke_radius_takes_the_studys_own_distance_rule() {
         feather: 100.0,
         flow: 100.0,
         erase: false,
+        colour: None,
     };
     assert!(brush_size_is_legal(&point));
     assert!(brush_size_is_legal(&BrushStroke {
@@ -644,6 +661,7 @@ fn the_brush_shares_the_studys_easing() {
         feather: 100.0,
         flow: 100.0,
         erase: false,
+        colour: None,
     };
     // With feather 100 the band is the whole radius, so the profile at distance
     // `d` is `smooth((R - d) / R)` exactly.
@@ -654,6 +672,238 @@ fn the_brush_shares_the_studys_easing() {
             smooth(((0.2 - d) / 0.2).clamp(0.0, 1.0)).to_bits()
         );
     }
+}
+
+// ---------------------------------------------------------------------------
+// The colour constraint (TASK-024), frozen in
+// `docs/design/mask-study.md#the-colour-constraint`
+// ---------------------------------------------------------------------------
+
+/// A few real surface colours to seed a constraint on and to test against, as
+/// linear sRGB. They are the range study's own measured chart surfaces, used here
+/// for the same reason: they are real surface colours rather than numbers chosen
+/// to make a point.
+const SKY: [f64; 3] = [0.108, 0.196, 0.378];
+const SKIN: [f64; 3] = [0.377, 0.238, 0.184];
+const FOLIAGE: [f64; 3] = [0.086, 0.132, 0.058];
+const ROOF: [f64; 3] = [0.278, 0.061, 0.048];
+
+fn limited(refine: f64, seed: [f64; 3]) -> BrushStroke {
+    BrushStroke {
+        points: vec![[0.3, 0.5], [0.7, 0.5]],
+        size: 0.12,
+        feather: 50.0,
+        flow: 100.0,
+        erase: false,
+        colour: Some(ColourLimit { seed, refine }),
+    }
+}
+
+/// The similarity **is** the frozen colour range at one sample, bit for bit — not
+/// a second metric that resembles it. Folding one sample by `min` against
+/// `+infinity` returns that sample's own squared distance exactly, so the two
+/// spellings evaluate the same `f64` at every pixel.
+#[test]
+fn the_colour_similarity_is_the_frozen_colour_range_at_one_sample() {
+    let mut rng = SplitMix64(0x0024_C01A);
+    let mut compared = 0usize;
+    for seed in [SKY, SKIN, FOLIAGE, ROOF] {
+        for refine in [0.0, 12.5, 50.0, 77.0, 100.0] {
+            let limit = ColourLimit { seed, refine };
+            for _ in 0..600 {
+                // Pixels inside and well outside the gamut, because an earlier
+                // unit in the same colour run may hand on either.
+                let rgb = [
+                    rng.next_range(-0.2, 1.6),
+                    rng.next_range(-0.2, 1.6),
+                    rng.next_range(-0.2, 1.6),
+                ];
+                assert_eq!(
+                    colour_similarity(&limit, rgb).to_bits(),
+                    colour_similarity_as_range(&limit, rgb).to_bits(),
+                    "the similarity and the one-sample colour range differ at {rgb:?}, \
+                     refine {refine}"
+                );
+                compared += 1;
+            }
+        }
+    }
+    assert_eq!(compared, 12_000);
+}
+
+/// An unconstrained stroke is untouched by this section: the same expressions in
+/// the same order, so the delivered brush's own bit-identity still holds.
+#[test]
+fn an_unconstrained_stroke_is_unchanged_by_the_colour_constraint() {
+    let mut rng = SplitMix64(0x0024_B00B);
+    for stage in [LANDSCAPE, PORTRAIT] {
+        for _ in 0..60 {
+            let stroke = random_stroke(&mut rng, false);
+            let segments = brush_segments(&stroke, &stage);
+            for _ in 0..80 {
+                let u = rng.next_range(0.0, 1.5);
+                let v = rng.next_range(0.0, 1.0);
+                // Five very different pixels, and the coverage never moves: an
+                // unconstrained stroke ignores the pixel it is handed exactly as
+                // a geometric component does.
+                let first = stroke_coverage(&stroke, &segments, u, v, ANY_PIXEL);
+                for rgb in [SKY, SKIN, FOLIAGE, ROOF, [0.0, 0.0, 0.0]] {
+                    assert_eq!(
+                        stroke_coverage(&stroke, &segments, u, v, rgb).to_bits(),
+                        first.to_bits(),
+                        "an unconstrained stroke moved with the pixel at {u},{v}"
+                    );
+                }
+                // And it is the profile times flow, with no third multiply.
+                let mut nearest = f64::INFINITY;
+                for segment in &segments {
+                    nearest = nearest.min(segment_distance2(segment, u, v));
+                }
+                assert_eq!(
+                    first.to_bits(),
+                    (capsule_profile(&stroke, nearest.sqrt()) * (stroke.flow / 100.0)).to_bits()
+                );
+            }
+        }
+    }
+}
+
+/// The constraint only ever removes coverage, is exact on the colour it was
+/// seeded on and exactly zero past its radius — which is what leaves the support
+/// box and the grid index exactly right rather than nearly right.
+#[test]
+fn the_colour_constraint_only_ever_removes_coverage() {
+    let mut rng = SplitMix64(0x0024_5EED);
+    let stage = LANDSCAPE;
+    for refine in [0.0, 25.0, 50.0, 90.0, 100.0] {
+        let stroke = limited(refine, SKY);
+        let plain = BrushStroke {
+            colour: None,
+            ..stroke.clone()
+        };
+        let segments = brush_segments(&stroke, &stage);
+        let radius = refine_radius(refine);
+        for _ in 0..4000 {
+            let u = rng.next_range(0.0, 1.5);
+            let v = rng.next_range(0.0, 1.0);
+            let rgb = [
+                rng.next_range(-0.1, 1.2),
+                rng.next_range(-0.1, 1.2),
+                rng.next_range(-0.1, 1.2),
+            ];
+            let constrained = stroke_coverage(&stroke, &segments, u, v, rgb);
+            let unconstrained = stroke_coverage(&plain, &segments, u, v, ANY_PIXEL);
+            assert!(
+                (0.0..=1.0).contains(&constrained),
+                "coverage {constrained} left the unit interval"
+            );
+            assert!(
+                constrained <= unconstrained,
+                "the constraint added coverage: {constrained} over {unconstrained}"
+            );
+            // Exactly zero wherever the geometry is: `0.0 * amount * k` is
+            // exactly `0.0`, which is the grid index's whole licence.
+            if unconstrained == 0.0 {
+                assert_eq!(constrained.to_bits(), 0.0f64.to_bits());
+            }
+        }
+        // On the colour it was seeded on the constrained stroke *is* the plain
+        // one, bit for bit, because `smooth(1)` is exactly `1.0`.
+        for _ in 0..200 {
+            let u = rng.next_range(0.2, 0.9);
+            let v = rng.next_range(0.35, 0.65);
+            assert_eq!(
+                stroke_coverage(&stroke, &segments, u, v, SKY).to_bits(),
+                stroke_coverage(&plain, &segments, u, v, ANY_PIXEL).to_bits(),
+                "a stroke over its own seed differed from the unconstrained stroke"
+            );
+        }
+        assert_eq!(
+            colour_similarity(&ColourLimit { seed: SKY, refine }, SKY),
+            1.0
+        );
+        // Out to the plateau's edge the similarity is still exactly one; past the
+        // radius it is exactly zero. Both are stepped along the Oklab `a` axis
+        // through a colour whose distance from the seed is known by construction.
+        let inside = shifted(SKY, PLATEAU * radius * 0.9);
+        let outside = shifted(SKY, radius * 1.5);
+        assert_eq!(
+            colour_similarity(&ColourLimit { seed: SKY, refine }, inside),
+            1.0,
+            "the plateau was not exactly one at refine {refine}"
+        );
+        assert_eq!(
+            colour_similarity(&ColourLimit { seed: SKY, refine }, outside),
+            0.0,
+            "past the radius was not exactly zero at refine {refine}"
+        );
+    }
+}
+
+/// A colour this far from `seed` in the Oklab chromaticity plane, found by
+/// bisection on a straight line in linear sRGB so the test states a *measured*
+/// distance rather than assuming a direction in Oklab is a direction in sRGB.
+fn shifted(seed: [f64; 3], distance: f64) -> [f64; 3] {
+    // Towards sRGB green, which moves `(a, b)` a long way from every seed used
+    // here, so a bisection on `t` always brackets the wanted distance.
+    let target = [0.0, 1.0, 0.0];
+    let at = |t: f64| -> [f64; 3] {
+        [
+            seed[0] + t * (target[0] - seed[0]),
+            seed[1] + t * (target[1] - seed[1]),
+            seed[2] + t * (target[2] - seed[2]),
+        ]
+    };
+    let metric = |rgb: [f64; 3]| -> f64 {
+        let a = reference::colour::to_oklab(seed);
+        let b = reference::colour::to_oklab(rgb);
+        ((b.a - a.a) * (b.a - a.a) + (b.b - a.b) * (b.b - a.b)).sqrt()
+    };
+    let (mut lo, mut hi) = (0.0f64, 1.0f64);
+    // At the loosest refine the radius is `0.25` and `1.5 · radius` is further
+    // from a photographed sky than any in-gamut colour, so the ray is extended
+    // past the gamut rather than the test quietly asserting less than it says. A
+    // linear value above 1 is legal input here for the same reason the axis is
+    // unclamped: an earlier unit in the same colour run may hand one on.
+    while metric(at(hi)) <= distance {
+        hi *= 2.0;
+        assert!(
+            hi < 1e9,
+            "no colour on the ray from {seed:?} reaches {distance}"
+        );
+    }
+    for _ in 0..200 {
+        let mid = 0.5 * (lo + hi);
+        if metric(at(mid)) < distance {
+            lo = mid;
+        } else {
+            hi = mid;
+        }
+    }
+    at(0.5 * (lo + hi))
+}
+
+/// The refine mapping a constrained stroke takes is the colour range's own, ends
+/// included: nothing here introduces a second radius mapping or a second pair of
+/// ends.
+#[test]
+fn a_constrained_stroke_takes_the_colour_ranges_own_refine_mapping() {
+    assert_eq!(refine_radius(100.0), refine_radius(100.0));
+    assert!((refine_radius(100.0) - RADIUS_MIN).abs() < 1e-15);
+    // Strictly tighter with refine, so a higher number is always a narrower hold
+    // — the one meaning the editor has for refine.
+    let seed = SKIN;
+    let probe = shifted(seed, 0.02);
+    let mut last = f64::INFINITY;
+    for refine in [0.0f64, 20.0, 40.0, 60.0, 80.0, 100.0] {
+        let k = colour_similarity(&ColourLimit { seed, refine }, probe);
+        assert!(
+            k <= last,
+            "refine {refine} held the probe harder than the looser setting: {k} over {last}"
+        );
+        last = k;
+    }
+    assert_eq!(last, 0.0, "the tightest refine still held a 0.02 intruder");
 }
 
 // ---------------------------------------------------------------------------
@@ -688,8 +938,8 @@ fn brush_study_figures() {
             for _ in 0..100 {
                 let u = rng.next_range(0.0, 1.5);
                 let v = rng.next_range(0.0, 1.0);
-                let a = brush_coverage(&ordered, &stage, u, v);
-                let b = brush_coverage(&permuted, &stage, u, v);
+                let a = brush_coverage(&ordered, &stage, u, v, ANY_PIXEL);
+                let b = brush_coverage(&permuted, &stage, u, v, ANY_PIXEL);
                 if a.to_bits() == b.to_bits() {
                     identical += 1;
                 }
@@ -723,6 +973,7 @@ fn brush_study_figures() {
             feather: 60.0,
             flow,
             erase: false,
+            colour: None,
         };
         let once = Brush {
             strokes: vec![stroke.clone()],
@@ -732,8 +983,8 @@ fn brush_study_figures() {
         };
         let (mut a_max, mut b_max) = (0.0f64, 0.0f64);
         for (u, v) in sample_points(&stage, 17) {
-            a_max = a_max.max(brush_coverage(&once, &stage, u, v));
-            b_max = b_max.max(brush_coverage(&twice, &stage, u, v));
+            a_max = a_max.max(brush_coverage(&once, &stage, u, v, ANY_PIXEL));
+            b_max = b_max.max(brush_coverage(&twice, &stage, u, v, ANY_PIXEL));
         }
         println!("flow {flow:5.1}: one pass reaches {a_max:.9}, two passes reach {b_max:.9}");
     }
@@ -762,8 +1013,8 @@ fn brush_study_figures() {
             let u = rng.next_range(-0.1, 1.6);
             let v = rng.next_range(-0.1, 1.1);
             worst_resample = worst_resample.max(
-                (stroke_coverage(&coarse, &coarse_segments, u, v)
-                    - stroke_coverage(&fine, &fine_segments, u, v))
+                (stroke_coverage(&coarse, &coarse_segments, u, v, ANY_PIXEL)
+                    - stroke_coverage(&fine, &fine_segments, u, v, ANY_PIXEL))
                 .abs(),
             );
         }

@@ -255,6 +255,9 @@ pub(crate) enum MaskStep {
     /// One component row's own list edit, on the row it names rather than on whichever component
     /// happens to be selected.
     Row { component: Reference, edit: RowStep },
+    /// Enter or leave the host's own canvas pick for the selected component's kind, which is what
+    /// the panel's Pick button does: one `workspace.set`, committing nothing.
+    Pick,
 }
 
 /// What one component row's control does, before its row is resolved to an identity.
@@ -292,6 +295,11 @@ pub(crate) struct BrushStep {
     pub(crate) flow: Option<f64>,
     pub(crate) erase: Option<bool>,
     pub(crate) erase_held: Option<bool>,
+    /// Hold the next stroke to the colour under the brush where it begins. The script sets the flag
+    /// and never a colour: the host reads the pixel the masked operation receives at the stroke's
+    /// first position, exactly as it does for a pointer.
+    pub(crate) limit_to_colour: Option<bool>,
+    pub(crate) colour_refine: Option<f64>,
     /// Move one declared field by that many of its own declared steps, which is what a bracket key
     /// does. Named so a script can prove the key and the panel move by the same amount.
     pub(crate) nudge: Option<(String, f64)>,
@@ -314,12 +322,17 @@ impl BrushStep {
             ("size", self.size),
             ("feather", self.feather),
             ("flow", self.flow),
+            ("colour_refine", self.colour_refine),
         ] {
             if let Some(number) = number {
                 value.insert(name.into(), json!(number));
             }
         }
-        for (name, flag) in [("erase", self.erase), ("erase_held", self.erase_held)] {
+        for (name, flag) in [
+            ("erase", self.erase),
+            ("erase_held", self.erase_held),
+            ("limit_to_colour", self.limit_to_colour),
+        ] {
             if let Some(flag) = flag {
                 value.insert(name.into(), json!(flag));
             }
@@ -353,6 +366,7 @@ impl MaskStep {
             Self::Drag { handle, points } => json!({"drag":{"handle":handle,"points":points}}),
             Self::Apply => json!({ "apply": true }),
             Self::Cancel => json!({ "cancel": true }),
+            Self::Pick => json!({ "pick": true }),
             Self::Row { component, edit } => json!({"row": match edit {
                 RowStep::Mode(mode) => json!({"component":component.record(),"mode":mode}),
                 RowStep::Invert(invert) => json!({"component":component.record(),"invert":invert}),
@@ -1216,6 +1230,7 @@ impl Editor {
                     ("size", brush.size),
                     ("feather", brush.feather),
                     ("flow", brush.flow),
+                    ("colour_refine", brush.colour_refine),
                 ] {
                     if let Some(value) = value {
                         tasks.push(self.mask_message(MaskMessage::Brush(BrushEdit::Set {
@@ -1234,6 +1249,11 @@ impl Editor {
                 }
                 if let Some(held) = brush.erase_held {
                     tasks.push(self.mask_message(MaskMessage::Brush(BrushEdit::EraseHeld(held))));
+                }
+                if let Some(limit) = brush.limit_to_colour {
+                    tasks.push(
+                        self.mask_message(MaskMessage::Brush(BrushEdit::LimitToColour(limit))),
+                    );
                 }
                 self.note_step(json!({"masks": self.workspace.masks.summary()}));
                 self.capture_next_frame();
@@ -1291,6 +1311,16 @@ impl Editor {
                     return self.fail_step("no mask gesture is open to release");
                 }
                 (MaskMessage::Handle(MaskPointer::End), Expect::Gesture)
+            }
+            // The host's own pick, entered and left the way the panel's button does: one
+            // `workspace.set` and nothing committed, so the frame after it shows the mode.
+            MaskStep::Pick => {
+                if self.selected_component.is_none() {
+                    return self.fail_step("a pick step needs a selected component to fill");
+                }
+                // Entering or leaving a pick mode commits nothing and changes no pixel, so the
+                // frame is the next redraw rather than a preview that will never arrive.
+                (MaskMessage::Pick, Expect::Redraw)
             }
             MaskStep::Apply => {
                 if self.mask_draft.is_none() {
@@ -2657,6 +2687,13 @@ fn parse_mask(value: &Value) -> Result<MaskStep, String> {
         "mode" => Ok(MaskStep::Mode(word()?)),
         "new" => Ok(MaskStep::New(kind()?)),
         "add" => Ok(MaskStep::Add(kind()?)),
+        "pick" => {
+            if value.as_bool() == Some(true) {
+                Ok(MaskStep::Pick)
+            } else {
+                Err("mask pick takes true".to_owned())
+            }
+        }
         "paint" => parse_paint(value),
         "brush" => parse_brush(value).map(MaskStep::Brush),
         "stroke" => parse_stroke(value),
@@ -2745,8 +2782,8 @@ fn parse_paint(value: &Value) -> Result<MaskStep, String> {
 /// `mask.add-stroke` declares. There is no density, and naming one says so rather than being
 /// ignored.
 fn parse_brush(value: &Value) -> Result<BrushStep, String> {
-    const SHAPE: &str =
-        "mask brush takes size, feather, flow, erase, erase_held or nudge: [FIELD, STEPS]";
+    const SHAPE: &str = "mask brush takes size, feather, flow, erase, erase_held, limit_to_colour, \
+         colour_refine or nudge: [FIELD, STEPS]";
     let object = value.as_object().ok_or(SHAPE)?;
     if object.is_empty() {
         return Err(SHAPE.to_owned());
@@ -2770,6 +2807,8 @@ fn parse_brush(value: &Value) -> Result<BrushStep, String> {
             "flow" => step.flow = Some(number()?),
             "erase" => step.erase = Some(flag()?),
             "erase_held" => step.erase_held = Some(flag()?),
+            "limit_to_colour" => step.limit_to_colour = Some(flag()?),
+            "colour_refine" => step.colour_refine = Some(number()?),
             "nudge" => {
                 let pair = value
                     .as_array()

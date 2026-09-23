@@ -349,7 +349,7 @@ mod tests {
                 target: self
                     .selected_mask
                     .as_ref()
-                    .filter(|_| self.session.workspace.mode == lightwell_core::MASK_MODE),
+                    .filter(|_| crate::state::canvas::mask_workspace(&self.session.workspace.mode)),
                 draft_pending: false,
                 drafting: self.draft.is_some(),
                 crop_angle: &self.crop_angle,

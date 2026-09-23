@@ -96,7 +96,7 @@ pub(crate) fn workspace<'a>(model: &'a Workspace, surfaces: Surfaces<'a>) -> Ele
                 &model.tools,
                 &model.histogram,
                 &model.masks,
-                model.canvas.masking,
+                model.canvas.mask_panel,
             ))
             .width(Length::Fixed(TOOLS_PANEL_WIDTH))
             .height(Length::Fill)

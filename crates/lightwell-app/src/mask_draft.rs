@@ -133,13 +133,19 @@ pub(crate) fn paintable(kind: &str) -> bool {
     kind == BRUSH
 }
 
-/// The brush one stroke is drawn with: the four settings the gesture offers, in the ranges
+/// The brush one stroke is drawn with: the settings the gesture offers, in the ranges
 /// `mask.add-stroke` declares for them.
 ///
 /// **There is no density.** Lightroom's Density needs a build-up model along a single stroke, which
 /// would make coverage depend on the stamp spacing and therefore on the resolution the stroke was
 /// stamped at; nothing in the frozen mathematics has a stamp in it. Flow is delivered and is exactly
 /// what the study states: the coverage one pass reaches.
+///
+/// **`limit_to_colour` is not Auto Mask**, and the panel and the guide say so. It multiplies the
+/// stroke's coverage by a similarity to the colour under the brush where the stroke began — a
+/// per-pixel colour test with no notion of an edge or of connectivity — and the colour itself is
+/// never the client's: the request carries this flag and the host reads the pixel the masked
+/// operation receives at the stroke's first position.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct Brush {
     /// The radius in mask-space units, one unit being the content stage's height on both axes.
@@ -148,15 +154,23 @@ pub(crate) struct Brush {
     pub(crate) flow: f64,
     /// This stroke removes coverage rather than adding it, for the whole of its life.
     pub(crate) erase: bool,
+    /// This stroke is held to the colour under the brush where it began.
+    pub(crate) limit_to_colour: bool,
+    /// How tight that hold is, on the colour range's own refine axis.
+    pub(crate) colour_refine: f64,
 }
 
 /// What the brush starts at: a fifth of the frame's height across, softly feathered, at full flow —
-/// the brush a person reaches for to lighten a face.
+/// the brush a person reaches for to lighten a face. It is unlimited, because a limit is something a
+/// person asks for; the refine starts where the colour range's own does, which is the measured
+/// setting that holds an ordinary surface across a stop of shading.
 pub(crate) const NEUTRAL_BRUSH: Brush = Brush {
     size: 0.1,
     feather: 50.0,
     flow: 100.0,
     erase: false,
+    limit_to_colour: false,
+    colour_refine: lightwell_core::mask::REFINE_DEFAULT,
 };
 
 impl Brush {
@@ -167,6 +181,7 @@ impl Brush {
             ("size", self.size),
             ("feather", self.feather),
             ("flow", self.flow),
+            ("colour_refine", self.colour_refine),
         ]
     }
 
@@ -189,6 +204,7 @@ impl Brush {
             "size" => self.size = value,
             "feather" => self.feather = value,
             "flow" => self.flow = value,
+            "colour_refine" => self.colour_refine = value,
             _ => return false,
         }
         true
@@ -801,6 +817,12 @@ impl MaskDraft {
         if let MaskGeometry::Brush(stroke) = &self.geometry {
             fields.insert("points".to_owned(), json!(stroke.points()));
             fields.insert("erase".to_owned(), json!(stroke.brush.erase));
+            // The flag, and never a colour: the host reads the pixel the masked operation receives
+            // at the stroke's first position and stores that with the stroke.
+            fields.insert(
+                "limit_to_colour".to_owned(),
+                json!(stroke.brush.limit_to_colour),
+            );
         }
         for (name, value) in self.values() {
             fields.insert(name.to_owned(), json!(value));

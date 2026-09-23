@@ -374,7 +374,10 @@ impl CompiledGeometry {
             // across the change and the frozen references still hold bit for bit.
             Self::Linear(linear) => linear.coverage(u, v),
             Self::Radial(radial) => radial.coverage(u, v),
-            Self::Brush(brush) => brush.coverage(u, v),
+            // A brush ignores `rgb` for every stroke that is not limited to a colour, and a limited
+            // one multiplies its own coverage by the similarity frozen in
+            // `docs/design/mask-study.md#the-colour-constraint`.
+            Self::Brush(brush) => brush.coverage(u, v, rgb),
             // A value-based component ignores the position instead.
             Self::LuminanceRange(band) => band.coverage(rgb),
             Self::ColourRange(colours) => colours.coverage(rgb),
@@ -385,7 +388,15 @@ impl CompiledGeometry {
     /// It is what makes a mask's bounds the whole stage and what a client is told so it can say the
     /// 100% view is the truth for such a selection.
     fn reads_pixels(&self) -> bool {
-        matches!(self, Self::LuminanceRange(_) | Self::ColourRange(_))
+        match self {
+            Self::Linear(_) | Self::Radial(_) => false,
+            // A brush reads pixels exactly when one of its strokes is limited to a colour. That is
+            // the whole of what the colour-constrained brush costs the rest of the mask, and it is
+            // the range selections' cost too: the overlay refuses such a mask, and what the stroke
+            // paints moves when a layer ahead of the masked one changes the operation's input.
+            Self::Brush(brush) => brush.reads_pixels(),
+            Self::LuminanceRange(_) | Self::ColourRange(_) => true,
+        }
     }
 
     /// A conservative pixel rectangle of this component's own support: outside it the component's

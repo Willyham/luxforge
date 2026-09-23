@@ -99,6 +99,11 @@ pub const POINTS_PER_STROKE: usize = 1024;
 pub const SIZE_MIN: f64 = 1.0 / COORDINATE_STEPS_PER_UNIT;
 pub const SIZE_MAX: f64 = 2.0;
 
+/// The bounds a stored [`ColourLimit`]'s refine takes, read from the colour range's own declaration
+/// rather than restated: it is the same slider on the same axis with the same meaning, so the editor
+/// holds one rule for both.
+use crate::mask::{REFINE_MAX, REFINE_MIN};
+
 /// One stored stroke's content address: the first 128 bits of the SHA-256 of its canonical bytes,
 /// lowercase hex.
 ///
@@ -178,6 +183,89 @@ pub struct Stroke {
     feather: f64,
     flow: f64,
     erase: bool,
+    /// The colour this stroke is limited to, when it carries one.
+    ///
+    /// It is part of the stroke and therefore part of what is hashed: a limited stroke and the same
+    /// path drawn without a limit are two different strokes, exactly as an add and an erase of one
+    /// path are. Omitted from the canonical bytes when there is none, so an unlimited stroke has the
+    /// spelling it has always had and the same content address.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    colour: Option<ColourLimit>,
+}
+
+/// The colour a limited stroke was seeded on, and how tight the similarity around it is.
+///
+/// The seed is the pixel the operation the mask modulates receives where the stroke began, **as the
+/// host samples it**: the three sRGB codes [`crate::modules::StageContext::sample_before`] answers,
+/// decoded to linear light by the delivered decode when the stroke is compiled. It is **stored**, not
+/// re-read, so the stroke reproduces its own limit from its bytes after any later edit and nothing is
+/// sampled again when the picture is drawn. `refine` is the colour range's own slider and means what
+/// it means there: a higher number is always a narrower hold.
+///
+/// **Both are stored as integers, and that is load-bearing rather than tidy.** A stroke is addressed
+/// by the hash of its canonical bytes, so a value that does not survive a JSON round trip exactly
+/// would give the reparsed stroke a different address from the one the recipe references — and
+/// `serde_json` does not round-trip every `f64` (`0.026241222396492958` reads back one ulp away). The
+/// positions and the radius are held as integer grid steps for the same reason; these two join them,
+/// so the stored precision is a property of the type rather than of the code that happens to write
+/// it. The codes are what the host can read at all, and the refine is quantized to the tenth its own
+/// declared control moves in.
+///
+/// The similarity itself is frozen in `docs/design/mask-study.md#the-colour-constraint` and is the
+/// [colour range](crate::mask::ColourRange)'s own falloff at one sample.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ColourLimit {
+    /// The sRGB codes of the sampled pixel, in the domain of the operation the mask modulates.
+    seed: [u8; 3],
+    /// Tenths of a refine unit, which is the step the declared control moves in.
+    refine: i32,
+}
+
+/// Refine is stored in tenths, so a stored limit carries `0..=1000` of them.
+const REFINE_STEPS_PER_UNIT: f64 = 10.0;
+
+impl ColourLimit {
+    /// The limit for a pixel the host sampled, at this refine.
+    ///
+    /// The seed is bytes because that is what the host's own point sample answers; nothing is lost
+    /// against what it could offer, and a code is exact where a decoded `f64` is not. The refine is
+    /// rounded to the tenth its declared control moves in, and refused by name outside its range.
+    pub fn sampled(seed: [u8; 3], refine: f64) -> Result<Self, Error> {
+        if !refine.is_finite() || !(REFINE_MIN..=REFINE_MAX).contains(&refine) {
+            return Err(Error::new(
+                ErrorKind::Validation,
+                format!(
+                    "stroke colour refine must be a number within {REFINE_MIN:.0}..={REFINE_MAX:.0}"
+                ),
+            ));
+        }
+        Ok(Self {
+            seed,
+            refine: (refine * REFINE_STEPS_PER_UNIT).round() as i32,
+        })
+    }
+
+    /// The seed in **linear sRGB**, through the delivered decode, which is the domain the frozen
+    /// similarity is evaluated in.
+    pub fn seed(&self) -> [f64; 3] {
+        let linear = crate::render::decode_pixel(self.seed);
+        [
+            f64::from(linear[0]),
+            f64::from(linear[1]),
+            f64::from(linear[2]),
+        ]
+    }
+
+    /// The sampled codes as stored, for a client that wants to show the swatch it holds.
+    pub fn codes(&self) -> [u8; 3] {
+        self.seed
+    }
+
+    /// The refine on its own `0..=100` axis.
+    pub fn refine(&self) -> f64 {
+        f64::from(self.refine) / REFINE_STEPS_PER_UNIT
+    }
 }
 
 /// Equality on the stored values, with the two percentages compared by their bits, exactly as a
@@ -192,6 +280,7 @@ impl PartialEq for Stroke {
             && self.feather.to_bits() == other.feather.to_bits()
             && self.flow.to_bits() == other.flow.to_bits()
             && self.erase == other.erase
+            && self.colour == other.colour
     }
 }
 
@@ -240,7 +329,26 @@ impl Stroke {
             feather,
             flow,
             erase,
+            colour: None,
         })
+    }
+
+    /// Limit this stroke to a colour: the seed the host sampled where the stroke began, and the
+    /// refine that says how tight the hold is.
+    ///
+    /// It is a second step rather than a sixth argument to [`Self::capture`] because a limit is
+    /// something a stroke *may* carry and the seed is not the client's to supply: the host reads the
+    /// pixel the masked operation receives and calls this, so no request can name a colour the
+    /// picture does not have at the position the stroke started from. Every bound a limit has is
+    /// checked where it is built, by [`ColourLimit::sampled`], and a code needs no bound at all.
+    pub fn with_colour_limit(mut self, limit: ColourLimit) -> Self {
+        self.colour = Some(limit);
+        self
+    }
+
+    /// The colour this stroke is limited to, when it carries a limit.
+    pub fn colour_limit(&self) -> Option<ColourLimit> {
+        self.colour
     }
 
     /// The stored positions in normalized coordinates, in drawn order.

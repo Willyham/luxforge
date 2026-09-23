@@ -898,6 +898,35 @@ fn mask_command(
         let entry_id = selected_entry(service, session, &asset_id, entry_id)?;
         return value(service.mask_listing(&asset_id, &entry_id)?);
     }
+    // The other read: the pixel the operation one mask modulates receives. It resolves its entry the
+    // way `mask.list` does, takes the mask in the envelope like every other command, and its two
+    // coordinates through the same generic check a mutation's parameters take.
+    if command.method == mask_commands::SAMPLE_INPUT {
+        let entry_id: Option<EntryId> = optional_envelope(&mut parameters, "entry_id")?;
+        let mask = optional_envelope(&mut parameters, "mask")?;
+        let target = MaskTarget {
+            mask,
+            ..MaskTarget::default()
+        };
+        command.checked_target(&target)?;
+        let checked = crate::check_parameters(&command.action, &Value::Object(parameters))?;
+        let coordinate = |name: &str| -> Result<u32, Error> {
+            u32::try_from(
+                checked
+                    .get(name)
+                    .and_then(Value::as_i64)
+                    .ok_or_else(|| missing_parameter(name, command.method))?,
+            )
+            .map_err(|_| missing_parameter(name, command.method))
+        };
+        let (x, y) = (coordinate("x")?, coordinate("y")?);
+        let entry_id = selected_entry(service, session, &asset_id, entry_id)?;
+        let mask = target
+            .mask
+            .as_ref()
+            .expect("checked_target requires a mask");
+        return value(service.mask_input_sample(&asset_id, &entry_id, mask, x, y)?);
+    }
     require_current(session)?;
     let mutation: Mutation = envelope(&mut parameters, "mutation")?;
     let target = MaskTarget {
@@ -915,6 +944,14 @@ fn mask_command(
         Value::Object(parameters),
         target,
     )?)
+}
+
+/// A declared parameter a request did not carry, in the spelling the generic check already uses.
+fn missing_parameter(name: &str, method: &str) -> Error {
+    Error::new(
+        ErrorKind::Validation,
+        format!("missing required parameter {name} for action {method}"),
+    )
 }
 
 fn object(params: &Value) -> Result<Map<String, Value>, Error> {
@@ -1254,9 +1291,21 @@ fn recipe_describe(
 /// The canvas modes this registry offers: the pointer plus every available module that declares a
 /// canvas interaction. `O(modules)`; it touches no image resource.
 fn canvas_modes(registry: &ModuleRegistry) -> Vec<String> {
-    // The two host modes first: the pointer, and the mask mode, which belongs to the host because a
-    // mask is a host object rather than a module. Then one per module that declares a canvas.
+    // The host modes first: the pointer, the mask mode — a mask is a host object rather than a
+    // module — and one per canvas pick the host itself declares, which is one per sampling component
+    // kind. A pick's mode is its own action's method name, read from the same table that generates
+    // the command, so registering a kind is what makes its mode legal here too. Then one per module
+    // that declares a canvas.
     let mut modes = vec![POINTER_MODE.to_owned(), MASK_MODE.to_owned()];
+    modes.extend(
+        crate::mask::commands::canvas()
+            .iter()
+            .filter_map(|pick| match pick {
+                crate::CanvasInteraction::SampleApply { action, .. } => Some(action.clone()),
+                crate::CanvasInteraction::PointPick { .. }
+                | crate::CanvasInteraction::CropFrame { .. } => None,
+            }),
+    );
     modes.extend(
         registry
             .descriptors()
@@ -1892,6 +1941,7 @@ mod tests {
                 // The kind-independent commands, then three geometry methods per registered
                 // component kind, generated from the host's own kind table.
                 "mask.list",
+                "mask.sample-input",
                 "mask.delete",
                 "mask.rename",
                 "mask.duplicate",
@@ -2802,9 +2852,11 @@ mod tests {
             (
                 "an unknown mode",
                 json!({"mode": "lightwell.heal"}),
-                // The two host modes first, then the registry's canvas declarations, so the RAW and
-                // Basic neutral pickers join the list without a change here.
-                "mode must be one of pointer, mask, lightwell.pixel, lightwell.raw, lightwell.basic, lightwell.crop",
+                // The host modes first — the pointer, the mask mode and one per canvas pick the host
+                // declares for a sampling component kind — then the registry's canvas declarations,
+                // so the RAW and Basic neutral pickers join the list without a change here.
+                "mode must be one of pointer, mask, mask.add-colour-range-sample, lightwell.pixel, \
+                 lightwell.raw, lightwell.basic, lightwell.crop",
             ),
             (
                 "a module that declares no canvas",

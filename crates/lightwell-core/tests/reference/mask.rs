@@ -415,6 +415,77 @@ pub struct BrushStroke {
     pub feather: f64,
     pub flow: f64,
     pub erase: bool,
+    /// The colour this stroke is constrained to, when it carries one. It is part
+    /// of the stroke, so a stored stroke reproduces its own constraint and
+    /// nothing is sampled again when the picture is drawn.
+    pub colour: Option<ColourLimit>,
+}
+
+/// The colour a constrained stroke was seeded on, and how tight the similarity
+/// around it is
+/// (`docs/design/mask-study.md#the-colour-constraint`).
+///
+/// `seed` is a **linear sRGB** triple in the domain of the operation the mask
+/// modulates — the pixel that operation receives where the stroke began —
+/// sampled once, when the stroke is made. `refine` is the colour range's own
+/// slider in `0..100` and means exactly what it means there: higher is tighter.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ColourLimit {
+    pub seed: [f64; 3],
+    pub refine: f64,
+}
+
+/// The similarity a constrained stroke multiplies its coverage by, in the exact
+/// order a production unit transcribes:
+///
+/// ```text
+/// (a0, b0) = the Oklab a and b of seed        -- once per stroke
+/// radius   = refine_radius(refine)            -- once per stroke
+///
+/// lab = to_oklab(rgb)
+/// da  = lab.a - a0
+/// db  = lab.b - b0
+/// d2  = da*da + db*db
+/// d   = sqrt(d2)
+/// r   = d / radius
+/// k   = smooth(clamp((1 - r) / SPAN, 0, 1))
+/// ```
+///
+/// **This is the [`super::range`] study's colour range at one sample**, not a
+/// second metric that resembles it: the same Oklab chromaticity distance, the
+/// same plateau and span, and the same geometric refine mapping, reached through
+/// that module's own constants and conversions.
+/// `the_colour_similarity_is_the_frozen_colour_range_at_one_sample` proves the
+/// two equal bit for bit against [`colour_similarity_as_range`], which they are
+/// because folding one sample by `min` against `+infinity` returns that sample's
+/// squared distance exactly.
+///
+/// Exactly `1.0` at the seed and out to `PLATEAU * radius`, and exactly `0.0` at
+/// and beyond `radius`, because `smooth` is exact at both ends of its clamp.
+pub fn colour_similarity(limit: &ColourLimit, rgb_linear: [f64; 3]) -> f64 {
+    let seed = super::colour::to_oklab(limit.seed);
+    let (a0, b0) = (seed.a, seed.b);
+    let radius = super::range::refine_radius(limit.refine);
+    let lab = super::colour::to_oklab(rgb_linear);
+    let da = lab.a - a0;
+    let db = lab.b - b0;
+    let d2 = da * da + db * db;
+    let d = d2.sqrt();
+    let r = d / radius;
+    smooth(((1.0 - r) / super::range::SPAN).clamp(0.0, 1.0))
+}
+
+/// The same similarity reached through the colour range's own compiled form,
+/// kept only so the proofs can show the two are the same number rather than
+/// asserting it in prose. No production unit transcribes this one — but a
+/// production unit is free to *evaluate* the range's own compiled component,
+/// which is what this shows costs nothing.
+pub fn colour_similarity_as_range(limit: &ColourLimit, rgb_linear: [f64; 3]) -> f64 {
+    let compiled = super::range::compile_colour_range(&super::range::ColourRange {
+        samples: vec![limit.seed],
+        refine: limit.refine,
+    });
+    super::range::colour_coverage(&compiled, rgb_linear)
 }
 
 /// A brush component: its strokes in stored order. Order is load-bearing only
@@ -564,7 +635,8 @@ pub fn capsule_profile(stroke: &BrushStroke, d: f64) -> f64 {
 ///
 /// ```text
 /// d      = sqrt(min over the stroke's segments of segment_distance2)
-/// stroke = capsule_profile(d) * (flow / 100)
+/// stroke = capsule_profile(d) * (flow / 100)                  -- unconstrained
+/// stroke = capsule_profile(d) * (flow / 100) * k              -- constrained
 /// ```
 ///
 /// **The minimum distance, not the maximum profile.** The two are the same
@@ -574,7 +646,20 @@ pub fn capsule_profile(stroke: &BrushStroke, d: f64) -> f64 {
 /// [`stroke_coverage_max_form`] rather than assuming it. This spelling is the
 /// frozen one because it evaluates one `sqrt` and one `smooth` per stroke
 /// instead of one per segment.
-pub fn stroke_coverage(stroke: &BrushStroke, segments: &[Segment], u: f64, v: f64) -> f64 {
+///
+/// **The colour constraint's `k` is the last multiply, and only a constrained
+/// stroke performs one.** An unconstrained stroke evaluates the same expression
+/// it always did, with no `* 1.0` appended, so the geometric brush's
+/// bit-identity is untouched by the constraint; `rgb` is the pixel the operation
+/// the mask modulates receives, and a stroke with no constraint ignores it
+/// exactly as a geometric component ignores it.
+pub fn stroke_coverage(
+    stroke: &BrushStroke,
+    segments: &[Segment],
+    u: f64,
+    v: f64,
+    rgb_linear: [f64; 3],
+) -> f64 {
     let mut nearest = f64::INFINITY;
     for segment in segments {
         let d2 = segment_distance2(segment, u, v);
@@ -583,13 +668,23 @@ pub fn stroke_coverage(stroke: &BrushStroke, segments: &[Segment], u: f64, v: f6
         }
     }
     let d = nearest.sqrt();
-    capsule_profile(stroke, d) * (stroke.flow / 100.0)
+    let s = capsule_profile(stroke, d) * (stroke.flow / 100.0);
+    match &stroke.colour {
+        None => s,
+        Some(limit) => s * colour_similarity(limit, rgb_linear),
+    }
 }
 
 /// The design's "the maximum over its segments of a capsule profile" spelling,
 /// kept only so `mask_brush_reference.rs` can prove it equals
 /// [`stroke_coverage`] bit for bit. No production unit transcribes this one.
-pub fn stroke_coverage_max_form(stroke: &BrushStroke, segments: &[Segment], u: f64, v: f64) -> f64 {
+pub fn stroke_coverage_max_form(
+    stroke: &BrushStroke,
+    segments: &[Segment],
+    u: f64,
+    v: f64,
+    rgb_linear: [f64; 3],
+) -> f64 {
     let mut best = 0.0f64;
     for segment in segments {
         let d = segment_distance2(segment, u, v).sqrt();
@@ -598,7 +693,11 @@ pub fn stroke_coverage_max_form(stroke: &BrushStroke, segments: &[Segment], u: f
             best = s;
         }
     }
-    best * (stroke.flow / 100.0)
+    let s = best * (stroke.flow / 100.0);
+    match &stroke.colour {
+        None => s,
+        Some(limit) => s * colour_similarity(limit, rgb_linear),
+    }
 }
 
 /// How one stroke folds into the coverage the strokes before it accumulated:
@@ -639,11 +738,14 @@ pub fn accumulate(c: f64, s: f64, erase: bool) -> f64 {
 ///
 /// A component with no strokes covers nothing: `c = 0`, which is the same answer
 /// an empty component list gives the composition above.
-pub fn brush_coverage(brush: &Brush, stage: &Stage, u: f64, v: f64) -> f64 {
+///
+/// `rgb` is the pixel the operation the mask modulates receives, which only a
+/// stroke carrying a [`ColourLimit`] reads.
+pub fn brush_coverage(brush: &Brush, stage: &Stage, u: f64, v: f64, rgb_linear: [f64; 3]) -> f64 {
     let mut c = 0.0;
     for stroke in &brush.strokes {
         let segments = brush_segments(stroke, stage);
-        let s = stroke_coverage(stroke, &segments, u, v);
+        let s = stroke_coverage(stroke, &segments, u, v, rgb_linear);
         c = accumulate(c, s, stroke.erase);
     }
     c

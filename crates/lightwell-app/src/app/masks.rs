@@ -253,6 +253,16 @@ impl Editor {
         self.busy.then(|| "Waiting for the last request".to_owned())
     }
 
+    /// The kind of the component the panel has selected, as the listing reports it.
+    fn selected_component_kind(&self) -> Option<String> {
+        let component = self.selected_component.as_ref()?;
+        self.open_mask()?
+            .components
+            .iter()
+            .find(|report| &report.id == component)
+            .map(|report| report.kind.clone())
+    }
+
     /// The open mask's report, when the panel has one open and the listing still holds it.
     fn open_mask(&self) -> Option<&MaskReport> {
         let id = self.selected_mask.as_ref()?;
@@ -475,6 +485,25 @@ impl Editor {
                 self.hovered_component = hovered;
                 self.refresh_mask_overlay()
             }
+            // Enter or leave the host's own pick for the selected component's kind: one
+            // `workspace.set` through the same message a module's picker control sends, so the pick
+            // mode is per-client view state and nothing is committed by turning it on.
+            MaskMessage::Pick => {
+                let Some(kind) = self.selected_component_kind() else {
+                    self.status = "Select the component this pick fills".into();
+                    return Task::none();
+                };
+                let Some(mode) = crate::state::masks::pick_mode(&kind) else {
+                    self.status = format!("This build has no canvas pick for a {kind} component");
+                    return Task::none();
+                };
+                let target = if self.session.workspace.mode == mode {
+                    lightwell_core::POINTER_MODE.to_owned()
+                } else {
+                    mode
+                };
+                self.dispatch(Message::SetMode(target))
+            }
             MaskMessage::Name(text) => {
                 self.mask_name = text;
                 Task::none()
@@ -565,6 +594,21 @@ impl Editor {
                 "mask.set-component-invert",
                 one("invert", json!(invert)),
             ),
+            // A swatch is addressed by its position in the component's own list, which is an
+            // ordinary declared integer; the method is the one the host generated for that kind, so
+            // the panel spells no method name of its own.
+            RowEdit::DeleteSample {
+                component,
+                kind,
+                index,
+            } => {
+                let method = lightwell_core::mask::commands::sample(
+                    lightwell_core::mask::commands::SampleOp::Delete,
+                    kind,
+                )?
+                .method;
+                of_component(component, method, one("index", json!(index)))
+            }
             // A stroke is addressed by its content address, which is an identity and therefore an
             // envelope field, exactly as the mask and the component it lives in are.
             RowEdit::DeleteStroke { component, stroke } => {
@@ -596,6 +640,11 @@ impl Editor {
                 self.brush_erase_held = false;
                 changed
             }
+            BrushEdit::LimitToColour(limit) => {
+                let changed = self.brush.limit_to_colour != *limit;
+                self.brush.limit_to_colour = *limit;
+                changed
+            }
             // Held, not latched: the modifier erases while it is down and the toggle's own state is
             // what it returns to.
             BrushEdit::EraseHeld(held) => {
@@ -623,10 +672,17 @@ impl Editor {
     }
 
     /// The brush a stroke started now would be drawn with: the panel's settings, with the held
-    /// modifier erasing over them.
+    /// modifier erasing over them, and the colour limit applied only where it can be read.
+    ///
+    /// The limit needs the pixel the operation the open mask modulates receives, so a mask no layer
+    /// is bound to has nothing to read. The panel says that in the same row the toggle sits in and
+    /// through the same predicate this reads, so a stroke never carries a limit the host would refuse
+    /// and a person is never told one thing while the request says another.
     pub(crate) fn painting_brush(&self) -> crate::mask_draft::Brush {
+        let refused = crate::state::masks::limit_reason(self.open_mask()).is_some();
         crate::mask_draft::Brush {
             erase: self.brush.erase || self.brush_erase_held,
+            limit_to_colour: self.brush.limit_to_colour && !refused,
             ..self.brush
         }
     }

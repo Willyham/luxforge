@@ -189,6 +189,21 @@ The **brush** is painted rather than dragged, so it is reached from the Brush se
 
 One brush control is worth naming because you may go looking for it and will not find it: there is no **Density**. In Lightroom, Density and Flow interact through a build-up model *along a single stroke*: coverage accumulates from overlapping stamps, so what you get depends on how densely the stroke was stamped, and therefore on the size of the picture it was stamped on. Lightwell's stroke is a path rather than a row of stamps: one pass of the brush reaches its Flow and no more, however fast your hand moved, however finely the pointer was sampled and whatever the picture's resolution. A second pass over the same place is a second stroke and does build up. A control called Density on top of that would have to mean something other than Lightroom's, so it is left out and named here rather than shipped under a familiar label with unfamiliar behaviour.
 
+**Limit to colour** holds a stroke to the colour it started on. Turn it on, put the brush down on a
+blue sky, and the stroke paints the sky and leaves the red roof beside it; **Colour refine** says how
+tight the hold is, on the same 0-to-100 axis a colour range's Refine uses and with the same meaning,
+where a higher number is a narrower hold and 50 holds an ordinary surface across a stop of shading.
+**It is not Lightroom's Auto Mask:** it compares each pixel with the colour under the brush where the
+stroke began and knows nothing about edges or connectivity, so it will also paint that same colour
+anywhere else the stroke passes over — if a strip of the same sky shows through on the far side of the
+roof and your stroke reaches it, it is painted too, and the remedy is to subtract a brush over what it
+caught. The colour is sampled once, where the stroke starts, and stored with the stroke: later edits
+never move it, and nothing is re-read when the picture is drawn. Because the stroke then reads pixels,
+it inherits what the range selections say below — what it holds follows the adjustment's own input, so
+a layer ahead of the mask changes it, and a mask holding such a stroke draws no coverage overlay.
+Limit to colour needs an adjustment to read the input of, so the toggle is unavailable until the open
+mask is bound to a layer, and it says so.
+
 A mask's geometry is stored in the photograph's own content coordinates, so it travels through every quarter-turn, reflection and crop with the picture: cropping after masking never moves the mask. A stroke is stored on a grid fine enough that a position is one pixel of the largest picture the editor admits, and each stroke is kept once under the fingerprint of its own contents, so painting for an afternoon costs kilobytes rather than megabytes.
 
 Selecting a mask opens it. Its **components** are always listed, in the order they compose, each row carrying its kind, its own three-way Add / Subtract / Intersect control, its own Invert toggle, Move up and Move down, Delete and Edit shape. Each of those is one command, and each has a Copy button beside it that copies the exact JSON request that control sends. A control belongs to the row it sits on: changing the third component's mode never touches the first, and none of it changes what is selected or what the handles are editing. Pointing at a row shows that component's own contribution in the overlay and leaving the row brings the composed mask back, which is how you see what a Subtract is doing on top of a gradient. **Add component** offers the same kinds, with the mode — Add, Subtract or Intersect — chosen before the gesture starts rather than guessed from a modifier afterwards. A mask's first component is always an Add, because nothing precedes it to subtract from; the panel says so on that row rather than offering a mode it would refuse, it refuses a move that would leave a component that is not an Add at the front, and while Add component is set to Subtract or Intersect, New mask is refused with that reason rather than quietly making an Add. A recipe that holds sixteen masks, or a mask that holds thirty-two components, says so in place of the button. A mask never exists empty either, so its only component offers no Delete: the row says to delete the mask instead.
@@ -215,10 +230,20 @@ An unsampled colour range selects nothing, which is what a new one is.
 Neither kind is drawn on the photograph, because neither has a shape: choosing it from New mask or
 Add component creates it straight away as a starting selection — the whole tonal range with soft
 shoulders for a band, no swatches for a colour range — and you narrow it through the numbers under
-its row. **Picking a colour off the photograph is not wired to the canvas yet**: a swatch is added
-and removed through `mask.add-colour-range-sample` and `mask.delete-colour-range-sample`, which take
-a linear sRGB triple and an index, so a colour range is reachable from the API and not yet from a
-click.
+its row. A colour range's swatches are **picked off the photograph**: select the component and press
+**Pick colour range**, then click the picture, and each click adds one swatch, up to five. Every
+swatch is listed under the row with the colour it holds and a Remove of its own, so one picked by
+accident goes without clearing the rest, and picking a colour the component already holds changes
+nothing rather than spending a swatch on it. The same two commands do it from a script:
+`mask.add-colour-range-sample` takes a linear sRGB triple and `mask.delete-colour-range-sample` an
+index.
+
+The pick needs something to read: a selection by value is evaluated on the pixel the adjustment it
+modulates *receives*, so the mask has to be bound to a layer before a colour can be picked into it.
+Until it is, the button says so. The colour never comes from the frame you are looking at — that
+frame holds the adjustment's output, and picking from it would sample a colour the selection is never
+evaluated against — so the host reads the pixel itself and the click carries a position, not a
+colour.
 
 Four things about a range selection are worth knowing before you rely on one, because they are how it
 works rather than faults to be fixed:
@@ -253,9 +278,12 @@ Leaving Mask mode with a gesture open is refused with the reason rather than dis
 A mask made of several components is ordinary, not a special case: draw a radial, take a region back out of it with a Subtract, confine what is left with an Intersect, and adjust through the result exactly as through a single gradient. Order matters, and the list is the order: an Add moved above a Subtract is no longer cut by it, and moving a row is an ordinary history entry like any other edit.
 
 The linear gradient, the radial gradient, the brush and the two range selections are every kind this
-build offers. The colour-constrained brush — the honest part of Lightroom's Auto Mask — is not built,
-and no selection here is made by a model: there is no Select Subject, Sky, People, Objects or
-Background, and none of them is drawn as a control that does nothing.
+build offers, and Limit to colour is the part of Lightroom's Auto Mask that can be evaluated exactly:
+a colour similarity, not edge detection. **A genuinely edge-aware refinement is not built.** Nothing
+here finds a boundary, follows one, or snaps a selection to it; that needs a neighbourhood operation
+over what is today a test of one pixel at a time, and it will get its own design rather than being
+approximated under a familiar name. No selection here is made by a model either: there is no Select
+Subject, Sky, People, Objects or Background, and none of them is drawn as a control that does nothing.
 
 ### Vignette
 
@@ -393,6 +421,16 @@ A gesture that changes a setting over and over — a slider drag, a held arrow k
 Masks are host commands in their own namespace, declared with the same descriptors a module's actions are, so `schema.list` publishes them and their controls. `mask.list {asset_id, entry_id?}` is read-only and answers every mask with its `amount`, `invert`, its `components` — each with its `id`, `index`, `name`, `mode`, `invert`, `kind`, `payload` and whether this build can evaluate the kind — and the `layers` bound to it. `recipe.describe` reports the same relation from the other side, naming each layer's `mask`, so a client reading the processing order can tell a masked layer from a global one without a second question.
 
 The geometry commands are **generated per component kind**, because one command carrying a kind and every kind's fields could not be declared honestly: `mask.create-linear {x0, y0, x1, y1}` creates a mask whose first component is that gradient, `mask.add-linear {mask, mode, …}` adds a further component, and `mask.set-linear {mask, component, …}` patches one component's geometry. `linear` and `radial` are the kinds this build registers. The kind-independent commands keep one name each: `mask.delete`, `mask.rename {name}`, `mask.duplicate`, `mask.set-amount {amount}`, `mask.set-invert {invert}`, `mask.reorder {index}`, `mask.set-component-mode {mode}`, `mask.set-component-invert {invert}`, `mask.delete-component` and `mask.reorder-component {index}`.
+
+`mask.sample-input {mask, x, y}` is the family's second read-only method: it answers `r`, `g` and `b`
+— the linear-sRGB pixel the adjustment that mask modulates *receives* at one content position of the
+stage that adjustment's layer sees — plus the position and that stage's size. It is where a canvas
+pick gets the colour a colour range's swatch is, and it exists because a client must not read that
+colour off the frame: the frame holds the adjustment's output, which is a different colour wherever
+the adjustment does anything. A mask no layer is bound to has no adjustment to be the input of and is
+refused by name. `mask.add-stroke` takes `limit_to_colour` and `colour_refine` beside its path and its
+brush; it carries **no colour**, because the host reads the pixel at the stroke's first position
+itself, and a stroke limited on a mask no layer carries is refused by name for the same reason.
 
 A `mask`, a `component` and a `name` travel in the request envelope beside `asset_id` and `mutation`, not as declared parameters: the parameter vocabulary has no string kind, so an identity is not something a control could edit. Everything a control *can* edit — an endpoint, an amount, a mode, an inversion — is a declared parameter, validated by the same generic check a module action goes through. Every one of these is an ordinary mutation with a revision check, request deduplication, one history entry and one immutable snapshot, and each drafts through `draft.*` exactly as a module action does, so a whole gradient drag costs one entry.
 
