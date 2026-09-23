@@ -45,7 +45,7 @@ Doctor reports missing tools and the graphics environment without installing any
 | Rendered Vignette: section expand, an Amount drag and commit at Fit and 100%, roundness and feather extremes, a post-crop recentre and the module reset | `cargo xtask smoke --scenario vignette --output NEW_DIR` |
 | Rendered percentage zooms: 50%, 100%, 120%, 800% and 1600%, pans to the centre and the far corner at 1600%, and idle checks at Fit, 100% and 1600%, over the generated 24 MP and 60 MP JPEGs, one launch each | `cargo xtask smoke --scenario zoom --output NEW_DIR` |
 | Rendered Presets: section expand, an XMP and a Lightwell preset imported, each applied from its row, undo, the create form filled and submitted, a native preset applied to the Original, `preset.list` through the `api` step and a delete through the row menu | `cargo xtask smoke --scenario presets --output NEW_DIR` |
-| Rendered RAW section over a supplied RAW file, with Basic collapsed, then a double-click on each RAW slider and on Basic's Exposure: the first press's committed jump and the reset that follows it, each checked as two entries with the reset sent against the jump's revision and never refused; not in `rendered`, because no RAW photograph is checked in | `cargo xtask smoke --scenario raw-panel --source RAW --output NEW_DIR` |
+| Rendered RAW section over a supplied RAW file, with Basic collapsed; a Custom temperature drag left open and then released, at Fit and at 100%, whose drafted frame differs from the one before, is labelled approximate and adopts no histogram, and whose release's exact frame is the first drawn after the commit, carries its own report and is within a code of the approximate one on average; then a double-click on each RAW slider and on Basic's Exposure: the first press's committed jump and the reset that follows it, each checked as two entries with the reset sent against the jump's revision and never refused; not in `rendered`, because no RAW photograph is checked in | `cargo xtask smoke --scenario raw-panel --source RAW --output NEW_DIR` |
 | Inspect a capture | `cargo xtask check-capture --image PNG [--orientation N]` |
 | Process failure checks; macOS measurement, `--samples` defaults to 5 launches per workload | `cargo xtask hardening --binary PATH --output NEW_DIR`, `cargo xtask measure --binary PATH --output NEW_DIR [--samples N]` |
 | Package; dependency inventory | `cargo xtask package --output NEW_DIR`, `cargo xtask inventory --output NEW_DIR` |
@@ -559,13 +559,15 @@ releases, so its drafted preview is superseded by the commit — that is the que
 report counts — and it is measured through to the `analysis_adopted` of the committed frame, which
 is the settled exact histogram, and to that frame's own first `preview_displayed`
 (`commit_to_committed_frame`), which is what a person sees on release. A final burst step sends
-every value between two ticks to show the driver's coalescing. A slider whose drafted value the
-core does not render — a RAW temperature or tint, whose `draft.set` is accepted but whose preview
-job answers preparation-required, logged as `slider_draft_unpreviewed` — has no frame per input, so
-a drag of it is refused with that reason and `--mode commit` times its release instead. A RAW
-slider's gesture values start from zero when its range holds it and from its declared default
-otherwise (Custom temperature's 6504 K); `--mode burst` takes `--action`/`--parameter` too, for a
-slider whose range holds its ±2 values. `--crop DEGREES` commits a straightening 16:9 crop first, so the measured stack
+every value between two ticks to show the driver's coalescing. A RAW temperature or tint drag is
+timed like any other: its drafted values preview approximately on the developed planes, the report
+counts those frames by phase in `approximate_white_balance_frames`, and its releases, which wait
+for the mosaic to be redeveloped, show in `commit_to_committed_frame`. An input whose preview job
+was refused — logged as `slider_draft_unpreviewed`, a RAW draft whose development is not in memory
+because a redevelopment is in flight — has no frame of its own, and a drag with one is refused with
+that reason rather than timed. A RAW slider's gesture values start from zero when its range holds
+it and from its declared default otherwise (Custom temperature's 6504 K); `--mode burst` takes
+`--action`/`--parameter` too. `--crop DEGREES` commits a straightening 16:9 crop first, so the measured stack
 carries the crop resample as well as the colour pass. `--basic` commits a Basic layer with every
 field non-neutral first, so each measured frame runs every one of the module's colour units. `--idle` adds a second workload: one evidence
 run commits a Basic layer with all ten fields non-neutral into a catalog that outlives it, then an
@@ -574,10 +576,12 @@ is where peak RSS with a full stack and idle CPU come from. `latency.json` and `
 every sample, the scratch budget's high-water mark and the correlated state.
 
 `--mode burst` is a wild, undrained drag rather than the drained gesture drag and commit mode
-measure: one scripted `slider` step of exposure values, paced through `interval_ms` at 120 values a
-second for 3 seconds (360 values, a triangle wave from 0 to +2 EV, down to -2 EV and back to 0,
-released at the end) instead of sent all at once, so the desktop's own gesture round trip decides
-what reaches the owner exactly as a real fast drag would. `--samples` is ignored: every burst run
+measure: one scripted `slider` step, paced through `interval_ms` at 120 values a second for 3
+seconds (360 values, a triangle wave about the field's origin peaking at 40% of the smaller half of
+its declared range, on its own step: from 0 to +2 EV, down to -2 EV and back to 0 on an exposure
+slider, 6500 K up to 8300 K, down to 4710 K and back on Custom temperature; released at the end) instead of sent all at once, so
+the desktop's own gesture round trip decides what reaches the owner exactly as a real fast drag
+would. `--samples` is ignored: every burst run
 sends the same fixed values. Its `latency.json` keeps the same header fields as drag and commit
 (host, binary hashes, launch mode, method, queue counts) and adds a `burst` object: `scripted_values`
 and `sent_values` (the paced driver's own `slider_step_value` events, which count a value the core

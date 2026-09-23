@@ -344,20 +344,28 @@ tables below, so these are single launches and not distributions): request to di
 exposure step is 10.5 ms on the Z6, 14.6 ms on the X100VI and 15.0 ms on the Air 2S, against
 133.3, 178.8 and the Air 2S figures recorded below for the full-resolution path; rotate, crop-fit
 and undo present in 18 to 46 ms. The white-balance steps still take 354–364 ms on the Z6 and
-1364–1428 ms on the other two, because temperature, tint, the gains and the neutral pick redevelop
-the mosaic on the source worker before any proxy exists; that is the RAW white-balance drag listed
-in the [performance rules](../engineering/performance-rules.md#known-remaining-costs).
+1364–1428 ms on the other two, because a committed temperature, tint, gain or neutral pick
+redevelops the mosaic on the source worker before its exact frame exists; that is the release cost
+listed in the [performance rules](../engineering/performance-rules.md#known-remaining-costs).
 
-A drafted RAW temperature or tint has no frame at all: every `draft.set` is accepted and its
-preview job answers preparation-required (30 of 30 in each run below), so `editor-latency` refuses
-to time a drag of it and `--mode commit` times its release instead, 30 commits per run on the same
-M4 Pro host (macOS 26.5.2, release build, warm cache) with other agents building: release to the committed frame on screen is 376 / 430 ms p50 /
-p95 for Z6 temperature at load average 11–13 (436 / 465 ms at 23), 441 / 1458 ms for Z6 tint at
-23–28, and 1516 / 3175 ms for X100VI temperature (15 commits, load average 20–22). RAW exposure
-on the Z6, for comparison, is 34.5 / 120.8 ms at 11–13. A wild RAW exposure drag (`--mode burst`)
-presents 45.0 frames per second with a staleness of 16.3 / 37.4 ms p50 / p95 on the Z6, against
-51.0 and 16.8 / 30.4 ms for Basic's Exposure on the same file in the run after it, both at load
-average 13.
+A drafted RAW temperature or tint previews approximately on the developed planes
+([instant previews](../design/instant-preview.md#a-raw-white-balance-during-a-drag)), so its drag
+has a frame per input like exposure's. `editor-latency`, drained drag of 30 inputs at Fit, same
+M4 Pro host (macOS 26.5.2, release build, warm cache), input to presented frame p50 / p95: Z6
+temperature 11.2 / 21.0 ms (load average 2.4–4.1) and tint 10.9 / 19.3 ms (2.9–6.1), X100VI
+temperature 10.5 / 20.6 ms (6.7–7.0) and tint 13.6 / 20.4 ms (5.2–6.2), against RAW exposure at
+12.0 / 19.9 ms on the Z6 (6.1–6.7) and 11.9 / 21.3 ms on the X100VI (5.8–6.6). Every drafted value
+produced a frame labelled approximate and none was analysed. The release still waits for the
+redevelopment: release to the committed frame is 534–540 ms on the Z6 and 1578–1639 ms on the
+X100VI in those runs (two commits each), and in `--mode commit`, 30 commits per run with other
+agents building, 376 / 430 ms p50 / p95 for Z6 temperature at load average 11–13 (436 / 465 ms at
+23), 441 / 1458 ms for Z6 tint at 23–28 and 1516 / 3175 ms for X100VI temperature (15 commits, load
+average 20–22), against 34.5 / 120.8 ms for RAW exposure on the Z6 at 11–13. A wild drag (`--mode
+burst`, 360 values over 3 s) presents 43.2 frames per second with a staleness of 16.5 / 34.7 ms
+p50 / p95 on the Z6 temperature slider and 35.7 at 16.6 / 30.6 ms on the X100VI's, against 48.8 at
+16.7 / 40.2 ms for RAW exposure on the Z6 (load average 5.9–7.4); an earlier RAW exposure burst on
+the Z6 presented 45.0 at 16.3 / 37.4 ms, against 51.0 and 16.8 / 30.4 ms for Basic's Exposure on
+the same file in the run after it, both at load average 13.
 
 Memory and idle from the same timing tier, five launches per workload: sampled peak RSS 130.4 MiB
 empty, 389.7 MiB at 24 MP and 808.8 MiB at 60 MP (medians); idle CPU 1.53% of one core over 30 s

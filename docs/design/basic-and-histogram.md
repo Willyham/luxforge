@@ -272,7 +272,11 @@ committed render; it never goes to zero counters. At Fit the drafted pixels on s
 proxy phase and the report is reduced from its exact phase, which a newer input cancels, so during a
 fast drag the plot follows the frames the gesture pauses on and the counts are never approximate.
 The bound is one `draft.set` and one preview job per accepted value, with the analysis riding that
-job and no second render.
+job and no second render. The one exception is a drafted RAW temperature or tint, which is previewed
+approximately on the planes developed at the committed white balance
+([instant previews](instant-preview.md#a-raw-white-balance-during-a-drag)): no phase of that job is
+reduced, so the previous exact report stays plotted and marked updating until the committed frame's
+own report replaces it, and the counts are never taken from approximate pixels.
 The `histogram` scenario's open-gesture frame proves it on the M4 — status ready,
 `identity.draft_revision` present, and the eleven counters equal to an independent core render and
 reduction of the drafted stack rebuilt from the committed layers the frame displays and the drafted
