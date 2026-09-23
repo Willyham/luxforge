@@ -1718,7 +1718,9 @@
         "The owner's requirement is that several brushes in one mask layer are easy and that a brush can subtract from a gradient. The evidence has to show exactly that, on the M4 Mac, with correlated state.",
         "The user guide says what Feather and Flow do and says plainly that Density is not delivered and why.",
         "Report misses against the latency targets with figures; they do not block delivery.",
-        "Phase B retook the masked-drag latency properly and it is no longer provisional: sixteen runs, forward and reversed, with a 100 s pause before each so the recorded load is the other sessions', at loads 2.34 to 8.13 and again at 12 to 17. Every median is 16.8 to 17.9 ms masked and unmasked alike, the largest masked-unmasked difference is 0.4 ms, and draft.set is 0.214-0.226 ms unmasked against 0.227-0.236 masked. Do not retake what is already taken; measure the brush's own workload instead. One finding to respect: the first editor-latency launch after an idle period read p50 41.40 ms and draft.set 0.395 ms, double everything else including the hop, which no render load moves - the first launch after idle is not a usable sample, so discard it rather than averaging it in."
+        "Phase B retook the masked-drag latency properly and it is no longer provisional: sixteen runs, forward and reversed, with a 100 s pause before each so the recorded load is the other sessions', at loads 2.34 to 8.13 and again at 12 to 17. Every median is 16.8 to 17.9 ms masked and unmasked alike, the largest masked-unmasked difference is 0.4 ms, and draft.set is 0.214-0.226 ms unmasked against 0.227-0.236 masked. Do not retake what is already taken; measure the brush's own workload instead. One finding to respect: the first editor-latency launch after an idle period read p50 41.40 ms and draft.set 0.395 ms, double everything else including the hop, which no render load moves - the first launch after idle is not a usable sample, so discard it rather than averaging it in.",
+        "A script asking for mask_overlay tint on a mask that reads pixels HANGS the evidence harness: it waits for an overlay texture the host will never produce, because coverage_grid refuses a pixel-reading mask by design (P16, open). It should fail with the host's reason instead of waiting to the deadline. The place is app/evidence.rs::mask_settle. This is the second refusal the harness cannot see - the first, a refused row command, was fixed by the mask command's failure path settling the waiting step; do the same here.",
+        "Phase B already retook the masked-drag latency quiesced, so do not retake it: sixteen runs, every median 16.8 to 17.9 ms masked and unmasked alike. What phase C still owes is the brush's own workload, which TASK-019 could not measure because xtask was contended. Discard the first editor-latency launch after an idle period - it reads roughly double everything including the inter-thread hop, which no render load moves."
       ],
       "context_links": [
         {
@@ -1862,7 +1864,7 @@
     {
       "id": "TASK-023",
       "description": "Deliver the luminance-range and colour-range components, reading the input pixel of the operation they modulate, with their panel controls and their sampling gesture.",
-      "status": "pending",
+      "status": "completed",
       "dependencies": [
         "TASK-018",
         "TASK-022"
@@ -1945,7 +1947,7 @@
     {
       "id": "TASK-024",
       "description": "Deliver the colour-constrained brush, the tractable part of Lightroom's Auto Mask, with its difference from Lightroom's behaviour stated in the product and in the guide.",
-      "status": "pending",
+      "status": "completed",
       "dependencies": [
         "TASK-019",
         "TASK-023"
