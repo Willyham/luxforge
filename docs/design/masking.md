@@ -329,6 +329,10 @@ The store changes the catalog format again, to 6. Pre-release rules allow that: 
 
 A mask never exists empty from a command, so `mask.delete-component` refuses a mask's only component and says to delete the mask instead. The alternative — deleting the last component deletes the mask — destroys the mask's adjustments as a side effect of a smaller gesture, and there is no promotion rule that could preserve them. The panel therefore offers Delete mask in that position rather than a delete that would be refused, and the same refusal protects an ordering or deletion that would leave a non-`add` component leading.
 
+### What a draft covers today
+
+A mask *command* drafts: `draft.begin` carries the mask and component it addresses, so a gradient handle drag is one entry with the delivered conflict, Discard and Reapply behaviour. A *module* action does not: `draft.*` has no mask target for `edit.set-basic`, so a masked slider gesture commits through the action and the canvas does not follow the drag the way a global slider's does. That is a gap in the gesture, not in the edit — the commit itself is correct — and closing it is the desktop task's, which needs the same target to preview what it is about to commit.
+
 ### An unknown component kind
 
 A stored component whose `kind` this build does not know is treated exactly as a layer whose effect has no available provider ([missing effects](modules-and-api.md#missing-effects)), because it is the same thing: a payload the host retains and cannot evaluate.
