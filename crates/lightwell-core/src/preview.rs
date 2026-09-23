@@ -1542,4 +1542,116 @@ mod tests {
             "one stop more exposure brightens the cached proxy, not the cached settings"
         );
     }
+
+    /// A straightened crop over a RAW source with a Presence layer, previewed while another
+    /// evaluation holds the whole spatial target: the pointer readout sampling through the same
+    /// layer on the owner thread, which is how a committed RAW crop was once refused with "spatial
+    /// processing needs … bytes, and … of the … byte spatial budget is in use" and left unshown.
+    /// Both phases deliver the cropped frame, each byte for byte the frame the same stack renders
+    /// with the target free, and every batch releases what it reserved.
+    #[test]
+    fn a_cropped_raw_preview_with_presence_renders_while_the_spatial_target_is_held() {
+        use crate::{LinearImage, LinearSettings, PRESENCE_EFFECT, SpatialBudget};
+        let _guard = crate::render::spatial::tests::spatial_guard();
+        crate::clear_estimates();
+        // More than one 512 px tile each way, so the spatial pass runs in batches.
+        let (width, height) = (1100_u32, 700_u32);
+        let planes: Vec<f32> = (0..3 * width * height)
+            .map(|index| 0.05 + (index % 1009) as f32 / 1400.0)
+            .collect();
+        let image =
+            LinearImage::with_fingerprint(width, height, planes, "sha256:raw-crop").unwrap();
+        let stage = CropStage {
+            width,
+            height,
+            angle: 7.0,
+        };
+        let (box_width, box_height) = stage.bounding_box();
+        let fitted = stage.fit_about_center(BoxRect {
+            x: 0.0,
+            y: 0.0,
+            width: box_width,
+            height: box_height,
+        });
+        let mut job = job(1, false);
+        job.recipe.layers = vec![
+            Layer {
+                id: LayerId::new(),
+                effect_id: PRESENCE_EFFECT.into(),
+                effect_format: EFFECT_FORMAT,
+                payload: json!({"clarity": 60.0}),
+            },
+            Layer::crop(fitted.normalized(&stage)),
+        ];
+        job.source = PreviewSource::Raw {
+            image,
+            settings: LinearSettings::default(),
+        };
+        let display = ProxyBounds {
+            width: 480,
+            height: 320,
+        };
+        job.proxy = Some(display);
+        let registry = job.registry.clone();
+        let recipe = job.recipe.clone();
+        let snapshot = job.entry.snapshot.id.clone();
+        let output = registry.compile(width, height, &recipe).unwrap().stage();
+        assert!(
+            output.width < width && output.height < height,
+            "the crop trims the stage"
+        );
+        let plan = job
+            .source
+            .proxy_plan(&registry, &recipe, display)
+            .unwrap()
+            .expect("a proxy is worthwhile");
+        let exact_reference = job
+            .source
+            .render(&registry, snapshot.clone(), &recipe)
+            .expect("the stack renders with the target free");
+        let proxy_reference = job
+            .source
+            .proxy(plan)
+            .unwrap()
+            .render(&registry, snapshot, &recipe)
+            .expect("the proxy renders with the target free");
+
+        let budget = SpatialBudget::default();
+        let held = budget.reserve(budget.target(), 1);
+        let mut queue = PreviewQueue::default();
+        let generation = queue.request(job);
+        let results = drain_all(&mut queue);
+        drop(held);
+        assert_eq!(budget.in_use(), 0, "every batch released its reservation");
+        assert_eq!(results.len(), 2, "one proxy frame and one exact frame");
+        let [proxy, exact] = <[PreviewResult; 2]>::try_from(results).ok().unwrap();
+        assert_eq!(
+            (proxy.generation, proxy.phase),
+            (generation, PreviewPhase::Proxy)
+        );
+        assert_eq!(
+            (exact.generation, exact.phase),
+            (generation, PreviewPhase::Exact)
+        );
+        assert_eq!(exact.proxy_declined, None, "the proxy phase ran");
+        let proxy = proxy
+            .result
+            .expect("the proxy phase renders beside a held target");
+        assert_eq!(
+            (proxy.width, proxy.height),
+            (proxy_reference.width, proxy_reference.height)
+        );
+        assert!(
+            proxy.rgba == proxy_reference.rgba,
+            "the proxy frame differs"
+        );
+        let exact = exact
+            .result
+            .expect("the exact phase renders beside a held target");
+        assert_eq!((exact.width, exact.height), (output.width, output.height));
+        assert!(
+            exact.rgba == exact_reference.rgba,
+            "the exact frame differs"
+        );
+    }
 }
