@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/lightwell-raw", "crates/lightwell-core", "crates/lightwell-ui", "crates/lightwell-app", "xtask"]
+members = ["crates/lightwell-raw", "crates/lightwell-process", "crates/lightwell-core", "crates/lightwell-ui", "crates/lightwell-app", "xtask"]
 exclude = ["probes/s0", "probes/raw"]
 resolver = "3"
 

@@ -1892,6 +1892,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "lightwell-process"
+version = "0.0.0"
+dependencies = [
+ "core-foundation 0.10.1",
+ "libc",
+ "objc2 0.6.4",
+ "serde",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
 name = "lightwell-raw"
 version = "0.0.0"
 dependencies = [
