@@ -151,6 +151,75 @@ shared with other sessions. There is no paired before-run from this worktree; th
 arithmetic is unchanged by construction and proved byte-identical by the colour tests, and the mask is
 consulted once per operation per row rather than per pixel.
 
+### The masked spatial primitive, one to four layers
+
+A masked spatial layer costs what it would have cost unmasked, plus one coverage evaluation and one
+blend per pixel of the tiles the mask's bounds rectangle reaches, minus the whole unit chain of every
+tile it does not. Each spatial layer, masked or not, is a stage boundary and therefore a **sequential
+full frame**: the design caps masked ones at four for that reason, and the host now refuses a fifth
+with a `resource-limit` error naming the limit.
+
+`cargo test --release --locked --package lightwell-core --lib -- --ignored masked_spatial_timing
+--nocapture` (`render::spatial::tests::masked_spatial_timing`), on the host recorded above, on
+in-memory synthetic frames rendered by the core alone, warm source and warm estimate store, p50 and
+the slowest of 5 runs, one `lightwell.presence` clarity `+100` layer per mask. "Whole frame" is a
+gradient whose bounds rectangle is the entire stage; "right-edge band" is one confined to about a
+tenth of the columns. The tile counts are exact counters read from the host
+(`masked_tile_counts`), not estimates.
+
+| Stage | Layers | Mask | p50 / slowest ms | Tiles copied / evaluated per render | Budget peak |
+| --- | --- | --- | --- | --- | --- |
+| 6000 × 4000 | 1 | none | 353 / 482 | 0 / 0 | 242.5 MiB |
+| 6000 × 4000 | 1 | whole frame | 386 / 599 | 0 / 96 | 255.3 MiB |
+| 6000 × 4000 | 2 | whole frame | 1015 / 1599 | 0 / 192 | 255.3 MiB |
+| 6000 × 4000 | 3 | whole frame | 1390 / 1542 | 0 / 288 | 255.3 MiB |
+| 6000 × 4000 | 4 | whole frame | 2864 / 4049 | 0 / 384 | 255.3 MiB |
+| 6000 × 4000 | 1 | none | 543 / 583 | 0 / 0 | 242.5 MiB |
+| 6000 × 4000 | 1 | right-edge band | 403 / 448 | 80 / 16 | 255.3 MiB |
+| 6000 × 4000 | 2 | right-edge band | 797 / 871 | 160 / 32 | 255.3 MiB |
+| 6000 × 4000 | 3 | right-edge band | 1105 / 1139 | 240 / 48 | 255.3 MiB |
+| 6000 × 4000 | 4 | right-edge band | 1020 / 1278 | 320 / 64 | 255.3 MiB |
+| 10000 × 6000 | 1 | none | 1293 / 1749 | 0 / 0 | 249.9 MiB |
+| 10000 × 6000 | 1 | whole frame | 1495 / 1588 | 0 / 240 | 239.7 MiB |
+| 10000 × 6000 | 2 | whole frame | 3156 / 3628 | 0 / 480 | 239.7 MiB |
+| 10000 × 6000 | 3 | whole frame | 5927 / 8809 | 0 / 720 | 239.7 MiB |
+| 10000 × 6000 | 4 | whole frame | 7868 / 9017 | 0 / 960 | 239.7 MiB |
+| 10000 × 6000 | 1 | none | 1124 / 1140 | 0 / 0 | 249.9 MiB |
+| 10000 × 6000 | 1 | right-edge band | 580 / 968 | 204 / 36 | 239.7 MiB |
+| 10000 × 6000 | 2 | right-edge band | 1186 / 1458 | 408 / 72 | 239.7 MiB |
+| 10000 × 6000 | 3 | right-edge band | 1863 / 2839 | 612 / 108 | 239.7 MiB |
+| 10000 × 6000 | 4 | right-edge band | 3574 / 4266 | 816 / 144 | 239.7 MiB |
+
+**Scope, stated plainly: this run is not a quiesced benchmark and its absolute milliseconds must not
+be quoted as the cost of a masked Presence layer.** The one-minute load average was 87.9 at the start
+and 50.8 at the end, because several other sessions were building in release on the same machine
+throughout; the unmasked 24 MP row alone varies between 353 and 543 ms across two measurements of the
+identical work, and the delivered quiesced figure for the same operation is 191 / 202 ms. What the run
+does establish, because these are ratios inside one contended window and exact counters:
+
+- **Cost grows with the layer count, roughly linearly**, which is what a sequential full frame per
+  layer predicts, and four is the point at which a 60 MP whole-frame mask reaches seconds even before
+  the contention is removed. The cap of four is the right order; it is not generous.
+- **A tile outside the bounds rectangle costs no unit evaluation**, exactly: 204 of 240 tiles copied
+  at 60 MP, 80 of 96 at 24 MP, and a small mask is then *cheaper* than the unmasked layer — 580 ms
+  against 1124 at 60 MP, 403 against 543 at 24 MP. That is the whole point of the rectangle, and it
+  is a counter rather than an inference.
+- **A whole-frame mask costs about 10–16% over no mask at one layer** (386 against 353 at 24 MP, 1495
+  against 1293 at 60 MP). The structural part of that is the working set: a masked tile holds one
+  extra tile-sized plane, the snapshot the blend is against, which at 60 MP moves the plan's
+  concurrency from 8 tiles to 7.
+- The blend is **in place** in the last unit's planes. An earlier spelling that copied the tile out
+  and blended into a second buffer measured 4464 ms against 1873 at 60 MP — a 2.4× overhead from two
+  fresh tile-sized allocations per tile, not from arithmetic. That spelling is not what shipped, and
+  it is recorded because it is the trap: the blend is cheap and the allocations were not.
+
+A quiesced re-measurement, and a `editor-latency --mode drag` figure for a masked Presence slider,
+are outstanding and must be taken before any acceptance claim. One further cost is arithmetic from
+the delivered retained-frame rule rather than a measurement, and is a finding for the owner: on the
+**RAW linear path** each spatial operation materializes one `f32` frame and every one of them is
+retained for the whole render, so four masked spatial layers at 60 MP retain about 2.9 GB of float
+frames. The byte path has no equivalent cost because its frames are sequential and dropped.
+
 ### Desktop slider-to-presented-frame and settled histogram
 
 `editor-latency`, release, warm cache, background evidence launches on the host above, 30 samples
