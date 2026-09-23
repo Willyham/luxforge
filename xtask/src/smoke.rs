@@ -576,13 +576,17 @@ pub fn verify(evidence: &Path, scenario: &str, count: usize) -> Result<Value> {
     }
     if scenario.starts_with("large") {
         // A photo-sized source at Fit is shown as its display proxy, so the status bar's figure is
-        // the proxy phase's own render time and says so.
+        // the proxy phase's own render time and says so. A capture can land while a refit or the
+        // exact phase is still running, when the bar says "Rendering…"; the figure behind it is
+        // still recorded, and it must be the proxy's.
         let record = expect_render_times(&events, frames)?;
         ensure(
             frames.iter().all(|frame| {
-                frame["state"]["status_bar"]["render"]
-                    .as_str()
-                    .is_some_and(|text| text.ends_with("(proxy)"))
+                let bar = &frame["state"]["status_bar"];
+                bar["render_proxy"] == json!(true)
+                    && bar["render"].as_str().is_some_and(|text| {
+                        text.ends_with("(proxy)") || text == "Rendering\u{2026}"
+                    })
             }),
             "A photo-sized frame at Fit does not report the proxy's render time",
         )?;
