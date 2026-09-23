@@ -2,7 +2,7 @@ use crate::{
     basic_smoke as basic, controls_smoke as controls, crop_smoke as crop, gallery_smoke as gallery,
     histogram_smoke as histogram, mixer_smoke as mixer, presence_smoke as presence,
     presets_smoke as presets, raw_panel_smoke as raw_panel, vignette_smoke as vignette,
-    workspace_smoke as workspace, *,
+    workspace_smoke as workspace, zoom_smoke as zoom, *,
 };
 use std::{
     process::{Child, Stdio},
@@ -10,7 +10,7 @@ use std::{
 };
 /// Every rendered scenario, in the order `verify --tier rendered` runs them. One list: `main.rs`
 /// and `verify` both reach a scenario through [`dispatch`], so a new scenario is named here once.
-pub const SCENARIOS: [&str; 23] = [
+pub const SCENARIOS: [&str; 24] = [
     "empty",
     "load",
     "replacement",
@@ -19,6 +19,7 @@ pub const SCENARIOS: [&str; 23] = [
     "alternating",
     "large24",
     "large60",
+    "zoom",
     "crop",
     "crop-draft",
     "workspace",
@@ -36,12 +37,14 @@ pub const SCENARIOS: [&str; 23] = [
     "unavailable",
 ];
 
-/// Run one scenario, including the two that are not a single launch: a module can only be disabled
-/// at startup, and persistence across a restart needs a second process.
+/// Run one scenario, including the three that are not a single launch: a module can only be
+/// disabled at startup, persistence across a restart needs a second process, and `zoom` runs its
+/// script over the 24 MP and the 60 MP photograph in turn.
 pub fn dispatch(root: &Path, out: &Path, scenario: &str, bin: &Path, timeout: Duration) -> Result {
     match scenario {
         "unavailable" => workspace::run_unavailable(root, out, bin, timeout),
         "basic-restart" => basic::run_restart(root, out, bin, timeout),
+        zoom::SCENARIO => zoom::run(root, out, bin, timeout),
         _ => run(root, out, scenario, bin, timeout),
     }
 }
@@ -478,6 +481,11 @@ pub fn verify(evidence: &Path, scenario: &str, count: usize) -> Result<Value> {
         presets::verify(evidence, &app, &events)?;
         return Ok(app);
     }
+    if let Some(frames) = zoom::frames(scenario) {
+        let (app, events) = preamble(evidence, frames)?;
+        zoom::verify(evidence, &app, &events)?;
+        return Ok(app);
+    }
     if let Some(frames) = raw_panel::frames(scenario) {
         let (app, _) = preamble(evidence, frames)?;
         raw_panel::verify(evidence, &app)?;
@@ -722,6 +730,7 @@ pub fn run_sources(
         .or_else(|| mixer::script(scenario))
         .or_else(|| vignette::script(scenario))
         .or_else(|| presets::script(scenario))
+        .or_else(|| zoom::script(scenario))
     {
         let file = out.join("script.json");
         write_json(&file, &script)?;

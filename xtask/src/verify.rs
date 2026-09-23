@@ -124,8 +124,8 @@ impl Launches {
         match self {
             Self::None => 0,
             // A scenario records one exit code per launch it made: the two-launch scenarios
-            // (`unavailable`, `basic-restart`) record `launch1_exit_code` and `launch2_exit_code`,
-            // every other one a single `exit_code`.
+            // (`unavailable`, `basic-restart`, `zoom`) record `launch1_exit_code` and
+            // `launch2_exit_code`, every other one a single `exit_code`.
             Self::Smoke => ["exit_code", "launch1_exit_code", "launch2_exit_code"]
                 .iter()
                 .filter(|key| !result[**key].is_null())
