@@ -1541,7 +1541,7 @@
     {
       "id": "TASK-019",
       "description": "Build the brush-paint canvas interaction and its stroke draft: cursor feedback, size and feather keys, held-modifier erase, an immediately drawn path, and one history entry per stroke.",
-      "status": "pending",
+      "status": "completed",
       "dependencies": [
         "TASK-015",
         "TASK-017",
