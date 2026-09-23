@@ -1,4 +1,5 @@
 //! UI-independent JPEG decoding, non-destructive editing state, rendering and the JSON owner API.
+pub mod activity;
 pub mod analysis;
 mod api;
 #[cfg(test)]
@@ -14,6 +15,7 @@ mod profile;
 mod proxy;
 mod render;
 mod source;
+pub use activity::{Activity, ActivityBoard, ActivitySnapshot, ActivitySpec};
 pub use api::*;
 pub use draft::Draft;
 pub use editor::*;
