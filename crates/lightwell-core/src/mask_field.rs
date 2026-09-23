@@ -84,9 +84,10 @@ impl MaskField {
     pub(crate) fn compile(
         mask: &Mask,
         stage: Stage,
+        strokes: &crate::path::StrokeTable,
         sampling: MaskSampling,
     ) -> Result<Self, Error> {
-        let compiled = CompiledMask::new(mask, stage)?;
+        let compiled = CompiledMask::new(mask, stage, strokes)?;
         let thin = sampling == MaskSampling::ThinFeature
             && compiled.min_feature_px(stage) < MIN_FEATURE_PX;
         if !thin {
@@ -108,7 +109,7 @@ impl MaskField {
                 bounds,
             });
         };
-        let fine = CompiledMask::new(mask, doubled)?;
+        let fine = CompiledMask::new(mask, doubled, strokes)?;
         let bounds = halved(fine.bounds(), stage);
         Ok(Self {
             mask: Arc::new(compiled),
@@ -221,6 +222,11 @@ mod tests {
         Stage { width, height }
     }
 
+    /// The gradients read no stroke, so these tests compile against an empty table.
+    fn no_strokes() -> crate::path::StrokeTable {
+        crate::path::StrokeTable::default()
+    }
+
     fn mask_of(kind: &str, payload: serde_json::Value) -> Mask {
         let mut mask = Mask::new("Mask 1");
         let name = mask.next_component_name(kind);
@@ -239,9 +245,10 @@ mod tests {
             json!({"x0": 0.2, "y0": 0.0, "x1": 0.8, "y1": 0.0}),
         );
         let stage = stage(64, 48);
-        let field = MaskField::compile(&mask, stage, MaskSampling::ThinFeature).unwrap();
+        let field =
+            MaskField::compile(&mask, stage, &no_strokes(), MaskSampling::ThinFeature).unwrap();
         assert!(!field.supersampled());
-        let compiled = CompiledMask::new(&mask, stage).unwrap();
+        let compiled = CompiledMask::new(&mask, stage, &no_strokes()).unwrap();
         for y in 0..stage.height {
             for x in 0..stage.width {
                 assert_eq!(field.evaluate(x, y), compiled.evaluate(x, y));
@@ -260,9 +267,10 @@ mod tests {
             json!({"x": 0.5, "y": 0.5, "radius_x": 0.2, "radius_y": 0.2, "angle": 0.0, "feather": 0.0}),
         );
         let coarse = stage(40, 30);
-        let field = MaskField::compile(&mask, coarse, MaskSampling::ThinFeature).unwrap();
+        let field =
+            MaskField::compile(&mask, coarse, &no_strokes(), MaskSampling::ThinFeature).unwrap();
         assert!(field.supersampled(), "a hard edge draws a zero-wide ramp");
-        let fine = CompiledMask::new(&mask, stage(80, 60)).unwrap();
+        let fine = CompiledMask::new(&mask, stage(80, 60), &no_strokes()).unwrap();
         for y in 0..coarse.height {
             for x in 0..coarse.width {
                 let expected = (fine.coverage(2 * x, 2 * y)
@@ -274,7 +282,7 @@ mod tests {
             }
         }
         // The same mask on an exact render is the frozen point sample, untouched.
-        let point = MaskField::compile(&mask, coarse, MaskSampling::Point).unwrap();
+        let point = MaskField::compile(&mask, coarse, &no_strokes(), MaskSampling::Point).unwrap();
         assert!(!point.supersampled());
     }
 
@@ -284,13 +292,14 @@ mod tests {
     fn a_mask_with_no_components_is_never_supersampled() {
         let mask = Mask::new("Mask 1");
         let stage = stage(64, 48);
-        let compiled = CompiledMask::new(&mask, stage).unwrap();
+        let compiled = CompiledMask::new(&mask, stage, &no_strokes()).unwrap();
         assert_eq!(compiled.min_feature_px(stage), f32::INFINITY);
         assert!(
             compiled.min_feature_px(stage) >= MIN_FEATURE_PX,
             "infinity must not read as thinner than two pixels"
         );
-        let field = MaskField::compile(&mask, stage, MaskSampling::ThinFeature).unwrap();
+        let field =
+            MaskField::compile(&mask, stage, &no_strokes(), MaskSampling::ThinFeature).unwrap();
         assert!(!field.supersampled());
         assert!(
             field.bounds().is_empty(),
@@ -307,7 +316,8 @@ mod tests {
             json!({"x": 0.4, "y": 0.6, "radius_x": 0.15, "radius_y": 0.25, "angle": 0.0, "feather": 0.0}),
         );
         let stage = stage(37, 29);
-        let field = MaskField::compile(&mask, stage, MaskSampling::ThinFeature).unwrap();
+        let field =
+            MaskField::compile(&mask, stage, &no_strokes(), MaskSampling::ThinFeature).unwrap();
         assert!(field.supersampled());
         let bounds = field.bounds();
         for y in 0..stage.height {

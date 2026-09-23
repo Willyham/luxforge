@@ -147,8 +147,12 @@ fn the_compiled_mask_is_bit_identical_to_the_frozen_reference() {
             mask.validate()
                 .expect("the sampled mask is structurally valid");
             for (width, height) in STAGES {
-                let compiled = CompiledMask::new(&mask, stage(width, height))
-                    .expect("a legal payload compiles");
+                let compiled = CompiledMask::new(
+                    &mask,
+                    stage(width, height),
+                    &lightwell_core::path::StrokeTable::default(),
+                )
+                .expect("a legal payload compiles");
                 let reference_stage = ref_stage(width, height);
                 for _ in 0..24 {
                     let x = rng.next_usize(width as usize) as u32;
@@ -183,7 +187,12 @@ fn bit_identity_holds_across_whole_rows_and_columns() {
         for _ in 0..20 {
             let (mask, reference) = sample_pair(&mut rng, components, &stages);
             for (width, height) in stages {
-                let compiled = CompiledMask::new(&mask, stage(width, height)).unwrap();
+                let compiled = CompiledMask::new(
+                    &mask,
+                    stage(width, height),
+                    &lightwell_core::path::StrokeTable::default(),
+                )
+                .unwrap();
                 let reference_stage = ref_stage(width, height);
                 for y in 0..height {
                     for x in 0..width {
@@ -209,7 +218,12 @@ fn evaluate_is_the_narrowed_field_and_stays_in_range() {
     for components in 1..=5 {
         for _ in 0..20 {
             let (mask, _) = sample_pair(&mut rng, components, &stages);
-            let compiled = CompiledMask::new(&mask, stage(41, 29)).unwrap();
+            let compiled = CompiledMask::new(
+                &mask,
+                stage(41, 29),
+                &lightwell_core::path::StrokeTable::default(),
+            )
+            .unwrap();
             for y in 0..29 {
                 for x in 0..41 {
                     let coverage = compiled.coverage(x, y);
@@ -241,7 +255,12 @@ fn bounds_never_excludes_a_non_zero_pixel() {
         for _ in 0..60 {
             let (mask, _) = sample_pair(&mut rng, components, &stages);
             for (width, height) in stages {
-                let compiled = CompiledMask::new(&mask, stage(width, height)).unwrap();
+                let compiled = CompiledMask::new(
+                    &mask,
+                    stage(width, height),
+                    &lightwell_core::path::StrokeTable::default(),
+                )
+                .unwrap();
                 let bounds = compiled.bounds();
                 cases += 1;
                 if bounds.pixels() < u64::from(width) * u64::from(height) {
@@ -288,7 +307,12 @@ fn a_gradient_entirely_off_the_frame_bounds_to_nothing() {
         // p0 and p1 both above the frame, pointing further up: every pixel is behind p0.
         json!({"x0": 0.5, "y0": -0.4, "x1": 0.5, "y1": -0.9}),
     ));
-    let compiled = CompiledMask::new(&mask, stage(40, 30)).unwrap();
+    let compiled = CompiledMask::new(
+        &mask,
+        stage(40, 30),
+        &lightwell_core::path::StrokeTable::default(),
+    )
+    .unwrap();
     assert!(compiled.bounds().is_empty());
     for y in 0..30 {
         for x in 0..40 {
@@ -310,7 +334,8 @@ fn min_feature_px_scales_with_the_stage_it_is_asked_about() {
         json!({"x0": 0.5, "y0": 0.4, "x1": 0.5, "y1": 0.45}),
     ));
     let full = stage(6000, 4000);
-    let compiled = CompiledMask::new(&mask, full).unwrap();
+    let compiled =
+        CompiledMask::new(&mask, full, &lightwell_core::path::StrokeTable::default()).unwrap();
     // 0.05 mask-space units is 200 px at 4000 px of height and 12 px at 240.
     assert_eq!(compiled.min_feature_px(full), 200.0);
     assert_eq!(compiled.min_feature_px(stage(360, 240)), 12.0);
@@ -324,19 +349,24 @@ fn min_feature_px_scales_with_the_stage_it_is_asked_about() {
 #[test]
 fn an_unknown_kind_is_refused_by_name_and_still_reads_back() {
     let mut mask = Mask::new("Mask 1");
-    // The brush is named in the masking design and is not delivered, so it is the kind this build
-    // does not claim.
-    let name = mask.next_component_name("brush");
+    // The luminance range is named in the masking design and is not delivered, so it is a kind this
+    // build does not claim.
+    let name = mask.next_component_name("luminance-range");
     mask.components.push(Component::new(
         name,
         ComponentMode::Add,
-        "brush",
-        json!({"strokes": [{"points": [[0.25, 0.5]], "size": 0.1, "feather": 50.0, "flow": 100.0, "erase": false}]}),
+        "luminance-range",
+        json!({"low": 0.2, "low_feather": 10.0, "high": 0.8, "high_feather": 10.0}),
     ));
-    let error = CompiledMask::new(&mask, stage(64, 48)).unwrap_err();
+    let error = CompiledMask::new(
+        &mask,
+        stage(64, 48),
+        &lightwell_core::path::StrokeTable::default(),
+    )
+    .unwrap_err();
     assert_eq!(
         error.to_string(),
-        "incompatible: unknown mask component brush"
+        "incompatible: unknown mask component luminance-range"
     );
     // The stored mask is structurally valid — the model never asks what a kind means — and survives
     // a round trip byte for byte, which is what retention means.

@@ -1426,11 +1426,18 @@ impl<'a> Evaluation<'a> {
         source: &'a SourceImage,
         layers: &[Layer],
         masks: &[crate::Mask],
+        strokes: &crate::path::StrokeTable,
     ) -> Result<Self, Error> {
         check_source(source)?;
         Ok(Self {
             source,
-            compiled: registry.compile_layers(source.width, source.height, layers, masks)?,
+            compiled: registry.compile_layers(
+                source.width,
+                source.height,
+                layers,
+                masks,
+                strokes,
+            )?,
             tile: PRODUCTION_TILE,
         })
     }
@@ -4609,6 +4616,7 @@ mod tests {
                     width: source.width,
                     height: source.height,
                 },
+                &crate::path::StrokeTable::default(),
             )
             .unwrap();
             let mut partial = 0;
@@ -4674,7 +4682,9 @@ mod tests {
         counter.store(0, std::sync::atomic::Ordering::Relaxed);
         let raster = render(&registry, &source, SnapshotId::new(), &recipe).unwrap();
         let counted = counter.load(std::sync::atomic::Ordering::Relaxed);
-        let compiled = crate::mask::CompiledMask::new(&mask, stage).unwrap();
+        let compiled =
+            crate::mask::CompiledMask::new(&mask, stage, &crate::path::StrokeTable::default())
+                .unwrap();
         let bounds = compiled.bounds();
         assert_eq!(
             counted as u64,
@@ -4931,7 +4941,9 @@ mod tests {
         measure("identity", &identity);
         measure("unmasked exposure", &unmasked);
         for (name, mask) in [("small bounds", small), ("whole frame", whole)] {
-            let compiled = crate::mask::CompiledMask::new(&mask, stage).unwrap();
+            let compiled =
+                crate::mask::CompiledMask::new(&mask, stage, &crate::path::StrokeTable::default())
+                    .unwrap();
             let bounds = compiled.bounds();
             println!(
                 "{name}: the rectangle admits {:.2}% of the frame",

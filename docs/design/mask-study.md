@@ -5,16 +5,19 @@ reference](../../crates/lightwell-core/tests/reference/mask.rs) and its
 [proofs](../../crates/lightwell-core/tests/mask_reference.rs) are the complete specification the
 mask units of the [masking design](masking.md) are checked against, answering its "What a mask is",
 "Composition", "Mask space" and "Component kinds" sections. It settles that design's proposals P2
-(the composition algebra) and P3 (what a radial selects) with the figures below.
+(the composition algebra), P3 (what a radial selects) and P4 (the brush's build-up rule, and the
+Density control that follows from not having one) with the figures below.
 
 Scope: this is a numerical/design task. It implements nothing, touches no crate's `src/`, and the
 reference under `tests/` never runs in a release build or against a real image row, so the
 [performance rules](../engineering/performance-rules.md) checklist applies to the transcription
 tasks rather than to the files this one adds. **Not frozen here**, and named so nothing assumes
-otherwise: the brush stroke's capsule profile and its accumulation rule, the luminance and colour
-range metrics (their own study), the conservative bounds rectangle and `min_feature_px`, and the
-masked colour and spatial blend itself. What is frozen is mask space, the legality of a stored
-distance, the component composition algebra, and the linear and radial coverage fields.
+otherwise: the luminance and colour range metrics (their own study), the conservative bounds *pixel
+rectangle* and `min_feature_px`, the brush's grid index and its occupancy cap, and the masked colour
+and spatial blend itself. What is frozen is mask space, the legality of a stored distance, the
+component composition algebra, the linear and radial coverage fields, and — added by TASK-018 — the
+brush's capsule profile, its per-stroke maximum, its accumulation rules and its mask-space support
+box.
 
 No formula below claims Lightroom or darktable numeric equivalence. Where a choice differs from
 Lightroom's — a radial selecting inside rather than outside — the difference is stated as
@@ -340,6 +343,202 @@ argument.
 Lightroom's radial affects the outside until Invert is ticked. That difference is deliberate and is
 stated in the design and in the user guide, not smoothed over.
 
+## The brush
+
+Payload `{strokes: [address, …]}`: the reserved [`strokes` field](../../crates/lightwell-core/src/path.rs) and
+nothing else, holding the component's strokes **in order** as content addresses into the host's
+stroke store. No coordinate is ever written into a component payload. Each referenced stroke carries
+its own path and the brush it was drawn with:
+
+```text
+Stroke { points: [[x, y], …], size, feather, flow, erase }
+```
+
+`size` is the radius in mask-space units, so it is **a stored distance and takes the rule above**:
+`1e-4 <= size <= 64`, refused by name rather than clamped. There is no second convention — the
+floor is what bounds the divisor `band` below, exactly as it bounds a radius and an axis length —
+and `smooth` is the same easing the gradients take.
+
+### Per-stroke terms, computed once
+
+```text
+R      = size                            -- mask-space units
+f      = feather / 100
+band   = R * f                           -- the ramp's width
+hard   = (band == 0)
+amount = flow / 100
+```
+
+The stroke's positions become mask space through the **stored position** spelling, and each
+consecutive pair becomes one segment:
+
+```text
+(ax, ay), (bx, by) = position_uv of the pair
+ex   = bx - ax
+ey   = by - ay
+len2 = ex*ex + ey*ey
+if len2 == 0:  ex = 0, ey = 0, len2 = 1
+```
+
+A stroke of `n >= 2` positions has `n - 1` segments. **A one-point stroke has the one degenerate
+segment `A → A`**, and the normalization above is what makes "the distance to the point itself"
+fall out of the same expression a real segment takes: with `ex = ey = 0` and `len2 = 1` the
+projection evaluates `t = 0/1 = 0` and `q = A` exactly, so there is no branch on the per-pixel path
+and no division by a vanishing length. It absorbs a repeated position too, which a stored path
+cannot hold — [`decimate`](../../crates/lightwell-core/src/path.rs) drops repeats on the grid — but
+which the mathematics must still be total on.
+
+### The capsule profile
+
+```text
+wx = u - ax
+wy = v - ay
+t  = clamp((wx*ex + wy*ey) / len2, 0, 1)
+qx = ax + t*ex
+qy = ay + t*ey
+dx = u - qx
+dy = v - qy
+d2 = dx*dx + dy*dy                                    -- per segment
+
+d = sqrt(min over the stroke's segments of d2)
+s = if hard { if d <= R { 1 } else { 0 } }
+    else    { smooth(clamp((R - d) / band, 0, 1)) }
+stroke = s * amount
+```
+
+**The minimum distance, not the maximum profile.** The design states one stroke's coverage as the
+maximum over its segments of the capsule profile; the frozen spelling evaluates the profile once, at
+the smallest distance. The two are the same number *bit for bit* — the profile is nonincreasing in
+`d`, and `max` returns one of its operands exactly — and
+`the_minimum_distance_form_equals_the_maximum_profile_form_bit_for_bit` compares them by bit pattern
+over 48 000 points on both stages rather than arguing it. The frozen one is frozen because it takes
+one `sqrt` and one `smooth` per stroke instead of one per segment, which at the 64-segments-per-pixel
+cap below is the difference between one transcendental-free evaluation and 64 of them.
+
+Squared distances are compared and the square root is taken once, of the minimum: `sqrt` is monotone
+and correctly rounded, so the root of the smallest square is the smallest root, exactly.
+
+**`feather = 0` is an explicit hard edge, not a limit**, taken from the computed `band` being exactly
+zero, exactly as the radial's is and for the same reason: the divisor `band` is only reached on the
+branch the compile has already proved is non-zero.
+`feather_zero_is_a_hard_edge_and_no_vanishing_band_is_divided_by` covers the second route as well — a
+feather so small that `R · f/100` underflows to exactly zero is the same edge, reached by rounding
+rather than by an equality against the stored feather — and checks that a representable small feather
+(`0.01`) is still the smooth branch, so the boundary is not asserted from one side only.
+
+Two exactness properties carry the bounds rectangle and the grid index below, and are proved rather
+than assumed (`the_profile_is_exactly_one_on_the_core_and_exactly_zero_past_the_radius`, 2000
+randomized strokes):
+
+- **Exactly `1.0` on the core** — at the centre for every feather, and at `d = R - band` on the
+  feathered branch, because `smooth(1)` is exactly `1.0`.
+- **Exactly `0.0` at and beyond `d = R`** on the feathered branch, because `smooth(0)` is exactly
+  `0.0`; and exactly `0.0` beyond `d = R` on the hard branch, which is closed at `R` itself.
+
+### Accumulation
+
+Strokes accumulate inside the component **in stored order**, starting from `c = 0`:
+
+```text
+c = 0
+for stroke in strokes:
+    s = the stroke's coverage at (u, v)
+    c = c * (1.0 - s)                    if stroke.erase
+    c = c + (1.0 - c) * s                otherwise
+```
+
+That is the screen union across add strokes and the multiply-complement for erase strokes, and both
+are **written in the one spelling that is an exact identity when a stroke contributes nothing**:
+`c + (1 − c)·0` is `c` bit for bit and so is `c · (1 − 0)`, while the algebraically equal
+`1 − (1 − c)(1 − s)` is not — it fails that identity on 195 983 of 200 000 log-sampled coverages, by
+up to 100% of the coverage it was given, because a small `c` does not survive the round trip through
+`1 − c` (`the_accumulation_is_an_exact_identity_at_zero_and_saturates_exactly_at_one`). Small
+coverages are not a corner: the tail of a feather is most of a brush's area.
+
+That exactness is the whole licence for the grid index below. A production unit may evaluate **only**
+the strokes whose segments reach the pixel and still produce, bit for bit, the field the whole list
+would have produced — `dropping_strokes_that_cover_nothing_is_bit_identical` states it as a property
+of the fold rather than of any index. Both folds are exact at the other end too: `c + (1 − c)·1` is
+exactly `1.0` and `c · (1 − 1)` is exactly `0.0`.
+
+### What the rule is chosen for
+
+**Maximum along a stroke, screen union across strokes.** One pass of the brush has one density
+whatever the pointer's sampling rate: coverage depends on the path, not on how fast the hand moved or
+on how many positions the desktop posted. Resampling a stroke's own polyline at eight times the
+density moves its coverage by at most `2.759e-13`
+(`a_strokes_density_does_not_depend_on_its_point_sampling`), which is seven orders below the frozen
+tolerance and is the two expressions' rounding and nothing else. A doubled-back path — out and back
+along the same line — covers *exactly* what the single pass covers, bit for bit over 20 000 sampled
+points (`a_doubled_back_path_covers_exactly_what_the_single_pass_covers`), because the nearest
+segment is the nearest segment however many times the path crosses it.
+
+**A second pass is a second object and does build up**, which is the opposite of the component
+algebra's idempotence and is deliberate:
+
+| Flow | One pass reaches | Two passes reach |
+| --- | --- | --- |
+| 25 | `0.250000000` | `0.437500000` |
+| 50 | `0.500000000` | `0.750000000` |
+| 100 | `1.000000000` | `1.000000000` |
+
+**Add strokes commute, to `2.220e-16`.** Permuting the strokes of 500 randomized add-only components
+eight ways each, over 400 000 sampled points, leaves 99.46% of them bit-identical and moves the rest
+by at most one ulp of `1.0` (`add_strokes_commute_under_the_frozen_rule`). The union is commutative
+and associative in the reals; in `f64` the fold rounds differently, and that is recorded here rather
+than claimed away. What it costs is nothing a picture can carry: through the masked blend at `+1 EV`
+on 18% grey the deviation moves a channel by `3.997e-17` in linear light, against `3.922e-3` between
+output codes, so no permutation of add strokes can change a byte. That is the difference from the
+component algebra, where the same `1.943e-16` was called fatal in kind: `mask.reorder` promises that
+moving a *component* leaves the pixels alone, while stroke order inside a component is not a promise
+anyone makes about add strokes — it exists for the erase strokes, below.
+
+**An erase stroke does not commute with an add.** Painting then erasing and erasing then painting
+differ by up to `1.000000000` of coverage on the same two strokes
+(`an_erase_stroke_does_not_commute_with_an_add`) — a whole edit, not a rounding artefact. That is why
+the component stores its strokes in order and why the component list shows that order.
+
+**Deleting one stroke is well defined.** The fold is over the stored order, so removing an entry from
+the middle produces, bit for bit, the field the remaining strokes would have produced had the deleted
+one never been made (`deleting_a_stroke_leaves_the_others_bit_identical`, 200 randomized components
+with erase strokes among them). That is what makes `mask.delete-stroke` a forward edit rather than an
+approximation of one.
+
+### Density is not delivered
+
+Lightroom's Density and Flow interact through a build-up model **along a single stroke**: coverage
+accumulates from overlapping stamps, so it depends on the stamp spacing and therefore on the
+resolution the stroke was stamped at. Nothing above has a stamp in it — one stroke is one geometric
+path with one density — so there is no honest place to put a Density control that would mean what
+Lightroom's means. It is named and left out rather than shipped meaning something else; the
+[user guide](../user-guide.md) says so where a person would look for it. Flow is delivered and is
+exactly what the rule above states: the per-stroke amount a single pass reaches.
+
+### The conservative box
+
+Coverage is exactly zero wherever `d > R` for every stroke, so a brush component's support is the
+union of its **add** strokes' point boxes, each grown by that stroke's own radius. An erase stroke
+contributes nothing to it — `c · (1 − s)` cannot raise `c` — and neither does a stroke whose flow is
+exactly zero, because `s = profile · 0.0` is exactly `0.0` and the fold is an exact identity there.
+`coverage_is_exactly_zero_outside_the_conservative_box` sweeps 600 randomized components on both
+stages against it.
+
+The box is over the stroke's *positions* rather than its segments because they are the same box: a
+segment lies inside the box of its two endpoints.
+
+### What this section does not settle
+
+- **The grid index is a production concern, not a numerical one.** Its correctness is the exactness
+  property above — a stroke the pixel cannot reach contributes exactly nothing — and the cell size,
+  the occupancy cap and the refusal are the transcription task's to choose and to measure. Nothing
+  about the field changes with them.
+- **The pixel rectangle is not frozen here**, only the mask-space box. Turning a mask-space box into
+  a conservative pixel rectangle is the same closed form the radial's already uses, with the same two
+  slacks.
+- **Per-stroke pressure is later work.** A per-position radius would change `R` from a stroke term
+  into a segment term and nothing else in the frozen form, which is why the payload's point shape is
+  the one it is.
+
 ## Frozen tolerance
 
 **Production versus this reference: `1e-6 + 1e-6 * |reference|` in coverage units.** This is the
@@ -374,17 +573,24 @@ is identical; rewriting changes the last bits. Specifically forbidden, each of w
 tolerance and not bit-identical:
 
 - a precomputed reciprocal in place of a division — `a * (1/radius_x)`, `dot * (1/l2)`,
-  `(1 - r) * (1/span)`;
+  `(1 - r) * (1/span)`, `(R - d) * (1/band)`, `dot * (1/len2)`;
 - a fused multiply-add, or any reassociation of `du*du + dv*dv`, of the dot product, or of
   `ca*du + sa*dv`;
 - folding `smooth` into a different but algebraically equal polynomial, including Horner's form;
 - hoisting a component's `invert` into its falloff (as a sign flip or a swapped clamp) instead of the
   one `1 - c` the composition performs;
-- collapsing `(amount / 100) * m` into a single scale applied earlier in the fold.
+- collapsing `(amount / 100) * m` into a single scale applied earlier in the fold;
+- spelling a brush's add as `1 - (1 - c) * (1 - s)` rather than `c + (1 - c) * s`, or its erase as
+  `c - c * s` rather than `c * (1 - s)`: both are the same union in the reals and only the frozen
+  spellings are exact identities at `s = 0`, which is what the grid index depends on;
+- taking the square root per segment rather than once per stroke, or scaling a stroke's profile by
+  `flow` before the accumulation's multiply rather than in the `s * amount` the profile ends with.
 
-Permitted, and expected: hoisting `u0, v0, du, dv, l2`, `cu, cv, ca, sa, r0, span, hard` and
-`amount / 100` to compile time; hoisting the row term of a component out of a row loop; and skipping
-a span or tile whose coverage the bounds rectangle proves is zero.
+Permitted, and expected: hoisting `u0, v0, du, dv, l2`, `cu, cv, ca, sa, r0, span, hard`, a stroke's
+`R, band, hard, amount` and its segments' `ax, ay, ex, ey, len2`, and `amount / 100` to compile time;
+hoisting the row term of a component out of a row loop; skipping a span or tile whose coverage the
+bounds rectangle proves is zero; and **skipping a stroke whose segments cannot reach the pixel**,
+which the `s = 0` identity above makes bit-identical rather than merely close.
 
 ## Limitations and what this study does not settle
 
@@ -408,9 +614,10 @@ a span or tile whose coverage the bounds rectangle proves is zero.
   reference in process, pixel by pixel. A committed JSON oracle would be a third artefact to keep in
   step for no coverage the direct comparison does not already give. The vignette and mixer studies
   freeze fixtures because their inputs are pixels; this one's are payloads.
-- **The brush and the range selections are outside this study.** The brush's capsule profile shares
-  this study's `smooth` and its distance floor, and the range selections reuse the
-  [mixer study](mixer-study.md)'s Oklab basis, but neither coverage field is frozen here.
+- **The range selections are outside this study.** They reuse the [mixer study](mixer-study.md)'s
+  Oklab basis and are frozen by the [range study](range-study.md), not here. The brush *is* frozen
+  here, above, and it reuses this study's `smooth` and its distance floor rather than introducing a
+  second convention.
 
 ## Figures
 
@@ -420,6 +627,8 @@ ignored test, because a 24 million pixel sweep does not belong in an ordinary ru
 ```sh
 cargo test --release --locked --package lightwell-core --test mask_reference \
     -- --ignored --nocapture mask_study_figures
+cargo test --release --locked --package lightwell-core --test mask_brush_reference \
+    -- --ignored --nocapture brush_study_figures
 ```
 
 The smaller figures reprint with `-- --nocapture` on the ordinary tests that assert them. Every
@@ -430,13 +639,15 @@ randomized comparison uses a fixed SplitMix64 seed, so the figures are reproduci
 | File | Purpose |
 | --- | --- |
 | `docs/design/mask-study.md` | This document. |
-| [`crates/lightwell-core/tests/reference/mask.rs`](../../crates/lightwell-core/tests/reference/mask.rs) | The frozen `f64` reference: `Stage`, the distance rules, `smooth`, the linear and radial fields, both algebras and `coverage`. |
-| [`crates/lightwell-core/tests/mask_reference.rs`](../../crates/lightwell-core/tests/mask_reference.rs) | The proofs and measurements above, and the ignored 24 MP figures test. |
+| [`crates/lightwell-core/tests/reference/mask.rs`](../../crates/lightwell-core/tests/reference/mask.rs) | The frozen `f64` reference: `Stage`, the distance rules, `smooth`, the linear and radial fields, both algebras, `coverage`, and the brush's segments, capsule profile, accumulation and support box. |
+| [`crates/lightwell-core/tests/mask_reference.rs`](../../crates/lightwell-core/tests/mask_reference.rs) | The mask-space, composition and gradient proofs, and the ignored 24 MP figures test. |
+| [`crates/lightwell-core/tests/mask_brush_reference.rs`](../../crates/lightwell-core/tests/mask_brush_reference.rs) | The brush proofs and measurements above, and the ignored `brush_study_figures` test. |
 | [`crates/lightwell-core/tests/reference/mod.rs`](../../crates/lightwell-core/tests/reference/mod.rs) | Declares `pub mod mask;` beside the other studies' references. |
 
 ## References
 
-- [Masking](masking.md) — the design this study freezes the numerics for, and whose proposals P2 and P3 it settles.
+- [Masking](masking.md) — the design this study freezes the numerics for, and whose proposals P2, P3 and P4 it settles.
+- [Path primitives](../../crates/lightwell-core/src/path.rs) — the stored coordinate grid, the decimation contract and the content-addressed stroke store the brush's payload references.
 - [Vignette study](vignette-study.md) — the positional coverage field, the `smooth` falloff, the explicit hard-step case and the tolerance this study follows.
 - [Content-space edits](content-space-edits.md) — the content stage mask space is defined against.
 - [Instant previews](instant-preview.md) — why normalized storage keeps a masked recipe proxy eligible.

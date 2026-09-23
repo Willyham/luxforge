@@ -214,7 +214,8 @@ fn expected_grid(
         width: transform.content.width,
         height: transform.content.height,
     };
-    let compiled = CompiledMask::new(mask, stage).expect("the mask compiles");
+    let compiled = CompiledMask::new(mask, stage, &lightwell_core::path::StrokeTable::default())
+        .expect("the mask compiles");
     let mut grid = Vec::with_capacity((cells_w * cells_h) as usize);
     for cy in 0..cells_h {
         let py = cell_pixel(cy, transform.output.height, cells_h);
@@ -583,7 +584,12 @@ fn the_cell_cap_bounds_the_grid_on_a_stage_that_exceeds_it() {
         .find(|held| held.id == mask)
         .expect("the mask")
         .clone();
-    let compiled = CompiledMask::new(&held, oversized).expect("the mask compiles at any stage");
+    let compiled = CompiledMask::new(
+        &held,
+        oversized,
+        &lightwell_core::path::StrokeTable::default(),
+    )
+    .expect("the mask compiles at any stage");
     assert_eq!(
         analysis::coverage_grid(
             &compiled,

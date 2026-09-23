@@ -1365,7 +1365,13 @@ impl EditorService {
             };
             let stage_before = |index: usize| -> Result<Stage, Error> {
                 Ok(registry
-                    .compile_layers(width, height, prefix(&recipe.layers, index)?, &recipe.masks)?
+                    .compile_layers(
+                        width,
+                        height,
+                        prefix(&recipe.layers, index)?,
+                        &recipe.masks,
+                        &recipe.strokes,
+                    )?
                     .stage())
             };
             let sample_before = |_: usize, _: u32, _: u32| -> Result<Option<[u8; 4]>, Error> {
@@ -1652,7 +1658,13 @@ impl EditorService {
         // and rasterizes nothing. The whole recipe compiled above, so its format is known good.
         let stage_before = |index: usize| -> Result<Stage, Error> {
             Ok(registry
-                .compile_layers(width, height, prefix(&recipe.layers, index)?, &recipe.masks)?
+                .compile_layers(
+                    width,
+                    height,
+                    prefix(&recipe.layers, index)?,
+                    &recipe.masks,
+                    &recipe.strokes,
+                )?
                 .stage())
         };
         // One pixel of the stage a prefix produces, for a module planning against the position its
@@ -1661,9 +1673,14 @@ impl EditorService {
         let sample_before = |index: usize, x: u32, y: u32| -> Result<Option<[u8; 4]>, Error> {
             let layers = prefix(&recipe.layers, index)?;
             match source {
-                PreparedSource::Jpeg(image) => {
-                    Evaluation::over_layers(registry, image, layers, &recipe.masks)?.pixel(x, y)
-                }
+                PreparedSource::Jpeg(image) => Evaluation::over_layers(
+                    registry,
+                    image,
+                    layers,
+                    &recipe.masks,
+                    &recipe.strokes,
+                )?
+                .pixel(x, y),
                 PreparedSource::Raw(_) => {
                     let prefix_recipe = Recipe {
                         format: recipe.format,
@@ -4364,13 +4381,14 @@ mod tests {
         }
     }
 
-    /// Strokes per mask in the measured session below: the smaller of what the implemented
-    /// points-per-mask limit admits at 100 positions a stroke (81) and the design's declared 64
-    /// strokes per brush component, which the brush component itself will enforce. It is why the
-    /// 200-stroke session paints four masks — 200 strokes of 100 positions cannot live in one mask
-    /// at all — and the assertion below is what keeps the two limits from drifting apart.
-    const STROKES_PER_MASK: usize = 64;
+    /// Strokes per mask in the measured session below: the smaller of what the points-per-mask
+    /// limit admits at 100 positions a stroke (81) and the brush component's own declared 64 strokes
+    /// per component. It is why the 200-stroke session paints four masks — 200 strokes of 100
+    /// positions cannot live in one mask at all — and the two assertions below are what keep the
+    /// three limits from drifting apart.
+    const STROKES_PER_MASK: usize = crate::mask::STROKES_PER_COMPONENT;
     const _: () = assert!(STROKES_PER_MASK * 100 <= crate::POINTS_PER_MASK);
+    const _: () = assert!(STROKES_PER_MASK <= crate::mask::STROKES_PER_COMPONENT);
 
     /// A mask holding these strokes by address, with a component named for its ordinal so several
     /// masks in one recipe read apart.
@@ -4556,15 +4574,11 @@ mod tests {
                 ..base.clone()
             }
         };
-        // Under the bound the mask is refused only for the kind no provider claims yet, which is a
-        // fact about this build and not about the limit.
-        assert_eq!(
-            registry
-                .compile(64, 48, &recipe(&at_bound))
-                .err()
-                .expect("no provider for the brush kind yet")
-                .detail,
-            "unknown mask component brush",
+        // Under the bound the recipe compiles: the brush kind is evaluable and the limit has not
+        // been reached, so nothing refuses.
+        assert!(
+            registry.compile(64, 48, &recipe(&at_bound)).is_ok(),
+            "a mask under the bound should compile"
         );
         assert!(points <= crate::POINTS_PER_MASK);
 

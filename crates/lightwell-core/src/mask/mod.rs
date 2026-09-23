@@ -33,8 +33,10 @@
 use crate::{
     Component, ComponentMode, Error, ErrorKind, Mask, ParameterDescriptor,
     modules::{Region, Stage},
+    path::StrokeTable,
 };
 
+mod brush;
 #[cfg(test)]
 mod command_contracts;
 /// The `mask.*` host command family: what each command declares, does and labels.
@@ -43,6 +45,7 @@ mod linear;
 mod parameters;
 mod radial;
 
+pub use brush::{BrushStrokes, SEGMENTS_PER_PIXEL, STROKES_PER_COMPONENT};
 pub use linear::{LinearGradient, POSITION_MAX, POSITION_MIN};
 pub use radial::{ANGLE_MAX, ANGLE_MIN, FEATHER_MAX, FEATHER_MIN, RadialGradient};
 
@@ -87,7 +90,13 @@ struct ComponentKind {
     parse: fn(&Component) -> Result<Geometry, Error>,
     /// The kind's declared geometry, from its own module beside its parser. `required` is false for
     /// the patch method, where every field is optional.
-    parameters: fn(bool) -> Vec<ParameterDescriptor>,
+    ///
+    /// `None` for a kind whose geometry is **drawn** rather than typed. A brush's geometry is a list
+    /// of strokes captured by a gesture and stored by hash: there is no number a control could edit
+    /// and no honest `mask.create-brush` to generate from an empty parameter list, so such a kind
+    /// registers its parser and its evaluation here and brings its own commands instead. Every kind
+    /// is evaluable; only the ones with declared geometry are generated over.
+    parameters: Option<fn(bool) -> Vec<ParameterDescriptor>>,
 }
 
 /// Every component kind this build knows. A later kind — a brush, a range selection — is one more
@@ -96,12 +105,17 @@ const COMPONENT_KINDS: &[ComponentKind] = &[
     ComponentKind {
         kind: linear::KIND,
         parse: parse_linear,
-        parameters: linear::parameters,
+        parameters: Some(linear::parameters),
     },
     ComponentKind {
         kind: radial::KIND,
         parse: parse_radial,
-        parameters: radial::parameters,
+        parameters: Some(radial::parameters),
+    },
+    ComponentKind {
+        kind: brush::KIND,
+        parse: parse_brush,
+        parameters: None,
     },
 ];
 
@@ -113,14 +127,16 @@ fn parse_radial(component: &Component) -> Result<Geometry, Error> {
     radial::parse(component).map(Geometry::Radial)
 }
 
+fn parse_brush(component: &Component) -> Result<Geometry, Error> {
+    brush::parse(component).map(Geometry::Brush)
+}
+
 /// Whether this build can evaluate `kind`, which is the question the refusal below answers in the
 /// negative. It reads the table rather than a second list, so the two cannot drift.
 pub fn knows_component_kind(kind: &str) -> bool {
     COMPONENT_KINDS.iter().any(|entry| entry.kind == kind)
 }
 
-/// Every component kind this build knows, in table order. The command family generates its geometry
-/// methods from exactly this list, so what a client can create is what this build can evaluate.
 /// One kind's display name, as the host itself writes it into a component's name: `linear` reads
 /// `Linear`, `luminance-range` reads `Luminance Range`. A client offering the kinds names them with
 /// this rather than a table of its own, so what a button says and what the committed component is
@@ -129,8 +145,31 @@ pub fn kind_title(kind: &str) -> String {
     crate::modules::title_case(kind)
 }
 
+/// Every component kind this build knows, in table order: every kind it can parse, evaluate, bound
+/// and retain.
 pub fn component_kinds() -> impl Iterator<Item = &'static str> {
     COMPONENT_KINDS.iter().map(|entry| entry.kind)
+}
+
+/// The kinds whose geometry is a set of declared numbers, in table order. The command family
+/// generates `mask.create-<kind>`, `mask.add-<kind>` and `mask.set-<kind>` from exactly this list,
+/// and the panel generates their number fields from the same declarations — so what a client can
+/// *type* is what a control can edit. A kind whose geometry is drawn is evaluable without being
+/// generated over, and says so by declaring no parameters.
+pub fn declared_geometry_kinds() -> impl Iterator<Item = &'static str> {
+    COMPONENT_KINDS
+        .iter()
+        .filter(|entry| entry.parameters.is_some())
+        .map(|entry| entry.kind)
+}
+
+/// Whether this build draws `kind`'s geometry rather than declaring it as numbers. A drawn kind has
+/// no generated geometry method and no number field, which is a fact a refusal has to be able to
+/// state.
+pub fn component_geometry_is_drawn(kind: &str) -> bool {
+    COMPONENT_KINDS
+        .iter()
+        .any(|entry| entry.kind == kind && entry.parameters.is_none())
 }
 
 /// One kind's declared geometry parameters, or none when this build does not know the kind.
@@ -141,7 +180,8 @@ pub fn component_parameters(kind: &str, required: bool) -> Option<Vec<ParameterD
     COMPONENT_KINDS
         .iter()
         .find(|entry| entry.kind == kind)
-        .map(|entry| (entry.parameters)(required))
+        .and_then(|entry| entry.parameters)
+        .map(|parameters| parameters(required))
 }
 
 /// One component's stored geometry, validated but not yet bound to a stage. Everything checkable
@@ -149,14 +189,21 @@ pub fn component_parameters(kind: &str, required: bool) -> Option<Vec<ParameterD
 /// and every stored position is finite and inside the legal range. What needs a stage — an axis
 /// length, which is a mask-space distance and therefore depends on the aspect ratio — is checked
 /// when the component is compiled.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 enum Geometry {
     Linear(LinearGradient),
     Radial(RadialGradient),
+    Brush(BrushStrokes),
 }
 
 impl Geometry {
-    fn compile(self, stage: Stage, name: &str) -> Result<CompiledGeometry, Error> {
+    fn compile(
+        self,
+        stage: Stage,
+        strokes: &StrokeTable,
+        mask: &str,
+        name: &str,
+    ) -> Result<CompiledGeometry, Error> {
         match self {
             Self::Linear(gradient) => {
                 linear::Compiled::new(gradient, stage, name).map(CompiledGeometry::Linear)
@@ -167,16 +214,23 @@ impl Geometry {
             Self::Radial(gradient) => Ok(CompiledGeometry::Radial(radial::Compiled::new(
                 gradient, stage,
             ))),
+            // A brush resolves its stroke references against the store the recipe was read from,
+            // checks each radius against the study's distance rule and builds its grid index, and
+            // every one of those can refuse — by name, and before any pixel is read.
+            Self::Brush(held) => {
+                brush::Compiled::new(&held, stage, strokes, mask, name).map(CompiledGeometry::Brush)
+            }
         }
     }
 }
 
 /// One component's geometry bound to a stage, with every term that does not depend on the pixel
 /// already computed.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 enum CompiledGeometry {
     Linear(linear::Compiled),
     Radial(radial::Compiled),
+    Brush(brush::Compiled),
 }
 
 impl CompiledGeometry {
@@ -187,6 +241,7 @@ impl CompiledGeometry {
         match self {
             Self::Linear(linear) => linear.coverage(u, v),
             Self::Radial(radial) => radial.coverage(u, v),
+            Self::Brush(brush) => brush.coverage(u, v),
         }
     }
 
@@ -196,6 +251,7 @@ impl CompiledGeometry {
         match self {
             Self::Linear(linear) => linear.support(stage, inverted),
             Self::Radial(radial) => radial.support(stage, inverted),
+            Self::Brush(brush) => brush.support(stage, inverted),
         }
     }
 
@@ -204,12 +260,13 @@ impl CompiledGeometry {
         match self {
             Self::Linear(linear) => linear.feature_px(stage),
             Self::Radial(radial) => radial.feature_px(stage),
+            Self::Brush(brush) => brush.feature_px(stage),
         }
     }
 }
 
 /// One compiled component: its mode, its own inversion and its stage-bound geometry.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 struct CompiledComponent {
     mode: ComponentMode,
     invert: bool,
@@ -257,7 +314,13 @@ impl CompiledMask {
     /// Every refusal names what it refused: a component kind this build does not know is
     /// `incompatible`, and a payload that is malformed, out of range or geometrically degenerate is
     /// `validation` naming the component and the field.
-    pub fn new(mask: &Mask, stage: Stage) -> Result<Self, Error> {
+    ///
+    /// `strokes` is the recipe's resolved stroke table, which the drawn kinds read and the typed
+    /// kinds ignore. It is a parameter rather than something a component carries because the strokes
+    /// are the *recipe's*: a component holds addresses and never coordinates, so the table is what
+    /// turns those addresses into geometry, and a reference it cannot answer refuses here — with the
+    /// store's own message, before any pixel is read.
+    pub fn new(mask: &Mask, stage: Stage, strokes: &StrokeTable) -> Result<Self, Error> {
         if stage.width == 0 || stage.height == 0 {
             return Err(Error::new(
                 ErrorKind::Validation,
@@ -269,7 +332,8 @@ impl CompiledMask {
         }
         let mut components = Vec::with_capacity(mask.components.len());
         for component in &mask.components {
-            let geometry = parse_component(component)?.compile(stage, &component.name)?;
+            let geometry =
+                parse_component(component)?.compile(stage, strokes, &mask.name, &component.name)?;
             components.push(CompiledComponent {
                 mode: component.mode,
                 invert: component.invert,
@@ -613,7 +677,9 @@ mod tests {
             "linear",
             gradient(0.5, 0.25, 0.5, 0.75),
         )]);
-        let compiled = CompiledMask::new(&mask, stage(400, 400)).unwrap();
+        let compiled =
+            CompiledMask::new(&mask, stage(400, 400), &crate::path::StrokeTable::default())
+                .unwrap();
         // p0 sits at v = 0.25, which is pixel row 99.5; row 99 is behind it and row 300 beyond p1.
         assert_eq!(compiled.coverage(200, 0), 0.0);
         assert_eq!(compiled.coverage(200, 99), 0.0);
@@ -641,15 +707,21 @@ mod tests {
         )];
         let mut mask = mask_of(components);
         mask.amount = 50.0;
-        let compiled = CompiledMask::new(&mask, stage(400, 400)).unwrap();
+        let compiled =
+            CompiledMask::new(&mask, stage(400, 400), &crate::path::StrokeTable::default())
+                .unwrap();
         assert_eq!(compiled.coverage(200, 300), 0.5);
         mask.invert = true;
-        let inverted = CompiledMask::new(&mask, stage(400, 400)).unwrap();
+        let inverted =
+            CompiledMask::new(&mask, stage(400, 400), &crate::path::StrokeTable::default())
+                .unwrap();
         assert_eq!(inverted.coverage(200, 300), 0.0);
         assert_eq!(inverted.coverage(200, 0), 0.5);
         // An amount of exactly zero is exactly zero coverage, inverted or not, and nothing to draw.
         mask.amount = 0.0;
-        let silent = CompiledMask::new(&mask, stage(400, 400)).unwrap();
+        let silent =
+            CompiledMask::new(&mask, stage(400, 400), &crate::path::StrokeTable::default())
+                .unwrap();
         assert_eq!(silent.coverage(200, 0), 0.0);
         assert!(silent.bounds().is_empty());
     }
@@ -659,7 +731,8 @@ mod tests {
     #[test]
     fn an_empty_mask_selects_nothing() {
         let mask = mask_of(Vec::new());
-        let compiled = CompiledMask::new(&mask, stage(64, 48)).unwrap();
+        let compiled =
+            CompiledMask::new(&mask, stage(64, 48), &crate::path::StrokeTable::default()).unwrap();
         for y in 0..48 {
             for x in 0..64 {
                 assert_eq!(compiled.coverage(x, y), 0.0);
@@ -688,7 +761,9 @@ mod tests {
                 gradient(0.25, 0.5, 0.75, 0.5),
             ),
         ]);
-        let compiled = CompiledMask::new(&mask, stage(400, 400)).unwrap();
+        let compiled =
+            CompiledMask::new(&mask, stage(400, 400), &crate::path::StrokeTable::default())
+                .unwrap();
         for (x, y) in [(20u32, 380u32), (200, 300), (380, 380), (100, 100)] {
             let first = compiled.coverage(x, y);
             // Duplicating the whole list changes nothing, bit for bit: the algebra is idempotent
@@ -704,7 +779,12 @@ mod tests {
                     [component.clone(), copy]
                 })
                 .collect();
-            let twice = CompiledMask::new(&doubled, stage(400, 400)).unwrap();
+            let twice = CompiledMask::new(
+                &doubled,
+                stage(400, 400),
+                &crate::path::StrokeTable::default(),
+            )
+            .unwrap();
             assert_eq!(twice.coverage(x, y), first, "at {x},{y}");
         }
     }
@@ -715,16 +795,19 @@ mod tests {
     fn an_unknown_component_kind_is_refused_by_name() {
         assert!(knows_component_kind("linear"));
         assert!(knows_component_kind("radial"));
-        // The brush is named in the masking design and is not delivered, so it is the kind this
-        // build does not claim.
-        assert!(!knows_component_kind("brush"));
+        assert!(knows_component_kind("brush"));
+        // The range selections are named in the masking design and are not delivered, so they are
+        // the kinds this build does not claim.
+        assert!(!knows_component_kind("luminance-range"));
+        assert!(!knows_component_kind("colour-range"));
         let mask = mask_of(vec![component(
             "Future 1",
             ComponentMode::Add,
             "future-kind",
             json!({"nested": {"points": [[0.25, 0.5]]}, "flag": true}),
         )]);
-        let error = CompiledMask::new(&mask, stage(64, 48)).unwrap_err();
+        let error = CompiledMask::new(&mask, stage(64, 48), &crate::path::StrokeTable::default())
+            .unwrap_err();
         assert_eq!(error.kind, ErrorKind::Incompatible);
         assert_eq!(
             error.to_string(),
@@ -779,7 +862,9 @@ mod tests {
                 "linear",
                 payload,
             )]);
-            let error = CompiledMask::new(&mask, stage(400, 400)).unwrap_err();
+            let error =
+                CompiledMask::new(&mask, stage(400, 400), &crate::path::StrokeTable::default())
+                    .unwrap_err();
             assert_eq!(error.kind, kind);
             assert_eq!(error.to_string(), message);
         }
@@ -796,7 +881,12 @@ mod tests {
             gradient(-1.0, 0.0, 2.0, 0.0),
         )]);
         // Three stage widths of horizontal axis on a 16384x100 stage is 491.52 mask-space units.
-        let error = CompiledMask::new(&mask, stage(16384, 100)).unwrap_err();
+        let error = CompiledMask::new(
+            &mask,
+            stage(16384, 100),
+            &crate::path::StrokeTable::default(),
+        )
+        .unwrap_err();
         assert_eq!(error.kind, ErrorKind::Validation);
         assert!(
             error
@@ -805,14 +895,17 @@ mod tests {
             "{error}"
         );
         // The same payload on a square stage is three units, which is legal.
-        assert!(CompiledMask::new(&mask, stage(400, 400)).is_ok());
+        assert!(
+            CompiledMask::new(&mask, stage(400, 400), &crate::path::StrokeTable::default()).is_ok()
+        );
     }
 
     /// A stage with no pixels is refused rather than divided by.
     #[test]
     fn an_empty_stage_is_refused() {
         let mask = mask_of(Vec::new());
-        let error = CompiledMask::new(&mask, stage(0, 48)).unwrap_err();
+        let error = CompiledMask::new(&mask, stage(0, 48), &crate::path::StrokeTable::default())
+            .unwrap_err();
         assert_eq!(error.kind, ErrorKind::Validation);
         assert_eq!(
             error.to_string(),
@@ -832,7 +925,8 @@ mod tests {
             "linear",
             gradient(0.5, 0.25, 0.5, 0.75),
         )]);
-        let compiled = CompiledMask::new(&mask, stage).unwrap();
+        let compiled =
+            CompiledMask::new(&mask, stage, &crate::path::StrokeTable::default()).unwrap();
         // The axis is half the stage's height in mask-space units: 0.5 * 400 = 200 px.
         assert_eq!(compiled.min_feature_px(stage), 200.0);
         let partial = (0..stage.height)
@@ -854,7 +948,8 @@ mod tests {
             "linear",
             gradient(0.25, 0.25, 0.75, 0.75),
         )]);
-        let compiled = CompiledMask::new(&diagonal, stage).unwrap();
+        let compiled =
+            CompiledMask::new(&diagonal, stage, &crate::path::StrokeTable::default()).unwrap();
         let expected = ((0.5 * 1.5f64).powi(2) + 0.5f64.powi(2)).sqrt() * 400.0;
         assert!(
             (f64::from(compiled.min_feature_px(stage)) - expected).abs() < 1e-3,
@@ -876,7 +971,8 @@ mod tests {
                 gradient(0.5, 0.5, 0.5, 0.55),
             ),
         ]);
-        let compiled = CompiledMask::new(&mixed, stage).unwrap();
+        let compiled =
+            CompiledMask::new(&mixed, stage, &crate::path::StrokeTable::default()).unwrap();
         assert!((f64::from(compiled.min_feature_px(stage)) - 20.0).abs() < 1e-9);
     }
 
@@ -891,7 +987,8 @@ mod tests {
             "linear",
             gradient(0.5, 0.6, 0.5, 0.9),
         )]);
-        let compiled = CompiledMask::new(&mask, stage).unwrap();
+        let compiled =
+            CompiledMask::new(&mask, stage, &crate::path::StrokeTable::default()).unwrap();
         let bounds = compiled.bounds();
         assert_eq!(bounds.x0, 0);
         assert_eq!(bounds.width, 200);
@@ -906,7 +1003,8 @@ mod tests {
             "linear",
             gradient(0.6, 0.5, 0.9, 0.5),
         ));
-        let compiled = CompiledMask::new(&narrowed, stage).unwrap();
+        let compiled =
+            CompiledMask::new(&narrowed, stage, &crate::path::StrokeTable::default()).unwrap();
         assert_eq!(compiled.bounds().y0, 118);
         assert_eq!(compiled.bounds().x0, 118);
         let mut unchanged = mask.clone();
@@ -916,12 +1014,14 @@ mod tests {
             "linear",
             gradient(0.6, 0.5, 0.9, 0.5),
         ));
-        let compiled = CompiledMask::new(&unchanged, stage).unwrap();
+        let compiled =
+            CompiledMask::new(&unchanged, stage, &crate::path::StrokeTable::default()).unwrap();
         assert_eq!(compiled.bounds(), bounds);
         // A whole-mask inversion is non-zero almost everywhere, so no rectangle bounds it.
         let mut inverted = mask.clone();
         inverted.invert = true;
-        let compiled = CompiledMask::new(&inverted, stage).unwrap();
+        let compiled =
+            CompiledMask::new(&inverted, stage, &crate::path::StrokeTable::default()).unwrap();
         assert_eq!(compiled.bounds(), whole_stage(stage));
     }
 
@@ -937,7 +1037,8 @@ mod tests {
             gradient(0.5, 0.1, 0.5, 0.4),
         )]);
         mask.components[0].invert = true;
-        let compiled = CompiledMask::new(&mask, stage).unwrap();
+        let compiled =
+            CompiledMask::new(&mask, stage, &crate::path::StrokeTable::default()).unwrap();
         // p1 is at v = 0.4, which is row 79.5: above it the inverted component is non-zero, and from
         // row 80 down the original was exactly 1 so the inversion is exactly 0. The rectangle ends
         // one pixel past the crossing row.
@@ -974,7 +1075,10 @@ mod tests {
                 let rounds = 1000;
                 let started = std::time::Instant::now();
                 for _ in 0..rounds {
-                    std::hint::black_box(CompiledMask::new(&mask, stage).unwrap());
+                    std::hint::black_box(
+                        CompiledMask::new(&mask, stage, &crate::path::StrokeTable::default())
+                            .unwrap(),
+                    );
                 }
                 let elapsed = started.elapsed();
                 println!(
@@ -1000,7 +1104,8 @@ mod tests {
                     })
                     .collect(),
             );
-            let compiled = CompiledMask::new(&mask, stage).unwrap();
+            let compiled =
+                CompiledMask::new(&mask, stage, &crate::path::StrokeTable::default()).unwrap();
             let started = std::time::Instant::now();
             let mut total = 0.0;
             for y in 0..stage.height {

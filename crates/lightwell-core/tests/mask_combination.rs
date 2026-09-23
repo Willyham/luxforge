@@ -391,6 +391,7 @@ fn invert_applies_before_amount_and_the_reference_agrees() {
             width: WIDTH,
             height: HEIGHT,
         },
+        &lightwell_core::path::StrokeTable::default(),
     )
     .unwrap();
     assert_eq!(compiled.coverage(WIDTH / 2, 0), 0.4);

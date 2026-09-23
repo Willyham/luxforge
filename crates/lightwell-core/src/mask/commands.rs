@@ -37,7 +37,10 @@
 //! better. Generating from [`super::COMPONENT_KINDS`] also means a kind becomes creatable, addable
 //! and patchable by being *registered*, rather than by someone remembering a second table: this
 //! module declares no geometry of its own and knows no kind by name.
-use super::{component_kinds, component_parameters, knows_component_kind};
+use super::{
+    component_geometry_is_drawn, component_parameters, declared_geometry_kinds,
+    knows_component_kind,
+};
 use crate::{
     ActionDescriptor, ChoiceStyle, Component, ComponentId, ComponentMode, Control, Error,
     ErrorKind, Layer, LayerId, Mask, MaskId, ModuleRegistry, MutationResult, NumberStyle,
@@ -911,6 +914,15 @@ fn plan_geometry(
             // because a client that picked the wrong generated method has to be told which one to
             // use.
             if component.kind != kind {
+                // A kind whose geometry is drawn has no patch method to point at, so the refusal
+                // says what is true of it rather than naming a command that does not exist.
+                if component_geometry_is_drawn(&component.kind) {
+                    return Err(validation(format!(
+                        "component {} is a {} component, whose geometry is drawn rather than \
+                         patched",
+                        component.name, component.kind
+                    )));
+                }
                 return Err(validation(format!(
                     "component {} is a {} component; patch it with mask.set-{}",
                     component.name, component.kind, component.kind
@@ -1399,9 +1411,12 @@ static COMMANDS: LazyLock<Vec<MaskCommand>> = LazyLock::new(|| {
             )],
         ),
     ];
-    // The geometry methods, generated from the host's kind table: registering a kind is what makes it
-    // creatable, addable and patchable, and nothing above has to be edited for that to happen.
-    for kind in component_kinds() {
+    // The geometry methods, generated from the host's kind table: registering a kind with declared
+    // geometry is what makes it creatable, addable and patchable, and nothing above has to be edited
+    // for that to happen. A kind whose geometry is *drawn* declares no parameters and generates none
+    // of these: there is no number a `mask.set-brush` could patch, and a create method over an empty
+    // parameter list would advertise a component a gesture has to fill in afterwards.
+    for kind in declared_geometry_kinds() {
         commands.extend(geometry_commands(kind));
     }
     debug_assert!(
@@ -1448,7 +1463,7 @@ static CONTROLS: LazyLock<Vec<Control>> = LazyLock::new(|| {
     // `mask.set-radial` control and a gradient endpoint a `mask.set-linear` one — so a panel selects
     // the controls of the component it has open without a second table saying which are which, and a
     // kind registered later brings its own fields with it.
-    for kind in component_kinds() {
+    for kind in declared_geometry_kinds() {
         let action = COMMANDS
             .iter()
             .find(|command| {
@@ -1614,7 +1629,7 @@ mod tests {
         let schemas = crate::schemas(&registry());
         let listed = schemas["methods"].as_object().expect("a method listing");
         let mut kinds = 0usize;
-        for kind in component_kinds() {
+        for kind in declared_geometry_kinds() {
             kinds += 1;
             let declared: Vec<String> = component_parameters(kind, true)
                 .expect("the table's own kind")
@@ -1678,7 +1693,36 @@ mod tests {
                 }
             }
         }
-        assert_eq!(kinds, 2, "linear and radial are the kinds this build knows");
+        assert_eq!(
+            kinds, 2,
+            "linear and radial are the kinds whose geometry is declared as numbers"
+        );
+        // And the other side of the same contract: a kind whose geometry is drawn is evaluable
+        // without being generated over, so it registers, parses and renders while declaring no
+        // parameter, no geometry method and no control.
+        let drawn: Vec<&str> = crate::mask::component_kinds()
+            .filter(|kind| component_geometry_is_drawn(kind))
+            .collect();
+        assert_eq!(drawn, vec!["brush"]);
+        for kind in drawn {
+            assert!(knows_component_kind(kind));
+            assert!(component_parameters(kind, true).is_none());
+            for method in [
+                format!("mask.create-{kind}"),
+                format!("mask.add-{kind}"),
+                format!("mask.set-{kind}"),
+            ] {
+                assert!(find(&method).is_none(), "{method} should not be generated");
+                assert!(listed.get(&method).is_none(), "schema.list lists {method}");
+            }
+            assert!(
+                !controls().iter().any(|control| matches!(
+                    control,
+                    Control::Number { action, .. } if action.contains(kind)
+                )),
+                "a drawn kind declares no control"
+            );
+        }
     }
 
     #[test]

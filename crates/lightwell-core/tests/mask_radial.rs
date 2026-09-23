@@ -167,7 +167,12 @@ fn single(radial: RadialGradient) -> Mask {
 }
 
 fn compile(radial: RadialGradient, width: u32, height: u32) -> CompiledMask {
-    CompiledMask::new(&single(radial), stage(width, height)).expect("a legal radial compiles")
+    CompiledMask::new(
+        &single(radial),
+        stage(width, height),
+        &lightwell_core::path::StrokeTable::default(),
+    )
+    .expect("a legal radial compiles")
 }
 
 // ---------------------------------------------------------------------------
@@ -187,8 +192,12 @@ fn the_compiled_radial_is_bit_identical_to_the_frozen_reference() {
             mask.validate()
                 .expect("the sampled mask is structurally valid");
             for (width, height) in STAGES {
-                let compiled = CompiledMask::new(&mask, stage(width, height))
-                    .expect("a legal payload compiles");
+                let compiled = CompiledMask::new(
+                    &mask,
+                    stage(width, height),
+                    &lightwell_core::path::StrokeTable::default(),
+                )
+                .expect("a legal payload compiles");
                 let reference_stage = ref_stage(width, height);
                 for _ in 0..24 {
                     let x = rng.next_usize(width as usize) as u32;
@@ -226,7 +235,12 @@ fn radial_bit_identity_holds_over_whole_small_stages() {
         for _ in 0..20 {
             let (mask, reference) = sample_pair(&mut rng, components);
             for (width, height) in stages {
-                let compiled = CompiledMask::new(&mask, stage(width, height)).unwrap();
+                let compiled = CompiledMask::new(
+                    &mask,
+                    stage(width, height),
+                    &lightwell_core::path::StrokeTable::default(),
+                )
+                .unwrap();
                 let reference_stage = ref_stage(width, height);
                 for y in 0..height {
                     for x in 0..width {
@@ -292,7 +306,12 @@ fn a_mixed_radial_and_linear_mask_is_bit_identical() {
                 },
             ],
         };
-        let compiled = CompiledMask::new(&mask, stage(64, 48)).unwrap();
+        let compiled = CompiledMask::new(
+            &mask,
+            stage(64, 48),
+            &lightwell_core::path::StrokeTable::default(),
+        )
+        .unwrap();
         let reference_stage = ref_stage(64, 48);
         for y in 0..48 {
             for x in 0..64 {
@@ -328,7 +347,12 @@ fn radial_bounds_never_excludes_a_non_zero_pixel() {
         for _ in 0..60 {
             let (mask, _) = sample_pair(&mut rng, components);
             for (width, height) in stages {
-                let compiled = CompiledMask::new(&mask, stage(width, height)).unwrap();
+                let compiled = CompiledMask::new(
+                    &mask,
+                    stage(width, height),
+                    &lightwell_core::path::StrokeTable::default(),
+                )
+                .unwrap();
                 let bounds = compiled.bounds();
                 cases += 1;
                 if bounds.pixels() < u64::from(width) * u64::from(height) {
@@ -427,7 +451,12 @@ fn an_inverted_radial_bounds_to_the_whole_stage() {
         feather: 50.0,
     });
     mask.components[0].invert = true;
-    let compiled = CompiledMask::new(&mask, stage(40, 30)).unwrap();
+    let compiled = CompiledMask::new(
+        &mask,
+        stage(40, 30),
+        &lightwell_core::path::StrokeTable::default(),
+    )
+    .unwrap();
     assert_eq!(compiled.bounds().x0, 0);
     assert_eq!(compiled.bounds().y0, 0);
     assert_eq!(compiled.bounds().width, 40);
@@ -585,7 +614,12 @@ fn invert_is_the_exact_complement_and_inside_is_selected() {
         let drawn = compile(radial, 61, 47);
         let mut inverted_mask = single(radial);
         inverted_mask.components[0].invert = true;
-        let inverted = CompiledMask::new(&inverted_mask, stage(61, 47)).unwrap();
+        let inverted = CompiledMask::new(
+            &inverted_mask,
+            stage(61, 47),
+            &lightwell_core::path::StrokeTable::default(),
+        )
+        .unwrap();
         for y in 0..47 {
             for x in 0..61 {
                 let c = drawn.coverage(x, y);
@@ -712,7 +746,12 @@ fn refusal(payload: serde_json::Value) -> (lightwell_core::ErrorKind, String) {
         "radial",
         payload,
     ));
-    let error = CompiledMask::new(&mask, stage(400, 400)).unwrap_err();
+    let error = CompiledMask::new(
+        &mask,
+        stage(400, 400),
+        &lightwell_core::path::StrokeTable::default(),
+    )
+    .unwrap_err();
     (error.kind, error.to_string())
 }
 
@@ -807,8 +846,12 @@ fn radial_validation_errors_name_the_field() {
             "radial",
             payload.clone(),
         ));
-        CompiledMask::new(&mask, stage(400, 400))
-            .unwrap_or_else(|error| panic!("{payload} was refused: {error}"));
+        CompiledMask::new(
+            &mask,
+            stage(400, 400),
+            &lightwell_core::path::StrokeTable::default(),
+        )
+        .unwrap_or_else(|error| panic!("{payload} was refused: {error}"));
     }
 }
 

@@ -232,7 +232,12 @@ mod tests {
     }
 
     fn compiled(mask: &Mask, width: u32, height: u32) -> CompiledMask {
-        CompiledMask::new(mask, Stage { width, height }).expect("the gradient compiles")
+        CompiledMask::new(
+            mask,
+            Stage { width, height },
+            &crate::path::StrokeTable::default(),
+        )
+        .expect("the gradient compiles")
     }
 
     #[test]

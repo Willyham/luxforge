@@ -840,7 +840,7 @@ fn mask_overlay_for(
         width: transform.content.width,
         height: transform.content.height,
     };
-    let compiled = CompiledMask::new(mask, stage).ok()?;
+    let compiled = CompiledMask::new(mask, stage, &recipe.strokes).ok()?;
     let coverage = crate::analysis::coverage_grid(
         &compiled,
         &transform,

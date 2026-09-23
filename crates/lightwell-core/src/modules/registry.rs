@@ -595,6 +595,7 @@ impl ModuleRegistry {
     fn compiled_mask(
         layer: &Layer,
         masks: &[Mask],
+        strokes: &crate::path::StrokeTable,
         stage: Stage,
         sampling: MaskSampling,
     ) -> Result<Option<MaskField>, Error> {
@@ -610,7 +611,7 @@ impl ModuleRegistry {
                 ),
             )
         })?;
-        Ok(Some(MaskField::compile(mask, stage, sampling)?))
+        Ok(Some(MaskField::compile(mask, stage, strokes, sampling)?))
     }
 
     /// A component's `kind` is the host's business, not a module's: `crate::mask` owns the table of
@@ -698,6 +699,7 @@ impl ModuleRegistry {
             source_height,
             &recipe.layers,
             &recipe.masks,
+            &recipe.strokes,
             sampling,
         )
     }
@@ -712,12 +714,14 @@ impl ModuleRegistry {
         source_height: u32,
         layers: &[Layer],
         masks: &[Mask],
+        strokes: &crate::path::StrokeTable,
     ) -> Result<Compiled, Error> {
         self.compile_layers_sampled(
             source_width,
             source_height,
             layers,
             masks,
+            strokes,
             MaskSampling::Point,
         )
     }
@@ -729,6 +733,7 @@ impl ModuleRegistry {
         source_height: u32,
         layers: &[Layer],
         masks: &[Mask],
+        strokes: &crate::path::StrokeTable,
         sampling: MaskSampling,
     ) -> Result<Compiled, Error> {
         let mut layer_ids = HashSet::with_capacity(layers.len());
@@ -827,10 +832,11 @@ impl ModuleRegistry {
                         // `Processing` — against the stage this layer receives, which for a
                         // content-stage layer is the content stage its geometry is normalized to. A
                         // module returned a plain operation and never saw the reference.
-                        let operation = match Self::compiled_mask(layer, masks, stage, sampling)? {
-                            Some(mask) => operation.with_mask(mask),
-                            None => operation,
-                        };
+                        let operation =
+                            match Self::compiled_mask(layer, masks, strokes, stage, sampling)? {
+                                Some(mask) => operation.with_mask(mask),
+                                None => operation,
+                            };
                         segment.has_color = true;
                         segment.operations.push(Processing::Color(operation));
                     }
@@ -849,7 +855,9 @@ impl ModuleRegistry {
                     // writes, which is what lets the tile loop read the mask at a tile's own
                     // coordinates. The module returned a plain operation and never saw the
                     // reference.
-                    let operation = match Self::compiled_mask(layer, masks, stage, sampling)? {
+                    let operation = match Self::compiled_mask(
+                        layer, masks, strokes, stage, sampling,
+                    )? {
                         Some(mask) => {
                             masked_spatial += 1;
                             if masked_spatial > MAX_MASKED_SPATIAL_LAYERS {
@@ -2712,7 +2720,7 @@ pub(crate) mod tests {
         });
         let refused = vec![finish.clone(), turn.clone()];
         let error = registry
-            .compile_layers(2, 1, &refused, &[])
+            .compile_layers(2, 1, &refused, &[], &crate::path::StrokeTable::default())
             .err()
             .expect("a finish layer before geometry never compiles");
         assert_eq!(error.kind, ErrorKind::Validation);
@@ -2727,9 +2735,19 @@ pub(crate) mod tests {
         // The order the host does build compiles, and so does a stack with no geometry at all.
         assert!(
             registry
-                .compile_layers(2, 1, &[turn, finish.clone()], &[])
+                .compile_layers(
+                    2,
+                    1,
+                    &[turn, finish.clone()],
+                    &[],
+                    &crate::path::StrokeTable::default()
+                )
                 .is_ok()
         );
-        assert!(registry.compile_layers(2, 1, &[finish], &[]).is_ok());
+        assert!(
+            registry
+                .compile_layers(2, 1, &[finish], &[], &crate::path::StrokeTable::default())
+                .is_ok()
+        );
     }
 }

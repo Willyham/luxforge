@@ -317,9 +317,12 @@ pub fn combine(algebra: Algebra, m: f64, mode: Mode, c: f64) -> f64 {
     }
 }
 
-/// A component's geometry. Only the two kinds this study freezes are
-/// represented; the brush and the range selections are named in the study as
-/// not frozen here.
+/// A component's geometry. Only the two gradient kinds are represented, because
+/// the composition algebra below is what this enum exists for and the brush's
+/// own field is frozen standalone in [`brush_coverage`]: a single-component
+/// `Add` mask at amount 100 composes to `max(0, c)` and `1.0 * c`, both exact,
+/// so the brush is compared against its own reference without a third variant
+/// here. The range selections are a separate study.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Kind {
     Linear(Linear),
@@ -380,6 +383,317 @@ pub fn coverage(mask: &Mask, algebra: Algebra, stage: &Stage, u: f64, v: f64) ->
     }
     let m = if mask.invert { 1.0 - m } else { m };
     (mask.amount / 100.0) * m
+}
+
+// ---------------------------------------------------------------------------
+// The brush (TASK-018), frozen in `docs/design/mask-study.md#the-brush`.
+//
+// A brush component holds an ordered list of strokes. A stroke is a polyline in
+// stored normalized coordinates plus the brush settings it was drawn with; its
+// coverage is the capsule profile at the distance to the nearest of its
+// segments; and the strokes accumulate in stored order by screen union, or by
+// multiply-complement for an erase stroke.
+//
+// Everything below shares this study's `smooth` and its `DISTANCE_MIN` floor
+// rather than introducing a second convention: a stroke's radius *is* a stored
+// mask-space distance, so the divisor `band = R · f` is bounded exactly as a
+// radius and an axis length are, and the `f = 0` hard edge is an explicit case
+// for the same reason the radial's is.
+// ---------------------------------------------------------------------------
+
+/// One stroke of a brush component: the path in stored normalized coordinates
+/// and the brush at the moment the stroke was made.
+///
+/// `size` is the radius in mask-space units (one unit is the stage's height on
+/// both axes, so a round brush is round at any aspect ratio), `feather` and
+/// `flow` are the editor's usual `0..=100` percentages, and `erase` marks a
+/// stroke that takes coverage away rather than adding it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct BrushStroke {
+    pub points: Vec<[f64; 2]>,
+    pub size: f64,
+    pub feather: f64,
+    pub flow: f64,
+    pub erase: bool,
+}
+
+/// A brush component: its strokes in stored order. Order is load-bearing only
+/// where an erase stroke appears, but it is stored for every stroke because
+/// that is where the erase lands.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Brush {
+    pub strokes: Vec<BrushStroke>,
+}
+
+/// One segment of a stroke, in mask space, with the terms that do not depend on
+/// the pixel already computed:
+///
+/// ```text
+/// ex   = bx - ax
+/// ey   = by - ay
+/// len2 = ex*ex + ey*ey
+/// if len2 == 0:  ex = 0, ey = 0, len2 = 1
+/// ```
+///
+/// The normalization of a degenerate segment is the frozen spelling of "the
+/// distance to the point itself for a one-point stroke": with `ex = ey = 0` and
+/// `len2 = 1` the projection below evaluates `t = 0/1 = 0`, `q = A` and the
+/// distance to `A`, exactly, with **no branch on the per-pixel path**. It also
+/// absorbs a repeated position, which a stored path cannot hold but a reference
+/// must still be total on.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Segment {
+    pub ax: f64,
+    pub ay: f64,
+    pub ex: f64,
+    pub ey: f64,
+    pub len2: f64,
+}
+
+/// The segments of one stroke, in drawn order, through the **stored position**
+/// spelling of mask space (compiling a payload, not reading a pixel).
+///
+/// A stroke of `n >= 2` positions has `n - 1` segments; a one-point stroke has
+/// the single degenerate segment above, so every stroke has at least one and
+/// the evaluation below needs no empty case.
+pub fn brush_segments(stroke: &BrushStroke, stage: &Stage) -> Vec<Segment> {
+    let uv: Vec<(f64, f64)> = stroke
+        .points
+        .iter()
+        .map(|[x, y]| stage.position_uv(*x, *y))
+        .collect();
+    let mut segments = Vec::new();
+    if uv.len() == 1 {
+        segments.push(segment(uv[0], uv[0]));
+        return segments;
+    }
+    for pair in uv.windows(2) {
+        segments.push(segment(pair[0], pair[1]));
+    }
+    segments
+}
+
+fn segment(a: (f64, f64), b: (f64, f64)) -> Segment {
+    let ex = b.0 - a.0;
+    let ey = b.1 - a.1;
+    let len2 = ex * ex + ey * ey;
+    if len2 == 0.0 {
+        Segment {
+            ax: a.0,
+            ay: a.1,
+            ex: 0.0,
+            ey: 0.0,
+            len2: 1.0,
+        }
+    } else {
+        Segment {
+            ax: a.0,
+            ay: a.1,
+            ex,
+            ey,
+            len2,
+        }
+    }
+}
+
+/// The **squared** distance from mask-space point `(u, v)` to one segment, in
+/// the exact order a production unit transcribes:
+///
+/// ```text
+/// wx = u - ax
+/// wy = v - ay
+/// t  = clamp((wx*ex + wy*ey) / len2, 0, 1)
+/// qx = ax + t*ex
+/// qy = ay + t*ey
+/// dx = u - qx
+/// dy = v - qy
+/// d2 = dx*dx + dy*dy
+/// ```
+///
+/// Squared, because the capsule profile needs **one** square root per stroke and
+/// not one per segment: `sqrt` is monotone and correctly rounded, so the square
+/// root of the smallest squared distance is the smallest distance, bit for bit.
+/// `len2` is a divisor and never a precomputed reciprocal, and the dot product
+/// is not reassociated.
+pub fn segment_distance2(segment: &Segment, u: f64, v: f64) -> f64 {
+    let wx = u - segment.ax;
+    let wy = v - segment.ay;
+    let t = ((wx * segment.ex + wy * segment.ey) / segment.len2).clamp(0.0, 1.0);
+    let qx = segment.ax + t * segment.ex;
+    let qy = segment.ay + t * segment.ey;
+    let dx = u - qx;
+    let dy = v - qy;
+    dx * dx + dy * dy
+}
+
+/// The capsule profile of one stroke at distance `d`, before `flow`:
+///
+/// ```text
+/// R    = size                       -- once per stroke
+/// f    = feather / 100              -- once per stroke
+/// band = R * f                      -- once per stroke: the ramp's width
+/// hard = (band == 0)                -- once per stroke
+///
+/// s = if hard { if d <= R { 1 } else { 0 } }
+///     else    { smooth(clamp((R - d) / band, 0, 1)) }
+/// ```
+///
+/// `hard` is the `feather = 0` hard edge taken as an explicit case, exactly as
+/// the radial's is, so no division by a vanishing band is ever evaluated. It
+/// absorbs the second route to the same edge as well: a feather so small that
+/// `R · f/100` underflows to exactly zero is the same hard edge, reached by
+/// rounding rather than by an equality against zero.
+///
+/// Exactly `1.0` on the core (`d <= R - band`, where the clamp's upper end and
+/// `smooth(1)` are both exact) and exactly `0.0` at and beyond `d = R` on the
+/// feathered branch, which is what makes the support rectangle and the grid
+/// index below exactly right rather than nearly right.
+pub fn capsule_profile(stroke: &BrushStroke, d: f64) -> f64 {
+    let r = stroke.size;
+    let f = stroke.feather / 100.0;
+    let band = r * f;
+    if band == 0.0 {
+        if d <= r { 1.0 } else { 0.0 }
+    } else {
+        smooth(((r - d) / band).clamp(0.0, 1.0))
+    }
+}
+
+/// One stroke's coverage at mask-space point `(u, v)`: the profile at the
+/// distance to the nearest of its segments, scaled by its flow.
+///
+/// ```text
+/// d      = sqrt(min over the stroke's segments of segment_distance2)
+/// stroke = capsule_profile(d) * (flow / 100)
+/// ```
+///
+/// **The minimum distance, not the maximum profile.** The two are the same
+/// number — the profile is nonincreasing in `d`, so the largest profile over the
+/// segments is the profile of the smallest distance — and
+/// `mask_brush_reference.rs` proves that equality bit for bit against
+/// [`stroke_coverage_max_form`] rather than assuming it. This spelling is the
+/// frozen one because it evaluates one `sqrt` and one `smooth` per stroke
+/// instead of one per segment.
+pub fn stroke_coverage(stroke: &BrushStroke, segments: &[Segment], u: f64, v: f64) -> f64 {
+    let mut nearest = f64::INFINITY;
+    for segment in segments {
+        let d2 = segment_distance2(segment, u, v);
+        if d2 < nearest {
+            nearest = d2;
+        }
+    }
+    let d = nearest.sqrt();
+    capsule_profile(stroke, d) * (stroke.flow / 100.0)
+}
+
+/// The design's "the maximum over its segments of a capsule profile" spelling,
+/// kept only so `mask_brush_reference.rs` can prove it equals
+/// [`stroke_coverage`] bit for bit. No production unit transcribes this one.
+pub fn stroke_coverage_max_form(stroke: &BrushStroke, segments: &[Segment], u: f64, v: f64) -> f64 {
+    let mut best = 0.0f64;
+    for segment in segments {
+        let d = segment_distance2(segment, u, v).sqrt();
+        let s = capsule_profile(stroke, d);
+        if s > best {
+            best = s;
+        }
+    }
+    best * (stroke.flow / 100.0)
+}
+
+/// How one stroke folds into the coverage the strokes before it accumulated:
+///
+/// ```text
+/// c = c * (1.0 - s)          if the stroke erases
+/// c = c + (1.0 - c) * s      otherwise
+/// ```
+///
+/// The add is the **screen union** `1 − (1 − c)(1 − s)`, written in the one
+/// spelling that is an exact identity when the stroke contributes nothing:
+/// `c + (1 − c)·0` is `c` bit for bit, while `1 − (1 − c)·1` is not `c` for
+/// every `c`. The erase is the **multiply-complement** `c · (1 − s)`, exact at
+/// `s = 0` for the same reason. That exactness is not decoration: it is what
+/// lets a production unit's grid index skip a stroke the pixel is nowhere near
+/// and still produce, bit for bit, the field the whole list would have produced.
+///
+/// Both are exact at the other end too: `c + (1 − c)·1` is exactly `1.0` and
+/// `c · (1 − 1)` is exactly `0.0`.
+pub fn accumulate(c: f64, s: f64, erase: bool) -> f64 {
+    if erase {
+        c * (1.0 - s)
+    } else {
+        c + (1.0 - c) * s
+    }
+}
+
+/// A brush component's coverage at mask-space point `(u, v)`, in the exact order
+/// a production unit transcribes:
+///
+/// ```text
+/// c = 0
+/// for stroke in strokes:                   -- stored order
+///     s = the stroke's coverage at (u, v)
+///     c = c * (1 - s)                      if stroke.erase
+///     c = c + (1 - c) * s                  otherwise
+/// ```
+///
+/// A component with no strokes covers nothing: `c = 0`, which is the same answer
+/// an empty component list gives the composition above.
+pub fn brush_coverage(brush: &Brush, stage: &Stage, u: f64, v: f64) -> f64 {
+    let mut c = 0.0;
+    for stroke in &brush.strokes {
+        let segments = brush_segments(stroke, stage);
+        let s = stroke_coverage(stroke, &segments, u, v);
+        c = accumulate(c, s, stroke.erase);
+    }
+    c
+}
+
+/// The frozen legality rule for a stroke's radius. A radius is a stored
+/// mask-space distance like any other, so it takes [`distance_is_legal`] and not
+/// a rule of its own: the floor is what bounds the divisor `band = R · f` by
+/// `1e4 / f` instead of guarding it, and a radius below it is refused when the
+/// component compiles rather than clamped.
+pub fn brush_size_is_legal(stroke: &BrushStroke) -> bool {
+    distance_is_legal(stroke.size)
+}
+
+/// A conservative mask-space rectangle of one brush component's support, as
+/// `[u0, u1] x [v0, v1]`, or `None` when the component covers nothing anywhere.
+///
+/// Coverage is exactly zero wherever every stroke's is, and a stroke's is
+/// exactly zero wherever `d > R` on both branches of the profile, so the
+/// component's support is the union of its **add** strokes' segment boxes each
+/// grown by that stroke's own radius. An erase stroke never creates coverage —
+/// `c · (1 − s)` cannot raise `c` — so it contributes nothing to the box, and a
+/// stroke whose flow is exactly zero contributes nothing either, because
+/// `s = profile · 0.0` is exactly `0.0` and the fold is an exact identity there.
+pub fn brush_bounds(brush: &Brush, stage: &Stage) -> Option<[f64; 4]> {
+    let mut box_ = None::<[f64; 4]>;
+    for stroke in &brush.strokes {
+        if stroke.erase || stroke.flow == 0.0 {
+            continue;
+        }
+        for [x, y] in &stroke.points {
+            let (u, v) = stage.position_uv(*x, *y);
+            let grown = [
+                u - stroke.size,
+                v - stroke.size,
+                u + stroke.size,
+                v + stroke.size,
+            ];
+            box_ = Some(match box_ {
+                None => grown,
+                Some(held) => [
+                    held[0].min(grown[0]),
+                    held[1].min(grown[1]),
+                    held[2].max(grown[2]),
+                    held[3].max(grown[3]),
+                ],
+            });
+        }
+    }
+    box_
 }
 
 /// The blend a masked colour operation performs, per channel, in linear light:
