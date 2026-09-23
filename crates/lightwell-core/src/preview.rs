@@ -1,10 +1,14 @@
 use crate::{
-    Cancel, EntryId, Error, ErrorKind, HistoryEntry, LinearImage, LinearSettings, ModuleRegistry,
-    ProxyBounds, ProxyCache, ProxyKey, Raster, Recipe, SourceImage,
-    analysis::{AnalysisIdentity, Report},
-    render, render_cancellable, render_linear, render_linear_cancellable,
+    Cancel, Component, ComponentId, ComponentMode, EntryId, Error, ErrorKind, HistoryEntry,
+    LinearImage, LinearSettings, Mask, MaskId, ModuleRegistry, ProxyBounds, ProxyCache, ProxyKey,
+    Raster, Recipe, SourceImage,
+    analysis::{AnalysisIdentity, MAX_OVERLAY_CELLS, MaskOverlay, Report},
+    mask::CompiledMask,
+    modules::Stage,
+    render, render_cancellable, render_linear, render_linear_cancellable, stage_transform,
 };
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use std::sync::{
     Arc,
     mpsc::{Receiver, SyncSender, TryRecvError, sync_channel},
@@ -185,6 +189,51 @@ impl PreviewSource {
     }
 }
 
+/// What a preview job asks the worker for beside the frame: the coverage grid of one mask, over the
+/// frame that job renders, on a `cells_w × cells_h` display grid.
+///
+/// **Why a component *identity* and not an index.** Hovering a row of the component list shows that
+/// row's own contribution, so one component's grid has to be obtainable on its own. The cheapest
+/// honest way to ask for it is one more field on this request, because it costs nothing anywhere
+/// else: the host derives a one-component mask and compiles it through the same [`CompiledMask`]
+/// the whole mask goes through, so the row's overlay and the mask's overlay cannot disagree about
+/// that component's field, and compiling one component is strictly cheaper than compiling all of
+/// them. It is a [`ComponentId`] rather than a position because a position is not an identity: the
+/// component list is reorderable, a hover and the frame that answers it are a request apart, and an
+/// index that silently slid onto the neighbouring row would draw the wrong field with no way to
+/// tell. A component the mask does not hold is refused by name instead.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MaskOverlayRequest {
+    /// The mask to describe. It must be one this job's recipe holds.
+    pub mask: MaskId,
+    /// One component of that mask, on its own, or `None` for the whole composed mask.
+    pub component: Option<ComponentId>,
+    pub cells_w: u32,
+    pub cells_h: u32,
+}
+
+/// The mask a component's own row describes: that one component alone.
+///
+/// Its mode is `add` because there is nothing before it to subtract from or intersect with, the
+/// whole-mask amount and inversion are left out because they are the mask's modifiers and not the
+/// row's, and the component's *own* inversion is kept because that is a control on the row. `None`
+/// when the mask does not hold that component.
+fn one_component(mask: &Mask, component: &ComponentId) -> Option<Mask> {
+    let found = mask.components.iter().find(|held| &held.id == component)?;
+    let alone = Component {
+        mode: ComponentMode::Add,
+        ..found.clone()
+    };
+    Some(Mask {
+        id: mask.id.clone(),
+        name: mask.name.clone(),
+        amount: Mask::FULL_AMOUNT,
+        invert: false,
+        next_ordinal: BTreeMap::new(),
+        components: vec![alone],
+    })
+}
+
 #[derive(Clone, Debug)]
 pub struct PreviewJob {
     pub source: PreviewSource,
@@ -215,6 +264,62 @@ pub struct PreviewJob {
     /// or rendering the proxy declines it in [`PreviewResult::proxy_declined`] and the exact phase
     /// runs unchanged.
     pub proxy: Option<ProxyBounds>,
+    /// Fill one mask's coverage grid beside the frame and return it with it, exactly as
+    /// [`PreviewJob::analyse`] returns a [`Report`]. Set through
+    /// [`PreviewJob::with_mask_overlay`], which is what validates it against this job's own stack.
+    pub mask_overlay: Option<MaskOverlayRequest>,
+}
+
+impl PreviewJob {
+    /// Ask this job's exact phase for one mask's coverage grid, validated against the stack this
+    /// job renders.
+    ///
+    /// Validation happens here and not on the worker because the answer depends on the stack, and
+    /// the stack is in hand: a mask or a component this recipe does not hold is a named
+    /// `validation` refusal now rather than a silently absent overlay later. It costs
+    /// `O(masks + components)` and reads no pixel, so the thread that plans a job may call it
+    /// ([performance rule 5](../../docs/engineering/performance-rules.md#rules)).
+    pub fn with_mask_overlay(mut self, request: MaskOverlayRequest) -> Result<Self, Error> {
+        let mask = self
+            .recipe
+            .masks
+            .iter()
+            .find(|mask| mask.id == request.mask)
+            .ok_or_else(|| {
+                Error::new(
+                    ErrorKind::Validation,
+                    format!(
+                        "mask {} is not in the stack this preview renders",
+                        request.mask
+                    ),
+                )
+            })?;
+        if let Some(component) = &request.component
+            && !mask.components.iter().any(|held| &held.id == component)
+        {
+            return Err(Error::new(
+                ErrorKind::Validation,
+                format!("mask {} holds no component {component}", mask.name),
+            ));
+        }
+        if request.cells_w == 0 || request.cells_h == 0 {
+            return Err(Error::new(
+                ErrorKind::Validation,
+                "a mask overlay needs a non-empty cell grid",
+            ));
+        }
+        if request.cells_w > MAX_OVERLAY_CELLS || request.cells_h > MAX_OVERLAY_CELLS {
+            return Err(Error::new(
+                ErrorKind::ResourceLimit,
+                format!(
+                    "a mask overlay of {}x{} cells exceeds the {MAX_OVERLAY_CELLS} cells a side the display overlay allows",
+                    request.cells_w, request.cells_h
+                ),
+            ));
+        }
+        self.mask_overlay = Some(request);
+        Ok(self)
+    }
 }
 
 /// Which of a job's two phases produced a result.
@@ -243,6 +348,11 @@ pub struct PreviewResult {
     /// job did not ask, the render failed, or this is the proxy phase — a proxy raster is never
     /// reduced. It never means an empty histogram.
     pub report: Option<Report>,
+    /// The coverage grid of the mask the job named, over the frame in `result` and under the same
+    /// generation. `None` means the job did not ask, the render failed, this is the proxy phase, or
+    /// the mask had nothing to describe. It never means a mask whose coverage happens to be zero
+    /// everywhere: that is a grid of zeros, and this is its absence.
+    pub mask_overlay: Option<MaskOverlay>,
     /// Which phase produced this frame.
     pub phase: PreviewPhase,
     /// The proxy source dimensions this frame was rendered against. `Some` only on a
@@ -569,8 +679,13 @@ fn run(
                                     draft_revision,
                                     result: Ok(raster),
                                     // A proxy raster is never reduced: every number the histogram
-                                    // and the clipping counters report is the exact phase's.
+                                    // and the clipping counters report is the exact phase's. The
+                                    // mask overlay rides with the same frame for the same reason —
+                                    // the proxy phase is what a drag presents, and the histogram,
+                                    // the overlays and the 100% view follow the exact one
+                                    // (performance rule 11).
                                     report: None,
+                                    mask_overlay: None,
                                     phase: PreviewPhase::Proxy,
                                     proxy_dimensions: Some(dimensions),
                                     proxy_declined: None,
@@ -608,6 +723,15 @@ fn run(
         }
         rendered => (rendered, None),
     };
+    // The coverage grid is filled beside the frame it describes, from the very stack that produced
+    // it, so the two travel together under one generation. It reads no pixel of that frame and
+    // allocates one byte per display cell.
+    let mask_overlay = match (&result, &job.mask_overlay) {
+        (Ok(_), Some(request)) => {
+            mask_overlay_for(&job.registry, &job.source, recipe, request, &exact_cancel)
+        }
+        _ => None,
+    };
     let sent = sender.send(WorkerMessage {
         result: PreviewResult {
             generation,
@@ -616,6 +740,7 @@ fn run(
             draft_revision,
             result,
             report,
+            mask_overlay,
             phase: PreviewPhase::Exact,
             proxy_dimensions: None,
             proxy_declined: declined,
@@ -627,6 +752,60 @@ fn run(
     if sent.is_ok() {
         wake();
     }
+}
+
+/// One mask's coverage grid over the frame `recipe` just produced against `source`.
+///
+/// `recipe` is the stack that was rendered — a truncated job's prefix, when it had one — because
+/// the grid describes the frame it arrives with and a prefix has its own geometry tail. The mask
+/// table travels with a prefix, so a mask is still found there.
+///
+/// Every reason this answers `None` is a reason there is no grid to draw, never a silently empty
+/// one. The mask or component the request named was validated against this stack when the job was
+/// planned, and the stack rendered, so compiling it cannot fail here for a reason the frame did
+/// not already fail for; a cancel means a newer request is on its way with its own grid. The one
+/// ordinary `None` is a mask with nothing to describe, which [`analysis::coverage_grid`] decides in
+/// closed form.
+fn mask_overlay_for(
+    registry: &ModuleRegistry,
+    source: &PreviewSource,
+    recipe: &Recipe,
+    request: &MaskOverlayRequest,
+    cancel: &Cancel,
+) -> Option<MaskOverlay> {
+    let held = recipe.masks.iter().find(|mask| mask.id == request.mask)?;
+    let derived;
+    let mask = match &request.component {
+        None => held,
+        Some(component) => {
+            derived = one_component(held, component)?;
+            &derived
+        }
+    };
+    let (width, height) = source.dimensions();
+    // `O(layers)`: it composes the geometry tail of the stack already compiled for this frame and
+    // reads no pixel.
+    let transform = stage_transform(registry, width, height, recipe).ok()?;
+    let stage = Stage {
+        width: transform.content.width,
+        height: transform.content.height,
+    };
+    let compiled = CompiledMask::new(mask, stage).ok()?;
+    let coverage = crate::analysis::coverage_grid(
+        &compiled,
+        &transform,
+        request.cells_w,
+        request.cells_h,
+        cancel,
+    )
+    .ok()??;
+    Some(MaskOverlay {
+        mask: request.mask.clone(),
+        component: request.component.clone(),
+        cells_w: request.cells_w,
+        cells_h: request.cells_h,
+        coverage,
+    })
 }
 
 #[cfg(test)]
@@ -695,6 +874,7 @@ mod tests {
             identity,
             analyse,
             proxy: None,
+            mask_overlay: None,
             entry,
         }
     }
@@ -933,6 +1113,7 @@ mod tests {
             identity,
             analyse: false,
             proxy,
+            mask_overlay: None,
             entry,
         }
     }
