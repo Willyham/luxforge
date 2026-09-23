@@ -1945,6 +1945,7 @@ mod tests {
                 effect_id: MARK_EFFECT.into(),
                 effect_format: EFFECT_FORMAT,
                 payload: json!({}),
+                mask: None,
             }))
         }
         fn validate_payload(&self, _: &str, _: u32, _: &Value) -> Result<(), Error> {

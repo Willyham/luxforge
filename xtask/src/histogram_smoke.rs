@@ -139,9 +139,11 @@ fn displayed_recipe(frame: &Value) -> Result<Recipe> {
                         .to_owned(),
                     effect_format: lightwell_core::EFFECT_FORMAT,
                     payload: layer["payload"].clone(),
+                    mask: None,
                 })
             })
             .collect::<Result<Vec<_>>>()?,
+        masks: Vec::new(),
     })
 }
 
@@ -178,6 +180,7 @@ fn drafted_recipe(frame: &Value) -> Result<Recipe> {
             effect_id: BASIC_EFFECT.into(),
             effect_format: EFFECT_FORMAT,
             payload: fields,
+            mask: None,
         },
     );
     Ok(recipe)
@@ -440,6 +443,7 @@ pub fn verify(root: &Path, evidence: &Path, app: &Value, _events: &[Value]) -> R
         &Recipe {
             format: RECIPE_FORMAT,
             layers: vec![Layer::pixel(BOTH_PIXEL.0, BOTH_PIXEL.1, BOTH_RGB)],
+            masks: Vec::new(),
         },
     )?;
     ensure(

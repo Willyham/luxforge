@@ -410,6 +410,7 @@ mod tests {
             effect_id: effect_id.into(),
             effect_format: EFFECT_FORMAT,
             payload: json!({}),
+            mask: None,
         }
     }
 

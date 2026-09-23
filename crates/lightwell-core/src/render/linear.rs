@@ -948,7 +948,9 @@ mod tests {
                 effect_id: crate::BASIC_EFFECT.into(),
                 effect_format: crate::EFFECT_FORMAT,
                 payload: serde_json::json!({"exposure": 1.0}),
+                mask: None,
             }],
+            masks: Vec::new(),
         };
         let raster = render_linear(
             &ModuleRegistry::builtin(),
@@ -1055,11 +1057,12 @@ mod tests {
         assert_eq!(view.pixel(0, 0), Some([0.4, 1.4, -0.4]));
         assert_eq!(view.pixel(1, 2), Some([0.3, 1.3, -0.3]));
         let recipe = Recipe {
-            format: 1,
+            format: crate::RECIPE_FORMAT,
             layers: vec![Layer::orientation(crate::Orientation {
                 mirror: false,
                 turns: 2,
             })],
+            masks: Vec::new(),
         };
         let evaluation = LinearEvaluation::new(
             &ModuleRegistry::builtin(),
@@ -1158,8 +1161,9 @@ mod tests {
 
         let source = image(2, 2, &[[0.0, 0.0, 0.0]; 4]);
         let recipe = Recipe {
-            format: 1,
+            format: crate::RECIPE_FORMAT,
             layers: vec![Layer::pixel(1, 0, [128, 64, 255])],
+            masks: Vec::new(),
         };
         let sample = sample_linear(
             &ModuleRegistry::builtin(),
@@ -1191,7 +1195,7 @@ mod tests {
                 .collect::<Vec<_>>(),
         );
         let recipe = Recipe {
-            format: 1,
+            format: crate::RECIPE_FORMAT,
             layers: vec![Layer::crop(CropPayload {
                 angle: 12.0,
                 x: 0.25,
@@ -1199,6 +1203,7 @@ mod tests {
                 width: 0.5,
                 height: 0.5,
             })],
+            masks: Vec::new(),
         };
         let registry = ModuleRegistry::builtin();
         let raster = render_linear(
@@ -1265,6 +1270,7 @@ mod tests {
             let recipe = Recipe {
                 format: crate::RECIPE_FORMAT,
                 layers,
+                masks: Vec::new(),
             };
             let raster = render_linear(
                 &registry,
@@ -1328,7 +1334,9 @@ mod tests {
                 effect_id: crate::BASIC_EFFECT.into(),
                 effect_format: crate::EFFECT_FORMAT,
                 payload: serde_json::json!({"exposure": 0.5, "contrast": 20.0, "vibrance": 30.0}),
+                mask: None,
             }],
+            masks: Vec::new(),
         }
     }
 

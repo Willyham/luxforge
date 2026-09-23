@@ -376,6 +376,7 @@ mod tests {
                     &Recipe {
                         format: RECIPE_FORMAT,
                         layers,
+                        masks: Vec::new(),
                     },
                 )
                 .unwrap()

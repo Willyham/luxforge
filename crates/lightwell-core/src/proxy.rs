@@ -605,6 +605,7 @@ mod tests {
         Recipe {
             format: RECIPE_FORMAT,
             layers,
+            masks: Vec::new(),
         }
     }
 
@@ -614,6 +615,7 @@ mod tests {
             effect_id: BASIC_EFFECT.into(),
             effect_format: EFFECT_FORMAT,
             payload,
+            mask: None,
         }
     }
 
@@ -1101,6 +1103,7 @@ mod tests {
             effect_id: "test.absent".into(),
             effect_format: EFFECT_FORMAT,
             payload: json!({}),
+            mask: None,
         }]);
         let error = registry
             .proxy_eligible(&unknown)
@@ -1121,6 +1124,7 @@ mod tests {
                 effect_id: crate::VIGNETTE_EFFECT.into(),
                 effect_format: EFFECT_FORMAT,
                 payload: json!({ "amount": -40 }),
+                mask: None,
             },
         ]);
         registry
@@ -1135,6 +1139,7 @@ mod tests {
                 effect_id: crate::PRESENCE_EFFECT.into(),
                 effect_format: EFFECT_FORMAT,
                 payload: json!({ "clarity": 60 }),
+                mask: None,
             },
         ]);
         registry

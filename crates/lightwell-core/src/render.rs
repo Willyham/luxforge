@@ -1680,10 +1680,15 @@ mod tests {
                 effect_id: crate::BASIC_EFFECT.into(),
                 effect_format: EFFECT_FORMAT,
                 payload: json!({"exposure": 0.7, "contrast": 30.0, "vibrance": 40.0}),
+                mask: None,
             },
             Layer::crop(rect.normalized(&stage)),
         ];
-        let recipe = Recipe { format: 1, layers };
+        let recipe = Recipe {
+            format: crate::RECIPE_FORMAT,
+            layers,
+            masks: Vec::new(),
+        };
         let compiled = registry
             .compile(source.width, source.height, &recipe)
             .unwrap();
@@ -1749,7 +1754,11 @@ mod tests {
             &registry(),
             source,
             SnapshotId::new(),
-            &Recipe { format: 1, layers },
+            &Recipe {
+                format: crate::RECIPE_FORMAT,
+                layers,
+                masks: Vec::new(),
+            },
         )
         .unwrap()
     }
@@ -2015,6 +2024,7 @@ mod tests {
             effect_id: TEST_CROP_EFFECT.into(),
             effect_format: EFFECT_FORMAT,
             payload: serde_json::to_value(crop).unwrap(),
+            mask: None,
         }
     }
 
@@ -2024,6 +2034,7 @@ mod tests {
             effect_id: TEST_OFFSET_EFFECT.into(),
             effect_format: EFFECT_FORMAT,
             payload: json!({"x": x, "y": y, "width": width, "height": height}),
+            mask: None,
         }
     }
 
@@ -2042,6 +2053,7 @@ mod tests {
             effect_id: TEST_SCALE_EFFECT.into(),
             effect_format: EFFECT_FORMAT,
             payload: json!({"scale": scale}),
+            mask: None,
         }
     }
 
@@ -2209,7 +2221,11 @@ mod tests {
                     ],
                 ),
             ] {
-                let recipe = Recipe { format: 1, layers };
+                let recipe = Recipe {
+                    format: crate::RECIPE_FORMAT,
+                    layers,
+                    masks: Vec::new(),
+                };
                 let mut best = f64::INFINITY;
                 let mut raster = None;
                 for _ in 0..5 {
@@ -2240,8 +2256,9 @@ mod tests {
             let source = gradient(width, height);
             let crop = fitted_crop(width, height, angle, rect);
             let recipe = Recipe {
-                format: 1,
+                format: crate::RECIPE_FORMAT,
                 layers: vec![crop_layer(crop)],
+                masks: Vec::new(),
             };
             let raster = render(&registry, &source, SnapshotId::new(), &recipe).unwrap();
             let reference = CropReference::new(&source, crop);
@@ -2314,8 +2331,9 @@ mod tests {
                     layers.push(crop_layer(crop));
                     layers.extend(after.iter().copied().map(turn));
                     let recipe = Recipe {
-                        format: 1,
+                        format: crate::RECIPE_FORMAT,
                         layers: layers.clone(),
+                        masks: Vec::new(),
                     };
                     let compiled = registry
                         .compile(source.width, source.height, &recipe)
@@ -2346,8 +2364,9 @@ mod tests {
             &source,
             SnapshotId::new(),
             &Recipe {
-                format: 1,
+                format: crate::RECIPE_FORMAT,
                 layers: vec![crop_layer(CropPayload::NEUTRAL)],
+                masks: Vec::new(),
             },
         )
         .unwrap();
@@ -2392,8 +2411,9 @@ mod tests {
                     layers.push(crop_layer(crop));
                     layers.extend(after.iter().copied().map(turn));
                     let recipe = Recipe {
-                        format: 1,
+                        format: crate::RECIPE_FORMAT,
                         layers: layers.clone(),
+                        masks: Vec::new(),
                     };
                     let raster = render(&registry, &source, SnapshotId::new(), &recipe).unwrap();
                     // Every output pixel names a content pixel that the stepwise forward map puts
@@ -2480,8 +2500,9 @@ mod tests {
             let mut layers = vec![Layer::pixel(2, 3, [250, 1, 2]), crop_layer(crop)];
             layers.extend(tail.iter().cloned());
             let recipe = Recipe {
-                format: 1,
+                format: crate::RECIPE_FORMAT,
                 layers: layers.clone(),
+                masks: Vec::new(),
             };
             let raster = render(&registry, &source, SnapshotId::new(), &recipe).unwrap();
             let reference = CropReference::new(&source, crop);
@@ -2829,8 +2850,9 @@ mod tests {
             offset_layer(1, 2, 2, 3),
         ];
         let recipe = Recipe {
-            format: 1,
+            format: crate::RECIPE_FORMAT,
             layers: layers.clone(),
+            masks: Vec::new(),
         };
         let compiled = registry
             .compile(source.width, source.height, &recipe)
@@ -2862,8 +2884,9 @@ mod tests {
             vec![offset_layer(1, 1, 5, 4), offset_layer(1, 0, 5, 4)],
         ] {
             let recipe = Recipe {
-                format: 1,
+                format: crate::RECIPE_FORMAT,
                 layers: layers.clone(),
+                masks: Vec::new(),
             };
             let error = render(&registry, &source, SnapshotId::new(), &recipe)
                 .expect_err(&format!("{layers:?} reads outside the stage"));
@@ -2904,8 +2927,9 @@ mod tests {
             vec![scale_layer(2.0), Layer::pixel(5, 5, [254, 9, 10])],
         ] {
             let recipe = Recipe {
-                format: 1,
+                format: crate::RECIPE_FORMAT,
                 layers: layers.clone(),
+                masks: Vec::new(),
             };
             let raster = render(&registry, &source, SnapshotId::new(), &recipe).unwrap();
             for y in 0..raster.height {
@@ -2945,12 +2969,14 @@ mod tests {
             crop_layer(fitted_crop(8, 6, 15.0, [0.25, 0.25, 0.5, 0.5])),
         ] {
             let with_outside = Recipe {
-                format: 1,
+                format: crate::RECIPE_FORMAT,
                 layers: vec![inside.clone(), outside.clone(), crop.clone()],
+                masks: Vec::new(),
             };
             let without = Recipe {
-                format: 1,
+                format: crate::RECIPE_FORMAT,
                 layers: vec![inside.clone(), crop.clone()],
+                masks: Vec::new(),
             };
             let rendered = render(&registry, &source, SnapshotId::new(), &with_outside).unwrap();
             let expected = render(&registry, &source, SnapshotId::new(), &without).unwrap();
@@ -2974,8 +3000,9 @@ mod tests {
         let registry = geometry_registry();
         let source = source(3, 2);
         let recipe = Recipe {
-            format: 1,
+            format: crate::RECIPE_FORMAT,
             layers: vec![scale_layer(10_000.0)],
+            masks: Vec::new(),
         };
         let error = render(&registry, &source, SnapshotId::new(), &recipe)
             .expect_err("30000x20000 is over the frame limit");
@@ -2987,8 +3014,9 @@ mod tests {
         assert!(sampled.rgba.is_some());
         // A resample must declare a stage the host can address at all.
         let empty = Recipe {
-            format: 1,
+            format: crate::RECIPE_FORMAT,
             layers: vec![scale_layer(0.0)],
+            masks: Vec::new(),
         };
         let error = sample(&registry, &source, &empty, 0, 0).unwrap_err();
         assert_eq!(error.kind, ErrorKind::Validation);
@@ -3171,7 +3199,7 @@ mod tests {
             .collect();
         source.rgba = rgba.into();
         let recipe = Recipe {
-            format: 1,
+            format: crate::RECIPE_FORMAT,
             layers: vec![
                 Layer::pixel(1, 1, [201, 1, 2]),
                 turn(Transform::RotateLeft),
@@ -3180,6 +3208,7 @@ mod tests {
                 Layer::pixel(0, 0, [204, 8, 9]),
                 Layer::pixel(0, 0, [205, 10, 11]),
             ],
+            masks: Vec::new(),
         };
         let raster = render(&registry, &source, SnapshotId::new(), &recipe).unwrap();
         for y in 0..raster.height {
@@ -3205,8 +3234,9 @@ mod tests {
             None
         );
         let invalid = Recipe {
-            format: 1,
+            format: crate::RECIPE_FORMAT,
             layers: vec![Layer::pixel(9, 9, [0, 0, 0])],
+            masks: Vec::new(),
         };
         assert!(sample(&registry, &source, &invalid, 0, 0).is_err());
     }
@@ -3222,8 +3252,9 @@ mod tests {
                 &source,
                 snapshot.id.clone(),
                 &Recipe {
-                    format: 1,
-                    layers: vec![Layer::pixel(3, 0, [0, 0, 0])]
+                    format: crate::RECIPE_FORMAT,
+                    layers: vec![Layer::pixel(3, 0, [0, 0, 0])],
+                    masks: Vec::new(),
                 }
             )
             .is_err()
@@ -3410,6 +3441,7 @@ mod tests {
             effect_id: TEST_COLOR_EFFECT.into(),
             effect_format: EFFECT_FORMAT,
             payload,
+            mask: None,
         }
     }
 
@@ -3430,7 +3462,11 @@ mod tests {
     }
 
     fn colour_recipe(layers: Vec<Layer>) -> Recipe {
-        Recipe { format: 1, layers }
+        Recipe {
+            format: crate::RECIPE_FORMAT,
+            layers,
+            masks: Vec::new(),
+        }
     }
 
     /// The sRGB transfer function forwards in f64, written from the contract and used only by the
@@ -4064,7 +4100,7 @@ mod tests {
     /// is the turned one, which is the stage it is fitted onto.
     fn cancellation_stack(width: u32, height: u32) -> Recipe {
         Recipe {
-            format: 1,
+            format: crate::RECIPE_FORMAT,
             layers: vec![
                 turn(Transform::RotateRight),
                 Layer {
@@ -4072,9 +4108,11 @@ mod tests {
                     effect_id: crate::BASIC_EFFECT.into(),
                     effect_format: EFFECT_FORMAT,
                     payload: json!({"exposure": 0.5, "contrast": 20.0, "vibrance": 30.0}),
+                    mask: None,
                 },
                 Layer::crop(fitted_crop(height, width, 7.0, [0.05, 0.05, 0.9, 0.9])),
             ],
+            masks: Vec::new(),
         }
     }
 

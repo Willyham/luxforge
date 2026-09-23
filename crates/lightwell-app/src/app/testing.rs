@@ -248,6 +248,7 @@ pub(crate) fn crop_layer(payload: CropPayload) -> lightwell_core::Layer {
         effect_id: CROP_EFFECT.into(),
         effect_format: 1,
         payload: serde_json::to_value(payload).expect("a serializable payload"),
+        mask: None,
     }
 }
 

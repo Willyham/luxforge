@@ -909,11 +909,16 @@ pub(crate) mod tests {
             effect_id: TEST_SPATIAL_EFFECT.into(),
             effect_format: EFFECT_FORMAT,
             payload: json!({ "units": units }),
+            mask: None,
         }
     }
 
     fn recipe(layers: Vec<Layer>) -> Recipe {
-        Recipe { format: 1, layers }
+        Recipe {
+            format: crate::RECIPE_FORMAT,
+            layers,
+            masks: Vec::new(),
+        }
     }
 
     // -----------------------------------------------------------------------------------------

@@ -1,9 +1,16 @@
-use crate::{Error, ErrorKind, modules::CropPayload};
+use crate::{
+    Error, ErrorKind,
+    modules::{CropPayload, valid_name},
+};
 use serde::{Deserialize, Deserializer, Serialize, Serializer, de};
 use serde_json::{Value, json};
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 
-pub const RECIPE_FORMAT: u32 = 1;
+/// Format 2 adds the mask table a recipe carries and the optional mask reference a layer carries;
+/// a recipe written before it has no `masks` field and is refused by [`Recipe::validate`] and by
+/// deserialization rather than defaulted, because a stack whose masks are unknown is not the stack
+/// that was stored.
+pub const RECIPE_FORMAT: u32 = 2;
 pub const PIXEL_EFFECT: &str = "lightwell.pixel.replace";
 pub const RAW_EFFECT: &str = "lightwell.raw";
 pub const ORIENTATION_EFFECT: &str = "lightwell.geometry.orientation";
@@ -94,6 +101,19 @@ identifier!(SnapshotId, "snapshot-");
 identifier!(EntryId, "entry-");
 identifier!(DraftId, "draft-");
 identifier!(JobId, "job-");
+identifier!(MaskId, "mask-");
+identifier!(ComponentId, "component-");
+
+/// Masks per recipe, components per mask and the serialized size of one recipe's mask table: the
+/// structural part of the declared masking limits, each refused with a `ResourceLimit` error that
+/// names the limit. Every history entry stores a complete stack, so the byte bound is what keeps a
+/// long session's snapshots bounded rather than growing with every stroke.
+pub const MASKS_PER_RECIPE: usize = 16;
+pub const COMPONENTS_PER_MASK: usize = 32;
+pub const MASK_BYTES_PER_RECIPE: usize = 256 * 1024;
+/// Mask and component display names are a person's text, not an identity: printable, trimmed and
+/// bounded, exactly as a version name is.
+pub const MAX_MASK_NAME: usize = 64;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Layer {
@@ -101,6 +121,12 @@ pub struct Layer {
     pub effect_id: String,
     pub effect_format: u32,
     pub payload: Value,
+    /// The mask this layer is modulated by, or `None` for a layer that applies everywhere. It is
+    /// always written, so a stored stack says for every layer whether it was committed through a
+    /// selection. A mask is stored in content-stage coordinates, so only a layer before the
+    /// geometry tail may carry one; [`crate::ModuleRegistry`] owns that rule, because the stage
+    /// belongs to the effect's provider and not to the recipe.
+    pub mask: Option<MaskId>,
 }
 
 impl Layer {
@@ -110,6 +136,7 @@ impl Layer {
             effect_id: PIXEL_EFFECT.into(),
             effect_format: EFFECT_FORMAT,
             payload: json!({"x": x, "y": y, "rgb": rgb}),
+            mask: None,
         }
     }
     /// The one orientation layer of a stage: the composed quarter turns and reflections that every
@@ -120,6 +147,7 @@ impl Layer {
             effect_id: ORIENTATION_EFFECT.into(),
             effect_format: EFFECT_FORMAT,
             payload: serde_json::to_value(orientation).expect("orientation is serializable"),
+            mask: None,
         }
     }
     /// The one crop layer of a stack: straightening and a rectangle over its own input stage.
@@ -129,6 +157,7 @@ impl Layer {
             effect_id: CROP_EFFECT.into(),
             effect_format: EFFECT_FORMAT,
             payload: serde_json::to_value(payload).expect("crop payload is serializable"),
+            mask: None,
         }
     }
     /// Structural only: effect availability and payload shape belong to the providing module,
@@ -199,11 +228,233 @@ impl Default for Orientation {
     }
 }
 
+/// How one component joins the coverage the components before it composed. The first component of
+/// a mask is always [`ComponentMode::Add`], because there is nothing yet to subtract from or
+/// intersect with. Serialized kebab-case like [`Transform`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ComponentMode {
+    Add,
+    Subtract,
+    Intersect,
+}
+
+impl ComponentMode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Add => "add",
+            Self::Subtract => "subtract",
+            Self::Intersect => "intersect",
+        }
+    }
+}
+
+/// One selection a mask composes: the geometry a person drew, its role in the composition and its
+/// own inversion.
+///
+/// `kind` and `payload` are to a component what `effect_id` and `payload` are to a [`Layer`]: the
+/// host stores them and the provider of that kind reads them, so a component whose kind this build
+/// does not know is retained byte for byte instead of being dropped or rewritten. This model
+/// validates the pair structurally only — a well-formed kind token and a payload it never
+/// inspects; which kinds exist, and what each payload means, belongs to the kind's provider.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Component {
+    pub id: ComponentId,
+    /// The display name a history row names, such as `Brush 1`: renameable, never an identity.
+    pub name: String,
+    pub mode: ComponentMode,
+    pub invert: bool,
+    pub kind: String,
+    pub payload: Value,
+}
+
+impl Component {
+    /// A component of `kind` carrying the payload its provider will read. The name comes from the
+    /// mask, through [`Mask::next_component_name`], because the ordinal it spends belongs there.
+    pub fn new(
+        name: impl Into<String>,
+        mode: ComponentMode,
+        kind: impl Into<String>,
+        payload: Value,
+    ) -> Self {
+        Self {
+            id: ComponentId::new(),
+            name: name.into(),
+            mode,
+            invert: false,
+            kind: kind.into(),
+            payload,
+        }
+    }
+
+    /// Structural only: the identity is checked by its own type, the kind is a well-formed token
+    /// and the payload is the kind provider's business, unread here.
+    pub fn validate(&self) -> Result<(), Error> {
+        valid_display_name("component", &self.name)?;
+        if !valid_name(&self.kind) {
+            return Err(Error::new(
+                ErrorKind::Validation,
+                format!(
+                    "component {} has an invalid kind {:?}",
+                    self.name, self.kind
+                ),
+            ));
+        }
+        Ok(())
+    }
+}
+
+/// An editable selection in the recipe: an ordered list of components, a whole-mask amount and a
+/// whole-mask inversion. A mask is a host object beside the layers, not a layer and not a module's
+/// state, so every history entry's complete snapshot already carries it and undo, redo, preview,
+/// Restore and versions need no new machinery.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Mask {
+    pub id: MaskId,
+    /// The display name the masks list and the history labels show, such as `Mask 1`.
+    pub name: String,
+    /// 0..=100, multiplying the composed coverage.
+    pub amount: f64,
+    /// Inverts the composed coverage before `amount`.
+    pub invert: bool,
+    /// The next ordinal to spend on a component display name, per component kind, so an ordinal is
+    /// never reused: deleting `Brush 1` and adding another brush yields `Brush 2`. That is what
+    /// makes a stored history label honest — an entry that says `Update Brush 1` can only ever mean
+    /// the one component it was written about. A [`BTreeMap`] keeps the serialized object's keys in
+    /// one order, so a mask that did not change serializes to the same bytes.
+    pub next_ordinal: BTreeMap<String, u32>,
+    pub components: Vec<Component>,
+}
+
+/// Equality on the stored values, with `amount` compared by its bits. A mask therefore stays
+/// [`Eq`], and so do the recipe, snapshot and history entry that carry one: comparing two stored
+/// recipes asks whether they hold the same numbers, which is reflexive for every `f64` pattern,
+/// unlike `==` on a float.
+impl PartialEq for Mask {
+    fn eq(&self, other: &Self) -> bool {
+        self.id == other.id
+            && self.name == other.name
+            && self.amount.to_bits() == other.amount.to_bits()
+            && self.invert == other.invert
+            && self.next_ordinal == other.next_ordinal
+            && self.components == other.components
+    }
+}
+
+impl Eq for Mask {}
+
+impl Mask {
+    /// The default whole-mask amount: the composed coverage, unattenuated.
+    pub const FULL_AMOUNT: f64 = 100.0;
+
+    /// A mask with no components yet, named by the caller. The components a gesture or a request
+    /// adds carry their own ordinals from [`Self::next_component_name`].
+    pub fn new(name: impl Into<String>) -> Self {
+        Self {
+            id: MaskId::new(),
+            name: name.into(),
+            amount: Self::FULL_AMOUNT,
+            invert: false,
+            next_ordinal: BTreeMap::new(),
+            components: Vec::new(),
+        }
+    }
+
+    /// The display name the next component of `kind` gets, spending this mask's ordinal for that
+    /// kind: `brush` reads as `Brush 1`, then `Brush 2`, whatever was deleted in between. The
+    /// counter advances even when the caller does not go on to add the component, because a spent
+    /// ordinal must never name a second component.
+    pub fn next_component_name(&mut self, kind: &str) -> String {
+        let ordinal = self.next_ordinal.entry(kind.to_string()).or_insert(0);
+        *ordinal = ordinal.saturating_add(1);
+        format!("{} {}", crate::modules::title_case(kind), ordinal)
+    }
+
+    /// Structural only: identities, display names, the composition's first mode, the amount range
+    /// and the component-count limit. Coverage mathematics and payload shapes belong elsewhere.
+    pub fn validate(&self) -> Result<(), Error> {
+        valid_display_name("mask", &self.name)?;
+        if !self.amount.is_finite() || !(0.0..=Self::FULL_AMOUNT).contains(&self.amount) {
+            return Err(Error::new(
+                ErrorKind::Validation,
+                format!("mask {} amount must be a number within 0..=100", self.name),
+            ));
+        }
+        if self.components.len() > COMPONENTS_PER_MASK {
+            return Err(Error::new(
+                ErrorKind::ResourceLimit,
+                format!(
+                    "mask {} has {} components; the limit is {COMPONENTS_PER_MASK} components per mask",
+                    self.name,
+                    self.components.len()
+                ),
+            ));
+        }
+        // Nothing precedes the first component, so it can only add to an empty coverage. A stored
+        // mask that begins by subtracting or intersecting is refused as it stands, with the mode
+        // named, rather than read as if its first component had been an add.
+        if let Some(first) = self.components.first()
+            && first.mode != ComponentMode::Add
+        {
+            return Err(Error::new(
+                ErrorKind::Validation,
+                format!(
+                    "mask {} begins with a {} component; the first component of a mask is always add",
+                    self.name,
+                    first.mode.as_str()
+                ),
+            ));
+        }
+        let mut ids = HashSet::with_capacity(self.components.len());
+        let mut names = HashSet::with_capacity(self.components.len());
+        for component in &self.components {
+            component.validate()?;
+            if !ids.insert(&component.id) {
+                return Err(Error::new(
+                    ErrorKind::Validation,
+                    format!("duplicate component identity in mask {}", self.name),
+                ));
+            }
+            if !names.insert(&component.name) {
+                return Err(Error::new(
+                    ErrorKind::Validation,
+                    format!(
+                        "duplicate component name {} in mask {}",
+                        component.name, self.name
+                    ),
+                ));
+            }
+        }
+        Ok(())
+    }
+}
+
+/// A person's text for a mask or a component, held to the same shape a version name is: trimmed,
+/// printable and bounded, so a display name cannot carry control characters into a history label or
+/// grow a snapshot.
+fn valid_display_name(what: &str, name: &str) -> Result<(), Error> {
+    if name.trim() != name
+        || name.is_empty()
+        || name.chars().count() > MAX_MASK_NAME
+        || name.chars().any(char::is_control)
+    {
+        return Err(Error::new(
+            ErrorKind::Validation,
+            format!("{what} name must contain 1..={MAX_MASK_NAME} printable characters"),
+        ));
+    }
+    Ok(())
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Recipe {
     pub format: u32,
     pub layers: Vec<Layer>,
+    /// The masks the layers of this recipe may reference, in the order the masks list shows.
+    pub masks: Vec<Mask>,
 }
 
 impl Default for Recipe {
@@ -211,11 +462,17 @@ impl Default for Recipe {
         Self {
             format: RECIPE_FORMAT,
             layers: Vec::new(),
+            masks: Vec::new(),
         }
     }
 }
 
 impl Recipe {
+    /// Structural validation of a whole stack: `O(layers + components)` identity checks plus one
+    /// serialization of the mask table when the recipe has masks at all. It reads no pixels and asks
+    /// no provider anything, so every evaluation path can afford it — [`crate::ModuleRegistry`]
+    /// compiles through it, which is how a stack that names a mask it does not carry fails
+    /// compiling, rendering, sampling and planning alike instead of quietly rendering unmasked.
     pub fn validate(&self) -> Result<(), Error> {
         if self.format != RECIPE_FORMAT {
             return Err(Error::new(
@@ -223,6 +480,7 @@ impl Recipe {
                 format!("unsupported recipe format {}", self.format),
             ));
         }
+        self.validate_masks()?;
         let mut ids = HashSet::with_capacity(self.layers.len());
         for layer in &self.layers {
             if !ids.insert(&layer.id) {
@@ -232,6 +490,60 @@ impl Recipe {
                 ));
             }
             layer.validate()?;
+            // A layer's mask must be in the same snapshot. A missing one is incompatible data, not
+            // a layer that applies everywhere: the effect was committed through a selection, so the
+            // host refuses the stack and names both rather than rendering something else.
+            if let Some(mask) = &layer.mask
+                && !self.masks.iter().any(|candidate| candidate.id == *mask)
+            {
+                return Err(Error::new(
+                    ErrorKind::Incompatible,
+                    format!(
+                        "layer {} references mask {mask}, which this recipe does not carry",
+                        layer.id
+                    ),
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    /// The mask table on its own: the per-recipe limits, unique identities and each mask's own
+    /// structure. The serialized-bytes bound is measured only when there are masks, so an unmasked
+    /// recipe — every recipe without a local adjustment — pays nothing for it.
+    fn validate_masks(&self) -> Result<(), Error> {
+        if self.masks.is_empty() {
+            return Ok(());
+        }
+        if self.masks.len() > MASKS_PER_RECIPE {
+            return Err(Error::new(
+                ErrorKind::ResourceLimit,
+                format!(
+                    "recipe has {} masks; the limit is {MASKS_PER_RECIPE} masks per recipe",
+                    self.masks.len()
+                ),
+            ));
+        }
+        let mut ids = HashSet::with_capacity(self.masks.len());
+        for mask in &self.masks {
+            mask.validate()?;
+            if !ids.insert(&mask.id) {
+                return Err(Error::new(ErrorKind::Validation, "duplicate mask identity"));
+            }
+        }
+        // Every history entry stores a complete stack, so the mask table's size is multiplied by
+        // the number of entries a session writes. The bound fails explicitly instead of letting a
+        // brush session grow the catalog without a stated limit.
+        let bytes = serde_json::to_vec(&self.masks)
+            .map_err(|e| Error::new(ErrorKind::Internal, format!("cannot measure masks: {e}")))?
+            .len();
+        if bytes > MASK_BYTES_PER_RECIPE {
+            return Err(Error::new(
+                ErrorKind::ResourceLimit,
+                format!(
+                    "recipe masks serialize to {bytes} bytes; the limit is {MASK_BYTES_PER_RECIPE} serialized mask bytes per recipe"
+                ),
+            ));
         }
         Ok(())
     }
@@ -370,6 +682,310 @@ impl Mutation {
 mod tests {
     use super::*;
 
+    /// A mask with one component of a kind this build knows nothing about, which is the case the
+    /// model has to carry: a well-formed kind token and a payload nothing here reads.
+    fn future_mask() -> Mask {
+        let mut mask = Mask::new("Mask 1");
+        let name = mask.next_component_name("future-kind");
+        mask.components.push(Component::new(
+            name,
+            ComponentMode::Add,
+            "future-kind",
+            json!({"nested": {"points": [[0.25, 0.5], [0.75, 0.5]]}, "flag": true, "n": 3.5}),
+        ));
+        mask
+    }
+
+    fn masked_layer(mask: &Mask) -> Layer {
+        Layer {
+            mask: Some(mask.id.clone()),
+            ..Layer::pixel(0, 0, [1, 2, 3])
+        }
+    }
+
+    #[test]
+    fn masks_ride_in_the_snapshot_and_an_unknown_component_kind_survives_byte_for_byte() {
+        let mask = future_mask();
+        let mut snapshot = Snapshot::original(AssetId::new());
+        snapshot.recipe.masks.push(mask.clone());
+        snapshot.recipe.layers.push(masked_layer(&mask));
+        snapshot.recipe.validate().unwrap();
+        let encoded = serde_json::to_vec(&snapshot).unwrap();
+        let reopened: Snapshot = serde_json::from_slice(&encoded).unwrap();
+        assert_eq!(reopened, snapshot, "the whole snapshot round-trips");
+        // Retention is about the bytes, not about equality of a type this build understands: the
+        // stored kind and payload come back exactly as they were written, unparsed and unrewritten.
+        let stored = &reopened.recipe.masks[0].components[0];
+        assert_eq!(stored.kind, "future-kind");
+        assert_eq!(
+            serde_json::to_string(&stored.payload).unwrap(),
+            serde_json::to_string(&mask.components[0].payload).unwrap()
+        );
+        assert_eq!(
+            reopened.recipe.layers[0].mask.as_ref(),
+            Some(&mask.id),
+            "the layer still names the mask it was committed through"
+        );
+        // Nothing in validation asks what a kind means, so an unknown one is not a reason to refuse
+        // a stack; the provider table that parses payloads reports an unknown kind on its own.
+        assert!(reopened.recipe.validate().is_ok());
+    }
+
+    #[test]
+    fn a_recipe_stored_without_a_mask_table_is_refused_rather_than_defaulted() {
+        let current = serde_json::to_value(Recipe::default()).unwrap();
+        assert_eq!(current["masks"], json!([]), "masks are always written");
+        let older = json!({"format": RECIPE_FORMAT, "layers": []});
+        assert!(
+            serde_json::from_value::<Recipe>(older).is_err(),
+            "a recipe shape without masks fails explicitly instead of becoming an unmasked one"
+        );
+        // A layer always writes its mask reference, so a stored stack states for every layer
+        // whether it was committed through a selection. The recipe is the unit whose shape is
+        // marked, and the required table above is what refuses the older one.
+        let layer = serde_json::to_value(Layer::pixel(0, 0, [1, 2, 3])).unwrap();
+        assert_eq!(layer["mask"], Value::Null);
+    }
+
+    #[test]
+    fn a_layer_may_only_name_a_mask_its_own_recipe_carries() {
+        let mask = future_mask();
+        let layer = masked_layer(&mask);
+        let dangling = Recipe {
+            format: RECIPE_FORMAT,
+            layers: vec![layer.clone()],
+            masks: Vec::new(),
+        };
+        let error = dangling.validate().unwrap_err();
+        assert_eq!(error.kind, ErrorKind::Incompatible);
+        assert!(
+            error.detail.contains(layer.id.as_str()) && error.detail.contains(mask.id.as_str()),
+            "the error names both the layer and the mask: {}",
+            error.detail
+        );
+        assert_eq!(
+            dangling.layers.len(),
+            1,
+            "the refused stack is left as it stands"
+        );
+        assert!(
+            Recipe {
+                masks: vec![mask],
+                ..dangling
+            }
+            .validate()
+            .is_ok()
+        );
+    }
+
+    #[test]
+    fn mask_structure_is_validated_and_names_what_it_refuses() {
+        let mut mask = future_mask();
+        let subtract = Component {
+            mode: ComponentMode::Subtract,
+            ..mask.components[0].clone()
+        };
+        let first_subtracts = Mask {
+            components: vec![subtract.clone()],
+            ..mask.clone()
+        };
+        let error = first_subtracts.validate().unwrap_err();
+        assert_eq!(error.kind, ErrorKind::Validation);
+        assert_eq!(
+            error.detail,
+            "mask Mask 1 begins with a subtract component; the first component of a mask is always \
+             add"
+        );
+        // A second component in any mode is ordinary: only the first is constrained.
+        let second = Component::new("Radial 1", ComponentMode::Intersect, "radial", json!({}));
+        mask.components.push(second.clone());
+        mask.validate().unwrap();
+
+        let duplicate_identity = Mask {
+            components: vec![mask.components[0].clone(), mask.components[0].clone()],
+            ..mask.clone()
+        };
+        assert_eq!(
+            duplicate_identity.validate().unwrap_err().detail,
+            "duplicate component identity in mask Mask 1"
+        );
+        let duplicate_name = Mask {
+            components: vec![
+                mask.components[0].clone(),
+                Component {
+                    name: mask.components[0].name.clone(),
+                    ..second
+                },
+            ],
+            ..mask.clone()
+        };
+        assert_eq!(
+            duplicate_name.validate().unwrap_err().detail,
+            "duplicate component name Future kind 1 in mask Mask 1"
+        );
+        for amount in [-0.5, 100.5, f64::NAN, f64::INFINITY] {
+            let error = Mask {
+                amount,
+                ..mask.clone()
+            }
+            .validate()
+            .unwrap_err();
+            assert_eq!(error.kind, ErrorKind::Validation, "amount {amount}");
+            assert_eq!(
+                error.detail,
+                "mask Mask 1 amount must be a number within 0..=100"
+            );
+        }
+        for edge in [0.0, Mask::FULL_AMOUNT] {
+            assert!(
+                Mask {
+                    amount: edge,
+                    ..mask.clone()
+                }
+                .validate()
+                .is_ok()
+            );
+        }
+        for name in ["", " Mask 1", "Mask\n1", &"M".repeat(MAX_MASK_NAME + 1)] {
+            assert_eq!(
+                Mask {
+                    name: name.into(),
+                    ..mask.clone()
+                }
+                .validate()
+                .unwrap_err()
+                .detail,
+                format!("mask name must contain 1..={MAX_MASK_NAME} printable characters")
+            );
+        }
+        // A kind is an identity token, whether or not this build knows it; a display name is not.
+        for kind in ["", "Brush", "future kind"] {
+            let refused = Mask {
+                components: vec![Component::new(
+                    "Brush 1",
+                    ComponentMode::Add,
+                    kind,
+                    json!({}),
+                )],
+                ..mask.clone()
+            };
+            assert_eq!(
+                refused.validate().unwrap_err().detail,
+                format!("component Brush 1 has an invalid kind {kind:?}")
+            );
+        }
+    }
+
+    #[test]
+    fn a_component_ordinal_is_spent_once_and_never_reused() {
+        let mut mask = Mask::new("Mask 1");
+        assert_eq!(mask.next_component_name("brush"), "Brush 1");
+        assert_eq!(mask.next_component_name("radial"), "Radial 1");
+        assert_eq!(mask.next_component_name("brush"), "Brush 2");
+        assert_eq!(
+            mask.next_component_name("luminance-range"),
+            "Luminance range 1"
+        );
+        // Deleting a component does not return its ordinal: a history row that says Brush 1 can
+        // only ever have meant the component it was written about.
+        mask.components.push(Component::new(
+            "Brush 3",
+            ComponentMode::Add,
+            "brush",
+            json!({}),
+        ));
+        mask.components.clear();
+        assert_eq!(mask.next_component_name("brush"), "Brush 3");
+        assert_eq!(mask.next_ordinal["brush"], 3);
+        assert_eq!(mask.next_ordinal["radial"], 1);
+    }
+
+    #[test]
+    fn the_declared_mask_limits_are_refused_by_the_limit_they_name() {
+        let mask = future_mask();
+        let mut recipe = Recipe {
+            masks: (0..MASKS_PER_RECIPE)
+                .map(|index| Mask {
+                    name: format!("Mask {index}"),
+                    ..Mask::new("Mask")
+                })
+                .collect(),
+            ..Recipe::default()
+        };
+        recipe.validate().unwrap();
+        recipe.masks.push(Mask::new("One too many"));
+        let error = recipe.validate().unwrap_err();
+        assert_eq!(error.kind, ErrorKind::ResourceLimit);
+        assert_eq!(
+            error.detail,
+            format!(
+                "recipe has {} masks; the limit is {MASKS_PER_RECIPE} masks per recipe",
+                MASKS_PER_RECIPE + 1
+            )
+        );
+
+        let components = |count: usize| {
+            (0..count)
+                .map(|index| {
+                    Component::new(
+                        format!("Brush {index}"),
+                        ComponentMode::Add,
+                        "brush",
+                        json!({}),
+                    )
+                })
+                .collect::<Vec<_>>()
+        };
+        let full = Mask {
+            components: components(COMPONENTS_PER_MASK),
+            ..mask.clone()
+        };
+        full.validate().unwrap();
+        let error = Mask {
+            components: components(COMPONENTS_PER_MASK + 1),
+            ..mask.clone()
+        }
+        .validate()
+        .unwrap_err();
+        assert_eq!(error.kind, ErrorKind::ResourceLimit);
+        assert_eq!(
+            error.detail,
+            format!(
+                "mask Mask 1 has {} components; the limit is {COMPONENTS_PER_MASK} components per \
+                 mask",
+                COMPONENTS_PER_MASK + 1
+            )
+        );
+
+        // One payload well inside every other limit, whose bytes are not: the bound is on what a
+        // snapshot stores, because every history entry stores all of it.
+        let heavy = Mask {
+            components: vec![Component::new(
+                "Brush 1",
+                ComponentMode::Add,
+                "brush",
+                json!({"points": vec![[0.123_456_7_f64, 0.765_432_1]; 14_000]}),
+            )],
+            ..mask
+        };
+        let bytes = serde_json::to_vec(&vec![heavy.clone()]).unwrap().len();
+        assert!(bytes > MASK_BYTES_PER_RECIPE, "{bytes} bytes");
+        let error = Recipe {
+            masks: vec![heavy],
+            ..Recipe::default()
+        }
+        .validate()
+        .unwrap_err();
+        assert_eq!(error.kind, ErrorKind::ResourceLimit);
+        assert_eq!(
+            error.detail,
+            format!(
+                "recipe masks serialize to {bytes} bytes; the limit is {MASK_BYTES_PER_RECIPE} \
+                 serialized mask bytes per recipe"
+            )
+        );
+    }
+
     #[test]
     fn snapshots_are_complete_immutable_and_round_trip() {
         let original = Snapshot::original(AssetId::new());
@@ -392,6 +1008,7 @@ mod tests {
         let unsupported = Recipe {
             format: 99,
             layers: Vec::new(),
+            masks: Vec::new(),
         };
         assert_eq!(
             unsupported.validate().unwrap_err().kind,
@@ -402,6 +1019,7 @@ mod tests {
             effect_id: String::new(),
             effect_format: EFFECT_FORMAT,
             payload: json!({}),
+            mask: None,
         };
         assert_eq!(nameless.validate().unwrap_err().kind, ErrorKind::Validation);
         // Payload shape and effect format are the providing module's business, not the model's.
@@ -421,6 +1039,7 @@ mod tests {
         let recipe = Recipe {
             format: RECIPE_FORMAT,
             layers: vec![Layer::pixel(0, 0, [1, 2, 3]), Layer::pixel(1, 1, [4, 5, 6])],
+            masks: Vec::new(),
         };
         let joined = Layer::orientation(Orientation::NEUTRAL);
         for index in 0..=recipe.layers.len() {

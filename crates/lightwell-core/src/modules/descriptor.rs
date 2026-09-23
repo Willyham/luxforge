@@ -60,6 +60,21 @@ pub enum EffectStage {
     Finish,
 }
 
+impl EffectStage {
+    /// The declared name, spelled as the descriptor serializes it, for an error that has to say
+    /// which stage refused something.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Source => "source",
+            Self::Geometry => "geometry",
+            Self::Pixel => "pixel",
+            Self::Color => "color",
+            Self::Spatial => "spatial",
+            Self::Finish => "finish",
+        }
+    }
+}
+
 /// A durable effect identity stored in every layer, with its internal payload format marker and the
 /// order it takes among layers of its own stage.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -1146,8 +1161,10 @@ fn summary_value(value: &Value) -> String {
     }
 }
 
-/// `rotate-left` reads as `Rotate left`; `16:9` and other punctuated options keep their shape.
-fn title_case(text: &str) -> String {
+/// `rotate-left` reads as `Rotate left`; `16:9` and other punctuated options keep their shape. A
+/// mask component's display name is built from its kind the same way, so `luminance-range` reads as
+/// `Luminance range 1`.
+pub(crate) fn title_case(text: &str) -> String {
     let spaced = text.replace('-', " ");
     let mut characters = spaced.chars();
     match characters.next() {

@@ -174,7 +174,7 @@ Versions are chips naming saved states. Choose + to reveal the name field and Sa
 
 Undo and Redo navigate saved states without appending rows. Cmd+Z / Ctrl+Z and Shift+Cmd+Z / Shift+Ctrl+Z invoke the same service as the buttons. A new edit clears shortcut redo while every older entry remains available for preview or Restore. Layers, history, navigation state and stable IDs survive reopening the catalog.
 
-Missing or changed sources keep their catalog data and report why rendering is unavailable. Only the current catalog format (4, which stores typed source interpretation as well as entry labels) and operation formats are supported during pre-release development. Unsupported formats fail explicitly; Lightwell never silently resets or drops them. If a catalog format is rejected, start with a new path using `--catalog /path/to/new-catalog.sqlite` and import the originals again.
+Missing or changed sources keep their catalog data and report why rendering is unavailable. Only the current catalog format (5, which stores the recipe’s masks as well as typed source interpretation and entry labels) and operation formats are supported during pre-release development. Unsupported formats fail explicitly; Lightwell never silently resets or drops them. If a catalog format is rejected, start with a new path using `--catalog /path/to/new-catalog.sqlite` and import the originals again.
 
 ## JSON automation
 
