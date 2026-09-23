@@ -6,7 +6,7 @@
 //! halo bookkeeping, the scratch, the scheduling, the global estimate and the point-sample path.
 //! Nothing here reads a frame or allocates one; the execution side lives in
 //! [`crate::render`](crate::render).
-use crate::{Error, ErrorKind, modules::Stage};
+use crate::{Error, ErrorKind, mask::CompiledMask, modules::Stage};
 use std::sync::Arc;
 
 /// The side of one output tile the host streams. The stage is covered by tiles of this size
@@ -20,6 +20,18 @@ pub const MAX_SPATIAL_HALO: u32 = 512;
 /// The largest number of units one compiled spatial operation may hold. A module compiles its whole
 /// payload into one operation, so this bounds the chain one layer can ask the host to run.
 pub const MAX_SPATIAL_UNITS: usize = 4;
+
+/// The largest number of **masked** spatial layers one recipe may hold
+/// (`docs/design/masking.md`, "Limits").
+///
+/// Every spatial layer, masked or not, is a stage boundary and therefore a sequential full frame —
+/// the operation reads the finished frame before it and writes the next one, so no two of them
+/// overlap in time. A mask does not change that; what a mask changes is how cheap the frame is,
+/// because a tile the mask cannot reach is copied instead of evaluated. The cap is on the masked
+/// ones because local adjustments are the gesture that invites many of them, and four sequential
+/// full frames is what the measurement in `docs/specs/performance.md` was taken against. Exceeding
+/// it is a `resource-limit` error naming the limit, not a silently dropped layer.
+pub const MAX_MASKED_SPATIAL_LAYERS: usize = 4;
 
 /// The default process-wide bound on spatial working sets: 256 MiB, separate from the 64 MiB float
 /// scratch budget the colour run streams through, because one tile of a 60 MP stage with the frozen
@@ -489,10 +501,22 @@ pub trait SpatialUnit: Send + Sync {
 }
 
 /// What one spatial-stage layer compiles into: an ordered, bounded chain of neighbourhood units the
-/// host evaluates as one tiled pass at a stage boundary.
+/// host evaluates as one tiled pass at a stage boundary, with the mask the host modulates that pass
+/// by.
+///
+/// The mask is the host's half of the primitive and a module never sets it: a module compiles its
+/// payload into units and returns a plain operation, and [`SpatialOperation::with_mask`] attaches
+/// the [`CompiledMask`] the layer's own `mask` reference names. **A mask changes nothing about the
+/// neighbourhood** — the halo, the tiling, the scratch, the batch concurrency and the global
+/// estimate are all what they were, and every unit still reads the finished frame before the
+/// operation and writes the next one. What changes is the *write*: the host blends the chain's
+/// output at the output rectangle against the same input that tile already holds, per channel, in
+/// linear light, before quantization on the byte path, and copies a tile the mask cannot reach
+/// without evaluating a unit at all (`docs/design/masking.md`, "Masked colour and masked spatial").
 #[derive(Clone, Default)]
 pub struct SpatialOperation {
     units: Vec<Arc<dyn SpatialUnit>>,
+    mask: Option<Arc<CompiledMask>>,
 }
 
 impl SpatialOperation {
@@ -501,9 +525,22 @@ impl SpatialOperation {
     /// stage-dependent bounds — the summed halo and the per-tile working set — are the host's, and
     /// it checks them when it compiles the recipe against a stage.
     pub fn new(units: Vec<Arc<dyn SpatialUnit>>) -> Result<Self, Error> {
-        let operation = Self { units };
+        let operation = Self { units, mask: None };
         operation.validate()?;
         Ok(operation)
+    }
+
+    /// The same operation modulated by one compiled mask. Host-only: the mask comes from the
+    /// layer's `mask` reference, which no module parses, plans or compiles.
+    pub(crate) fn with_mask(mut self, mask: Arc<CompiledMask>) -> Self {
+        self.mask = Some(mask);
+        self
+    }
+
+    /// The mask this operation is modulated by, or `None` for an operation that applies everywhere
+    /// and therefore keeps today's exact tile path, byte for byte.
+    pub(crate) fn mask(&self) -> Option<&Arc<CompiledMask>> {
+        self.mask.as_ref()
     }
 
     /// The operation a neutral payload compiles to: no units, which the host drops entirely, so a
@@ -575,11 +612,20 @@ impl SpatialOperation {
     }
 }
 
-/// Two operations are the same when their units describe themselves the same way in the same order:
-/// a trait object carries no structural identity, so the description is the comparison.
+/// Two operations are the same when their units describe themselves the same way in the same order
+/// and they are modulated by the same compiled mask: a trait object carries no structural identity,
+/// so the description is the comparison. A compiled mask is compared by allocation, exactly as
+/// [`ColorOperation`](crate::modules::ColorOperation) compares its own — conservative, because the
+/// coverage field has no cheaper identity and nothing in the host depends on the other answer.
 impl PartialEq for SpatialOperation {
     fn eq(&self, other: &Self) -> bool {
-        self.units.len() == other.units.len()
+        let masks = match (&self.mask, &other.mask) {
+            (None, None) => true,
+            (Some(left), Some(right)) => Arc::ptr_eq(left, right),
+            _ => false,
+        };
+        masks
+            && self.units.len() == other.units.len()
             && std::iter::zip(&self.units, &other.units)
                 .all(|(left, right)| left.describe() == right.describe())
     }
@@ -587,9 +633,17 @@ impl PartialEq for SpatialOperation {
 
 impl std::fmt::Debug for SpatialOperation {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_list()
-            .entries(self.units.iter().map(|unit| unit.describe()))
-            .finish()
+        let mut list = f.debug_list();
+        list.entries(self.units.iter().map(|unit| unit.describe()));
+        if let Some(mask) = &self.mask {
+            list.entry(&format!(
+                "masked by {} components over {}x{}",
+                mask.components(),
+                mask.stage().width,
+                mask.stage().height
+            ));
+        }
+        list.finish()
     }
 }
 

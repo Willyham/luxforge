@@ -47,8 +47,9 @@ pub(crate) use registry::tests::{
 };
 pub use spatial::{
     ESTIMATE_REDUCTION, ESTIMATE_STORE_ENTRIES, Global, MAX_GLOBAL_BYTES, MAX_GLOBAL_VALUES,
-    MAX_REDUCTION_PIXELS, MAX_SPATIAL_HALO, MAX_SPATIAL_UNITS, Planes, PlanesMut, Reduction,
-    Region, SPATIAL_BUDGET_BYTES, SPATIAL_TILE, SpatialOperation, SpatialUnit,
+    MAX_MASKED_SPATIAL_LAYERS, MAX_REDUCTION_PIXELS, MAX_SPATIAL_HALO, MAX_SPATIAL_UNITS, Planes,
+    PlanesMut, Reduction, Region, SPATIAL_BUDGET_BYTES, SPATIAL_TILE, SpatialOperation,
+    SpatialUnit,
 };
 pub use transform::TransformModule;
 pub use vignette::VignetteModule;

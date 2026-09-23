@@ -2,8 +2,9 @@
 //! action and query identity. Registration touches no image or catalog resource.
 use super::{
     ActionDescriptor, BasicModule, CanvasInteraction, CropModule, EffectDescriptor, EffectStage,
-    MAX_COLOR_UNITS, MixerModule, ModuleDescriptor, PixelModule, PresenceModule, Processing,
-    RawModule, SPATIAL_TILE, Stage, ToolModule, TransformModule, VignetteModule,
+    MAX_COLOR_UNITS, MAX_MASKED_SPATIAL_LAYERS, MixerModule, ModuleDescriptor, PixelModule,
+    PresenceModule, Processing, RawModule, SPATIAL_TILE, Stage, ToolModule, TransformModule,
+    VignetteModule,
 };
 use crate::{
     Error, ErrorKind, Layer, Mask, MaskId, Recipe,
@@ -524,13 +525,14 @@ impl ModuleRegistry {
 
     /// Refuse a layer whose mask this build cannot evaluate.
     ///
-    /// A mask reaches a colour operation and nothing else yet: the masked spatial primitive is a
-    /// later step, and a point replacement has no blend to perform. A mask this build cannot evaluate
-    /// must never be silently omitted from a frame or an export, so such a stack is refused by name
-    /// wherever it would be drawn — and because the host compiles a stack before it persists one, the
-    /// refusal is also what keeps such a layer from being committed at all. It reads the stack and
-    /// rewrites nothing; registering the missing primitive restores evaluation without touching
-    /// stored data, exactly as registering an unknown component kind does.
+    /// A mask reaches a colour operation and a spatial operation, and nothing else: a point
+    /// replacement writes one stored pixel and has no blend to perform, so there is nothing for a
+    /// coverage to modulate. (A geometry or finish layer cannot carry a mask at all, for the earlier
+    /// reason that it has no content stage to read one in; that is
+    /// [`Self::validate_masked_stages`].) A mask this build cannot evaluate must never be silently
+    /// omitted from a frame or an export, so such a stack is refused by name wherever it would be
+    /// drawn — and because the host compiles a stack before it persists one, the refusal is also
+    /// what keeps such a layer from being committed at all. It reads the stack and rewrites nothing.
     fn refuse_unevaluated_mask(&self, layer: &Layer) -> Result<(), Error> {
         if layer.mask.is_none() {
             return Ok(());
@@ -539,7 +541,7 @@ impl ModuleRegistry {
             ErrorKind::Incompatible,
             format!(
                 "layer {} carries a mask on the {} effect {}, and this build evaluates a mask only \
-                 on a colour-stage effect",
+                 on a colour-stage or spatial-stage effect",
                 layer.id,
                 self.effect_stage(&layer.effect_id)
                     .map_or("unknown", EffectStage::as_str),
@@ -655,6 +657,9 @@ impl ModuleRegistry {
         // coordinates of the geometry tail, so a geometry layer after it has no stage to address.
         // The stack is refused as it stands and nothing is rewritten or reordered.
         let mut finish_layer: Option<&Layer> = None;
+        // Masked spatial layers seen so far, against the declared cap. Each one is a stage boundary
+        // and therefore a sequential full frame, which is the whole reason there is a cap.
+        let mut masked_spatial = 0_usize;
         for (index, layer) in layers.iter().enumerate() {
             match self.effect_stage(&layer.effect_id) {
                 Some(EffectStage::Source) if index != 0 => {
@@ -747,16 +752,38 @@ impl ModuleRegistry {
                 Processing::Spatial(operation) => {
                     // A neutral payload compiles to no units, and no units is no processing: the
                     // stack keeps its single pass, the identity byte path and the shared source
-                    // buffer, exactly as a neutral colour payload does.
+                    // buffer, exactly as a neutral colour payload does. Masking nothing is nothing,
+                    // so no mask is compiled for it either.
                     if operation.is_empty() {
                         continue;
                     }
-                    // The masked spatial primitive is not delivered, so a spatial layer that names a
-                    // mask is refused by name rather than rendered as if it applied everywhere.
-                    self.refuse_unevaluated_mask(layer)?;
+                    // The mask is the host's, attached here — where a compiled layer becomes
+                    // `Processing` — against the stage this layer receives. A spatial layer is a
+                    // stage boundary, so that stage is also the frame the operation reads and
+                    // writes, which is what lets the tile loop read the mask at a tile's own
+                    // coordinates. The module returned a plain operation and never saw the
+                    // reference.
+                    let operation = match Self::compiled_mask(layer, masks, stage)? {
+                        Some(mask) => {
+                            masked_spatial += 1;
+                            if masked_spatial > MAX_MASKED_SPATIAL_LAYERS {
+                                return Err(Error::new(
+                                    ErrorKind::ResourceLimit,
+                                    format!(
+                                        "this recipe holds {masked_spatial} masked spatial layers, more than the \
+                                         {MAX_MASKED_SPATIAL_LAYERS} the host evaluates: each one is a stage \
+                                         boundary and therefore a sequential full frame"
+                                    ),
+                                ));
+                            }
+                            operation.with_mask(mask)
+                        }
+                        None => operation,
+                    };
                     // Everything stage-dependent about the operation — the unit count, their
-                    // finiteness, the summed halo and the bytes one tile would need — is decided
-                    // here, before a pixel is read. Nothing is rewritten or reduced to fit.
+                    // finiteness, the summed halo and the bytes one tile would need, which a mask
+                    // adds two tile planes to — is decided here, before a pixel is read. Nothing is
+                    // rewritten or reduced to fit.
                     SpatialPlan::new(&operation, stage, SPATIAL_TILE)?;
                     let prefix_hash = prefix_hash(&layers[..index])?;
                     segments.push(Segment::new(
@@ -1993,14 +2020,92 @@ pub(crate) mod tests {
         assert_eq!(identities(&unmasked), before);
     }
 
-    /// A mask reaches a colour operation and nothing else yet, so a layer that carries one and
+    /// A mask reaches a colour operation and a spatial operation, so a layer that carries one and
     /// compiles into anything else is refused by name on every path that would have to draw it.
     /// Refusing is what keeps such a layer from being committed at all — the host compiles a stack
     /// before it persists one — and is the alternative to the silent omission of rendering it as if it
-    /// applied everywhere. The spatial case is the live one: Presence declares itself maskable and the
-    /// masked spatial primitive is a later step.
+    /// applied everywhere.
+    ///
+    /// The live case is a point replacement: no delivered pixel effect declares itself maskable, and
+    /// the recipe model lets a stored layer of one carry a mask, so this refusal is what a stack like
+    /// that meets. A geometry or finish layer is refused for the earlier reason, that it has no
+    /// content stage to read a mask in, and that refusal is asserted below too so the two cannot both
+    /// be removed by accident.
     #[test]
     fn a_mask_this_build_cannot_evaluate_is_refused_by_name() {
+        let registry = ModuleRegistry::builtin();
+        let mask = gradient_mask("Mask 1");
+        let recipe = |layer: Layer| Recipe {
+            format: RECIPE_FORMAT,
+            layers: vec![layer],
+            masks: vec![mask.clone()],
+        };
+        let layer = Layer::pixel(1, 1, [9, 9, 9]);
+        // Unmasked, the same layer compiles as it always has.
+        registry
+            .compile(256, 256, &recipe(layer.clone()))
+            .unwrap_or_else(|error| panic!("an unmasked pixel layer: {error:?}"));
+        let refused = recipe(bound(layer, &mask));
+        let error = registry
+            .compile(256, 256, &refused)
+            .err()
+            .expect("a masked pixel layer");
+        assert_eq!(error.kind, ErrorKind::Incompatible);
+        assert_eq!(
+            error.detail,
+            format!(
+                "layer {} carries a mask on the pixel effect {}, and this build evaluates a \
+                 mask only on a colour-stage or spatial-stage effect",
+                refused.layers[0].id, refused.layers[0].effect_id
+            )
+        );
+        // The refusal reads the stack; it rewrites nothing.
+        assert!(refused.layers[0].mask.is_some());
+
+        // The stage rule still refuses the two stages that have no content stage to read a mask in.
+        for (stage, layer) in [
+            (
+                "geometry",
+                Layer::orientation(Orientation {
+                    mirror: false,
+                    turns: 1,
+                }),
+            ),
+            (
+                "finish",
+                Layer {
+                    id: LayerId::new(),
+                    effect_id: crate::VIGNETTE_EFFECT.into(),
+                    effect_format: EFFECT_FORMAT,
+                    payload: json!({"amount": -40.0}),
+                    mask: None,
+                },
+            ),
+        ] {
+            let refused = recipe(bound(layer, &mask));
+            let error = registry
+                .compile(256, 256, &refused)
+                .err()
+                .unwrap_or_else(|| panic!("a masked {stage} layer compiled"));
+            assert_eq!(error.kind, ErrorKind::Validation, "{stage}");
+            assert_eq!(
+                error.detail,
+                format!(
+                    "layer {} carries a mask, which a {stage} effect cannot: a mask is stored in \
+                     content-stage coordinates",
+                    refused.layers[0].id
+                ),
+                "{stage}"
+            );
+            assert!(refused.layers[0].mask.is_some(), "{stage}");
+        }
+    }
+
+    /// A masked spatial layer compiles, because the masked spatial primitive is delivered: the mask
+    /// is attached to the operation the module returned, against the stage the layer receives, which
+    /// for a stage boundary is also the frame it reads and writes.
+    #[test]
+    fn a_masked_spatial_layer_compiles_with_its_mask_attached() {
         let registry = ModuleRegistry::builtin();
         let mask = gradient_mask("Mask 1");
         let presence = Layer {
@@ -2010,40 +2115,68 @@ pub(crate) mod tests {
             payload: json!({"clarity": 40.0}),
             mask: None,
         };
-        let recipe = |layer: Layer| Recipe {
+        let recipe = Recipe {
             format: RECIPE_FORMAT,
-            layers: vec![layer],
-            masks: vec![mask.clone()],
+            layers: vec![bound(presence, &mask)],
+            masks: vec![mask],
         };
-        for (stage, layer) in [
-            ("spatial", presence),
-            // A point replacement has no blend to perform. No delivered pixel effect declares itself
-            // maskable, and the recipe model lets a stored layer of one carry a mask, so the refusal
-            // is what a stack like that meets.
-            ("pixel", Layer::pixel(1, 1, [9, 9, 9])),
-        ] {
-            // Unmasked, the same layer compiles as it always has.
-            registry
-                .compile(256, 256, &recipe(layer.clone()))
-                .unwrap_or_else(|error| panic!("an unmasked {stage} layer: {error}"));
-            let refused = recipe(bound(layer, &mask));
-            let error = registry
-                .compile(256, 256, &refused)
-                .err()
-                .unwrap_or_else(|| panic!("a masked {stage} layer"));
-            assert_eq!(error.kind, ErrorKind::Incompatible, "{stage}");
-            assert_eq!(
-                error.detail,
-                format!(
-                    "layer {} carries a mask on the {stage} effect {}, and this build evaluates a \
-                     mask only on a colour-stage effect",
-                    refused.layers[0].id, refused.layers[0].effect_id
-                ),
-                "{stage}"
-            );
-            // The refusal reads the stack; it rewrites nothing.
-            assert!(refused.layers[0].mask.is_some(), "{stage}");
-        }
+        let compiled = registry
+            .compile(256, 200, &recipe)
+            .unwrap_or_else(|error| panic!("a masked spatial layer: {error:?}"));
+        let entry = compiled.segments[1]
+            .entry
+            .as_ref()
+            .expect("a spatial entry");
+        let Entry::Spatial { operation, .. } = entry else {
+            panic!("a spatial entry");
+        };
+        let attached = operation.mask().expect("the mask is attached");
+        // The mask is compiled against the stage the layer receives, which is the frame this
+        // operation reads and writes: the tile loop needs no mapping at all.
+        assert_eq!(
+            attached.stage(),
+            Stage {
+                width: 256,
+                height: 200
+            }
+        );
+        assert_eq!(compiled.segments[0].width, 256);
+    }
+
+    /// Each masked spatial layer is a stage boundary and therefore a sequential full frame, so the
+    /// design caps them at four. The fifth is a `resource-limit` error naming the limit; nothing is
+    /// dropped, reordered or rendered as if it applied everywhere.
+    #[test]
+    fn a_fifth_masked_spatial_layer_is_a_resource_limit() {
+        let registry = ModuleRegistry::builtin();
+        let masks: Vec<Mask> = (0..MAX_MASKED_SPATIAL_LAYERS + 1)
+            .map(|index| gradient_mask(&format!("Mask {index}")))
+            .collect();
+        let presence = |mask: &Mask| Layer {
+            id: LayerId::new(),
+            effect_id: crate::PRESENCE_EFFECT.into(),
+            effect_format: EFFECT_FORMAT,
+            payload: json!({"clarity": 40.0}),
+            mask: Some(mask.id.clone()),
+        };
+        let recipe = |count: usize| Recipe {
+            format: RECIPE_FORMAT,
+            layers: masks[..count].iter().map(presence).collect(),
+            masks: masks.clone(),
+        };
+        registry
+            .compile(128, 128, &recipe(MAX_MASKED_SPATIAL_LAYERS))
+            .unwrap_or_else(|error| panic!("four masked spatial layers: {error:?}"));
+        let error = registry
+            .compile(128, 128, &recipe(MAX_MASKED_SPATIAL_LAYERS + 1))
+            .err()
+            .expect("five masked spatial layers");
+        assert_eq!(error.kind, ErrorKind::ResourceLimit);
+        assert_eq!(
+            error.detail,
+            "this recipe holds 5 masked spatial layers, more than the 4 the host evaluates: each \
+             one is a stage boundary and therefore a sequential full frame"
+        );
     }
 
     /// The missing mask is refused wherever a recipe is evaluated, because compiling checks it and

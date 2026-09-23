@@ -25,7 +25,9 @@ use spatial::{
     PRODUCTION_TILE, SpatialPlan, build_reduction, fill_planes, resolve_globals, run_batches,
     run_tile,
 };
-pub use spatial::{SpatialBudget, cached_estimates, clear_estimates};
+pub use spatial::{
+    SpatialBudget, cached_estimates, clear_estimates, masked_tile_counts, reset_masked_tile_counts,
+};
 
 const PARALLEL_RENDER_PIXELS: u64 = 1_000_000;
 
