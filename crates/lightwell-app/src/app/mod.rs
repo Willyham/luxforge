@@ -4432,6 +4432,7 @@ mod tests {
                     summary: "Test".into(),
                     values: values.as_object().cloned().unwrap_or_default(),
                     available: true,
+                    mask: None,
                 })
                 .collect();
             let _ = editor.update(Message::Refreshed(Ok(Box::new(refresh))));
@@ -5011,6 +5012,7 @@ mod tests {
                     .cloned()
                     .unwrap_or_default(),
                 available: true,
+                mask: None,
             }];
             Box::new(refresh)
         };

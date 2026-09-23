@@ -183,3 +183,157 @@ fn a_global_and_a_masked_layer_of_one_effect_coexist_in_mask_order() {
         .render_current(&f.asset)
         .expect("a stack holding a global and a masked layer of one effect renders");
 }
+
+/// The same slice through the JSON envelope an external client actually speaks, which neither half
+/// of the work could reach: the command family's tests predate the `mask` request field, and the
+/// masked primitive's tests call the service directly. The envelope is where `mask` is stripped
+/// before a module sees it, so it deserves its own proof.
+mod json_client {
+    use super::{fixture, temp};
+    use lightwell_core::{ApiRequest, ClientId, OwnerHandle};
+    use serde_json::{Value, json};
+
+    struct Client {
+        owner: OwnerHandle,
+        client: ClientId,
+        join: Option<std::thread::JoinHandle<()>>,
+        asset: Value,
+    }
+
+    impl Client {
+        fn open(name: &str) -> Self {
+            let dir = temp(name);
+            let source = dir.join("orientation-1.jpg");
+            std::fs::copy(fixture(), &source).unwrap();
+            let (owner, join) = OwnerHandle::start(&dir.join("catalog.sqlite")).unwrap();
+            let client = owner.register();
+            let queued = Self::call(&owner, client, "catalog.import", json!({"path": source}))
+                .expect("import queues");
+            let id = queued["job_id"].as_str().unwrap().to_owned();
+            let asset = loop {
+                let status = Self::call(&owner, client, "job.status", json!({"job_id": id}))
+                    .expect("a job this client owns");
+                match status["state"].as_str() {
+                    Some("ready") => break status["asset"]["asset"]["id"].clone(),
+                    Some("queued" | "preparing") => {
+                        std::thread::sleep(std::time::Duration::from_millis(1))
+                    }
+                    other => panic!("unexpected import job {other:?}"),
+                }
+            };
+            Self {
+                owner,
+                client,
+                join: Some(join),
+                asset,
+            }
+        }
+
+        fn call(
+            owner: &OwnerHandle,
+            client: ClientId,
+            method: &str,
+            params: Value,
+        ) -> Result<Value, Value> {
+            let response = owner
+                .call(
+                    client,
+                    ApiRequest {
+                        id: method.into(),
+                        method: method.into(),
+                        params,
+                        token: None,
+                    },
+                )
+                .unwrap();
+            match response.error {
+                Some(error) => Err(json!({"code": error.code, "detail": error.message})),
+                None => Ok(response.result.unwrap()),
+            }
+        }
+
+        fn send(&self, method: &str, params: Value) -> Result<Value, Value> {
+            Self::call(&self.owner, self.client, method, params)
+        }
+
+        fn revision(&self) -> u64 {
+            self.send("asset.state", json!({"asset_id": self.asset}))
+                .expect("asset.state answers")["revision"]
+                .as_u64()
+                .unwrap()
+        }
+
+        fn mutation(&self, request: &str) -> Value {
+            json!({"expected_revision": self.revision(), "request_id": request, "actor": "json"})
+        }
+    }
+
+    impl Drop for Client {
+        fn drop(&mut self) {
+            self.owner.stop();
+            if let Some(join) = self.join.take() {
+                let _ = join.join();
+            }
+        }
+    }
+
+    #[test]
+    fn a_masked_edit_round_trips_through_the_json_envelope() {
+        let c = Client::open("json");
+
+        let created = c
+            .send(
+                "mask.create",
+                json!({
+                    "asset_id": c.asset,
+                    "mutation": c.mutation("create"),
+                    "kind": "linear", "x0": 0.5, "y0": 0.0, "x1": 0.5, "y1": 1.0
+                }),
+            )
+            .expect("mask.create answers an external client");
+        let mask = created["mask"]
+            .as_str()
+            .expect("the created mask's id")
+            .to_owned();
+
+        c.send(
+            "edit.set-basic",
+            json!({
+                "asset_id": c.asset,
+                "mutation": c.mutation("lift"),
+                "mask": mask,
+                "exposure": 2.0
+            }),
+        )
+        .expect("a masked Basic edit commits through the envelope");
+
+        // The mask field reached the layer rather than being dropped or handed to the module.
+        let listed = c
+            .send("recipe.describe", json!({"asset_id": c.asset}))
+            .expect("recipe.describe answers");
+        let masked = listed["layers"]
+            .as_array()
+            .expect("layers")
+            .iter()
+            .filter(|l| l["mask"].as_str() == Some(mask.as_str()))
+            .count();
+        assert_eq!(
+            masked, 1,
+            "exactly one layer is bound to the mask: {listed}"
+        );
+
+        // And the same field on an action whose module declares no maskable effect is refused by
+        // name, rather than silently ignored.
+        let refused = c
+            .send(
+                "edit.crop-reset",
+                json!({
+                    "asset_id": c.asset,
+                    "mutation": c.mutation("refused"),
+                    "mask": mask
+                }),
+            )
+            .expect_err("a mask on a non-maskable action is refused");
+        assert_eq!(refused["code"], "validation", "{refused}");
+    }
+}

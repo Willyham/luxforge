@@ -204,6 +204,8 @@ Masks are host commands in their own namespace, as `history.*` and `version.*` a
 | Method | Purpose |
 | --- | --- |
 | `mask.list {asset_id, entry_id?}` | Every mask with its components, values, amount, invert and the layers bound to it. Read-only, no history |
+
+The relation is readable from both sides: `mask.list` names the layers bound to each mask, and `recipe.describe` reports each layer's mask on its own row, so a client reading the durable processing order can tell a masked layer from a global one without asking a second question.
 | `mask.create {kind, …geometry}` | A new mask whose first component is an `add` component of that kind |
 | `mask.delete {mask}` / `mask.rename {mask, name}` / `mask.duplicate {mask}` | Mask lifecycle. Deleting a mask deletes the layers bound to it, named in the history label |
 | `mask.set-amount {mask, amount}` / `mask.set-invert {mask, invert}` | Whole-mask modifiers |

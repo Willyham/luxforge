@@ -210,6 +210,11 @@ pub struct LayerDescription {
     #[serde(default)]
     pub values: Map<String, Value>,
     pub available: bool,
+    /// The mask this layer is modulated by, when it carries one. The recipe is the durable order of
+    /// processing, so a client reading it must be able to tell a masked layer from a global one
+    /// without asking a second question; `mask.list` answers the same relation from the other side.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mask: Option<MaskId>,
 }
 
 /// One entry's ordered layers with their provider and summary. Reading only: no source, no render.
@@ -922,6 +927,7 @@ impl EditorService {
                     summary: "no provider".into(),
                     values: Map::new(),
                     available: false,
+                    mask: layer.mask.clone(),
                 },
                 Some((module, _)) => {
                     let descriptor = module.descriptor();
@@ -962,6 +968,7 @@ impl EditorService {
                         summary,
                         values,
                         available,
+                        mask: layer.mask.clone(),
                     }
                 }
             };
