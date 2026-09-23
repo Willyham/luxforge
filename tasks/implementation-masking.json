@@ -2020,7 +2020,7 @@
     {
       "id": "TASK-025",
       "description": "Close phase D with its evidence and with an honest statement, in the product and in the guide, about what the non-AI selections do and do not select.",
-      "status": "pending",
+      "status": "completed",
       "dependencies": [
         "TASK-021",
         "TASK-024"
@@ -2104,7 +2104,10 @@
       "extra_context": [
         "A milestone claim needs the full verification tier and a native demonstration, and a skipped check is not a pass.",
         "The interesting failures are the shared ones: an agent committing during a brush stroke, a missing original under a masked recipe, a disabled maskable module, a catalog reopened after a long session.",
-        "Everything the feature did not deliver is stated in one place: Density, edge-aware refinement, model-based selections, copying masks between photographs, mask presets."
+        "Everything the feature did not deliver is stated in one place: Density, edge-aware refinement, model-based selections, copying masks between photographs, mask presets.",
+        "Two measurements are named and not taken, and the acceptance pass either takes them or states them: a paint gesture's latency on a bare recipe and at 24 and 60 MP (the delivered figure is on four masked colour layers, three binding the whole stage, and misses the provisional p95 bound at p50 32.2-32.6 ms and p95 42.1-50.2 ms), and the range selections have no photographic corpus - the fixture's patches are flat, so the study's noise and speckle measurement is still only numerical.",
+        "Proposal P16 is open and is the owner's, not the acceptance pass's: the coverage overlay refuses a mask that reads pixels, and since the colour-constrained brush landed a mask a person painted can lose its overlay too, which is the case they least expect. The refusal is legible - the host's own sentence lands on the frame and the waiting step ends on it - and the panel now warns before a person goes looking. Do not settle it; confirm it is still stated wherever a reader meets it.",
+        "The delivered evidence is five mask scenarios: mask-linear, mask-combine, mask-brush, mask-range, plus the delivered workspace, basic, histogram, presence, mixer and vignette. verify --tier rendered runs 27 and takes about 285 s. Build release first; smoke launches target/release/lightwell."
       ],
       "context_links": [
         {
