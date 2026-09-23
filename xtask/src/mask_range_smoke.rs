@@ -791,45 +791,10 @@ pub fn run(root: &Path, out: &Path, bin: &Path, timeout: Duration) -> Result {
 /// the number is. The one-minute load average is recorded too, since a figure taken above `8.0` is
 /// provisional by the repository's own rule.
 fn stroke_latency(root: &Path, events: &[Value], recipe: Value) -> Result<Value> {
-    let elapsed = |event: &Value| -> Result<f64> {
-        event["elapsed_ms"]
-            .as_f64()
-            .ok_or_else(|| "An event carries no elapsed_ms".into())
-    };
-    let mut pending: Option<f64> = None;
-    let mut inputs: Vec<(f64, u64)> = Vec::new();
-    for event in events {
-        match event["event"].as_str() {
-            // A gesture holds one round trip at a time, so a set with no answer before the next one
-            // was refused rather than previewed. It is dropped instead of failing the run: a refusal
-            // is not a measurement, and the scenario's own step checks already cover refusals.
-            Some("mask_draft_set") => pending = Some(elapsed(event)?),
-            Some("mask_draft_preview") => {
-                let Some(sent) = pending.take() else {
-                    return Err("A mask_draft_preview answered no mask_draft_set".into());
-                };
-                let generation = event["detail"]["generation"]
-                    .as_u64()
-                    .ok_or("A mask draft preview named no generation")?;
-                inputs.push((sent, generation));
-            }
-            _ => {}
-        }
-    }
-    let mut latencies = Vec::new();
-    for event in events
-        .iter()
-        .filter(|event| event["event"] == json!("preview_displayed"))
-    {
-        let generation = event["detail"]["generation"].as_u64();
-        if let Some((sent, _)) = inputs
-            .iter()
-            .find(|(_, held)| Some(*held) == generation)
-            .copied()
-        {
-            latencies.push(elapsed(event)? - sent);
-        }
-    }
+    // The pairing itself lives in `editor_latency`, beside the `--mode paint` run that takes the same
+    // measurement on a bare recipe at 24 and 60 MP, so the two figures are one definition and not
+    // two implementations that could drift apart.
+    let (queued, mut latencies) = editor_latency::paced_stroke_latencies(events)?;
     ensure(
         !latencies.is_empty(),
         "The run painted no stroke whose drafted frame reached the screen",
@@ -841,7 +806,7 @@ fn stroke_latency(root: &Path, events: &[Value], recipe: Value) -> Result<Value>
     };
     let load = crate::verify::load_average(root);
     Ok(json!({
-        "inputs": inputs.len(),
+        "inputs": queued,
         "displayed": latencies.len(),
         "p50_ms": percentile(50),
         "p95_ms": percentile(95),

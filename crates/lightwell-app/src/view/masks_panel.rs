@@ -733,8 +733,13 @@ fn component_row<'a>(
     for limit in &component.limits {
         block = block.push(caption(limit.clone()));
     }
+    // The component's own geometry fields, each carrying the context menu the whole-mask controls
+    // carry: a `mask.set-<kind>` field is one declared command like any other, so a person editing an
+    // endpoint by hand can copy the request it sends. Passing `None` here left those fields as the
+    // one generated mask control with no Copy as JSON request, which is a hole in UI/API parity
+    // rather than a cosmetic omission.
     for field in &component.fields {
-        block = block.push(control_view(HOST, component.available, field, None, plot));
+        block = block.push(control_view(HOST, component.available, field, menu, plot));
     }
     // The pointer over the row is what asks the overlay for this component's own contribution, and
     // leaving it restores the composed mask. It commits nothing and changes no selection.

@@ -1170,6 +1170,66 @@ fn a_mask_controls_request_matches_json_and_a_drag_rederives_one_section() {
     );
 }
 
+/// A generated `mask.*` control copies **the request it sends**, byte for byte.
+///
+/// The row controls already prove this, because one function builds both. A generated control reaches
+/// the two through different functions — `request_for_preset` for the copy and `run_mask_action` for
+/// the send — which share `mask_request`, `action_params` and `draft_target` but are distinct paths.
+/// An argument that two paths agree is not the claim the panel makes; this is. It is checked for the
+/// whole-mask amount and for a component's own geometry field, because the second carries one more
+/// identity than the first.
+#[test]
+fn a_generated_mask_control_copies_the_request_it_sends() {
+    let mut masking = Masking::opened();
+    masking.enter_mask_mode();
+    masking.draw_mask();
+    let component = masking.listing().masks[0].components[0].id.clone();
+    masking.message(MaskMessage::SelectComponent(component.as_str().to_owned()));
+
+    for (action, parameter, value) in [
+        ("mask.set-amount", "amount", json!(60.0)),
+        ("mask.set-linear", "x0", json!(0.4)),
+    ] {
+        masking
+            .editor
+            .set_control_field_value(action, parameter, &value);
+        let copied = masking
+            .editor
+            .request_for_preset(action, Some(parameter), None)
+            .unwrap_or_else(|| panic!("{action} built no request"));
+        assert_eq!(copied["method"], json!(action));
+
+        // The preset is derived exactly as the field's own submit derives it, so the two paths are
+        // given the same input and any difference in the request is theirs.
+        let preset = super::submit_preset(
+            &masking.editor.modules,
+            action,
+            Some(parameter),
+            &masking.editor.fields,
+        )
+        .unwrap_or_else(|error| panic!("{action} refused its own field: {error}"));
+        masking.editor.last_mask_request = None;
+        let _ = masking.editor.update(Message::RunAction {
+            action: action.to_owned(),
+            preset,
+        });
+        let (method, sent) = masking
+            .editor
+            .last_mask_request
+            .clone()
+            .unwrap_or_else(|| panic!("{action} sent nothing"));
+        assert_eq!(method, action, "the sent method is not the copied one");
+        assert_eq!(
+            identified(sent),
+            identified(copied["params"].clone()),
+            "the copied {action} request is not the request that was sent"
+        );
+        // The send is answered so the next iteration is not refused as busy.
+        masking.editor.busy = false;
+        masking.refresh();
+    }
+}
+
 /// A mask's row menu carries the lifecycle the design names, and each item is one host command.
 #[test]
 fn the_row_menu_duplicates_inverts_and_deletes_through_the_host() {
