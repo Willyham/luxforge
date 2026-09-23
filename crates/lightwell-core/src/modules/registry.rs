@@ -486,9 +486,10 @@ impl ModuleRegistry {
                     if operation.is_empty() {
                         continue;
                     }
-                    // Everything stage-dependent about the operation — the unit count, their
-                    // finiteness, the summed halo and the bytes one tile would need — is decided
-                    // here, before a pixel is read. Nothing is rewritten or reduced to fit.
+                    // Everything stage-dependent the operation declares — the unit count, their
+                    // finiteness and the summed halo — is checked here, before a pixel is read.
+                    // Nothing is rewritten or reduced to fit, and what a tile costs in memory
+                    // never refuses it.
                     SpatialPlan::new(&operation, stage, SPATIAL_TILE)?;
                     let prefix_hash = prefix_hash(&layers[..index])?;
                     segments.push(Segment::new(

@@ -635,7 +635,6 @@ impl<'a> LinearEvaluation<'a> {
         )?;
         let mut frame = vec![0.0_f32; values];
         let plane = (u64::from(stage.width) * u64::from(stage.height)) as usize;
-        let _reservation = spatial::reserve_batch(&plan)?;
         run_batches(
             &plan,
             cancel,

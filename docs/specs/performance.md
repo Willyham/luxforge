@@ -200,8 +200,8 @@ retention; it is not a CPU-heap figure and GPU memory is not separated.
 | Peak RSS, 24 MP, gesture process committing the full Basic layer | 645.3 MiB |
 | Peak RSS, 24 MP, second process holding that committed layer | 568.2 MiB, settling to 408.0 MiB |
 | Idle CPU, 24 MP with the full Basic layer, 30 s after settling | 1.46% of one core |
-| Scratch budget high-water mark, 24 MP colour pass | 14 112 000 B (13.46 MiB) of the 64 MiB limit |
-| Scratch budget high-water mark, 60 MP colour pass | 13 440 000 B (12.82 MiB) of the 64 MiB limit |
+| Scratch budget high-water mark, 24 MP colour pass | 14 112 000 B (13.46 MiB) of the 64 MiB target |
+| Scratch budget high-water mark, 60 MP colour pass | 13 440 000 B (12.82 MiB) of the 64 MiB target |
 | Peak RSS during a 30-input 24 MP latency run (32 window captures retained) | 1336.5 MiB |
 | Peak RSS during a 30-input 60 MP latency run (32 window captures retained) | 2143.0 MiB |
 
@@ -599,7 +599,7 @@ Native Apple M4 Pro (14 cores, 48 GiB), macOS 26.5.2, Metal, release `--locked`,
 
 ### Core cost of the units
 
-`cargo test --release -- --ignored presence_timing` and the spatial primitive's own timing test, p50 / p95 over 10 runs, one operation over a textured frame. Working set is one tile's reserved bytes; concurrency is how many tiles the 256 MiB spatial budget allowed in flight at once.
+`cargo test --release -- --ignored presence_timing` and the spatial primitive's own timing test, p50 / p95 over 10 runs, one operation over a textured frame. Working set is one tile's reserved bytes; concurrency is how many tiles the 256 MiB spatial target allows in flight at once when no other evaluation holds any of it.
 
 | Stage | Operation | p50 / p95 ms | Summed halo | Working set | Concurrency | Budget peak |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -614,7 +614,7 @@ Native Apple M4 Pro (14 cores, 48 GiB), macOS 26.5.2, Metal, release `--locked`,
 | 6000 × 4000 | Host box blur r = 137 (test unit, naive) | 2528 / 2694 | 137 px | 17.1 MiB | 14 | 240.0 MiB |
 | 10000 × 6000 | Host box blur r = 224 (test unit, naive) | 14970 / 15074 | 224 px | 24.1 MiB | 10 | 240.9 MiB |
 
-The three units together cost about eight times the sum of the singles. That is structural, not a hot loop: with a summed halo of 448 px a 512 px tile reads a 1408 px input region, dehaze fills 1194 px and texture 1166 px of it to deliver 512 px, and the 101 MiB working set cuts concurrency to two tiles. Larger tiles amortise the halo better but a 2048 px tile's input region does not fit the spatial budget with the frozen declarations; tiling each unit separately would need an intermediate frame between units. Both are open proposals for the owner, with these figures as the baseline. The vignette's unit alone, single-threaded over 6000 × 4000: 57 ms at amount −50, 505 ms at +50 (the positive branch encodes and decodes each channel), 164 ms at roundness −100.
+The three units together cost about eight times the sum of the singles. That is structural, not a hot loop: with a summed halo of 448 px a 512 px tile reads a 1408 px input region, dehaze fills 1194 px and texture 1166 px of it to deliver 512 px, and the 101 MiB working set cuts concurrency to two tiles. Larger tiles amortise the halo better but a 2048 px tile's input region does not fit the spatial target with the frozen declarations; tiling each unit separately would need an intermediate frame between units. Both are open proposals for the owner, with these figures as the baseline. The vignette's unit alone, single-threaded over 6000 × 4000: 57 ms at amount −50, 505 ms at +50 (the positive branch encodes and decodes each channel), 164 ms at roundness −100.
 
 ### Desktop slider-to-presented-frame
 

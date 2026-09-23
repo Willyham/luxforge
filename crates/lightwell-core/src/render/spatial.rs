@@ -25,24 +25,32 @@ use std::{
     },
 };
 
+#[cfg(test)]
 const MIB: f64 = (1024 * 1024) as f64;
 
-/// A process-wide bound on the working sets of spatial tiles, separate from the colour run's
+/// A process-wide target for the working sets of spatial tiles, separate from the colour run's
 /// [`ScratchBudget`](super::ScratchBudget) because one tile is orders of magnitude larger than one
 /// row chunk: a 512 × 512 tile of a 60 MP stage with the frozen presence halos reads a 1408 × 1408
-/// input region and needs about 57 MiB, which would leave the 64 MiB scratch budget no room for a
+/// input region and needs about 57 MiB, which would leave the 64 MiB scratch target no room for a
 /// second tile.
 ///
-/// Reservations are taken for a whole batch before any of its tiles allocates, so a tile never
-/// fails a reservation half way through an operation.
+/// It is a target, not a limit. It decides how many tiles run at once: a batch takes as many
+/// working sets as fit beside what other evaluations hold, and never fewer than one. So a render
+/// that meets the target already taken — the histogram's analysis rendering the same stack as the
+/// preview, say — slows to one tile at a time instead of failing, and a tile larger than the whole
+/// target still runs, alone. The overshoot is at most one working set per spatial evaluation in
+/// flight, and [`Self::peak`] shows it. Nothing here refuses work.
+///
+/// A reservation covers one batch and is taken before any of its tiles allocates, so the next
+/// batch sees whatever other evaluations released in the meantime.
 pub struct SpatialBudget {
-    limit: AtomicU64,
+    target: AtomicU64,
     used: AtomicU64,
     peak: AtomicU64,
 }
 
 static SPATIAL_BUDGET: SpatialBudget = SpatialBudget {
-    limit: AtomicU64::new(SPATIAL_BUDGET_BYTES),
+    target: AtomicU64::new(SPATIAL_BUDGET_BYTES),
     used: AtomicU64::new(0),
     peak: AtomicU64::new(0),
 };
@@ -55,23 +63,24 @@ impl SpatialBudget {
         &SPATIAL_BUDGET
     }
 
-    pub fn limit(&self) -> u64 {
-        self.limit.load(Ordering::Relaxed)
+    pub fn target(&self) -> u64 {
+        self.target.load(Ordering::Relaxed)
     }
 
-    /// Set the limit and return the previous one. Lowering it below what is already reserved does
-    /// not free anything; the next reservation is what fails.
-    pub fn set_limit(&self, bytes: u64) -> u64 {
-        self.limit.swap(bytes, Ordering::SeqCst)
+    /// Set the target and return the previous one. Lowering it below what is already reserved does
+    /// not free anything; the next batch is what runs fewer tiles.
+    pub fn set_target(&self, bytes: u64) -> u64 {
+        self.target.swap(bytes, Ordering::SeqCst)
     }
 
     pub fn in_use(&self) -> u64 {
         self.used.load(Ordering::SeqCst)
     }
 
-    /// The high-water mark of [`Self::in_use`]. A batch releases its reservation as soon as the
-    /// operation is done, so `in_use` observed from outside a render is almost always zero; this is
-    /// what makes the budget observable after the fact.
+    /// The high-water mark of [`Self::in_use`]. A batch releases its reservation as soon as its
+    /// tiles are written, so `in_use` observed from outside a render is almost always zero; this is
+    /// what makes the budget observable after the fact, including a peak above the target when
+    /// evaluations overlapped or one tile needed more than all of it.
     pub fn peak(&self) -> u64 {
         self.peak.load(Ordering::Relaxed)
     }
@@ -82,35 +91,43 @@ impl SpatialBudget {
         self.peak.store(self.in_use(), Ordering::Relaxed);
     }
 
-    /// Reserve `bytes` or fail with `ResourceLimit`. The reservation is released when the returned
-    /// guard is dropped, including on an early return from the work it covers.
-    pub(crate) fn reserve(&self, bytes: u64) -> Result<SpatialReservation<'_>, Error> {
-        let limit = self.limit();
-        let total = self
-            .used
-            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |used| {
-                used.checked_add(bytes).filter(|total| *total <= limit)
-            })
-            .map_err(|used| {
-                Error::new(
-                    ErrorKind::ResourceLimit,
-                    format!(
-                        "spatial processing needs {bytes} bytes, and {used} of the {limit} byte spatial budget is in use"
-                    ),
-                )
-            })?
-            + bytes;
-        self.peak.fetch_max(total, Ordering::Relaxed);
-        Ok(SpatialReservation {
+    /// Reserve working sets for up to `wanted` tiles: as many as fit in what the target has left,
+    /// and one when none do. It never fails. The reservation is released when the returned guard is
+    /// dropped, including on an early return from the work it covers.
+    pub(crate) fn reserve(&self, working_set: u64, wanted: usize) -> SpatialReservation<'_> {
+        let target = self.target();
+        let wanted = wanted.max(1) as u64;
+        let mut tiles = 1;
+        // The closure always yields a value, so the update always succeeds; `tiles` is the count of
+        // the attempt that did.
+        let (Ok(used) | Err(used)) =
+            self.used
+                .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |used| {
+                    tiles = (target.saturating_sub(used) / working_set.max(1)).clamp(1, wanted);
+                    Some(used.saturating_add(tiles.saturating_mul(working_set)))
+                });
+        let bytes = tiles.saturating_mul(working_set);
+        self.peak
+            .fetch_max(used.saturating_add(bytes), Ordering::Relaxed);
+        SpatialReservation {
             budget: self,
             bytes,
-        })
+            tiles: tiles as usize,
+        }
     }
 }
 
 pub(crate) struct SpatialReservation<'a> {
     budget: &'a SpatialBudget,
     bytes: u64,
+    tiles: usize,
+}
+
+impl SpatialReservation<'_> {
+    /// How many tiles this reservation covers: at least one, at most what was asked for.
+    pub(crate) fn tiles(&self) -> usize {
+        self.tiles
+    }
 }
 
 impl Drop for SpatialReservation<'_> {
@@ -122,9 +139,9 @@ impl Drop for SpatialReservation<'_> {
 /// Everything about running one operation over one stage that does not depend on the pixels: the
 /// tiling, the halos, what one tile costs and how many tiles may run at once.
 ///
-/// It is built when the recipe is compiled, which is where an operation that cannot fit is refused,
-/// and again when a frame or a sample is actually evaluated. Building it is `O(units)` and reads
-/// nothing.
+/// It is built when the recipe is compiled, which is where an operation whose declarations the
+/// host does not accept is refused, and again when a frame or a sample is actually evaluated.
+/// Building it is `O(units)` and reads nothing.
 #[derive(Clone, Debug)]
 pub(crate) struct SpatialPlan {
     stage: Stage,
@@ -134,14 +151,16 @@ pub(crate) struct SpatialPlan {
     tile: u32,
     /// The bytes one tile may hold at once, computed for the largest tile of the stage.
     working_set: u64,
-    /// How many tiles the budget and the pool allow in flight together.
+    /// How many tiles the budget's target and the pool allow in flight together when nothing else
+    /// holds any of the target: what each batch asks for, and at least one.
     concurrency: usize,
 }
 
 impl SpatialPlan {
-    /// The plan for this operation at this stage with this tile size, or the `ResourceLimit` that
-    /// refuses it. `tile` is [`SPATIAL_TILE`] in production; a test passes another size to prove
-    /// the result does not depend on it.
+    /// The plan for this operation at this stage with this tile size, or the error that refuses
+    /// its declarations. What one tile costs never refuses it: a tile larger than the budget's
+    /// target runs alone. `tile` is [`SPATIAL_TILE`] in production; a test passes another size to
+    /// prove the result does not depend on it.
     pub(crate) fn new(
         operation: &SpatialOperation,
         stage: Stage,
@@ -158,19 +177,7 @@ impl SpatialPlan {
         }
         let tile = tile.max(1);
         let working_set = worst_case_working_set(operation, stage, &halos, summed_halo, tile);
-        let budget = SpatialBudget::default();
-        let limit = budget.limit();
-        if working_set > limit {
-            return Err(Error::new(
-                ErrorKind::ResourceLimit,
-                format!(
-                    "spatial tile needs {:.1} MiB, more than the {:.1} MiB spatial budget",
-                    working_set as f64 / MIB,
-                    limit as f64 / MIB
-                ),
-            ));
-        }
-        let concurrency = usize::try_from(limit / working_set.max(1))
+        let concurrency = usize::try_from(SpatialBudget::default().target() / working_set.max(1))
             .unwrap_or(usize::MAX)
             .clamp(1, rayon::current_num_threads().max(1));
         Ok(Self {
@@ -344,9 +351,13 @@ pub(crate) fn run_tile(
     ))
 }
 
-/// Run every tile of a stage in batches whose concurrency the plan chose, on the shared Rayon pool
-/// above the same one-megapixel threshold the other passes use and serially below it, checking the
-/// cancellation token between batches.
+/// Run every tile of a stage in batches, on the shared Rayon pool above the same one-megapixel
+/// threshold the other passes use and serially below it, checking the cancellation token between
+/// batches.
+///
+/// Each batch reserves its working sets from the budget before any of its tiles allocates, asking
+/// for the plan's concurrency and running as many tiles as the reservation covers, so a render that
+/// overlaps another slows down rather than failing and speeds up again once the other releases.
 ///
 /// `work` computes one tile's result and `write` places it, so the tiles themselves never share a
 /// mutable frame: a batch's results are bounded by its concurrency times one tile.
@@ -357,12 +368,16 @@ pub(crate) fn run_batches<T: Send>(
     mut write: impl FnMut(Region, T) -> Result<(), Error>,
 ) -> Result<(), Error> {
     let tiles = plan.tiles();
-    let parallel = plan.stage.width as u64 * plan.stage.height as u64
-        >= super::PARALLEL_RENDER_PIXELS
-        && plan.concurrency > 1;
-    for batch in tiles.chunks(plan.concurrency.max(1)) {
+    let large = plan.stage.width as u64 * plan.stage.height as u64 >= super::PARALLEL_RENDER_PIXELS;
+    let mut start = 0;
+    while start < tiles.len() {
+        // Before the reservation, so a cancelled render never takes working sets it will not use.
         cancel.check()?;
-        let results: Vec<T> = if parallel {
+        let reservation = SpatialBudget::default()
+            .reserve(plan.working_set, plan.concurrency.min(tiles.len() - start));
+        let batch = &tiles[start..start + reservation.tiles()];
+        start += batch.len();
+        let results: Vec<T> = if large && batch.len() > 1 {
             batch
                 .par_iter()
                 .map(|tile| work(*tile))
@@ -380,14 +395,9 @@ pub(crate) fn run_batches<T: Send>(
     Ok(())
 }
 
-/// Reserve one batch's worth of working sets, once, before any tile of the operation allocates.
-pub(crate) fn reserve_batch(plan: &SpatialPlan) -> Result<SpatialReservation<'static>, Error> {
-    SpatialBudget::default().reserve(plan.working_set.saturating_mul(plan.concurrency as u64))
-}
-
 /// Reserve the one working set a point sample needs.
-pub(crate) fn reserve_one(plan: &SpatialPlan) -> Result<SpatialReservation<'static>, Error> {
-    SpatialBudget::default().reserve(plan.working_set)
+pub(crate) fn reserve_one(plan: &SpatialPlan) -> SpatialReservation<'static> {
+    SpatialBudget::default().reserve(plan.working_set, 1)
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -1586,16 +1596,6 @@ pub(crate) mod tests {
         assert!(units.detail.contains("5 units"), "{units}");
         let finite = refuse(vec![spatial_layer(&["infinite"])]);
         assert!(finite.detail.contains("not finite"), "{finite}");
-        // A tile larger than the budget, with the budget lowered to prove the check reads the live
-        // limit rather than the default constant.
-        let previous = budget.set_limit(1024);
-        let tile = refuse(vec![spatial_layer(&["blur:1"])]);
-        budget.set_limit(previous);
-        assert!(
-            tile.detail.starts_with("spatial tile needs")
-                && tile.detail.ends_with("MiB spatial budget"),
-            "{tile}"
-        );
         assert_eq!(budget.in_use(), 0, "no reservation was taken");
         assert_eq!(budget.peak(), 0, "and no pixel work was done");
         // A refused stack is still readable: nothing was rewritten.
@@ -1608,6 +1608,136 @@ pub(crate) mod tests {
             .unwrap(),
             (64, 48)
         );
+    }
+
+    // -----------------------------------------------------------------------------------------
+    // The budget is a target.
+    // -----------------------------------------------------------------------------------------
+
+    #[test]
+    fn a_reservation_takes_what_fits_and_never_less_than_one_tile() {
+        let _guard = spatial_guard();
+        let budget = SpatialBudget::default();
+        assert_eq!(budget.in_use(), 0, "nothing is held between tests");
+        let previous = budget.set_target(1000);
+        {
+            let all = budget.reserve(100, 4);
+            assert_eq!(all.tiles(), 4, "everything asked for fits");
+            let some = budget.reserve(100, 8);
+            assert_eq!(some.tiles(), 6, "only what the target has left");
+            assert_eq!(budget.in_use(), 1000);
+            let over = budget.reserve(100, 8);
+            assert_eq!(over.tiles(), 1, "a taken target still runs one tile");
+            let huge = budget.reserve(5000, 2);
+            assert_eq!(huge.tiles(), 1, "a tile larger than the target runs alone");
+            assert_eq!(budget.in_use(), 6100);
+        }
+        assert_eq!(budget.in_use(), 0, "every reservation is released");
+        budget.set_target(previous);
+    }
+
+    /// The reported failure: the histogram's analysis and the preview's exact phase rendering the
+    /// same stack at once, each sizing its batch to nearly the whole target, so the second one
+    /// found `254059360 of the 268435456 byte spatial budget` in use and failed. Holding the whole
+    /// target stands in for the other evaluation, deterministically.
+    #[test]
+    fn a_render_and_a_sample_complete_when_another_evaluation_holds_the_target() {
+        let _guard = spatial_guard();
+        clear_estimates();
+        let registry = spatial_registry();
+        let (width, height, tile) = (200_u32, 150_u32, 32_u32);
+        let stack = recipe(vec![spatial_layer(&["blur:3"])]);
+        let operation = SpatialOperation::new(vec![Arc::new(BoxBlur { radius: 3 })]).unwrap();
+        let plan = SpatialPlan::new(&operation, Stage { width, height }, tile).unwrap();
+        assert!(
+            plan.concurrency() > 1,
+            "alone, the operation runs tiles together"
+        );
+        let budget = SpatialBudget::default();
+        let held = budget.reserve(budget.target(), 1);
+        budget.reset_peak();
+
+        let source = gradient(width, height);
+        let raster = render_tiled(
+            &registry,
+            &source,
+            SnapshotId::new(),
+            &stack,
+            &Cancel::new(),
+            tile,
+        )
+        .expect("the byte render completes past the target");
+        let expected = reference_chain(
+            width,
+            height,
+            decode_frame(source.rgba.as_ref()),
+            &[RefUnit::Blur(3)],
+        );
+        assert_frame(&raster, &expected, "byte render beside a taken target");
+        assert_eq!(
+            budget.peak(),
+            budget.target() + plan.working_set(),
+            "one tile at a time, one working set past the target"
+        );
+
+        let linear = linear_source(width, height);
+        let raster = render_linear_tiled(
+            &registry,
+            &linear,
+            SnapshotId::new(),
+            &stack,
+            LinearSettings::default(),
+            &Cancel::new(),
+            tile,
+        )
+        .expect("the RAW render completes past the target");
+        let expected = reference_chain(width, height, linear_frame(&linear), &[RefUnit::Blur(3)]);
+        assert_frame(&raster, &expected, "linear render beside a taken target");
+
+        let rendered = crate::render(&registry, &source, SnapshotId::new(), &stack).unwrap();
+        let sampled = crate::sample(&registry, &source, &stack, 100, 75)
+            .expect("the sample completes past the target");
+        assert_eq!(sampled.rgba, rendered.pixel(100, 75), "the rendered byte");
+
+        drop(held);
+        assert_eq!(budget.in_use(), 0, "every batch released its reservation");
+    }
+
+    #[test]
+    fn a_tile_larger_than_the_target_renders_alone() {
+        let _guard = spatial_guard();
+        clear_estimates();
+        let registry = spatial_registry();
+        let (width, height, tile) = (64_u32, 48_u32, 16_u32);
+        let source = gradient(width, height);
+        let stack = recipe(vec![spatial_layer(&["blur:2"])]);
+        let operation = SpatialOperation::new(vec![Arc::new(BoxBlur { radius: 2 })]).unwrap();
+        let budget = SpatialBudget::default();
+        let previous = budget.set_target(1024);
+        let plan = SpatialPlan::new(&operation, Stage { width, height }, tile)
+            .expect("what a tile costs never refuses a plan");
+        assert!(plan.working_set() > budget.target());
+        assert_eq!(plan.concurrency(), 1);
+        budget.reset_peak();
+        let raster = render_tiled(
+            &registry,
+            &source,
+            SnapshotId::new(),
+            &stack,
+            &Cancel::new(),
+            tile,
+        );
+        budget.set_target(previous);
+        let raster = raster.expect("the render completes");
+        let expected = reference_chain(
+            width,
+            height,
+            decode_frame(source.rgba.as_ref()),
+            &[RefUnit::Blur(2)],
+        );
+        assert_frame(&raster, &expected, "tiles larger than the target");
+        assert_eq!(budget.peak(), plan.working_set(), "one tile at a time");
+        assert_eq!(budget.in_use(), 0);
     }
 
     // -----------------------------------------------------------------------------------------
@@ -1707,7 +1837,7 @@ pub(crate) mod tests {
         let _guard = spatial_guard();
         clear_estimates();
         let registry = spatial_registry();
-        // Many tiles, one at a time: the budget is lowered to exactly one working set so the
+        // Many tiles, one at a time: the target is lowered to exactly one working set so the
         // operation runs a batch of one tile, which is where the token is checked.
         let source = gradient(2000, 1500);
         let stack = recipe(vec![spatial_layer(&["blur:24"])]);
@@ -1723,7 +1853,7 @@ pub(crate) mod tests {
         )
         .unwrap();
         assert!(plan.tiles().len() > 4, "several batches of one tile");
-        let previous = budget.set_limit(plan.working_set());
+        let previous = budget.set_target(plan.working_set());
         let cancel = Cancel::new();
         let handle = {
             let cancel = cancel.clone();
@@ -1755,7 +1885,7 @@ pub(crate) mod tests {
                 Err(error) => error,
             };
         assert_eq!(error.kind, ErrorKind::Cancelled);
-        budget.set_limit(previous);
+        budget.set_target(previous);
     }
 
     #[test]
@@ -1804,12 +1934,13 @@ pub(crate) mod tests {
             let p95 = samples[(samples.len() as f64 * 0.95).ceil() as usize - 1];
             println!(
                 "{width}x{height} box blur r={radius}: p50 {p50:.0} ms, p95 {p95:.0} ms over \
-                 {} runs; working set {:.1} MiB, concurrency {}, budget peak {:.1} MiB of {:.1} MiB",
+                 {} runs; working set {:.1} MiB, concurrency {}, budget peak {:.1} MiB, \
+                 target {:.1} MiB",
                 samples.len(),
                 plan.working_set() as f64 / MIB,
                 plan.concurrency(),
                 SpatialBudget::default().peak() as f64 / MIB,
-                SpatialBudget::default().limit() as f64 / MIB,
+                SpatialBudget::default().target() as f64 / MIB,
             );
         }
     }
