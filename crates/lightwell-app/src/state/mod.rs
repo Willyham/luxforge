@@ -5,6 +5,7 @@ pub(crate) mod canvas;
 pub(crate) mod histogram;
 pub(crate) mod palette;
 pub(crate) mod panel;
+pub(crate) mod performance;
 pub(crate) mod presets;
 pub(crate) mod status;
 pub(crate) mod title;
@@ -95,6 +96,10 @@ pub(crate) struct Inputs<'a> {
     pub(crate) presets: &'a presets::PresetLibrary,
     /// The Presets section's create form.
     pub(crate) preset_form: &'a presets::PresetForm,
+    /// The Performance section is expanded, which is local to this client and this launch.
+    pub(crate) performance_expanded: bool,
+    /// What the Performance section's sampler has read since it last started sampling.
+    pub(crate) performance: &'a performance::PerformanceHistory,
 }
 
 /// The whole screen as plain data. The tools panel keeps its sections across derivations so an
@@ -108,12 +113,16 @@ pub(crate) struct Workspace {
     pub(crate) histogram: histogram::HistogramModel,
     pub(crate) status: status::StatusBarModel,
     pub(crate) palette: palette::PaletteModel,
+    /// The state panel's pinned last block. It keeps itself across derivations and is rebuilt only
+    /// when a sample lands or the section opens or closes.
+    pub(crate) performance: performance::PerformanceModel,
 }
 
 impl Workspace {
     pub(crate) fn derive(&mut self, inputs: &Inputs<'_>) {
         self.title = title::derive(inputs);
         self.panel = panel::derive(inputs);
+        self.performance.refresh(inputs);
         self.canvas = canvas::derive(inputs);
         self.tools.refresh(inputs);
         self.histogram = histogram::derive(inputs, &self.histogram);
@@ -207,6 +216,8 @@ mod tests {
         presets: presets::PresetLibrary,
         preset_form: presets::PresetForm,
         slider_draft: Option<crate::app::slider::SliderDraft>,
+        performance_expanded: bool,
+        performance: performance::PerformanceHistory,
     }
 
     impl Scene {
@@ -242,6 +253,8 @@ mod tests {
                 presets: presets::PresetLibrary::default(),
                 preset_form: presets::PresetForm::default(),
                 slider_draft: None,
+                performance_expanded: false,
+                performance: performance::PerformanceHistory::default(),
             }
         }
 
@@ -334,6 +347,8 @@ mod tests {
                 palette_selected: 0,
                 presets: &self.presets,
                 preset_form: &self.preset_form,
+                performance_expanded: self.performance_expanded,
+                performance: &self.performance,
             }
         }
 
@@ -350,6 +365,47 @@ mod tests {
             .all()
             .find(|section| section.module_id == id)
             .unwrap_or_else(|| panic!("no section for {id}"))
+    }
+
+    /// The Performance section is rebuilt only when a sample lands or it opens or closes: every
+    /// other derivation — a drag re-derives dozens of times a second — leaves it, and so its
+    /// sparklines' version, exactly as it was.
+    #[test]
+    fn the_performance_section_is_rebuilt_only_by_its_own_inputs() {
+        let mut scene = Scene::new(descriptors());
+        let mut workspace = scene.derive();
+        assert!(!workspace.performance.expanded);
+        assert!(workspace.performance.metrics.is_empty());
+
+        scene.performance_expanded = true;
+        scene.performance.clear();
+        workspace.derive(&scene.inputs());
+        assert!(workspace.performance.expanded);
+        assert_eq!(workspace.performance.metrics.len(), 3);
+        let version = workspace.performance.version;
+
+        scene.status = "Something else changed".into();
+        scene.busy = true;
+        workspace.derive(&scene.inputs());
+        assert_eq!(workspace.performance.version, version);
+
+        let sample: performance::ResourceSample = serde_json::from_value(json!({
+            "monotonic_ns": 1,
+            "cpu": {"time_ns": 5, "logical_cpus": 14},
+            "memory": {"kind": "footprint", "bytes": 1_523_000_000_u64},
+            "gpu": {"time_ns": 1}
+        }))
+        .unwrap();
+        scene
+            .performance
+            .push(sample, performance::ActivityList::default());
+        workspace.derive(&scene.inputs());
+        assert_ne!(workspace.performance.version, version);
+        assert_eq!(workspace.performance.metrics[0].value, "1.42");
+
+        scene.performance_expanded = false;
+        workspace.derive(&scene.inputs());
+        assert!(workspace.performance.metrics.is_empty(), "collapsed");
     }
 
     #[test]

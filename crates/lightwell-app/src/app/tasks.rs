@@ -907,6 +907,45 @@ pub(crate) fn sync_task(
     )
 }
 
+/// One read by the Performance section's sampler: the counters, then the activity board, as the
+/// owner answered them.
+#[derive(Clone, Debug)]
+pub(crate) struct PerformanceRead {
+    pub(crate) resources: Value,
+    pub(crate) activity: Value,
+    /// Milliseconds since the Unix epoch, taken the moment `resources.read` answered, so evidence
+    /// can place the sample beside a reading of this process that another program took.
+    pub(crate) wall_ms: u64,
+}
+
+/// One sampler read off the UI thread: `resources.read` and then `activity.list`, through the same
+/// method table as any API client, answered as one message tagged with the sampling epoch that
+/// asked for it. Neither method mutates anything or emits an event, so a sampling section never
+/// makes this or any other client resynchronise.
+pub(crate) fn performance_task(owner: OwnerHandle, client: ClientId, epoch: u64) -> Task<Message> {
+    Task::perform(
+        async move { read_performance(&owner, client) },
+        move |result| Message::PerformanceSampled {
+            epoch,
+            result: result.map(Box::new),
+        },
+    )
+}
+
+fn read_performance(owner: &OwnerHandle, client: ClientId) -> Result<PerformanceRead, String> {
+    let (resources, _) = call(owner, client, "resources.read", json!({}))?;
+    let wall_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|since| u64::try_from(since.as_millis()).unwrap_or(u64::MAX))
+        .unwrap_or_default();
+    let (activity, _) = call(owner, client, "activity.list", json!({}))?;
+    Ok(PerformanceRead {
+        resources,
+        activity,
+        wall_ms,
+    })
+}
+
 /// A method whose event changes the preset library rather than an asset.
 fn is_library_event(method: &str) -> bool {
     method.starts_with("preset.")

@@ -1,25 +1,125 @@
-//! The state panel: what has happened to this photograph. Versions, history and the recipe render
-//! straight from [`StatePanelModel`] with the widget library; nothing here decides what a row means.
+//! The state panel: what has happened to this photograph, and what the editor is doing now.
+//! Versions, history and the recipe scroll; the Performance section is pinned under them. Both
+//! render straight from their models with the widget library; nothing here decides what a row
+//! means, which figure a counter shows or which jobs are listed.
 use crate::{
     app::message::{MenuTarget, Message},
-    state::panel::{Marker as PanelMarker, StatePanelModel},
+    state::{
+        panel::{Marker as PanelMarker, StatePanelModel},
+        performance::{PerformanceModel, WINDOW},
+    },
 };
 use iced::{
     Alignment, Element, Length, Padding,
-    widget::{Space, column, container, row, scrollable, text, text::Wrapping, text_input},
+    widget::{
+        Column, Space, column, container, row, scrollable, text, text::LineHeight, text::Wrapping,
+        text_input,
+    },
 };
 use lightwell_ui::{
-    ButtonSize, ButtonTone, ChipModel, Icon, IconButtonModel, ListRowModel, Marker, chip,
-    chip_wrap, icon_button, inline_menu, list_heading, list_row, section_label, text_button, theme,
-    truncated_text,
+    ButtonSize, ButtonTone, ChipModel, Icon, IconButtonModel, JobRowModel, ListRowModel, Marker,
+    MetricRowModel, SparklineModel, chip, chip_wrap, disclosure_heading, icon_button, inline_menu,
+    job_row, list_heading, list_row, metric_row, section_label, text_button, theme, truncated_text,
 };
 
-pub(crate) fn state_panel(model: &StatePanelModel) -> Element<'_, Message> {
+/// The history and the recipe scroll above a 1 px rule, and the Performance section stays pinned
+/// under it, so the section never scrolls out of view and never pushes History off the panel. The
+/// rule is inset by the panel's padding, as the rules between the mockup's sections are.
+pub(crate) fn state_panel<'a>(
+    model: &'a StatePanelModel,
+    performance_model: &'a PerformanceModel,
+) -> Element<'a, Message> {
     let content = column![versions(model), history(model), recipe(model)]
         .spacing(theme::SPACING * 2.0)
         .padding(theme::SPACING)
         .width(Length::Fill);
-    scrollable(content).height(Length::Fill).into()
+    let rule = container(
+        container(Space::new())
+            .width(Length::Fill)
+            .height(Length::Fixed(theme::BORDER_WIDTH))
+            .style(theme::band_border_surface),
+    )
+    .padding([0.0, theme::SPACING]);
+    column![
+        scrollable(content).height(Length::Fill),
+        rule,
+        performance(performance_model),
+    ]
+    .width(Length::Fill)
+    .height(Length::Fill)
+    .into()
+}
+
+/// The Performance section in the panel's own padding, its heading at the same left edge as
+/// History and Recipe. Collapsed it is the heading alone. Expanded: the three metric rows under
+/// the heading, then, one grid unit further down, the job rows and the caption counting any long
+/// jobs past the fourth.
+fn performance(model: &PerformanceModel) -> Element<'_, Message> {
+    let heading = disclosure_heading(
+        "Performance",
+        model.caption.clone(),
+        model.expanded,
+        Message::TogglePerformance,
+    );
+    if !model.expanded {
+        return container(heading)
+            .padding(theme::SPACING)
+            .width(Length::Fill)
+            .into();
+    }
+    let metrics = Column::with_children(model.metrics.iter().map(|row| {
+        metric_row(&MetricRowModel {
+            label: row.label.to_owned(),
+            value: row.value.clone(),
+            unit: row.unit.to_owned(),
+            series: SparklineModel {
+                values: row.series.clone(),
+                capacity: WINDOW,
+                version: model.version,
+            },
+            tooltip: row.tooltip.clone(),
+        })
+    }))
+    .spacing(theme::ROW_SPACING);
+    let mut jobs = Column::with_children(model.jobs.iter().map(|job| {
+        job_row(&JobRowModel {
+            label: job.label.clone(),
+            trailing: job.trailing.clone(),
+            detail: job.detail.clone(),
+            progress: job.progress,
+            running: job.running,
+        })
+    }))
+    .spacing(theme::SPACING)
+    .width(Length::Fill);
+    if model.reserve_detail {
+        // The column's own spacing would add a grid unit above it; this is the detail line alone.
+        jobs = jobs
+            .push(Space::new().height(Length::Fixed(theme::CAPTION_LINE_HEIGHT - theme::SPACING)));
+    }
+    if let Some(more) = &model.more {
+        jobs = jobs.push(
+            container(
+                text(more.clone())
+                    .size(theme::SIZE_SMALL_CAPTION)
+                    .line_height(LineHeight::Absolute(theme::CAPTION_LINE_HEIGHT.into()))
+                    .color(theme::TEXT_TERTIARY),
+            )
+            .padding(Padding::default().left(theme::JOB_LABEL_INSET)),
+        );
+    }
+    container(
+        column![
+            heading,
+            metrics,
+            // The rows above end with their own row spacing; this makes the gap one grid unit.
+            container(jobs).padding(Padding::default().top(theme::SPACING - theme::ROW_SPACING)),
+        ]
+        .spacing(theme::ROW_SPACING),
+    )
+    .padding(theme::SPACING)
+    .width(Length::Fill)
+    .into()
 }
 
 fn ui_marker(marker: PanelMarker) -> Marker {
@@ -210,6 +310,58 @@ fn recipe_row(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::state::performance::{JobRow, MetricRow};
+
+    /// The section builds collapsed, expanded with every row kind, and with more jobs than rows.
+    #[test]
+    fn the_performance_section_builds_in_every_state() {
+        let panel = StatePanelModel::default();
+        let _: Element<'_, Message> = state_panel(&panel, &PerformanceModel::default());
+        let job = JobRow {
+            label: "Developing RAW".into(),
+            trailing: "1.2 s".into(),
+            detail: Some("DSC_0412.NEF".into()),
+            progress: Some(0.5),
+            running: true,
+        };
+        let expanded = PerformanceModel {
+            expanded: true,
+            caption: Some("6 jobs".into()),
+            metrics: vec![
+                MetricRow {
+                    label: "Memory",
+                    value: "1.42".into(),
+                    unit: "GB",
+                    available: true,
+                    series: vec![0.5, 0.6],
+                    tooltip: "Memory footprint".into(),
+                },
+                MetricRow {
+                    label: "GPU",
+                    value: "\u{2013}".into(),
+                    unit: "",
+                    available: false,
+                    series: Vec::new(),
+                    tooltip: "GPU time is not reported on Linux yet".into(),
+                },
+            ],
+            jobs: vec![job.clone(); 4],
+            reserve_detail: false,
+            more: Some("+2 more".into()),
+            version: 7,
+        };
+        let _: Element<'_, Message> = state_panel(&panel, &expanded);
+        let quiet = PerformanceModel {
+            jobs: vec![JobRow {
+                label: "No background work".into(),
+                ..JobRow::default()
+            }],
+            reserve_detail: true,
+            more: None,
+            ..expanded
+        };
+        let _: Element<'_, Message> = state_panel(&panel, &quiet);
+    }
 
     /// A summary long enough to have caused the old trailing-caption layout to wrap into a tall
     /// sliver still builds as one row, its own two lines, with no panic.

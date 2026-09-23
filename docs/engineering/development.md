@@ -382,6 +382,12 @@ Each step is an object with exactly one key.
 - `preset_import` imports one file through the section's own import task, bypassing only the native
   dialog: `{"path": "fixtures/presets/develop.xmp"}`, relative to the editor's working directory.
   Captured once the library answers; a refused file is a failed step.
+- `performance` opens or closes the state panel's Performance section through its heading's own
+  message: `{"expanded": true}` or `{"expanded": false}`. Opening it, with the state panel shown, is
+  captured once the section's first `resources.read` and `activity.list` have answered, so the frame
+  shows figures rather than dashes; closing it, opening it under a hidden panel and asking for the
+  state it is already in are captured on the next frame. The section is collapsed at every launch,
+  so a script that never names it runs no sampler.
 
 A step that cannot be sent is recorded with `"status": "failed"` and its reason and still captures a
 frame, so a refused step is visible in the evidence instead of missing from it.
