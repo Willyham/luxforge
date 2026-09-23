@@ -2,7 +2,8 @@
 //! source, with Basic collapsed so the RAW section sits under the histogram; a Custom temperature
 //! drag left open, whose drafted frame approximates the white balance on the developed planes and
 //! is labelled so, then released, which redevelops the mosaic and lands the exact frame, at Fit
-//! and again at 100%; and a double-click reset on each of the three sliders after the committed
+//! and again at 100%, each keeping the tint in force (the first, from As shot, the camera's as-shot
+//! tint); and a double-click reset on each of the three sliders after the committed
 //! drag the first press makes: exposure back to 0 EV, and the custom temperature and tint back to
 //! As shot, whose fields then show the camera's as-shot equivalent. The RAW band carries no edited
 //! dot on the untouched photograph and again once the resets leave As shot at 0 EV.
@@ -591,9 +592,11 @@ fn white_balance_drag(
         settled_mean < 1.0,
         format!("The exact frame is {settled_mean:.3} codes from the approximate one on average"),
     )?;
+    let tint = keeps_the_tint_in_force(before, drafted, released, drag)?;
     Ok(json!({
         "step": drag_step,
         "kelvin": kelvin,
+        "tint": tint,
         "view": if drag.fit { "fit" } else { "100%" },
         "drafted_frame": drafted["file"],
         "drafted_render": drafted["state"]["status_bar"]["render"],
@@ -604,6 +607,47 @@ fn white_balance_drag(
         "released_histogram": histogram["status"],
         "released_against_drafted": {"mean_codes": settled_mean, "share_over_2": settled_over},
         "surface_versions": [versions.0, versions.1],
+    }))
+}
+
+/// A temperature drag keeps the tint in force, as Lightroom's Temp does: the committed payload's
+/// tint is the core's answer for the development before the drag — for the first drag, which starts
+/// from the untouched photograph, the camera's as-shot equivalent — and the Custom tint field reads
+/// the same before the drag, while it is open and once it is released.
+fn keeps_the_tint_in_force(
+    before: &Value,
+    drafted: &Value,
+    released: &Value,
+    drag: &Drag,
+) -> Result<Value> {
+    let prior: lightwell_core::RawPayload = serde_json::from_value(raw_payload(before)?.clone())?;
+    if drag.step == DRAGS[0].step {
+        ensure(
+            prior.wb_mode == lightwell_core::WhiteBalanceMode::AsShot,
+            "The first temperature drag does not start from As shot",
+        )?;
+    }
+    let [_, in_force] = prior.white_balance_controls();
+    let committed = raw_payload(released)?["tint"]
+        .as_f64()
+        .ok_or("The committed RAW layer has no tint")?;
+    ensure(
+        (committed - in_force).abs() <= 1e-9,
+        format!("The temperature drag committed tint {committed}, not the {in_force} in force"),
+    )?;
+    let field = "set-raw-tint.tint";
+    let shown = [before, drafted, released].map(|frame| frame["state"]["controls"][field].clone());
+    ensure(
+        shown
+            .iter()
+            .all(|text| *text == shown[0] && text.is_string()),
+        format!("The Custom tint field moved during a temperature drag: {shown:?}"),
+    )?;
+    Ok(json!({
+        "from": if prior.wb_mode == lightwell_core::WhiteBalanceMode::AsShot { "as-shot" } else { "custom" },
+        "in_force": in_force,
+        "committed": committed,
+        "field": shown[0],
     }))
 }
 
