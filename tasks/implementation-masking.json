@@ -1708,7 +1708,7 @@
     {
       "id": "TASK-021",
       "description": "Close phase C with its evidence: a mask-brush smoke scenario, brush-over-gradient combination, feathering at two sizes, stroke deletion, and the documentation the phase changes.",
-      "status": "pending",
+      "status": "completed",
       "dependencies": [
         "TASK-016",
         "TASK-019",
@@ -2028,7 +2028,8 @@
       "extra_context": [
         "This is where the owner's question about non-AI sky and object detection is answered in the product: range selections plus a subtract brush, and no control named Sky or Subject backed by heuristics.",
         "A scene that the selections handle badly is part of the evidence, not something to leave out.",
-        "Documentation stays current behaviour only."
+        "Documentation stays current behaviour only.",
+        "Phase C left one measurement unmade and it is the honest gap to close or to state: there is no end-to-end latency figure for the paint gesture. editor-latency drives field-patch sliders, and a stroke is a different gesture, so TASK-019's item - a stroke's drafted frames per second and staleness during a continuous drag - is unmeasured. Either extend the harness to drive a stroke, or say plainly in the product and the guide that no such figure exists rather than letting the slider figure stand in for it."
       ],
       "context_links": [
         {
