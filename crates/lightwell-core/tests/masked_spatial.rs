@@ -123,6 +123,7 @@ fn recipe(layers: Vec<Layer>, masks: Vec<Mask>) -> Recipe {
         format: RECIPE_FORMAT,
         layers,
         masks,
+        ..Recipe::default()
     }
 }
 

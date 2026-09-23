@@ -1025,6 +1025,7 @@ mod tests {
                 mask: None,
             }],
             masks: Vec::new(),
+            ..Recipe::default()
         };
         let raster = render_linear(
             &ModuleRegistry::builtin(),
@@ -1137,6 +1138,7 @@ mod tests {
                 turns: 2,
             })],
             masks: Vec::new(),
+            ..Recipe::default()
         };
         let evaluation = LinearEvaluation::new(
             &ModuleRegistry::builtin(),
@@ -1238,6 +1240,7 @@ mod tests {
             format: crate::RECIPE_FORMAT,
             layers: vec![Layer::pixel(1, 0, [128, 64, 255])],
             masks: Vec::new(),
+            ..Recipe::default()
         };
         let sample = sample_linear(
             &ModuleRegistry::builtin(),
@@ -1278,6 +1281,7 @@ mod tests {
                 height: 0.5,
             })],
             masks: Vec::new(),
+            ..Recipe::default()
         };
         let registry = ModuleRegistry::builtin();
         let raster = render_linear(
@@ -1345,6 +1349,7 @@ mod tests {
                 format: crate::RECIPE_FORMAT,
                 layers,
                 masks: Vec::new(),
+                ..Recipe::default()
             };
             let raster = render_linear(
                 &registry,
@@ -1411,6 +1416,7 @@ mod tests {
                 mask: None,
             }],
             masks: Vec::new(),
+            ..Recipe::default()
         }
     }
 

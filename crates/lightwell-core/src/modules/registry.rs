@@ -679,6 +679,19 @@ impl ModuleRegistry {
         // planning alike rather than only at the catalog boundary.
         recipe.validate()?;
         self.validate_masked_stages(recipe)?;
+        // Every stroke this stack references, resolved against the store it was read from. A
+        // reference the store cannot answer is incompatible data exactly as an unknown component
+        // kind is: refusing here refuses rendering, sampling, export, proxy planning and module
+        // planning alike, and — because the host compiles a stack before it persists one — refuses
+        // to commit an edit onto such a stack as well. Nothing is rewritten and no reference is
+        // resolved to an empty stroke.
+        //
+        // Before the kind table, because these are two different facts and the store's is the more
+        // basic one: a kind this build does not know is a statement about the build, which
+        // registering a provider settles, while a reference the store cannot answer is the stored
+        // data disagreeing with itself, which no build can settle. A stack with both is reported by
+        // the one that will still be true tomorrow.
+        recipe.resolve_strokes()?;
         self.validate_mask_kinds(recipe)?;
         self.compile_layers_sampled(
             source_width,
@@ -1696,6 +1709,7 @@ pub(crate) mod tests {
                 second.clone(),
             ],
             masks: Vec::new(),
+            ..Recipe::default()
         };
         let expected = format!(
             "unavailable effect test.effect (layers {}, {})",
@@ -1723,6 +1737,7 @@ pub(crate) mod tests {
             format: RECIPE_FORMAT,
             layers: vec![test_layer("test.absent")],
             masks: Vec::new(),
+            ..Recipe::default()
         };
         assert_eq!(
             registry.validate_recipe(&missing).unwrap_err().detail,
@@ -1752,6 +1767,7 @@ pub(crate) mod tests {
             format: RECIPE_FORMAT,
             layers: vec![retired.clone()],
             masks: Vec::new(),
+            ..Recipe::default()
         };
         let expected = format!(
             "unavailable effect lightwell.geometry.transform (layers {})",
@@ -1791,6 +1807,7 @@ pub(crate) mod tests {
             format: RECIPE_FORMAT,
             layers: vec![layer],
             masks: vec![mask.clone()],
+            ..Recipe::default()
         };
         // A colour-stage layer addresses the content stage, so it may carry one.
         let colour = recipe(masked(test_layer(MIXER_EFFECT)));
@@ -1957,6 +1974,7 @@ pub(crate) mod tests {
             format: RECIPE_FORMAT,
             layers,
             masks: vec![first.clone(), second.clone()],
+            ..Recipe::default()
         };
         // The global layer and one layer per mask: three layers of one single-layer effect, legal.
         let legal = recipe(vec![
@@ -2142,6 +2160,7 @@ pub(crate) mod tests {
             format: RECIPE_FORMAT,
             layers: vec![layer],
             masks: vec![mask.clone()],
+            ..Recipe::default()
         };
         let layer = Layer::pixel(1, 1, [9, 9, 9]);
         // Unmasked, the same layer compiles as it always has.
@@ -2222,6 +2241,7 @@ pub(crate) mod tests {
             format: RECIPE_FORMAT,
             layers: vec![bound(presence, &mask)],
             masks: vec![mask],
+            ..Recipe::default()
         };
         let compiled = registry
             .compile(256, 200, &recipe)
@@ -2266,6 +2286,7 @@ pub(crate) mod tests {
             format: RECIPE_FORMAT,
             layers: masks[..count].iter().map(presence).collect(),
             masks: masks.clone(),
+            ..Recipe::default()
         };
         registry
             .compile(128, 128, &recipe(MAX_MASKED_SPATIAL_LAYERS))
@@ -2296,6 +2317,7 @@ pub(crate) mod tests {
             format: RECIPE_FORMAT,
             layers: vec![layer.clone()],
             masks: Vec::new(),
+            ..Recipe::default()
         };
         let expected = format!(
             "layer {} references mask {}, which this recipe does not carry",
@@ -2341,6 +2363,7 @@ pub(crate) mod tests {
             format: RECIPE_FORMAT,
             layers: vec![layer],
             masks: vec![mask.clone()],
+            ..Recipe::default()
         };
         for error in [
             registry

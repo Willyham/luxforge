@@ -384,6 +384,9 @@ fn presence_journey(root: &Path, out: &Path) -> Result<Value> {
         )?;
         ensure(
             descriptor["effects"]
+                // `maskable` is part of how Presence describes itself: its one spatial effect
+                // accepts a mask, so the descriptor carries the flag and this assertion has to
+                // carry it too, or the scenario refuses the delivered behaviour.
                 == json!([{"id": PRESENCE_EFFECT, "format": EFFECT_FORMAT, "stage": "spatial", "order": 0, "maskable": true}]),
             format!(
                 "The presence effect is described as {}",
@@ -1184,6 +1187,8 @@ fn mixer_journey(root: &Path, out: &Path) -> Result<Value> {
         )?;
         ensure(
             descriptor["effects"]
+                // The mixer's one colour effect accepts a mask, so its descriptor carries the flag.
+                // The vignette's does not, which is why the finish assertion below has none.
                 == json!([{"id": MIXER_EFFECT, "format": EFFECT_FORMAT, "stage": "color", "order": 10, "maskable": true}]),
             format!("The mixer effect is described as {}", descriptor["effects"]),
         )?;

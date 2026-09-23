@@ -245,6 +245,7 @@ fn proof_layer_is_byte_exact_and_shares_the_source_allocation() {
             format: RECIPE_FORMAT,
             layers: vec![layer],
             masks: Vec::new(),
+            ..Recipe::default()
         },
     )
     .expect("identity controls render");

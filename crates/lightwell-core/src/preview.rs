@@ -687,6 +687,7 @@ fn run(
         // The mask table belongs to the recipe, not to the prefix: a truncated stack keeps it so a
         // masked layer inside the prefix still finds the mask it names.
         masks: job.recipe.masks.clone(),
+        strokes: job.recipe.strokes.clone(),
     });
     let recipe = prefix.as_ref().unwrap_or(&job.recipe);
 
@@ -1134,6 +1135,7 @@ mod tests {
             format: RECIPE_FORMAT,
             layers,
             masks,
+            ..Recipe::default()
         };
         let snapshot = Snapshot {
             id: SnapshotId::new(),
@@ -1343,6 +1345,7 @@ mod tests {
                     ..layer.clone()
                 })
                 .collect(),
+            ..Recipe::default()
         }
     }
 
@@ -1501,6 +1504,7 @@ mod tests {
             format: RECIPE_FORMAT,
             layers: masked_basic(&thin),
             masks: vec![thin.clone()],
+            ..Recipe::default()
         };
         let plan = source
             .proxy_plan(&registry, &recipe, display)
@@ -1564,6 +1568,7 @@ mod tests {
                 }])
                 .collect(),
             masks: vec![thin.clone()],
+            ..Recipe::default()
         };
         let both = registry.proxy_approximation(&spatial_and_mask, 40, 30);
         assert!(both.spatial && both.mask);

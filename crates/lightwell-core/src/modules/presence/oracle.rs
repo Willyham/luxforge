@@ -437,6 +437,7 @@ fn presence_recipe(payload: Value) -> Recipe {
             mask: None,
         }],
         masks: Vec::new(),
+        ..Recipe::default()
     }
 }
 

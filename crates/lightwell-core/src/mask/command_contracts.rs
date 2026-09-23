@@ -1110,6 +1110,7 @@ fn deleting_a_mask_carrying_layers_of_two_effects_says_what_it_removed() {
                     format: crate::RECIPE_FORMAT,
                     layers,
                     masks: vec![mask.clone()],
+                    ..Recipe::default()
                 },
             },
             ..state.current_entry.clone()

@@ -112,6 +112,12 @@ identifier!(ComponentId, "component-");
 pub const MASKS_PER_RECIPE: usize = 16;
 pub const COMPONENTS_PER_MASK: usize = 32;
 pub const MASK_BYTES_PER_RECIPE: usize = 256 * 1024;
+/// Stored path positions one mask's components may hold between them, summed over every stroke they
+/// reference. The per-stroke bound is [`crate::path::POINTS_PER_STROKE`] and belongs to the host's
+/// path primitives; this one is the mask's own and is refused with a `ResourceLimit` error naming
+/// it. It is checked wherever the referenced strokes are resolved, which is every path that draws
+/// the mask.
+pub const POINTS_PER_MASK: usize = 8192;
 /// Mask and component display names are a person's text, not an identity: printable, trimmed and
 /// bounded, exactly as a version name is.
 pub const MAX_MASK_NAME: usize = 64;
@@ -449,14 +455,37 @@ fn valid_display_name(what: &str, name: &str) -> Result<(), Error> {
     Ok(())
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Recipe {
     pub format: u32,
     pub layers: Vec<Layer>,
     /// The masks the layers of this recipe may reference, in the order the masks list shows.
     pub masks: Vec<Mask>,
+    /// The strokes this recipe's payloads reference, resolved from the content-addressed store
+    /// ([`crate::path`]), and the references that could not be resolved.
+    ///
+    /// **Never serialized.** A stored recipe holds stroke *addresses* in its payloads and no
+    /// positions at all, so "no catalog ever holds embedded stroke points" is a property of this
+    /// type and not of the code that happens to write it. It is filled in when a recipe is read out
+    /// of a store that has the strokes, and it is empty on a recipe that references none — which is
+    /// every recipe without a painted edit.
+    #[serde(skip)]
+    pub strokes: crate::path::StrokeTable,
 }
+
+/// Equality on the stored recipe, which is what two recipes being the same means: the format, the
+/// layers and the mask table. The resolved stroke table is excluded because it is not stored — it
+/// is what the addresses in those payloads resolved to, so two recipes that compare equal reference
+/// the same strokes by construction, and a hydrated recipe must not compare unequal to the recipe
+/// it was hydrated from.
+impl PartialEq for Recipe {
+    fn eq(&self, other: &Self) -> bool {
+        self.format == other.format && self.layers == other.layers && self.masks == other.masks
+    }
+}
+
+impl Eq for Recipe {}
 
 impl Default for Recipe {
     fn default() -> Self {
@@ -464,6 +493,7 @@ impl Default for Recipe {
             format: RECIPE_FORMAT,
             layers: Vec::new(),
             masks: Vec::new(),
+            strokes: crate::path::StrokeTable::default(),
         }
     }
 }
@@ -502,6 +532,78 @@ impl Recipe {
                     format!(
                         "layer {} references mask {mask}, which this recipe does not carry",
                         layer.id
+                    ),
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    /// Every stroke address this recipe's payloads carry, in stored order: the layers first, then
+    /// the components of each mask, with the thing that carries each list named for a refusal.
+    ///
+    /// The host reads exactly [`crate::path::STROKES_FIELD`] of each payload and parses nothing
+    /// else, because a payload belongs to the effect or component kind that provides it. Cost is
+    /// `O(layers + components)` and no store is touched: this answers what a recipe references, not
+    /// what it resolves to.
+    pub fn stroke_references(&self) -> Result<Vec<(String, crate::path::StrokeId)>, Error> {
+        let mut found = Vec::new();
+        for layer in &self.layers {
+            let what = format!("layer {}", layer.id);
+            for id in crate::path::references(&layer.payload, &what)? {
+                found.push((what.clone(), id));
+            }
+        }
+        for mask in &self.masks {
+            for component in &mask.components {
+                let what = format!("component {} of mask {}", component.name, mask.name);
+                for id in crate::path::references(&component.payload, &what)? {
+                    found.push((what.clone(), id));
+                }
+            }
+        }
+        Ok(found)
+    }
+
+    /// Resolve every stroke this recipe references against the table it was hydrated with, and
+    /// enforce the per-mask point bound while the strokes are in hand.
+    ///
+    /// This is what makes a missing or corrupt stroke refuse by name instead of drawing something
+    /// else: it runs where a recipe is compiled, so rendering, sampling, proxy planning, module
+    /// planning and the export that will compile the same way all pass through it, and it returns
+    /// the store's own refusal unchanged. It reads the recipe and rewrites nothing, so listing, undoing and carrying the
+    /// stack forward keep working exactly as they do for an unavailable effect.
+    ///
+    /// A recipe that references no stroke — every recipe without a painted edit — costs one walk of
+    /// its payloads and touches nothing else.
+    pub fn resolve_strokes(&self) -> Result<(), Error> {
+        let references = self.stroke_references()?;
+        if references.is_empty() {
+            return Ok(());
+        }
+        for (what, id) in &references {
+            self.strokes.resolve(id).map_err(|error| {
+                Error::new(error.kind, format!("{} referenced by {what}", error.detail))
+            })?;
+        }
+        for mask in &self.masks {
+            let mut points = 0_usize;
+            for component in &mask.components {
+                let what = format!("component {} of mask {}", component.name, mask.name);
+                for id in crate::path::references(&component.payload, &what)? {
+                    points += self
+                        .strokes
+                        .get(&id)
+                        .map_or(0, crate::path::Stroke::point_count);
+                }
+            }
+            if points > POINTS_PER_MASK {
+                return Err(Error::new(
+                    ErrorKind::ResourceLimit,
+                    format!(
+                        "mask {} holds {points} stored path positions; the limit is \
+                         {POINTS_PER_MASK} points per mask",
+                        mask.name
                     ),
                 ));
             }
@@ -767,6 +869,7 @@ mod tests {
             format: RECIPE_FORMAT,
             layers: vec![layer.clone()],
             masks: Vec::new(),
+            ..Recipe::default()
         };
         let error = dangling.validate().unwrap_err();
         assert_eq!(error.kind, ErrorKind::Incompatible);
@@ -1021,6 +1124,7 @@ mod tests {
             format: 99,
             layers: Vec::new(),
             masks: Vec::new(),
+            ..Recipe::default()
         };
         assert_eq!(
             unsupported.validate().unwrap_err().kind,
@@ -1052,6 +1156,7 @@ mod tests {
             format: RECIPE_FORMAT,
             layers: vec![Layer::pixel(0, 0, [1, 2, 3]), Layer::pixel(1, 1, [4, 5, 6])],
             masks: Vec::new(),
+            ..Recipe::default()
         };
         let joined = Layer::orientation(Orientation::NEUTRAL);
         for index in 0..=recipe.layers.len() {

@@ -9,6 +9,7 @@ use crate::{
     ActionDescriptor, AssetId, ComponentId, Draft, DraftId, EditorService, EntryId, Error,
     ErrorKind, HistorySelection, MaskId, ModuleRegistry, Mutation, MutationOutcome, PresetId, Zoom,
     mask::commands::{self as mask_commands, MaskCommand, MaskTarget},
+    path,
 };
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::{Map, Value, json};
@@ -669,10 +670,31 @@ pub fn schemas(registry: &ModuleRegistry) -> Value {
         "coordinate_space": "Each edit uses integer coordinates in its own input image stage after EXIF orientation. A pixel or colour edit addresses the content stage, the source after EXIF orientation, because the host places both before the quarter-turns, reflections and crop that carry them; a colour edit addresses every pixel of that stage and changes no dimension. A number parameter carries a finite JSON number within its declared range, such as an angle in degrees or a rectangle normalized to its stage; a JSON integer is accepted and passed through unchanged.",
         "methods": methods,
         "modules": descriptors,
+        // The host's path primitives, described here because a `points` parameter is the one
+        // parameter kind whose value a client has to construct rather than move a widget to: a
+        // painting action is a canvas gesture, so nothing in the control vocabulary edits a path.
+        // Everything needed to post one — the coordinate space and its range, the stored precision,
+        // the decimation the desktop applies before it posts, the deviation that leaves, and the
+        // per-stroke bound — is published here, so an agent draws the same stored stroke a hand
+        // does without reading any desktop code.
+        "paths": {
+            "coordinates": "A points parameter carries an ordered list of [x, y] positions in the content stage's normalized coordinates, in drawn order, where 1.0 is the stage's height on both axes, so a shape is the shape it looks like at any aspect ratio. Positions are not sorted and may repeat or reverse: a path is a path and not a function.",
+            "range": [path::COORDINATE_MIN, path::COORDINATE_MAX],
+            "stored_steps_per_unit": path::COORDINATE_STEPS_PER_UNIT,
+            "decimation_tolerance": path::DECIMATION_TOLERANCE,
+            "stored_deviation": path::STORED_DEVIATION,
+            "points_per_stroke": path::POINTS_PER_STROKE,
+            "notes": "A posted path is snapped to a grid of stored_steps_per_unit steps per unit and decimated on that grid at decimation_tolerance, so a stored position is at most stored_deviation from the position that was posted and the same posted path always produces the same stored stroke. Decimation is idempotent: a desktop decimates before it posts, and a path posted undecimated arrives at the same stored bytes. A stroke is stored once under the hash of its contents and an entry's recipe references it by that hash, so a payload's strokes field holds addresses and never positions.",
+        },
         // The host's mask surface: the widgets of the `mask.*` commands, in the same `Control`
         // vocabulary a module declares, so a client renders a mask's fields, toggles and mode
         // selector with the widgets it already has and invents no operation of its own.
-        "masks": {"controls": mask_commands::controls()},
+        "masks": {
+            "controls": mask_commands::controls(),
+            // The one path bound that is the mask's own rather than the host path primitive's, so
+            // the `paths` block above says nothing about masks and this one says what a mask adds.
+            "points_per_mask": crate::POINTS_PER_MASK,
+        },
         "mutation": {"required": ["expected_revision", "request_id", "actor"]},
     })
 }
@@ -2764,6 +2786,80 @@ mod tests {
         );
         drop(service);
         std::fs::remove_file(catalog).unwrap();
+    }
+
+    /// `schema.list` says everything a client needs to post a path, so an agent draws the stroke a
+    /// hand draws without reading any desktop code — and it says it under `paths`, with no mention
+    /// of the one feature that happens to use it first.
+    #[test]
+    fn schema_list_publishes_the_path_primitives_without_naming_a_feature() {
+        let catalog = std::env::temp_dir().join(format!(
+            "lightwell-methods-paths-{}.sqlite",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_file(&catalog);
+        let mut service = EditorService::open(&catalog).unwrap();
+        let mut session = ClientSession::default();
+        let listed = ok(&mut service, &mut session, "schema.list", json!({}));
+        let paths = &listed["paths"];
+
+        assert_eq!(
+            paths["range"],
+            json!([path::COORDINATE_MIN, path::COORDINATE_MAX])
+        );
+        assert_eq!(paths["stored_steps_per_unit"], json!(16384.0));
+        assert_eq!(
+            paths["decimation_tolerance"],
+            json!(path::DECIMATION_TOLERANCE)
+        );
+        assert_eq!(paths["stored_deviation"], json!(path::STORED_DEVIATION));
+        assert_eq!(paths["points_per_stroke"], json!(1024));
+        for text in [&paths["coordinates"], &paths["notes"]] {
+            let text = text.as_str().expect("prose a client can read");
+            assert!(!text.to_lowercase().contains("mask"), "{text}");
+            assert!(!text.to_lowercase().contains("brush"), "{text}");
+        }
+        assert!(
+            paths["notes"]
+                .as_str()
+                .unwrap()
+                .contains("the same posted path always produces the same stored stroke")
+        );
+        // The bound that is the mask's own is published with the masks, not with the paths.
+        assert!(paths.get("points_per_mask").is_none());
+        assert_eq!(
+            listed["masks"]["points_per_mask"],
+            json!(crate::POINTS_PER_MASK)
+        );
+
+        // And the kind itself serializes flat, as every other parameter kind does.
+        let declared = crate::ParameterDescriptor {
+            name: "path".into(),
+            kind: crate::ParameterKind::Points {
+                points_min: 1,
+                points_max: 512,
+            },
+            required: true,
+            default: None,
+            unit: None,
+            step: None,
+            precision: None,
+            soft_min: None,
+            soft_max: None,
+            fine_step: None,
+            zero: None,
+            notes: "the drawn path".into(),
+        };
+        let listed_kind = serde_json::to_value(&declared).unwrap();
+        assert_eq!(listed_kind["kind"], json!("points"));
+        assert_eq!(listed_kind["points_min"], json!(1));
+        assert_eq!(listed_kind["points_max"], json!(512));
+        assert_eq!(
+            serde_json::from_value::<crate::ParameterDescriptor>(listed_kind).unwrap(),
+            declared
+        );
+        drop(service);
+        let _ = std::fs::remove_file(&catalog);
     }
 
     #[test]

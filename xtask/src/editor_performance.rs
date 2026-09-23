@@ -273,6 +273,7 @@ pub fn run(root: &Path, source: &Path, out: &Path, samples: usize) -> Result {
         format: stack.format,
         layers: Vec::new(),
         masks: Vec::new(),
+        ..Recipe::default()
     };
     let mut coloured = stack.clone();
     let index = colour_registry.insertion_index_for(&coloured.layers, BASIC_EFFECT);

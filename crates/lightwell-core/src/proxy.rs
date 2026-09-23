@@ -659,6 +659,7 @@ mod tests {
             format: RECIPE_FORMAT,
             layers,
             masks: Vec::new(),
+            ..Recipe::default()
         }
     }
 
@@ -1468,6 +1469,7 @@ mod tests {
                     ..basic_layer(payload.clone())
                 }],
                 masks: vec![mask.clone()],
+                ..Recipe::default()
             };
             let broad_stack = masked_with(&broad);
             let thin_stack = masked_with(&thin);

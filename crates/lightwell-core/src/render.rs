@@ -1985,6 +1985,7 @@ mod tests {
             format: crate::RECIPE_FORMAT,
             layers,
             masks: Vec::new(),
+            ..Recipe::default()
         };
         let compiled = registry
             .compile(source.width, source.height, &recipe)
@@ -2055,6 +2056,7 @@ mod tests {
                 format: crate::RECIPE_FORMAT,
                 layers,
                 masks: Vec::new(),
+                ..Recipe::default()
             },
         )
         .unwrap()
@@ -2525,6 +2527,7 @@ mod tests {
                     format: crate::RECIPE_FORMAT,
                     layers,
                     masks: Vec::new(),
+                    ..Recipe::default()
                 };
                 let mut best = f64::INFINITY;
                 let mut raster = None;
@@ -2559,6 +2562,7 @@ mod tests {
                 format: crate::RECIPE_FORMAT,
                 layers: vec![crop_layer(crop)],
                 masks: Vec::new(),
+                ..Recipe::default()
             };
             let raster = render(&registry, &source, SnapshotId::new(), &recipe).unwrap();
             let reference = CropReference::new(&source, crop);
@@ -2634,6 +2638,7 @@ mod tests {
                         format: crate::RECIPE_FORMAT,
                         layers: layers.clone(),
                         masks: Vec::new(),
+                        ..Recipe::default()
                     };
                     let compiled = registry
                         .compile(source.width, source.height, &recipe)
@@ -2667,6 +2672,7 @@ mod tests {
                 format: crate::RECIPE_FORMAT,
                 layers: vec![crop_layer(CropPayload::NEUTRAL)],
                 masks: Vec::new(),
+                ..Recipe::default()
             },
         )
         .unwrap();
@@ -2714,6 +2720,7 @@ mod tests {
                         format: crate::RECIPE_FORMAT,
                         layers: layers.clone(),
                         masks: Vec::new(),
+                        ..Recipe::default()
                     };
                     let raster = render(&registry, &source, SnapshotId::new(), &recipe).unwrap();
                     // Every output pixel names a content pixel that the stepwise forward map puts
@@ -2803,6 +2810,7 @@ mod tests {
                 format: crate::RECIPE_FORMAT,
                 layers: layers.clone(),
                 masks: Vec::new(),
+                ..Recipe::default()
             };
             let raster = render(&registry, &source, SnapshotId::new(), &recipe).unwrap();
             let reference = CropReference::new(&source, crop);
@@ -2963,6 +2971,7 @@ mod tests {
                 format: crate::RECIPE_FORMAT,
                 layers,
                 masks: Vec::new(),
+                ..Recipe::default()
             };
             let transform = stage_transform(&registry, width, height, &recipe).unwrap();
             let (stage_width, stage_height) = extents(&registry, &source, &recipe).unwrap();
@@ -3026,6 +3035,7 @@ mod tests {
                 format: crate::RECIPE_FORMAT,
                 layers,
                 masks: Vec::new(),
+                ..Recipe::default()
             };
             let transform = stage_transform(&registry, width, height, &recipe).unwrap();
             let budget_x = 0.5 * (transform.inverse[0].abs() + transform.inverse[1].abs());
@@ -3094,6 +3104,7 @@ mod tests {
                 format: crate::RECIPE_FORMAT,
                 layers,
                 masks: Vec::new(),
+                ..Recipe::default()
             };
             let transform = stage_transform(&registry, width, height, &recipe).unwrap();
             let mut rng = Lcg(0x5EED_0700);
@@ -3137,6 +3148,7 @@ mod tests {
                 mask: None,
             }],
             masks: Vec::new(),
+            ..Recipe::default()
         };
         let error = stage_transform(&registry, width, height, &recipe)
             .expect_err("an unavailable effect has no output stage");
@@ -3149,6 +3161,7 @@ mod tests {
             format: crate::RECIPE_FORMAT,
             layers: vec![degenerate_layer()],
             masks: Vec::new(),
+            ..Recipe::default()
         };
         let error = stage_transform(&registry, width, height, &recipe)
             .expect_err("a collapsed stage has no mapping");
@@ -3170,6 +3183,7 @@ mod tests {
             format: crate::RECIPE_FORMAT,
             layers: layers.clone(),
             masks: Vec::new(),
+            ..Recipe::default()
         };
         let compiled = registry
             .compile(source.width, source.height, &recipe)
@@ -3204,6 +3218,7 @@ mod tests {
                 format: crate::RECIPE_FORMAT,
                 layers: layers.clone(),
                 masks: Vec::new(),
+                ..Recipe::default()
             };
             let error = render(&registry, &source, SnapshotId::new(), &recipe)
                 .expect_err(&format!("{layers:?} reads outside the stage"));
@@ -3247,6 +3262,7 @@ mod tests {
                 format: crate::RECIPE_FORMAT,
                 layers: layers.clone(),
                 masks: Vec::new(),
+                ..Recipe::default()
             };
             let raster = render(&registry, &source, SnapshotId::new(), &recipe).unwrap();
             for y in 0..raster.height {
@@ -3289,11 +3305,13 @@ mod tests {
                 format: crate::RECIPE_FORMAT,
                 layers: vec![inside.clone(), outside.clone(), crop.clone()],
                 masks: Vec::new(),
+                ..Recipe::default()
             };
             let without = Recipe {
                 format: crate::RECIPE_FORMAT,
                 layers: vec![inside.clone(), crop.clone()],
                 masks: Vec::new(),
+                ..Recipe::default()
             };
             let rendered = render(&registry, &source, SnapshotId::new(), &with_outside).unwrap();
             let expected = render(&registry, &source, SnapshotId::new(), &without).unwrap();
@@ -3320,6 +3338,7 @@ mod tests {
             format: crate::RECIPE_FORMAT,
             layers: vec![scale_layer(10_000.0)],
             masks: Vec::new(),
+            ..Recipe::default()
         };
         let error = render(&registry, &source, SnapshotId::new(), &recipe)
             .expect_err("30000x20000 is over the frame limit");
@@ -3334,6 +3353,7 @@ mod tests {
             format: crate::RECIPE_FORMAT,
             layers: vec![scale_layer(0.0)],
             masks: Vec::new(),
+            ..Recipe::default()
         };
         let error = sample(&registry, &source, &empty, 0, 0).unwrap_err();
         assert_eq!(error.kind, ErrorKind::Validation);
@@ -3526,6 +3546,7 @@ mod tests {
                 Layer::pixel(0, 0, [205, 10, 11]),
             ],
             masks: Vec::new(),
+            ..Recipe::default()
         };
         let raster = render(&registry, &source, SnapshotId::new(), &recipe).unwrap();
         for y in 0..raster.height {
@@ -3554,6 +3575,7 @@ mod tests {
             format: crate::RECIPE_FORMAT,
             layers: vec![Layer::pixel(9, 9, [0, 0, 0])],
             masks: Vec::new(),
+            ..Recipe::default()
         };
         assert!(sample(&registry, &source, &invalid, 0, 0).is_err());
     }
@@ -3572,6 +3594,7 @@ mod tests {
                     format: crate::RECIPE_FORMAT,
                     layers: vec![Layer::pixel(3, 0, [0, 0, 0])],
                     masks: Vec::new(),
+                    ..Recipe::default()
                 }
             )
             .is_err()
@@ -3833,6 +3856,7 @@ mod tests {
             format: crate::RECIPE_FORMAT,
             layers,
             masks: Vec::new(),
+            ..Recipe::default()
         }
     }
 
@@ -4491,6 +4515,7 @@ mod tests {
             format: crate::RECIPE_FORMAT,
             layers,
             masks,
+            ..Recipe::default()
         }
     }
 
@@ -4962,6 +4987,7 @@ mod tests {
                 Layer::crop(fitted_crop(height, width, 7.0, [0.05, 0.05, 0.9, 0.9])),
             ],
             masks: Vec::new(),
+            ..Recipe::default()
         }
     }
 

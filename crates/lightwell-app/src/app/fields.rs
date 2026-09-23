@@ -245,6 +245,13 @@ pub(crate) fn seed_text(parameter: &ParameterDescriptor) -> String {
             .as_ref()
             .map(Value::to_string)
             .unwrap_or_else(|| "{}".into()),
+        // A path has no seed to start from: nothing here draws one, and an empty list is what a
+        // field shows until a gesture or a client supplies one.
+        ParameterKind::Points { .. } => parameter
+            .default
+            .as_ref()
+            .map(Value::to_string)
+            .unwrap_or_else(|| "[]".into()),
     }
 }
 
@@ -283,6 +290,7 @@ pub(crate) fn decimals_for(parameter: &ParameterDescriptor) -> usize {
         | ParameterKind::Enum { .. }
         | ParameterKind::Boolean
         | ParameterKind::Curve { .. }
+        | ParameterKind::Points { .. }
         | ParameterKind::String { .. }
         | ParameterKind::Settings => return 0,
     };
@@ -411,6 +419,15 @@ pub(crate) fn parse_field(parameter: &ParameterDescriptor, text: &str) -> Result
                     .map_err(|error| error.detail)
                     .map(|_| value)
             }),
+        // No panel widget edits a path: a path is drawn on the canvas, so this exists only so a
+        // path a client posted can be shown and read back through the same generic check.
+        ParameterKind::Points { .. } => serde_json::from_str::<Value>(text.trim())
+            .map_err(|_| format!("{name} must be a JSON list of [x, y] positions"))
+            .and_then(|value| {
+                check_value(parameter, &value)
+                    .map_err(|error| error.detail)
+                    .map(|_| value)
+            }),
     }
 }
 
@@ -429,7 +446,9 @@ pub(crate) fn value_text(parameter: &ParameterDescriptor, value: &Value) -> Resu
             .collect::<Vec<_>>()
             .join(","),
         ParameterKind::Boolean => value.as_bool().unwrap().to_string(),
-        ParameterKind::Curve { .. } | ParameterKind::Settings => value.to_string(),
+        ParameterKind::Curve { .. } | ParameterKind::Points { .. } | ParameterKind::Settings => {
+            value.to_string()
+        }
         ParameterKind::String { .. } => value.as_str().unwrap().to_owned(),
     })
 }

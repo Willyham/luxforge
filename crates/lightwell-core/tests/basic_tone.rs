@@ -66,6 +66,7 @@ fn recipe(layers: Vec<Layer>) -> Recipe {
         format: RECIPE_FORMAT,
         layers,
         masks: Vec::new(),
+        ..Recipe::default()
     }
 }
 

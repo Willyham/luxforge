@@ -1275,6 +1275,7 @@ pub fn run(root: &Path, out: &Path) -> Result<Value> {
                 format: RECIPE_FORMAT,
                 layers: Vec::new(),
                 masks: Vec::new(),
+                ..Recipe::default()
             },
         )?;
         ensure(
@@ -1616,6 +1617,7 @@ pub fn run(root: &Path, out: &Path) -> Result<Value> {
                 },
             ],
             masks: Vec::new(),
+            ..Recipe::default()
         };
         let error = render(&source, &ambiguous)
             .err()
@@ -1636,6 +1638,7 @@ pub fn run(root: &Path, out: &Path) -> Result<Value> {
                 mask: None,
             }],
             masks: Vec::new(),
+            ..Recipe::default()
         };
         let format_error = render(&source, &future_format)
             .err()

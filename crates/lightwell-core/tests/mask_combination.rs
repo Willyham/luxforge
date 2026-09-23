@@ -246,6 +246,7 @@ fn a_mixed_kind_mask_renders_exactly_as_the_reference_composes_it() {
                     mask: Some(mask.id.clone()),
                 }],
                 masks: vec![mask.clone()],
+                ..Recipe::default()
             };
             let rendered = render(&registry, &source, SnapshotId::new(), &stack)
                 .unwrap_or_else(|error| panic!("{components} components, round {round}: {error}"));
@@ -338,6 +339,7 @@ fn invert_applies_before_amount_and_the_reference_agrees() {
             mask: Some(mask.id.clone()),
         }],
         masks: vec![mask.clone()],
+        ..Recipe::default()
     };
     let rendered = render(&registry, &source, SnapshotId::new(), &stack).unwrap();
     let mut differed = 0usize;

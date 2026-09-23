@@ -29,8 +29,10 @@ use std::{
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
-/// Format 6 is the merged shape: recipes carry a mask table and layers a mask reference, and the
-/// catalog carries the preset library. Two branches each claimed format 5 for one of those halves,
+/// Format 6 is the merged shape: recipes carry a mask table and layers a mask reference, the
+/// catalog carries the preset library, and it carries the content-addressed stroke store a painted
+/// path is kept in, so no catalog ever holds embedded stroke points. Two branches each claimed
+/// format 5 for one of those halves,
 /// so a catalog written by either is refused by name rather than read as the other. Format 4 made
 /// entry records the only stored copy of a stack and format 3 stored each entry's rendered label.
 /// Every other marker, earlier or later, is refused by name and left as it is; choose a new
@@ -412,6 +414,13 @@ impl EditorService {
                     source_text TEXT,
                     UNIQUE(group_name, name)
                  );
+                 CREATE TABLE strokes (
+                    id TEXT PRIMARY KEY,
+                    stroke_json TEXT NOT NULL
+                 );
+                 CREATE TRIGGER strokes_are_immutable BEFORE UPDATE ON strokes BEGIN
+                    SELECT RAISE(ABORT, 'stored strokes are immutable');
+                 END;
                  CREATE TRIGGER entries_are_immutable BEFORE UPDATE ON entries BEGIN
                     SELECT RAISE(ABORT, 'history entries are immutable');
                  END;
@@ -1663,6 +1672,8 @@ impl EditorService {
                         // are the recipe's, not the prefix's, and dropping them would make a valid
                         // stack look as if it named a mask that does not exist.
                         masks: recipe.masks.clone(),
+                        // And the strokes those masks resolved to, for the same reason.
+                        strokes: recipe.strokes.clone(),
                     };
                     Ok(sample_linear(
                         registry,
@@ -2629,6 +2640,7 @@ fn recipe_for_target<'a>(
             .cloned()
             .collect(),
         masks: recipe.masks.clone(),
+        strokes: recipe.strokes.clone(),
     })
 }
 
@@ -2811,6 +2823,7 @@ fn insert_entry(
     entry: &HistoryEntry,
 ) -> Result<(), Error> {
     registry.validate_recipe(&entry.snapshot.recipe)?;
+    store_strokes(tx, &entry.snapshot.recipe)?;
     tx.execute(
         "INSERT INTO entries (id,asset_id,sequence,action_id,undo_parent_id,entry_json)
          VALUES (?1,?2,?3,?4,?5,?6)",
@@ -2824,6 +2837,79 @@ fn insert_entry(
         ],
     )
     .map_err(catalog_error)?;
+    Ok(())
+}
+
+/// Write this recipe's strokes to the content-addressed store, once each.
+///
+/// The address is the content's, so a stroke a later entry references again is already there and
+/// the insert does nothing: that is the whole of "stored once", and it needs no reference count and
+/// no check of what else points at it. The entry's own JSON carries only the addresses, so nothing
+/// written here is ever written into an entry.
+///
+/// A reference the recipe could not resolve writes nothing and is not an error at this boundary: an
+/// unresolvable reference is retained data, and the paths that would *draw* it refuse it by name.
+fn store_strokes(tx: &Transaction<'_>, recipe: &Recipe) -> Result<(), Error> {
+    let references = recipe.stroke_references()?;
+    if references.is_empty() {
+        return Ok(());
+    }
+    let mut statement = tx
+        .prepare("INSERT OR IGNORE INTO strokes (id,stroke_json) VALUES (?1,?2)")
+        .map_err(catalog_error)?;
+    for (_, id) in &references {
+        let Some(stroke) = recipe.strokes.get(id) else {
+            continue;
+        };
+        let text = String::from_utf8(stroke.canonical())
+            .map_err(|e| Error::new(ErrorKind::Internal, format!("cannot store stroke: {e}")))?;
+        statement
+            .execute(params![id.as_str(), text])
+            .map_err(catalog_error)?;
+    }
+    Ok(())
+}
+
+/// Resolve this recipe's stroke references against the store, one lookup each.
+///
+/// Nothing is replayed and no earlier entry is read: an entry is a complete snapshot, and this is
+/// the lookup that turns its addresses back into the strokes they name. A reference the store does
+/// not hold, or whose stored bytes are not the bytes the address names, is recorded as a fault
+/// rather than raised here, so reading, listing, undoing and carrying the stack forward keep
+/// working; the refusal happens where the recipe is compiled, which is every path that would draw
+/// it.
+fn hydrate_strokes(
+    connection: &Connection,
+    recipe: &mut Recipe,
+    origin: &str,
+) -> Result<(), Error> {
+    let references = recipe.stroke_references()?;
+    if references.is_empty() {
+        return Ok(());
+    }
+    let mut table = crate::path::StrokeTable::new(origin);
+    let mut statement = connection
+        .prepare("SELECT stroke_json FROM strokes WHERE id=?1")
+        .map_err(catalog_error)?;
+    for (_, id) in references {
+        if table.get(&id).is_some() {
+            continue;
+        }
+        let stored: Option<String> = statement
+            .query_row(params![id.as_str()], |row| row.get(0))
+            .optional()
+            .map_err(catalog_error)?;
+        match stored {
+            None => table.fault(id, crate::path::StrokeFault::Missing),
+            Some(text) => match crate::path::Stroke::from_stored(&id, text.as_bytes()) {
+                Ok(stroke) => {
+                    table.insert(stroke);
+                }
+                Err(_) => table.fault(id, crate::path::StrokeFault::Corrupt),
+            },
+        }
+    }
+    recipe.strokes = table;
     Ok(())
 }
 
@@ -2905,7 +2991,13 @@ fn entry_from(
                 "history entry does not belong to this asset",
             )
         })?;
-    decode("invalid history entry", json)
+    let mut entry: HistoryEntry = decode("invalid history entry", json)?;
+    // One lookup per referenced stroke, here and nowhere else: every path that evaluates an entry —
+    // state, preview, undo, redo, Restore, export — reads it through this function, and a listing,
+    // which never draws anything, keeps the stored addresses and pays nothing.
+    let origin = format!("entry {}", entry.id);
+    hydrate_strokes(connection, &mut entry.snapshot.recipe, &origin)?;
+    Ok(entry)
 }
 
 fn source_signature(path: &Path, metadata: &Metadata) -> SourceSignature {
@@ -3953,6 +4045,7 @@ mod tests {
                     format: crate::RECIPE_FORMAT,
                     layers,
                     masks,
+                    ..Recipe::default()
                 },
             },
             ..state.current_entry.clone()
@@ -4000,6 +4093,498 @@ mod tests {
                 |row| row.get(0),
             )
             .unwrap()
+    }
+
+    /// One captured stroke, deterministic in the index so a session builds a different stroke per
+    /// entry and the same one twice on demand.
+    fn stroke(index: usize) -> crate::path::Stroke {
+        let base = 0.05 + (index % 40) as f64 * 0.02;
+        let points: Vec<[f64; 2]> = (0..100)
+            .map(|step| {
+                let t = step as f64 / 99.0;
+                [
+                    base + 0.4 * t,
+                    0.2 + 0.3 * (t * 6.0 + index as f64).sin().abs(),
+                ]
+            })
+            .collect();
+        crate::path::Stroke::capture(&points, 0.04, 50.0, 100.0, index.is_multiple_of(7))
+            .expect("a legal stroke")
+    }
+
+    /// A mask whose one component references these strokes by address, with the strokes themselves
+    /// in the recipe's table. The component's kind is the one a brush will carry; this build has no
+    /// provider for it, which is exactly the retention case, and nothing here needs one: the store
+    /// is the host's and knows nothing about what references it.
+    fn brushed(recipe: &Recipe, strokes: &[crate::path::Stroke]) -> Recipe {
+        let mut table = crate::path::StrokeTable::new("the test session");
+        let addresses: Vec<String> = strokes
+            .iter()
+            .map(|stroke| table.insert(stroke.clone()).to_string())
+            .collect();
+        let mut mask = Mask::new("Mask 1");
+        let name = mask.next_component_name("brush");
+        mask.components.push(Component::new(
+            name,
+            ComponentMode::Add,
+            "brush",
+            json!({ "strokes": addresses }),
+        ));
+        Recipe {
+            masks: vec![mask],
+            strokes: table,
+            ..recipe.clone()
+        }
+    }
+
+    /// Write one entry through the production write path, which is what stores its strokes.
+    fn commit(catalog: &Path, entry: &HistoryEntry) {
+        let registry = ModuleRegistry::builtin();
+        let mut connection = Connection::open(catalog).unwrap();
+        let tx = connection.transaction().unwrap();
+        insert_entry(&registry, &tx, entry).unwrap();
+        tx.execute(
+            "UPDATE asset_state SET current_entry_id=?1, revision=?2 WHERE asset_id=?3",
+            params![
+                entry.id.as_str(),
+                entry.result_revision as i64,
+                entry.asset_id.as_str()
+            ],
+        )
+        .unwrap();
+        tx.commit().unwrap();
+    }
+
+    /// The next entry of a session, carrying `recipe` whole.
+    fn next_entry(state: &EditorState, recipe: Recipe) -> HistoryEntry {
+        HistoryEntry {
+            id: EntryId::new(),
+            sequence: state.current_entry.sequence + 1,
+            label: "Brush 1".into(),
+            undo_parent: Some(state.current_entry.id.clone()),
+            base_revision: state.revision,
+            result_revision: state.revision + 1,
+            snapshot: Snapshot {
+                id: SnapshotId::new(),
+                asset_id: state.asset.id.clone(),
+                recipe,
+            },
+            ..state.current_entry.clone()
+        }
+    }
+
+    fn stored_strokes(catalog: &Path) -> i64 {
+        Connection::open(catalog)
+            .unwrap()
+            .query_row("SELECT COUNT(*) FROM strokes", [], |row| row.get(0))
+            .unwrap()
+    }
+
+    /// A stroke is stored once under its address however many entries reference it, and an entry
+    /// holds addresses and no positions at all.
+    #[test]
+    fn one_stroke_is_stored_once_and_referenced_from_every_entry_that_holds_it() {
+        let catalog = temp("stroke-store.sqlite");
+        let mut service = EditorService::open(&catalog).unwrap();
+        let asset = service.import(&fixture()).unwrap().asset.id;
+        let state = service.state(&asset).unwrap();
+        let shared = stroke(1);
+        let first = next_entry(
+            &state,
+            brushed(
+                &state.current_entry.snapshot.recipe,
+                std::slice::from_ref(&shared),
+            ),
+        );
+        drop(service);
+        commit(&catalog, &first);
+
+        let service = EditorService::open(&catalog).unwrap();
+        let state = service.state(&asset).unwrap();
+        // A second entry drawn on top: the same stroke again, plus one more.
+        let second = next_entry(
+            &state,
+            brushed(
+                &state.current_entry.snapshot.recipe,
+                &[shared.clone(), stroke(2)],
+            ),
+        );
+        drop(service);
+        commit(&catalog, &second);
+
+        assert_eq!(
+            stored_strokes(&catalog),
+            2,
+            "the shared stroke is one stored object, not one per entry"
+        );
+        // Neither entry's JSON holds a position: the addresses are there and the points are not.
+        for entry in [&first, &second] {
+            let json = stored_entry_json(&catalog, &entry.id);
+            assert!(
+                json.contains(shared.id().as_str()),
+                "an entry references the stroke by address"
+            );
+            assert!(
+                !json.contains(r#""points""#),
+                "no catalog holds embedded stroke positions"
+            );
+        }
+
+        // And reading an entry back resolves what it references, without replaying anything.
+        let service = EditorService::open(&catalog).unwrap();
+        let read = service.entry(&asset, &second.id).unwrap();
+        assert_eq!(
+            read.snapshot.recipe.strokes.get(&shared.id()),
+            Some(&shared)
+        );
+        assert_eq!(
+            read.snapshot.recipe.strokes.strokes().count(),
+            2,
+            "one resolved stroke per distinct address"
+        );
+        // The earlier entry is still its own complete snapshot and resolves on its own.
+        let earlier = service.entry(&asset, &first.id).unwrap();
+        assert_eq!(earlier.snapshot.recipe.strokes.strokes().count(), 1);
+        assert_eq!(
+            earlier.snapshot.recipe.masks[0].components[0].payload,
+            first.snapshot.recipe.masks[0].components[0].payload,
+        );
+        drop(service);
+        std::fs::remove_file(catalog).unwrap();
+    }
+
+    /// A referenced stroke that is gone, or whose stored bytes are not the bytes its address names,
+    /// refuses every path that would draw the recipe and keeps everything it has.
+    #[test]
+    fn a_missing_or_corrupt_stroke_refuses_every_path_that_would_draw_it() {
+        for what in [false, true] {
+            let catalog = temp("broken-stroke.sqlite");
+            let mut service = EditorService::open(&catalog).unwrap();
+            let asset = service.import(&fixture()).unwrap().asset.id;
+            let state = service.state(&asset).unwrap();
+            let drawn = stroke(3);
+            let entry = next_entry(
+                &state,
+                brushed(
+                    &state.current_entry.snapshot.recipe,
+                    std::slice::from_ref(&drawn),
+                ),
+            );
+            drop(service);
+            commit(&catalog, &entry);
+
+            let before = stored_entry_json(&catalog, &entry.id);
+            let connection = Connection::open(&catalog).unwrap();
+            if what {
+                // Tamper with the stored bytes under an address that still names the old ones.
+                connection
+                    .execute(
+                        "DELETE FROM strokes WHERE id=?1",
+                        params![drawn.id().as_str()],
+                    )
+                    .unwrap();
+                connection
+                    .execute(
+                        "INSERT INTO strokes (id,stroke_json) VALUES (?1,?2)",
+                        params![
+                            drawn.id().as_str(),
+                            r#"{"points":[[1,1]],"size":819,"feather":0.0,"flow":100.0,"erase":false}"#
+                        ],
+                    )
+                    .unwrap();
+            } else {
+                connection
+                    .execute(
+                        "DELETE FROM strokes WHERE id=?1",
+                        params![drawn.id().as_str()],
+                    )
+                    .unwrap();
+            }
+            drop(connection);
+
+            let service = EditorService::open(&catalog).unwrap();
+            // Reading, listing and lineage keep working: the stack is retained whole.
+            let read = service.entry(&asset, &entry.id).unwrap();
+            assert_eq!(
+                read.snapshot.recipe.masks, entry.snapshot.recipe.masks,
+                "the stored mask table is retained unchanged"
+            );
+            assert!(service.history(&asset, None, 10).is_ok());
+            assert!(service.describe_entry(&asset, None).is_ok());
+            assert!(service.state(&asset).is_ok());
+            drop(service);
+            assert_eq!(
+                stored_entry_json(&catalog, &entry.id),
+                before,
+                "nothing was rewritten or discarded"
+            );
+
+            // And every path that would have to draw it refuses by name. `render` and `sample` are
+            // the delivered evaluation paths and an image export is not implemented yet; all three
+            // compile the recipe through one function, which is where this refusal lives, so the
+            // refusal is asserted on the compile every one of them makes.
+            let registry = ModuleRegistry::builtin();
+            let source = crate::SourceImage {
+                width: 8,
+                height: 8,
+                rgba: vec![255; 8 * 8 * 4].into(),
+                fingerprint: "test".into(),
+                orientation: 1,
+            };
+            let recipe = &read.snapshot.recipe;
+            let expected = format!(
+                "stroke {} of entry {} {} referenced by component Brush 1 of mask Mask 1",
+                drawn.id(),
+                entry.id,
+                if what {
+                    "does not match its stored content address"
+                } else {
+                    "is not in the stroke store"
+                },
+            );
+            for error in [
+                crate::render(&registry, &source, SnapshotId::new(), recipe).unwrap_err(),
+                crate::sample(&registry, &source, recipe, 0, 0).unwrap_err(),
+                crate::extents(&registry, &source, recipe).unwrap_err(),
+                crate::stage_transform(&registry, source.width, source.height, recipe).unwrap_err(),
+                registry
+                    .compile(source.width, source.height, recipe)
+                    .err()
+                    .expect("compiling refuses a broken reference"),
+            ] {
+                assert_eq!(error.kind, ErrorKind::Incompatible);
+                assert_eq!(error.detail, expected);
+            }
+            std::fs::remove_file(catalog).unwrap();
+        }
+    }
+
+    /// Strokes per mask in the measured session below: the smaller of what the implemented
+    /// points-per-mask limit admits at 100 positions a stroke (81) and the design's declared 64
+    /// strokes per brush component, which the brush component itself will enforce. It is why the
+    /// 200-stroke session paints four masks — 200 strokes of 100 positions cannot live in one mask
+    /// at all — and the assertion below is what keeps the two limits from drifting apart.
+    const STROKES_PER_MASK: usize = 64;
+    const _: () = assert!(STROKES_PER_MASK * 100 <= crate::POINTS_PER_MASK);
+
+    /// A mask holding these strokes by address, with a component named for its ordinal so several
+    /// masks in one recipe read apart.
+    fn brush_mask(
+        name: &str,
+        table: &mut crate::path::StrokeTable,
+        strokes: &[crate::path::Stroke],
+    ) -> Mask {
+        let addresses: Vec<String> = strokes
+            .iter()
+            .map(|stroke| table.insert(stroke.clone()).to_string())
+            .collect();
+        let mut mask = Mask::new(name);
+        let component = mask.next_component_name("brush");
+        mask.components.push(Component::new(
+            component,
+            ComponentMode::Add,
+            "brush",
+            json!({ "strokes": addresses }),
+        ));
+        mask
+    }
+
+    /// What one session of `count` strokes costs across its history, content-addressed against
+    /// embedded, measured on the bytes that are actually written.
+    ///
+    /// The store does not change the *shape* of the growth: an entry still holds one reference per
+    /// stroke, so the total is still quadratic in the stroke count. What it changes is the constant
+    /// — a reference instead of a stroke — and that is the only claim measured here.
+    fn session_bytes(catalog: &Path, count: usize) -> (usize, usize, usize) {
+        let mut service = EditorService::open(catalog).unwrap();
+        let asset = service.import(&fixture()).unwrap().asset.id;
+        let state = service.state(&asset).unwrap();
+        let base = state.current_entry.snapshot.recipe.clone();
+        drop(service);
+
+        let registry = ModuleRegistry::builtin();
+        let mut connection = Connection::open(catalog).unwrap();
+        let tx = connection.transaction().unwrap();
+        let mut table = crate::path::StrokeTable::new("the measured session");
+        let mut drawn: Vec<Vec<crate::path::Stroke>> = Vec::new();
+        let mut previous = state.current_entry.clone();
+        let mut revision = state.revision;
+        // What an entry embedding its strokes would have cost, accumulated beside what the
+        // content-addressed entries actually cost.
+        let mut embedded = 0_usize;
+        for index in 0..count {
+            let one = stroke(index);
+            if index.is_multiple_of(STROKES_PER_MASK) {
+                drawn.push(Vec::new());
+            }
+            drawn.last_mut().unwrap().push(one);
+            let masks: Vec<Mask> = drawn
+                .iter()
+                .enumerate()
+                .map(|(at, strokes)| brush_mask(&format!("Mask {}", at + 1), &mut table, strokes))
+                .collect();
+            let recipe = Recipe {
+                masks,
+                strokes: table.clone(),
+                ..base.clone()
+            };
+            // The same snapshot with every stroke's positions written into the payload instead of
+            // its address: the shape this store exists to avoid.
+            embedded += drawn
+                .iter()
+                .flatten()
+                .map(|stroke| stroke.canonical().len() + 1)
+                .sum::<usize>();
+            let entry = HistoryEntry {
+                id: EntryId::new(),
+                sequence: previous.sequence + 1,
+                label: format!("Brush {}", index + 1),
+                undo_parent: Some(previous.id.clone()),
+                base_revision: revision,
+                result_revision: revision + 1,
+                snapshot: Snapshot {
+                    id: SnapshotId::new(),
+                    asset_id: asset.clone(),
+                    recipe,
+                },
+                ..previous.clone()
+            };
+            revision += 1;
+            insert_entry(&registry, &tx, &entry).unwrap();
+            previous = entry;
+        }
+        tx.commit().unwrap();
+
+        let entries: i64 = connection
+            .query_row("SELECT SUM(LENGTH(entry_json)) FROM entries", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        let strokes: i64 = connection
+            .query_row("SELECT SUM(LENGTH(stroke_json)) FROM strokes", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        let addressed = entries as usize + strokes as usize;
+        (
+            addressed,
+            addressed - strokes as usize + embedded,
+            strokes as usize,
+        )
+    }
+
+    /// The measurement the content-addressed store is justified by: what 200 strokes of 100
+    /// positions cost across a history of 200 entries.
+    ///
+    /// Scope: `lightwell-core`'s own catalog, on the JPEG fixture, counting the bytes of every
+    /// stored entry plus the bytes of the stroke store, against the same entries with each stroke's
+    /// positions embedded in its payload. It is a byte count and not a timing, so no load average
+    /// applies to it. The strokes are spread over four masks because the declared points-per-mask
+    /// limit admits at most 81 strokes of 100 positions in one mask.
+    #[test]
+    fn two_hundred_strokes_cost_about_a_megabyte_rather_than_about_forty() {
+        let catalog = temp("stroke-growth.sqlite");
+        let (addressed, embedded, distinct) = session_bytes(&catalog, 200);
+        std::fs::remove_file(&catalog).unwrap();
+        let mb = |bytes: usize| bytes as f64 / 1_000_000.0;
+        println!(
+            "200 strokes of 100 positions: distinct stroke data {} KiB, content-addressed across \
+             history {:.2} MB, embedded across history {:.2} MB, a factor of {:.1}; one stroke \
+             serializes to {} bytes and one reference costs 35",
+            distinct / 1024,
+            mb(addressed),
+            mb(embedded),
+            embedded as f64 / addressed as f64,
+            distinct / 200,
+        );
+        // The design's table carries these measured figures, and carried predicted ones before this
+        // ran: it predicted 364 KiB of distinct stroke data and 37.5 MB embedded, from a stroke
+        // serializing to about 1.8 KiB. A stored position is a whole grid step and not a decimal, so
+        // a stroke serializes to about 968 bytes, and the table was corrected to what is measured
+        // here rather than the prediction being kept. The content-addressed total was predicted at
+        // 1.08 MB and measures 1.10 MB, because it is dominated by the 35-byte reference, which is
+        // what the prediction got right.
+        assert!(
+            (0.95..1.25).contains(&mb(addressed)),
+            "content-addressed history measured {:.3} MB, not the recorded 1.11 MB",
+            mb(addressed),
+        );
+        assert!(
+            (18.0..23.0).contains(&mb(embedded)),
+            "embedded history measured {:.3} MB, not the recorded 20.4 MB",
+            mb(embedded),
+        );
+        assert!(
+            (170..210).contains(&(distinct / 1024)),
+            "distinct stroke data measured {} KiB, not the recorded 189 KiB",
+            distinct / 1024,
+        );
+        // The store shrinks the constant; it does not change the shape of the growth, which is
+        // still quadratic in the stroke count. This is the constant, per stroke per entry.
+        assert!(
+            (25..32).contains(&(distinct / 200 / 35)),
+            "one reference stands in for {} of its own size, not the recorded 28",
+            distinct / 200 / 35,
+        );
+    }
+
+    /// The declared points-per-mask limit is enforced where the strokes are in hand, and names
+    /// itself.
+    #[test]
+    fn a_mask_over_the_points_per_mask_limit_names_the_limit() {
+        let catalog = temp("points-per-mask.sqlite");
+        let mut service = EditorService::open(&catalog).unwrap();
+        let asset = service.import(&fixture()).unwrap().asset.id;
+        let state = service.state(&asset).unwrap();
+        let base = state.current_entry.snapshot.recipe.clone();
+        drop(service);
+        std::fs::remove_file(&catalog).unwrap();
+
+        let registry = ModuleRegistry::builtin();
+        let at_bound: Vec<crate::path::Stroke> = (0..STROKES_PER_MASK).map(stroke).collect();
+        let points: usize = at_bound.iter().map(crate::path::Stroke::point_count).sum();
+        let recipe = |strokes: &[crate::path::Stroke]| {
+            let mut table = crate::path::StrokeTable::new("the test session");
+            Recipe {
+                masks: vec![brush_mask("Mask 1", &mut table, strokes)],
+                strokes: table,
+                ..base.clone()
+            }
+        };
+        // Under the bound the mask is refused only for the kind no provider claims yet, which is a
+        // fact about this build and not about the limit.
+        assert_eq!(
+            registry
+                .compile(64, 48, &recipe(&at_bound))
+                .err()
+                .expect("no provider for the brush kind yet")
+                .detail,
+            "unknown mask component brush",
+        );
+        assert!(points <= crate::POINTS_PER_MASK);
+
+        let mut over = at_bound.clone();
+        while over
+            .iter()
+            .map(crate::path::Stroke::point_count)
+            .sum::<usize>()
+            <= crate::POINTS_PER_MASK
+        {
+            over.push(stroke(over.len()));
+        }
+        let total: usize = over.iter().map(crate::path::Stroke::point_count).sum();
+        let error = registry
+            .compile(64, 48, &recipe(&over))
+            .err()
+            .expect("past the bound");
+        assert_eq!(error.kind, ErrorKind::ResourceLimit);
+        assert_eq!(
+            error.detail,
+            format!(
+                "mask Mask 1 holds {total} stored path positions; the limit is {} points per mask",
+                crate::POINTS_PER_MASK
+            )
+        );
     }
 
     /// Masks ride inside the snapshot every entry already stores, so reopen returns them unchanged

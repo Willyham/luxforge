@@ -142,6 +142,20 @@ pub enum ParameterKind {
     /// Three 8-bit sRGB channels as a JSON array.
     Color,
     Boolean,
+    /// An ordered path: `[x, y]` positions in the content stage's normalized coordinates, in drawn
+    /// order, as a drawn gesture produces them. The one parameter kind a painting action needs, and
+    /// a parameter kind rather than a control kind because a path is drawn on the canvas and no
+    /// panel widget edits one.
+    ///
+    /// Unlike a [`ParameterKind::Curve`] it is a path and not a function: positions may repeat an
+    /// `x`, may run in any direction and are not sorted. The coordinate range, the stored
+    /// precision, the decimation contract and the per-stroke bound are
+    /// [`crate::path`]'s and are published with the schema, so a client can post a path without
+    /// reading any desktop code.
+    Points {
+        points_min: usize,
+        points_max: usize,
+    },
     /// Ordered [x, y] fractions. Interpolation belongs to the module.
     Curve {
         points_min: usize,
@@ -1098,6 +1112,19 @@ fn check_declared<'a>(
                     parameter.name
                 )));
             }
+            ParameterKind::Points {
+                points_min,
+                points_max,
+            } if *points_min < 1
+                || *points_max > crate::path::POINTS_PER_STROKE
+                || points_min > points_max =>
+            {
+                return Err(validation(format!(
+                    "parameter {} declares invalid path point bounds; 1..={} is the limit",
+                    parameter.name,
+                    crate::path::POINTS_PER_STROKE
+                )));
+            }
             ParameterKind::Curve {
                 points_min,
                 points_max,
@@ -1385,6 +1412,56 @@ pub fn check_value(parameter: &ParameterDescriptor, value: &Value) -> Result<(),
         ParameterKind::Boolean => {
             if !value.is_boolean() {
                 return Err(validation(format!("parameter {name} must be a boolean")));
+            }
+        }
+        ParameterKind::Points {
+            points_min,
+            points_max,
+        } => {
+            use crate::path::{COORDINATE_MAX, COORDINATE_MIN};
+            let Some(points) = value.as_array() else {
+                return Err(validation(format!("parameter {name} must be a path")));
+            };
+            // The count is refused as a resource limit when it is over the bound and as a
+            // validation error when it is under one, because the two are different facts: a path
+            // longer than a build will store names the limit it exceeded, and a path too short to
+            // be a gesture is a malformed request.
+            if points.len() > *points_max {
+                return Err(Error::new(
+                    ErrorKind::ResourceLimit,
+                    format!(
+                        "parameter {name} has {} positions; the limit is {points_max} points per \
+                         stroke",
+                        points.len()
+                    ),
+                ));
+            }
+            if points.len() < *points_min {
+                return Err(validation(format!(
+                    "parameter {name} must hold at least {points_min} positions"
+                )));
+            }
+            for (index, point) in points.iter().enumerate() {
+                let Some(pair) = point.as_array().filter(|pair| pair.len() == 2) else {
+                    return Err(validation(format!(
+                        "parameter {name} has a malformed position {index}"
+                    )));
+                };
+                let (Some(x), Some(y)) = (pair[0].as_f64(), pair[1].as_f64()) else {
+                    return Err(validation(format!(
+                        "parameter {name} has a malformed position {index}"
+                    )));
+                };
+                if !x.is_finite()
+                    || !y.is_finite()
+                    || !(COORDINATE_MIN..=COORDINATE_MAX).contains(&x)
+                    || !(COORDINATE_MIN..=COORDINATE_MAX).contains(&y)
+                {
+                    return Err(validation(format!(
+                        "parameter {name} position {index} must hold two numbers within \
+                         {COORDINATE_MIN:.0}..={COORDINATE_MAX:.0}"
+                    )));
+                }
             }
         }
         ParameterKind::Curve {
@@ -1784,6 +1861,72 @@ mod tests {
                 },
             ],
         }
+    }
+
+    /// A `points` parameter declaring these bounds, on a module with no controls: a path is drawn
+    /// on the canvas and the control vocabulary has no widget for one, so the parameter stands on
+    /// its own and only the bounds rule under test can fail.
+    fn points_module(points_min: usize, points_max: usize) -> ModuleDescriptor {
+        ModuleDescriptor {
+            actions: vec![ActionDescriptor {
+                summary: None,
+                parameters: vec![ParameterDescriptor {
+                    name: "path".into(),
+                    kind: ParameterKind::Points {
+                        points_min,
+                        points_max,
+                    },
+                    required: true,
+                    default: None,
+                    unit: None,
+                    step: None,
+                    precision: None,
+                    notes: "the drawn path".into(),
+                    soft_min: None,
+                    soft_max: None,
+                    fine_step: None,
+                    zero: None,
+                }],
+                ..action()
+            }],
+            controls: Vec::new(),
+            reset: None,
+            ..descriptor()
+        }
+    }
+
+    #[test]
+    fn a_points_parameter_is_declared_within_the_host_path_bound() {
+        let limit = crate::path::POINTS_PER_STROKE;
+        points_module(1, limit)
+            .validate()
+            .expect("the whole bound is declarable");
+        points_module(1, 1)
+            .validate()
+            .expect("a one-position path is a legal declaration");
+        for (min, max) in [(0, 8), (1, limit + 1), (8, 4)] {
+            assert_eq!(
+                points_module(min, max).validate().unwrap_err().detail,
+                format!(
+                    "parameter path declares invalid path point bounds; 1..={limit} is the limit"
+                )
+            );
+        }
+        // A path is not numeric and not a curve, so it carries none of the numeric display hints.
+        let hinted = ModuleDescriptor {
+            actions: vec![ActionDescriptor {
+                parameters: vec![ParameterDescriptor {
+                    step: Some(0.1),
+                    ..points_module(1, 8).actions[0].parameters[0].clone()
+                }],
+                ..points_module(1, 8).actions[0].clone()
+            }],
+            ..points_module(1, 8)
+        };
+        assert_eq!(
+            hinted.validate().unwrap_err().detail,
+            "parameter path declares a step or precision but is not numeric or a curve"
+        );
     }
 
     fn descriptor() -> ModuleDescriptor {

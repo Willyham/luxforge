@@ -65,6 +65,7 @@ fn stack(width: u32, height: u32) -> Recipe {
             Layer::crop(fitted.normalized(&stage)),
         ],
         masks: Vec::new(),
+        ..Recipe::default()
     }
 }
 

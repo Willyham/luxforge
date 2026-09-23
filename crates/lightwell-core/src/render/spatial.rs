@@ -1081,6 +1081,7 @@ pub(crate) mod tests {
             format: crate::RECIPE_FORMAT,
             layers,
             masks: Vec::new(),
+            ..Recipe::default()
         }
     }
 
@@ -2043,6 +2044,7 @@ pub(crate) mod tests {
                                 .map(|mask| presence(masked.then_some(mask)))
                                 .collect(),
                             masks: masks.clone(),
+                            ..Recipe::default()
                         };
                         if !masked && count > 1 {
                             // Two unmasked layers of one single-layer effect share a target and are

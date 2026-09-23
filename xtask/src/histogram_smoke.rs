@@ -144,6 +144,7 @@ fn displayed_recipe(frame: &Value) -> Result<Recipe> {
             })
             .collect::<Result<Vec<_>>>()?,
         masks: Vec::new(),
+        ..Recipe::default()
     })
 }
 
@@ -444,6 +445,7 @@ pub fn verify(root: &Path, evidence: &Path, app: &Value, _events: &[Value]) -> R
             format: RECIPE_FORMAT,
             layers: vec![Layer::pixel(BOTH_PIXEL.0, BOTH_PIXEL.1, BOTH_RGB)],
             masks: Vec::new(),
+            ..Recipe::default()
         },
     )?;
     ensure(

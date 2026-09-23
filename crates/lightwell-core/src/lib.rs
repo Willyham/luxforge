@@ -11,6 +11,9 @@ pub mod mask;
 mod mask_field;
 mod model;
 mod modules;
+/// The host's path primitives: the stored coordinate grid, decimation, the stroke a painting
+/// action captures, and the content-addressed store those strokes live in.
+pub mod path;
 mod presets;
 mod preview;
 mod profile;
@@ -382,6 +385,7 @@ mod tests {
                         format: RECIPE_FORMAT,
                         layers,
                         masks: Vec::new(),
+                        ..Recipe::default()
                     },
                 )
                 .unwrap()
