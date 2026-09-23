@@ -1234,3 +1234,215 @@ fn apply_commits_then_updates_in_place_and_reset_neutralises_the_same_layer() {
     );
     assert_eq!(plan("reset-proof-tint", None, &[]), ActionPlan::NoOp);
 }
+
+/// p50 and p95 in milliseconds of a sorted sample.
+fn percentiles(samples: &mut [f64]) -> (f64, f64) {
+    samples.sort_by(f64::total_cmp);
+    let p95 = samples[((samples.len() as f64 * 0.95).ceil() as usize).max(1) - 1];
+    (samples[samples.len() / 2], p95)
+}
+
+/// Poll a job at a tenth of a millisecond, so the wait adds almost nothing to what is measured.
+fn settled(owner: &Owner, job_id: &Value) -> (Value, f64) {
+    let started = Instant::now();
+    loop {
+        let job = owner.ok(JOB_READ, json!({"job_id": job_id}));
+        if !matches!(job["status"].as_str(), Some("queued" | "running")) {
+            return (job, started.elapsed().as_secs_f64() * 1000.0);
+        }
+        thread::sleep(Duration::from_micros(100));
+    }
+}
+
+/// The framework's own costs on this host: registration with and without the proof module, the
+/// owner's answer to the capability reads, activation, a whole task against the loopback endpoint,
+/// cancellation of a running activation and of a task stalled in its request, and the disk an
+/// installed resource takes. Run explicitly, in release, on a quiet machine:
+/// `cargo test --release --locked -p lightwell-core --lib capability_timing -- --ignored --nocapture`.
+#[test]
+#[ignore = "measurement, run explicitly in release"]
+fn capability_timing() {
+    const SAMPLES: usize = 30;
+    let report = |name: &str, samples: &mut Vec<f64>| {
+        let (p50, p95) = percentiles(samples);
+        println!(
+            "{name}: p50 {p50:.3} ms, p95 {p95:.3} ms over {} samples",
+            samples.len()
+        );
+    };
+
+    let mut builtin = Vec::new();
+    let mut with_proof = Vec::new();
+    for _ in 0..200 {
+        let started = Instant::now();
+        let registry = ModuleRegistry::builtin();
+        builtin.push(started.elapsed().as_secs_f64() * 1000.0);
+        drop(registry);
+        let started = Instant::now();
+        let mut registry = ModuleRegistry::builtin();
+        registry
+            .register(Arc::new(CapabilitiesProofModule::new(
+                "http://127.0.0.1:9/",
+            )))
+            .unwrap();
+        with_proof.push(started.elapsed().as_secs_f64() * 1000.0);
+    }
+    report("registration, built-ins", &mut builtin);
+    report(
+        "registration, built-ins and the proof module",
+        &mut with_proof,
+    );
+
+    let fixture = Fixture::with_activation_delay("proof-timing", Duration::from_millis(1500));
+    let assets = fixture.import();
+    let owner = fixture.start();
+    let mut status = Vec::new();
+    let mut settings = Vec::new();
+    for _ in 0..SAMPLES {
+        let started = Instant::now();
+        owner.ok(STATUS, json!({"module_id": MODULE}));
+        status.push(started.elapsed().as_secs_f64() * 1000.0);
+        let started = Instant::now();
+        owner.ok(READ, json!({"module_id": MODULE}));
+        settings.push(started.elapsed().as_secs_f64() * 1000.0);
+    }
+    report("module.status round trip (nothing installed)", &mut status);
+    report("module.settings.read round trip", &mut settings);
+
+    ready(&fixture, &owner, assets);
+    let installed = fixture
+        .files()
+        .into_iter()
+        .filter(|(path, _)| {
+            path.components()
+                .any(|part| part.as_os_str() == "resources")
+        })
+        .map(|(_, bytes)| bytes.len())
+        .sum::<usize>();
+    let staging = fixture.root.join("data/modules/resources/.staging");
+    println!(
+        "installed resource disk: {installed} bytes including installed.json; staging entries left: {}",
+        fs::read_dir(&staging).map_or(0, |entries| entries.count())
+    );
+
+    // Cancelling a running activation: the proof's slow loader checks for cancellation every
+    // few milliseconds, so this is the host's own latency plus at most one loader step.
+    let mut cancel_activation = Vec::new();
+    for _ in 0..10 {
+        let deactivating = owner.ok(DEACTIVATE, json!({"module_id": MODULE}));
+        if let Some(job) = deactivating.get("job_id").filter(|job| !job.is_null()) {
+            settled(&owner, job);
+        }
+        let activating = owner.ok(ACTIVATE, json!({"module_id": MODULE}));
+        loop {
+            let job = owner.ok(JOB_READ, json!({"job_id": activating["job_id"]}));
+            if job["status"] == "running" {
+                break;
+            }
+            thread::sleep(Duration::from_micros(100));
+        }
+        let started = Instant::now();
+        owner.ok(DEACTIVATE, json!({"module_id": MODULE}));
+        let (job, _) = settled(&owner, &activating["job_id"]);
+        cancel_activation.push(started.elapsed().as_secs_f64() * 1000.0);
+        assert_eq!(job["status"], "cancelled", "{job}");
+    }
+    report(
+        "cancel a running activation to cancelled",
+        &mut cancel_activation,
+    );
+
+    // Activation of the proof module itself, without the slow loader: a fresh fixture whose
+    // loader reads and validates the installed palette.
+    drop(owner);
+    drop(fixture);
+    let fixture = Fixture::new("proof-timing-fast");
+    let assets = fixture.import();
+    let owner = fixture.start();
+    ready(&fixture, &owner, assets);
+    let mut activation = Vec::new();
+    for _ in 0..SAMPLES {
+        let deactivating = owner.ok(DEACTIVATE, json!({"module_id": MODULE}));
+        if let Some(job) = deactivating.get("job_id").filter(|job| !job.is_null()) {
+            settled(&owner, job);
+        }
+        let started = Instant::now();
+        let activating = owner.ok(ACTIVATE, json!({"module_id": MODULE}));
+        let (job, _) = settled(&owner, &activating["job_id"]);
+        activation.push(started.elapsed().as_secs_f64() * 1000.0);
+        assert_eq!(job["status"], "succeeded", "{job}");
+    }
+    report("activate to active (proof palette load)", &mut activation);
+    drop(owner);
+    drop(fixture);
+
+    // A whole task and a cancelled one, on the first fixture's shape: the owner binds the stack,
+    // the module lane samples the 8 × 8 grid, reads the input file, posts to the loopback
+    // endpoint and publishes the artifact, and the owner records it.
+    let fixture = Fixture::new("proof-timing-task");
+    let assets = fixture.import();
+    let owner = fixture.start();
+    let Ready { assets, profile } = ready(&fixture, &owner, assets);
+    let mut task = Vec::new();
+    for _ in 0..SAMPLES {
+        let started = Instant::now();
+        let queued = owner.task(&assets[0], &profile).unwrap();
+        let (job, _) = settled(&owner, &queued["job_id"]);
+        task.push(started.elapsed().as_secs_f64() * 1000.0);
+        assert_eq!(job["status"], "succeeded", "{job}");
+    }
+    report("task request to succeeded (loopback round trip)", &mut task);
+    // The task's durable part: one artifact synced and renamed into place, as the writer does it.
+    let writer = EditorService::open_with(&fixture.root.join("timing.sqlite"), fixture.registry())
+        .unwrap()
+        .artifact_writer()
+        .unwrap();
+    let mut publish = Vec::new();
+    for index in 0..SAMPLES as u32 {
+        let bytes: Vec<u8> = (index..index + 3)
+            .flat_map(|value| (value as f32).to_le_bytes())
+            .collect();
+        let started = Instant::now();
+        writer
+            .write(
+                &bytes,
+                crate::artifacts::ArtifactMeta {
+                    kind: "timing".into(),
+                    width: None,
+                    height: None,
+                    colour: None,
+                },
+                MODULE,
+            )
+            .unwrap();
+        publish.push(started.elapsed().as_secs_f64() * 1000.0);
+    }
+    report(
+        "publish one 12-byte artifact (synced, renamed)",
+        &mut publish,
+    );
+    fixture.endpoint.set_delay(Duration::from_secs(60));
+    let mut cancel_task = Vec::new();
+    for _ in 0..10 {
+        let queued = owner.task(&assets[0], &profile).unwrap();
+        loop {
+            let job = owner.ok(JOB_READ, json!({"job_id": queued["job_id"]}));
+            if job["status"] == "running" {
+                break;
+            }
+            thread::sleep(Duration::from_micros(100));
+        }
+        // Let the request reach the endpoint and stall there.
+        thread::sleep(Duration::from_millis(20));
+        let started = Instant::now();
+        owner.ok(JOB_CANCEL, json!({"job_id": queued["job_id"]}));
+        let (job, _) = settled(&owner, &queued["job_id"]);
+        cancel_task.push(started.elapsed().as_secs_f64() * 1000.0);
+        assert_eq!(job["status"], "cancelled", "{job}");
+    }
+    report(
+        "cancel a task stalled in its request to cancelled",
+        &mut cancel_task,
+    );
+    fixture.endpoint.set_delay(Duration::ZERO);
+}
