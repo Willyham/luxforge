@@ -4,7 +4,7 @@ One application service, used by the desktop UI and by external clients alike, o
 
 ## Workspace
 
-Rust 1.94 workspace: Iced 0.14 on wgpu, `image` for JPEG and PNG, `moxcms` for conservative sRGB profile recognition, `rfd` for native and portal dialogs, pinned bundled LibRaw/librtprocess behind the private `lightwell-raw` adapter, bundled SQLite through `rusqlite`, Rayon for the parallel raster pass. Exact versions are pinned in `Cargo.lock`.
+Rust 1.94 workspace: Iced 0.14 on wgpu, `image` for JPEG and PNG, `moxcms` for conservative sRGB profile recognition, `rfd` for native and portal dialogs, pinned bundled LibRaw/librtprocess behind the private `lightwell-raw` adapter, bundled SQLite through `rusqlite`, Rayon for the parallel raster pass, `roxmltree` for Lightroom XMP presets. Exact versions are pinned in `Cargo.lock`.
 
 - `crates/lightwell-core`: images, recipes, rendering, SQLite catalog and history, preview scheduling, JSON API.
 - `crates/lightwell-ui`: the widget library and theme tokens of the Develop workspace; depends on Iced only, never on the core, so a widget cannot hold editing logic.
