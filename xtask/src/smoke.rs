@@ -256,25 +256,30 @@ pub const RENDER_MS_BOUND: f64 = 5000.0;
 
 /// The status bar's wording of one frame's render time, exactly as the editor's
 /// `state::status::RenderTime` formats it, so a captured frame's text is checked against its own
-/// figure rather than against a copy of the text.
-pub fn render_text(ms: f64, proxy: bool) -> String {
+/// figure rather than against a copy of the text. `approximate` is a frame that approximates a
+/// drafted RAW white balance.
+pub fn render_text(ms: f64, proxy: bool, approximate: bool) -> String {
     let figure = if ms < 0.5 {
         "<1".to_owned()
     } else {
         format!("{}", ms.round() as i64)
     };
-    format!(
-        "Rendered in {figure} ms{}",
-        if proxy { " (proxy)" } else { "" }
-    )
+    let phase = match (proxy, approximate) {
+        (true, true) => " (proxy, approximate)",
+        (true, false) => " (proxy)",
+        (false, true) => " (approximate)",
+        (false, false) => "",
+    };
+    format!("Rendered in {figure} ms{phase}")
 }
 
 /// Every presented frame's render time, from its `preview_displayed` event: the preview worker's
 /// own time for the phase on screen. Each must be a finite number of milliseconds in
 /// `0..RENDER_MS_BOUND`, and there must be at least one. Then, for every captured frame, the status
 /// bar either says the renderer is busy or states a figure that one of those events carried, in
-/// exactly the editor's wording, with `(proxy)` exactly when the frame on screen is the proxy.
-/// Returns the evidence record.
+/// exactly the editor's wording, with `(proxy)` exactly when the frame on screen is the proxy and
+/// `approximate` exactly when it approximates a drafted RAW white balance. Returns the evidence
+/// record.
 pub fn expect_render_times(events: &[Value], frames: &[Value]) -> Result<Value> {
     let mut displayed = Vec::new();
     for event in events.iter().filter(|e| e["event"] == "preview_displayed") {
@@ -334,14 +339,22 @@ pub fn expect_render_times(events: &[Value], frames: &[Value]) -> Result<Value> 
                 frame["file"]
             ),
         )?;
+        let approximate = bar["render_approximate"] == json!(true);
         ensure(
-            text == render_text(ms, proxy),
+            approximate == (frame["state"]["approximate_white_balance"] == json!(true)),
+            format!(
+                "{}: the status bar's approximate label disagrees with the frame on screen",
+                frame["file"]
+            ),
+        )?;
+        ensure(
+            text == render_text(ms, proxy, approximate),
             format!(
                 "{}: the status bar says {text:?} for {ms} ms",
                 frame["file"]
             ),
         )?;
-        shown.push(json!({"frame":frame["file"],"render":text,"render_ms":ms,"proxy":proxy}));
+        shown.push(json!({"frame":frame["file"],"render":text,"render_ms":ms,"proxy":proxy,"approximate":approximate}));
     }
     Ok(json!({"bound_ms":RENDER_MS_BOUND,"preview_displayed":displayed,"status_bar":shown}))
 }
@@ -804,8 +817,16 @@ mod tests {
     fn render_times_must_be_each_frames_own_and_plausible() {
         let displayed = |ms: Value| json!({"event":"preview_displayed","detail":{"generation":2,"proxy":true,"render_ms":ms}});
         let frame = |render: &str, ms: f64, proxy: bool| json!({"file":"frame-1.png","state":{"proxy":{"presented":proxy},"status_bar":{"render":render,"render_ms":ms,"render_proxy":proxy}}});
-        assert_eq!(render_text(12.4, true), "Rendered in 12 ms (proxy)");
-        assert_eq!(render_text(0.3, false), "Rendered in <1 ms");
+        assert_eq!(render_text(12.4, true, false), "Rendered in 12 ms (proxy)");
+        assert_eq!(render_text(0.3, false, false), "Rendered in <1 ms");
+        assert_eq!(
+            render_text(9.2, true, true),
+            "Rendered in 9 ms (proxy, approximate)"
+        );
+        assert_eq!(
+            render_text(140.0, false, true),
+            "Rendered in 140 ms (approximate)"
+        );
         let good = expect_render_times(
             &[displayed(json!(12.4))],
             &[frame("Rendered in 12 ms (proxy)", 12.4, true)],
