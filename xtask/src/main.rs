@@ -1,5 +1,6 @@
 mod basic_acceptance;
 mod basic_smoke;
+mod capabilities_smoke;
 mod controls_smoke;
 mod crop_smoke;
 mod diagnostics;
