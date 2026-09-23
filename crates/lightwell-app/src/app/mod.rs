@@ -1400,8 +1400,8 @@ impl Editor {
     /// is the only caller, and only when the pixels it needs do not exist.
     /// Queue one preview job with the bounds of this moment. Every job goes through here: the
     /// bounds a task carried from the owner are replaced by what the window, the panels and the
-    /// display scale ask for now, so the first frame after launch is already at the display's
-    /// scale and a job requested during a resize is sized for the window it will be shown in. A
+    /// display scale ask for now, so a job requested once the display scale is known is already at
+    /// it and a job requested during a resize is sized for the window it will be shown in. A
     /// truncated job never gets a proxy.
     pub(crate) fn request_preview(&mut self, mut job: lightwell_core::PreviewJob) -> u64 {
         job.proxy = if job.layer_count.is_some() {
@@ -7243,7 +7243,7 @@ mod tests {
 
     /// The bounds a job renders for are the window, the panels and the display scale of the
     /// moment it is requested, not of the moment its owner task was created: the display scale
-    /// arrives after launch, and the first frame must already be at it.
+    /// arrives after launch, and every job requested after it must already be at it.
     #[test]
     fn a_preview_job_takes_the_bounds_of_the_moment_it_is_requested() {
         let (mut editor, catalog, _, _) = opened(Vec::new(), 4);
