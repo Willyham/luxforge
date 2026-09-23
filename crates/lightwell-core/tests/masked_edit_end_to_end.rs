@@ -337,3 +337,37 @@ mod json_client {
         assert_eq!(refused["code"], "validation", "{refused}");
     }
 }
+
+/// A masked module edit names its mask in the history label, and a global edit of the same module
+/// does not — the one case where a label would otherwise be ambiguous with a single mask in the
+/// recipe, because both entries carry the module's own summary and nothing else.
+#[test]
+fn a_masked_edit_names_its_mask_in_history_where_the_same_global_edit_does_not() {
+    let mut f = Fixture::open("labels");
+    let mask = f.mask_command(
+        "mask.create-linear",
+        MaskTarget::default(),
+        json!({"x0": 0.5, "y0": 0.0, "x1": 0.5, "y1": 1.0}),
+        "create",
+    );
+
+    f.edit("set-basic", json!({"exposure": 1.0}), "global");
+    let global = f.service.state(&f.asset).unwrap().current_entry.label;
+
+    f.edit(
+        "set-basic",
+        json!({"mask": mask.as_str(), "exposure": 1.0}),
+        "masked",
+    );
+    let masked = f.service.state(&f.asset).unwrap().current_entry.label;
+
+    assert!(
+        !global.contains('·'),
+        "a global edit names no mask: {global}"
+    );
+    assert_eq!(
+        masked,
+        format!("Mask 1 · {global}"),
+        "a masked edit is the same summary, prefixed with the mask it went through"
+    );
+}

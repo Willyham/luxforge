@@ -649,7 +649,7 @@ fn a_radial_is_created_added_patched_and_rendered_end_to_end() {
         labels,
         [
             "Add radial",
-            "Exposure -2.00 EV",
+            "Mask 1 · Exposure -2.00 EV",
             "Add subtract linear",
             "Update Radial 1",
         ],
@@ -786,7 +786,7 @@ fn a_components_mode_and_inversion_are_editable_after_it_exists() {
         labels,
         [
             "Add radial",
-            "Exposure -2.00 EV",
+            "Mask 1 · Exposure -2.00 EV",
             "Radial 1 inverted",
             "Add linear",
             "Linear 1 intersect",

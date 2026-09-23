@@ -1354,6 +1354,18 @@ impl EditorService {
         validate_source_recipe(&state.asset, recipe)?;
         // A target the stack does not hold is refused here, before a module plans anything.
         resolve_mask_target(recipe, mask.as_ref())?;
+        // A masked module edit always names its mask, where a `mask.*` command names one only once
+        // the stack holds more than one. The difference is not an inconsistency but the ambiguity
+        // each one actually has: `Update Linear 1` is unmistakable while a recipe holds one mask,
+        // but `Exposure +2.00 EV` is exactly what this module's *global* edit writes, so a single
+        // mask is already enough for a history row to show two entries nothing distinguishes.
+        let label = match mask
+            .as_ref()
+            .and_then(|id| recipe.masks.iter().find(|mask| &mask.id == id))
+        {
+            Some(mask) => format!("{} · {label}", mask.name),
+            None => label,
+        };
         if module.descriptor().id == "lightwell.raw" {
             let (width, height) = (state.asset.width, state.asset.height);
             let stage = registry.compile(width, height, recipe)?.stage();
