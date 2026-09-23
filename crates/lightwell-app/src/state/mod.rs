@@ -148,6 +148,21 @@ impl Workspace {
         )
     }
 
+    /// Which sections' bands carry the edited dot, for the correlated evidence state.
+    pub(crate) fn active(&self) -> serde_json::Value {
+        serde_json::Value::Object(
+            self.tools
+                .all()
+                .map(|section| {
+                    (
+                        section.module_id.clone(),
+                        serde_json::Value::from(section.active),
+                    )
+                })
+                .collect(),
+        )
+    }
+
     /// Which sections are expanded, for the correlated evidence state.
     pub(crate) fn expanded(&self) -> serde_json::Value {
         serde_json::Value::Object(

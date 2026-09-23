@@ -3,7 +3,9 @@
 //! drag left open, whose drafted frame approximates the white balance on the developed planes and
 //! is labelled so, then released, which redevelops the mosaic and lands the exact frame, at Fit
 //! and again at 100%; and a double-click reset on each of the three sliders after the committed
-//! drag the first press makes.
+//! drag the first press makes: exposure back to 0 EV, and the custom temperature and tint back to
+//! As shot, whose fields then show the camera's as-shot equivalent. The RAW band carries no edited
+//! dot on the untouched photograph and again once the resets leave As shot at 0 EV.
 //!
 //! No RAW photograph is checked in (see `fixtures/README.md`), so this scenario is not in
 //! [`crate::smoke::SCENARIOS`] and takes its source from `--source`: an owner or raw.pixls.us file
@@ -50,33 +52,46 @@ const FIRST_CLICK_STEP: usize = 8;
 /// inside the 300 ms iced gives the two presses.
 const GAP_MS: u64 = 120;
 
-/// One double-click the script makes: the field, where its first press lands, and the text the
-/// field shows once the reset has run, which is the parameter's declared default.
+/// One double-click the script makes: the field, where its first press lands, the action its
+/// reset runs, and what the field shows once that has run.
 struct DoubleClick {
     action: &'static str,
     parameter: &'static str,
     value: f64,
-    default: &'static str,
+    /// The action the reset sends: the field's own, with its declared default, or the reset its
+    /// control declares.
+    reset: &'static str,
+    /// The text the field shows after its reset: its declared default, or `None` for As shot,
+    /// whose temperature and tint are the camera's as-shot equivalent, computed from the frame's
+    /// own RAW layer by the check.
+    shows: Option<&'static str>,
 }
+
+const AS_SHOT: &str = "use-as-shot-wb";
 
 const DOUBLE_CLICKS: [DoubleClick; 4] = [
     DoubleClick {
         action: "set-raw-exposure",
         parameter: "ev",
         value: 0.35,
-        default: "0.00",
+        reset: "set-raw-exposure",
+        shows: Some("0.00"),
     },
+    // Custom temperature and tint reset to the camera's own white balance, as Lightroom's Temp and
+    // Tint do.
     DoubleClick {
         action: "set-raw-temperature",
         parameter: "kelvin",
         value: 5000.0,
-        default: "6504",
+        reset: AS_SHOT,
+        shows: None,
     },
     DoubleClick {
         action: "set-raw-tint",
         parameter: "tint",
         value: 12.0,
-        default: "0",
+        reset: AS_SHOT,
+        shows: None,
     },
     // Basic's own Exposure on the same photograph, for comparison: its commit does not wait for a
     // redevelopment.
@@ -84,7 +99,8 @@ const DOUBLE_CLICKS: [DoubleClick; 4] = [
         action: "set-basic",
         parameter: "exposure",
         value: 0.4,
-        default: "0.00",
+        reset: "set-basic",
+        shows: Some("0.00"),
     },
 ];
 
@@ -249,9 +265,14 @@ pub fn verify(evidence: &Path, app: &Value, events: &[Value]) -> Result {
         let sent = named("field_reset_sent");
         ensure(
             sent.len() == 1
-                && sent[0]["detail"]["action"] == click.action
+                && sent[0]["detail"]["action"] == click.reset
+                && sent[0]["detail"]["field"]
+                    == json!({"action": click.action, "parameter": click.parameter})
                 && sent[0]["detail"]["revision"] == json!(revision(before)? + 1),
-            format!("{field}: the reset was not sent once, after the jump's commit: {sent:?}"),
+            format!(
+                "{field}: the reset was not {} sent once, after the jump's commit: {sent:?}",
+                click.reset
+            ),
         )?;
         ensure(
             named("slider_draft_commit").len() == 1,
@@ -265,35 +286,120 @@ pub fn verify(evidence: &Path, app: &Value, events: &[Value]) -> Result {
                 revision(before)?
             ),
         )?;
-        ensure(
-            after["state"]["controls"][&field] == json!(click.default),
-            format!(
-                "{field} shows {} after its reset, not its default {}",
-                after["state"]["controls"][&field], click.default
-            ),
-        )?;
+        let mut shown = json!({"field": after["state"]["controls"][&field]});
+        match click.shows {
+            Some(default) => ensure(
+                after["state"]["controls"][&field] == json!(default),
+                format!(
+                    "{field} shows {} after its reset, not its default {default}",
+                    after["state"]["controls"][&field]
+                ),
+            )?,
+            None => {
+                // As shot: the entry is labelled so, the development is the camera's own white
+                // balance, and both white-balance fields show its equivalent.
+                let label = &after["state"]["stack"]["label"];
+                ensure(
+                    label == "As shot white balance" && raw_payload(after)?["wb_mode"] == "as-shot",
+                    format!(
+                        "{field}: the reset left {label} with {}",
+                        raw_payload(after)?
+                    ),
+                )?;
+                shown = shows_as_shot_equivalent(after, &field)?;
+            }
+        }
         checks.push(json!({
             "step": step,
             "field": field,
+            "reset": click.reset,
+            "label": after["state"]["stack"]["label"],
             "revision_before": revision(before)?,
             "revision_after": revision(after)?,
             "reset_sent_at_revision": sent[0]["detail"]["revision"],
             "queued": !named("field_reset_queued").is_empty(),
-            "shown": after["state"]["controls"][&field],
+            "shown": shown,
         }));
     }
-    // The RAW development the resets leave: exposure back at 0 EV, and a custom white balance at
-    // the declared 6504 K and 0 tint, which is what those two fields reset to.
-    let raw = raw_payload(&frames[FIRST_CLICK_STEP + 2])?;
+    // The RAW development the resets leave: exposure back at 0 EV and the camera's own white
+    // balance, which is the Original's development, so the band carries no dot again.
+    let reset = &frames[FIRST_CLICK_STEP + 2];
+    let raw = raw_payload(reset)?;
     ensure(
-        raw["exposure_ev"] == json!(0.0)
-            && raw["wb_mode"] == "custom"
-            && raw["temperature_kelvin"] == json!(6504.0)
-            && raw["tint"] == json!(0.0),
+        raw["exposure_ev"] == json!(0.0) && raw["wb_mode"] == "as-shot",
         format!("The RAW layer after the three resets is {raw}"),
     )?;
+    // The band's dot: none on the untouched photograph, one once a drag has committed a custom
+    // white balance, and none again once the resets leave As shot at 0 EV.
+    for (frame, dotted, when) in [
+        (&frames[0], false, "untouched"),
+        (
+            &frames[DRAGS[0].step + 1],
+            true,
+            "after a committed custom temperature",
+        ),
+        (reset, false, "back at As shot and 0 EV"),
+    ] {
+        ensure(
+            frame["state"]["active"][RAW_MODULE] == json!(dotted),
+            format!(
+                "The RAW band's dot is {} {when}, not {dotted}",
+                frame["state"]["active"][RAW_MODULE]
+            ),
+        )?;
+        checks.push(
+            json!({"frame": frame["file"], "when": when, "raw_dot": dotted,
+            "revision": frame["state"]["stack"]["revision"]}),
+        );
+    }
     write_json(&evidence.join("raw-panel-checks.json"), &json!(checks))?;
     Ok(())
+}
+
+/// Under As shot, a frame's temperature and tint fields show the camera's as-shot equivalent: the
+/// core's answer for the frame's own RAW layer, to the precision each field declares, and a
+/// temperature and tint whose gains are the as-shot gains. Returns what was compared.
+fn shows_as_shot_equivalent(frame: &Value, field: &str) -> Result<Value> {
+    let payload: lightwell_core::RawPayload = serde_json::from_value(raw_payload(frame)?.clone())?;
+    let [kelvin, tint] =
+        lightwell_core::temperature_tint_from_gains(payload.as_shot_gains, payload.cam_xyz)
+            .map_err(|error| format!("{field}: the as-shot gains have no equivalent: {error}"))?;
+    let back = lightwell_core::gains_from_temperature_tint(kelvin, tint, payload.cam_xyz)?;
+    ensure(
+        back.iter()
+            .zip(payload.as_shot_gains)
+            .all(|(gain, shot)| (gain - shot).abs() <= 1.0e-6 * shot),
+        format!("{field}: {kelvin} K, {tint} does not reproduce the as-shot gains"),
+    )?;
+    let controls = &frame["state"]["controls"];
+    let registry = lightwell_core::ModuleRegistry::builtin();
+    for (action, parameter, expected) in [
+        ("set-raw-temperature", "kelvin", kelvin),
+        ("set-raw-tint", "tint", tint),
+    ] {
+        let key = format!("{action}.{parameter}");
+        let shown: f64 = controls[&key]
+            .as_str()
+            .ok_or_else(|| format!("{key} is not shown"))?
+            .parse()?;
+        // The text is the value rounded to the decimals the parameter declares: half the last one.
+        let precision = registry
+            .action(action)
+            .and_then(|(_, declared)| declared.parameter(parameter))
+            .and_then(|declared| declared.precision)
+            .ok_or_else(|| format!("{key} declares no precision"))?;
+        let tolerance = 0.5 * 10f64.powi(-i32::from(precision)) + 1e-9;
+        ensure(
+            (shown - expected).abs() <= tolerance,
+            format!("{field}: {key} shows {shown}, not the as-shot {expected}"),
+        )?;
+    }
+    Ok(json!({
+        "kelvin": controls["set-raw-temperature.kelvin"],
+        "tint": controls["set-raw-tint.tint"],
+        "as_shot_equivalent": [kelvin, tint],
+        "as_shot_gains": payload.as_shot_gains,
+    }))
 }
 
 /// One temperature drag and its release.
@@ -545,14 +651,36 @@ mod tests {
         assert!(!crate::smoke::SCENARIOS.contains(&SCENARIO));
     }
 
-    /// Every double-click names a declared slider field whose one value is a whole request, lands
-    /// its first press inside the declared range and off the default, and expects the declared
-    /// default back, formatted as the field shows it.
+    /// The reset a number control declares for its own field, found the way `module.list` lists it.
+    fn declared_reset(
+        controls: &[lightwell_core::Control],
+        action: &str,
+        parameter: &str,
+    ) -> Option<Option<lightwell_core::ResetAction>> {
+        controls.iter().find_map(|control| match control {
+            lightwell_core::Control::Group { controls, .. } => {
+                declared_reset(controls, action, parameter)
+            }
+            lightwell_core::Control::Number {
+                action: declared,
+                parameter: named,
+                reset,
+                ..
+            } if declared == action && named == parameter => Some(reset.clone()),
+            _ => None,
+        })
+    }
+
+    /// Every double-click names a declared slider field whose one value is a whole request and
+    /// lands its first press inside the declared range and off the default. It expects the reset
+    /// the control declares — As shot for the RAW temperature and tint — or, for a control that
+    /// declares none, its own action and the declared default back, formatted as the field shows
+    /// it.
     #[test]
-    fn every_double_click_is_a_declared_drafting_field_reset_to_its_default() {
+    fn every_double_click_is_a_declared_drafting_field_and_its_declared_reset() {
         let registry = lightwell_core::ModuleRegistry::builtin();
         for click in &DOUBLE_CLICKS {
-            let (_, action) = registry.action(click.action).expect("a declared action");
+            let (module, action) = registry.action(click.action).expect("a declared action");
             let parameter = action.parameter(click.parameter).expect("a declared field");
             assert!(
                 action.patch || action.parameters.len() == 1,
@@ -565,8 +693,21 @@ mod tests {
             assert!((min..=max).contains(&click.value));
             let default = parameter.default.as_ref().and_then(Value::as_f64).unwrap();
             assert_ne!(default, click.value, "the first press moves the value");
-            let decimals = usize::from(parameter.precision.unwrap_or(0));
-            assert_eq!(format!("{default:.decimals$}"), click.default);
+            let reset =
+                declared_reset(&module.descriptor().controls, click.action, click.parameter)
+                    .expect("a number control of the field");
+            match reset {
+                Some(reset) => {
+                    assert_eq!(reset.action, click.reset, "{}", click.action);
+                    assert!(reset.preset.is_empty());
+                    assert_eq!(click.shows, None);
+                }
+                None => {
+                    assert_eq!(click.reset, click.action);
+                    let decimals = usize::from(parameter.precision.unwrap_or(0));
+                    assert_eq!(Some(format!("{default:.decimals$}").as_str()), click.shows);
+                }
+            }
         }
     }
 
