@@ -320,6 +320,10 @@ impl Editor {
         );
         self.last_mask_request = Some((method.to_owned(), request.clone()));
         let sent = self.command(method, request);
+        // `command` refuses while a request is in flight, but `mask_command` has already answered
+        // that case above, so reaching here means this one went out and its answer is ours.
+        self.mask_command_in_flight = true;
+        // The gesture's own geometry goes out ahead of the commit; batching keeps that order.
         match disarm {
             Some(disarm) => Task::batch([disarm, sent]),
             None => sent,

@@ -2380,6 +2380,27 @@ impl Editor {
         self.settle_step(Settle::Host);
     }
 
+    /// A `mask.*` command the running step sent was refused by the host.
+    ///
+    /// Every other refusal a Masks-panel step can meet is answered before the request leaves: the
+    /// panel states the rule on the control rather than offering a button the host would reject,
+    /// and [`Editor::mask_step`] reads whether one went out at all. This is the remaining case —
+    /// the command went out and the host refused it — and it arrives one round trip after the step
+    /// returned, so the arming condition cannot see it. It renders nothing, so the step is waiting
+    /// for pixels that will never come; the refusal is what ends it, recorded on the step with the
+    /// frame on screen as its evidence.
+    pub(crate) fn mask_command_failed(&mut self, error: &str) {
+        if self
+            .evidence
+            .as_ref()
+            .is_none_or(|evidence| evidence.awaiting.is_none())
+        {
+            return;
+        }
+        self.refuse_step(error);
+        self.capture_next_frame();
+    }
+
     /// A request the running step sent was refused. The refusal still captures a frame, so it is
     /// recorded on the step and on the run rather than passing for a success.
     pub(crate) fn refuse_step(&mut self, reason: &str) {

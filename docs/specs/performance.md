@@ -165,47 +165,62 @@ in-memory synthetic frames rendered by the core alone, warm source and warm esti
 the slowest of 5 runs, one `lightwell.presence` clarity `+100` layer per mask. "Whole frame" is a
 gradient whose bounds rectangle is the entire stage; "right-edge band" is one confined to about a
 tenth of the columns. The tile counts are exact counters read from the host
-(`masked_tile_counts`), not estimates.
+(`masked_tile_counts`), not estimates. The load average rises during the run, because the render
+drives the whole Rayon pool; the figure quoted is the one before it starts, which is the other
+sessions' load and the only part of it a measurement can be spoiled by.
 
-| Stage | Layers | Mask | p50 / slowest ms | Tiles copied / evaluated per render | Budget peak |
-| --- | --- | --- | --- | --- | --- |
-| 6000 × 4000 | 1 | none | 353 / 482 | 0 / 0 | 242.5 MiB |
-| 6000 × 4000 | 1 | whole frame | 386 / 599 | 0 / 96 | 255.3 MiB |
-| 6000 × 4000 | 2 | whole frame | 1015 / 1599 | 0 / 192 | 255.3 MiB |
-| 6000 × 4000 | 3 | whole frame | 1390 / 1542 | 0 / 288 | 255.3 MiB |
-| 6000 × 4000 | 4 | whole frame | 2864 / 4049 | 0 / 384 | 255.3 MiB |
-| 6000 × 4000 | 1 | none | 543 / 583 | 0 / 0 | 242.5 MiB |
-| 6000 × 4000 | 1 | right-edge band | 403 / 448 | 80 / 16 | 255.3 MiB |
-| 6000 × 4000 | 2 | right-edge band | 797 / 871 | 160 / 32 | 255.3 MiB |
-| 6000 × 4000 | 3 | right-edge band | 1105 / 1139 | 240 / 48 | 255.3 MiB |
-| 6000 × 4000 | 4 | right-edge band | 1020 / 1278 | 320 / 64 | 255.3 MiB |
-| 10000 × 6000 | 1 | none | 1293 / 1749 | 0 / 0 | 249.9 MiB |
-| 10000 × 6000 | 1 | whole frame | 1495 / 1588 | 0 / 240 | 239.7 MiB |
-| 10000 × 6000 | 2 | whole frame | 3156 / 3628 | 0 / 480 | 239.7 MiB |
-| 10000 × 6000 | 3 | whole frame | 5927 / 8809 | 0 / 720 | 239.7 MiB |
-| 10000 × 6000 | 4 | whole frame | 7868 / 9017 | 0 / 960 | 239.7 MiB |
-| 10000 × 6000 | 1 | none | 1124 / 1140 | 0 / 0 | 249.9 MiB |
-| 10000 × 6000 | 1 | right-edge band | 580 / 968 | 204 / 36 | 239.7 MiB |
-| 10000 × 6000 | 2 | right-edge band | 1186 / 1458 | 408 / 72 | 239.7 MiB |
-| 10000 × 6000 | 3 | right-edge band | 1863 / 2839 | 612 / 108 | 239.7 MiB |
-| 10000 × 6000 | 4 | right-edge band | 3574 / 4266 | 816 / 144 | 239.7 MiB |
+**These rows replace the contended first measurement.** The whole test was run twice back to back
+on a quiesced host, one-minute load average 3.32 before the first pass and 5.12 and 6.81 before the
+two halves of the second, against the 87.9 the first measurement was taken under. Both passes are
+given, because the spread between two identical measurements is the only honest statement about how
+quotable a millisecond from this machine is.
 
-**Scope, stated plainly: this run is not a quiesced benchmark and its absolute milliseconds must not
-be quoted as the cost of a masked Presence layer.** The one-minute load average was 87.9 at the start
-and 50.8 at the end, because several other sessions were building in release on the same machine
-throughout; the unmasked 24 MP row alone varies between 353 and 543 ms across two measurements of the
-identical work, and the delivered quiesced figure for the same operation is 191 / 202 ms. What the run
-does establish, because these are ratios inside one contended window and exact counters:
+| Stage | Layers | Mask | p50 / slowest ms, pass 1 | p50 / slowest ms, pass 2 | Tiles copied / evaluated per render | Budget peak |
+| --- | --- | --- | --- | --- | --- | --- |
+| 6000 × 4000 | 1 | none | 181 / 187 | 217 / 221 | 0 / 0 | 242.5 MiB |
+| 6000 × 4000 | 1 | whole frame | 204 / 206 | 243 / 261 | 0 / 96 | 255.3 MiB |
+| 6000 × 4000 | 2 | whole frame | 408 / 424 | 449 / 458 | 0 / 192 | 255.3 MiB |
+| 6000 × 4000 | 3 | whole frame | 693 / 746 | 736 / 756 | 0 / 288 | 255.3 MiB |
+| 6000 × 4000 | 4 | whole frame | 1088 / 1991 | 905 / 919 | 0 / 384 | 255.3 MiB |
+| 6000 × 4000 | 1 | none | 365 / 460 | 200 / 201 | 0 / 0 | 242.5 MiB |
+| 6000 × 4000 | 1 | right-edge band | 166 / 168 | 153 / 162 | 80 / 16 | 255.3 MiB |
+| 6000 × 4000 | 2 | right-edge band | 306 / 323 | 304 / 318 | 160 / 32 | 255.3 MiB |
+| 6000 × 4000 | 3 | right-edge band | 462 / 467 | 468 / 472 | 240 / 48 | 255.3 MiB |
+| 6000 × 4000 | 4 | right-edge band | 616 / 622 | 642 / 741 | 320 / 64 | 255.3 MiB |
+| 10000 × 6000 | 1 | none | 654 / 663 | 863 / 884 | 0 / 0 | 249.9 MiB |
+| 10000 × 6000 | 1 | whole frame | 809 / 816 | 831 / 852 | 0 / 240 | 239.7 MiB |
+| 10000 × 6000 | 2 | whole frame | 1648 / 1651 | 1654 / 1699 | 0 / 480 | 239.7 MiB |
+| 10000 × 6000 | 3 | whole frame | 2545 / 2800 | 2550 / 2743 | 0 / 720 | 239.7 MiB |
+| 10000 × 6000 | 4 | whole frame | 3354 / 3480 | 3263 / 3269 | 0 / 960 | 239.7 MiB |
+| 10000 × 6000 | 1 | none | 680 / 684 | 687 / 693 | 0 / 0 | 249.9 MiB |
+| 10000 × 6000 | 1 | right-edge band | 407 / 416 | 394 / 413 | 204 / 36 | 239.7 MiB |
+| 10000 × 6000 | 2 | right-edge band | 807 / 810 | 783 / 786 | 408 / 72 | 239.7 MiB |
+| 10000 × 6000 | 3 | right-edge band | 1196 / 1208 | 1179 / 1198 | 612 / 108 | 239.7 MiB |
+| 10000 × 6000 | 4 | right-edge band | 1592 / 1613 | 1593 / 1694 | 816 / 144 | 239.7 MiB |
 
-- **Cost grows with the layer count, roughly linearly**, which is what a sequential full frame per
-  layer predicts, and four is the point at which a 60 MP whole-frame mask reaches seconds even before
-  the contention is removed. The cap of four is the right order; it is not generous.
+**Scope.** The quiesced figures are in the same place as the delivered unmasked quiesced figure for
+the same operation (191 / 202 ms at 24 MP), which is what says the host was quiet: three of the four
+measurements of the identical unmasked 24 MP work read 181, 200 and 217 ms, against 353 and 543 ms
+when the same rows were taken at load 87.9. **One of the four read 365 ms and is an outlier**, and
+the 24 MP four-layer pass-1 slowest of 1991 ms against a pass-2 slowest of 919 ms is another; this
+machine is shared and a stray minute still lands in a five-sample window. The masked rows themselves
+are steady — every masked pair above agrees to within 10% except the 24 MP four-layer row — so these
+are quotable as the cost of a masked Presence layer, with that spread stated.
+
+- **Cost grows with the layer count, linearly.** At 60 MP whole frame the four masked rows are 809,
+  1648, 2545, 3354 ms: 809 ms per layer, flat. At 24 MP they are 204, 408, 693, 1088. That is what a
+  sequential full frame per layer predicts, and it is why four is the cap: a fourth masked spatial
+  layer at 60 MP costs the person three and a third seconds of exact render, and it is the *exact*
+  phase, behind the proxy, so it is not what the hand feels.
 - **A tile outside the bounds rectangle costs no unit evaluation**, exactly: 204 of 240 tiles copied
-  at 60 MP, 80 of 96 at 24 MP, and a small mask is then *cheaper* than the unmasked layer — 580 ms
-  against 1124 at 60 MP, 403 against 543 at 24 MP. That is the whole point of the rectangle, and it
-  is a counter rather than an inference.
-- **A whole-frame mask costs about 10–16% over no mask at one layer** (386 against 353 at 24 MP, 1495
-  against 1293 at 60 MP). The structural part of that is the working set: a masked tile holds one
+  at 60 MP and 80 of 96 at 24 MP, so a small mask is *cheaper* than the unmasked layer — 394–407 ms
+  against 654–863 at 60 MP, 153–166 against 181–217 at 24 MP, a saving of about 40% and 20%. That is
+  a counter rather than an inference.
+- **A whole-frame mask costs 12–13% over no mask at one layer at 24 MP** (204 against 181 in pass 1,
+  243 against 217 in pass 2). At 60 MP the two passes disagree — 809 against 654 is +24%, 831
+  against 863 is −4% — so at 60 MP the honest statement is that the whole-frame mask costs
+  **somewhere between nothing and a quarter** of the unmasked layer at one layer, and the 24 MP
+  figure is the quotable one. The structural part of it is the working set: a masked tile holds one
   extra tile-sized plane, the snapshot the blend is against, which at 60 MP moves the plan's
   concurrency from 8 tiles to 7.
 - The blend is **in place** in the last unit's planes. An earlier spelling that copied the tile out
@@ -213,12 +228,41 @@ does establish, because these are ratios inside one contended window and exact c
   fresh tile-sized allocations per tile, not from arithmetic. That spelling is not what shipped, and
   it is recorded because it is the trap: the blend is cheap and the allocations were not.
 
-A quiesced re-measurement, and a `editor-latency --mode drag` figure for a masked Presence slider,
-are outstanding and must be taken before any acceptance claim. One further cost is arithmetic from
-the delivered retained-frame rule rather than a measurement, and is a finding for the owner: on the
-**RAW linear path** each spatial operation materializes one `f32` frame and every one of them is
-retained for the whole render, so four masked spatial layers at 60 MP retain about 2.9 GB of float
-frames. The byte path has no equivalent cost because its frames are sequential and dropped.
+One further cost is arithmetic from the delivered retained-frame rule rather than a measurement, and
+is a finding for the owner: on the **RAW linear path** each spatial operation materializes one `f32`
+frame and every one of them is retained for the whole render, so four masked spatial layers at 60 MP
+retain about 2.9 GB of float frames. The byte path has no equivalent cost because its frames are
+sequential and dropped.
+
+### The masked spatial primitive, a mask of many components
+
+The other half of the same cost: one masked Presence layer whose mask holds 1, 4, 16 and 32
+components — [the limit](../design/masking.md) — each a linear gradient across the whole frame, so
+the bounds rectangle is the whole stage and **every** component is evaluated at every pixel. The
+modes cycle through add, subtract and intersect, because those are one `max` and two `min`s per
+pixel and nothing else. `cargo test --release --locked --package lightwell-core --lib -- --ignored
+masked_spatial_component_timing --nocapture`, same host, same warm-up, p50 and the slowest of 5
+runs, one-minute load average 5.12 at the start.
+
+| Stage | Components | p50 / slowest ms | Tiles copied / evaluated | Budget peak |
+| --- | --- | --- | --- | --- |
+| 6000 × 4000 | 1 | 216 / 226 | 0 / 96 | 255.3 MiB |
+| 6000 × 4000 | 4 | 239 / 305 | 0 / 96 | 255.3 MiB |
+| 6000 × 4000 | 16 | 306 / 311 | 0 / 96 | 255.3 MiB |
+| 6000 × 4000 | 32 | 380 / 384 | 0 / 96 | 255.3 MiB |
+| 10000 × 6000 | 1 | 844 / 844 | 0 / 240 | 239.7 MiB |
+| 10000 × 6000 | 4 | 877 / 891 | 0 / 240 | 239.7 MiB |
+| 10000 × 6000 | 16 | 1042 / 1060 | 0 / 240 | 239.7 MiB |
+| 10000 × 6000 | 32 | 1204 / 1243 | 0 / 240 | 239.7 MiB |
+
+**A component is cheap and the cost is linear in the count.** Thirty-one further components add
+164 ms at 24 MP and 360 ms at 60 MP — **5.3 ms and 11.6 ms each**, a ratio of 2.2 against the 2.5
+the pixel counts predict, which is what a per-pixel field evaluation looks like. A mask at the
+32-component limit costs 76% more than a one-component mask at 24 MP and 43% more at 60 MP, and the
+whole 32-component evaluation is still smaller than the Presence chain it modulates. The limit of 32
+is not a performance limit at these sizes; it is a limit on how much a person can keep track of.
+This is the worst case by construction: a real mask's components have bounded supports, and a
+component whose support the tile does not touch is not evaluated there at all.
 
 ### Masks in the proxy phase
 
@@ -277,42 +321,81 @@ slider gesture carries that mask, exactly as the panel's own drag does. With `--
 measured stack holds a global full-Basic layer *and* a masked Basic layer, so each frame runs the
 module's whole colour pass twice, once of it through the masked colour primitive.
 
-The runs below were taken back to back and reversed, 30 samples each, drag mode, at Fit. **The
-one-minute load average was 39.5 to 57.5 throughout — five to seven times the 8.0 this document sets
-for quoting a baseline — so none of these millisecond figures is a baseline and none of them may be
-substituted for the rows above.** The spread within one condition proves it: the two 24 MP masked
-runs, identical in every respect, measured p50 32.6 ms and 16.0 ms and p95 99.2 ms and 21.7 ms.
+**These figures replace the first, contended ones, which were taken at load 39.5 to 57.5 and are
+withdrawn.** Eight runs, 30 samples each, drag mode, at Fit, taken back to back and then reversed —
+24 MP unmasked, 24 MP masked, 60 MP unmasked, 60 MP masked, then the same four in the opposite
+order — each preceded by a 100-second pause, so the one-minute load average read beside it is the
+*other sessions'* load and not this measurement's own tail. Those loads are in the last row. The
+two figures in each cell are the forward run and the reversed one.
 
 | Drained drag at Fit, `--basic` | 24 MP unmasked | 24 MP masked | 60 MP unmasked | 60 MP masked |
 | --- | --- | --- | --- | --- |
-| p50 | 17.0 / 15.6 ms | 32.6 / 16.0 ms | 15.7 ms | 34.5 ms |
-| p95 | 38.7 / 26.0 ms | 99.2 / 21.7 ms | 17.2 ms | 65.5 ms |
-| min | 14.6 / 11.5 ms | 17.3 / 14.3 ms | 13.8 ms | 19.6 ms |
-| load average during the run | 40.9 / 51.3 | 39.5 / 57.5 | 45.2 | 37.6 |
+| p50 | — / 16.93 ms | 16.77 / 17.13 ms | 17.00 / 17.48 ms | 17.06 / 17.87 ms |
+| p95 | — / 91.7 ms | 25.3 / 25.7 ms | 25.4 / 26.8 ms | 25.1 / 26.2 ms |
+| min | — / 15.12 ms | 15.45 / 15.74 ms | 15.25 / 15.46 ms | 15.70 / 15.44 ms |
+| `draft.set` round trip p50 | — / 0.226 ms | 0.227 / 0.231 ms | 0.214 / 0.215 ms | 0.231 / 0.236 ms |
+| one-minute load before the run | — / 4.19 | 8.13 / 3.37 | 3.65 / 3.32 | 2.34 / 2.58 |
 
-What **is** quotable from these runs is what load does not move:
+**The first run of the sequence is discarded and is shown as `—`.** It measured p50 41.40 ms, p95
+135.7, min 25.95 and a `draft.set` of 0.395 ms — every one of them roughly double every other run's,
+including the hop, which no amount of render load moves. It was the first launch after the machine
+had been idle, so it paid for cold shader, filesystem and allocator state; the identical run at the
+other end of the sequence read 16.93 ms. That is a finding about the harness and not about masking,
+and it is recorded rather than averaged away: **the first `editor-latency` launch after an idle
+period is not a usable sample.**
 
-- `draft.set` round trip p50 is 0.2–0.3 ms unmasked and 0.3–0.5 ms masked, so a mask target adds
-  nothing measurable to the gesture's own hop. The hop rule holds through the masked path.
-- The queue counters are identical in all six runs: 31 scripted values in the burst step coalesced
-  into **1** `draft.set`, 32 `draft.set` requests, 32 preview jobs requested and **0** superseded,
-  two commits. A masked drag coalesces and drains exactly as an unmasked one does; nothing about the
-  mask adds a round trip, a job or a dropped frame.
+**A mask costs a person's hand nothing measurable.** Every remaining p50 is between 16.8 and
+17.9 ms, masked and unmasked, at both sizes. The largest difference between a masked run and its
+unmasked pair is 0.4 ms, which is smaller than the difference between the two runs of the same
+condition. A second set of eight runs taken back to back with no pause between them — and therefore
+at load 12.1 to 17.4, this measurement's own tail — agrees: 17.64 and 16.75 ms 24 MP unmasked,
+16.63 and 16.52 masked, 16.23 and 16.12 ms 60 MP unmasked, 15.76 and 15.91 masked.
+
+- `draft.set` round trip p50 is **0.214–0.226 ms unmasked and 0.227–0.236 ms masked** — a mask
+  target adds about 0.01–0.02 ms to the gesture's own hop, on every run, in both orders. The hop
+  rule holds through the masked path.
+- The queue counters are identical in all sixteen runs: 31 scripted values in the burst step
+  coalesced into **1** `draft.set`, 32 `draft.set` requests, 32 preview jobs requested and **0**
+  superseded, two commits. A masked drag coalesces and drains exactly as an unmasked one does;
+  nothing about the mask adds a round trip, a job or a dropped frame.
 - Every run passed its own scripted-step checks, so each measured input is the scripted value with
   its own `draft.set`, preview job and displayed frame.
 
-Against the provisional target (p95 below 16 ms, acceptable below 32 ms) every run is a miss at the
-p95 and the two quietest runs — 24 MP unmasked at 26.0 ms and 24 MP masked at 21.7 ms — are inside
-the acceptable bound. **That comparison is not usable as a verdict on masking**: it is a finding that
-the figure can now be taken, and the measurement must be repeated on a quiesced host before any cost
-is attributed to the mask. The mask's own contribution to a rendered frame, measured where load can
-be controlled, is the core row above.
+Against the provisional target (p95 below 16 ms, acceptable below 32 ms): **every run is inside the
+acceptable bound at the p95 and every one misses the 16 ms target, and masking does not change
+which.** The one exception is the 24 MP unmasked p95 of 91.7 ms, a single stray sample against that
+run's own minimum of 15.1 ms and p50 of 16.9. The median misses the target by about a millisecond
+everywhere. That is the same miss the unmasked rows above already record.
 
-`editor-performance --samples 30` was re-run on the same host beside those drags, release, warm
-cache, on `24mp.jpg` (load average 8.6 rising to 17.3) and `60mp.jpg` (load average 17.3 rising to
-20.8). Both **passed every check**, including that the catalog reopen reconstructs the original
-historical state and the source SHA-256 is unchanged, so the phase leaves the core's own
-correctness diagnostics intact. Their timings are not quoted, for the same reason as the drags: the
+#### A masked Presence slider
+
+The figure this document previously recorded as outstanding. `editor-latency --action set-presence
+--parameter clarity`, with and without `--mask`, 24 MP, 30 samples, drag mode, at Fit, taken in both
+orders with the same 100-second pause before each. Clarity is a spatial operation and therefore a
+stage boundary, so this is the hand's-eye view of the row the core table above measures at exact
+size.
+
+| Drained Clarity drag at Fit, 24 MP | unmasked | masked |
+| --- | --- | --- |
+| p50 | 17.00 / 17.10 ms | 17.18 / 17.10 ms |
+| p95 | 18.2 / 25.4 ms | 18.6 / 24.0 ms |
+| min | 14.64 / 14.86 ms | 14.04 / 15.27 ms |
+| `draft.set` round trip p50 | 0.202 / 0.209 ms | 0.226 / 0.237 ms |
+| one-minute load before the run | 3.67 / 1.85 | 3.96 / 1.99 |
+
+**A masked Presence drag is indistinguishable from an unmasked one at the median**: 17.10–17.18 ms
+against 17.00–17.10, a difference of at most 0.18 ms against a run-to-run spread of 0.10 ms in
+either condition. The hop pays the same 0.02–0.03 ms a masked Basic drag does. The queue counters
+are again identical: 31 values into 1 `draft.set`, 0 superseded. Masked Presence therefore meets the
+same provisional bound the unmasked spatial slider does — acceptable at the p95, missing the 16 ms
+target at the median by about a millisecond. This is the proxy phase, which is what the hand feels;
+the exact phase behind it is the core table above.
+
+`editor-performance --samples 30` was re-run on the same host beside the first, contended drags,
+release, warm cache, on `24mp.jpg` (load average 8.6 rising to 17.3) and `60mp.jpg` (load average
+17.3 rising to 20.8). Both **passed every check**, including that the catalog reopen reconstructs the
+original historical state and the source SHA-256 is unchanged, so the phase leaves the core's own
+correctness diagnostics intact. Their timings are not quoted, for the reason the drags were not: the
 harness's own full-Basic core render read 128.2 ms p50 / 224.5 ms p95 at 24 MP and 527.1 / 619.1 ms
 at 60 MP, and a p95 more than 1.7 times its own p50 in a warm 30-sample loop is a measure of the
 host's queue, not of the render.
@@ -568,6 +651,7 @@ blocker, and no approximate processing, cache or timer was added to reach any of
 | 60 MP peak ≤ 1 GiB process RSS | 975.0 MiB median peak on a 60 MP open; 1316.4 MiB after sixteen consecutive 60 MP loads | **Pass** on one image, **miss** on the sixteen-load workload (unchanged from before this work: 1316.0 MiB) |
 | Idle CPU < 1% of one core over 30 s | 1.32% with a 60 MP image open and 1.38% with a 24 MP full Basic layer, after caching the histogram plot's tessellated geometry; 1.29% / 1.46% for the same two workloads before that cache; 0.93% on the 60 MP workload before the Basic panel and histogram existed at all | **Miss** |
 | Geometry input to presented preview p95 < 50 ms once the source preview is ready | not measured for geometry in this round | Open |
+| A masked drag costs a person no more than an unmasked one | 24 MP drained drag p50 16.77 / 17.13 ms masked against 16.93 unmasked, 60 MP 17.06 / 17.87 against 17.00 / 17.48, all with a full Basic layer, in both orders at load 2.3–8.1; masked Clarity at 24 MP 17.18 / 17.10 against 17.00 / 17.10 unmasked | **Pass**: every masked run is within 0.4 ms of its unmasked pair at the median, which is inside the spread between two runs of the same condition |
 
 The same two targets at 60 MP, which have no stated threshold and are recorded because the design
 asks for the tails: slider-to-presented-frame 125.0 / 141.3 ms and settled histogram 185.4 /

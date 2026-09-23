@@ -250,6 +250,8 @@ works rather than faults to be fixed:
 
 Leaving Mask mode with a gesture open is refused with the reason rather than discarding what you drew, as the crop draft is; so is holding Compare. If anything else changes the photograph while a gesture is open the gesture is kept and marked "Changed elsewhere", with Discard and Reapply, exactly as a crop or slider draft is.
 
+A mask made of several components is ordinary, not a special case: draw a radial, take a region back out of it with a Subtract, confine what is left with an Intersect, and adjust through the result exactly as through a single gradient. Order matters, and the list is the order: an Add moved above a Subtract is no longer cut by it, and moving a row is an ordinary history entry like any other edit.
+
 The linear gradient, the radial gradient, the brush and the two range selections are every kind this
 build offers. The colour-constrained brush — the honest part of Lightroom's Auto Mask — is not built,
 and no selection here is made by a model: there is no Select Subject, Sky, People, Objects or

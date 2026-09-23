@@ -524,6 +524,11 @@ pub(crate) struct Editor {
     /// evidence: a captured frame and a driven run can both say which request produced the stack on
     /// screen, without reconstructing it from the panel afterwards.
     pub(crate) last_mask_request: Option<(String, Value)>,
+    /// A `mask.*` command this desktop sent is still in flight, so its answer is the one that
+    /// settles a waiting script step. A mask command changes no pixel when the host refuses it, so
+    /// without this the refusal arrives with no frame behind it and a driven run waits out its
+    /// deadline on a step that has already been answered.
+    pub(crate) mask_command_in_flight: bool,
     /// A coverage grid the preview worker filled beside a frame, waiting to be uploaded.
     pub(crate) mask_overlay_pending: Option<(u64, lightwell_core::analysis::MaskOverlay)>,
     /// The mask overlay on the GPU, with the preview generation it belongs to.
@@ -693,6 +698,7 @@ impl Editor {
             mask_draft_pending: false,
             mask_draft_finish: false,
             last_mask_request: None,
+            mask_command_in_flight: false,
             mask_overlay_pending: None,
             mask_overlay_photo: None,
             presets: PresetLibrary::default(),
@@ -1992,6 +1998,7 @@ impl Editor {
                     return Task::none();
                 }
                 self.busy = false;
+                let mask_command = std::mem::take(&mut self.mask_command_in_flight);
                 match result {
                     Ok(refresh) => {
                         if self.activity.pending {
@@ -2003,6 +2010,13 @@ impl Editor {
                     }
                     Err(error) => {
                         self.status = error.clone();
+                        // A refused `mask.*` command renders nothing, so the step that sent it has
+                        // no pixels to settle on: the refusal itself is what ends it, recorded on
+                        // the step with the frame that is on screen as its evidence. Without this
+                        // a driven run waits out its whole deadline on a step already answered.
+                        if mask_command {
+                            self.mask_command_failed(&error);
+                        }
                         // A failed Apply keeps the draft; a stale revision makes it conflicted so
                         // the user chooses Discard or Reapply rather than losing the composition.
                         if self.crop_applying.take().is_some() {

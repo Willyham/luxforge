@@ -62,6 +62,18 @@ pub(crate) struct RecipeMask {
     pub(crate) heading: bool,
 }
 
+impl RecipeMask {
+    /// What the heading above this mask's first row says: the mask's name, once.
+    ///
+    /// A default-named mask is called `Mask 1` *because* it is the first mask, so spelling its
+    /// position beside its name read `Mask 1 · mask 1` — the same fact twice, and a second ordering
+    /// inside a list whose whole subject is the processing order. The position a mask composes in
+    /// belongs to the Masks panel, whose list is that order.
+    pub(crate) fn heading_label(&self) -> String {
+        self.name.clone()
+    }
+}
+
 #[allow(dead_code)]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct RecipeRow {
@@ -194,4 +206,25 @@ fn recipe(inputs: &Inputs<'_>) -> Vec<RecipeRow> {
             }),
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The heading above a mask's first recipe row names the mask once, whatever its position and
+    /// whatever it is called. It read `Mask 1 · mask 1` before, which is the name and the position
+    /// the name is taken from.
+    #[test]
+    fn a_masks_recipe_heading_names_it_once() {
+        for (name, index) in [("Mask 1", 0), ("Mask 2", 1), ("Sky", 1)] {
+            let mask = RecipeMask {
+                id: MaskId::new(),
+                name: name.to_owned(),
+                index: Some(index),
+                heading: true,
+            };
+            assert_eq!(mask.heading_label(), name);
+        }
+    }
 }
