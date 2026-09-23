@@ -6,6 +6,8 @@ mod command_contracts;
 mod draft;
 mod editor;
 mod error;
+/// The host's compiled mask and the component kinds this build can evaluate.
+pub mod mask;
 mod model;
 mod modules;
 mod preview;

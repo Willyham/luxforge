@@ -3518,16 +3518,19 @@ mod tests {
         std::fs::remove_file(catalog).unwrap();
     }
 
-    /// One mask carrying a component of a kind this build knows nothing about: what the catalog has
-    /// to keep, since the table of known kinds and their payloads is the kind provider's.
+    /// One stored mask with a component the host can compile, which is what a persisted masked stack
+    /// looks like. A component of a kind this build knows nothing about is its own case and is
+    /// asserted where the kind table lives: the model proves the bytes survive a round trip, and the
+    /// module registry proves every path that would have to draw the mask refuses it by name while
+    /// reading, listing and validating still work.
     fn stored_mask() -> Mask {
         let mut mask = Mask::new("Mask 1");
-        let name = mask.next_component_name("future-kind");
+        let name = mask.next_component_name("linear");
         mask.components.push(Component::new(
             name,
             ComponentMode::Add,
-            "future-kind",
-            json!({"nested": {"points": [[0.25, 0.5], [0.75, 0.5]]}, "flag": true}),
+            "linear",
+            json!({"x0": 0.25, "y0": 0.5, "x1": 0.75, "y1": 0.5}),
         ));
         mask
     }
@@ -3628,10 +3631,7 @@ mod tests {
             "every field of the entry, masks included, survives reopen"
         );
         let stored = &reopened.current_entry.snapshot.recipe.masks[0].components[0];
-        assert_eq!(
-            stored.kind, "future-kind",
-            "an unknown kind is kept as it is"
-        );
+        assert_eq!(stored.kind, "linear", "the stored kind is kept as it is");
         assert_eq!(
             serde_json::to_string(&stored.payload).unwrap(),
             serde_json::to_string(&mask.components[0].payload).unwrap(),
