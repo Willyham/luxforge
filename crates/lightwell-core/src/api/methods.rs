@@ -5,8 +5,9 @@ use super::{
     ApiRequest, ApiResponse, COMPONENT_GALLERY_PAGE_COUNT, ClientSession, POINTER_MODE, PROTOCOL,
 };
 use crate::{
-    ActionDescriptor, AssetId, Draft, DraftId, EditorService, EntryId, Error, ErrorKind,
-    HistorySelection, ModuleRegistry, Mutation, Zoom,
+    ActionDescriptor, AssetId, ComponentId, Draft, DraftId, EditorService, EntryId, Error,
+    ErrorKind, HistorySelection, MaskId, ModuleRegistry, Mutation, Zoom,
+    mask::commands::{self as mask_commands, MaskCommand, MaskTarget},
 };
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::{Map, Value, json};
@@ -373,6 +374,9 @@ pub(super) enum Method {
     Action(String),
     /// A module's read-only query. It writes nothing, so it never emits an event.
     Query(String),
+    /// A host command of the `mask.*` family, declared with the same descriptor types a module
+    /// action uses and dispatched through the same lookup.
+    Mask(&'static MaskCommand),
 }
 
 impl Method {
@@ -381,6 +385,7 @@ impl Method {
             Self::Host(spec) => spec.mutates,
             Self::Action(_) => true,
             Self::Query(_) => false,
+            Self::Mask(command) => command.mutates,
         }
     }
     /// `true` for the methods the owner loop answers from its own state.
@@ -403,6 +408,9 @@ pub(super) fn query_method(query_id: &str) -> String {
 pub(super) fn find(service: &EditorService, name: &str) -> Option<Method> {
     if let Some(spec) = METHODS.iter().find(|spec| spec.name == name) {
         return Some(Method::Host(spec));
+    }
+    if let Some(command) = mask_commands::find(name) {
+        return Some(Method::Mask(command));
     }
     if let Some(action_id) = name.strip_prefix("edit.") {
         return service
@@ -445,6 +453,7 @@ pub(super) fn dispatch(
             edit_action(service, session, &action_id, &request.params)
         }
         Some(Method::Query(query_id)) => module_query(service, session, &query_id, &request.params),
+        Some(Method::Mask(command)) => mask_command(service, session, command, &request.params),
         None => Err(Error::new(
             ErrorKind::Protocol,
             format!("unknown method {}", request.method),
@@ -526,6 +535,11 @@ pub fn schemas(registry: &ModuleRegistry) -> Value {
             )
         })
         .collect();
+    // The host's own `mask.*` family, declared from the same descriptor types, so a client
+    // discovers a mask command and a module action from one listing.
+    for command in mask_commands::all() {
+        methods.insert(command.method.to_owned(), command.schema());
+    }
     let descriptors = registry.descriptors();
     for descriptor in &descriptors {
         for action in &descriptor.actions {
@@ -540,6 +554,10 @@ pub fn schemas(registry: &ModuleRegistry) -> Value {
         "coordinate_space": "Each edit uses integer coordinates in its own input image stage after EXIF orientation. A pixel or colour edit addresses the content stage, the source after EXIF orientation, because the host places both before the quarter-turns, reflections and crop that carry them; a colour edit addresses every pixel of that stage and changes no dimension. A number parameter carries a finite JSON number within its declared range, such as an angle in degrees or a rectangle normalized to its stage; a JSON integer is accepted and passed through unchanged.",
         "methods": methods,
         "modules": descriptors,
+        // The host's mask surface: the widgets of the `mask.*` commands, in the same `Control`
+        // vocabulary a module declares, so a client renders a mask's fields, toggles and mode
+        // selector with the widgets it already has and invents no operation of its own.
+        "masks": {"controls": mask_commands::controls()},
         "mutation": {"required": ["expected_revision", "request_id", "actor"]},
     })
 }
@@ -709,6 +727,58 @@ fn module_query(
     service.run_query(&asset_id, &entry_id, query_id, Value::Object(parameters))
 }
 
+/// Every `mask.*` method: `asset_id` and `mutation` are the envelope a mutation always carries, and
+/// `mask`, `component` and `name` join it because no declared parameter kind can carry an identity or
+/// a person's free text. The remaining top-level fields are the command's own declared parameters and
+/// go through the same generic check a module action's do.
+fn mask_command(
+    service: &mut EditorService,
+    session: &mut ClientSession,
+    command: &'static MaskCommand,
+    request_params: &Value,
+) -> Result<Value, Error> {
+    let mut parameters = object(request_params)?;
+    let asset_id: AssetId = envelope(&mut parameters, "asset_id")?;
+    // The one read-only command resolves its entry exactly as `render.sample` and `render.locate` do
+    // and touches nothing at all.
+    if command.method == mask_commands::LIST {
+        let entry_id: Option<EntryId> = optional_envelope(&mut parameters, "entry_id")?;
+        if let Some(name) = parameters.keys().next() {
+            return Err(Error::new(
+                ErrorKind::Validation,
+                format!("unknown field {name} for {}", command.method),
+            ));
+        }
+        let entry_id = selected_entry(service, session, &asset_id, entry_id)?;
+        return value(service.mask_listing(&asset_id, &entry_id)?);
+    }
+    require_current(session)?;
+    let mutation: Mutation = envelope(&mut parameters, "mutation")?;
+    let target = MaskTarget {
+        mask: optional_envelope(&mut parameters, "mask")?,
+        component: optional_envelope(&mut parameters, "component")?,
+        name: optional_envelope(&mut parameters, "name")?,
+    };
+    value(service.apply_mask_command(
+        &asset_id,
+        mutation,
+        command,
+        Value::Object(parameters),
+        target,
+    )?)
+}
+
+fn object(params: &Value) -> Result<Map<String, Value>, Error> {
+    match params {
+        Value::Object(object) => Ok(object.clone()),
+        Value::Null => Ok(Map::new()),
+        _ => Err(Error::new(
+            ErrorKind::Validation,
+            "params must be a JSON object",
+        )),
+    }
+}
+
 fn envelope<T: DeserializeOwned>(
     parameters: &mut Map<String, Value>,
     name: &str,
@@ -720,6 +790,18 @@ fn envelope<T: DeserializeOwned>(
         )
     })?;
     params(&field)
+}
+
+/// An envelope field the request may omit. A command that requires it says so itself, so the refusal
+/// names the command.
+fn optional_envelope<T: DeserializeOwned>(
+    parameters: &mut Map<String, Value>,
+    name: &str,
+) -> Result<Option<T>, Error> {
+    match parameters.remove(name) {
+        Some(field) => params(&field).map(Some),
+        None => Ok(None),
+    }
 }
 
 fn history_undo(
@@ -1034,10 +1116,18 @@ fn session_value(service: &EditorService, session: &mut ClientSession) -> Result
 }
 
 /// The action a draft will run, and the parameters its fields are validated against.
+///
+/// A host command of the `mask.*` family resolves here as a module action does, so `draft.set`,
+/// `draft.read` and `draft.reapply` validate a drafted gesture's fields against the same declared
+/// parameters with the same generic check, and the conflict, Discard and Reapply rules below are the
+/// delivered ones rather than a second copy.
 fn draft_action<'a>(
     service: &'a EditorService,
     action_id: &str,
 ) -> Result<&'a ActionDescriptor, Error> {
+    if let Some(command) = mask_commands::find(action_id) {
+        return Ok(&command.action);
+    }
     service
         .registry()
         .action(action_id)
@@ -1055,6 +1145,9 @@ fn draft_begin(
     struct P {
         asset_id: AssetId,
         action: String,
+        /// The mask and component a `mask.*` gesture edits. A module action's draft takes neither.
+        mask: Option<MaskId>,
+        component: Option<ComponentId>,
     }
     let p = parse::<P>(params)?;
     if let Some(draft) = &session.draft {
@@ -1073,8 +1166,31 @@ fn draft_begin(
         ));
     }
     let _ = draft_action(service, &p.action)?;
+    // A `mask.*` gesture says which mask and component it is editing, checked by the command itself;
+    // a module action's draft carries no target, so naming one is refused rather than ignored. A
+    // rename is not a gesture: it needs a `name`, which `draft.begin` does not take, so the command's
+    // own envelope check refuses drafting it.
+    let target = MaskTarget {
+        mask: p.mask,
+        component: p.component,
+        name: None,
+    };
+    let target = match mask_commands::find(&p.action) {
+        Some(command) => {
+            command.checked_target(&target)?;
+            Some(target)
+        }
+        None if target == MaskTarget::default() => None,
+        None => {
+            return Err(Error::new(
+                ErrorKind::Validation,
+                format!("action {} takes no mask target", p.action),
+            ));
+        }
+    };
     let revision = service.state(&p.asset_id)?.revision;
-    let draft = Draft::new(&p.action, p.asset_id, revision);
+    let mut draft = Draft::new(&p.action, p.asset_id, revision);
+    draft.target = target;
     session.draft = Some(draft);
     session.touch();
     value(session.draft.as_ref().expect("the draft just opened"))
@@ -1155,13 +1271,21 @@ fn draft_commit(
     }
     let asset_id = draft.asset_id.clone();
     let action = draft.action.clone();
+    let target = draft.target.clone().unwrap_or_default();
     let fields = Value::Object(draft.fields.clone());
     // A failed commit keeps the draft, so the client can correct it and try again; a no-op ends it
-    // exactly like an applied one, because the gesture is over either way.
-    let result = service.apply_action(&asset_id, p.mutation, &action, fields)?;
+    // exactly like an applied one, because the gesture is over either way. A drafted host command
+    // commits through its own family; everything above this line — the conflict check, the revision
+    // check and what a failure leaves behind — is the same for both.
+    let result = match mask_commands::find(&action) {
+        Some(command) => {
+            value(service.apply_mask_command(&asset_id, p.mutation, command, fields, target)?)?
+        }
+        None => value(service.apply_action(&asset_id, p.mutation, &action, fields)?)?,
+    };
     session.draft = None;
     session.touch();
-    value(result)
+    Ok(result)
 }
 
 fn draft_reapply(
@@ -1391,11 +1515,48 @@ mod tests {
             .map(|query| query_method(&query.id))
             .collect();
         assert_eq!(queries, ["query.neutral-sample"]);
+        // The host's own `mask.*` family, declared from the same descriptor types and listed from the
+        // same table dispatch resolves through.
+        let masks: Vec<&str> = mask_commands::all()
+            .iter()
+            .map(|command| command.method)
+            .collect();
+        assert_eq!(
+            masks,
+            [
+                "mask.list",
+                "mask.create",
+                "mask.delete",
+                "mask.rename",
+                "mask.duplicate",
+                "mask.set-amount",
+                "mask.set-invert",
+                "mask.reorder",
+                "mask.add-component",
+                "mask.set-component",
+                "mask.set-component-mode",
+                "mask.set-component-invert",
+                "mask.delete-component",
+                "mask.reorder-component"
+            ]
+        );
         let schema = schemas(service.registry());
         let listed = schema["methods"].as_object().unwrap();
         assert_eq!(
             listed.len(),
-            METHODS.len() + generated.len() + queries.len()
+            METHODS.len() + generated.len() + queries.len() + masks.len()
+        );
+        for method in &masks {
+            assert!(listed.contains_key(*method), "{method} is not discoverable");
+            assert!(
+                matches!(find(&service, method), Some(Method::Mask(_))),
+                "{method} does not dispatch as a host mask command"
+            );
+        }
+        assert_eq!(
+            listed["mask.list"]["mutates"],
+            json!(false),
+            "mask.list writes nothing"
         );
         assert_eq!(
             listed["query.neutral-sample"]["mutates"],

@@ -1,7 +1,10 @@
 //! The core's revision-bound draft: the settings of one gesture, held by one client session until
 //! it commits or cancels. A draft writes nothing, emits no event and appears in no history; its
 //! effective recipe is computed on demand from the current snapshot and never persisted.
-use crate::{AssetId, DraftId, Error, ErrorKind, ParameterDescriptor, check_value};
+use crate::{
+    AssetId, DraftId, Error, ErrorKind, ParameterDescriptor, check_value,
+    mask::commands::MaskTarget,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
@@ -20,6 +23,13 @@ pub struct Draft {
     /// settings it was evaluated against.
     pub draft_revision: u64,
     pub fields: Map<String, Value>,
+    /// The host-owned objects a drafted host action edits, and nothing for a module action's draft.
+    /// A `mask.*` gesture drags the handles of one component of one mask, and no declared parameter
+    /// kind can carry an identity, so the identity travels here beside the drafted fields exactly as
+    /// `asset_id` does. Everything else about the lifecycle — validation, conflict, Discard and
+    /// Reapply — is unchanged by it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target: Option<MaskTarget>,
     /// Derived: the asset moved under this draft. Recomputed wherever the draft is read, set,
     /// committed or reported, so no notification path is needed.
     pub conflicted: bool,
@@ -34,6 +44,7 @@ impl Draft {
             base_revision,
             draft_revision: 0,
             fields: Map::new(),
+            target: None,
             conflicted: false,
         }
     }

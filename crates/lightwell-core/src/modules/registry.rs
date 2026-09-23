@@ -90,6 +90,19 @@ impl ModuleRegistry {
     /// whole registry, so discovery and dispatch can never resolve to two providers.
     pub fn register(&mut self, module: Arc<dyn ToolModule>) -> Result<(), Error> {
         let descriptor = module.descriptor();
+        // A mask command lives in the host's own namespace, as `history.*` and `version.*` do, and
+        // its identity carries a dot, which `valid_name` forbids inside an action identity. So the
+        // two families cannot collide however either grows — and the rule is checked here rather
+        // than assumed, before the shape check below, so the refusal names the real reason instead
+        // of reporting a malformed identity.
+        for declared in descriptor.actions.iter().chain(&descriptor.queries) {
+            if crate::mask::commands::find(&declared.id).is_some() {
+                return Err(validation(format!(
+                    "{} declares {}, which is a host mask command",
+                    descriptor.id, declared.id
+                )));
+            }
+        }
         descriptor.validate()?;
         if self.module_ids.contains(&descriptor.id) {
             return Err(validation(format!("duplicate module {}", descriptor.id)));
