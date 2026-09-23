@@ -8,10 +8,10 @@
 use crate::{
     app::{
         Editor,
-        message::{MaskMessage, Message},
+        message::{MaskMessage, Message, RowEdit},
         tasks::mutation,
     },
-    mask_draft::{ContentMap, MaskDraft, MaskDraftOp},
+    mask_draft::{ContentMap, MaskDraft, MaskDraftOp, MaskShape},
 };
 use iced::Task;
 use iced_runtime::image as image_memory;
@@ -25,6 +25,14 @@ impl Editor {
     /// Mask mode is the active canvas mode.
     pub(crate) fn mask_mode_active(&self) -> bool {
         self.session.workspace.mode == MASK_MODE
+    }
+
+    /// The open shape gesture has nothing left in flight: no `draft.set` outstanding, none queued
+    /// and no commit waiting on one. The frame on screen is therefore rendered from the geometry the
+    /// gesture currently holds, which is what a captured frame has to be evidence of.
+    pub(crate) fn mask_draft_drained(&self) -> bool {
+        self.mask_draft.is_none()
+            || !(self.mask_draft_in_flight || self.mask_draft_pending || self.mask_draft_finish)
     }
 
     /// The mask the generated module sections are bound to.
@@ -101,17 +109,83 @@ impl Editor {
                 .map(|report| report.name.clone())
                 .unwrap_or_default();
             self.selected_component = None;
+            self.hovered_component = None;
             return true;
         }
-        // A component the open mask no longer holds is dropped for the same reason.
-        if let Some(component) = self.selected_component.clone()
-            && !reports
+        // A component the open mask no longer holds is dropped for the same reason, and so is a
+        // hover left pointing at a row that is gone.
+        let held = |component: &ComponentId| {
+            reports
                 .iter()
-                .any(|report| report.components.iter().any(|known| known.id == component))
-        {
+                .any(|report| report.components.iter().any(|known| &known.id == component))
+        };
+        if self.selected_component.as_ref().is_some_and(|id| !held(id)) {
             self.selected_component = None;
         }
+        if self.hovered_component.as_ref().is_some_and(|id| !held(id)) {
+            self.hovered_component = None;
+        }
         false
+    }
+
+    /// Seed the host's own mask fields from the open mask and the selected component.
+    ///
+    /// The `mask.*` controls are generated from the host's declarations exactly as a module's are,
+    /// so they read the same field store — and a store nothing seeds shows a declared minimum rather
+    /// than what is stored, which would make a component's numbers a different geometry from its
+    /// handles. This is the mask half of [`Editor::seed_values`] and follows it everywhere: after a
+    /// refresh, after a commit and whenever the selection moves.
+    ///
+    /// A field being typed or dragged is left exactly as it is, which is the same rule a module's
+    /// seeding follows.
+    pub(crate) fn seed_mask_fields(&mut self) {
+        let open = self.open_mask().cloned();
+        let selected = self.selected_component.clone();
+        let mut values: Vec<(&'static str, String, Value)> = Vec::new();
+        if let Some(report) = &open {
+            values.push(("mask.set-amount", "amount".to_owned(), json!(report.amount)));
+            values.push(("mask.set-invert", "invert".to_owned(), json!(report.invert)));
+            if let Some(component) = selected
+                .as_ref()
+                .and_then(|id| report.components.iter().find(|known| &known.id == id))
+                && let Some(command) = lightwell_core::mask::commands::geometry(
+                    lightwell_core::mask::commands::GeometryOp::Set,
+                    &component.kind,
+                )
+            {
+                values.push((
+                    "mask.set-component-mode",
+                    "mode".to_owned(),
+                    json!(component.mode.as_str()),
+                ));
+                values.push((
+                    "mask.set-component-invert",
+                    "invert".to_owned(),
+                    json!(component.invert),
+                ));
+                // The stored payload's field names are its parameters' names, which is what makes
+                // this a walk over declarations rather than a second description of a payload.
+                for parameter in &command.action.parameters {
+                    if let Some(value) = component.payload.get(&parameter.name) {
+                        values.push((command.method, parameter.name.clone(), value.clone()));
+                    }
+                }
+            }
+        }
+        for (action, parameter, value) in values {
+            let key = (action.to_owned(), parameter);
+            if self.editing.as_ref() == Some(&key) || self.dragging.as_ref() == Some(&key) {
+                continue;
+            }
+            let Some(declared) = lightwell_core::mask::commands::find(action)
+                .and_then(|command| command.action.parameter(&key.1))
+            else {
+                continue;
+            };
+            if let Ok(text) = crate::app::fields::value_text(declared, &value) {
+                self.fields.set(&key.0, &key.1, text);
+            }
+        }
     }
 
     /// Why Mask mode cannot be left right now. A draft is never discarded by leaving a mode: the
@@ -237,7 +311,16 @@ impl Editor {
                 Task::none()
             }
             MaskMessage::SelectComponent(id) => {
-                self.selected_component = ComponentId::parse(id).ok();
+                let chosen = ComponentId::parse(id).ok();
+                if self.selected_component == chosen {
+                    return Task::none();
+                }
+                self.selected_component = chosen;
+                // The row's own number fields show that component's stored geometry, so opening a
+                // row re-seeds them from the component it opened. Nothing is rendered: a selection
+                // opens a row's numbers, and the overlay follows the pointer rather than the
+                // selection.
+                self.seed_mask_fields();
                 Task::none()
             }
             MaskMessage::ToggleVisible(id) => {
@@ -296,8 +379,35 @@ impl Editor {
             MaskMessage::Apply => self.mask_commit(),
             MaskMessage::Cancel => self.mask_cancel(),
             MaskMessage::Reapply => self.mask_reapply(),
-            MaskMessage::Delete(mask) => self.one_mask("mask.delete", mask, Map::new()),
-            MaskMessage::Duplicate(mask) => self.one_mask("mask.duplicate", mask, Map::new()),
+            // A row edit and its Copy as JSON request go through one builder, so what is copied is
+            // what is sent.
+            MaskMessage::Row(edit) => match self.row_command(&edit) {
+                Some((method, target, fields)) => self.mask_command(method, target, fields),
+                None => Task::none(),
+            },
+            MaskMessage::CopyRow(edit) => {
+                let Some((method, target, fields)) = self.row_command(&edit) else {
+                    return Task::none();
+                };
+                let Some(params) = self.mask_request(&target, &fields) else {
+                    return Task::none();
+                };
+                self.status = format!("Copied the {method} request");
+                iced::clipboard::write(
+                    serde_json::to_string_pretty(&json!({"method": method, "params": params}))
+                        .unwrap_or_default(),
+                )
+            }
+            // Per-client view state: the overlay follows the pointer over the list and commits
+            // nothing. The grid for one component is the same grid, asked for by naming it.
+            MaskMessage::Hover(component) => {
+                let hovered = component.and_then(|id| ComponentId::parse(id).ok());
+                if self.hovered_component == hovered {
+                    return Task::none();
+                }
+                self.hovered_component = hovered;
+                self.refresh_mask_overlay()
+            }
             MaskMessage::Name(text) => {
                 self.mask_name = text;
                 Task::none()
@@ -321,74 +431,74 @@ impl Editor {
                     Map::new(),
                 )
             }
-            MaskMessage::Invert(mask) => {
-                let inverted = self.open_mask().is_some_and(|report| report.invert);
-                self.one_mask(
-                    "mask.set-invert",
-                    mask,
-                    [("invert".to_owned(), json!(!inverted))]
-                        .into_iter()
-                        .collect(),
-                )
-            }
-            MaskMessage::Move { mask, index } => self.one_mask(
-                "mask.reorder",
-                mask,
-                [("index".to_owned(), json!(index))].into_iter().collect(),
-            ),
-            MaskMessage::DeleteComponent(component) => {
-                self.one_component("mask.delete-component", component, Map::new())
-            }
-            MaskMessage::MoveComponent { component, index } => self.one_component(
-                "mask.reorder-component",
-                component,
-                [("index".to_owned(), json!(index))].into_iter().collect(),
-            ),
         }
     }
 
-    /// One command addressing a whole mask by its identity.
-    fn one_mask(
-        &mut self,
-        method: &'static str,
-        mask: String,
-        fields: Map<String, Value>,
-    ) -> Task<Message> {
-        let Ok(mask) = MaskId::parse(mask) else {
-            return Task::none();
+    /// The declared command one row edit sends: its method, the objects it addresses and the fields
+    /// it carries.
+    ///
+    /// This is the only place a row's request is described. Running a row control and copying its
+    /// JSON both come through here, which is what makes the copied request exactly the sent one, and
+    /// the method names come from the host's own family rather than being spelled twice.
+    pub(crate) fn row_command(
+        &self,
+        edit: &RowEdit,
+    ) -> Option<(&'static str, MaskTarget, Map<String, Value>)> {
+        let of_mask = |mask: &str, method, fields| {
+            Some((
+                method,
+                MaskTarget {
+                    mask: Some(MaskId::parse(mask.to_owned()).ok()?),
+                    component: None,
+                    name: None,
+                },
+                fields,
+            ))
         };
-        self.mask_command(
-            method,
-            MaskTarget {
-                mask: Some(mask),
-                component: None,
-                name: None,
-            },
-            fields,
-        )
-    }
-
-    /// One command addressing a component of the open mask.
-    fn one_component(
-        &mut self,
-        method: &'static str,
-        component: String,
-        fields: Map<String, Value>,
-    ) -> Task<Message> {
-        let (Some(mask), Ok(component)) =
-            (self.selected_mask.clone(), ComponentId::parse(component))
-        else {
-            return Task::none();
+        // A component is addressed inside the mask the panel has open: a component identity alone is
+        // not an address, and the command family asks for both.
+        let of_component = |component: &str, method, fields| {
+            Some((
+                method,
+                MaskTarget {
+                    mask: Some(self.selected_mask.clone()?),
+                    component: Some(ComponentId::parse(component.to_owned()).ok()?),
+                    name: None,
+                },
+                fields,
+            ))
         };
-        self.mask_command(
-            method,
-            MaskTarget {
-                mask: Some(mask),
-                component: Some(component),
-                name: None,
-            },
-            fields,
-        )
+        let one = |name: &str, value: Value| -> Map<String, Value> {
+            [(name.to_owned(), value)].into_iter().collect()
+        };
+        match edit {
+            RowEdit::DeleteMask(mask) => of_mask(mask, "mask.delete", Map::new()),
+            RowEdit::DuplicateMask(mask) => of_mask(mask, "mask.duplicate", Map::new()),
+            RowEdit::InvertMask { mask, invert } => {
+                of_mask(mask, "mask.set-invert", one("invert", json!(invert)))
+            }
+            RowEdit::MoveMask { mask, index } => {
+                of_mask(mask, "mask.reorder", one("index", json!(index)))
+            }
+            RowEdit::DeleteComponent(component) => {
+                of_component(component, "mask.delete-component", Map::new())
+            }
+            RowEdit::MoveComponent { component, index } => of_component(
+                component,
+                "mask.reorder-component",
+                one("index", json!(index)),
+            ),
+            RowEdit::ComponentMode { component, mode } => of_component(
+                component,
+                "mask.set-component-mode",
+                one("mode", json!(mode)),
+            ),
+            RowEdit::ComponentInvert { component, invert } => of_component(
+                component,
+                "mask.set-component-invert",
+                one("invert", json!(invert)),
+            ),
+        }
     }
 
     /// Per-client overlay view state: what the canvas draws of the selected mask, and in which of
@@ -454,9 +564,12 @@ impl Editor {
         let (cells_w, cells_h) = self.overlay_cells()?;
         Some(lightwell_core::MaskOverlayRequest {
             mask,
-            // Hovering or selecting one component shows that component's own contribution, which is
-            // the same grid asked for by naming it.
-            component: self.selected_component.clone(),
+            // The **pointer** is what asks for one component's own contribution, and nothing else:
+            // hovering a row shows that component alone, and leaving the list restores the composed
+            // mask. Tying it to the selection instead would leave the overlay showing one component
+            // long after the pointer had gone, and there would be no way to see the composition
+            // again without deselecting — which is the comparison the list exists to make.
+            component: self.hovered_component.clone(),
             cells_w,
             cells_h,
         })
@@ -479,6 +592,15 @@ impl Editor {
             return Task::none();
         };
         let revision = state.revision;
+        // A new mask's first component is always an add. Creating one while the Add row says
+        // subtract would silently coerce the mode a person chose, so it is refused and says so.
+        if op == MaskDraftOp::Create && self.mask_mode != lightwell_core::ComponentMode::Add {
+            self.status = format!(
+                "A mask's first component is always add; the next component is set to {}",
+                self.mask_mode.as_str()
+            );
+            return Task::none();
+        }
         let draft = match (op, mask) {
             (MaskDraftOp::Create, _) => MaskDraft::creating(kind, revision),
             (MaskDraftOp::Add(mode), Some(mask)) => MaskDraft::adding(mask, kind, mode, revision),
@@ -511,11 +633,9 @@ impl Editor {
             self.status = format!("unknown mask component {}", found.kind);
             return Task::none();
         }
-        // The gradient starts at exactly the stored payload, so reopening a gesture shows what was
-        // committed rather than a gradient reconstructed from the drawn handles.
-        let Ok(gradient) =
-            serde_json::from_value::<lightwell_core::mask::LinearGradient>(found.payload.clone())
-        else {
+        // The shape starts at exactly the stored payload, so reopening a gesture shows what was
+        // committed rather than a shape reconstructed from the drawn handles.
+        let Some(shape) = stored_shape(&found.kind, &found.payload) else {
             self.status = format!("{} has no handles in this build", found.name);
             return Task::none();
         };
@@ -526,7 +646,7 @@ impl Editor {
             mask,
             component_id,
             kind,
-            gradient,
+            shape,
             revision,
         ))
     }
@@ -582,7 +702,14 @@ impl Editor {
         result: Result<StageTransform, String>,
     ) -> Task<Message> {
         match result {
-            Ok(transform) => self.mask_map = ContentMap::new(&transform),
+            Ok(transform) => {
+                self.mask_map = ContentMap::new(&transform);
+                // Mask space is defined in terms of the content stage's aspect, so the gesture is
+                // told it from the same answer its handles are mapped through — once, not per move.
+                if let (Some(map), Some(draft)) = (self.mask_map, &mut self.mask_draft) {
+                    draft.set_aspect(map.aspect());
+                }
+            }
             Err(error) => {
                 // A stack with no output stage has no mapping, so the handles cannot be drawn and
                 // the gesture says so rather than drawing them somewhere invented.
@@ -758,6 +885,21 @@ impl Editor {
     }
 }
 
+/// One stored component payload as the shape its kind's handle editor edits, or `None` for a kind
+/// this build draws no handles for — which is what the panel says rather than opening a gesture that
+/// would edit the wrong geometry.
+fn stored_shape(kind: &str, payload: &Value) -> Option<MaskShape> {
+    match kind {
+        crate::mask_draft::LINEAR => serde_json::from_value(payload.clone())
+            .ok()
+            .map(MaskShape::Linear),
+        crate::mask_draft::RADIAL => serde_json::from_value(payload.clone())
+            .ok()
+            .map(MaskShape::Radial),
+        _ => None,
+    }
+}
+
 /// The target one generated mask control submits with, from the panel's own selection. A command
 /// that addresses a component takes both identities; one that addresses a mask takes the mask alone.
 pub(crate) fn control_target(
@@ -890,6 +1032,9 @@ impl Editor {
                 {
                     draft.mark_conflicted();
                 }
+                // A refusal belongs in the evidence log beside the commit it answers: a run that
+                // shows the request and not its outcome cannot be read afterwards.
+                self.event("mask_draft_refused", json!({ "reason": error }));
                 self.status = error;
                 Task::none()
             }

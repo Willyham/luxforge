@@ -54,6 +54,9 @@ pub(crate) struct Inputs<'a> {
     /// selection: it commits nothing and appears in no recipe.
     pub(crate) selected_mask: Option<&'a MaskId>,
     pub(crate) selected_component: Option<&'a ComponentId>,
+    /// The component row the pointer is over. While it lasts the overlay shows that component's own
+    /// contribution instead of the composed mask, which is what makes a subtract legible.
+    pub(crate) hovered_component: Option<&'a ComponentId>,
     /// Masks whose overlay the eye has hidden. View state: a hidden mask still applies to the
     /// picture, because hiding an edit and hiding its indicator are different things.
     pub(crate) hidden_masks: &'a HashSet<MaskId>,
@@ -219,6 +222,7 @@ mod tests {
         masks: Option<MaskListing>,
         selected_mask: Option<MaskId>,
         selected_component: Option<ComponentId>,
+        hovered_component: Option<ComponentId>,
         hidden_masks: HashSet<MaskId>,
         mask_draft: Option<MaskDraft>,
         session: ClientSession,
@@ -259,6 +263,7 @@ mod tests {
                 masks: None,
                 selected_mask: None,
                 selected_component: None,
+                hovered_component: None,
                 hidden_masks: HashSet::new(),
                 mask_draft: None,
                 session: ClientSession::default(),
@@ -331,6 +336,7 @@ mod tests {
                 masks: self.masks.as_ref(),
                 selected_mask: self.selected_mask.as_ref(),
                 selected_component: self.selected_component.as_ref(),
+                hovered_component: self.hovered_component.as_ref(),
                 hidden_masks: &self.hidden_masks,
                 mask_draft: self.mask_draft.as_ref(),
                 mask_mode: ComponentMode::Add,

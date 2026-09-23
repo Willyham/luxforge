@@ -1,7 +1,7 @@
-//! The transient mask shape draft: the single owner of everything a gradient gesture changes before
-//! it commits.
+//! The transient mask shape draft: the single owner of everything a shape gesture changes before it
+//! commits.
 //!
-//! This module holds no framework types and, unlike [`crate::crop_draft`], no stage geometry either.
+//! This module holds no framework types and, unlike [`crate::crop_draft`], no stage raster either.
 //! A mask component's geometry is stored in **content-stage normalized** coordinates — `x` and `y`
 //! as fractions of the content stage, legal over
 //! [`POSITION_MIN`][lightwell_core::mask::POSITION_MIN]`..=`[`POSITION_MAX`][lightwell_core::mask::POSITION_MAX]
@@ -9,13 +9,22 @@
 //! canvas's job, through `render.transform`'s affine and the canvas view, and it is done locally per
 //! move rather than by asking the host ([performance rule 12](../../docs/engineering/performance-rules.md)).
 //!
-//! What lives here is the state machine: which handle a gesture grabbed, what the gradient looked
-//! like when it started, and which command the release will commit. Every drag is evaluated against
-//! the gradient the gesture *started* with, never the previous position, so a drag away and back
-//! returns the starting gradient exactly.
+//! The one number about the stage this draft does hold is its **aspect**, `W/H`, because mask space
+//! is defined in terms of it: a stored distance is in units of the content stage's height on both
+//! axes, so a circle stays a circle at any aspect ratio. It is read from the same one
+//! `render.transform` answer the handles are mapped through, once per gesture, and never per move.
+//!
+//! What lives here is the state machine: which handle a gesture grabbed, what the shape looked like
+//! when it started, and which command the release will commit. Every drag is evaluated against the
+//! shape the gesture *started* with, never the previous position, and every handle moves by a
+//! **difference** from where the press landed, so a drag away and back returns the starting shape
+//! exactly and a press slightly off a handle never makes the shape jump.
 use lightwell_core::{
     ComponentId, ComponentMode, MaskId, StageTransform,
-    mask::{LinearGradient, POSITION_MAX, POSITION_MIN, commands::GeometryOp},
+    mask::{
+        ANGLE_MAX, ANGLE_MIN, DISTANCE_MAX, DISTANCE_MIN, FEATHER_MAX, FEATHER_MIN, LinearGradient,
+        POSITION_MAX, POSITION_MIN, RadialGradient, commands::GeometryOp,
+    },
 };
 use serde_json::{Map, Value, json};
 
@@ -63,6 +72,14 @@ impl ContentMap {
         self.output
     }
 
+    /// The **content** stage's aspect, `W/H`. Mask space is defined in terms of it — one unit is the
+    /// content stage's height on both axes — so a radial's stored radii cannot be placed without it.
+    /// It is the content stage's own ratio and not the output's: a crop changes what is shown, and
+    /// the geometry a mask stores is in the stage the mask is compiled against.
+    pub(crate) fn aspect(self) -> f64 {
+        self.content.0 / self.content.1
+    }
+
     /// A stored normalized position as a coordinate of the output stage.
     pub(crate) fn to_output(self, x: f64, y: f64) -> (f64, f64) {
         apply(self.forward, x * self.content.0, y * self.content.1)
@@ -97,38 +114,205 @@ fn apply(matrix: [f64; 6], x: f64, y: f64) -> (f64, f64) {
     )
 }
 
-/// The component kind this draft edits. Only the linear gradient has a handle editor today; a
-/// component of any other registered kind is edited through its generated number fields, which come
-/// from the same declarations.
+/// The component kinds this build draws handles for. A component of any other registered kind is
+/// edited through its generated number fields, which come from the same declarations.
 pub(crate) const LINEAR: &str = "linear";
+pub(crate) const RADIAL: &str = "radial";
 
-/// Which part of the drawn gradient a press grabbed.
-///
-/// The drawn figure is the design's three lines — `p0`, the midpoint and `p1` — with an end handle
-/// on each endpoint and the midpoint grabbable to move the whole axis.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum MaskHandle {
-    /// The end of the axis at coverage 0.
-    Start,
-    /// The midpoint: moves both ends together, keeping the axis's length and direction.
-    Middle,
-    /// The end of the axis at coverage 1.
-    End,
+/// This kind has a canvas handle editor in this build. One list, read by the panel that offers the
+/// kinds and by the draft that opens one, so the two cannot disagree.
+pub(crate) fn drawable(kind: &str) -> bool {
+    kind == LINEAR || kind == RADIAL
 }
 
-impl MaskHandle {
-    pub(crate) const ALL: [Self; 3] = [Self::Start, Self::Middle, Self::End];
+/// The geometry one gesture edits: one registered kind's stored payload, in the shape the host
+/// parses and the generated method declares.
+///
+/// There is no third state. A draft is opened for a kind this build draws, or it is not opened at
+/// all, so a shape is never "a linear gradient that might be a radial".
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) enum MaskShape {
+    Linear(LinearGradient),
+    Radial(RadialGradient),
+}
 
-    /// Where this handle sits on a gradient, in normalized content coordinates.
-    pub(crate) fn point(self, gradient: &LinearGradient) -> (f64, f64) {
-        match self {
-            Self::Start => (gradient.x0, gradient.y0),
-            Self::Middle => (
-                (gradient.x0 + gradient.x1) / 2.0,
-                (gradient.y0 + gradient.y1) / 2.0,
-            ),
-            Self::End => (gradient.x1, gradient.y1),
+impl MaskShape {
+    /// The shape one kind's gesture starts from when nothing has been drawn yet.
+    fn neutral(kind: &str) -> Option<Self> {
+        match kind {
+            LINEAR => Some(Self::Linear(NEUTRAL)),
+            RADIAL => Some(Self::Radial(NEUTRAL_RADIAL)),
+            _ => None,
         }
+    }
+
+    /// The declared fields this kind's methods carry, in the order the kind declares them.
+    pub(crate) fn values(self) -> Vec<(&'static str, f64)> {
+        match self {
+            Self::Linear(linear) => vec![
+                ("x0", linear.x0),
+                ("y0", linear.y0),
+                ("x1", linear.x1),
+                ("y1", linear.y1),
+            ],
+            Self::Radial(radial) => vec![
+                ("x", radial.x),
+                ("y", radial.y),
+                ("radius_x", radial.radius_x),
+                ("radius_y", radial.radius_y),
+                ("angle", radial.angle),
+                ("feather", radial.feather),
+            ],
+        }
+    }
+
+    /// The handles this shape draws, in the order they are hit tested: the ones that sit on a
+    /// specific point win over the ones a whole region answers for.
+    pub(crate) fn handles(self) -> &'static [MaskHandle] {
+        match self {
+            Self::Linear(_) => &[MaskHandle::Start, MaskHandle::End, MaskHandle::Middle],
+            Self::Radial(_) => &[
+                MaskHandle::RadiusPlusX,
+                MaskHandle::RadiusMinusX,
+                MaskHandle::RadiusPlusY,
+                MaskHandle::RadiusMinusY,
+                MaskHandle::Rotation,
+                MaskHandle::Feather,
+                MaskHandle::Centre,
+            ],
+        }
+    }
+}
+
+/// Which part of the drawn figure a press grabbed.
+///
+/// The linear gradient's figure is the design's three lines — `p0`, the midpoint and `p1` — with an
+/// end handle on each endpoint and the midpoint grabbable to move the whole axis. The radial's is
+/// the design's set: four radius handles, a centre, a rotation grip and a feather ring.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum MaskHandle {
+    /// Linear: the end of the axis at coverage 0.
+    Start,
+    /// Linear: the midpoint, which moves both ends together, keeping length and direction.
+    Middle,
+    /// Linear: the end of the axis at coverage 1.
+    End,
+    /// Radial: the centre, which moves the whole ellipse.
+    Centre,
+    /// Radial: the four radius handles, on the ellipse's own axes.
+    RadiusPlusX,
+    RadiusMinusX,
+    RadiusPlusY,
+    RadiusMinusY,
+    /// Radial: the rotation grip, beyond the `+x` radius handle on the same axis.
+    Rotation,
+    /// Radial: the feather ring, on the ellipse's own 45° diagonal so it never coincides with a
+    /// radius handle — which it would on any axis at `feather = 0`, where the ring is the boundary.
+    Feather,
+    /// The create gesture's own grab, which sets both radii from one drag. It is not drawn: the
+    /// handles above are what a committed component shows.
+    Extent,
+}
+
+/// How far beyond the `+x` radius handle the rotation grip sits, in mask-space units.
+const ROTATION_REACH: f64 = 0.06;
+
+/// `cos(45°)`, which is also `sin(45°)`: where the feather ring's handle sits on the ellipse's own
+/// parametrization.
+const DIAGONAL: f64 = std::f64::consts::FRAC_1_SQRT_2;
+
+/// The smallest relative radius the feather **grip** is drawn at. At `feather = 100` the ring itself
+/// has collapsed to the centre — which is the truth, and the drawn ring shows it — but a grip under
+/// the centre handle would be a grip nobody could take hold of again. The drag reads the pointer's
+/// travel from wherever the press landed, so flooring where the grip sits changes no arithmetic: it
+/// only keeps the feather reachable by pointer as well as by its number field.
+const MIN_RING_GRIP: f64 = 0.12;
+
+impl MaskHandle {
+    /// Where this handle sits, in normalized content coordinates, or `None` when it belongs to
+    /// another kind's figure.
+    pub(crate) fn point(self, shape: &MaskShape, aspect: f64) -> Option<(f64, f64)> {
+        match (self, shape) {
+            (Self::Start, MaskShape::Linear(linear)) => Some((linear.x0, linear.y0)),
+            (Self::Middle, MaskShape::Linear(linear)) => {
+                Some(((linear.x0 + linear.x1) / 2.0, (linear.y0 + linear.y1) / 2.0))
+            }
+            (Self::End, MaskShape::Linear(linear)) => Some((linear.x1, linear.y1)),
+            (_, MaskShape::Radial(radial)) => {
+                let ellipse = Ellipse::new(*radial, aspect);
+                let (du, dv) = match self {
+                    Self::Centre => (0.0, 0.0),
+                    Self::RadiusPlusX => ellipse.local(radial.radius_x, 0.0),
+                    Self::RadiusMinusX => ellipse.local(-radial.radius_x, 0.0),
+                    Self::RadiusPlusY => ellipse.local(0.0, radial.radius_y),
+                    Self::RadiusMinusY => ellipse.local(0.0, -radial.radius_y),
+                    Self::Rotation => ellipse.local(radial.radius_x + ROTATION_REACH, 0.0),
+                    Self::Feather => {
+                        let ring = (1.0 - radial.feather / 100.0).max(MIN_RING_GRIP);
+                        ellipse.local(
+                            ring * radial.radius_x * DIAGONAL,
+                            ring * radial.radius_y * DIAGONAL,
+                        )
+                    }
+                    Self::Start | Self::Middle | Self::End | Self::Extent => return None,
+                };
+                Some(ellipse.to_content(ellipse.cu + du, ellipse.cv + dv))
+            }
+            _ => None,
+        }
+    }
+}
+
+/// One radial payload bound to an aspect ratio: mask space, and the ellipse's own axes inside it.
+///
+/// Mask space is `u = x · W/H`, `v = y`, which is the spelling the host compiles a radial through,
+/// so the handles are placed by the same arithmetic the coverage is evaluated by rather than by a
+/// second description of the same ellipse.
+#[derive(Clone, Copy, Debug)]
+struct Ellipse {
+    cu: f64,
+    cv: f64,
+    ca: f64,
+    sa: f64,
+    aspect: f64,
+}
+
+impl Ellipse {
+    fn new(radial: RadialGradient, aspect: f64) -> Self {
+        let theta = radial.angle * std::f64::consts::PI / 180.0;
+        Self {
+            cu: radial.x * aspect,
+            cv: radial.y,
+            ca: theta.cos(),
+            sa: theta.sin(),
+            aspect,
+        }
+    }
+
+    /// A point on the ellipse's own axes, as an offset from the centre in mask space.
+    fn local(self, a: f64, b: f64) -> (f64, f64) {
+        (self.ca * a - self.sa * b, self.sa * a + self.ca * b)
+    }
+
+    /// A mask-space offset from the centre, back onto the ellipse's own axes.
+    fn axes(self, du: f64, dv: f64) -> (f64, f64) {
+        (self.ca * du + self.sa * dv, -self.sa * du + self.ca * dv)
+    }
+
+    /// A normalized content position as a mask-space one.
+    fn to_mask(self, x: f64, y: f64) -> (f64, f64) {
+        (x * self.aspect, y)
+    }
+
+    /// A mask-space position back to a normalized content one.
+    fn to_content(self, u: f64, v: f64) -> (f64, f64) {
+        (u / self.aspect, v)
+    }
+
+    /// That point's offset from the centre, on the ellipse's own axes.
+    fn offset(self, point: (f64, f64)) -> (f64, f64) {
+        let (u, v) = self.to_mask(point.0, point.1);
+        self.axes(u - self.cu, v - self.cv)
     }
 }
 
@@ -170,7 +354,7 @@ impl MaskDraftOp {
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct Gesture {
     handle: MaskHandle,
-    start: LinearGradient,
+    start: MaskShape,
     start_point: (f64, f64),
 }
 
@@ -184,7 +368,11 @@ pub(crate) struct MaskDraft {
     /// The registered component kind, which is half of the generated method's name.
     pub(crate) kind: String,
     pub(crate) op: MaskDraftOp,
-    pub(crate) gradient: LinearGradient,
+    pub(crate) shape: MaskShape,
+    /// The content stage's `W/H`, which mask space is defined in terms of. It is `1.0` until
+    /// `render.transform` answers, which is also when the handles first become drawable, so no
+    /// gesture is ever evaluated against an aspect that was guessed.
+    aspect: f64,
     /// The revision this draft was opened against; the commit expects it.
     pub(crate) base_revision: u64,
     /// Something else changed the asset; the commit is refused until Discard or Reapply.
@@ -206,17 +394,22 @@ pub(crate) const NEUTRAL: LinearGradient = LinearGradient {
     y1: 0.75,
 };
 
+/// An ellipse in the middle of the frame, a quarter of the stage's height across, upright, with the
+/// ramp starting halfway out. Inside is selected, so this is a soft-edged circle over the middle of
+/// the picture — what a person drawing around a face starts from.
+pub(crate) const NEUTRAL_RADIAL: RadialGradient = RadialGradient {
+    x: 0.5,
+    y: 0.5,
+    radius_x: 0.25,
+    radius_y: 0.25,
+    angle: 0.0,
+    feather: 50.0,
+};
+
 impl MaskDraft {
-    /// Start a gesture that will create a new mask from a gradient.
+    /// Start a gesture that will create a new mask from a shape of this kind.
     pub(crate) fn creating(kind: impl Into<String>, base_revision: u64) -> Self {
-        Self::seeded(
-            None,
-            None,
-            kind,
-            MaskDraftOp::Create,
-            NEUTRAL,
-            base_revision,
-        )
+        Self::seeded(None, None, kind, MaskDraftOp::Create, None, base_revision)
     }
 
     /// Start a gesture that will add a further component to an existing mask, in that mode.
@@ -231,18 +424,18 @@ impl MaskDraft {
             None,
             kind,
             MaskDraftOp::Add(mode),
-            NEUTRAL,
+            None,
             base_revision,
         )
     }
 
-    /// Edit an existing component: the gradient starts at exactly the stored payload, so reopening
-    /// a draft shows what was committed.
+    /// Edit an existing component: the shape starts at exactly the stored payload, so reopening a
+    /// draft shows what was committed.
     pub(crate) fn editing(
         mask: MaskId,
         component: ComponentId,
         kind: impl Into<String>,
-        gradient: LinearGradient,
+        shape: MaskShape,
         base_revision: u64,
     ) -> Self {
         Self::seeded(
@@ -250,7 +443,7 @@ impl MaskDraft {
             Some(component),
             kind,
             MaskDraftOp::Set,
-            gradient,
+            Some(shape),
             base_revision,
         )
     }
@@ -260,18 +453,55 @@ impl MaskDraft {
         component: Option<ComponentId>,
         kind: impl Into<String>,
         op: MaskDraftOp,
-        gradient: LinearGradient,
+        shape: Option<MaskShape>,
         base_revision: u64,
     ) -> Self {
+        let kind = kind.into();
+        // A kind this build cannot draw has no neutral shape and therefore no handles. The draft
+        // still exists — it names the kind and it has no method, which is the refusal the panel
+        // shows — rather than being quietly turned into a linear gradient.
+        let shape = shape
+            .or_else(|| MaskShape::neutral(&kind))
+            .unwrap_or(MaskShape::Linear(NEUTRAL));
         Self {
             mask,
             component,
-            kind: kind.into(),
+            kind,
             op,
-            gradient: clamped(gradient),
+            shape: legal(shape, shape),
+            aspect: 1.0,
             base_revision,
             conflicted: false,
             gesture: None,
+        }
+    }
+
+    /// Tell the gesture the content stage's aspect, from the one `render.transform` answer its
+    /// handles are mapped through. Mask space is defined in terms of it, so a radial's handles are
+    /// not drawable until it arrives.
+    pub(crate) fn set_aspect(&mut self, aspect: f64) {
+        if aspect.is_finite() && aspect > 0.0 {
+            self.aspect = aspect;
+        }
+    }
+
+    pub(crate) fn aspect(&self) -> f64 {
+        self.aspect
+    }
+
+    /// The gradient this gesture edits, when it edits one.
+    pub(crate) fn linear(&self) -> Option<LinearGradient> {
+        match self.shape {
+            MaskShape::Linear(linear) => Some(linear),
+            MaskShape::Radial(_) => None,
+        }
+    }
+
+    /// The ellipse this gesture edits, when it edits one.
+    pub(crate) fn radial(&self) -> Option<RadialGradient> {
+        match self.shape {
+            MaskShape::Radial(radial) => Some(radial),
+            MaskShape::Linear(_) => None,
         }
     }
 
@@ -282,7 +512,7 @@ impl MaskDraft {
             .map(|command| command.method)
     }
 
-    /// The declared parameters the commit carries: the gradient's four fields, and the mode when the
+    /// The declared parameters the commit carries: the shape's own fields, and the mode when the
     /// method takes one. The identities travel in the envelope and are not parameters.
     pub(crate) fn fields(&self) -> Map<String, Value> {
         let mut fields = Map::new();
@@ -295,14 +525,9 @@ impl MaskDraft {
         fields
     }
 
-    /// The gradient's four declared fields in the order the kind declares them.
-    pub(crate) fn values(&self) -> [(&'static str, f64); 4] {
-        [
-            ("x0", self.gradient.x0),
-            ("y0", self.gradient.y0),
-            ("x1", self.gradient.x1),
-            ("y1", self.gradient.y1),
-        ]
+    /// The shape's declared fields in the order the kind declares them.
+    pub(crate) fn values(&self) -> Vec<(&'static str, f64)> {
+        self.shape.values()
     }
 
     pub(crate) fn dragging(&self) -> bool {
@@ -329,26 +554,40 @@ impl MaskDraft {
 
     /// Which handle a press at this normalized point grabbed, or none when it grabbed nothing.
     /// `tolerance` is the hit radius in normalized units, so the canvas keeps a handle the same size
-    /// on screen at every zoom by dividing its pixel radius by the drawn scale. Endpoints win over
-    /// the midpoint, which is only reachable when the axis is long enough to draw all three.
+    /// on screen at every zoom by dividing its pixel radius by the drawn scale. The order is the
+    /// shape's own: the handles that sit on a specific point win over the ones that move everything.
     pub(crate) fn hit(&self, point: (f64, f64), tolerance: f64) -> Option<MaskHandle> {
         let tolerance = tolerance.max(0.0);
-        [MaskHandle::Start, MaskHandle::End, MaskHandle::Middle]
-            .into_iter()
-            .find(|handle| {
-                let (x, y) = handle.point(&self.gradient);
-                (point.0 - x).hypot(point.1 - y) <= tolerance
-            })
+        self.shape.handles().iter().copied().find(|handle| {
+            match handle.point(&self.shape, self.aspect) {
+                Some((x, y)) => (point.0 - x).hypot(point.1 - y) <= tolerance,
+                None => false,
+            }
+        })
     }
 
-    /// Start a gesture, snapshotting the gradient every later `drag` is measured against.
+    /// Where every drawn handle of this gesture sits, in normalized content coordinates. One list,
+    /// read by the canvas that draws them and by the hit test above.
+    pub(crate) fn handles(&self) -> Vec<(MaskHandle, (f64, f64))> {
+        self.shape
+            .handles()
+            .iter()
+            .filter_map(|handle| {
+                handle
+                    .point(&self.shape, self.aspect)
+                    .map(|point| (*handle, point))
+            })
+            .collect()
+    }
+
+    /// Start a gesture, snapshotting the shape every later `drag` is measured against.
     pub(crate) fn begin(&mut self, handle: MaskHandle, point: (f64, f64)) {
         if !finite(point) {
             return;
         }
         self.gesture = Some(Gesture {
             handle,
-            start: self.gradient,
+            start: self.shape,
             start_point: point,
         });
     }
@@ -362,74 +601,105 @@ impl MaskDraft {
         if !finite(point) {
             return;
         }
-        let delta = (
-            point.0 - gesture.start_point.0,
-            point.1 - gesture.start_point.1,
-        );
-        let start = gesture.start;
-        let moved = match gesture.handle {
-            MaskHandle::Start => LinearGradient {
-                x0: start.x0 + delta.0,
-                y0: start.y0 + delta.1,
-                ..start
-            },
-            MaskHandle::End => LinearGradient {
-                x1: start.x1 + delta.0,
-                y1: start.y1 + delta.1,
-                ..start
-            },
-            // A move is a move: the travel is clamped rather than the endpoints, so a move into the
-            // edge of the legal range slides along it and the axis keeps its length and direction
-            // exactly. Clamping the endpoints instead would shorten the gradient at the boundary.
-            MaskHandle::Middle => translated(start, delta),
+        let moved = match gesture.start {
+            MaskShape::Linear(start) => MaskShape::Linear(dragged_linear(start, gesture, point)),
+            MaskShape::Radial(start) => {
+                MaskShape::Radial(dragged_radial(start, gesture, point, self.aspect))
+            }
         };
-        self.gradient = lengthened(clamped(moved), start);
+        self.shape = legal(moved, gesture.start);
     }
 
-    /// Draw a whole gradient in one stroke: the press sets `p0` and the drag sets `p1`, which is
-    /// Lightroom's gesture — drag from the untouched side towards the affected one.
+    /// Draw a whole shape in one stroke.
+    ///
+    /// The linear gesture is Lightroom's: the press sets `p0` and the drag sets `p1`, from the
+    /// untouched side towards the affected one. The radial's is the same stroke read as an extent:
+    /// the press sets the centre and the drag sets both radii, upright, so one drag draws the
+    /// ellipse a person meant to draw.
     pub(crate) fn sweep(&mut self, from: (f64, f64), to: (f64, f64)) {
         if !finite(from) || !finite(to) {
             return;
         }
-        self.gradient = lengthened(
-            clamped(LinearGradient {
-                x0: from.0,
-                y0: from.1,
-                x1: to.0,
-                y1: to.1,
-            }),
-            self.gradient,
-        );
+        let (shape, handle) = match self.shape {
+            MaskShape::Linear(_) => (
+                MaskShape::Linear(LinearGradient {
+                    x0: from.0,
+                    y0: from.1,
+                    x1: to.0,
+                    y1: to.1,
+                }),
+                MaskHandle::End,
+            ),
+            MaskShape::Radial(radial) => (
+                MaskShape::Radial(RadialGradient {
+                    x: from.0,
+                    y: from.1,
+                    angle: 0.0,
+                    ..extent(radial, from, to, self.aspect)
+                }),
+                MaskHandle::Extent,
+            ),
+        };
+        self.shape = legal(shape, self.shape);
         self.gesture = Some(Gesture {
-            handle: MaskHandle::End,
-            start: self.gradient,
+            handle,
+            start: self.shape,
             start_point: to,
         });
     }
 
-    /// Finish the gesture. The gradient it produced stays; the commit is a separate decision.
+    /// Finish the gesture. The shape it produced stays; the commit is a separate decision.
     pub(crate) fn end(&mut self) {
         self.gesture = None;
     }
 
     /// Set one declared field by name, as its generated number field does. An unknown name and a
-    /// value the declared range refuses both leave the gradient exactly as it was.
+    /// value the declared range refuses both leave the shape exactly as it was.
+    ///
+    /// The range checked here is the declaring kind's own, which is the range the host's parser
+    /// enforces: a position, a mask-space distance, one turn of degrees and a percentage.
     pub(crate) fn set_field(&mut self, name: &str, value: f64) -> bool {
-        if !value.is_finite() || !(POSITION_MIN..=POSITION_MAX).contains(&value) {
+        if !value.is_finite() {
             return false;
         }
-        let mut next = self.gradient;
-        match name {
-            "x0" => next.x0 = value,
-            "y0" => next.y0 = value,
-            "x1" => next.x1 = value,
-            "y1" => next.y1 = value,
-            _ => return false,
-        }
-        // A number field may legally produce a degenerate axis; the length rule keeps the draft
+        let within = |low: f64, high: f64| (low..=high).contains(&value);
+        let next = match self.shape {
+            MaskShape::Linear(mut linear) => {
+                if !within(POSITION_MIN, POSITION_MAX) {
+                    return false;
+                }
+                match name {
+                    "x0" => linear.x0 = value,
+                    "y0" => linear.y0 = value,
+                    "x1" => linear.x1 = value,
+                    "y1" => linear.y1 = value,
+                    _ => return false,
+                }
+                MaskShape::Linear(linear)
+            }
+            MaskShape::Radial(mut radial) => {
+                match name {
+                    "x" | "y" if !within(POSITION_MIN, POSITION_MAX) => return false,
+                    "radius_x" | "radius_y" if !within(DISTANCE_MIN, DISTANCE_MAX) => return false,
+                    "angle" if !within(ANGLE_MIN, ANGLE_MAX) => return false,
+                    "feather" if !within(FEATHER_MIN, FEATHER_MAX) => return false,
+                    _ => {}
+                }
+                match name {
+                    "x" => radial.x = value,
+                    "y" => radial.y = value,
+                    "radius_x" => radial.radius_x = value,
+                    "radius_y" => radial.radius_y = value,
+                    "angle" => radial.angle = value,
+                    "feather" => radial.feather = value,
+                    _ => return false,
+                }
+                MaskShape::Radial(radial)
+            }
+        };
+        // A number field may legally produce a degenerate axis; the legality rule keeps the draft
         // committable, exactly as it does for a drag.
-        self.gradient = lengthened(next, self.gradient);
+        self.shape = legal(next, self.shape);
         true
     }
 
@@ -444,13 +714,181 @@ impl MaskDraft {
             "base_revision": self.base_revision,
             "conflicted": self.conflicted,
             "dragging": self.dragging(),
-            "gradient": {"x0": self.gradient.x0, "y0": self.gradient.y0, "x1": self.gradient.x1, "y1": self.gradient.y1},
+            "aspect": self.aspect,
+            "shape": Value::Object(
+                self.values()
+                    .into_iter()
+                    .map(|(name, value)| (name.to_owned(), json!(value)))
+                    .collect(),
+            ),
         })
     }
 }
 
 fn finite(point: (f64, f64)) -> bool {
     point.0.is_finite() && point.1.is_finite()
+}
+
+/// One pointer step of a linear gesture, measured from where the press landed.
+fn dragged_linear(start: LinearGradient, gesture: Gesture, point: (f64, f64)) -> LinearGradient {
+    let delta = (
+        point.0 - gesture.start_point.0,
+        point.1 - gesture.start_point.1,
+    );
+    match gesture.handle {
+        MaskHandle::Start => LinearGradient {
+            x0: start.x0 + delta.0,
+            y0: start.y0 + delta.1,
+            ..start
+        },
+        MaskHandle::End => LinearGradient {
+            x1: start.x1 + delta.0,
+            y1: start.y1 + delta.1,
+            ..start
+        },
+        // A move is a move: the travel is clamped rather than the endpoints, so a move into the edge
+        // of the legal range slides along it and the axis keeps its length and direction exactly.
+        // Clamping the endpoints instead would shorten the gradient at the boundary.
+        MaskHandle::Middle => translated(start, delta),
+        // A radial's handle on a gradient moves nothing rather than moving the wrong thing.
+        _ => start,
+    }
+}
+
+/// One pointer step of a radial gesture.
+///
+/// Every handle moves the payload by the **difference** between where the pointer is now and where
+/// the press landed, measured on the ellipse the gesture started with. That is what makes a drag
+/// away and back return the starting ellipse exactly, and what stops a press a pixel off a handle
+/// from snapping the shape to the pointer.
+fn dragged_radial(
+    start: RadialGradient,
+    gesture: Gesture,
+    point: (f64, f64),
+    aspect: f64,
+) -> RadialGradient {
+    let ellipse = Ellipse::new(start, aspect);
+    let (a, b) = ellipse.offset(point);
+    let (a0, b0) = ellipse.offset(gesture.start_point);
+    match gesture.handle {
+        MaskHandle::Centre => {
+            let delta = (
+                point.0 - gesture.start_point.0,
+                point.1 - gesture.start_point.1,
+            );
+            RadialGradient {
+                x: start.x + delta.0,
+                y: start.y + delta.1,
+                ..start
+            }
+        }
+        MaskHandle::RadiusPlusX => RadialGradient {
+            radius_x: start.radius_x + (a - a0),
+            ..start
+        },
+        MaskHandle::RadiusMinusX => RadialGradient {
+            radius_x: start.radius_x - (a - a0),
+            ..start
+        },
+        MaskHandle::RadiusPlusY => RadialGradient {
+            radius_y: start.radius_y + (b - b0),
+            ..start
+        },
+        MaskHandle::RadiusMinusY => RadialGradient {
+            radius_y: start.radius_y - (b - b0),
+            ..start
+        },
+        // The grip turns the ellipse by however far the pointer has swung around the centre, so the
+        // shape follows the hand rather than jumping to it.
+        MaskHandle::Rotation => RadialGradient {
+            angle: wrapped(start.angle + (degrees(b, a) - degrees(b0, a0))),
+            ..start
+        },
+        // The ring is at relative radius `1 - feather/100`, so moving out by `d` of a radius takes
+        // that much off the feather. The arithmetic stays in the stored percentage, which is what
+        // makes a drag that returns to its press return the stored feather bit for bit.
+        MaskHandle::Feather => RadialGradient {
+            feather: start.feather - (relative(a, b, start) - relative(a0, b0, start)) * 100.0,
+            ..start
+        },
+        // The create gesture's own grab: both radii from one drag, about the fixed centre.
+        MaskHandle::Extent => extent(start, (start.x, start.y), point, aspect),
+        _ => start,
+    }
+}
+
+/// The ellipse of the given centre that reaches the pointer on both axes, upright in mask space.
+/// The radii are taken from the pointer's own offset rather than from a difference, because the
+/// centre this is measured against does not move while the stroke lasts.
+fn extent(
+    start: RadialGradient,
+    centre: (f64, f64),
+    point: (f64, f64),
+    aspect: f64,
+) -> RadialGradient {
+    RadialGradient {
+        radius_x: ((point.0 - centre.0) * aspect).abs(),
+        radius_y: (point.1 - centre.1).abs(),
+        ..start
+    }
+}
+
+/// A point's radius relative to the ellipse's own boundary: `1.0` on it, `0.0` at the centre.
+fn relative(a: f64, b: f64, radial: RadialGradient) -> f64 {
+    let ax = a / radial.radius_x;
+    let by = b / radial.radius_y;
+    (ax * ax + by * by).sqrt()
+}
+
+fn degrees(dv: f64, du: f64) -> f64 {
+    dv.atan2(du) * 180.0 / std::f64::consts::PI
+}
+
+/// One turn's worth of degrees folded into the stored range, so two payloads that draw the same
+/// ellipse compare equal and the number field has ends.
+fn wrapped(angle: f64) -> f64 {
+    if !angle.is_finite() {
+        return 0.0;
+    }
+    let mut angle = angle;
+    while angle > ANGLE_MAX {
+        angle -= 360.0;
+    }
+    while angle < ANGLE_MIN {
+        angle += 360.0;
+    }
+    angle
+}
+
+/// A shape the host's own ranges accept, so a gesture never produces a payload the commit refuses.
+/// `reference` is the shape to borrow a direction from when this one has collapsed.
+fn legal(shape: MaskShape, reference: MaskShape) -> MaskShape {
+    match (shape, reference) {
+        (MaskShape::Linear(linear), MaskShape::Linear(was)) => {
+            MaskShape::Linear(lengthened(clamped(linear), was))
+        }
+        (MaskShape::Linear(linear), _) => MaskShape::Linear(lengthened(clamped(linear), linear)),
+        (MaskShape::Radial(radial), _) => MaskShape::Radial(bounded(radial)),
+    }
+}
+
+/// Every field of a radial inside the range its own parser enforces.
+fn bounded(radial: RadialGradient) -> RadialGradient {
+    let clamp = |value: f64, low: f64, high: f64, fallback: f64| {
+        if value.is_finite() {
+            value.clamp(low, high)
+        } else {
+            fallback
+        }
+    };
+    RadialGradient {
+        x: clamp(radial.x, POSITION_MIN, POSITION_MAX, 0.5),
+        y: clamp(radial.y, POSITION_MIN, POSITION_MAX, 0.5),
+        radius_x: clamp(radial.radius_x, DISTANCE_MIN, DISTANCE_MAX, DISTANCE_MIN),
+        radius_y: clamp(radial.radius_y, DISTANCE_MIN, DISTANCE_MAX, DISTANCE_MIN),
+        angle: clamp(wrapped(radial.angle), ANGLE_MIN, ANGLE_MAX, 0.0),
+        feather: clamp(radial.feather, FEATHER_MIN, FEATHER_MAX, FEATHER_MIN),
+    }
 }
 
 /// Every endpoint inside the legal stored range. The range is the host's, checked here so a gesture
@@ -533,28 +971,50 @@ fn in_range(value: f64) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use lightwell_core::{ParameterKind, mask::commands};
 
     fn draft() -> MaskDraft {
         MaskDraft::creating(LINEAR, 7)
+    }
+
+    fn radial_draft() -> MaskDraft {
+        let mut draft = MaskDraft::creating(RADIAL, 7);
+        // A landscape frame, so a bug that confuses mask space with normalized content coordinates
+        // cannot hide behind a square one.
+        draft.set_aspect(1.5);
+        draft
     }
 
     fn axis(gradient: &LinearGradient) -> f64 {
         (gradient.x1 - gradient.x0).hypot(gradient.y1 - gradient.y0)
     }
 
-    /// Every gradient this draft can produce is a payload the host's own range accepts.
+    /// Every shape this draft can produce is a payload the host's own declared ranges accept. The
+    /// ranges are read from the declarations the commit is validated against, so this asserts the
+    /// draft against the host rather than against a second copy of its rules.
     fn check(draft: &MaskDraft, what: &str) {
+        let patch = commands::geometry(commands::GeometryOp::Set, &draft.kind)
+            .expect("the kind declares a patch method");
         for (name, value) in draft.values() {
+            let declared = patch
+                .action
+                .parameter(name)
+                .unwrap_or_else(|| panic!("{name} is declared by {}", patch.method));
+            let ParameterKind::Number { min, max } = declared.kind else {
+                panic!("{name} is a number");
+            };
             assert!(
-                value.is_finite() && (POSITION_MIN..=POSITION_MAX).contains(&value),
-                "{what}: {name} is {value}, outside {POSITION_MIN}..={POSITION_MAX}"
+                value.is_finite() && (min..=max).contains(&value),
+                "{what}: {name} is {value}, outside {min}..={max}"
             );
         }
-        assert!(
-            axis(&draft.gradient) >= MIN_AXIS,
-            "{what}: the axis collapsed to {}",
-            axis(&draft.gradient)
-        );
+        if let Some(linear) = draft.linear() {
+            assert!(
+                axis(&linear) >= MIN_AXIS,
+                "{what}: the axis collapsed to {}",
+                axis(&linear)
+            );
+        }
     }
 
     #[test]
@@ -568,8 +1028,24 @@ mod tests {
             Some("mask.add-linear")
         );
         assert_eq!(
-            MaskDraft::editing(MaskId::new(), ComponentId::new(), LINEAR, NEUTRAL, 1).method(),
+            MaskDraft::editing(
+                MaskId::new(),
+                ComponentId::new(),
+                LINEAR,
+                MaskShape::Linear(NEUTRAL),
+                1
+            )
+            .method(),
             Some("mask.set-linear")
+        );
+        // The radial's methods are generated by the same table, from the same three operations.
+        assert_eq!(
+            MaskDraft::creating(RADIAL, 1).method(),
+            Some("mask.create-radial")
+        );
+        assert_eq!(
+            MaskDraft::adding(MaskId::new(), RADIAL, ComponentMode::Intersect, 1).method(),
+            Some("mask.add-radial")
         );
         // A kind this build cannot evaluate has no generated method, so nothing is spelled out here.
         assert_eq!(MaskDraft::creating("brush", 1).method(), None);
@@ -583,8 +1059,14 @@ mod tests {
         let add = MaskDraft::adding(MaskId::new(), LINEAR, ComponentMode::Intersect, 1).fields();
         assert_eq!(add["mode"], json!("intersect"));
         assert_eq!(add.len(), 5);
+        // A radial carries its own six, named exactly as its kind declares them.
+        let radial = MaskDraft::creating(RADIAL, 1).fields();
+        assert_eq!(radial.len(), 6);
+        for name in ["x", "y", "radius_x", "radius_y", "angle", "feather"] {
+            assert!(radial.contains_key(name), "a radial declares {name}");
+        }
         // The identities are never parameters: they travel in the envelope.
-        for fields in [create, add] {
+        for fields in [create, add, radial] {
             assert!(fields.get("mask").is_none() && fields.get("component").is_none());
         }
     }
@@ -592,111 +1074,118 @@ mod tests {
     #[test]
     fn each_handle_moves_what_it_names_and_the_midpoint_moves_the_whole_axis() {
         let mut draft = draft();
-        let before = draft.gradient;
+        let before = draft.linear().expect("a gradient");
         // The start handle moves p0 alone.
-        draft.begin(MaskHandle::Start, MaskHandle::Start.point(&before));
+        draft.begin(MaskHandle::Start, (before.x0, before.y0));
         draft.drag((before.x0 + 0.1, before.y0 - 0.05));
         draft.end();
-        assert_eq!(
-            (draft.gradient.x1, draft.gradient.y1),
-            (before.x1, before.y1)
-        );
-        assert!((draft.gradient.x0 - (before.x0 + 0.1)).abs() < 1e-12);
+        let now = draft.linear().expect("a gradient");
+        assert_eq!((now.x1, now.y1), (before.x1, before.y1));
+        assert!((now.x0 - (before.x0 + 0.1)).abs() < 1e-12);
         check(&draft, "start");
 
         // The end handle moves p1 alone.
-        let before = draft.gradient;
-        draft.begin(MaskHandle::End, MaskHandle::End.point(&before));
+        let before = draft.linear().expect("a gradient");
+        draft.begin(MaskHandle::End, (before.x1, before.y1));
         draft.drag((before.x1 - 0.2, before.y1 + 0.1));
         draft.end();
-        assert_eq!(
-            (draft.gradient.x0, draft.gradient.y0),
-            (before.x0, before.y0)
-        );
+        let now = draft.linear().expect("a gradient");
+        assert_eq!((now.x0, now.y0), (before.x0, before.y0));
         check(&draft, "end");
 
         // The midpoint translates both ends, so the axis keeps its length and direction exactly.
-        let before = draft.gradient;
+        let before = draft.linear().expect("a gradient");
         let length = axis(&before);
-        draft.begin(MaskHandle::Middle, MaskHandle::Middle.point(&before));
-        draft.drag((
-            MaskHandle::Middle.point(&before).0 + 0.05,
-            MaskHandle::Middle.point(&before).1 + 0.05,
-        ));
+        let middle = ((before.x0 + before.x1) / 2.0, (before.y0 + before.y1) / 2.0);
+        draft.begin(MaskHandle::Middle, middle);
+        draft.drag((middle.0 + 0.05, middle.1 + 0.05));
         draft.end();
+        let now = draft.linear().expect("a gradient");
         assert!(
-            (axis(&draft.gradient) - length).abs() < 1e-12,
+            (axis(&now) - length).abs() < 1e-12,
             "a move resized the axis"
         );
-        assert!((draft.gradient.x0 - (before.x0 + 0.05)).abs() < 1e-12);
-        assert!((draft.gradient.y1 - (before.y1 + 0.05)).abs() < 1e-12);
+        assert!((now.x0 - (before.x0 + 0.05)).abs() < 1e-12);
+        assert!((now.y1 - (before.y1 + 0.05)).abs() < 1e-12);
         check(&draft, "middle");
     }
 
     #[test]
-    fn a_drag_away_and_back_returns_the_starting_gradient_exactly() {
-        for handle in MaskHandle::ALL {
-            let mut draft = draft();
-            let start = draft.gradient;
-            let from = handle.point(&start);
-            draft.begin(handle, from);
-            for step in [(-0.3, 0.2), (0.6, -0.4), (0.0, 0.0)] {
-                draft.drag((from.0 + step.0, from.1 + step.1));
+    fn a_drag_away_and_back_returns_the_starting_shape_exactly() {
+        for mut draft in [draft(), radial_draft()] {
+            let kind = draft.kind.clone();
+            for (handle, from) in draft.handles() {
+                let start = draft.shape;
+                draft.begin(handle, from);
+                for step in [(-0.3, 0.2), (0.6, -0.4), (0.0, 0.0)] {
+                    draft.drag((from.0 + step.0, from.1 + step.1));
+                }
+                draft.end();
+                assert_eq!(
+                    draft.values(),
+                    start.values(),
+                    "{kind} {handle:?} did not return to where it started"
+                );
             }
-            draft.end();
-            assert_eq!(
-                (
-                    draft.gradient.x0,
-                    draft.gradient.y0,
-                    draft.gradient.x1,
-                    draft.gradient.y1
-                ),
-                (start.x0, start.y0, start.x1, start.y1),
-                "{handle:?}"
-            );
         }
     }
 
     #[test]
     fn every_gesture_stays_inside_the_declared_range_and_never_collapses_the_axis() {
-        for handle in MaskHandle::ALL {
-            let mut draft = draft();
-            let from = handle.point(&draft.gradient);
-            draft.begin(handle, from);
-            for step in [
-                (-900.0, -900.0),
-                (900.0, 900.0),
-                (0.0, 0.0),
-                (f64::NAN, 0.0),
-                (0.37, -0.91),
-            ] {
-                draft.drag((from.0 + step.0, from.1 + step.1));
-                check(&draft, &format!("{handle:?} {step:?}"));
+        for mut draft in [draft(), radial_draft()] {
+            let kind = draft.kind.clone();
+            for (handle, from) in draft.handles() {
+                draft.begin(handle, from);
+                for step in [
+                    (-900.0, -900.0),
+                    (900.0, 900.0),
+                    (0.0, 0.0),
+                    (f64::NAN, 0.0),
+                    (0.37, -0.91),
+                ] {
+                    draft.drag((from.0 + step.0, from.1 + step.1));
+                    check(&draft, &format!("{kind} {handle:?} {step:?}"));
+                }
+                draft.end();
             }
-            draft.end();
         }
         // Dragging one endpoint exactly onto the other still leaves a committable axis.
         let mut draft = draft();
-        let target = MaskHandle::Start.point(&draft.gradient);
-        draft.begin(MaskHandle::End, MaskHandle::End.point(&draft.gradient));
-        draft.drag(target);
+        let gradient = draft.linear().expect("a gradient");
+        draft.begin(MaskHandle::End, (gradient.x1, gradient.y1));
+        draft.drag((gradient.x0, gradient.y0));
         draft.end();
         check(&draft, "collapsed onto the other end");
+        // And collapsing a radius onto the centre leaves a radius the host's floor accepts.
+        let mut draft = radial_draft();
+        let ellipse = draft.radial().expect("an ellipse");
+        let centre = (ellipse.x, ellipse.y);
+        let grip = draft
+            .handles()
+            .into_iter()
+            .find(|(handle, _)| *handle == MaskHandle::RadiusPlusX)
+            .map(|(_, point)| point)
+            .expect("the +x radius handle");
+        draft.begin(MaskHandle::RadiusPlusX, grip);
+        draft.drag(centre);
+        draft.end();
+        check(&draft, "a radius collapsed onto the centre");
     }
 
     #[test]
     fn a_sweep_draws_the_whole_gradient_from_the_press_to_the_pointer() {
         let mut draft = draft();
         draft.sweep((0.2, 0.1), (0.8, 0.9));
-        assert_eq!((draft.gradient.x0, draft.gradient.y0), (0.2, 0.1));
-        assert_eq!((draft.gradient.x1, draft.gradient.y1), (0.8, 0.9));
+        let now = draft.linear().expect("a gradient");
+        assert_eq!((now.x0, now.y0), (0.2, 0.1));
+        assert_eq!((now.x1, now.y1), (0.8, 0.9));
         assert!(
             draft.dragging(),
             "the sweep continues as an end-handle drag"
         );
         assert_eq!(draft.held(), Some(MaskHandle::End));
         draft.drag((0.5, 0.5));
-        assert!((draft.gradient.x1 - 0.5).abs() < 1e-12);
+        assert!((draft.linear().expect("a gradient").x1 - 0.5).abs() < 1e-12);
         draft.end();
         check(&draft, "swept");
         // A sweep that never moved still leaves an axis the host will accept.
@@ -705,44 +1194,137 @@ mod tests {
         check(&still, "a sweep that did not move");
     }
 
+    /// A radial's sweep is the same stroke read as an extent: the press is the centre and the drag
+    /// sets both radii, in mask-space units of the stage's height on both axes.
+    #[test]
+    fn a_radial_sweep_sets_the_centre_and_both_radii_in_mask_space() {
+        let mut draft = radial_draft();
+        draft.sweep((0.4, 0.5), (0.6, 0.8));
+        let now = draft.radial().expect("an ellipse");
+        assert_eq!((now.x, now.y), (0.4, 0.5));
+        // 0.2 of the width at an aspect of 1.5 is 0.3 of the height, which is what mask space counts.
+        assert!((now.radius_x - 0.3).abs() < 1e-12, "{}", now.radius_x);
+        assert!((now.radius_y - 0.3).abs() < 1e-12, "{}", now.radius_y);
+        assert_eq!(now.angle, 0.0, "a swept ellipse is upright");
+        assert!(draft.dragging());
+        draft.drag((0.5, 0.6));
+        let now = draft.radial().expect("an ellipse");
+        assert!((now.radius_x - 0.15).abs() < 1e-12, "{}", now.radius_x);
+        assert!((now.radius_y - 0.1).abs() < 1e-12, "{}", now.radius_y);
+        draft.end();
+        check(&draft, "a swept ellipse");
+        // A sweep that never moved still leaves radii the host's floor accepts.
+        let mut still = radial_draft();
+        still.sweep((0.4, 0.4), (0.4, 0.4));
+        check(&still, "a radial sweep that did not move");
+    }
+
+    /// Each radial handle changes exactly the declared fields it names and leaves the rest alone,
+    /// which is what makes the number fields beside them agree with the drag at every point.
+    #[test]
+    fn each_radial_handle_changes_exactly_the_fields_it_names() {
+        let expected: [(MaskHandle, &[&str]); 7] = [
+            (MaskHandle::Centre, &["x", "y"]),
+            (MaskHandle::RadiusPlusX, &["radius_x"]),
+            (MaskHandle::RadiusMinusX, &["radius_x"]),
+            (MaskHandle::RadiusPlusY, &["radius_y"]),
+            (MaskHandle::RadiusMinusY, &["radius_y"]),
+            (MaskHandle::Rotation, &["angle"]),
+            (MaskHandle::Feather, &["feather"]),
+        ];
+        for (handle, changes) in expected {
+            let mut draft = radial_draft();
+            let before = draft.values();
+            let from = draft
+                .handles()
+                .into_iter()
+                .find(|(known, _)| *known == handle)
+                .map(|(_, point)| point)
+                .unwrap_or_else(|| panic!("{handle:?} is drawn"));
+            draft.begin(handle, from);
+            draft.drag((from.0 + 0.07, from.1 - 0.05));
+            draft.end();
+            let after = draft.values();
+            for ((name, was), (_, now)) in before.iter().zip(after.iter()) {
+                if changes.contains(name) {
+                    assert_ne!(was, now, "{handle:?} left {name} where it was");
+                } else {
+                    assert_eq!(
+                        was, now,
+                        "{handle:?} changed {name}, which it does not name"
+                    );
+                }
+            }
+            check(&draft, &format!("{handle:?}"));
+        }
+    }
+
+    /// The feather ring sits on the ellipse's own diagonal, so it is reachable even at `feather = 0`
+    /// where the ring *is* the boundary and would otherwise sit under a radius handle.
+    #[test]
+    fn the_feather_ring_is_grabbable_at_every_feather() {
+        for feather in [0.0, 1e-9, 50.0, 100.0] {
+            let mut draft = radial_draft();
+            assert!(draft.set_field("feather", feather), "feather = {feather}");
+            let handles = draft.handles();
+            let ring = handles
+                .iter()
+                .find(|(handle, _)| *handle == MaskHandle::Feather)
+                .map(|(_, point)| *point)
+                .expect("the feather ring is drawn");
+            for (handle, point) in &handles {
+                if *handle == MaskHandle::Feather {
+                    continue;
+                }
+                assert!(
+                    (ring.0 - point.0).hypot(ring.1 - point.1) > 1e-3,
+                    "at feather {feather} the ring sits on {handle:?}"
+                );
+            }
+            // And a press on it grabs it rather than one of the others.
+            assert_eq!(draft.hit(ring, 0.01), Some(MaskHandle::Feather));
+        }
+    }
+
     #[test]
     fn hit_testing_prefers_the_endpoints_and_misses_cleanly() {
         let draft = draft();
-        assert_eq!(
-            draft.hit(MaskHandle::Start.point(&draft.gradient), 0.02),
-            Some(MaskHandle::Start)
-        );
-        assert_eq!(
-            draft.hit(MaskHandle::End.point(&draft.gradient), 0.02),
-            Some(MaskHandle::End)
-        );
-        assert_eq!(
-            draft.hit(MaskHandle::Middle.point(&draft.gradient), 0.02),
-            Some(MaskHandle::Middle)
-        );
+        for (handle, point) in draft.handles() {
+            assert_eq!(draft.hit(point, 0.02), Some(handle), "{handle:?}");
+        }
         assert_eq!(
             draft.hit((0.0, 0.0), 0.02),
             None,
             "a press on nothing grabs nothing"
         );
         // A tolerance large enough to cover every handle answers with an endpoint, not the midpoint.
-        assert_eq!(
-            draft.hit(MaskHandle::Middle.point(&draft.gradient), 9.0),
-            Some(MaskHandle::Start)
-        );
+        let middle = draft
+            .handles()
+            .into_iter()
+            .find(|(handle, _)| *handle == MaskHandle::Middle)
+            .map(|(_, point)| point)
+            .expect("the midpoint");
+        assert_eq!(draft.hit(middle, 9.0), Some(MaskHandle::Start));
+        // On a radial the centre is the last resort, so a tolerance that covers everything answers
+        // with a radius handle rather than moving the whole ellipse.
+        let radial = radial_draft();
+        for (handle, point) in radial.handles() {
+            assert_eq!(radial.hit(point, 0.005), Some(handle), "{handle:?}");
+        }
+        assert_ne!(radial.hit((0.5, 0.5), 9.0), Some(MaskHandle::Centre));
     }
 
     #[test]
     fn a_number_field_sets_exactly_its_own_declared_value_and_refuses_the_rest() {
         let mut draft = draft();
         assert!(draft.set_field("x0", 0.125));
-        assert_eq!(draft.gradient.x0, 0.125);
+        assert_eq!(draft.linear().expect("a gradient").x0, 0.125);
         assert!(draft.set_field("y1", POSITION_MAX));
-        assert_eq!(draft.gradient.y1, POSITION_MAX);
+        assert_eq!(draft.linear().expect("a gradient").y1, POSITION_MAX);
         check(&draft, "typed");
         // Out of range, not a number, and a field this kind does not declare: each refused, and
-        // each leaves the gradient untouched.
-        let before = draft.gradient;
+        // each leaves the shape untouched.
+        let before = draft.shape;
         for (name, value) in [
             ("x0", POSITION_MAX + 1.0),
             ("y0", POSITION_MIN - 1.0),
@@ -754,23 +1336,55 @@ mod tests {
                 !draft.set_field(name, value),
                 "{name} = {value} was accepted"
             );
-            assert_eq!(
-                draft.gradient, before,
-                "{name} = {value} changed the gradient"
+            assert_eq!(draft.shape, before, "{name} = {value} changed the shape");
+        }
+
+        // A radial's six fields take their own declared ranges, which are not the position range.
+        let mut draft = radial_draft();
+        for (name, value) in [
+            ("x", 0.25),
+            ("y", 0.75),
+            ("radius_x", 0.4),
+            ("radius_y", DISTANCE_MAX),
+            ("angle", -173.5),
+            ("feather", 0.0),
+        ] {
+            assert!(draft.set_field(name, value), "{name} = {value} was refused");
+        }
+        let now = draft.radial().expect("an ellipse");
+        assert_eq!((now.x, now.y), (0.25, 0.75));
+        assert_eq!((now.radius_x, now.radius_y), (0.4, DISTANCE_MAX));
+        assert_eq!((now.angle, now.feather), (-173.5, 0.0));
+        check(&draft, "a typed ellipse");
+        let before = draft.shape;
+        for (name, value) in [
+            ("x", POSITION_MAX + 1.0),
+            ("radius_x", DISTANCE_MIN / 2.0),
+            ("radius_y", DISTANCE_MAX + 1.0),
+            ("angle", ANGLE_MAX + 1.0),
+            ("feather", FEATHER_MAX + 1.0),
+            ("feather", FEATHER_MIN - 1.0),
+            ("x0", 0.5),
+        ] {
+            assert!(
+                !draft.set_field(name, value),
+                "{name} = {value} was accepted"
             );
+            assert_eq!(draft.shape, before, "{name} = {value} changed the shape");
         }
     }
 
     #[test]
     fn a_gesture_without_a_press_changes_nothing_and_a_conflict_ends_the_drag() {
         let mut draft = draft();
-        let before = draft.gradient;
+        let before = draft.shape;
         draft.drag((0.9, 0.9));
         draft.end();
-        assert_eq!(draft.gradient, before);
+        assert_eq!(draft.shape, before);
         assert!(!draft.dragging());
 
-        draft.begin(MaskHandle::End, MaskHandle::End.point(&before));
+        let gradient = draft.linear().expect("a gradient");
+        draft.begin(MaskHandle::End, (gradient.x1, gradient.y1));
         assert!(draft.dragging());
         draft.mark_conflicted();
         assert!(
@@ -779,16 +1393,13 @@ mod tests {
         );
         draft.drag((0.9, 0.9));
         assert_eq!(
-            draft.gradient, before,
+            draft.shape, before,
             "a conflicted draft ignores the pointer"
         );
         draft.rebase(11);
         assert_eq!(draft.base_revision, 11);
         assert!(!draft.conflicted);
-        assert_eq!(
-            draft.gradient, before,
-            "a reapply keeps what this client drew"
-        );
+        assert_eq!(draft.shape, before, "a reapply keeps what this client drew");
     }
 
     /// The map is applied locally, so it must agree with the host both ways and for every tail the
@@ -838,6 +1449,12 @@ mod tests {
                     f64::from(transform.output.height)
                 )
             );
+            // The aspect mask space is defined in is the content stage's, whatever the crop did.
+            assert!(
+                (map.aspect() - 1.5).abs() < 1e-12,
+                "{what}: {}",
+                map.aspect()
+            );
             for (x, y) in [(0.0, 0.0), (0.5, 0.5), (1.0, 1.0), (-0.25, 1.75)] {
                 let (ox, oy) = map.to_output(x, y);
                 let (bx, by) = map.to_content(ox, oy);
@@ -870,7 +1487,13 @@ mod tests {
     fn the_summary_reports_the_state_a_capture_is_correlated_with() {
         let mask = MaskId::new();
         let component = ComponentId::new();
-        let draft = MaskDraft::editing(mask.clone(), component.clone(), LINEAR, NEUTRAL, 4);
+        let draft = MaskDraft::editing(
+            mask.clone(),
+            component.clone(),
+            LINEAR,
+            MaskShape::Linear(NEUTRAL),
+            4,
+        );
         let summary = draft.summary();
         assert_eq!(summary["mask"], json!(mask.as_str()));
         assert_eq!(summary["component"], json!(component.as_str()));
@@ -879,10 +1502,15 @@ mod tests {
         assert_eq!(summary["method"], json!("mask.set-linear"));
         assert_eq!(summary["base_revision"], json!(4));
         assert_eq!(summary["conflicted"], json!(false));
-        assert_eq!(summary["gradient"]["y1"], json!(NEUTRAL.y1));
+        assert_eq!(summary["shape"]["y1"], json!(NEUTRAL.y1));
         // A create names no mask and no component, because it has none yet.
         let creating = MaskDraft::creating(LINEAR, 4).summary();
         assert_eq!(creating["mask"], Value::Null);
         assert_eq!(creating["op"], json!("New mask"));
+        // A radial's summary carries its own six fields under the same key.
+        let radial = radial_draft().summary();
+        assert_eq!(radial["kind"], json!(RADIAL));
+        assert_eq!(radial["aspect"], json!(1.5));
+        assert_eq!(radial["shape"]["feather"], json!(NEUTRAL_RADIAL.feather));
     }
 }

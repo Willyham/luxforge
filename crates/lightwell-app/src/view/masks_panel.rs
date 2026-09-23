@@ -5,7 +5,7 @@
 //! is a button with a label, every refusal the command family makes is shown as the reason on the
 //! control it would refuse, and every number a handle can be dragged to is also a field.
 use crate::{
-    app::message::{MaskMessage, MenuTarget, Message},
+    app::message::{MaskMessage, MenuTarget, Message, RowEdit},
     state::{
         histogram::HistogramModel,
         masks::{ComponentRow, KindOption, MaskDraftModel, MaskRow, MasksModel},
@@ -14,12 +14,35 @@ use crate::{
 };
 use iced::{
     Alignment, Element, Length,
-    widget::{column, row},
+    widget::{column, mouse_area, row},
 };
 use lightwell_ui::{
-    ButtonSize, ButtonTone, Icon, IconButtonModel, SegmentedModel, boxed_input, caption,
-    icon_button, inline_menu, list_heading, section_label, segmented, text_button, theme,
+    ButtonSize, ButtonTone, Icon, IconButtonModel, SegmentedModel, ToggleModel, boxed_input,
+    caption, icon_button, inline_menu, list_heading, section_label, segmented, text_button, theme,
+    toggle,
 };
+
+/// Run one list edit. Every list edit in this panel goes out as a [`RowEdit`], and its Copy as JSON
+/// request carries the same one through the same builder, so what is copied is what is sent.
+fn run(edit: RowEdit) -> Message {
+    Message::Mask(MaskMessage::Row(edit))
+}
+
+/// A copy beside one control: a labelled button where there is room for one, because a row control's
+/// request is that control's documentation and it is reachable from the keyboard.
+fn copy_button<'a>(label: &str, edit: RowEdit) -> Element<'a, Message> {
+    text_button(
+        label,
+        ButtonTone::Quiet,
+        ButtonSize::Compact,
+        Some(Message::Mask(MaskMessage::CopyRow(edit))),
+    )
+}
+
+/// One menu entry that copies the JSON request a row control sends.
+fn copy_item(label: &str, edit: RowEdit) -> (String, Message) {
+    (label.to_owned(), Message::Mask(MaskMessage::CopyRow(edit)))
+}
 
 /// The panel's own module key, for the generated controls' group and focus keys. The mask commands
 /// belong to the host rather than to a module, and this is the name the host goes by.
@@ -54,7 +77,7 @@ pub(crate) fn masks_panel<'a>(
         panel = panel.push(rename_row(model, selected.as_str()));
         panel = panel.push(section_label("Components"));
         for component in &model.components {
-            panel = panel.push(component_row(component, plot));
+            panel = panel.push(component_row(component, selected.as_str(), menu, plot));
         }
         panel = panel.push(add_component(model));
         // The whole-mask controls: the amount and the inversion, generated from the host's own
@@ -122,29 +145,28 @@ fn mask_row<'a>(mask: &'a MaskRow, menu: Option<&'a MenuTarget>) -> Element<'a, 
     // Reorder is a pair of labelled buttons rather than a drag handle alone, because a drag is not
     // reachable from the keyboard and the order a mask applies in is an edit like any other.
     if mask.selected {
+        let up = RowEdit::MoveMask {
+            mask: id.clone(),
+            index: mask.index.saturating_sub(1),
+        };
+        let down = RowEdit::MoveMask {
+            mask: id.clone(),
+            index: mask.index + 1,
+        };
         let mut moves = row![].spacing(theme::SPACING);
         moves = moves.push(text_button(
             "Move up",
             ButtonTone::Quiet,
             ButtonSize::Compact,
-            (mask.can_move_up && mask.index > 0).then(|| {
-                Message::Mask(MaskMessage::Move {
-                    mask: id.clone(),
-                    index: mask.index - 1,
-                })
-            }),
+            (mask.can_move_up && mask.index > 0).then(|| run(up.clone())),
         ));
         moves = moves.push(text_button(
             "Move down",
             ButtonTone::Quiet,
             ButtonSize::Compact,
-            mask.can_move_down.then(|| {
-                Message::Mask(MaskMessage::Move {
-                    mask: id.clone(),
-                    index: mask.index + 1,
-                })
-            }),
+            mask.can_move_down.then(|| run(down.clone())),
         ));
+        moves = moves.push(copy_button("Copy move", down));
         block = block.push(moves);
         if !mask.layers.is_empty() {
             block = block.push(caption(mask.layers.join(" · ")));
@@ -154,7 +176,7 @@ fn mask_row<'a>(mask: &'a MaskRow, menu: Option<&'a MenuTarget>) -> Element<'a, 
         block = block.push(inline_menu(vec![
             (
                 "Duplicate".to_owned(),
-                Message::Mask(MaskMessage::Duplicate(id.clone())),
+                run(RowEdit::DuplicateMask(id.clone())),
             ),
             (
                 if mask.inverted {
@@ -162,12 +184,12 @@ fn mask_row<'a>(mask: &'a MaskRow, menu: Option<&'a MenuTarget>) -> Element<'a, 
                 } else {
                     "Invert".to_owned()
                 },
-                Message::Mask(MaskMessage::Invert(id.clone())),
+                run(RowEdit::InvertMask {
+                    mask: id.clone(),
+                    invert: !mask.inverted,
+                }),
             ),
-            (
-                "Delete mask".to_owned(),
-                Message::Mask(MaskMessage::Delete(id)),
-            ),
+            ("Delete mask".to_owned(), run(RowEdit::DeleteMask(id))),
         ]));
     }
     block.into()
@@ -294,13 +316,22 @@ fn kind_row<'a>(
     line.into()
 }
 
-/// One component's row: its name and kind, its mode, its inversion, reorder, delete and, while it
-/// is selected, its own declared number fields.
+/// One component's row: its name and kind, its own mode control, its own inversion, reorder, delete
+/// and, while it is selected, its own declared number fields.
+///
+/// Every control here belongs to *this* component and not to whichever one happens to be selected,
+/// which is the whole point of an ordered component list: the mode is a property of a component,
+/// editable at any time, rather than a decision frozen by which button created it. Hovering the row
+/// shows this component's own contribution in the overlay, which is what makes a subtract on top of
+/// a gradient legible instead of guesswork.
 fn component_row<'a>(
     component: &'a ComponentRow,
+    selected_mask: &str,
+    menu: Option<&'a MenuTarget>,
     plot: &'a HistogramModel,
 ) -> Element<'a, Message> {
     let id = component.id.as_str().to_owned();
+    let target = MenuTarget::Component(id.clone());
     let mut line = row![
         text_button(
             &component.name,
@@ -312,6 +343,7 @@ fn component_row<'a>(
             ButtonSize::Compact,
             Some(Message::Mask(MaskMessage::SelectComponent(id.clone()))),
         ),
+        caption(component.kind_title.clone()),
         caption(component.mode.clone()),
     ]
     .spacing(theme::SPACING)
@@ -320,47 +352,126 @@ fn component_row<'a>(
     if component.inverted {
         line = line.push(caption("inverted"));
     }
+    if component.hovered {
+        line = line.push(caption("overlay"));
+    }
     if !component.available {
         line = line.push(caption(format!("unknown kind {}", component.kind)));
     }
+    // Every command this row's controls send, copyable as the JSON request it is. A menu rather than
+    // a button beside each control, so the row stays readable while nothing is hidden from a client.
+    line = line.push(icon_button(
+        &IconButtonModel {
+            icon: Icon::ChevronDown,
+            tooltip: format!("Copy the requests {} sends", component.name),
+            enabled: true,
+            selected: menu == Some(&target),
+        },
+        Some(Message::OpenMenu(target.clone())),
+    ));
     let mut block = column![line].spacing(theme::LIST_ROW_SPACING);
+    let down = RowEdit::MoveComponent {
+        component: id.clone(),
+        index: component.index + 1,
+    };
+    let up = RowEdit::MoveComponent {
+        component: id.clone(),
+        index: component.index.saturating_sub(1),
+    };
+    let invert = RowEdit::ComponentInvert {
+        component: id.clone(),
+        invert: !component.inverted,
+    };
+    if menu == Some(&target) {
+        let mut items = Vec::new();
+        if let Some(mode) = component.mode_options.get(component.mode_selected) {
+            items.push(copy_item(
+                "Copy mode request",
+                RowEdit::ComponentMode {
+                    component: id.clone(),
+                    mode: mode.clone(),
+                },
+            ));
+        }
+        items.push(copy_item("Copy invert request", invert.clone()));
+        items.push(copy_item("Copy move request", down.clone()));
+        if component.delete_reason.is_none() {
+            items.push(copy_item(
+                "Copy delete request",
+                RowEdit::DeleteComponent(id.clone()),
+            ));
+        }
+        block = block.push(inline_menu(items));
+    }
+    // This row's own mode, as a three-way control over the options the host declares. The first
+    // component has none: its mode is fixed by the composition, and the reason is shown below.
+    if !component.mode_options.is_empty() {
+        let chosen = component.mode_options.clone();
+        let row_id = id.clone();
+        block = block.push(
+            row![
+                caption(component.mode_label.clone()),
+                segmented(
+                    &SegmentedModel {
+                        options: component.mode_options.clone(),
+                        selected: component.mode_selected,
+                        enabled: component.available,
+                    },
+                    move |index| match chosen.get(index) {
+                        Some(mode) => run(RowEdit::ComponentMode {
+                            component: row_id.clone(),
+                            mode: mode.clone(),
+                        }),
+                        None => Message::Mask(MaskMessage::SelectComponent(row_id.clone())),
+                    },
+                ),
+            ]
+            .spacing(theme::SPACING)
+            .align_y(Alignment::Center),
+        );
+    }
+    // This row's own inversion.
+    let toggled = invert.clone();
+    block = block.push(toggle(
+        &ToggleModel {
+            label: component.invert_label.clone(),
+            on: component.inverted,
+            enabled: component.available,
+        },
+        move |_| run(toggled.clone()),
+    ));
     // Reorder and delete, each with the reason the command family would refuse it in place of an
     // offer it would reject.
     let mut actions = row![].spacing(theme::SPACING);
     actions = actions.push(text_button(
-        "Move up",
+        "Up",
         ButtonTone::Quiet,
         ButtonSize::Compact,
-        component.can_move_up().then(|| {
-            Message::Mask(MaskMessage::MoveComponent {
-                component: id.clone(),
-                index: component.index.saturating_sub(1),
-            })
-        }),
+        component.can_move_up().then(|| run(up)),
     ));
     actions = actions.push(text_button(
-        "Move down",
+        "Down",
         ButtonTone::Quiet,
         ButtonSize::Compact,
-        component.can_move_down().then(|| {
-            Message::Mask(MaskMessage::MoveComponent {
-                component: id.clone(),
-                index: component.index + 1,
-            })
-        }),
+        component.can_move_down().then(|| run(down)),
     ));
     match &component.delete_reason {
         // A mask's only component cannot be deleted: the panel offers Delete mask instead rather
-        // than a button the host would refuse.
-        Some(reason) => {
-            actions = actions.push(caption(reason.clone()));
+        // than a button the host would refuse, and says why under the row.
+        Some(_) => {
+            actions = actions.push(text_button(
+                "Delete mask",
+                ButtonTone::Quiet,
+                ButtonSize::Compact,
+                Some(run(RowEdit::DeleteMask(selected_mask.to_owned()))),
+            ));
         }
         None => {
             actions = actions.push(text_button(
                 "Delete",
                 ButtonTone::Quiet,
                 ButtonSize::Compact,
-                Some(Message::Mask(MaskMessage::DeleteComponent(id.clone()))),
+                Some(run(RowEdit::DeleteComponent(id.clone()))),
             ));
         }
     }
@@ -369,20 +480,35 @@ fn component_row<'a>(
             "Edit shape",
             ButtonTone::Quiet,
             ButtonSize::Compact,
-            Some(Message::Mask(MaskMessage::EditShape(id))),
+            Some(Message::Mask(MaskMessage::EditShape(id.clone()))),
         ));
     }
     block = block.push(actions);
-    if let Some(reason) = &component.mode_reason {
-        block = block.push(caption(reason.clone()));
-    }
-    for control in &component.controls {
-        block = block.push(control_view(HOST, component.available, control, None, plot));
+    // The reasons the command family gives, on the row they apply to. They are shown on the open row
+    // rather than on every row, so a list of components stays a list rather than a page of prose;
+    // the row's own controls are beneath them either way.
+    if component.selected || component.delete_reason.is_some() {
+        for reason in [
+            &component.mode_reason,
+            &component.delete_reason,
+            &component.up_reason,
+            &component.down_reason,
+        ]
+        .into_iter()
+        .flatten()
+        {
+            block = block.push(caption(reason.clone()));
+        }
     }
     for field in &component.fields {
         block = block.push(control_view(HOST, component.available, field, None, plot));
     }
-    block.into()
+    // The pointer over the row is what asks the overlay for this component's own contribution, and
+    // leaving it restores the composed mask. It commits nothing and changes no selection.
+    mouse_area(block)
+        .on_enter(Message::Mask(MaskMessage::Hover(Some(id))))
+        .on_exit(Message::Mask(MaskMessage::Hover(None)))
+        .into()
 }
 
 /// What the canvas draws of the selected mask, and in which of the two tints. Red is deliberately

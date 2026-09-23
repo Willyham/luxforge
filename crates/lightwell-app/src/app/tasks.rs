@@ -12,7 +12,7 @@ use lightwell_core::{
     MAX_PRESET_BYTES, MaskOverlayRequest, ModuleDescriptor, Mutation, MutationOutcome,
     MutationResult, OwnerHandle, PresetSummary, PreviewJob, PreviewRequest, ProxyBounds,
     RecipeDescription, StageTransform, Version,
-    mask::commands::{MaskListing, MaskTarget},
+    mask::commands::{MaskCommandResult, MaskListing, MaskTarget},
 };
 use serde_json::{Value, json};
 use std::{
@@ -879,8 +879,12 @@ pub(crate) fn mask_draft_commit_task(
                 "draft.commit",
                 json!({"draft_id":draft_id,"mutation":mutation}),
             )?;
-            let result = parse::<MutationResult>(committed)?;
-            if result.outcome == MutationOutcome::NoOp {
+            // A mask command answers with the mutation envelope **and** what it changed — the
+            // history label, the mask, the component, the layers a delete removed — so the answer
+            // is read as that result rather than as the bare envelope, which would refuse the
+            // extra fields by name and turn every committed gesture into a failure.
+            let result = parse::<MaskCommandResult>(committed)?;
+            if result.mutation.outcome == MutationOutcome::NoOp {
                 return Ok(None);
             }
             refresh(&owner, client, asset_id, true, sequence, proxy).map(Some)

@@ -59,6 +59,9 @@ pub(crate) struct ComponentRow {
     pub(crate) index: usize,
     pub(crate) name: String,
     pub(crate) kind: String,
+    /// The kind's own display title, as the host gives it, so the row says what it is rather than
+    /// relying on the ordinal in its name.
+    pub(crate) kind_title: String,
     /// The declared mode token — `add`, `subtract`, `intersect` — as the host spells it. The view
     /// shows it and names no vocabulary of its own.
     pub(crate) mode: String,
@@ -67,9 +70,17 @@ pub(crate) struct ComponentRow {
     /// edit to it is refused rather than silently dropped.
     pub(crate) available: bool,
     pub(crate) selected: bool,
-    /// The three-way mode control and the invert toggle, generated from the host's declarations.
-    /// Empty for the first component, whose mode is fixed by the composition.
-    pub(crate) controls: Vec<ControlModel>,
+    /// The pointer is over this row, so the overlay is showing this component alone.
+    pub(crate) hovered: bool,
+    /// This row's own three-way mode control: the options the host's `mode` parameter declares and
+    /// **this** component's mode among them. It is the row's, not the panel's — changing row three's
+    /// mode never edits row one, and the mode is a property of a component rather than a decision
+    /// frozen when it was created.
+    pub(crate) mode_options: Vec<String>,
+    pub(crate) mode_selected: usize,
+    pub(crate) mode_label: String,
+    /// This row's own invert toggle, labelled as the host's control declares it.
+    pub(crate) invert_label: String,
     /// The kind's own number fields, shown beneath the row while it is selected, so no gesture is
     /// reachable only by pointer.
     pub(crate) fields: Vec<ControlModel>,
@@ -250,8 +261,12 @@ impl MasksModel {
                 "inverted": row.inverted,
                 "available": row.available,
                 "selected": row.selected,
+                "hovered": row.hovered,
+                "mode_options": row.mode_options,
                 "delete_reason": row.delete_reason,
                 "mode_reason": row.mode_reason,
+                "up_reason": row.up_reason,
+                "down_reason": row.down_reason,
             })).collect::<Vec<_>>(),
             "kinds": self.kinds.iter().map(|kind| kind.kind.clone()).collect::<Vec<_>>(),
             "add_mode": self.modes.get(self.add_mode),
@@ -356,7 +371,18 @@ pub(crate) fn derive(inputs: &Inputs<'_>) -> MasksModel {
     MasksModel {
         caption: caption(inputs, listing.is_some(), reports.is_empty()),
         create_reason: (reports.len() >= MASKS_PER_RECIPE)
-            .then(|| format!("This recipe holds {MASKS_PER_RECIPE} masks, which is the limit")),
+            .then(|| format!("This recipe holds {MASKS_PER_RECIPE} masks, which is the limit"))
+            // A new mask's first component is always an add, because nothing precedes it to
+            // subtract from. Rather than creating an add while the Add row says subtract — which
+            // would be a silent coercion — New mask is refused and says why.
+            .or_else(|| {
+                (inputs.mask_mode != ComponentMode::Add).then(|| {
+                    format!(
+                        "A mask's first component is always add; the next component is set to {}",
+                        inputs.mask_mode.as_str()
+                    )
+                })
+            }),
         add_reason: open.and_then(|report| {
             (report.components.len() >= COMPONENTS_PER_MASK).then(|| {
                 format!(
@@ -423,16 +449,10 @@ fn kinds(enabled: bool) -> Vec<KindOption> {
         .map(|kind| KindOption {
             kind: kind.to_owned(),
             label: lightwell_core::mask::kind_title(kind),
-            drawable: drawable(kind),
+            drawable: crate::mask_draft::drawable(kind),
             enabled,
         })
         .collect()
-}
-
-/// This kind has a canvas handle editor in this build. Only the linear gradient does today; a
-/// component of another registered kind is created and edited through its declared number fields.
-fn drawable(kind: &str) -> bool {
-    kind == crate::mask_draft::LINEAR
 }
 
 /// The whole-mask controls: the amount slider and the inversion toggle, generated from the host's
@@ -479,6 +499,7 @@ fn control_action(control: &lightwell_core::Control) -> Option<&str> {
 /// rules rather than discovered by sending a request that will be rejected.
 fn component_rows(report: &MaskReport, inputs: &Inputs<'_>, enabled: bool) -> Vec<ComponentRow> {
     let only = report.components.len() == 1;
+    let modes = declared_modes();
     report
         .components
         .iter()
@@ -506,13 +527,15 @@ fn component_rows(report: &MaskReport, inputs: &Inputs<'_>, enabled: bool) -> Ve
                 // host checks; the panel states it here instead of offering the move.
                 up_reason: move_reason(report, component.index, -1, enabled),
                 down_reason: move_reason(report, component.index, 1, enabled),
-                controls: if first {
-                    Vec::new()
-                } else {
-                    host_controls(inputs, enabled && component.available, |action| {
-                        action == "mask.set-component-mode" || action == "mask.set-component-invert"
-                    })
-                },
+                // The first component's mode is fixed by the composition, so its control is not
+                // offered; every other row carries its own, showing that component's mode.
+                mode_options: if first { Vec::new() } else { modes.clone() },
+                mode_selected: modes
+                    .iter()
+                    .position(|option| option == component.mode.as_str())
+                    .unwrap_or(0),
+                mode_label: control_label("mask.set-component-mode", "mode"),
+                invert_label: control_label("mask.set-component-invert", "invert"),
                 fields: if selected {
                     kind_fields(inputs, &component.kind, enabled && component.available)
                 } else {
@@ -521,17 +544,44 @@ fn component_rows(report: &MaskReport, inputs: &Inputs<'_>, enabled: bool) -> Ve
                 id: component.id.clone(),
                 index: component.index,
                 name: component.name.clone(),
+                kind_title: lightwell_core::mask::kind_title(&component.kind),
                 kind: component.kind.clone(),
                 mode: component.mode.as_str().to_owned(),
                 inverted: component.invert,
                 available: component.available,
                 selected,
+                hovered: inputs.hovered_component == Some(&component.id),
                 mode_reason,
                 delete_reason,
-                can_edit_shape: enabled && component.available && drawable(&component.kind),
+                can_edit_shape: enabled
+                    && component.available
+                    && crate::mask_draft::drawable(&component.kind),
             }
         })
         .collect()
+}
+
+/// The mode tokens the host's own `mask.set-component-mode` declares, in declared order. The panel
+/// offers exactly these and invents none: a mode a control shows is a mode the command accepts.
+fn declared_modes() -> Vec<String> {
+    lightwell_core::mask::commands::find("mask.set-component-mode")
+        .and_then(|command| command.action.parameter("mode"))
+        .and_then(|declared| match &declared.kind {
+            lightwell_core::ParameterKind::Enum { options } => Some(options.clone()),
+            _ => None,
+        })
+        .unwrap_or_default()
+}
+
+/// The label the host's own control declares for one command's parameter.
+fn control_label(action: &str, parameter: &str) -> String {
+    crate::state::tools::labelled_control(
+        lightwell_core::mask::commands::controls(),
+        action,
+        parameter,
+    )
+    .unwrap_or(parameter)
+    .to_owned()
 }
 
 /// Why one component cannot move by `step` places, or `None` when it can.

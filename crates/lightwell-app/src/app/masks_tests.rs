@@ -6,13 +6,13 @@
 //! same messages the runtime delivers.
 use super::{
     Boot, Editor,
-    message::{MaskMessage, MaskPointer, MenuTarget, Message},
+    message::{MaskMessage, MaskPointer, MenuTarget, Message, RowEdit},
     tasks::{self, call},
 };
 use crate::{
     Config,
     app::testing::descriptors,
-    mask_draft::{LINEAR, MaskHandle},
+    mask_draft::{LINEAR, MaskHandle, RADIAL},
 };
 use lightwell_core::{
     AssetId, ClientId, ComponentMode, MASK_MODE, MaskOverlayMode, OwnerHandle, POINTER_MODE,
@@ -268,6 +268,15 @@ impl Masking {
         )
         .unwrap_or_else(|error| panic!("the gesture commits: {error}"));
         assert_ne!(committed["outcome"], json!("no-op"), "{committed}");
+        // The desktop reads this answer back, and a mask command answers with what it changed
+        // beside the mutation envelope. Reading it as the bare envelope refuses the extra fields by
+        // name and turns every committed gesture into a failure, so the shape is pinned here.
+        serde_json::from_value::<lightwell_core::mask::commands::MaskCommandResult>(
+            committed.clone(),
+        )
+        .unwrap_or_else(|error| {
+            panic!("the desktop reads the commit's own answer: {error}: {committed}")
+        });
         let refreshed = tasks::refresh(
             &self.owner(),
             self.editor.client,
@@ -282,18 +291,106 @@ impl Masking {
             .update(Message::MaskDraftCommitted(Ok(Some(Box::new(refreshed)))));
     }
 
+    /// One whole shape drawn in a stroke, as a press and a drag on the photograph do.
+    fn sweep(&mut self, from: (f64, f64), to: (f64, f64)) {
+        self.message(MaskMessage::Handle(MaskPointer::Sweep { from, to }));
+        self.drain_draft_set();
+        self.message(MaskMessage::Handle(MaskPointer::End));
+        self.drain_draft_set();
+    }
+
     /// Draw one whole gradient and commit it, which is what New mask does end to end.
     fn draw_mask(&mut self) {
         self.message(MaskMessage::New(LINEAR.to_owned()));
         self.open_gesture();
-        self.message(MaskMessage::Handle(MaskPointer::Sweep {
-            from: (0.5, 0.2),
-            to: (0.5, 0.8),
-        }));
-        self.drain_draft_set();
-        self.message(MaskMessage::Handle(MaskPointer::End));
-        self.drain_draft_set();
+        self.sweep((0.5, 0.2), (0.5, 0.8));
         self.apply();
+    }
+
+    /// Add one component of that kind and mode to the open mask, through the Add row and the canvas
+    /// gesture that follows it.
+    fn add_component(&mut self, kind: &str, mode: ComponentMode) {
+        self.message(MaskMessage::SetAddMode(crate::state::masks::mode_index(
+            mode,
+        )));
+        self.message(MaskMessage::Add(kind.to_owned()));
+        self.open_gesture();
+        self.sweep((0.25, 0.3), (0.7, 0.65));
+        self.apply();
+        // The Add row is left where every other gesture leaves it, so a later New mask is not
+        // refused by a mode this helper chose.
+        self.message(MaskMessage::SetAddMode(crate::state::masks::mode_index(
+            ComponentMode::Add,
+        )));
+    }
+
+    /// The request one row edit would send, built through the panel's own builder — which is the
+    /// same builder its Copy as JSON request reads.
+    fn request_for(&mut self, edit: &RowEdit) -> Value {
+        let (_, target, fields) = self
+            .editor
+            .row_command(edit)
+            .expect("the row names a declared command");
+        identified(
+            self.editor
+                .mask_request(&target, &fields)
+                .expect("a photograph is open"),
+        )
+    }
+
+    /// The request the panel last sent, with its deduplication id replaced by a marker.
+    fn sent(&self) -> Option<Value> {
+        self.editor
+            .last_mask_request
+            .as_ref()
+            .map(|(_, request)| identified(request.clone()))
+    }
+
+    /// Every declared field the panel shows for the open gesture is the value the draft holds, to
+    /// the bit. That is what "the handles match their number fields" means.
+    fn assert_fields_match_the_draft(&self, what: &str) {
+        let draft = self.editor.mask_draft.as_ref().expect("a gesture is open");
+        let shown = self
+            .editor
+            .workspace
+            .masks
+            .draft
+            .as_ref()
+            .expect("the panel shows the gesture");
+        assert_eq!(shown.fields.len(), draft.values().len(), "{what}");
+        for ((name, value), field) in draft.values().into_iter().zip(shown.fields.iter()) {
+            assert_eq!(field.name, name, "{what}");
+            assert_eq!(field.value, value, "{what}: {name}");
+        }
+    }
+
+    /// One more component on that mask, posted the way an independent client posts one. Used where
+    /// a test needs a long list rather than a drawn one.
+    fn add_component_through_the_api(&mut self, mask: &lightwell_core::MaskId) {
+        let revision = self.editor.state.as_ref().unwrap().revision;
+        call(
+            &self.owner(),
+            self.editor.client,
+            "mask.add-linear",
+            json!({"asset_id": self.asset, "mutation": tasks::mutation(revision), "mask": mask,
+                   "mode": "add", "x0": 0.1, "y0": 0.1, "x1": 0.9, "y1": 0.9}),
+        )
+        .expect("the component is added");
+        self.refresh();
+    }
+
+    /// One more mask, posted the same way.
+    fn create_mask_through_the_api(&mut self) {
+        let revision = self.editor.state.as_ref().unwrap().revision;
+        call(
+            &self.owner(),
+            self.editor.client,
+            "mask.create-linear",
+            json!({"asset_id": self.asset, "mutation": tasks::mutation(revision),
+                   "x0": 0.1, "y0": 0.1, "x1": 0.9, "y1": 0.9}),
+        )
+        .expect("the mask is created");
+        self.refresh();
     }
 
     /// The masks the owner holds, read the way an independent client reads them.
@@ -469,7 +566,8 @@ fn a_gradient_drags_as_one_draft_commits_once_and_is_editable_as_numbers() {
             .mask_draft
             .as_ref()
             .expect("the gesture is open")
-            .gradient
+            .linear()
+            .expect("a gradient")
             .y1,
         0.5
     );
@@ -478,7 +576,14 @@ fn a_gradient_drags_as_one_draft_commits_once_and_is_editable_as_numbers() {
         value: 99.0,
     });
     assert_eq!(
-        masking.editor.mask_draft.as_ref().unwrap().gradient.y1,
+        masking
+            .editor
+            .mask_draft
+            .as_ref()
+            .unwrap()
+            .linear()
+            .expect("a gradient")
+            .y1,
         0.5,
         "a value outside the declared range changes nothing"
     );
@@ -721,7 +826,7 @@ fn the_panel_shows_the_familys_refusals_instead_of_offering_them() {
 
     // A mask's first component is always add, so its mode is not offered.
     assert!(
-        only.controls.is_empty(),
+        only.mode_options.is_empty(),
         "the first component has no mode control"
     );
     let mode_reason = only
@@ -927,16 +1032,23 @@ fn the_row_menu_duplicates_inverts_and_deletes_through_the_host() {
     );
 
     // Invert is one command, and the listing shows it afterwards.
-    let result = masking.run(MaskMessage::Invert(mask.as_str().to_owned()));
+    let result = masking.run(MaskMessage::Row(RowEdit::InvertMask {
+        mask: mask.as_str().to_owned(),
+        invert: true,
+    }));
     assert_eq!(result["label"], json!("Inverted"), "{result}");
     assert!(masking.listing().masks[0].invert);
 
     // Duplicate copies the mask and its layers, so the list grows by one.
-    masking.run(MaskMessage::Duplicate(mask.as_str().to_owned()));
+    masking.run(MaskMessage::Row(RowEdit::DuplicateMask(
+        mask.as_str().to_owned(),
+    )));
     assert_eq!(masking.listing().masks.len(), 2);
 
     // Delete removes it and names the layers it removed.
-    let result = masking.run(MaskMessage::Delete(mask.as_str().to_owned()));
+    let result = masking.run(MaskMessage::Row(RowEdit::DeleteMask(
+        mask.as_str().to_owned(),
+    )));
     assert!(
         result["label"]
             .as_str()
@@ -956,4 +1068,485 @@ fn the_row_menu_duplicates_inverts_and_deletes_through_the_host() {
             .as_ref()
             .is_none_or(|selected| selected != &mask)
     );
+}
+
+/// The component list is the recorded improvement over Lightroom, so this is the part that has to
+/// be right: each row carries its **own** mode, inversion, order and delete, every one of them is a
+/// declared command, and the request a row sends is the request its Copy as JSON request produces.
+#[test]
+fn each_component_row_carries_its_own_mode_invert_order_and_delete() {
+    let mut masking = Masking::opened();
+    masking.enter_mask_mode();
+    masking.draw_mask();
+    masking.add_component(LINEAR, ComponentMode::Subtract);
+    masking.add_component(RADIAL, ComponentMode::Subtract);
+    let listed = masking.listing().masks[0].clone();
+    assert_eq!(listed.components.len(), 3);
+    let second = listed.components[1].id.as_str().to_owned();
+    let third = listed.components[2].id.as_str().to_owned();
+
+    // Every row names its kind and shows its own mode, and the options come from the host's own
+    // declaration rather than a vocabulary the panel made up.
+    let panel = &masking.editor.workspace.masks;
+    let declared = lightwell_core::mask::commands::find("mask.set-component-mode")
+        .and_then(|command| command.action.parameter("mode"))
+        .map(|declared| match &declared.kind {
+            lightwell_core::ParameterKind::Enum { options } => options.clone(),
+            other => panic!("mode is declared as {other:?}"),
+        })
+        .expect("the host declares the mode parameter");
+    assert_eq!(panel.components[1].mode_options, declared);
+    assert_eq!(panel.components[2].mode_options, declared);
+    assert_eq!(panel.components[2].kind_title, "Radial");
+    assert_eq!(
+        panel.components[1].mode_options[panel.components[1].mode_selected],
+        ComponentMode::Subtract.as_str()
+    );
+
+    // Select the first component, then change the *second* row's mode. The row edits its own
+    // component: a list whose controls all addressed the selection would be no list at all.
+    masking.message(MaskMessage::SelectComponent(
+        listed.components[0].id.as_str().to_owned(),
+    ));
+    let edit = RowEdit::ComponentMode {
+        component: second.clone(),
+        mode: ComponentMode::Intersect.as_str().to_owned(),
+    };
+    // What Copy as JSON request would copy, built before the gesture runs, from the same builder.
+    let copied = masking.request_for(&edit);
+    let result = masking.run(MaskMessage::Row(edit));
+    assert_eq!(
+        masking.sent(),
+        Some(copied),
+        "the copied request is not the request that was sent"
+    );
+    assert!(
+        result["label"]
+            .as_str()
+            .is_some_and(|label| label.contains("intersect")),
+        "{result}"
+    );
+    let listed = masking.listing().masks[0].clone();
+    assert_eq!(listed.components[1].mode, ComponentMode::Intersect);
+    assert_eq!(
+        listed.components[2].mode,
+        ComponentMode::Subtract,
+        "one row's mode control changed another row's component"
+    );
+    // The selection survives a row edit: the canvas keeps editing what it was editing.
+    assert_eq!(
+        masking
+            .editor
+            .selected_component
+            .as_ref()
+            .map(|id| id.as_str().to_owned()),
+        Some(listed.components[0].id.as_str().to_owned())
+    );
+
+    // Inverting is the row's own too, and the request matches the builder the copy reads.
+    let edit = RowEdit::ComponentInvert {
+        component: third.clone(),
+        invert: true,
+    };
+    let copied = masking.request_for(&edit);
+    masking.run(MaskMessage::Row(edit));
+    assert_eq!(masking.sent(), Some(copied));
+    let listed = masking.listing().masks[0].clone();
+    assert!(listed.components[2].invert);
+    assert!(!listed.components[1].invert);
+
+    // And so is the order. Moving the third row up swaps it with the second, and the selection is
+    // still the first component.
+    let edit = RowEdit::MoveComponent {
+        component: third.clone(),
+        index: 1,
+    };
+    let copied = masking.request_for(&edit);
+    masking.run(MaskMessage::Row(edit));
+    assert_eq!(masking.sent(), Some(copied));
+    let listed = masking.listing().masks[0].clone();
+    assert_eq!(listed.components[1].id.as_str(), third);
+    assert_eq!(listed.components[2].id.as_str(), second);
+    assert_eq!(
+        masking
+            .editor
+            .selected_component
+            .as_ref()
+            .map(|id| id.as_str().to_owned()),
+        Some(listed.components[0].id.as_str().to_owned())
+    );
+
+    // Delete is a row command like the rest, and the panel offers it because the host would accept
+    // it: two components remain afterwards.
+    let edit = RowEdit::DeleteComponent(second.clone());
+    let copied = masking.request_for(&edit);
+    masking.run(MaskMessage::Row(edit));
+    assert_eq!(masking.sent(), Some(copied));
+    assert_eq!(masking.listing().masks[0].components.len(), 2);
+
+    // Every method a row sends is one the host declares, and every one of them mutates.
+    for method in [
+        "mask.set-component-mode",
+        "mask.set-component-invert",
+        "mask.reorder-component",
+        "mask.delete-component",
+        "mask.delete",
+        "mask.duplicate",
+        "mask.set-invert",
+        "mask.reorder",
+    ] {
+        let command = lightwell_core::mask::commands::find(method)
+            .unwrap_or_else(|| panic!("{method} is declared"));
+        assert!(command.mutates, "{method}");
+    }
+}
+
+/// Hovering a component row shows that component's own contribution in the overlay, and leaving the
+/// row restores the composed mask. It is view state: no selection changes and nothing commits.
+#[test]
+fn hovering_a_row_shows_that_components_contribution_and_leaving_restores_the_mask() {
+    let mut masking = Masking::opened();
+    masking.enter_mask_mode();
+    masking.draw_mask();
+    masking.add_component(LINEAR, ComponentMode::Subtract);
+    masking.message(MaskMessage::ToggleOverlay);
+    let listed = masking.listing().masks[0].clone();
+    let second = listed.components[1].id.clone();
+
+    // With nothing hovered or selected, the overlay asks for the whole composed mask.
+    let request = masking
+        .editor
+        .mask_overlay_request()
+        .expect("the overlay is on and a mask is open");
+    assert_eq!(request.mask, listed.id);
+    assert_eq!(
+        request.component, None,
+        "the composed mask, not a component"
+    );
+
+    // Hovering the second row asks for that component's own grid instead.
+    masking.message(MaskMessage::Hover(Some(second.as_str().to_owned())));
+    let request = masking.editor.mask_overlay_request().expect("an overlay");
+    assert_eq!(request.component.as_ref(), Some(&second));
+    assert!(
+        masking.editor.workspace.masks.components[1].hovered,
+        "the row says the overlay is showing it"
+    );
+    // Nothing was selected and nothing was committed by pointing at a row.
+    assert_eq!(masking.editor.selected_component, None);
+    assert_eq!(masking.editor.last_mask_request, None);
+
+    // Leaving the row restores the composed overlay.
+    masking.message(MaskMessage::Hover(None));
+    let request = masking.editor.mask_overlay_request().expect("an overlay");
+    assert_eq!(request.component, None);
+    assert!(!masking.editor.workspace.masks.components[1].hovered);
+
+    // The overlay follows the pointer and nothing else. A selected component opens that row's own
+    // numbers; it does not pin the overlay to that component, or leaving the list would never show
+    // the composition again — which is the comparison the component list exists to make.
+    let first = listed.components[0].id.clone();
+    masking.message(MaskMessage::SelectComponent(first.as_str().to_owned()));
+    assert_eq!(
+        masking.editor.mask_overlay_request().unwrap().component,
+        None
+    );
+    masking.message(MaskMessage::Hover(Some(second.as_str().to_owned())));
+    assert_eq!(
+        masking
+            .editor
+            .mask_overlay_request()
+            .unwrap()
+            .component
+            .as_ref(),
+        Some(&second),
+        "the pointer wins over the selection"
+    );
+    masking.message(MaskMessage::Hover(None));
+    assert_eq!(
+        masking.editor.mask_overlay_request().unwrap().component,
+        None
+    );
+    assert_eq!(
+        masking.editor.selected_component.as_ref(),
+        Some(&first),
+        "pointing at a row never changes what is selected"
+    );
+}
+
+/// The Add row offers each kind with its mode chosen up front, and the gesture that follows creates
+/// exactly that component — not one whose role was guessed from a modifier key afterwards.
+#[test]
+fn the_add_row_chooses_the_mode_before_the_gesture() {
+    let mut masking = Masking::opened();
+    masking.enter_mask_mode();
+    masking.draw_mask();
+
+    // Every registered kind is offered, and both of this build's kinds are drawable.
+    let panel = &masking.editor.workspace.masks;
+    let kinds: Vec<String> = panel.kinds.iter().map(|kind| kind.kind.clone()).collect();
+    assert!(
+        kinds.contains(&LINEAR.to_owned()) && kinds.contains(&RADIAL.to_owned()),
+        "{kinds:?}"
+    );
+    for kind in &panel.kinds {
+        assert!(kind.drawable, "{} has no handles", kind.kind);
+    }
+
+    for (mode, kind) in [
+        (ComponentMode::Subtract, LINEAR),
+        (ComponentMode::Intersect, RADIAL),
+    ] {
+        masking.message(MaskMessage::SetAddMode(crate::state::masks::mode_index(
+            mode,
+        )));
+        assert_eq!(
+            masking.editor.workspace.masks.modes[masking.editor.workspace.masks.add_mode],
+            mode.as_str(),
+            "the panel shows the mode the next gesture will use"
+        );
+        masking.message(MaskMessage::Add(kind.to_owned()));
+        // The gesture already knows its mode: it is in the request the release will send.
+        let fields = masking
+            .editor
+            .mask_draft
+            .as_ref()
+            .expect("a gesture is open")
+            .fields();
+        assert_eq!(fields["mode"], json!(mode.as_str()));
+        masking.open_gesture();
+        masking.sweep((0.3, 0.3), (0.7, 0.7));
+        masking.apply();
+        let listed = masking.listing().masks[0].clone();
+        let added = listed.components.last().expect("the component was added");
+        assert_eq!(added.mode, mode, "the gesture created a {mode:?} component");
+        assert_eq!(added.kind, kind);
+    }
+}
+
+/// A radial drags as one draft, commits once, and its number fields agree with the drag at every
+/// point of it — which is what makes the handles and the fields two views of one geometry.
+#[test]
+fn a_radial_drags_as_one_draft_commits_once_and_matches_its_number_fields() {
+    let mut masking = Masking::opened();
+    masking.enter_mask_mode();
+    let before = masking.editor.history.entries.len();
+    masking.message(MaskMessage::New(RADIAL.to_owned()));
+    masking.open_gesture();
+    // The gesture knows the content stage's aspect from `render.transform`, which is the only thing
+    // it needs about the stage to place an ellipse.
+    let aspect = masking
+        .editor
+        .mask_draft
+        .as_ref()
+        .expect("a gesture")
+        .aspect();
+    assert!(aspect > 0.0 && aspect.is_finite(), "{aspect}");
+
+    masking.sweep((0.5, 0.5), (0.75, 0.8));
+    // Every handle is where the panel's own fields say it is, at every step of the drag.
+    let handles: Vec<_> = masking
+        .editor
+        .mask_draft
+        .as_ref()
+        .expect("a gesture")
+        .handles();
+    assert_eq!(
+        handles.len(),
+        7,
+        "four radii, a centre, a rotation grip and the ring"
+    );
+    for (handle, _) in &handles {
+        let from = masking
+            .editor
+            .mask_draft
+            .as_ref()
+            .unwrap()
+            .handles()
+            .into_iter()
+            .find(|(known, _)| known == handle)
+            .map(|(_, point)| point)
+            .expect("the handle is drawn");
+        masking.message(MaskMessage::Handle(MaskPointer::Begin {
+            handle: *handle,
+            x: from.0,
+            y: from.1,
+        }));
+        for step in [(0.03, 0.02), (-0.04, 0.05)] {
+            masking.message(MaskMessage::Handle(MaskPointer::Drag {
+                x: from.0 + step.0,
+                y: from.1 + step.1,
+            }));
+            masking.drain_draft_set();
+            masking.assert_fields_match_the_draft(&format!("{handle:?} {step:?}"));
+        }
+        masking.message(MaskMessage::Handle(MaskPointer::End));
+        masking.drain_draft_set();
+    }
+    // One drag of seven handles is still one draft, and the commit is one entry.
+    let drawn: Vec<(String, f64)> = masking
+        .editor
+        .mask_draft
+        .as_ref()
+        .unwrap()
+        .values()
+        .into_iter()
+        .map(|(name, value)| (name.to_owned(), value))
+        .collect();
+    masking.apply();
+    assert_eq!(
+        masking.editor.history.entries.len(),
+        before + 1,
+        "a shape gesture is one history entry"
+    );
+    let listed = masking.listing().masks[0].clone();
+    assert_eq!(listed.components.len(), 1);
+    assert_eq!(listed.components[0].kind, RADIAL);
+    // The committed payload is the geometry the fields showed, to the last bit.
+    for (name, value) in drawn {
+        assert_eq!(
+            listed.components[0].payload[&name],
+            json!(value),
+            "{name} was committed as something other than what the field showed"
+        );
+    }
+
+    // Selecting the row puts that component's stored geometry in its own number fields, so the
+    // numbers under a row are the geometry its handles draw and not a declared minimum.
+    masking.message(MaskMessage::SelectComponent(
+        listed.components[0].id.as_str().to_owned(),
+    ));
+    let fields = &masking.editor.workspace.masks.components[0].fields;
+    assert!(!fields.is_empty(), "the selected row shows its own fields");
+    let patch = lightwell_core::mask::commands::find("mask.set-radial").expect("the patch method");
+    for name in ["x", "y", "radius_x", "radius_y", "angle", "feather"] {
+        let declared = patch.action.parameter(name).expect("a declared parameter");
+        let stored = &listed.components[0].payload[name];
+        let shown = masking
+            .editor
+            .fields
+            .get("mask.set-radial", name)
+            .unwrap_or_else(|| panic!("{name} is a field"));
+        assert_eq!(
+            shown,
+            crate::app::fields::value_text(declared, stored).expect("the stored value"),
+            "{name} reads {shown} and is stored as {stored}"
+        );
+    }
+
+    // Reopening the component starts from exactly the stored payload rather than a reconstruction.
+    masking.message(MaskMessage::EditShape(
+        listed.components[0].id.as_str().to_owned(),
+    ));
+    masking.open_gesture();
+    let reopened = masking.editor.mask_draft.as_ref().expect("a gesture");
+    for (name, value) in reopened.values() {
+        assert_eq!(listed.components[0].payload[name], json!(value), "{name}");
+    }
+    masking.message(MaskMessage::Cancel);
+}
+
+/// The panel refuses rather than silently coercing, and says why each time: a first component that
+/// is not an add, and a list that has reached its declared limit.
+#[test]
+fn the_panel_refuses_a_first_component_that_is_not_add_and_a_list_at_its_limit() {
+    let mut masking = Masking::opened();
+    masking.enter_mask_mode();
+    masking.draw_mask();
+
+    // With the next component set to subtract, New mask would have to create an add: it is refused
+    // with its reason rather than quietly creating one.
+    masking.message(MaskMessage::SetAddMode(crate::state::masks::mode_index(
+        ComponentMode::Subtract,
+    )));
+    let reason = masking
+        .editor
+        .workspace
+        .masks
+        .create_reason
+        .clone()
+        .expect("New mask names why it cannot run");
+    assert!(
+        reason.contains("always add") && reason.contains("subtract"),
+        "{reason}"
+    );
+    masking.message(MaskMessage::New(LINEAR.to_owned()));
+    assert!(
+        masking.editor.mask_draft.is_none(),
+        "a gesture opened anyway"
+    );
+    assert_eq!(masking.editor.status, reason);
+    // Setting it back to add clears the refusal, so nothing is permanently blocked.
+    masking.message(MaskMessage::SetAddMode(crate::state::masks::mode_index(
+        ComponentMode::Add,
+    )));
+    assert_eq!(masking.editor.workspace.masks.create_reason, None);
+
+    // A mask at its component limit says so rather than offering an Add the host would refuse.
+    let mask = masking.listing().masks[0].id.clone();
+    while masking.listing().masks[0].components.len() < lightwell_core::COMPONENTS_PER_MASK {
+        masking.add_component_through_the_api(&mask);
+    }
+    masking.refresh();
+    let add_reason = masking
+        .editor
+        .workspace
+        .masks
+        .add_reason
+        .clone()
+        .expect("the Add row names why it cannot run");
+    assert!(
+        add_reason.contains(&lightwell_core::COMPONENTS_PER_MASK.to_string()),
+        "{add_reason}"
+    );
+    // And the host refuses one more, with a reason of the same shape.
+    let revision = masking.editor.state.as_ref().unwrap().revision;
+    let refused = call(
+        &masking.owner(),
+        masking.editor.client,
+        "mask.add-linear",
+        json!({"asset_id": masking.asset, "mutation": tasks::mutation(revision), "mask": mask,
+               "mode": "add", "x0": 0.1, "y0": 0.1, "x1": 0.9, "y1": 0.9}),
+    )
+    .expect_err("the host refuses a component past the limit");
+    assert!(
+        refused.contains(&lightwell_core::COMPONENTS_PER_MASK.to_string()),
+        "{refused}"
+    );
+
+    // A recipe at its mask limit says so in the same place.
+    let mut masking = Masking::opened();
+    masking.enter_mask_mode();
+    for _ in 0..lightwell_core::MASKS_PER_RECIPE {
+        masking.create_mask_through_the_api();
+    }
+    masking.refresh();
+    let create_reason = masking
+        .editor
+        .workspace
+        .masks
+        .create_reason
+        .clone()
+        .expect("New mask names the limit");
+    assert!(
+        create_reason.contains(&lightwell_core::MASKS_PER_RECIPE.to_string()),
+        "{create_reason}"
+    );
+}
+
+/// One request with its deduplication id replaced by a marker.
+///
+/// Two sends of the same edit are two requests and must carry two ids, so the id is the one field a
+/// copy cannot be expected to reproduce — and the one field that must be present in both.
+fn identified(mut request: Value) -> Value {
+    let mutation = request["mutation"]
+        .as_object_mut()
+        .expect("a mutation envelope");
+    assert!(
+        mutation
+            .insert("request_id".into(), json!("<fresh>"))
+            .is_some_and(|id| id.as_str().is_some_and(|id| !id.is_empty())),
+        "a mutation carries its own request id"
+    );
+    request
 }

@@ -491,6 +491,9 @@ pub(crate) struct Editor {
     /// selection: it changes no recipe and is never sent.
     pub(crate) selected_mask: Option<lightwell_core::MaskId>,
     pub(crate) selected_component: Option<lightwell_core::ComponentId>,
+    /// The component row the pointer is over, which the overlay shows on its own while it lasts.
+    /// View state of the same kind as the selection, and never sent.
+    pub(crate) hovered_component: Option<lightwell_core::ComponentId>,
     /// Masks whose overlay the eye has hidden. A hidden mask still applies to the picture.
     pub(crate) hidden_masks: std::collections::HashSet<lightwell_core::MaskId>,
     /// The open mask shape gesture, which commits one `mask.*` command through the draft lifecycle.
@@ -670,6 +673,7 @@ impl Editor {
             masks: None,
             selected_mask: None,
             selected_component: None,
+            hovered_component: None,
             hidden_masks: std::collections::HashSet::new(),
             mask_draft: None,
             mask_map: None,
@@ -1585,6 +1589,10 @@ impl Editor {
         let settle = match &self.slider_draft {
             Some(draft) if draft.drained() => Some(Settle::SliderDraft),
             Some(_) => None,
+            // A mask shape gesture drains the same way: while another `draft.set` or the commit is
+            // still queued the frame on screen is not the one the step is evidence of, so the step
+            // waits for the geometry that settles.
+            None if !self.mask_draft_drained() => None,
             None => Some(Settle::Preview),
         };
         if upload.proxy {
@@ -1837,6 +1845,7 @@ impl Editor {
             masks: self.masks.as_ref(),
             selected_mask: self.selected_mask.as_ref(),
             selected_component: self.selected_component.as_ref(),
+            hovered_component: self.hovered_component.as_ref(),
             hidden_masks: &self.hidden_masks,
             mask_draft: self.mask_draft.as_ref(),
             mask_mode: self.mask_mode,
@@ -3700,6 +3709,7 @@ impl Editor {
             }
         }
         self.modules = modules;
+        self.seed_mask_fields();
     }
 
     /// A new authoritative revision arrived while a draft was open. The draft's own Apply ends it;

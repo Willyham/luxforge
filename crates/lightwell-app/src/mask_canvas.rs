@@ -13,7 +13,7 @@
 //! `render.locate` per move, which would put a runtime hop on the input path.
 use crate::{
     app::message::{MaskMessage, MaskPointer, Message},
-    mask_draft::{ContentMap, MaskDraft, MaskHandle},
+    mask_draft::{ContentMap, MaskDraft, MaskHandle, MaskShape},
 };
 use iced::{
     Point, Rectangle, Renderer, Size, Theme, Vector,
@@ -29,6 +29,9 @@ const HANDLE_RADIUS: f32 = 5.0;
 /// output stage's diagonal. A gradient's lines are infinite; this is enough to leave the frame from
 /// any position and angle the legal range allows.
 const LINE_REACH: f64 = 2.0;
+/// How many segments one drawn ellipse is built from. Fixed, so a figure costs the same at every
+/// zoom, and fine enough that the boundary reads as a curve on a full-screen radial.
+const ELLIPSE_STEPS: usize = 96;
 
 /// Where the output stage is drawn inside this canvas, in logical pixels. Fit centres it, a
 /// percentage zoom draws it at its own size with the origin at the corner and the surrounding
@@ -144,6 +147,114 @@ impl<'a> MaskCanvas<'a> {
     fn pointer(&self, pointer: MaskPointer) -> Action<Message> {
         Action::publish(Message::Mask(MaskMessage::Handle(pointer))).and_capture()
     }
+
+    /// The linear gradient's figure: the design's three lines — one through `p0`, one through the
+    /// midpoint and one through `p1`, each perpendicular to the axis — and the axis itself, so the
+    /// direction of the gradient is visible rather than inferred. They are drawn in content space
+    /// and mapped, so a crop, a straighten or a quarter turn moves them with the picture.
+    fn draw_linear(&self, frame: &mut Frame, gradient: lightwell_core::mask::LinearGradient) {
+        let (dx, dy) = (gradient.x1 - gradient.x0, gradient.y1 - gradient.y0);
+        let length = dx.hypot(dy);
+        if length <= 0.0 {
+            return;
+        }
+        let (px, py) = (-dy / length * LINE_REACH, dx / length * LINE_REACH);
+        for (handle, alpha) in [
+            (MaskHandle::Start, 0.85),
+            (MaskHandle::Middle, 0.45),
+            (MaskHandle::End, 0.85),
+        ] {
+            let Some((x, y)) = handle.point(&MaskShape::Linear(gradient), self.draft.aspect())
+            else {
+                continue;
+            };
+            frame.stroke(
+                &Path::line(
+                    self.placement.canvas_point(x - px, y - py),
+                    self.placement.canvas_point(x + px, y + py),
+                ),
+                Stroke::default().with_color(tint(alpha)).with_width(1.0),
+            );
+        }
+        frame.stroke(
+            &Path::line(
+                self.placement.canvas_point(gradient.x0, gradient.y0),
+                self.placement.canvas_point(gradient.x1, gradient.y1),
+            ),
+            Stroke::default().with_color(tint(0.55)).with_width(1.0),
+        );
+    }
+
+    /// The radial's figure: the boundary ellipse, where coverage reaches zero, and the feather ring
+    /// at `1 - feather/100` of it, where the ramp starts. Both are drawn by mapping the ellipse's
+    /// own parametrization through mask space and the affine, so they follow a crop or a quarter
+    /// turn with the picture and stay a circle in pixels at any aspect ratio.
+    ///
+    /// At `feather = 0` the two coincide, which is the truth: the edge is hard.
+    fn draw_radial(&self, frame: &mut Frame, radial: lightwell_core::mask::RadialGradient) {
+        let ring = 1.0 - radial.feather / 100.0;
+        for (scale, alpha, dashes) in [(1.0, 0.85, false), (ring, 0.5, true)] {
+            if scale <= 0.0 {
+                continue;
+            }
+            let outline = self.ellipse_path(radial, scale, dashes);
+            frame.stroke(
+                &outline,
+                Stroke::default().with_color(tint(alpha)).with_width(1.0),
+            );
+        }
+        // The grip's tether, so the rotation handle reads as belonging to the ellipse rather than
+        // floating beside it.
+        if let (Some(axis), Some(grip)) = (
+            MaskHandle::RadiusPlusX.point(&MaskShape::Radial(radial), self.draft.aspect()),
+            MaskHandle::Rotation.point(&MaskShape::Radial(radial), self.draft.aspect()),
+        ) {
+            frame.stroke(
+                &Path::line(
+                    self.placement.canvas_point(axis.0, axis.1),
+                    self.placement.canvas_point(grip.0, grip.1),
+                ),
+                Stroke::default().with_color(tint(0.55)).with_width(1.0),
+            );
+        }
+    }
+
+    /// One ellipse of the radial's family, at `scale` of its radii, as a closed canvas path.
+    ///
+    /// `ELLIPSE_STEPS` segments is what a bounded figure costs: the path is rebuilt per frame like
+    /// every other canvas figure, and a fixed step count keeps that cost independent of zoom.
+    fn ellipse_path(
+        &self,
+        radial: lightwell_core::mask::RadialGradient,
+        scale: f64,
+        dashed: bool,
+    ) -> Path {
+        let aspect = self.draft.aspect();
+        let theta = radial.angle * std::f64::consts::PI / 180.0;
+        let (ca, sa) = (theta.cos(), theta.sin());
+        let point = |step: usize| {
+            let t = step as f64 / ELLIPSE_STEPS as f64 * std::f64::consts::TAU;
+            let (a, b) = (
+                scale * radial.radius_x * t.cos(),
+                scale * radial.radius_y * t.sin(),
+            );
+            let (du, dv) = (ca * a - sa * b, sa * a + ca * b);
+            self.placement
+                .canvas_point((radial.x * aspect + du) / aspect, radial.y + dv)
+        };
+        Path::new(|builder| {
+            builder.move_to(point(0));
+            for step in 1..=ELLIPSE_STEPS {
+                // A dashed ring is drawn as alternate segments rather than with a dash pattern, so
+                // the feather ring reads as the softer of the two figures at every zoom.
+                if dashed && step % 2 == 0 {
+                    builder.move_to(point(step));
+                } else {
+                    builder.line_to(point(step));
+                }
+            }
+        })
+    }
 }
 
 /// The pointer position in canvas-local logical pixels, even once a drag has left the bounds.
@@ -212,40 +323,14 @@ impl canvas::Program<Message> for MaskCanvas<'_> {
         _cursor: Cursor,
     ) -> Vec<Geometry> {
         let mut frame = Frame::new(renderer, bounds.size());
-        let gradient = self.draft.gradient;
-        // The three lines the design names: one through p0, one through the midpoint and one
-        // through p1, each perpendicular to the axis. They are drawn in content space and mapped,
-        // so a crop, a straighten or a quarter turn moves them with the picture.
-        let (dx, dy) = (gradient.x1 - gradient.x0, gradient.y1 - gradient.y0);
-        let length = dx.hypot(dy);
-        if length > 0.0 {
-            let (px, py) = (-dy / length * LINE_REACH, dx / length * LINE_REACH);
-            for (handle, width, alpha) in [
-                (MaskHandle::Start, 1.0, 0.85),
-                (MaskHandle::Middle, 1.0, 0.45),
-                (MaskHandle::End, 1.0, 0.85),
-            ] {
-                let (x, y) = handle.point(&gradient);
-                frame.stroke(
-                    &Path::line(
-                        self.placement.canvas_point(x - px, y - py),
-                        self.placement.canvas_point(x + px, y + py),
-                    ),
-                    Stroke::default().with_color(tint(alpha)).with_width(width),
-                );
-            }
-            // The axis itself, so the direction of the gradient is visible rather than inferred.
-            frame.stroke(
-                &Path::line(
-                    self.placement.canvas_point(gradient.x0, gradient.y0),
-                    self.placement.canvas_point(gradient.x1, gradient.y1),
-                ),
-                Stroke::default().with_color(tint(0.55)).with_width(1.0),
-            );
+        if let Some(gradient) = self.draft.linear() {
+            self.draw_linear(&mut frame, gradient);
         }
-        // One handle per end, and the midpoint's own grip.
-        for handle in MaskHandle::ALL {
-            let (x, y) = handle.point(&gradient);
+        if let Some(radial) = self.draft.radial() {
+            self.draw_radial(&mut frame, radial);
+        }
+        // One grip per drawn handle, whatever the figure under them is.
+        for (handle, (x, y)) in self.draft.handles() {
             let centre = self.placement.canvas_point(x, y);
             let held = self.draft.held() == Some(handle);
             frame.fill(
@@ -279,7 +364,8 @@ impl canvas::Program<Message> for MaskCanvas<'_> {
             return mouse::Interaction::None;
         };
         match self.handle_at(point) {
-            Some(MaskHandle::Middle) => mouse::Interaction::Move,
+            // The handles that move the whole figure say so; the rest are grips.
+            Some(MaskHandle::Middle | MaskHandle::Centre) => mouse::Interaction::Move,
             Some(_) => mouse::Interaction::Grab,
             None => mouse::Interaction::Crosshair,
         }
@@ -298,7 +384,7 @@ fn tint(alpha: f32) -> iced::Color {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::mask_draft::{LINEAR, MaskDraft};
+    use crate::mask_draft::{LINEAR, MaskDraft, RADIAL};
     use lightwell_core::{StageSize, StageTransform};
 
     fn placement(output: (u32, u32), available: Size) -> Placement {
@@ -344,21 +430,25 @@ mod tests {
     #[test]
     fn a_drawn_handle_is_where_a_press_on_it_is_answered() {
         let placement = placement((480, 320), Size::new(960.0, 640.0));
-        let draft = MaskDraft::creating(LINEAR, 1);
-        let canvas = MaskCanvas::new(&draft, placement);
-        for handle in MaskHandle::ALL {
-            let (x, y) = handle.point(&draft.gradient);
-            let drawn = placement.canvas_point(x, y);
-            let (back_x, back_y) = placement.content_point(drawn);
-            assert!(
-                (back_x - x).abs() < 1e-9 && (back_y - y).abs() < 1e-9,
-                "{handle:?} drew at {drawn:?}, which maps back to ({back_x}, {back_y})"
-            );
-            assert_eq!(canvas.handle_at(drawn), Some(handle), "{handle:?}");
+        for kind in [LINEAR, RADIAL] {
+            let mut draft = MaskDraft::creating(kind, 1);
+            draft.set_aspect(placement.map.aspect());
+            let canvas = MaskCanvas::new(&draft, placement);
+            for (handle, (x, y)) in draft.handles() {
+                let drawn = placement.canvas_point(x, y);
+                let (back_x, back_y) = placement.content_point(drawn);
+                // Canvas coordinates are `f32`, so the round trip is exact to the drawn pixel and
+                // not to the `f64` the geometry is kept in: a hundredth of a pixel on this stage.
+                assert!(
+                    (back_x - x).abs() < 1e-5 && (back_y - y).abs() < 1e-5,
+                    "{kind} {handle:?} drew at {drawn:?}, which maps back to ({back_x}, {back_y})"
+                );
+                assert_eq!(canvas.handle_at(drawn), Some(handle), "{kind} {handle:?}");
+            }
+            // A point well away from every handle grabs none, and is the start of a sweep instead.
+            let away = placement.canvas_point(0.02, 0.02);
+            assert_eq!(canvas.handle_at(away), None, "{kind}");
         }
-        // A point well away from every handle grabs none, and is the start of a sweep instead.
-        let away = placement.canvas_point(0.05, 0.05);
-        assert_eq!(canvas.handle_at(away), None);
     }
 
     #[test]
@@ -371,7 +461,8 @@ mod tests {
         let mut state = Interaction::default();
 
         // A press on the start handle begins a drag of that handle.
-        let grip = placement.canvas_point(draft.gradient.x0, draft.gradient.y0);
+        let gradient = draft.linear().expect("a gradient");
+        let grip = placement.canvas_point(gradient.x0, gradient.y0);
         let action = program.update(
             &mut state,
             &Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)),

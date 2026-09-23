@@ -74,6 +74,10 @@ pub(crate) enum MenuTarget {
     /// A mask's row in the Masks panel, by its identity: Duplicate, Invert and Delete. Rename is the
     /// row's own field rather than a menu item, because it needs one.
     Mask(String),
+    /// A component's row in the open mask, by its identity: the Copy as JSON request of every
+    /// command that row's own controls send. They are a menu rather than four more buttons because
+    /// a copy is read once and a control is used often, and the row has to stay scannable.
+    Component(String),
 }
 
 /// What running one command palette entry does. Every entry is an existing message, so running an
@@ -198,22 +202,45 @@ pub(crate) enum MaskMessage {
     Apply,
     Cancel,
     Reapply,
-    Delete(String),
-    Duplicate(String),
     /// The rename field's text, as it is typed.
     Name(String),
     /// Submit the rename field for that mask.
     Rename(String),
-    Invert(String),
-    Move {
-        mask: String,
-        index: usize,
-    },
+    /// One list edit from a row, run as the command it names.
+    Row(RowEdit),
+    /// The same edit, copied as the JSON request it would send rather than sent.
+    CopyRow(RowEdit),
+    /// The pointer entered or left a component row. Per-client view state: the overlay shows that
+    /// component's own contribution while a row is under the pointer, which is what makes a subtract
+    /// on top of a gradient legible, and the composed mask again when the pointer leaves.
+    Hover(Option<String>),
+}
+
+/// One list edit a Masks-panel row offers: the objects it addresses and the one value it changes.
+///
+/// Every row control is one of these, and every one of them resolves to exactly one declared
+/// `mask.*` command through a single builder — so the request a row sends and the request its Copy
+/// as JSON request produces are the same request, built once, and neither can drift from the other.
+/// What a row may *not* do is not represented here at all: the panel reads the family's own reasons
+/// and offers no control the host would refuse.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum RowEdit {
+    /// `mask.delete`, which also removes the layers bound to the mask.
+    DeleteMask(String),
+    /// `mask.duplicate`.
+    DuplicateMask(String),
+    /// `mask.set-invert`.
+    InvertMask { mask: String, invert: bool },
+    /// `mask.reorder`.
+    MoveMask { mask: String, index: usize },
+    /// `mask.delete-component`.
     DeleteComponent(String),
-    MoveComponent {
-        component: String,
-        index: usize,
-    },
+    /// `mask.reorder-component`.
+    MoveComponent { component: String, index: usize },
+    /// `mask.set-component-mode`, with the mode token the host declares.
+    ComponentMode { component: String, mode: String },
+    /// `mask.set-component-invert`.
+    ComponentInvert { component: String, invert: bool },
 }
 
 /// One pointer step of a crop gesture, already mapped to box pixels by the canvas.
