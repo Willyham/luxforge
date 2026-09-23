@@ -188,13 +188,16 @@ fn vignette_field<'a>(frame: &'a Value, name: &str) -> Result<&'a str> {
         .ok_or_else(|| format!("Frame records no {name} field").into())
 }
 
-/// Where the photograph is drawn: found by the row with the widest run of bright pixels (an
-/// accurate horizontal extent no title-bar or mode-strip chrome can win, since none of it spans as
-/// wide as the photograph itself, and a rectangular fixture's own least-vignetted row — the one
-/// through its own vertical centre — is always at least as wide as any other) and the column with
-/// the tallest run, the same way for the vertical extent. This works whether the zoom centres the
-/// photograph (Fit) or anchors it to the photo surface's own top-left corner, which 100% does for
-/// a photograph smaller than the canvas.
+/// Where the photograph is drawn: found by the column with the tallest run of bright pixels, and
+/// then by the widest run of bright pixels among that vertical extent's own rows (a rectangular
+/// fixture's least-vignetted row — the one through its own vertical centre — is always at least as
+/// wide as any other). The vertical extent comes first because the photograph is the tallest bright
+/// thing on the surface by a wide margin, while it is not always the widest: the mode strip is a
+/// bright floating bar of its own near the bottom of the canvas, and it grows with every mode the
+/// host registers, so a scan of every row measures whichever of the two currently happens to be
+/// wider. Confining the row scan to the photograph's own rows reads the photograph whatever the
+/// chrome does, and works whether the zoom centres the photograph (Fit) or anchors it to the photo
+/// surface's own top-left corner, which 100% does for a photograph smaller than the canvas.
 pub fn bright_bounds(path: &Path, frame: &Value) -> Result<[u32; 4]> {
     const BRIGHT: u32 = 60;
     let image = image::open(path)?.to_rgb8();
@@ -217,17 +220,6 @@ pub fn bright_bounds(path: &Path, frame: &Value) -> Result<[u32; 4]> {
     let bottom_margin = height - top_margin;
     let side_inset = 10;
     let (inset_left, inset_right) = (surface_left + side_inset, surface_right - side_inset);
-    let mut widest: Option<(u32, u32, u32)> = None;
-    for y in top_margin..bottom_margin {
-        let run =
-            longest_run((inset_left..inset_right).map(|x| (x, bright(image.get_pixel(x, y).0))));
-        if let Some((left, right)) = run
-            && widest.is_none_or(|(w, ..)| right - left > w)
-        {
-            widest = Some((right - left, left, right));
-        }
-    }
-    let (_, left, right) = widest.ok_or("No photograph in the frame: blank or wrong render")?;
     let mut tallest: Option<(u32, u32, u32)> = None;
     for x in inset_left..inset_right {
         let run =
@@ -239,6 +231,17 @@ pub fn bright_bounds(path: &Path, frame: &Value) -> Result<[u32; 4]> {
         }
     }
     let (_, top, bottom) = tallest.ok_or("No photograph in the frame: blank or wrong render")?;
+    let mut widest: Option<(u32, u32, u32)> = None;
+    for y in top..=bottom {
+        let run =
+            longest_run((inset_left..inset_right).map(|x| (x, bright(image.get_pixel(x, y).0))));
+        if let Some((left, right)) = run
+            && widest.is_none_or(|(w, ..)| right - left > w)
+        {
+            widest = Some((right - left, left, right));
+        }
+    }
+    let (_, left, right) = widest.ok_or("No photograph in the frame: blank or wrong render")?;
     Ok([left, top, right, bottom])
 }
 
