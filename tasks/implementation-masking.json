@@ -1272,7 +1272,7 @@
     {
       "id": "TASK-016",
       "description": "Close phase B with its evidence: a mask-combine smoke scenario, masked spatial exactness on both paths, the measured cost of combination, and the documentation the phase changes.",
-      "status": "pending",
+      "status": "completed",
       "dependencies": [
         "TASK-011",
         "TASK-014",
@@ -1717,7 +1717,8 @@
       "extra_context": [
         "The owner's requirement is that several brushes in one mask layer are easy and that a brush can subtract from a gradient. The evidence has to show exactly that, on the M4 Mac, with correlated state.",
         "The user guide says what Feather and Flow do and says plainly that Density is not delivered and why.",
-        "Report misses against the latency targets with figures; they do not block delivery."
+        "Report misses against the latency targets with figures; they do not block delivery.",
+        "Phase B retook the masked-drag latency properly and it is no longer provisional: sixteen runs, forward and reversed, with a 100 s pause before each so the recorded load is the other sessions', at loads 2.34 to 8.13 and again at 12 to 17. Every median is 16.8 to 17.9 ms masked and unmasked alike, the largest masked-unmasked difference is 0.4 ms, and draft.set is 0.214-0.226 ms unmasked against 0.227-0.236 masked. Do not retake what is already taken; measure the brush's own workload instead. One finding to respect: the first editor-latency launch after an idle period read p50 41.40 ms and draft.set 0.395 ms, double everything else including the hop, which no render load moves - the first launch after idle is not a usable sample, so discard it rather than averaging it in."
       ],
       "context_links": [
         {
