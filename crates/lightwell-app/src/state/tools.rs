@@ -952,12 +952,15 @@ fn control_model(
                 controls,
             })
         }
+        // A declared field reset is resolved from the descriptors when the reset is asked for, by
+        // `fields::field_reset`; the slider itself draws nothing for it.
         Rendered::Number {
             action,
             parameter,
             label,
             style,
             rail,
+            ..
         } => {
             let mut model = value_model(module, inputs, action, parameter, label);
             if let ControlModel::Slider(slider) = &mut model {
@@ -1758,6 +1761,8 @@ pub(crate) enum Rendered<'a> {
         label: &'a str,
         style: NumberStyle,
         rail: Option<&'a RailDecoration>,
+        /// What resetting this field runs, when it is not the parameter's declared default.
+        reset: Option<&'a ResetAction>,
     },
     Toggle {
         action: &'a str,
@@ -1820,12 +1825,14 @@ pub(crate) fn classify(control: &Control) -> Rendered<'_> {
             label,
             style,
             rail,
+            reset,
         } => Rendered::Number {
             action,
             parameter,
             label,
             style: *style,
             rail: rail.as_ref(),
+            reset: reset.as_ref(),
         },
         Control::Toggle {
             action,
@@ -1941,6 +1948,36 @@ pub(crate) fn drafts(modules: &[ModuleDescriptor], action: &str, parameter: &str
 }
 
 /// The label a generated control carries for one field, as the panel and the status line name it.
+/// The reset a number control declares for its own field, if the first number control of this
+/// action and parameter declares one: the action and preset that resetting the field runs instead
+/// of its parameter's declared default.
+pub(crate) fn declared_field_reset<'a>(
+    modules: &'a [ModuleDescriptor],
+    action: &str,
+    parameter: &str,
+) -> Option<&'a ResetAction> {
+    fn find<'a>(
+        controls: &'a [Control],
+        action: &str,
+        parameter: &str,
+    ) -> Option<Option<&'a ResetAction>> {
+        controls.iter().find_map(|control| match classify(control) {
+            Rendered::Group { controls, .. } => find(controls, action, parameter),
+            Rendered::Number {
+                action: declared,
+                parameter: named,
+                reset,
+                ..
+            } if declared == action && named == parameter => Some(reset),
+            _ => None,
+        })
+    }
+    modules
+        .iter()
+        .find_map(|module| find(&module.controls, action, parameter))
+        .flatten()
+}
+
 pub(crate) fn control_label(
     modules: &[ModuleDescriptor],
     action: &str,

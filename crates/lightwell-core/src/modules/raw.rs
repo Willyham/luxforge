@@ -302,6 +302,7 @@ impl RawModule {
                             label: "Exposure".into(),
                             style: crate::NumberStyle::Slider,
                             rail: None,
+                            reset: None,
                         },
                         Control::Number {
                             action: SET_TEMPERATURE.into(),
@@ -309,6 +310,7 @@ impl RawModule {
                             label: "Custom temperature".into(),
                             style: crate::NumberStyle::Slider,
                             rail: Some(crate::RailDecoration::Temperature),
+                            reset: None,
                         },
                         Control::Number {
                             action: SET_TINT.into(),
@@ -316,6 +318,7 @@ impl RawModule {
                             label: "Custom tint".into(),
                             style: crate::NumberStyle::Slider,
                             rail: Some(crate::RailDecoration::Tint),
+                            reset: None,
                         },
                         // The sensor neutral pick, beside the temperature and tint it sets.
                         Control::Picker {
@@ -577,6 +580,7 @@ mod tests {
                 label: "Custom temperature".into(),
                 style: crate::NumberStyle::Slider,
                 rail: Some(crate::RailDecoration::Temperature),
+                reset: None,
             }
         );
         let tint = controls
@@ -593,6 +597,7 @@ mod tests {
                 label: "Custom tint".into(),
                 style: crate::NumberStyle::Slider,
                 rail: Some(crate::RailDecoration::Tint),
+                reset: None,
             }
         );
         // Tint is a unitless scale: the panel shows the bare number beside its label.

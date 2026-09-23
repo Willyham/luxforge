@@ -316,6 +316,7 @@ fn range_controls(fields: &[&str], rail: fn(usize) -> RailDecoration) -> Vec<Con
             label: range_label(range),
             style: crate::NumberStyle::Slider,
             rail: Some(rail(range)),
+            reset: None,
         })
         .collect()
 }

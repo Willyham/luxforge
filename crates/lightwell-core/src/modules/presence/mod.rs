@@ -209,6 +209,7 @@ fn sliders() -> Vec<Control> {
             label: field_label(field).into(),
             style: crate::NumberStyle::Slider,
             rail: None,
+            reset: None,
         })
         .collect()
 }

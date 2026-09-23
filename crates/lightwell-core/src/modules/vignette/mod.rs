@@ -386,6 +386,7 @@ impl VignetteModule {
                             label: AMOUNT_LABEL.into(),
                             style: crate::NumberStyle::Slider,
                             rail: None,
+                            reset: None,
                         },
                         Control::Number {
                             action: SET_VIGNETTE.into(),
@@ -393,6 +394,7 @@ impl VignetteModule {
                             label: MIDPOINT_LABEL.into(),
                             style: crate::NumberStyle::Slider,
                             rail: None,
+                            reset: None,
                         },
                         Control::Number {
                             action: SET_VIGNETTE.into(),
@@ -400,6 +402,7 @@ impl VignetteModule {
                             label: ROUNDNESS_LABEL.into(),
                             style: crate::NumberStyle::Slider,
                             rail: None,
+                            reset: None,
                         },
                         Control::Number {
                             action: SET_VIGNETTE.into(),
@@ -407,6 +410,7 @@ impl VignetteModule {
                             label: FEATHER_LABEL.into(),
                             style: crate::NumberStyle::Slider,
                             rail: None,
+                            reset: None,
                         },
                     ],
                     collapsed: false,

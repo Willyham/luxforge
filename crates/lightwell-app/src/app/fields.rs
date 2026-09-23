@@ -554,19 +554,26 @@ fn control_preset_of(modules: &[ModuleDescriptor], action: &str) -> Map<String, 
         .unwrap_or_default()
 }
 
-/// What a double-click on a label submits: that one field at its declared default.
+/// What resetting one field runs — a double-click on its label or rail, or its field's own reset —
+/// as the action and the parameters it is sent with.
 ///
-/// It runs as one action exactly where one field is already a whole request — a patch action's
-/// field, which the module merges, or the only parameter its action declares. An action with a
-/// second parameter has no way to send one field alone, so the double-click only refills the text
-/// there, as it has always done. A non-patch action's default is the value that is sent, so a
-/// parameter that declares none cannot be reset this way either; `seed_text` would invent its
-/// minimum, and inventing a value to commit is not a reset.
-pub(crate) fn reset_field_preset(
+/// A number control that declares its own reset runs exactly that: an action of its module with
+/// fixed parameters, such as RAW's custom temperature and tint returning the development to As
+/// shot. Otherwise the field returns to its declared default, which runs as one action exactly
+/// where one field is already a whole request — a patch action's field, which the module merges,
+/// or the only parameter its action declares. An action with a second parameter has no way to send
+/// one field alone, so the reset only refills the text there, as it has always done. A non-patch
+/// action's default is the value that is sent, so a parameter that declares none cannot be reset
+/// this way either; `seed_text` would invent its minimum, and inventing a value to commit is not a
+/// reset.
+pub(crate) fn field_reset(
     modules: &[ModuleDescriptor],
     action: &str,
     parameter: &str,
-) -> Option<Map<String, Value>> {
+) -> Option<(String, Map<String, Value>)> {
+    if let Some(reset) = crate::state::tools::declared_field_reset(modules, action, parameter) {
+        return Some((reset.action.clone(), reset.preset.clone()));
+    }
     let declared = crate::state::tools::declared_action(modules, action)?;
     if !declared.patch && !crate::state::tools::drafts_alone(modules, action, parameter) {
         return None;
@@ -576,7 +583,10 @@ pub(crate) fn reset_field_preset(
         return None;
     }
     let value = parse_field(declared, &seed_text(declared)).ok()?;
-    Some([(parameter.to_owned(), value)].into_iter().collect())
+    Some((
+        action.to_owned(),
+        [(parameter.to_owned(), value)].into_iter().collect(),
+    ))
 }
 
 fn control_preset<'a>(controls: &'a [Control], action: &str) -> Option<&'a Map<String, Value>> {
@@ -1104,8 +1114,9 @@ mod tests {
             .find(|action| action.patch)
             .expect("a built-in declares a field patch");
         let parameter = patch.parameters.first().expect("a declared field");
-        let preset = reset_field_preset(&modules, &patch.id, &parameter.name)
+        let (action, preset) = field_reset(&modules, &patch.id, &parameter.name)
             .expect("a patch action resets one field as one action");
+        assert_eq!(action, patch.id);
         assert_eq!(preset.len(), 1);
         assert_eq!(
             preset[&parameter.name],
@@ -1113,7 +1124,61 @@ mod tests {
         );
         // A non-patch action cannot send one field alone, so the double-click only refills text.
         let (action, x, _) = point_pick(&modules).expect("a canvas pick");
-        assert_eq!(reset_field_preset(&modules, action, x), None);
+        assert_eq!(field_reset(&modules, action, x), None);
+    }
+
+    /// A number control that declares its own reset runs that action with its preset, and no
+    /// field default; the same field without the declaration resets to its default again.
+    #[test]
+    fn a_declared_field_reset_runs_its_own_action() {
+        let mut descriptor = crate::app::testing::controls_descriptor();
+        // The declared reset sends another field, never the Amount default.
+        let reset = lightwell_core::ResetAction {
+            action: "fixture-set".into(),
+            preset: json!({"mode": "two"}).as_object().unwrap().clone(),
+        };
+        let (action, parameter) = declare_amount_reset(&mut descriptor, Some(reset.clone()));
+        let modules = [descriptor.clone()];
+        assert_eq!(
+            field_reset(&modules, &action, &parameter),
+            Some((reset.action.clone(), reset.preset.clone()))
+        );
+        declare_amount_reset(&mut descriptor, None);
+        let modules = [descriptor];
+        let (sent, preset) = field_reset(&modules, &action, &parameter)
+            .expect("a patch field resets to its default");
+        assert_eq!(sent, action);
+        assert_eq!(preset.keys().collect::<Vec<_>>(), [&parameter]);
+    }
+
+    /// Set the controls fixture's Amount slider's declared field reset, returning its field.
+    pub(crate) fn declare_amount_reset(
+        descriptor: &mut ModuleDescriptor,
+        declared: Option<lightwell_core::ResetAction>,
+    ) -> (String, String) {
+        fn walk(
+            controls: &mut [Control],
+            declared: &Option<lightwell_core::ResetAction>,
+        ) -> Option<(String, String)> {
+            controls.iter_mut().find_map(|control| match control {
+                Control::Group { controls, .. } => walk(controls, declared),
+                Control::Number {
+                    action,
+                    parameter,
+                    reset,
+                    ..
+                } if parameter == "amount" => {
+                    *reset = declared.clone();
+                    Some((action.clone(), parameter.clone()))
+                }
+                _ => None,
+            })
+        }
+        let field = walk(&mut descriptor.controls, &declared).expect("the Amount slider");
+        descriptor
+            .validate()
+            .expect("the fixture validates with its reset");
+        field
     }
 
     /// Every group reset a module's controls declare, in order.
@@ -1152,6 +1217,7 @@ mod tests {
                 label: "X".into(),
                 style: lightwell_core::NumberStyle::Slider,
                 rail: None,
+                reset: None,
             },
             Control::Color {
                 action: "act".into(),

@@ -534,8 +534,10 @@ impl Editor {
         Task::none()
     }
 
-    /// Double-clicking a control's label or rail: reset that one field to its declared default,
-    /// as one action where that one field is a whole request, and otherwise only refill its text.
+    /// Double-clicking a control's label or rail: reset that one field. A number control that
+    /// declares its own reset runs that action, such as RAW's temperature and tint returning to As
+    /// shot; otherwise the field goes to its declared default, as one action where that one field
+    /// is a whole request, and otherwise only its text is refilled ([`fields::field_reset`]).
     ///
     /// The first click of a double-click on a rail usually moves the value a step or two, so it
     /// opens a gesture whose release commits; the second click arrives while that commit is still
@@ -552,8 +554,10 @@ impl Editor {
             return Task::none();
         };
         let default = fields::seed_text(declared);
-        let preset = fields::reset_field_preset(&self.modules, &action, &parameter);
-        if preset.is_some()
+        let declared_reset =
+            tools::declared_field_reset(&self.modules, &action, &parameter).is_some();
+        let reset = fields::field_reset(&self.modules, &action, &parameter);
+        if reset.is_some()
             && (self.slider_draft.is_some() || self.busy)
             && self.session.preview.can_edit()
             && let Some(state) = &self.state
@@ -571,10 +575,16 @@ impl Editor {
             });
             return Task::none();
         }
-        self.fields.set(&action, &parameter, default);
         self.editing = None;
-        match preset.filter(|_| self.editable()) {
-            Some(preset) => self.send_reset(action, preset),
+        if declared_reset {
+            // What the declared action leaves is known only from its answer, so until then the
+            // field shows the authoritative value again rather than a default nothing will set.
+            self.seed_values();
+        } else {
+            self.fields.set(&action, &parameter, default);
+        }
+        match reset.filter(|_| self.editable()) {
+            Some((reset, preset)) => self.send_reset((action, parameter), reset, preset),
             None => Task::none(),
         }
     }
@@ -614,12 +624,19 @@ impl Editor {
         self.reset_field(reset.action, reset.parameter)
     }
 
-    /// Send one field's reset as its own action.
-    fn send_reset(&mut self, action: String, preset: Map<String, Value>) -> Task<Message> {
+    /// Send one field's reset as its own action: `action` and `preset` are the request, `field` the
+    /// control it was asked of.
+    fn send_reset(
+        &mut self,
+        field: (String, String),
+        action: String,
+        preset: Map<String, Value>,
+    ) -> Task<Message> {
         let revision = self.state.as_ref().map(|state| state.revision);
         self.event(
             "field_reset_sent",
-            json!({"action":action,"preset":preset,"revision":revision}),
+            json!({"action":action,"preset":preset,"revision":revision,
+                "field":{"action":field.0,"parameter":field.1}}),
         );
         self.dispatch(Message::RunAction { action, preset })
     }

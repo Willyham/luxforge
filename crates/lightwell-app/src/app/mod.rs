@@ -4659,8 +4659,9 @@ mod tests {
             .and_then(|declared| declared.parameter(&parameter))
             .and_then(|declared| declared.default.clone())
             .expect("the parameter declares a default");
-        let preset = fields::reset_field_preset(&editor.modules, &action, &parameter)
+        let (sent, preset) = fields::field_reset(&editor.modules, &action, &parameter)
             .expect("a single-parameter action resets that field as one action");
+        assert_eq!(sent, action, "exposure declares no reset of its own");
         assert_eq!(
             preset,
             [(parameter.clone(), default.clone())]

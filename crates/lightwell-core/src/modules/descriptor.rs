@@ -281,6 +281,12 @@ pub enum Control {
         style: NumberStyle,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         rail: Option<RailDecoration>,
+        /// What resetting this one field runs — a double-click on its label or rail, or its
+        /// field's own reset — when that is not the field's declared default: an action of this
+        /// module with fixed parameters, validated like a group's reset. Without it the field
+        /// resets to its parameter's declared default.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reset: Option<ResetAction>,
     },
     Toggle {
         action: String,
@@ -748,8 +754,10 @@ impl ModuleDescriptor {
                 action,
                 parameter,
                 rail,
+                reset,
                 ..
             } => {
+                self.check_reset(reset.as_ref())?;
                 let declared = self.declared_action(action)?;
                 let declared = self.declared_parameter(declared, parameter)?;
                 if !matches!(
@@ -1639,6 +1647,7 @@ mod tests {
                 label: "Angle".into(),
                 style: crate::NumberStyle::Slider,
                 rail: None,
+                reset: None,
             }],
             // The shared descriptor's reset names an action this one does not declare.
             reset: None,
@@ -1740,6 +1749,54 @@ mod tests {
         }
     }
 
+    /// The test module with one number control whose field reset runs `action` with `preset`.
+    fn number_reset(action: &str, preset: Value) -> ModuleDescriptor {
+        ModuleDescriptor {
+            controls: vec![Control::Number {
+                action: "set-thing".into(),
+                parameter: "x".into(),
+                label: "X".into(),
+                style: crate::NumberStyle::Slider,
+                rail: None,
+                reset: Some(ResetAction {
+                    action: action.into(),
+                    preset: preset.as_object().unwrap().clone(),
+                }),
+            }],
+            ..descriptor()
+        }
+    }
+
+    /// A number control may declare what resetting its field runs. It is validated like a group's
+    /// reset, lists in `module.list` beside the control's other fields, and a control without one
+    /// lists no `reset` at all, so every other control keeps its shape.
+    #[test]
+    fn a_number_control_declares_its_own_field_reset() {
+        let declared = number_reset("set-thing", json!({"mode": "fast"}));
+        declared
+            .validate()
+            .expect("a reset naming this module's action");
+        let listed = serde_json::to_value(&declared).unwrap();
+        assert_eq!(
+            listed["controls"][0],
+            json!({"kind":"number","action":"set-thing","parameter":"x","label":"X",
+                "reset":{"action":"set-thing","preset":{"mode":"fast"}}})
+        );
+        assert_eq!(ModuleDescriptor::parse(&listed).unwrap(), declared);
+        let plain = serde_json::to_value(descriptor()).unwrap();
+        let number = &plain["controls"][0]["controls"][0];
+        assert_eq!(number["kind"], "number");
+        assert!(number.get("reset").is_none(), "{number}");
+        // A preset naming another module's action is refused like any undeclared action.
+        let error = number_reset("reset-raw", json!({}))
+            .validate()
+            .expect_err("another module's action");
+        assert_eq!(
+            error.detail,
+            "module test.module references undeclared action reset-raw"
+        );
+    }
+
     fn descriptor() -> ModuleDescriptor {
         ModuleDescriptor {
             id: "test.module".into(),
@@ -1766,6 +1823,7 @@ mod tests {
                         label: "X".into(),
                         style: crate::NumberStyle::Slider,
                         rail: None,
+                        reset: None,
                     },
                     Control::Action {
                         action: "set-thing".into(),
@@ -1999,6 +2057,7 @@ mod tests {
                         label: "X".into(),
                         style: crate::NumberStyle::Slider,
                         rail: None,
+                        reset: None,
                     }],
                     ..descriptor()
                 },
@@ -2012,6 +2071,7 @@ mod tests {
                         label: "X".into(),
                         style: crate::NumberStyle::Slider,
                         rail: None,
+                        reset: None,
                     }],
                     ..descriptor()
                 },
@@ -2112,6 +2172,7 @@ mod tests {
                         label: "RGB".into(),
                         style: crate::NumberStyle::Slider,
                         rail: None,
+                        reset: None,
                     }],
                     ..descriptor()
                 },
@@ -2221,6 +2282,22 @@ mod tests {
                     }],
                     ..descriptor()
                 },
+            ),
+            (
+                "number reset names an undeclared action",
+                number_reset("missing", json!({})),
+            ),
+            (
+                "number reset names an undeclared parameter",
+                number_reset("set-thing", json!({"missing": 1})),
+            ),
+            (
+                "number reset preset out of range",
+                number_reset("set-thing", json!({"x": 99})),
+            ),
+            (
+                "number reset preset of the wrong kind",
+                number_reset("set-thing", json!({"mode": 3})),
             ),
             (
                 "summary names an undeclared parameter",
@@ -3501,6 +3578,7 @@ mod tests {
                 label: "Amount".into(),
                 style: NumberStyle::Stepper,
                 rail: Some(RailDecoration::Hue),
+                reset: None,
             },
             Control::Curve {
                 action: "set-controls".into(),
@@ -3755,6 +3833,7 @@ mod tests {
                 label: "X".into(),
                 style: crate::NumberStyle::Slider,
                 rail: None,
+                reset: None,
             }],
             collapsed: false,
         };
@@ -3798,6 +3877,7 @@ mod tests {
             label: "X".into(),
             style: crate::NumberStyle::Slider,
             rail: None,
+            reset: None,
         });
         let error = non_group
             .validate()
