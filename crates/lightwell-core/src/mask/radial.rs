@@ -32,9 +32,13 @@
 //! Compiling uses the **stored position** spelling of mask space (`u = x · W/H`, `v = y`); the
 //! per-pixel path receives the pixel-centre spelling from [`super::CompiledMask`]. The two agree to
 //! `2.220e-16` and not bit for bit, so each is used only where the study froze it.
-use super::{DISTANCE_MAX, DISTANCE_MIN, POSITION_MAX, POSITION_MIN, smooth};
+use super::{
+    DISTANCE_MAX, DISTANCE_MIN, POSITION_MAX, POSITION_MIN,
+    parameters::{angle, distance, percentage, position},
+    smooth,
+};
 use crate::{
-    Component, Error, ErrorKind,
+    Component, Error, ErrorKind, ParameterDescriptor,
     modules::{Region, Stage},
 };
 use serde::{Deserialize, Serialize};
@@ -68,6 +72,51 @@ pub struct RadialGradient {
     pub radius_y: f64,
     pub angle: f64,
     pub feather: f64,
+}
+
+/// What this kind declares to the API: one parameter per stored field, each carrying the range
+/// [`parse`] enforces below — a centre is a position, the two radii are mask-space distances, the
+/// angle is one turn and the feather is a percentage of the radius.
+///
+/// This is the *only* declaration of a radial gradient's geometry, and it is the whole of what makes
+/// the kind creatable: the host's kind table reads it, the generated `mask.create-radial`,
+/// `mask.add-radial` and `mask.set-radial` methods declare exactly these parameters and no other
+/// kind's, and the stored payload's field names are their names. Nothing else has to be told the
+/// radial exists.
+///
+/// `required` is false for the patch method, where every field is optional and the ones a request
+/// names are merged over the stored payload.
+pub(super) fn parameters(required: bool) -> Vec<ParameterDescriptor> {
+    vec![
+        position("x", required, "the centre of the ellipse, across the frame"),
+        position("y", required, "the centre of the ellipse, down the frame"),
+        distance(
+            "radius_x",
+            required,
+            "the ellipse's radius along its own x axis, in mask-space units of the stage's height",
+        ),
+        distance(
+            "radius_y",
+            required,
+            "the ellipse's radius along its own y axis, in mask-space units of the stage's height",
+        ),
+        angle(
+            "angle",
+            required,
+            ANGLE_MIN,
+            ANGLE_MAX,
+            "the ellipse's rotation, clockwise as drawn because v increases down the frame",
+        ),
+        percentage(
+            "feather",
+            required,
+            FEATHER_MIN,
+            FEATHER_MAX,
+            FEATHER_MIN,
+            "where the ramp starts, as a percentage of the radius; 0 is a hard edge and 100 ramps \
+             from the centre. Inside the ellipse is selected",
+        ),
+    ]
 }
 
 /// Parse and range-check one stored `radial` payload, without a stage.

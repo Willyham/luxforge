@@ -31,7 +31,7 @@
 //! (`docs/engineering/performance-rules.md`), not an optimization — a mask that could not be
 //! answered for one pixel in bounded time would make a sampled byte unable to equal a rendered one.
 use crate::{
-    Component, ComponentMode, Error, ErrorKind, Mask,
+    Component, ComponentMode, Error, ErrorKind, Mask, ParameterDescriptor,
     modules::{Region, Stage},
 };
 
@@ -40,6 +40,7 @@ mod command_contracts;
 /// The `mask.*` host command family: what each command declares, does and labels.
 pub mod commands;
 mod linear;
+mod parameters;
 mod radial;
 
 pub use linear::{LinearGradient, POSITION_MAX, POSITION_MIN};
@@ -69,17 +70,24 @@ fn smooth(s: f64) -> f64 {
     s * s * (3.0 - 2.0 * s)
 }
 
-/// One entry of the host's component-kind table: the token a stored component carries and the
-/// parser that turns that component's payload into geometry this build can evaluate.
+/// One entry of the host's component-kind table: the token a stored component carries, the parser
+/// that turns that component's payload into geometry this build can evaluate, and the parameters
+/// that payload's fields are declared as.
 ///
-/// The table is what makes retention of an unknown kind work. A component's `kind` and `payload` are
-/// to a component what `effect_id` and `payload` are to a layer: the model stores them without
-/// reading them, so a kind no entry here claims is refused by name and its bytes are left exactly as
-/// they were read, rather than being dropped, defaulted or rewritten into something this build does
-/// understand.
+/// This is the **one** table describing a component kind. It is what makes retention of an unknown
+/// kind work — a component's `kind` and `payload` are to a component what `effect_id` and `payload`
+/// are to a layer, so a kind no entry here claims is refused by name and its bytes are left exactly
+/// as they were read — and it is equally what makes a *known* kind reachable: the `mask.*` command
+/// family generates `mask.create-<kind>`, `mask.add-<kind>` and `mask.set-<kind>` from these rows,
+/// each declaring exactly the parameters [`ComponentKind::parameters`] returns. Registering a kind
+/// is therefore sufficient to make it evaluable, creatable, addable and patchable; there is no
+/// second table to remember.
 struct ComponentKind {
     kind: &'static str,
     parse: fn(&Component) -> Result<Geometry, Error>,
+    /// The kind's declared geometry, from its own module beside its parser. `required` is false for
+    /// the patch method, where every field is optional.
+    parameters: fn(bool) -> Vec<ParameterDescriptor>,
 }
 
 /// Every component kind this build knows. A later kind — a brush, a range selection — is one more
@@ -88,10 +96,12 @@ const COMPONENT_KINDS: &[ComponentKind] = &[
     ComponentKind {
         kind: linear::KIND,
         parse: parse_linear,
+        parameters: linear::parameters,
     },
     ComponentKind {
         kind: radial::KIND,
         parse: parse_radial,
+        parameters: radial::parameters,
     },
 ];
 
@@ -107,6 +117,23 @@ fn parse_radial(component: &Component) -> Result<Geometry, Error> {
 /// negative. It reads the table rather than a second list, so the two cannot drift.
 pub fn knows_component_kind(kind: &str) -> bool {
     COMPONENT_KINDS.iter().any(|entry| entry.kind == kind)
+}
+
+/// Every component kind this build knows, in table order. The command family generates its geometry
+/// methods from exactly this list, so what a client can create is what this build can evaluate.
+pub fn component_kinds() -> impl Iterator<Item = &'static str> {
+    COMPONENT_KINDS.iter().map(|entry| entry.kind)
+}
+
+/// One kind's declared geometry parameters, or none when this build does not know the kind.
+///
+/// `required` is false for a patch method, where every field is optional and the ones a request
+/// names are merged over the stored payload.
+pub fn component_parameters(kind: &str, required: bool) -> Option<Vec<ParameterDescriptor>> {
+    COMPONENT_KINDS
+        .iter()
+        .find(|entry| entry.kind == kind)
+        .map(|entry| (entry.parameters)(required))
 }
 
 /// One component's stored geometry, validated but not yet bound to a stage. Everything checkable

@@ -326,7 +326,11 @@ fn component_of(listing: &Value, mask: &str, component: &str) -> MaskTarget {
 }
 
 fn linear(x0: f64, y0: f64, x1: f64, y1: f64) -> Value {
-    json!({"kind": "linear", "x0": x0, "y0": y0, "x1": x1, "y1": y1})
+    json!({"x0": x0, "y0": y0, "x1": x1, "y1": y1})
+}
+
+fn radial(x: f64, y: f64, radius: f64, feather: f64) -> Value {
+    json!({"x": x, "y": y, "radius_x": radius, "radius_y": radius, "angle": 0.0, "feather": feather})
 }
 
 /// Every command of the family, in one journey, driven through whichever way `driver` reaches it.
@@ -339,9 +343,9 @@ fn journey(driver: &mut dyn Driver) -> (Value, Vec<Value>, Value, Vec<Value>) {
     refusals.push(
         driver
             .run(
-                "mask.create",
+                "mask.create-linear",
                 &MaskTarget::default(),
-                json!({"kind": "linear", "mode": "subtract", "x0": 0, "y0": 0, "x1": 0, "y1": 1}),
+                json!({"mode": "subtract", "x0": 0, "y0": 0, "x1": 0, "y1": 1}),
                 "refused-mode",
             )
             .expect_err("a first component is always add"),
@@ -349,16 +353,39 @@ fn journey(driver: &mut dyn Driver) -> (Value, Vec<Value>, Value, Vec<Value>) {
     refusals.push(
         driver
             .run(
-                "mask.create",
+                "mask.create-linear",
                 &MaskTarget::default(),
                 linear(0.0, 0.0, 0.0, 3.0),
                 "refused-range",
             )
             .expect_err("a stored position is bounded"),
     );
+    // A radius is not a linear gradient's field, and a linear gradient's endpoint is not a radial's:
+    // each generated method declares exactly its own kind's parameters, so the other kind's are
+    // simply unknown to it rather than passed through a range that does not fit them.
+    refusals.push(
+        driver
+            .run(
+                "mask.create-linear",
+                &MaskTarget::default(),
+                json!({"x0": 0, "y0": 0, "x1": 0, "y1": 1, "radius_x": 0.4}),
+                "refused-foreign",
+            )
+            .expect_err("a radius is not part of a linear gradient"),
+    );
+    refusals.push(
+        driver
+            .run(
+                "mask.create-radial",
+                &MaskTarget::default(),
+                radial(0.5, 0.5, 0.0, 40.0),
+                "refused-radius",
+            )
+            .expect_err("a radius takes the study's distance range"),
+    );
     driver
         .run(
-            "mask.create",
+            "mask.create-linear",
             &MaskTarget::default(),
             linear(0.0, 0.0, 0.0, 1.0),
             "create-1",
@@ -375,10 +402,10 @@ fn journey(driver: &mut dyn Driver) -> (Value, Vec<Value>, Value, Vec<Value>) {
     );
     // A field patch over one component's geometry, and the same patch again, which changes nothing.
     driver
-        .run("mask.set-component", &first, json!({"x1": 0.5}), "patch-1")
+        .run("mask.set-linear", &first, json!({"x1": 0.5}), "patch-1")
         .expect("a geometry patch");
     let repeated = driver
-        .run("mask.set-component", &first, json!({"x1": 0.5}), "patch-2")
+        .run("mask.set-linear", &first, json!({"x1": 0.5}), "patch-2")
         .expect("a patch that changes nothing");
     assert_eq!(
         repeated["outcome"],
@@ -387,9 +414,9 @@ fn journey(driver: &mut dyn Driver) -> (Value, Vec<Value>, Value, Vec<Value>) {
     );
     driver
         .run(
-            "mask.add-component",
+            "mask.add-linear",
             &sky,
-            json!({"kind": "linear", "mode": "subtract", "x0": 0.1, "y0": 0.1, "x1": 0.9, "y1": 0.9}),
+            json!({"mode": "subtract", "x0": 0.1, "y0": 0.1, "x1": 0.9, "y1": 0.9}),
             "add-2",
         )
         .expect("a second component");
@@ -456,12 +483,53 @@ fn journey(driver: &mut dyn Driver) -> (Value, Vec<Value>, Value, Vec<Value>) {
     let listing = driver.list();
     driver
         .run(
-            "mask.add-component",
+            "mask.add-linear",
             &mask_of(&listing, "Sky"),
-            json!({"kind": "linear", "mode": "add", "x0": 0.2, "y0": 0.2, "x1": 0.8, "y1": 0.8}),
+            json!({"mode": "add", "x0": 0.2, "y0": 0.2, "x1": 0.8, "y1": 0.8}),
             "add-3",
         )
         .expect("a third component");
+    // A radial joins the same mask, intersecting, and is then patched on a radius, an angle and a
+    // feather — the three fields the delivered single geometry table could not express at all.
+    let listing = driver.list();
+    driver
+        .run(
+            "mask.add-radial",
+            &mask_of(&listing, "Sky"),
+            json!({"mode": "intersect", "x": 0.5, "y": 0.5, "radius_x": 0.3, "radius_y": 0.3,
+                   "angle": 0.0, "feather": 40.0}),
+            "add-radial",
+        )
+        .expect("a radial component of a mask that already holds two linear ones");
+    let listing = driver.list();
+    let ellipse = component_of(&listing, "Sky", "Radial 1");
+    driver
+        .run(
+            "mask.set-radial",
+            &ellipse,
+            json!({"radius_y": 0.45, "angle": -30.0}),
+            "patch-radial",
+        )
+        .expect("a radial geometry patch");
+    driver
+        .run(
+            "mask.set-component-invert",
+            &ellipse,
+            json!({"invert": true}),
+            "invert-radial",
+        )
+        .expect("a radial inversion, after the fact");
+    // One kind's patch may not reach another kind's component, and the refusal names both.
+    refusals.push(
+        driver
+            .run(
+                "mask.set-radial",
+                &component_of(&listing, "Sky", "Linear 1"),
+                json!({"radius_x": 0.2}),
+                "refused-mismatch",
+            )
+            .expect_err("a radial's patch on a linear component"),
+    );
     refusals.push(
         driver
             .run(
@@ -543,6 +611,9 @@ fn every_command_is_identical_from_an_independent_json_client_and_from_inside() 
             "Move Mask 1 to 1",
             "Sky · Delete Linear 2",
             "Sky · Add linear",
+            "Sky · Add intersect radial",
+            "Sky · Update Radial 1",
+            "Sky · Radial 1 inverted",
             "Delete Mask 1"
         ]
     );
@@ -553,9 +624,9 @@ fn every_command_is_identical_from_an_independent_json_client_and_from_inside() 
             .map(|entry| entry[0].as_str().unwrap())
             .collect::<Vec<_>>(),
         [
-            "mask.create",
-            "mask.set-component",
-            "mask.add-component",
+            "mask.create-linear",
+            "mask.set-linear",
+            "mask.add-linear",
             "mask.set-component-mode",
             "mask.set-component-invert",
             "mask.set-amount",
@@ -564,12 +635,15 @@ fn every_command_is_identical_from_an_independent_json_client_and_from_inside() 
             "mask.duplicate",
             "mask.reorder",
             "mask.delete-component",
-            "mask.add-component",
+            "mask.add-linear",
+            "mask.add-radial",
+            "mask.set-radial",
+            "mask.set-component-invert",
             "mask.delete"
         ]
     );
-    // One mask survives: the renamed original, with its amount, inversion and two components. The
-    // duplicate — which was the one holding `Mask 1` after the rename — was deleted.
+    // One mask survives: the renamed original, with its amount, inversion and three components of
+    // two kinds. The duplicate — which was the one holding `Mask 1` after the rename — was deleted.
     assert_eq!(
         json_shape,
         json!([{
@@ -584,6 +658,10 @@ fn every_command_is_identical_from_an_independent_json_client_and_from_inside() 
                 {"index": 1, "name": "Linear 3", "mode": "add", "invert": false,
                  "kind": "linear", "payload": {"x0": 0.2, "y0": 0.2, "x1": 0.8, "y1": 0.8},
                  "available": true},
+                {"index": 2, "name": "Radial 1", "mode": "intersect", "invert": true,
+                 "kind": "radial", "payload": {"x": 0.5, "y": 0.5, "radius_x": 0.3,
+                 "radius_y": 0.45, "angle": -30.0, "feather": 40.0},
+                 "available": true},
             ],
             "layers": [],
         }])
@@ -593,13 +671,19 @@ fn every_command_is_identical_from_an_independent_json_client_and_from_inside() 
         json_refusals
             .iter()
             .map(|error| error["detail"].as_str().unwrap())
-            .take(4)
+            .take(7)
             .collect::<Vec<_>>(),
         [
-            "unknown parameter mode for action mask.create",
+            "unknown parameter mode for action mask.create-linear",
             "parameter y1 must be a number within -1..=2",
+            // One kind's field is not a parameter of another kind's method at all, which is what
+            // generating a method per kind buys: a radius cannot arrive on a linear gradient, and a
+            // radius that does arrive takes the study's distance range rather than a position's.
+            "unknown parameter radius_x for action mask.create-linear",
+            "parameter radius_x must be a number within 0.0001..=64",
             "mask Mask 1 has one component; delete the mask rather than its last component",
             "mask Mask 1 begins with a intersect component; the first component of a mask is always add",
+            "component Linear 1 is a linear component; patch it with mask.set-linear",
         ]
     );
     assert!(
@@ -610,12 +694,12 @@ fn every_command_is_identical_from_an_independent_json_client_and_from_inside() 
     );
     // The unknown mask names the identity it could not find.
     assert!(
-        json_refusals[4]["detail"]
+        json_refusals[7]["detail"]
             .as_str()
             .unwrap()
             .starts_with("unknown mask mask-"),
         "{}",
-        json_refusals[4]
+        json_refusals[7]
     );
     std::fs::remove_dir_all(dir).unwrap();
 }
@@ -649,7 +733,7 @@ fn a_gradient_drag_is_one_entry_and_a_drag_that_returns_to_its_start_is_none() {
     let asset = client.asset.clone();
     client
         .run(
-            "mask.create",
+            "mask.create-linear",
             &MaskTarget::default(),
             linear(0.0, 0.0, 0.0, 1.0),
             "create",
@@ -659,7 +743,7 @@ fn a_gradient_drag_is_one_entry_and_a_drag_that_returns_to_its_start_is_none() {
     let target = component_of(&listing, "Mask 1", "Linear 1");
     let begin = json!({
         "asset_id": asset,
-        "action": "mask.set-component",
+        "action": "mask.set-linear",
         "mask": target.mask.as_ref().unwrap().as_str(),
         "component": target.component.as_ref().unwrap().as_str(),
     });
@@ -765,7 +849,7 @@ fn an_external_commit_conflicts_a_mask_draft_and_discard_or_reapply_resolves_it(
     let asset = mine.asset.clone();
     let other = mine.owner.register();
     mine.run(
-        "mask.create",
+        "mask.create-linear",
         &MaskTarget::default(),
         linear(0.0, 0.0, 0.0, 1.0),
         "create",
@@ -775,7 +859,7 @@ fn an_external_commit_conflicts_a_mask_draft_and_discard_or_reapply_resolves_it(
     let target = component_of(&listing, "Mask 1", "Linear 1");
     let begin = json!({
         "asset_id": asset,
-        "action": "mask.set-component",
+        "action": "mask.set-linear",
         "mask": target.mask.as_ref().unwrap().as_str(),
         "component": target.component.as_ref().unwrap().as_str(),
     });
@@ -870,7 +954,7 @@ fn a_retried_command_returns_its_original_result_and_a_reused_id_conflicts() {
     let asset = client.asset.clone();
     let created = client
         .run(
-            "mask.create",
+            "mask.create-linear",
             &MaskTarget::default(),
             linear(0.0, 0.0, 0.0, 1.0),
             "once",
@@ -944,7 +1028,6 @@ fn a_retried_command_returns_its_original_result_and_a_reused_id_conflicts() {
     params.insert("asset_id".into(), asset.clone());
     params.insert("mutation".into(), mutation(0, "once"));
     for (name, value) in [
-        ("kind", json!("linear")),
         ("x0", json!(0.0)),
         ("y0", json!(0.0)),
         ("x1", json!(0.0)),
@@ -953,7 +1036,7 @@ fn a_retried_command_returns_its_original_result_and_a_reused_id_conflicts() {
         params.insert(name.into(), value);
     }
     let retried = client
-        .send("mask.create", Value::Object(params))
+        .send("mask.create-linear", Value::Object(params))
         .expect("a retry of the create");
     assert_eq!(retried["mask"], created["mask"]);
     assert_eq!(retried["component"], created["component"]);
@@ -1117,6 +1200,67 @@ fn deleting_a_mask_carrying_layers_of_two_effects_says_what_it_removed() {
         2,
         "originals are sacred and so is history: the removed layers come back"
     );
+
+    // And the other half of the relation, over the restored stack: a duplicate copies the layers
+    // bound to the mask as well as its components, because a mask without its adjustments is not a
+    // useful copy. The copies are legal because `single_layer` is per target and the two masks are
+    // two targets, and the whole stack compiles on the way out — which is what `mask.list`
+    // answering at all proves.
+    client
+        .run(
+            "mask.duplicate",
+            &MaskTarget {
+                mask: Some(mask.id.clone()),
+                ..MaskTarget::default()
+            },
+            Value::Null,
+            "duplicate",
+        )
+        .expect("a duplicate of a mask that holds layers");
+    let listed = client.list();
+    let masks = listed["masks"].as_array().expect("two masks");
+    assert_eq!(masks.len(), 2);
+    for report in masks {
+        assert_eq!(
+            report["layers"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|layer| layer["title"].as_str().unwrap())
+                .collect::<Vec<_>>(),
+            ["Basic", "Presence"],
+            "each mask holds its own copy of the adjustments: {report}"
+        );
+    }
+    assert_ne!(
+        masks[0]["layers"][0]["id"], masks[1]["layers"][0]["id"],
+        "a copied layer takes a new identity"
+    );
+    // The durable processing order follows the ordering rule: the global layer first, then each
+    // effect's masked layers in the order the mask list shows.
+    let described = client
+        .send("recipe.describe", json!({"asset_id": client.asset.clone()}))
+        .expect("the recipe answers");
+    let order: Vec<Value> = described["layers"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|layer| json!([layer["effect"], layer["mask"]]))
+        .collect();
+    assert_eq!(
+        order,
+        json!([
+            [crate::BASIC_EFFECT, Value::Null],
+            [crate::BASIC_EFFECT, masks[0]["id"]],
+            [crate::BASIC_EFFECT, masks[1]["id"]],
+            [crate::PRESENCE_EFFECT, masks[0]["id"]],
+            [crate::PRESENCE_EFFECT, masks[1]["id"]],
+        ])
+        .as_array()
+        .unwrap()
+        .clone(),
+        "each copy sits after the layer it was copied from, which is the ordering rule"
+    );
     drop(client);
     std::fs::remove_dir_all(dir).unwrap();
 }
@@ -1163,11 +1307,13 @@ fn a_mask_command_and_a_module_action_can_never_collide() {
     assert_eq!(error.kind, ErrorKind::Validation);
     assert_eq!(
         error.detail,
-        "test.collide declares mask.create, which is a host mask command"
+        "test.collide declares mask.create-linear, which is a host mask command"
     );
 }
 
-/// A module whose one action names a host mask command, which is the case the registry refuses.
+/// A module whose one action names a host mask command — a *generated* one, because a generated
+/// geometry method carries the same dotted identity every other command does and is protected by the
+/// same check.
 struct Colliding;
 
 impl crate::ToolModule for Colliding {
@@ -1179,7 +1325,7 @@ impl crate::ToolModule for Colliding {
                 hint: None,
                 effects: Vec::new(),
                 actions: vec![crate::ActionDescriptor {
-                    id: "mask.create".into(),
+                    id: "mask.create-linear".into(),
                     title: "Create".into(),
                     notes: String::new(),
                     summary: None,
