@@ -937,7 +937,7 @@
     {
       "id": "TASK-012",
       "description": "Add the radial gradient component, transcribed from the frozen study with its feather and rotation, including the inside-selected default and the hard-edge case.",
-      "status": "pending",
+      "status": "completed",
       "dependencies": [
         "TASK-001",
         "TASK-004"
@@ -1012,6 +1012,8 @@
         "TASK-012"
       ],
       "extra_context": [
+        "First, a correction found on integration: the command family declares its own geometry table (GEOMETRY in the mask command module) separate from the host's component-kind table, and forces every field through a normalized-position descriptor. The radial gradient is therefore evaluable but not creatable — mask.create still advertises only linear and only x0/y0/x1/y1, and a radius, an angle and a feather do not take a position's range. Two tables describing one thing is the defect; fix it before adding anything.",
+        "The decided shape: each kind declares its own ParameterDescriptors once, in its own module beside its payload parser, and the commands generate their geometry methods per kind — mask.create-<kind>, mask.add-<kind>, mask.set-<kind> — exactly as edit.<action> and query.<id> are already generated. A kind then becomes creatable by being registered. The kind-independent commands (delete, rename, duplicate, set-amount, set-invert, reorder, set-component-mode, set-component-invert, delete-component, reorder-component, list) keep their current shape and names.",
         "This is the phase-B heart and the answer to the owner's complaint about Lightroom: a component's mode, inversion and position are properties you can change afterwards, not a consequence of which button created it.",
         "The first component of a mask is always add; adding a subtract or intersect component to an empty mask is refused with its reason rather than silently creating an empty selection.",
         "Reordering masks re-sorts the masked layers by the ordering rule in one transaction and moves nothing else.",
@@ -1057,6 +1059,8 @@
         }
       ],
       "acceptance_criteria": [
+        "There is exactly one table describing component kinds and their parameters; the command family reads it rather than declaring a second, and registering a kind is sufficient to make it creatable, addable and patchable through the API with only its own parameters in its schema.",
+        "A radial gradient can be created, added as a second component, patched, previewed and committed through the API and rendered, which is the end-to-end gap this correction closes.",
         "A component's mode and inversion can be changed after it exists, each as one command and one history entry with a readable label.",
         "Mask amount and mask inversion apply in the frozen order (amount after inversion) and are provably the frozen algebra, checked against the reference.",
         "Reorder, duplicate and delete of a mask and of a component each produce one entry; duplicate copies geometry and bound layers and gives the copy a new identity and name.",
