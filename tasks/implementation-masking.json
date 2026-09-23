@@ -1358,7 +1358,7 @@
     {
       "id": "TASK-017",
       "description": "Add the host path primitives and their storage: the points parameter kind with its decimation contract, and the content-addressed stroke store in catalog format 6, so no catalog ever holds embedded stroke points.",
-      "status": "pending",
+      "status": "completed",
       "dependencies": [
         "TASK-008"
       ],
@@ -1786,7 +1786,7 @@
     {
       "id": "TASK-022",
       "description": "Freeze the range-selection mathematics in a study: the luminance band and the Oklab colour-range metric and their refine mappings, against an independent f64 reference.",
-      "status": "pending",
+      "status": "completed",
       "dependencies": [
         "TASK-001"
       ],
@@ -1862,7 +1862,11 @@
       "extra_context": [
         "An image-dependent component costs nothing during a render because the value is in the row being processed, and costs one delivered O(layers) sample at a point query. It must not become a second rasterization path.",
         "The colour range samples colours from the photograph through the delivered pick machinery rather than inventing a second picking mode.",
-        "These components combine with gradients and brushes through the same frozen algebra, which is what makes a sky selection practical."
+        "These components combine with gradients and brushes through the same frozen algebra, which is what makes a sky selection practical.",
+        "The mathematics is frozen in docs/design/range-study.md with its f64 reference at crates/lightwell-core/tests/reference/range.rs. Transcribe it; do not re-derive it, and obey the mask study's Transcription section (bit-identical: no FMA, no reassociation, no precomputed reciprocals, no Horner-form rewrites). The frozen tolerance is on the metric, at 1e-6 + 1e-6 times the reference magnitude.",
+        "The study escalated four proposals, P12 to P15, with recommendations rather than decisions. P12 is the one that blocks implementation: CompiledMask::evaluate is declared position-only and a value-based component cannot be answered from position. The study's recommendation is evaluate(x, y, rgb), with geometric components ignoring rgb and staying bit-identical, and render.sample passing the same input pixel it already computes so a sampled byte still equals the rendered byte. Settle P12 before writing the component; P13's bounds answer (whole stage, INFINITY, proxy frame not marked approximate) follows from it.",
+        "A range selection reads the operation's input pixel, so a layer ahead of it changes what it selects: the study measures a +0.75 EV layer taking a sky from fully selected to not selected at all. That is the honest behaviour, and the user guide has to say it rather than the component hiding it.",
+        "At proxy scale, coverage of the average is not the average of coverages, measured by the study. Do not paper over this; the overlay and the user guide state that a range selection is evaluated on what the current view can see and that the 100% view is the truth."
       ],
       "context_links": [
         {
