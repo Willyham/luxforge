@@ -384,7 +384,7 @@ fn presence_journey(root: &Path, out: &Path) -> Result<Value> {
         )?;
         ensure(
             descriptor["effects"]
-                == json!([{"id": PRESENCE_EFFECT, "format": EFFECT_FORMAT, "stage": "spatial", "order": 0}]),
+                == json!([{"id": PRESENCE_EFFECT, "format": EFFECT_FORMAT, "stage": "spatial", "order": 0, "maskable": true}]),
             format!(
                 "The presence effect is described as {}",
                 descriptor["effects"]
@@ -1184,7 +1184,7 @@ fn mixer_journey(root: &Path, out: &Path) -> Result<Value> {
         )?;
         ensure(
             descriptor["effects"]
-                == json!([{"id": MIXER_EFFECT, "format": EFFECT_FORMAT, "stage": "color", "order": 10}]),
+                == json!([{"id": MIXER_EFFECT, "format": EFFECT_FORMAT, "stage": "color", "order": 10, "maskable": true}]),
             format!("The mixer effect is described as {}", descriptor["effects"]),
         )?;
         let groups = descriptor["controls"]
