@@ -231,8 +231,9 @@ pub(crate) enum MaskStep {
     /// One change to the brush the next stroke will be drawn with.
     Brush(BrushStep),
     /// Paint one stroke into the open gesture: a press, a move per position and, unless the step
-    /// says to leave it down, a release that ends it. Committing it is a separate decision, as it is
-    /// for every other gesture.
+    /// says to leave it down, a release that commits it as **one** history entry. That is the one
+    /// place a mask gesture differs from the rest: a person painting does not apply each stroke, so
+    /// the release is the commit and the brush stays in hand for the next one.
     Stroke {
         points: Vec<[f64; 2]>,
         release: bool,
@@ -1163,8 +1164,27 @@ impl Editor {
                 };
                 (MaskMessage::SetAddMode(index), Expect::Redraw)
             }
-            MaskStep::New(kind) => (MaskMessage::New(kind), Expect::Gesture),
-            MaskStep::Add(kind) => (MaskMessage::Add(kind), Expect::Gesture),
+            // A kind with handles opens a gesture; a **typed** kind — one whose geometry is entirely
+            // defaulted, as a range selection's is — is created straight away and so has a round
+            // trip rather than a draft to wait for. The step reads the host's own declarations to
+            // know which, exactly as the panel's button does, so registering a kind is still all it
+            // takes for a script to reach it.
+            MaskStep::New(kind) => {
+                let expect = if mask_kind_is_typed(&kind) {
+                    Expect::RoundTrip
+                } else {
+                    Expect::Gesture
+                };
+                (MaskMessage::New(kind), expect)
+            }
+            MaskStep::Add(kind) => {
+                let expect = if mask_kind_is_typed(&kind) {
+                    Expect::RoundTrip
+                } else {
+                    Expect::Gesture
+                };
+                (MaskMessage::Add(kind), expect)
+            }
             // Arming the brush asks for no frame of its own: a stroke with no path is not a geometry
             // the host can preview, so the gesture waits for the pointer rather than for pixels
             // nothing requested, and the step is captured on the next frame.
@@ -1220,8 +1240,8 @@ impl Editor {
                 return Task::batch(tasks);
             }
             // One whole stroke: a press, a move per position and, unless the step leaves it down,
-            // the release that ends it. Committing it is Apply's decision, exactly as it is for
-            // every other gesture.
+            // the release that commits it as one history entry. The brush stays in hand afterwards,
+            // so the next stroke needs no further `paint` and Apply has nothing left to commit.
             MaskStep::Stroke { points, release } => {
                 if self
                     .mask_draft
@@ -2829,6 +2849,14 @@ fn parse_mask_row(value: &Value) -> Result<MaskStep, String> {
         component,
         edit: edit.ok_or(SHAPE)?,
     })
+}
+
+/// Whether one component kind is **typed**: created straight away from the defaults its own geometry
+/// declares, rather than drawn as a gesture. Read from the host's declarations, which is the same
+/// question the panel's own button asks, so the two can never disagree about which route a kind takes.
+fn mask_kind_is_typed(kind: &str) -> bool {
+    !crate::mask_draft::drawable(kind)
+        && lightwell_core::mask::component_geometry_is_defaulted(kind)
 }
 
 /// One normalized content position, in the stored range the mask study froze.
