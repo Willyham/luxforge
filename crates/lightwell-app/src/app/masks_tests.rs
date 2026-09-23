@@ -6,14 +6,15 @@
 //! same messages the runtime delivers.
 use super::{
     Boot, Editor,
-    message::{MaskMessage, MaskPointer, MenuTarget, Message, RowEdit},
+    message::{MaskMessage, MaskPointer, MenuTarget, Message, PaintTarget, RowEdit},
     tasks::{self, call},
 };
 use crate::{
     Config,
     app::testing::descriptors,
-    mask_draft::{LINEAR, MaskHandle, RADIAL},
+    mask_draft::{BRUSH, LINEAR, MaskDraft, MaskHandle, RADIAL},
 };
+use iced::keyboard::{Key, Modifiers};
 use lightwell_core::{
     AssetId, ClientId, ComponentMode, MASK_MODE, MaskOverlayMode, OwnerHandle, POINTER_MODE,
     mask::commands::MaskListing,
@@ -161,6 +162,87 @@ impl Masking {
         let _ = self.editor.update(Message::Mask(message));
     }
 
+    /// One key press through the **single keymap table**, so what a test presses is what a keyboard
+    /// presses and nothing here invents a shortcut of its own.
+    fn key(&mut self, letter: &str, modifiers: Modifiers) {
+        let event = iced::Event::Keyboard(iced::keyboard::Event::KeyPressed {
+            key: Key::Character(letter.into()),
+            modified_key: Key::Character(letter.into()),
+            physical_key: iced::keyboard::key::Physical::Unidentified(
+                iced::keyboard::key::NativeCode::Unidentified,
+            ),
+            location: iced::keyboard::Location::Standard,
+            modifiers,
+            text: None,
+            repeat: false,
+        });
+        if let Some(message) = super::keymap::keymap(
+            &event,
+            iced::event::Status::Ignored,
+            &self.editor.key_context(),
+        ) {
+            let _ = self.editor.update(message);
+        }
+    }
+
+    /// The modifiers changing, through the same table. The erase modifier is a hold, so this is how
+    /// it goes down and how it comes up.
+    fn modifiers(&mut self, modifiers: Modifiers) {
+        let event = iced::Event::Keyboard(iced::keyboard::Event::ModifiersChanged(modifiers));
+        if let Some(message) = super::keymap::keymap(
+            &event,
+            iced::event::Status::Ignored,
+            &self.editor.key_context(),
+        ) {
+            let _ = self.editor.update(message);
+        }
+    }
+
+    /// Every entry's label, oldest first, without the import's own.
+    fn labels(&self) -> Vec<String> {
+        let (listed, _) = call(
+            &self.owner(),
+            self.editor.client,
+            "history.list",
+            json!({"asset_id": self.asset, "limit": 100}),
+        )
+        .expect("history.list answers");
+        let mut labels: Vec<String> = listed["entries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|entry| {
+                entry["action_id"]
+                    .as_str()
+                    .is_some_and(|action| action.starts_with("mask."))
+            })
+            .map(|entry| entry["label"].as_str().unwrap_or_default().to_owned())
+            .collect();
+        labels.reverse();
+        labels
+    }
+
+    /// One step back or forward through history, as the editor's own command does.
+    fn walk(&mut self, method: &str) {
+        let revision = self.editor.state.as_ref().unwrap().revision;
+        call(
+            &self.owner(),
+            self.editor.client,
+            method,
+            json!({"asset_id": self.asset, "mutation": tasks::mutation(revision)}),
+        )
+        .unwrap_or_else(|error| panic!("{method} was refused: {error}"));
+        self.refresh();
+    }
+
+    fn undo(&mut self) {
+        self.walk("history.undo");
+    }
+
+    fn redo(&mut self) {
+        self.walk("history.redo");
+    }
+
     /// One panel gesture that sends a `mask.*` command, with the request it built run against the
     /// owner as the runtime's task would run it. The request replayed here is the panel's own,
     /// recorded as it was sent, so this proves the panel's request and nothing reconstructed.
@@ -186,7 +268,7 @@ impl Masking {
         let target = lightwell_core::mask::commands::MaskTarget {
             mask: draft.mask.clone(),
             component: draft.component.clone(),
-            name: None,
+            ..Default::default()
         };
         let (begun, _) = call(
             &self.owner(),
@@ -216,11 +298,32 @@ impl Masking {
     }
 
     /// Answer whatever `draft.set` the gesture has outstanding, as its task does.
+    ///
+    /// It answers only what the gesture actually asked for. Once an answer makes the gesture commit
+    /// rather than set again, this stops: sending a `draft.set` the desktop never requested would
+    /// repair a commit that went out before the geometry did, which is exactly the ordering these
+    /// tests exist to hold.
     fn drain_draft_set(&mut self) {
-        for _ in 0..8 {
-            if !self.editor.mask_draft_in_flight {
+        for _ in 0..16 {
+            let committing = self.editor.mask_draft_finish;
+            if !self.answer_one_draft_set() {
                 break;
             }
+            if committing && !self.editor.mask_draft_finish {
+                break;
+            }
+        }
+    }
+
+    /// Answer the one `draft.set` that is outstanding, and say whether there was one.
+    ///
+    /// One at a time, because what the gesture does with each answer is what a commit racing a
+    /// queued position depends on.
+    fn answer_one_draft_set(&mut self) -> bool {
+        if !self.editor.mask_draft_in_flight {
+            return false;
+        }
+        {
             let (draft_id, fields) = {
                 let id = self
                     .editor
@@ -249,11 +352,34 @@ impl Masking {
                 job,
             )))));
         }
+        true
     }
 
     /// Commit the open gesture, as Apply does.
     fn apply(&mut self) {
         self.message(MaskMessage::Apply);
+        self.commit_open_draft();
+    }
+
+    /// Paint one whole stroke: a press, a move per position and the release that commits it.
+    ///
+    /// The release is what commits, because one stroke is one draft and therefore one history entry;
+    /// nothing presses Apply. The gesture re-arms itself on the component the stroke landed on, and
+    /// the caller opens that core draft when it wants to paint again.
+    fn paint(&mut self, points: &[(f64, f64)]) {
+        let (x, y) = points[0];
+        self.message(MaskMessage::Handle(MaskPointer::PaintBegin { x, y }));
+        self.drain_draft_set();
+        for &(x, y) in &points[1..] {
+            self.message(MaskMessage::Handle(MaskPointer::PaintTo { x, y }));
+            self.drain_draft_set();
+        }
+        self.message(MaskMessage::Handle(MaskPointer::PaintEnd));
+        self.commit_open_draft();
+    }
+
+    /// Answer the `draft.commit` the open gesture asked for, as its task does.
+    fn commit_open_draft(&mut self) {
         let draft_id = self
             .editor
             .mask_draft_id
@@ -1549,4 +1675,329 @@ fn identified(mut request: Value) -> Value {
         "a mutation carries its own request id"
     );
     request
+}
+
+/// The brush gesture end to end: one entry a stroke, the labels the granularity table states, the
+/// brush's own keys, the held erase modifier, and a stroke deleted as a forward edit.
+///
+/// Every step here is a message the panel or the keymap sends, so the whole gesture is reachable
+/// without a pointer, and the requests that reach the owner are the panel's own.
+#[test]
+fn painting_commits_one_entry_a_stroke_and_the_brush_keys_size_it() {
+    let mut masking = Masking::opened();
+    masking.enter_mask_mode();
+
+    // The Add row offers only the kinds that declare their geometry as numbers, because that is what
+    // generates a `mask.create-<kind>`. A brush declares none, so it is not there — and the panel
+    // does not put up a button with no command behind it.
+    assert!(
+        !masking
+            .editor
+            .workspace
+            .masks
+            .kinds
+            .iter()
+            .any(|kind| kind.kind == BRUSH),
+        "the Add row must not offer a brush: there is no mask.create-brush to run"
+    );
+
+    // The bracket keys move the brush by its command's own declared step, so a key and the panel's
+    // nudge can never disagree. `[` and `]` size it; shifted, they feather it.
+    let declared = |name: &str| {
+        lightwell_core::mask::commands::find("mask.add-stroke")
+            .and_then(|command| command.action.parameter(name))
+            .and_then(|parameter| parameter.step)
+            .expect("the command declares a step")
+    };
+    let before = masking.editor.brush;
+    masking.key("]", Modifiers::default());
+    assert_eq!(
+        masking.editor.brush.size,
+        before.size + declared("size"),
+        "] grows the brush by its declared step"
+    );
+    masking.key("[", Modifiers::default());
+    assert_eq!(masking.editor.brush.size, before.size, "[ shrinks it back");
+    masking.key("]", Modifiers::SHIFT);
+    assert_eq!(
+        masking.editor.brush.feather,
+        (before.feather + declared("feather")).min(100.0),
+        "Shift+] feathers it"
+    );
+    masking.key("[", Modifiers::SHIFT);
+    assert_eq!(masking.editor.brush.feather, before.feather);
+
+    // The first stroke on nothing: a mask, a brush component and the stroke, as one entry.
+    masking.message(MaskMessage::Paint(PaintTarget::NewMask));
+    masking.open_gesture();
+    assert_eq!(
+        masking
+            .editor
+            .mask_draft
+            .as_ref()
+            .and_then(MaskDraft::method),
+        Some("mask.add-stroke"),
+        "every stroke commits through the one command that carries a path"
+    );
+    masking.paint(&[(0.3, 0.3), (0.45, 0.4), (0.6, 0.35)]);
+    let listing = masking.listing();
+    assert_eq!(listing.masks.len(), 1, "one mask");
+    let component = &listing.masks[0].components[0];
+    assert_eq!(component.kind, BRUSH);
+    assert_eq!(component.name, "Brush 1");
+    // No coordinate is ever written into a component payload: it holds addresses and nothing else.
+    assert_eq!(
+        component
+            .payload
+            .as_object()
+            .expect("an object payload")
+            .keys()
+            .collect::<Vec<_>>(),
+        ["strokes"],
+        "a brush payload holds the reserved strokes field and nothing else"
+    );
+
+    // The gesture re-arms itself on the component that stroke landed on, so painting carries on
+    // without a second gesture — and every later stroke is one more entry on that component.
+    masking.open_gesture();
+    assert_eq!(
+        masking
+            .editor
+            .mask_draft
+            .as_ref()
+            .and_then(|draft| draft.component.clone()),
+        Some(component.id.clone()),
+        "the brush is armed on the component the last stroke landed on"
+    );
+    masking.paint(&[(0.5, 0.6), (0.65, 0.65)]);
+
+    // Option erases while it is held, and the flag is frozen for the stroke's whole life: letting
+    // the key go halfway along a path must not turn an erase into an add.
+    masking.open_gesture();
+    masking.modifiers(Modifiers::ALT);
+    assert!(masking.editor.painting_brush().erase, "Option erases");
+    masking.message(MaskMessage::Handle(MaskPointer::PaintBegin {
+        x: 0.4,
+        y: 0.45,
+    }));
+    masking.drain_draft_set();
+    masking.modifiers(Modifiers::default());
+    assert!(
+        masking
+            .editor
+            .mask_draft
+            .as_ref()
+            .and_then(MaskDraft::brush)
+            .is_some_and(|stroke| stroke.brush.erase),
+        "a stroke already down keeps the flag it started with"
+    );
+    masking.message(MaskMessage::Handle(MaskPointer::PaintTo { x: 0.5, y: 0.5 }));
+    masking.drain_draft_set();
+    masking.message(MaskMessage::Handle(MaskPointer::PaintEnd));
+    masking.commit_open_draft();
+
+    // One entry a stroke, named by the design's granularity table, with undo walking back one
+    // stroke at a time and redo returning them in order.
+    let labels = masking.labels();
+    assert_eq!(
+        labels,
+        ["Add brush", "Update Brush 1", "Update Brush 1"],
+        "one entry a stroke, named for what that stroke did"
+    );
+    let strokes = |masking: &Masking| {
+        masking.listing().masks[0].components[0].payload["strokes"]
+            .as_array()
+            .expect("a stroke list")
+            .len()
+    };
+    assert_eq!(strokes(&masking), 3);
+    masking.undo();
+    assert_eq!(strokes(&masking), 2, "undo walks back one stroke");
+    masking.undo();
+    assert_eq!(strokes(&masking), 1);
+    masking.redo();
+    masking.redo();
+    assert_eq!(strokes(&masking), 3, "redo returns them in order");
+
+    // A press that painted no position is not an edit: it commits nothing and writes no entry.
+    masking.open_gesture();
+    let before = masking.labels().len();
+    masking.message(MaskMessage::Handle(MaskPointer::PaintEnd));
+    assert_eq!(
+        masking.labels().len(),
+        before,
+        "a stroke that committed nothing produces no entry"
+    );
+
+    // Escape cancels the armed gesture with nothing committed.
+    masking.message(MaskMessage::Handle(MaskPointer::PaintBegin {
+        x: 0.2,
+        y: 0.2,
+    }));
+    masking.drain_draft_set();
+    masking.message(MaskMessage::Cancel);
+    assert!(masking.editor.mask_draft.is_none(), "Escape ends it");
+    assert_eq!(
+        masking.labels().len(),
+        before,
+        "a cancelled stroke commits nothing"
+    );
+}
+
+/// `mask.delete-stroke` is a forward edit and is presented as one: it appends an entry, removes only
+/// the stroke it names, and leaves every entry after that stroke exactly where it is.
+#[test]
+fn deleting_a_stroke_is_a_forward_edit_the_panel_names_as_its_own() {
+    let mut masking = Masking::opened();
+    masking.enter_mask_mode();
+    masking.message(MaskMessage::Paint(PaintTarget::NewMask));
+    masking.open_gesture();
+    masking.paint(&[(0.2, 0.2), (0.3, 0.3)]);
+    for path in [[(0.4, 0.4), (0.5, 0.5)], [(0.6, 0.6), (0.7, 0.7)]] {
+        masking.open_gesture();
+        masking.paint(&path);
+    }
+    let component = masking.listing().masks[0].components[0].id.clone();
+    let held: Vec<String> = masking.listing().masks[0].components[0].payload["strokes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|address| address.as_str().unwrap().to_owned())
+        .collect();
+    assert_eq!(held.len(), 3);
+
+    // The row lists its strokes while it is selected, each with a delete of its own, and the request
+    // that delete sends is the one an independent client would send.
+    masking.message(MaskMessage::SelectComponent(component.as_str().to_owned()));
+    let rows = masking.editor.workspace.masks.components[0].strokes.clone();
+    assert_eq!(
+        rows.iter()
+            .map(|row| row.stroke.clone())
+            .collect::<Vec<_>>(),
+        held,
+        "the row lists the component's own strokes, in the order they compose"
+    );
+    let edit = RowEdit::DeleteStroke {
+        component: component.as_str().to_owned(),
+        stroke: held[1].clone(),
+    };
+    let request = masking.request_for(&edit);
+    assert_eq!(request["stroke"], json!(held[1]));
+    assert_eq!(request["component"], json!(component.as_str()));
+
+    let before = masking.labels().len();
+    masking.run(MaskMessage::Row(edit));
+    masking.refresh();
+    let after: Vec<String> = masking.listing().masks[0].components[0].payload["strokes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|address| address.as_str().unwrap().to_owned())
+        .collect();
+    assert_eq!(
+        after,
+        [held[0].clone(), held[2].clone()],
+        "only the named stroke goes and the rest keep their order"
+    );
+    let labels = masking.labels();
+    assert_eq!(labels.len(), before + 1, "a delete appends an entry");
+    assert_eq!(
+        labels.last().map(String::as_str),
+        Some("Delete a stroke from Brush 1"),
+        "it is named as its own edit and not as an undo"
+    );
+    // A component's last stroke is not deletable: a component with no stroke covers nothing, so the
+    // panel says so on the row rather than offering a delete the host would refuse.
+    masking.message(MaskMessage::SelectComponent(component.as_str().to_owned()));
+    masking.run(MaskMessage::Row(RowEdit::DeleteStroke {
+        component: component.as_str().to_owned(),
+        stroke: after[0].clone(),
+    }));
+    masking.refresh();
+    masking.message(MaskMessage::SelectComponent(component.as_str().to_owned()));
+    let rows = masking.editor.workspace.masks.components[0].strokes.clone();
+    assert_eq!(rows.len(), 1);
+    assert!(
+        rows[0]
+            .delete_reason
+            .as_deref()
+            .is_some_and(|reason| reason.contains("only stroke")),
+        "the row says why the last stroke cannot go: {rows:?}"
+    );
+}
+
+/// A commit sends the **core** draft's fields, so geometry the gesture has produced but not sent yet
+/// must go out before it.
+///
+/// A hand moving faster than the round trip leaves positions queued; committing there wrote the path
+/// as it was one step ago, which on a brush is most of the stroke. A background capture found it
+/// storing a six-position stroke as one position. The ordering is pinned here rather than left to
+/// the timing that exposed it.
+#[test]
+fn a_commit_waits_for_the_geometry_the_gesture_has_not_sent_yet() {
+    let mut masking = Masking::opened();
+    masking.enter_mask_mode();
+    masking.message(MaskMessage::Paint(PaintTarget::NewMask));
+    masking.open_gesture();
+    let brush = masking.editor.brush;
+
+    // The press sends its first position and the round trip is in flight.
+    masking.message(MaskMessage::Handle(MaskPointer::PaintBegin {
+        x: 0.3,
+        y: 0.3,
+    }));
+    assert!(masking.editor.mask_draft_in_flight, "the press sent a set");
+    // Every position after it is queued behind that round trip, which is what a fast hand produces.
+    let drawn = [[0.3, 0.3], [0.4, 0.35], [0.5, 0.4], [0.6, 0.42]];
+    for [x, y] in drawn[1..].iter().copied() {
+        masking.message(MaskMessage::Handle(MaskPointer::PaintTo { x, y }));
+    }
+    assert!(masking.editor.mask_draft_pending, "positions are queued");
+
+    // The release asks to commit. It must not commit yet: the queued positions are not in the core
+    // draft, and a commit would write the path without them.
+    masking.message(MaskMessage::Handle(MaskPointer::PaintEnd));
+    assert!(
+        masking.editor.mask_draft_finish,
+        "the commit is held until the geometry is sent"
+    );
+
+    // Answering the outstanding round trip must send the **queued geometry**, not the commit. This
+    // is the whole of the ordering: a commit here writes the path as it was at the press.
+    assert!(masking.answer_one_draft_set(), "a set was outstanding");
+    assert!(
+        masking.editor.mask_draft_finish,
+        "the commit is still waiting: the queued positions go first"
+    );
+    assert!(
+        masking.editor.mask_draft_in_flight,
+        "and what went out is the geometry"
+    );
+    assert!(
+        !masking.editor.mask_draft_pending,
+        "with nothing left queued behind it"
+    );
+
+    // Only once that is answered does the commit run, and what it writes is one whole stroke.
+    assert!(masking.answer_one_draft_set(), "the geometry is answered");
+    assert!(
+        !masking.editor.mask_draft_finish,
+        "the commit has gone out now"
+    );
+    masking.commit_open_draft();
+    let held = masking.listing().masks[0].components[0].payload["strokes"]
+        .as_array()
+        .expect("a stroke list")
+        .clone();
+    assert_eq!(held.len(), 1, "one stroke");
+    // A stroke is named by the hash of its contents, so asserting the address asserts the path.
+    let expected =
+        lightwell_core::path::Stroke::capture(&drawn, brush.size, brush.feather, brush.flow, false)
+            .expect("a capturable stroke")
+            .id();
+    assert_eq!(
+        held[0].as_str(),
+        Some(expected.as_str()),
+        "the committed stroke is the whole path the pointer drew"
+    );
 }

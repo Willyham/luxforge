@@ -5,7 +5,7 @@
 //! is a button with a label, every refusal the command family makes is shown as the reason on the
 //! control it would refuse, and every number a handle can be dragged to is also a field.
 use crate::{
-    app::message::{MaskMessage, MenuTarget, Message, RowEdit},
+    app::message::{BrushEdit, MaskMessage, MenuTarget, Message, PaintTarget, RowEdit},
     state::{
         histogram::HistogramModel,
         masks::{ComponentRow, KindOption, MaskDraftModel, MaskRow, MasksModel},
@@ -69,8 +69,13 @@ pub(crate) fn masks_panel<'a>(
         }
     }
     panel = panel.push(new_mask(model));
+    panel = panel.push(brush_section(model));
     panel = panel.push(overlay_row(model));
-    if let Some(draft) = &model.draft {
+    // A painted gesture's numbers are the Brush section's, so its own block has nothing left to show
+    // unless it carries a reason the gesture cannot be applied.
+    if let Some(draft) = &model.draft
+        && !(draft.painted && draft.apply_reason.is_none())
+    {
         panel = panel.push(draft_fields(draft));
     }
     if let Some(selected) = &model.selected {
@@ -201,7 +206,10 @@ fn mask_row<'a>(mask: &'a MaskRow, menu: Option<&'a MenuTarget>) -> Element<'a, 
 fn draft_fields(draft: &MaskDraftModel) -> Element<'_, Message> {
     let mut block = column![section_label(format!("{} · {}", draft.title, draft.kind))]
         .spacing(theme::LIST_ROW_SPACING);
-    for field in &draft.fields {
+    // A painted gesture's numbers are the brush's own, and the Brush section above already offers
+    // every one of them with the same declared steps. Two identical field sets is one too many.
+    let fields: &[_] = if draft.painted { &[] } else { &draft.fields };
+    for field in fields {
         let nudge = |direction: f64| {
             let name = field.name.clone();
             let value = field.value + direction * field.step;
@@ -230,6 +238,77 @@ fn draft_fields(draft: &MaskDraftModel) -> Element<'_, Message> {
     }
     if let Some(reason) = &draft.apply_reason {
         block = block.push(caption(reason.clone()));
+    }
+    block.into()
+}
+
+/// The brush, and what it can be put down on.
+///
+/// It is its own section rather than a button in the Add row: that row is built from the kinds whose
+/// geometry is declared as numbers, and a brush's geometry is drawn, so a Brush button there would
+/// be a button with no `mask.create-brush` behind it. Every setting is a field with a label and a
+/// pair of nudges as well as a key, so nothing here is reachable only by pointer.
+///
+/// **There is no Density.** Lightroom's Density needs a build-up model along a single stroke, which
+/// would make coverage depend on the stamp spacing and therefore on the resolution; the user guide
+/// says so where a person would look for it, rather than this panel implying a control that is not
+/// there.
+fn brush_section(model: &MasksModel) -> Element<'_, Message> {
+    let brush = &model.brush;
+    let mut block = column![section_label("Brush")].spacing(theme::LIST_ROW_SPACING);
+    for field in &brush.fields {
+        let nudge = |steps: f64| {
+            Message::Mask(MaskMessage::Brush(BrushEdit::Nudge {
+                name: field.name.clone(),
+                steps,
+            }))
+        };
+        block = block.push(
+            row![
+                caption(field.label.clone()),
+                caption(field.text.clone()),
+                text_button("−", ButtonTone::Quiet, ButtonSize::Compact, {
+                    (!brush.locked).then(|| nudge(-1.0))
+                }),
+                text_button("+", ButtonTone::Quiet, ButtonSize::Compact, {
+                    (!brush.locked).then(|| nudge(1.0))
+                }),
+            ]
+            .spacing(theme::SPACING)
+            .align_y(Alignment::Center),
+        );
+    }
+    block = block.push(toggle(
+        &ToggleModel {
+            label: brush.erase_label.clone(),
+            on: brush.erase || brush.erase_held,
+            enabled: brush.enabled && !brush.locked,
+        },
+        |on| Message::Mask(MaskMessage::Brush(BrushEdit::Erase(on))),
+    ));
+    let mut actions = row![].spacing(theme::SPACING).align_y(Alignment::Center);
+    actions = actions.push(text_button(
+        "Paint new mask",
+        ButtonTone::Quiet,
+        ButtonSize::Compact,
+        (brush.enabled && model.create_reason.is_none())
+            .then(|| Message::Mask(MaskMessage::Paint(PaintTarget::NewMask))),
+    ));
+    actions = actions.push(text_button(
+        "Paint on this mask",
+        ButtonTone::Quiet,
+        ButtonSize::Compact,
+        (brush.enabled && brush.can_add && model.add_reason.is_none())
+            .then(|| Message::Mask(MaskMessage::Paint(PaintTarget::NewBrush))),
+    ));
+    block = block.push(actions);
+    if brush.armed {
+        block = block.push(caption(
+            "Paint on the photograph · each stroke is one history entry · [ ] size · Shift+[ ] feather · Option erases",
+        ));
+    }
+    if brush.erase_held {
+        block = block.push(caption("Option held: the next stroke erases"));
     }
     block.into()
 }
@@ -476,14 +555,54 @@ fn component_row<'a>(
         }
     }
     if component.can_edit_shape {
-        actions = actions.push(text_button(
-            "Edit shape",
-            ButtonTone::Quiet,
-            ButtonSize::Compact,
-            Some(Message::Mask(MaskMessage::EditShape(id.clone()))),
-        ));
+        // A painted component has no shape to reopen: what it offers is the next stroke on it,
+        // which is one more history entry and not a patch, so the button says that instead.
+        actions = actions.push(if component.painted {
+            text_button(
+                "Paint more",
+                ButtonTone::Quiet,
+                ButtonSize::Compact,
+                Some(Message::Mask(MaskMessage::Paint(PaintTarget::Component(
+                    id.clone(),
+                )))),
+            )
+        } else {
+            text_button(
+                "Edit shape",
+                ButtonTone::Quiet,
+                ButtonSize::Compact,
+                Some(Message::Mask(MaskMessage::EditShape(id.clone()))),
+            )
+        });
     }
     block = block.push(actions);
+    // The strokes this component holds, in the order they compose. Each has its own delete, and that
+    // delete is a **forward edit**: it appends an entry and removes only that stroke, leaving
+    // everything committed after it exactly where it is. Undo walks entries; this does not, and the
+    // row says so rather than leaving the two to look alike.
+    if !component.strokes.is_empty() {
+        block = block.push(caption("Strokes · Delete appends an entry; it is not undo"));
+        for stroke in &component.strokes {
+            let edit = RowEdit::DeleteStroke {
+                component: id.clone(),
+                stroke: stroke.stroke.clone(),
+            };
+            let mut line = row![caption(stroke.label.clone())]
+                .spacing(theme::SPACING)
+                .align_y(Alignment::Center);
+            line = line.push(text_button(
+                "Delete",
+                ButtonTone::Quiet,
+                ButtonSize::Compact,
+                stroke.delete_reason.is_none().then(|| run(edit.clone())),
+            ));
+            line = line.push(copy_button("Copy request", edit));
+            if let Some(reason) = &stroke.delete_reason {
+                line = line.push(caption(reason.clone()));
+            }
+            block = block.push(line);
+        }
+    }
     // The reasons the command family gives, on the row they apply to. They are shown on the open row
     // rather than on every row, so a list of components stays a list rather than a page of prose;
     // the row's own controls are beneath them either way.

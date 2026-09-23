@@ -118,11 +118,194 @@ fn apply(matrix: [f64; 6], x: f64, y: f64) -> (f64, f64) {
 /// edited through its generated number fields, which come from the same declarations.
 pub(crate) const LINEAR: &str = "linear";
 pub(crate) const RADIAL: &str = "radial";
+/// The one kind whose geometry is painted rather than dragged, from the host's own kind table.
+pub(crate) const BRUSH: &str = lightwell_core::mask::BRUSH;
 
-/// This kind has a canvas handle editor in this build. One list, read by the panel that offers the
-/// kinds and by the draft that opens one, so the two cannot disagree.
+/// This kind is edited on the canvas in this build: a gradient by its handles, a brush by painting
+/// it. One list, read by the panel that offers the gesture and by the draft that opens one, so the
+/// two cannot disagree.
 pub(crate) fn drawable(kind: &str) -> bool {
-    kind == LINEAR || kind == RADIAL
+    kind == LINEAR || kind == RADIAL || kind == BRUSH
+}
+
+/// This kind's geometry is a drawn path, so its gesture paints rather than drags handles.
+pub(crate) fn paintable(kind: &str) -> bool {
+    kind == BRUSH
+}
+
+/// The brush one stroke is drawn with: the four settings the gesture offers, in the ranges
+/// `mask.add-stroke` declares for them.
+///
+/// **There is no density.** Lightroom's Density needs a build-up model along a single stroke, which
+/// would make coverage depend on the stamp spacing and therefore on the resolution the stroke was
+/// stamped at; nothing in the frozen mathematics has a stamp in it. Flow is delivered and is exactly
+/// what the study states: the coverage one pass reaches.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct Brush {
+    /// The radius in mask-space units, one unit being the content stage's height on both axes.
+    pub(crate) size: f64,
+    pub(crate) feather: f64,
+    pub(crate) flow: f64,
+    /// This stroke removes coverage rather than adding it, for the whole of its life.
+    pub(crate) erase: bool,
+}
+
+/// What the brush starts at: a fifth of the frame's height across, softly feathered, at full flow —
+/// the brush a person reaches for to lighten a face.
+pub(crate) const NEUTRAL_BRUSH: Brush = Brush {
+    size: 0.1,
+    feather: 50.0,
+    flow: 100.0,
+    erase: false,
+};
+
+impl Brush {
+    /// The declared fields one `mask.add-stroke` carries besides its path, in the order the command
+    /// declares them. The names are the command's; this spells no field of its own.
+    pub(crate) fn values(self) -> Vec<(&'static str, f64)> {
+        vec![
+            ("size", self.size),
+            ("feather", self.feather),
+            ("flow", self.flow),
+        ]
+    }
+
+    /// Set one declared number by name, refusing a value the command's own range would refuse, so a
+    /// key, a nudge and a typed field all land on the same rule.
+    pub(crate) fn set(&mut self, name: &str, value: f64) -> bool {
+        if !value.is_finite() {
+            return false;
+        }
+        let Some(declared) = lightwell_core::mask::commands::find(ADD_STROKE)
+            .and_then(|command| command.action.parameter(name))
+        else {
+            return false;
+        };
+        let lightwell_core::ParameterKind::Number { min, max } = declared.kind else {
+            return false;
+        };
+        let value = value.clamp(min, max);
+        match name {
+            "size" => self.size = value,
+            "feather" => self.feather = value,
+            "flow" => self.flow = value,
+            _ => return false,
+        }
+        true
+    }
+
+    /// Move one declared number by `steps` of its own declared step. The brackets and the panel's
+    /// nudges are the same call, so the key and the button can never move by different amounts.
+    pub(crate) fn nudge(&mut self, name: &str, steps: f64) -> bool {
+        let Some(step) = lightwell_core::mask::commands::find(ADD_STROKE)
+            .and_then(|command| command.action.parameter(name))
+            .and_then(|declared| declared.step)
+            .filter(|step| step.is_finite() && *step > 0.0)
+        else {
+            return false;
+        };
+        let current = self
+            .values()
+            .into_iter()
+            .find(|(field, _)| *field == name)
+            .map(|(_, value)| value);
+        match current {
+            Some(value) => self.set(name, value + steps * step),
+            None => false,
+        }
+    }
+}
+
+/// The host command every stroke commits through, whichever of its three edits it turns out to be.
+const ADD_STROKE: &str = lightwell_core::mask::commands::ADD_STROKE;
+
+/// One stroke as it is being painted: the path the pointer has drawn so far, and the brush it is
+/// being drawn with.
+///
+/// The path is captured raw and **decimated only when it is posted**, on the host's own grid at the
+/// host's own tolerance, which is idempotent — so what the desktop sends and what an agent would
+/// send arrive at the same stored stroke. Nothing here calls the host: a pointer move appends a
+/// position and the canvas redraws, which is why path feedback never waits on a render.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct BrushStroke {
+    /// The brush this stroke was begun with. `erase` is frozen for the stroke's whole life, which is
+    /// what "holding the modifier erases while the stroke lasts" means.
+    pub(crate) brush: Brush,
+    /// The captured path in normalized content coordinates, in drawn order.
+    path: Vec<[f64; 2]>,
+    /// The pointer is down: moves extend the path, and a move with it up is not painting.
+    painting: bool,
+}
+
+impl BrushStroke {
+    pub(crate) fn new(brush: Brush) -> Self {
+        Self {
+            brush,
+            path: Vec::new(),
+            painting: false,
+        }
+    }
+
+    /// The pointer went down: this stroke starts here, at the brush it is holding now.
+    fn press(&mut self, point: (f64, f64)) {
+        if !finite(point) {
+            return;
+        }
+        self.path = vec![[point.0, point.1]];
+        self.painting = true;
+    }
+
+    /// The pointer moved with the button down. A position identical to the last one is dropped here
+    /// rather than posted: the stored grid would drop it anyway, and a still pointer must not grow
+    /// the path without bound.
+    fn paint(&mut self, point: (f64, f64)) -> bool {
+        if !self.painting || !finite(point) {
+            return false;
+        }
+        let point = [point.0, point.1];
+        if self.path.last() == Some(&point) {
+            return false;
+        }
+        self.path.push(point);
+        true
+    }
+
+    /// The pointer came up. The path it drew stays; committing it is a separate decision.
+    fn release(&mut self) {
+        self.painting = false;
+    }
+
+    /// The path as it was captured, for the canvas to draw while the stroke is in flight.
+    pub(crate) fn captured(&self) -> &[[f64; 2]] {
+        &self.path
+    }
+
+    pub(crate) fn painting(&self) -> bool {
+        self.painting
+    }
+
+    /// The path this stroke posts: decimated by the host's own contract, on its grid, at its
+    /// tolerance. Deterministic, so the same captured path is always the same stored stroke and
+    /// therefore the same content address.
+    pub(crate) fn points(&self) -> Vec<[f64; 2]> {
+        lightwell_core::path::decimate(&self.path).unwrap_or_default()
+    }
+
+    /// Something was drawn. An empty stroke commits nothing: a click that painted no position is not
+    /// an edit, and a commit of one would be a history entry nobody made.
+    pub(crate) fn drawn(&self) -> bool {
+        !self.path.is_empty()
+    }
+}
+
+/// The geometry one gesture edits: a registered kind's declared numbers, or a painted path.
+///
+/// There is no third state and no "either": a draft is opened for a kind this build draws, with the
+/// geometry that kind has, or it is not opened at all.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) enum MaskGeometry {
+    Shape(MaskShape),
+    Brush(BrushStroke),
 }
 
 /// The geometry one gesture edits: one registered kind's stored payload, in the shape the host
@@ -368,7 +551,8 @@ pub(crate) struct MaskDraft {
     /// The registered component kind, which is half of the generated method's name.
     pub(crate) kind: String,
     pub(crate) op: MaskDraftOp,
-    pub(crate) shape: MaskShape,
+    /// What this gesture is drawing: a gradient's numbers, or a painted path.
+    pub(crate) geometry: MaskGeometry,
     /// The content stage's `W/H`, which mask space is defined in terms of. It is `1.0` until
     /// `render.transform` answers, which is also when the handles first become drawable, so no
     /// gesture is ever evaluated against an aspect that was guessed.
@@ -407,9 +591,17 @@ pub(crate) const NEUTRAL_RADIAL: RadialGradient = RadialGradient {
 };
 
 impl MaskDraft {
-    /// Start a gesture that will create a new mask from a shape of this kind.
-    pub(crate) fn creating(kind: impl Into<String>, base_revision: u64) -> Self {
-        Self::seeded(None, None, kind, MaskDraftOp::Create, None, base_revision)
+    /// Start a gesture that will create a new mask from a shape of this kind, or from a stroke.
+    pub(crate) fn creating(kind: impl Into<String>, brush: Brush, base_revision: u64) -> Self {
+        Self::seeded(
+            None,
+            None,
+            kind,
+            MaskDraftOp::Create,
+            None,
+            brush,
+            base_revision,
+        )
     }
 
     /// Start a gesture that will add a further component to an existing mask, in that mode.
@@ -417,6 +609,7 @@ impl MaskDraft {
         mask: MaskId,
         kind: impl Into<String>,
         mode: ComponentMode,
+        brush: Brush,
         base_revision: u64,
     ) -> Self {
         Self::seeded(
@@ -425,17 +618,20 @@ impl MaskDraft {
             kind,
             MaskDraftOp::Add(mode),
             None,
+            brush,
             base_revision,
         )
     }
 
     /// Edit an existing component: the shape starts at exactly the stored payload, so reopening a
-    /// draft shows what was committed.
+    /// draft shows what was committed. A brush component has no shape to start from — its strokes
+    /// are already drawn — so this opens the next stroke on it instead.
     pub(crate) fn editing(
         mask: MaskId,
         component: ComponentId,
         kind: impl Into<String>,
-        shape: MaskShape,
+        shape: Option<MaskShape>,
+        brush: Brush,
         base_revision: u64,
     ) -> Self {
         Self::seeded(
@@ -443,7 +639,8 @@ impl MaskDraft {
             Some(component),
             kind,
             MaskDraftOp::Set,
-            Some(shape),
+            shape,
+            brush,
             base_revision,
         )
     }
@@ -454,25 +651,89 @@ impl MaskDraft {
         kind: impl Into<String>,
         op: MaskDraftOp,
         shape: Option<MaskShape>,
+        brush: Brush,
         base_revision: u64,
     ) -> Self {
         let kind = kind.into();
-        // A kind this build cannot draw has no neutral shape and therefore no handles. The draft
-        // still exists — it names the kind and it has no method, which is the refusal the panel
-        // shows — rather than being quietly turned into a linear gradient.
-        let shape = shape
-            .or_else(|| MaskShape::neutral(&kind))
-            .unwrap_or(MaskShape::Linear(NEUTRAL));
+        // A painted kind has no shape at all: what it edits is the stroke about to be drawn, at the
+        // brush the person is holding.
+        let geometry = if paintable(&kind) {
+            MaskGeometry::Brush(BrushStroke::new(brush))
+        } else {
+            // A kind this build cannot draw has no neutral shape and therefore no handles. The draft
+            // still exists — it names the kind and it has no method, which is the refusal the panel
+            // shows — rather than being quietly turned into a linear gradient.
+            let shape = shape
+                .or_else(|| MaskShape::neutral(&kind))
+                .unwrap_or(MaskShape::Linear(NEUTRAL));
+            MaskGeometry::Shape(legal(shape, shape))
+        };
         Self {
             mask,
             component,
             kind,
             op,
-            shape: legal(shape, shape),
+            geometry,
             aspect: 1.0,
             base_revision,
             conflicted: false,
             gesture: None,
+        }
+    }
+
+    /// The shape this gesture drags, when it drags one.
+    pub(crate) fn shape(&self) -> Option<MaskShape> {
+        match &self.geometry {
+            MaskGeometry::Shape(shape) => Some(*shape),
+            MaskGeometry::Brush(_) => None,
+        }
+    }
+
+    /// The stroke this gesture paints, when it paints one.
+    pub(crate) fn brush(&self) -> Option<&BrushStroke> {
+        match &self.geometry {
+            MaskGeometry::Brush(stroke) => Some(stroke),
+            MaskGeometry::Shape(_) => None,
+        }
+    }
+
+    fn brush_mut(&mut self) -> Option<&mut BrushStroke> {
+        match &mut self.geometry {
+            MaskGeometry::Brush(stroke) => Some(stroke),
+            MaskGeometry::Shape(_) => None,
+        }
+    }
+
+    /// The pointer went down on the photograph: this stroke starts here.
+    pub(crate) fn paint_begin(&mut self, point: (f64, f64)) {
+        if let Some(stroke) = self.brush_mut() {
+            stroke.press(point);
+        }
+    }
+
+    /// One pointer move with the button down. It returns whether the path grew, because a move that
+    /// added nothing must not cost a round trip.
+    pub(crate) fn paint_to(&mut self, point: (f64, f64)) -> bool {
+        self.brush_mut().is_some_and(|stroke| stroke.paint(point))
+    }
+
+    /// The pointer came up. What it drew stays; the commit is a separate decision.
+    pub(crate) fn paint_end(&mut self) {
+        if let Some(stroke) = self.brush_mut() {
+            stroke.release();
+        }
+    }
+
+    /// Change the brush this stroke is being drawn with. Refused once the stroke is down: the brush
+    /// a stroke was begun with is the brush it was drawn with, for its whole life, which is what
+    /// makes a stored stroke the record of one pass and not of a setting that moved under it.
+    pub(crate) fn set_brush(&mut self, brush: Brush) -> bool {
+        match self.brush_mut() {
+            Some(stroke) if !stroke.painting() => {
+                stroke.brush = brush;
+                true
+            }
+            _ => false,
         }
     }
 
@@ -491,7 +752,7 @@ impl MaskDraft {
 
     /// The gradient this gesture edits, when it edits one.
     pub(crate) fn linear(&self) -> Option<LinearGradient> {
-        match self.shape {
+        match self.shape()? {
             MaskShape::Linear(linear) => Some(linear),
             MaskShape::Radial(_) => None,
         }
@@ -499,25 +760,47 @@ impl MaskDraft {
 
     /// The ellipse this gesture edits, when it edits one.
     pub(crate) fn radial(&self) -> Option<RadialGradient> {
-        match self.shape {
+        match self.shape()? {
             MaskShape::Radial(radial) => Some(radial),
             MaskShape::Linear(_) => None,
         }
     }
 
-    /// The generated method this draft commits through, read from the host's own kind table so the
-    /// desktop spells no method name of its own. `None` for a kind this build does not know.
+    /// The host method this draft commits through, read from the host's own tables so the desktop
+    /// spells no method name of its own.
+    ///
+    /// A painted kind has no generated geometry method — there is no number a `mask.set-brush` could
+    /// patch — so all three of its edits go through the one command that carries a path, and which
+    /// of the three it is, is what the envelope says. `None` for a kind this build cannot draw.
     pub(crate) fn method(&self) -> Option<&'static str> {
-        lightwell_core::mask::commands::geometry(self.op.geometry_op(), &self.kind)
-            .map(|command| command.method)
+        match self.geometry {
+            MaskGeometry::Brush(_) => {
+                lightwell_core::mask::commands::find(ADD_STROKE).map(|command| command.method)
+            }
+            MaskGeometry::Shape(_) => {
+                lightwell_core::mask::commands::geometry(self.op.geometry_op(), &self.kind)
+                    .map(|command| command.method)
+            }
+        }
     }
 
-    /// The declared parameters the commit carries: the shape's own fields, and the mode when the
+    /// The declared parameters the commit carries: the geometry's own fields, and the mode when the
     /// method takes one. The identities travel in the envelope and are not parameters.
+    ///
+    /// A stroke's path is decimated here, where it is posted, rather than as it is captured: the
+    /// contract is idempotent, so the desktop's decimated path and an agent's raw one reach the same
+    /// stored stroke, and the canvas keeps drawing what the pointer actually did.
     pub(crate) fn fields(&self) -> Map<String, Value> {
         let mut fields = Map::new();
+        // A mode belongs to a component, so only the edit that makes one carries it. A stroke
+        // appended to a component that exists is refused for carrying one, which is why this is the
+        // same rule for both geometries rather than a brush-shaped exception.
         if let MaskDraftOp::Add(mode) = self.op {
             fields.insert("mode".to_owned(), json!(mode.as_str()));
+        }
+        if let MaskGeometry::Brush(stroke) = &self.geometry {
+            fields.insert("points".to_owned(), json!(stroke.points()));
+            fields.insert("erase".to_owned(), json!(stroke.brush.erase));
         }
         for (name, value) in self.values() {
             fields.insert(name.to_owned(), json!(value));
@@ -525,13 +808,17 @@ impl MaskDraft {
         fields
     }
 
-    /// The shape's declared fields in the order the kind declares them.
+    /// The gesture's declared number fields, in the order its command declares them.
     pub(crate) fn values(&self) -> Vec<(&'static str, f64)> {
-        self.shape.values()
+        match &self.geometry {
+            MaskGeometry::Shape(shape) => shape.values(),
+            MaskGeometry::Brush(stroke) => stroke.brush.values(),
+        }
     }
 
+    /// A pointer is down: a handle is being dragged, or a stroke is being painted.
     pub(crate) fn dragging(&self) -> bool {
-        self.gesture.is_some()
+        self.gesture.is_some() || self.brush().is_some_and(BrushStroke::painting)
     }
 
     /// The handle a gesture currently holds, for the status line and the canvas cursor.
@@ -542,6 +829,7 @@ impl MaskDraft {
     pub(crate) fn mark_conflicted(&mut self) {
         self.conflicted = true;
         self.gesture = None;
+        self.paint_end();
     }
 
     /// Point the draft at a new revision after something else committed. The gradient this client
@@ -550,31 +838,41 @@ impl MaskDraft {
         self.base_revision = base_revision;
         self.conflicted = false;
         self.gesture = None;
+        self.paint_end();
     }
 
     /// Which handle a press at this normalized point grabbed, or none when it grabbed nothing.
     /// `tolerance` is the hit radius in normalized units, so the canvas keeps a handle the same size
     /// on screen at every zoom by dividing its pixel radius by the drawn scale. The order is the
     /// shape's own: the handles that sit on a specific point win over the ones that move everything.
+    ///
+    /// A painted gesture has no handles at all: every press on the photograph paints, which is why a
+    /// brush draws its cursor rather than grips.
     pub(crate) fn hit(&self, point: (f64, f64), tolerance: f64) -> Option<MaskHandle> {
+        let shape = self.shape()?;
         let tolerance = tolerance.max(0.0);
-        self.shape.handles().iter().copied().find(|handle| {
-            match handle.point(&self.shape, self.aspect) {
+        shape
+            .handles()
+            .iter()
+            .copied()
+            .find(|handle| match handle.point(&shape, self.aspect) {
                 Some((x, y)) => (point.0 - x).hypot(point.1 - y) <= tolerance,
                 None => false,
-            }
-        })
+            })
     }
 
     /// Where every drawn handle of this gesture sits, in normalized content coordinates. One list,
     /// read by the canvas that draws them and by the hit test above.
     pub(crate) fn handles(&self) -> Vec<(MaskHandle, (f64, f64))> {
-        self.shape
+        let Some(shape) = self.shape() else {
+            return Vec::new();
+        };
+        shape
             .handles()
             .iter()
             .filter_map(|handle| {
                 handle
-                    .point(&self.shape, self.aspect)
+                    .point(&shape, self.aspect)
                     .map(|point| (*handle, point))
             })
             .collect()
@@ -582,12 +880,15 @@ impl MaskDraft {
 
     /// Start a gesture, snapshotting the shape every later `drag` is measured against.
     pub(crate) fn begin(&mut self, handle: MaskHandle, point: (f64, f64)) {
+        let Some(shape) = self.shape() else {
+            return;
+        };
         if !finite(point) {
             return;
         }
         self.gesture = Some(Gesture {
             handle,
-            start: self.shape,
+            start: shape,
             start_point: point,
         });
     }
@@ -607,7 +908,7 @@ impl MaskDraft {
                 MaskShape::Radial(dragged_radial(start, gesture, point, self.aspect))
             }
         };
-        self.shape = legal(moved, gesture.start);
+        self.geometry = MaskGeometry::Shape(legal(moved, gesture.start));
     }
 
     /// Draw a whole shape in one stroke.
@@ -617,10 +918,13 @@ impl MaskDraft {
     /// the press sets the centre and the drag sets both radii, upright, so one drag draws the
     /// ellipse a person meant to draw.
     pub(crate) fn sweep(&mut self, from: (f64, f64), to: (f64, f64)) {
+        let Some(held) = self.shape() else {
+            return;
+        };
         if !finite(from) || !finite(to) {
             return;
         }
-        let (shape, handle) = match self.shape {
+        let (shape, handle) = match held {
             MaskShape::Linear(_) => (
                 MaskShape::Linear(LinearGradient {
                     x0: from.0,
@@ -640,10 +944,11 @@ impl MaskDraft {
                 MaskHandle::Extent,
             ),
         };
-        self.shape = legal(shape, self.shape);
+        let shape = legal(shape, held);
+        self.geometry = MaskGeometry::Shape(shape);
         self.gesture = Some(Gesture {
             handle,
-            start: self.shape,
+            start: shape,
             start_point: to,
         });
     }
@@ -651,6 +956,7 @@ impl MaskDraft {
     /// Finish the gesture. The shape it produced stays; the commit is a separate decision.
     pub(crate) fn end(&mut self) {
         self.gesture = None;
+        self.paint_end();
     }
 
     /// Set one declared field by name, as its generated number field does. An unknown name and a
@@ -662,8 +968,19 @@ impl MaskDraft {
         if !value.is_finite() {
             return false;
         }
+        // A painted gesture's numbers are the brush's, checked against the same command's own
+        // declared ranges, and refused once the stroke is down for the same reason the modifier is.
+        let Some(held) = self.shape() else {
+            let Some(stroke) = self.brush_mut() else {
+                return false;
+            };
+            if stroke.painting() {
+                return false;
+            }
+            return stroke.brush.set(name, value);
+        };
         let within = |low: f64, high: f64| (low..=high).contains(&value);
-        let next = match self.shape {
+        let next = match held {
             MaskShape::Linear(mut linear) => {
                 if !within(POSITION_MIN, POSITION_MAX) {
                     return false;
@@ -699,7 +1016,7 @@ impl MaskDraft {
         };
         // A number field may legally produce a degenerate axis; the legality rule keeps the draft
         // committable, exactly as it does for a drag.
-        self.shape = legal(next, self.shape);
+        self.geometry = MaskGeometry::Shape(legal(next, held));
         true
     }
 
@@ -721,6 +1038,15 @@ impl MaskDraft {
                     .map(|(name, value)| (name.to_owned(), json!(value)))
                     .collect(),
             ),
+            // The stroke a painted gesture is drawing: what the pointer captured, what will be
+            // posted after decimation, and the one setting that is not a number. A frame captured
+            // mid-stroke is evidence of this, so the two counts are both here.
+            "stroke": self.brush().map(|stroke| json!({
+                "captured": stroke.captured().len(),
+                "posted": stroke.points().len(),
+                "erase": stroke.brush.erase,
+                "painting": stroke.painting(),
+            })),
         })
     }
 }
@@ -974,11 +1300,11 @@ mod tests {
     use lightwell_core::{ParameterKind, mask::commands};
 
     fn draft() -> MaskDraft {
-        MaskDraft::creating(LINEAR, 7)
+        MaskDraft::creating(LINEAR, NEUTRAL_BRUSH, 7)
     }
 
     fn radial_draft() -> MaskDraft {
-        let mut draft = MaskDraft::creating(RADIAL, 7);
+        let mut draft = MaskDraft::creating(RADIAL, NEUTRAL_BRUSH, 7);
         // A landscape frame, so a bug that confuses mask space with normalized content coordinates
         // cannot hide behind a square one.
         draft.set_aspect(1.5);
@@ -1020,11 +1346,18 @@ mod tests {
     #[test]
     fn the_method_and_fields_come_from_the_hosts_own_kind_table() {
         assert_eq!(
-            MaskDraft::creating(LINEAR, 1).method(),
+            MaskDraft::creating(LINEAR, NEUTRAL_BRUSH, 1).method(),
             Some("mask.create-linear")
         );
         assert_eq!(
-            MaskDraft::adding(MaskId::new(), LINEAR, ComponentMode::Subtract, 1).method(),
+            MaskDraft::adding(
+                MaskId::new(),
+                LINEAR,
+                ComponentMode::Subtract,
+                NEUTRAL_BRUSH,
+                1
+            )
+            .method(),
             Some("mask.add-linear")
         );
         assert_eq!(
@@ -1032,7 +1365,8 @@ mod tests {
                 MaskId::new(),
                 ComponentId::new(),
                 LINEAR,
-                MaskShape::Linear(NEUTRAL),
+                Some(MaskShape::Linear(NEUTRAL)),
+                NEUTRAL_BRUSH,
                 1
             )
             .method(),
@@ -1040,27 +1374,67 @@ mod tests {
         );
         // The radial's methods are generated by the same table, from the same three operations.
         assert_eq!(
-            MaskDraft::creating(RADIAL, 1).method(),
+            MaskDraft::creating(RADIAL, NEUTRAL_BRUSH, 1).method(),
             Some("mask.create-radial")
         );
         assert_eq!(
-            MaskDraft::adding(MaskId::new(), RADIAL, ComponentMode::Intersect, 1).method(),
+            MaskDraft::adding(
+                MaskId::new(),
+                RADIAL,
+                ComponentMode::Intersect,
+                NEUTRAL_BRUSH,
+                1
+            )
+            .method(),
             Some("mask.add-radial")
         );
-        // A kind this build cannot evaluate has no generated method, so nothing is spelled out here.
-        assert_eq!(MaskDraft::creating("brush", 1).method(), None);
+        // A kind this build cannot evaluate has no method at all, so nothing is spelled out here.
+        assert_eq!(
+            MaskDraft::creating("cloud", NEUTRAL_BRUSH, 1).method(),
+            None
+        );
+        // A painted kind has no *generated* method — there is no number a `mask.set-brush` could
+        // patch — so all three of its edits go through the one command that carries a path, and the
+        // envelope says which of the three the stroke was.
+        for op in [
+            MaskDraft::creating(BRUSH, NEUTRAL_BRUSH, 1),
+            MaskDraft::adding(
+                MaskId::new(),
+                BRUSH,
+                ComponentMode::Subtract,
+                NEUTRAL_BRUSH,
+                1,
+            ),
+            MaskDraft::editing(
+                MaskId::new(),
+                ComponentId::new(),
+                BRUSH,
+                None,
+                NEUTRAL_BRUSH,
+                1,
+            ),
+        ] {
+            assert_eq!(op.method(), Some("mask.add-stroke"));
+        }
 
         // A create carries the four geometry fields and no mode; an add carries its mode too.
-        let create = MaskDraft::creating(LINEAR, 1).fields();
+        let create = MaskDraft::creating(LINEAR, NEUTRAL_BRUSH, 1).fields();
         assert_eq!(create.len(), 4);
         assert_eq!(create["x0"], json!(NEUTRAL.x0));
         assert_eq!(create["y1"], json!(NEUTRAL.y1));
         assert!(create.get("mode").is_none(), "a create is always an add");
-        let add = MaskDraft::adding(MaskId::new(), LINEAR, ComponentMode::Intersect, 1).fields();
+        let add = MaskDraft::adding(
+            MaskId::new(),
+            LINEAR,
+            ComponentMode::Intersect,
+            NEUTRAL_BRUSH,
+            1,
+        )
+        .fields();
         assert_eq!(add["mode"], json!("intersect"));
         assert_eq!(add.len(), 5);
         // A radial carries its own six, named exactly as its kind declares them.
-        let radial = MaskDraft::creating(RADIAL, 1).fields();
+        let radial = MaskDraft::creating(RADIAL, NEUTRAL_BRUSH, 1).fields();
         assert_eq!(radial.len(), 6);
         for name in ["x", "y", "radius_x", "radius_y", "angle", "feather"] {
             assert!(radial.contains_key(name), "a radial declares {name}");
@@ -1115,7 +1489,7 @@ mod tests {
         for mut draft in [draft(), radial_draft()] {
             let kind = draft.kind.clone();
             for (handle, from) in draft.handles() {
-                let start = draft.shape;
+                let start = draft.shape().expect("a shape gesture");
                 draft.begin(handle, from);
                 for step in [(-0.3, 0.2), (0.6, -0.4), (0.0, 0.0)] {
                     draft.drag((from.0 + step.0, from.1 + step.1));
@@ -1189,7 +1563,7 @@ mod tests {
         draft.end();
         check(&draft, "swept");
         // A sweep that never moved still leaves an axis the host will accept.
-        let mut still = MaskDraft::creating(LINEAR, 7);
+        let mut still = MaskDraft::creating(LINEAR, NEUTRAL_BRUSH, 7);
         still.sweep((0.4, 0.4), (0.4, 0.4));
         check(&still, "a sweep that did not move");
     }
@@ -1324,7 +1698,7 @@ mod tests {
         check(&draft, "typed");
         // Out of range, not a number, and a field this kind does not declare: each refused, and
         // each leaves the shape untouched.
-        let before = draft.shape;
+        let before = draft.shape().expect("a shape gesture");
         for (name, value) in [
             ("x0", POSITION_MAX + 1.0),
             ("y0", POSITION_MIN - 1.0),
@@ -1336,7 +1710,11 @@ mod tests {
                 !draft.set_field(name, value),
                 "{name} = {value} was accepted"
             );
-            assert_eq!(draft.shape, before, "{name} = {value} changed the shape");
+            assert_eq!(
+                draft.shape().expect("a shape gesture"),
+                before,
+                "{name} = {value} changed the shape"
+            );
         }
 
         // A radial's six fields take their own declared ranges, which are not the position range.
@@ -1356,7 +1734,7 @@ mod tests {
         assert_eq!((now.radius_x, now.radius_y), (0.4, DISTANCE_MAX));
         assert_eq!((now.angle, now.feather), (-173.5, 0.0));
         check(&draft, "a typed ellipse");
-        let before = draft.shape;
+        let before = draft.shape().expect("a shape gesture");
         for (name, value) in [
             ("x", POSITION_MAX + 1.0),
             ("radius_x", DISTANCE_MIN / 2.0),
@@ -1370,17 +1748,21 @@ mod tests {
                 !draft.set_field(name, value),
                 "{name} = {value} was accepted"
             );
-            assert_eq!(draft.shape, before, "{name} = {value} changed the shape");
+            assert_eq!(
+                draft.shape().expect("a shape gesture"),
+                before,
+                "{name} = {value} changed the shape"
+            );
         }
     }
 
     #[test]
     fn a_gesture_without_a_press_changes_nothing_and_a_conflict_ends_the_drag() {
         let mut draft = draft();
-        let before = draft.shape;
+        let before = draft.shape().expect("a shape gesture");
         draft.drag((0.9, 0.9));
         draft.end();
-        assert_eq!(draft.shape, before);
+        assert_eq!(draft.shape().expect("a shape gesture"), before);
         assert!(!draft.dragging());
 
         let gradient = draft.linear().expect("a gradient");
@@ -1393,13 +1775,18 @@ mod tests {
         );
         draft.drag((0.9, 0.9));
         assert_eq!(
-            draft.shape, before,
+            draft.shape().expect("a shape gesture"),
+            before,
             "a conflicted draft ignores the pointer"
         );
         draft.rebase(11);
         assert_eq!(draft.base_revision, 11);
         assert!(!draft.conflicted);
-        assert_eq!(draft.shape, before, "a reapply keeps what this client drew");
+        assert_eq!(
+            draft.shape().expect("a shape gesture"),
+            before,
+            "a reapply keeps what this client drew"
+        );
     }
 
     /// The map is applied locally, so it must agree with the host both ways and for every tail the
@@ -1491,7 +1878,8 @@ mod tests {
             mask.clone(),
             component.clone(),
             LINEAR,
-            MaskShape::Linear(NEUTRAL),
+            Some(MaskShape::Linear(NEUTRAL)),
+            NEUTRAL_BRUSH,
             4,
         );
         let summary = draft.summary();
@@ -1504,7 +1892,7 @@ mod tests {
         assert_eq!(summary["conflicted"], json!(false));
         assert_eq!(summary["shape"]["y1"], json!(NEUTRAL.y1));
         // A create names no mask and no component, because it has none yet.
-        let creating = MaskDraft::creating(LINEAR, 4).summary();
+        let creating = MaskDraft::creating(LINEAR, NEUTRAL_BRUSH, 4).summary();
         assert_eq!(creating["mask"], Value::Null);
         assert_eq!(creating["op"], json!("New mask"));
         // A radial's summary carries its own six fields under the same key.
