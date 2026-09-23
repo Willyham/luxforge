@@ -6,12 +6,13 @@ use crate::{
         Editor,
         fields::number_text,
         message::{
-            CropMessage, CropPointer, MaskMessage, MenuTarget, Message, PaletteAction,
-            PresetMessage, RowEdit,
+            BrushEdit, CropMessage, CropPointer, MaskMessage, MenuTarget, Message, PaintTarget,
+            PaletteAction, PresetMessage, RowEdit,
         },
         tasks::{HostAnswer, host_task, mutation, workspace_task},
     },
     crop_draft::{Corner, Handle},
+    mask_draft::MaskDraft,
     state::{
         presets::{PresetRow, presettable_groups},
         tools::crop_frame,
@@ -222,6 +223,20 @@ pub(crate) enum MaskStep {
     New(String),
     /// Begin a gesture that adds a component of this kind to the open mask, in the chosen mode.
     Add(String),
+    /// Arm the brush: on nothing, which paints a new mask; on the open mask, which puts a further
+    /// brush on it in the chosen mode; or on one component, which appends to that brush. The Add row
+    /// offers no brush, so this is the route a script takes, exactly as the panel's own Brush
+    /// section does.
+    Paint(PaintStep),
+    /// One change to the brush the next stroke will be drawn with.
+    Brush(BrushStep),
+    /// Paint one stroke into the open gesture: a press, a move per position and, unless the step
+    /// says to leave it down, a release that ends it. Committing it is a separate decision, as it is
+    /// for every other gesture.
+    Stroke {
+        points: Vec<[f64; 2]>,
+        release: bool,
+    },
     /// A whole shape drawn in one stroke: the press at `from`, the pointer at `to`. The pointer is
     /// still down afterwards, exactly as it is mid-drag, so the release is a step of its own.
     Sweep { from: [f64; 2], to: [f64; 2] },
@@ -248,6 +263,71 @@ pub(crate) enum RowStep {
     Invert(bool),
     Move(usize),
     Delete,
+    /// Remove one of this component's strokes, named the same three ways every other object in a
+    /// script is: its content address, the label the row shows — `Stroke 1` — or its position in
+    /// the list. A forward edit: one entry appended, every entry after the stroke left where it is.
+    DeleteStroke(Reference),
+}
+
+/// What the next stroke will land on, named before the gesture rather than guessed from where the
+/// pointer went down.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum PaintStep {
+    /// A new mask whose first component is an add brush.
+    NewMask,
+    /// A further brush on the open mask, in the mode the Add row has chosen.
+    NewBrush,
+    /// Another stroke on that component of the open mask.
+    Component(Reference),
+}
+
+/// One change to the brush, each field named exactly as `mask.add-stroke` declares it. A script sets
+/// what it means to set rather than counting key presses, and the held modifier is its own field
+/// because it is a hold and not a latch.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub(crate) struct BrushStep {
+    pub(crate) size: Option<f64>,
+    pub(crate) feather: Option<f64>,
+    pub(crate) flow: Option<f64>,
+    pub(crate) erase: Option<bool>,
+    pub(crate) erase_held: Option<bool>,
+    /// Move one declared field by that many of its own declared steps, which is what a bracket key
+    /// does. Named so a script can prove the key and the panel move by the same amount.
+    pub(crate) nudge: Option<(String, f64)>,
+}
+
+impl PaintStep {
+    fn record(&self) -> Value {
+        match self {
+            Self::NewMask => json!("new-mask"),
+            Self::NewBrush => json!("new-brush"),
+            Self::Component(component) => json!({ "component": component.record() }),
+        }
+    }
+}
+
+impl BrushStep {
+    fn record(&self) -> Value {
+        let mut value = Map::new();
+        for (name, number) in [
+            ("size", self.size),
+            ("feather", self.feather),
+            ("flow", self.flow),
+        ] {
+            if let Some(number) = number {
+                value.insert(name.into(), json!(number));
+            }
+        }
+        for (name, flag) in [("erase", self.erase), ("erase_held", self.erase_held)] {
+            if let Some(flag) = flag {
+                value.insert(name.into(), json!(flag));
+            }
+        }
+        if let Some((name, steps)) = &self.nudge {
+            value.insert("nudge".into(), json!([name, steps]));
+        }
+        Value::Object(value)
+    }
 }
 
 impl MaskStep {
@@ -262,6 +342,11 @@ impl MaskStep {
             Self::Mode(mode) => json!({ "mode": mode }),
             Self::New(kind) => json!({ "new": kind }),
             Self::Add(kind) => json!({ "add": kind }),
+            Self::Paint(target) => json!({ "paint": target.record() }),
+            Self::Brush(step) => json!({ "brush": step.record() }),
+            Self::Stroke { points, release } => {
+                json!({"stroke":{"points":points,"release":release}})
+            }
             Self::Sweep { from, to } => json!({"sweep":{"from":from,"to":to}}),
             Self::Release => json!({ "release": true }),
             Self::Drag { handle, points } => json!({"drag":{"handle":handle,"points":points}}),
@@ -272,6 +357,9 @@ impl MaskStep {
                 RowStep::Invert(invert) => json!({"component":component.record(),"invert":invert}),
                 RowStep::Move(index) => json!({"component":component.record(),"index":index}),
                 RowStep::Delete => json!({"component":component.record(),"delete":true}),
+                RowStep::DeleteStroke(stroke) => {
+                    json!({"component":component.record(),"delete_stroke":stroke.record()})
+                }
             }}),
         }
     }
@@ -921,6 +1009,54 @@ impl Editor {
         Ok(first.id.as_str().to_owned())
     }
 
+    /// One stroke of a brush component, by its content address, by the label its row shows —
+    /// `Stroke 1` — or by its position in that row's own list.
+    ///
+    /// A stroke is minted by the run that painted it, so a script written before the run has only
+    /// the label or the position to write down, exactly as it has for a mask and a component. The
+    /// list is the panel's own, which is filled while the row is open, so a script that names a
+    /// stroke on a closed row is told to open it rather than being guessed at.
+    fn resolve_stroke(&self, component: &str, reference: &Reference) -> Result<String, String> {
+        if let Reference::Id(id) = reference {
+            return Ok(id.clone());
+        }
+        let row = self
+            .workspace
+            .masks
+            .components
+            .iter()
+            .find(|row| row.id.as_str() == component)
+            .ok_or_else(|| format!("no component {component} is listed"))?;
+        if row.strokes.is_empty() {
+            return Err(format!(
+                "{} lists no strokes; select the row first so its strokes are listed",
+                row.name
+            ));
+        }
+        let name = match reference {
+            Reference::Index(index) => {
+                return row
+                    .strokes
+                    .get(*index)
+                    .map(|stroke| stroke.stroke.clone())
+                    .ok_or_else(|| format!("{} holds {} strokes", row.name, row.strokes.len()));
+            }
+            Reference::Name(name) => name,
+            Reference::Id(_) => unreachable!("an identity is answered above"),
+        };
+        let mut found = row.strokes.iter().filter(|stroke| stroke.label == *name);
+        let first = found
+            .next()
+            .ok_or_else(|| format!("{} holds no stroke named {name}", row.name))?;
+        if found.next().is_some() {
+            return Err(format!(
+                "{} holds more than one stroke named {name}",
+                row.name
+            ));
+        }
+        Ok(first.stroke.clone())
+    }
+
     /// One Masks-panel view or mask-canvas gesture, through the same [`MaskMessage`] the panel's
     /// rows, buttons and the canvas raise. Geometry arrives in normalized content coordinates,
     /// which is what the canvas publishes once it has mapped the pointer through
@@ -1029,6 +1165,95 @@ impl Editor {
             }
             MaskStep::New(kind) => (MaskMessage::New(kind), Expect::Gesture),
             MaskStep::Add(kind) => (MaskMessage::Add(kind), Expect::Gesture),
+            // Arming the brush asks for no frame of its own: a stroke with no path is not a geometry
+            // the host can preview, so the gesture waits for the pointer rather than for pixels
+            // nothing requested, and the step is captured on the next frame.
+            MaskStep::Paint(target) => {
+                let target = match target {
+                    PaintStep::NewMask => PaintTarget::NewMask,
+                    PaintStep::NewBrush => PaintTarget::NewBrush,
+                    PaintStep::Component(reference) => {
+                        match self.resolve_component(None, &reference) {
+                            Ok(id) => PaintTarget::Component(id),
+                            Err(reason) => return self.fail_step(reason),
+                        }
+                    }
+                };
+                let task = self.mask_message(MaskMessage::Paint(target));
+                self.note_step(json!({"masks": self.workspace.masks.summary()}));
+                if self.mask_draft.is_none() {
+                    let reason = self.status.clone();
+                    return Task::batch([task, self.fail_step(reason)]);
+                }
+                self.capture_next_frame();
+                return task;
+            }
+            // The brush changes no pixel and asks for nothing: it is the setting the next stroke
+            // will be drawn with, and its captured frame is the panel showing that setting.
+            MaskStep::Brush(brush) => {
+                let mut tasks = Vec::new();
+                for (name, value) in [
+                    ("size", brush.size),
+                    ("feather", brush.feather),
+                    ("flow", brush.flow),
+                ] {
+                    if let Some(value) = value {
+                        tasks.push(self.mask_message(MaskMessage::Brush(BrushEdit::Set {
+                            name: name.to_owned(),
+                            value,
+                        })));
+                    }
+                }
+                if let Some((name, steps)) = brush.nudge {
+                    tasks.push(
+                        self.mask_message(MaskMessage::Brush(BrushEdit::Nudge { name, steps })),
+                    );
+                }
+                if let Some(erase) = brush.erase {
+                    tasks.push(self.mask_message(MaskMessage::Brush(BrushEdit::Erase(erase))));
+                }
+                if let Some(held) = brush.erase_held {
+                    tasks.push(self.mask_message(MaskMessage::Brush(BrushEdit::EraseHeld(held))));
+                }
+                self.note_step(json!({"masks": self.workspace.masks.summary()}));
+                self.capture_next_frame();
+                return Task::batch(tasks);
+            }
+            // One whole stroke: a press, a move per position and, unless the step leaves it down,
+            // the release that ends it. Committing it is Apply's decision, exactly as it is for
+            // every other gesture.
+            MaskStep::Stroke { points, release } => {
+                if self
+                    .mask_draft
+                    .as_ref()
+                    .and_then(MaskDraft::brush)
+                    .is_none()
+                {
+                    return self.fail_step("no painted gesture is open to paint into");
+                }
+                let Some((first, rest)) = points.split_first() else {
+                    return self.fail_step("a stroke needs at least one position");
+                };
+                let mut tasks =
+                    vec![
+                        self.mask_message(MaskMessage::Handle(MaskPointer::PaintBegin {
+                            x: first[0],
+                            y: first[1],
+                        })),
+                    ];
+                for point in rest {
+                    tasks.push(self.mask_message(MaskMessage::Handle(MaskPointer::PaintTo {
+                        x: point[0],
+                        y: point[1],
+                    })));
+                }
+                if release {
+                    tasks.push(self.mask_message(MaskMessage::Handle(MaskPointer::PaintEnd)));
+                }
+                self.await_step(self.mask_settle());
+                self.note_step(json!({"masks": self.workspace.masks.summary()}));
+                return Task::batch(tasks);
+            }
             MaskStep::Sweep { from, to } => {
                 if self.mask_draft.is_none() {
                     return self.fail_step("no mask gesture is open to sweep");
@@ -1082,6 +1307,15 @@ impl Editor {
                             index,
                         },
                         RowStep::Delete => RowEdit::DeleteComponent(id),
+                        // A stroke is resolved against the row's own list, which is the list the
+                        // panel's delete button reads too.
+                        RowStep::DeleteStroke(stroke) => match self.resolve_stroke(&id, &stroke) {
+                            Ok(stroke) => RowEdit::DeleteStroke {
+                                component: id,
+                                stroke,
+                            },
+                            Err(reason) => return self.fail_step(reason),
+                        },
                     }),
                     Expect::Request,
                 )
@@ -2382,6 +2616,9 @@ fn parse_mask(value: &Value) -> Result<MaskStep, String> {
         "mode" => Ok(MaskStep::Mode(word()?)),
         "new" => Ok(MaskStep::New(kind()?)),
         "add" => Ok(MaskStep::Add(kind()?)),
+        "paint" => parse_paint(value),
+        "brush" => parse_brush(value).map(MaskStep::Brush),
+        "stroke" => parse_stroke(value),
         "sweep" => {
             let object = value
                 .as_object()
@@ -2434,15 +2671,126 @@ fn parse_mask(value: &Value) -> Result<MaskStep, String> {
         "cancel" => requested().map(|()| MaskStep::Cancel),
         "row" => parse_mask_row(value),
         other => Err(format!(
-            "unknown mask step {other}; expected select, select_component, hover, edit_shape, mode, new, add, sweep, release, drag, apply, cancel or row"
+            "unknown mask step {other}; expected select, select_component, hover, edit_shape, mode, new, add, paint, brush, stroke, sweep, release, drag, apply, cancel or row"
         )),
     }
+}
+
+/// `{"paint": "new-mask"}`, `{"paint": "new-brush"}` or `{"paint": {"component": REF}}`: what the
+/// next stroke lands on. The Add row offers no brush, because a brush declares no geometry to type,
+/// so this is the route a script reaches one by, exactly as the panel's Brush section is.
+fn parse_paint(value: &Value) -> Result<MaskStep, String> {
+    const SHAPE: &str = "mask paint takes new-mask, new-brush or {\"component\": REF}";
+    match value {
+        Value::String(word) => match word.trim() {
+            "new-mask" => Ok(MaskStep::Paint(PaintStep::NewMask)),
+            "new-brush" => Ok(MaskStep::Paint(PaintStep::NewBrush)),
+            _ => Err(SHAPE.to_owned()),
+        },
+        Value::Object(object) => {
+            let (key, value) = sole(object)?;
+            if key != "component" {
+                return Err(format!("unknown mask paint field {key}"));
+            }
+            Reference::parse(value, "component")
+                .map(|component| MaskStep::Paint(PaintStep::Component(component)))
+        }
+        _ => Err(SHAPE.to_owned()),
+    }
+}
+
+/// `{"brush": {"size": 0.1, "feather": 50, "flow": 100, "erase": false, "erase_held": true,
+/// "nudge": ["size", -1]}}`: the brush the next stroke will be drawn with, by the field names
+/// `mask.add-stroke` declares. There is no density, and naming one says so rather than being
+/// ignored.
+fn parse_brush(value: &Value) -> Result<BrushStep, String> {
+    const SHAPE: &str =
+        "mask brush takes size, feather, flow, erase, erase_held or nudge: [FIELD, STEPS]";
+    let object = value.as_object().ok_or(SHAPE)?;
+    if object.is_empty() {
+        return Err(SHAPE.to_owned());
+    }
+    let mut step = BrushStep::default();
+    for (key, value) in object {
+        let number = || -> Result<f64, String> {
+            value
+                .as_f64()
+                .filter(|value| value.is_finite())
+                .ok_or_else(|| format!("mask brush {key} takes a number"))
+        };
+        let flag = || -> Result<bool, String> {
+            value
+                .as_bool()
+                .ok_or_else(|| format!("mask brush {key} takes a flag"))
+        };
+        match key.as_str() {
+            "size" => step.size = Some(number()?),
+            "feather" => step.feather = Some(number()?),
+            "flow" => step.flow = Some(number()?),
+            "erase" => step.erase = Some(flag()?),
+            "erase_held" => step.erase_held = Some(flag()?),
+            "nudge" => {
+                let pair = value
+                    .as_array()
+                    .ok_or("mask brush nudge takes [FIELD, STEPS]")?;
+                match (
+                    pair.first().and_then(Value::as_str),
+                    pair.get(1).and_then(Value::as_f64),
+                ) {
+                    (Some(name), Some(steps)) if pair.len() == 2 => {
+                        step.nudge = Some((name.to_owned(), steps));
+                    }
+                    _ => return Err("mask brush nudge takes [FIELD, STEPS]".to_owned()),
+                }
+            }
+            // Density is deliberately not delivered: its meaning depends on a build-up model along
+            // one stroke, which would make coverage depend on stamp spacing and so on resolution.
+            "density" => {
+                return Err(
+                    "there is no brush density: it would make coverage depend on stamp spacing \
+                     and therefore on resolution. Flow is the per-stroke amount"
+                        .to_owned(),
+                );
+            }
+            other => return Err(format!("unknown mask brush field {other}")),
+        }
+    }
+    Ok(step)
+}
+
+/// `{"stroke": {"points": [[x, y], …], "release": true}}`: one painted stroke, in normalized content
+/// coordinates, released unless the step leaves the pointer down.
+fn parse_stroke(value: &Value) -> Result<MaskStep, String> {
+    const SHAPE: &str = "mask stroke takes {\"points\": [[x, y], …]} and an optional release flag";
+    let object = value.as_object().ok_or(SHAPE)?;
+    let mut release = true;
+    let mut points: Option<Vec<[f64; 2]>> = None;
+    for (key, value) in object {
+        match key.as_str() {
+            "release" => release = value.as_bool().ok_or("mask stroke release takes a flag")?,
+            "points" => {
+                let listed = value.as_array().ok_or(SHAPE)?;
+                points = Some(
+                    listed
+                        .iter()
+                        .map(|point| content_point(Some(point), "mask stroke point"))
+                        .collect::<Result<Vec<_>, _>>()?,
+                );
+            }
+            other => return Err(format!("unknown mask stroke field {other}")),
+        }
+    }
+    let points = points
+        .filter(|path| !path.is_empty())
+        .ok_or("mask stroke needs at least one point")?;
+    Ok(MaskStep::Stroke { points, release })
 }
 
 /// `{"row": {"component": REF, "mode": "subtract" | "invert": true | "index": N | "delete": true}}`:
 /// one row control, by the row it belongs to and the one value it changes.
 fn parse_mask_row(value: &Value) -> Result<MaskStep, String> {
-    const SHAPE: &str = "mask row takes a component and one of mode, invert, index or delete";
+    const SHAPE: &str =
+        "mask row takes a component and one of mode, invert, index, delete or delete_stroke";
     let object = value.as_object().ok_or(SHAPE)?;
     let component = Reference::parse(
         object
@@ -2470,6 +2818,7 @@ fn parse_mask_row(value: &Value) -> Result<MaskStep, String> {
                 }
                 RowStep::Delete
             }
+            "delete_stroke" => RowStep::DeleteStroke(Reference::parse(value, "stroke")?),
             other => return Err(format!("unknown mask row field {other}")),
         };
         if edit.replace(chosen).is_some() {
@@ -3555,6 +3904,14 @@ mod tests {
                 {"mask":{"mode":"subtract"}},
                 {"mask":{"new":"linear"}},
                 {"mask":{"add":"radial"}},
+                {"mask":{"paint":"new-mask"}},
+                {"mask":{"paint":"new-brush"}},
+                {"mask":{"paint":{"component":{"name":"Brush 1"}}}},
+                {"mask":{"brush":{"size":0.08,"feather":50.0,"flow":100.0}}},
+                {"mask":{"brush":{"erase":true,"erase_held":false}}},
+                {"mask":{"brush":{"nudge":["size",-2.0]}}},
+                {"mask":{"stroke":{"points":[[0.3,0.3],[0.4,0.35]],"release":true}}},
+                {"mask":{"stroke":{"points":[[0.5,0.5]],"release":false}}},
                 {"mask":{"sweep":{"from":[0.5,0.2],"to":[0.5,0.8]}}},
                 {"mask":{"release":true}},
                 {"mask":{"drag":{"handle":"feather","points":[[0.4,0.4],[0.45,0.4]]}}},
@@ -3563,7 +3920,10 @@ mod tests {
                 {"mask":{"row":{"component":1,"mode":"intersect"}}},
                 {"mask":{"row":{"component":{"name":"Radial 1"},"invert":true}}},
                 {"mask":{"row":{"component":0,"index":2}}},
-                {"mask":{"row":{"component":2,"delete":true}}}]"#;
+                {"mask":{"row":{"component":2,"delete":true}}},
+                {"mask":{"row":{"component":0,"delete_stroke":1}}},
+                {"mask":{"row":{"component":{"name":"Brush 1"},"delete_stroke":{"name":"Stroke 2"}}}},
+                {"mask":{"row":{"component":0,"delete_stroke":"01JA0000000000000000000B"}}}]"#;
         let steps = parse_script(script).expect("a valid mask script");
         let written: Vec<Value> = serde_json::from_str(script).expect("the script is JSON");
         assert_eq!(steps.len(), written.len());
@@ -3583,18 +3943,78 @@ mod tests {
         );
         assert_eq!(steps[4], Step::Mask(MaskStep::SelectComponent(None)));
         assert_eq!(steps[6], Step::Mask(MaskStep::Hover(None)));
+        assert_eq!(steps[11], Step::Mask(MaskStep::Paint(PaintStep::NewMask)));
+        assert_eq!(steps[12], Step::Mask(MaskStep::Paint(PaintStep::NewBrush)));
         assert_eq!(
-            steps[11],
+            steps[13],
+            Step::Mask(MaskStep::Paint(PaintStep::Component(Reference::Name(
+                "Brush 1".into()
+            ))))
+        );
+        assert_eq!(
+            steps[14],
+            Step::Mask(MaskStep::Brush(BrushStep {
+                size: Some(0.08),
+                feather: Some(50.0),
+                flow: Some(100.0),
+                ..BrushStep::default()
+            }))
+        );
+        assert_eq!(
+            steps[16],
+            Step::Mask(MaskStep::Brush(BrushStep {
+                nudge: Some(("size".into(), -2.0)),
+                ..BrushStep::default()
+            }))
+        );
+        assert_eq!(
+            steps[17],
+            Step::Mask(MaskStep::Stroke {
+                points: vec![[0.3, 0.3], [0.4, 0.35]],
+                release: true
+            })
+        );
+        assert_eq!(
+            steps[18],
+            Step::Mask(MaskStep::Stroke {
+                points: vec![[0.5, 0.5]],
+                release: false
+            })
+        );
+        assert_eq!(
+            steps[19],
             Step::Mask(MaskStep::Sweep {
                 from: [0.5, 0.2],
                 to: [0.5, 0.8]
             })
         );
         assert_eq!(
-            steps[16],
+            steps[24],
             Step::Mask(MaskStep::Row {
                 component: Reference::Index(1),
                 edit: RowStep::Mode("intersect".into())
+            })
+        );
+        // A stroke is named the same three ways every other object in a script is.
+        assert_eq!(
+            steps[28],
+            Step::Mask(MaskStep::Row {
+                component: Reference::Index(0),
+                edit: RowStep::DeleteStroke(Reference::Index(1))
+            })
+        );
+        assert_eq!(
+            steps[29],
+            Step::Mask(MaskStep::Row {
+                component: Reference::Name("Brush 1".into()),
+                edit: RowStep::DeleteStroke(Reference::Name("Stroke 2".into()))
+            })
+        );
+        assert_eq!(
+            steps[30],
+            Step::Mask(MaskStep::Row {
+                component: Reference::Index(0),
+                edit: RowStep::DeleteStroke(Reference::Id("01JA0000000000000000000B".into()))
             })
         );
 
@@ -3628,6 +4048,40 @@ mod tests {
             (
                 r#"[{"mask":{"row":{"component":0,"mode":"add","invert":true}}}]"#,
                 "one of mode",
+            ),
+            (r#"[{"mask":{"paint":"new-shape"}}]"#, "new-mask, new-brush"),
+            (
+                r#"[{"mask":{"paint":{"kind":"brush"}}}]"#,
+                "unknown mask paint field kind",
+            ),
+            (
+                r#"[{"mask":{"paint":{"component":true}}}]"#,
+                "takes an identity",
+            ),
+            (r#"[{"mask":{"brush":{"size":"big"}}}]"#, "takes a number"),
+            (r#"[{"mask":{"brush":{"erase":1}}}]"#, "takes a flag"),
+            (
+                r#"[{"mask":{"brush":{"nudge":["size"]}}}]"#,
+                "[FIELD, STEPS]",
+            ),
+            (
+                r#"[{"mask":{"brush":{"opacity":1}}}]"#,
+                "unknown mask brush field",
+            ),
+            // Density is refused by name rather than ignored, because it is deliberately absent.
+            (r#"[{"mask":{"brush":{"density":50}}}]"#, "no brush density"),
+            (
+                r#"[{"mask":{"stroke":{"points":[]}}}]"#,
+                "at least one point",
+            ),
+            (r#"[{"mask":{"stroke":{"points":[[0.5,9.0]]}}}]"#, "-1 to 2"),
+            (
+                r#"[{"mask":{"stroke":{"points":[[0.5,0.5]],"speed":2}}}]"#,
+                "unknown mask stroke field",
+            ),
+            (
+                r#"[{"mask":{"row":{"component":0,"delete_stroke":true}}}]"#,
+                "takes an identity",
             ),
         ] {
             let error = parse_script(script).expect_err(script);

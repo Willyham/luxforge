@@ -64,6 +64,9 @@ pub(crate) struct Inputs<'a> {
     pub(crate) mask_draft: Option<&'a MaskDraft>,
     /// The mode the next Add-component gesture will use.
     pub(crate) mask_mode: ComponentMode,
+    /// The brush the next stroke will be drawn with, and whether the erase modifier is held.
+    pub(crate) brush: crate::mask_draft::Brush,
+    pub(crate) brush_erase_held: bool,
     /// The open mask's name as it is being typed in the panel's rename field.
     pub(crate) mask_name: &'a str,
     /// The mask the generated module sections are bound to, which is what a masked slider edits.
@@ -340,6 +343,8 @@ mod tests {
                 hidden_masks: &self.hidden_masks,
                 mask_draft: self.mask_draft.as_ref(),
                 mask_mode: ComponentMode::Add,
+                brush: crate::mask_draft::NEUTRAL_BRUSH,
+                brush_erase_held: false,
                 mask_name: "",
                 target: self
                     .selected_mask

@@ -96,6 +96,33 @@ pub(crate) struct ComponentRow {
     pub(crate) down_reason: Option<String>,
     /// This row can be edited on the canvas: its kind has a handle editor in this build.
     pub(crate) can_edit_shape: bool,
+    /// This component's geometry is painted, so the canvas gesture for it is another stroke rather
+    /// than a handle drag, and the row says so.
+    pub(crate) painted: bool,
+    /// The strokes this component holds, in the order they compose, shown while the row is selected
+    /// so every stroke is a thing a person can see and remove. Empty for a component that holds
+    /// none, which is every component whose geometry is declared as numbers.
+    pub(crate) strokes: Vec<StrokeRow>,
+}
+
+/// One stroke of a brush component, as the panel lists it.
+///
+/// A stroke is an object and not an event: it has a content address, a place in the order its
+/// component composes in, and a delete of its own. **That delete is a forward edit** — it appends an
+/// entry and removes only that stroke, leaving everything committed after it exactly where it is —
+/// which is a different thing from undo, and the row says so rather than leaving the two to look
+/// alike.
+#[allow(dead_code)]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct StrokeRow {
+    /// The content address, which is what the delete addresses it by.
+    pub(crate) stroke: String,
+    pub(crate) index: usize,
+    /// What the row reads: `Stroke 1`, and its position in the fold.
+    pub(crate) label: String,
+    /// Why this stroke cannot be removed, when it cannot: a component with no stroke covers nothing,
+    /// so its last stroke goes by removing the component.
+    pub(crate) delete_reason: Option<String>,
 }
 
 impl ComponentRow {
@@ -154,6 +181,9 @@ pub(crate) struct MaskDraftModel {
     pub(crate) conflicted: bool,
     pub(crate) can_apply: bool,
     pub(crate) apply_reason: Option<String>,
+    /// This gesture is painted, so its numbers are the brush's own and the Brush section already
+    /// offers them. The panel shows one set of fields rather than two identical ones.
+    pub(crate) painted: bool,
 }
 
 /// What the canvas draws of the selected mask, as the panel's overlay control reads it.
@@ -193,6 +223,11 @@ pub(crate) struct MasksModel {
     pub(crate) disabled_reason: Option<String>,
     pub(crate) enabled: bool,
     pub(crate) draft: Option<MaskDraftModel>,
+    /// The brush the next stroke will be drawn with, and what it can be put down on. It is its own
+    /// section rather than a button in the Add row: the Add row offers the kinds that declare their
+    /// geometry as numbers, and a brush declares none, so a Brush button there would be a button
+    /// with no command behind it.
+    pub(crate) brush: BrushModel,
     pub(crate) overlay: OverlayModel,
     /// Why a new mask cannot be created, when the recipe is full.
     pub(crate) create_reason: Option<String>,
@@ -220,6 +255,16 @@ impl Default for MasksModel {
             disabled_reason: None,
             enabled: false,
             draft: None,
+            brush: BrushModel {
+                fields: Vec::new(),
+                erase: false,
+                erase_label: String::new(),
+                erase_held: false,
+                locked: false,
+                armed: false,
+                can_add: false,
+                enabled: false,
+            },
             overlay: OverlayModel {
                 modes: Vec::new(),
                 selected: 0,
@@ -267,7 +312,22 @@ impl MasksModel {
                 "mode_reason": row.mode_reason,
                 "up_reason": row.up_reason,
                 "down_reason": row.down_reason,
+                "painted": row.painted,
+                "strokes": row.strokes.iter().map(|stroke| serde_json::json!({
+                    "stroke": stroke.stroke,
+                    "index": stroke.index,
+                    "delete_reason": stroke.delete_reason,
+                })).collect::<Vec<_>>(),
             })).collect::<Vec<_>>(),
+            "brush": serde_json::json!({
+                "fields": self.brush.fields.iter()
+                    .map(|field| (field.name.clone(), serde_json::json!(field.value)))
+                    .collect::<serde_json::Map<_, _>>(),
+                "erase": self.brush.erase,
+                "erase_held": self.brush.erase_held,
+                "armed": self.brush.armed,
+                "locked": self.brush.locked,
+            }),
             "kinds": self.kinds.iter().map(|kind| kind.kind.clone()).collect::<Vec<_>>(),
             "add_mode": self.modes.get(self.add_mode),
             "overlay": self.overlay.modes.get(self.overlay.selected),
@@ -401,6 +461,7 @@ pub(crate) fn derive(inputs: &Inputs<'_>) -> MasksModel {
         disabled_reason,
         enabled,
         draft: draft_model(inputs, enabled),
+        brush: brush_model(inputs, enabled, open),
         name: inputs.mask_name.to_owned(),
         overlay: overlay_model(inputs),
     }
@@ -556,10 +617,108 @@ fn component_rows(report: &MaskReport, inputs: &Inputs<'_>, enabled: bool) -> Ve
                 can_edit_shape: enabled
                     && component.available
                     && crate::mask_draft::drawable(&component.kind),
+                painted: crate::mask_draft::paintable(&component.kind),
+                strokes: if selected {
+                    stroke_rows(&component.payload, &component.name, enabled)
+                } else {
+                    Vec::new()
+                },
             }
         })
         .collect()
 }
+
+/// The strokes one component's stored payload references, read through the host's own reserved
+/// field so the panel parses no payload of its own. A payload that carries none — every gradient's —
+/// gives no rows, and a malformed one gives none rather than a guess.
+fn stroke_rows(payload: &serde_json::Value, component: &str, enabled: bool) -> Vec<StrokeRow> {
+    let held = lightwell_core::path::references(payload, component).unwrap_or_default();
+    let only = held.len() == 1;
+    held.iter()
+        .enumerate()
+        .map(|(index, stroke)| StrokeRow {
+            stroke: stroke.as_str().to_owned(),
+            index,
+            label: format!("Stroke {}", index + 1),
+            delete_reason: if !enabled {
+                Some("Waiting for the last request".into())
+            } else {
+                only.then(|| {
+                    format!("this is {component}'s only stroke; delete the component instead")
+                })
+            },
+        })
+        .collect()
+}
+
+/// The brush the next stroke will be drawn with, as the panel offers it.
+///
+/// Every field is generated from `mask.add-stroke`'s own declarations — its name, its range, its
+/// step and its precision — so the panel names no setting of its own and a key and a nudge move by
+/// the same declared amount. **There is no density**: its Lightroom meaning needs a build-up model
+/// along one stroke, which would make coverage depend on stamp spacing and therefore on resolution,
+/// so it is left out and the [user guide](../../../docs/user-guide.md) says why rather than the
+/// panel implying it exists.
+#[allow(dead_code)]
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct BrushModel {
+    pub(crate) fields: Vec<DraftField>,
+    pub(crate) erase: bool,
+    pub(crate) erase_label: String,
+    /// The erase modifier is held down, so the next stroke erases whatever the toggle says.
+    pub(crate) erase_held: bool,
+    /// A stroke is on the photograph, so the brush is frozen for the rest of its life.
+    pub(crate) locked: bool,
+    /// A painted gesture is open and waiting for the pointer.
+    pub(crate) armed: bool,
+    /// Painting on the open mask is possible: one is open.
+    pub(crate) can_add: bool,
+    pub(crate) enabled: bool,
+}
+
+/// The brush settings and what they can be put down on.
+fn brush_model(inputs: &Inputs<'_>, enabled: bool, open: Option<&MaskReport>) -> BrushModel {
+    let brush = inputs.brush;
+    let painting = inputs
+        .mask_draft
+        .and_then(MaskDraft::brush)
+        .is_some_and(|stroke| stroke.painting());
+    let declared = lightwell_core::mask::commands::find(ADD_STROKE);
+    let fields = brush
+        .values()
+        .into_iter()
+        .map(|(name, value)| {
+            let parameter = declared.and_then(|command| command.action.parameter(name));
+            DraftField {
+                label: lightwell_core::mask::kind_title(name),
+                text: parameter
+                    .map(|declared| crate::app::fields::format_number(declared, value))
+                    .unwrap_or_else(|| format!("{value:.4}")),
+                step: parameter
+                    .and_then(|declared| declared.step)
+                    .filter(|step| step.is_finite() && *step > 0.0)
+                    .unwrap_or(0.01),
+                name: name.to_owned(),
+                value,
+            }
+        })
+        .collect();
+    BrushModel {
+        fields,
+        erase: brush.erase,
+        erase_label: lightwell_core::mask::kind_title("erase"),
+        erase_held: inputs.brush_erase_held,
+        locked: painting,
+        armed: inputs
+            .mask_draft
+            .is_some_and(|draft| draft.brush().is_some()),
+        can_add: open.is_some(),
+        enabled,
+    }
+}
+
+/// The one host command every stroke commits through.
+const ADD_STROKE: &str = lightwell_core::mask::commands::ADD_STROKE;
 
 /// The mode tokens the host's own `mask.set-component-mode` declares, in declared order. The panel
 /// offers exactly these and invents none: a mode a control shows is a mode the command accepts.
@@ -637,11 +796,16 @@ fn draft_model(inputs: &Inputs<'_>, enabled: bool) -> Option<MaskDraftModel> {
         None
     };
     // The fields the open gesture offers, from the same declarations its commit is validated
-    // against: the panel names no field and no step of its own.
-    let patch = lightwell_core::mask::commands::geometry(
-        lightwell_core::mask::commands::GeometryOp::Set,
-        &draft.kind,
-    );
+    // against: the panel names no field and no step of its own. A painted gesture's fields are its
+    // command's, because a brush has no patch method to read them from.
+    let patch = if draft.brush().is_some() {
+        lightwell_core::mask::commands::find(ADD_STROKE)
+    } else {
+        lightwell_core::mask::commands::geometry(
+            lightwell_core::mask::commands::GeometryOp::Set,
+            &draft.kind,
+        )
+    };
     let fields = draft
         .values()
         .into_iter()
@@ -654,8 +818,8 @@ fn draft_model(inputs: &Inputs<'_>, enabled: bool) -> Option<MaskDraftModel> {
                     patch.map(|command| command.method).unwrap_or_default(),
                     name,
                 )
-                .unwrap_or(name)
-                .to_owned(),
+                .map(str::to_owned)
+                .unwrap_or_else(|| lightwell_core::mask::kind_title(name)),
                 text: declared
                     .map(|declared| crate::app::fields::format_number(declared, value))
                     .unwrap_or_else(|| format!("{value:.4}")),
@@ -680,5 +844,6 @@ fn draft_model(inputs: &Inputs<'_>, enabled: bool) -> Option<MaskDraftModel> {
         conflicted: draft.conflicted,
         can_apply: apply_reason.is_none(),
         apply_reason,
+        painted: draft.brush().is_some(),
     })
 }

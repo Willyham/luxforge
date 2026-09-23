@@ -165,6 +165,39 @@ pub(crate) enum MaskPointer {
         y: f64,
     },
     End,
+    /// A press on the photograph while a painted gesture is open: this stroke starts here, at the
+    /// brush being held, with its erase flag frozen for the stroke's whole life.
+    PaintBegin {
+        x: f64,
+        y: f64,
+    },
+    /// One pointer move with the button down. The path is extended and drawn immediately; the
+    /// drafted picture follows one frame behind it, exactly as a slider's does.
+    PaintTo {
+        x: f64,
+        y: f64,
+    },
+    /// The pointer came up. What it drew stays; the commit is a separate decision.
+    PaintEnd,
+}
+
+/// One change to the brush the next stroke will be drawn with.
+///
+/// It is per-client gesture state and sends nothing on its own: the brush reaches the host as the
+/// settings of the stroke it drew, on that stroke's own request. Every one of these is reachable
+/// from the panel as well as from a key, so nothing here is reachable only by pointer.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) enum BrushEdit {
+    /// Move one declared number by that many of its own declared steps: the bracket keys and the
+    /// panel's nudges, which are the same call and therefore always move by the same amount.
+    Nudge { name: String, steps: f64 },
+    /// Set one declared number outright, as a typed field does.
+    Set { name: String, value: f64 },
+    /// The Erase toggle in the panel, which latches until it is turned off again.
+    Erase(bool),
+    /// The erase modifier went down or came up. It erases while it is held, and a stroke already
+    /// down keeps the flag it started with.
+    EraseHeld(bool),
 }
 
 /// Every Masks-panel change is one message, so a script drives the whole panel through the update
@@ -194,6 +227,13 @@ pub(crate) enum MaskMessage {
     EditShape(String),
     /// One pointer step of the open gesture.
     Handle(MaskPointer),
+    /// Open a painted gesture: a new mask, a further brush on the open mask in the chosen mode, or
+    /// another stroke on the component that is selected. The Add row does not offer a brush — it is
+    /// built from the kinds that declare their geometry as numbers, and a brush declares none — so
+    /// this is the route a brush is reached by.
+    Paint(PaintTarget),
+    /// One change to the brush the next stroke will be drawn with.
+    Brush(BrushEdit),
     /// One declared geometry field of the open gesture, typed rather than dragged.
     Field {
         name: String,
@@ -214,6 +254,18 @@ pub(crate) enum MaskMessage {
     /// component's own contribution while a row is under the pointer, which is what makes a subtract
     /// on top of a gradient legible, and the composed mask again when the pointer leaves.
     Hover(Option<String>),
+}
+
+/// What the next stroke will land on, chosen before the gesture starts rather than guessed from
+/// where the pointer went down.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum PaintTarget {
+    /// A new mask whose first component is an add brush.
+    NewMask,
+    /// A further brush on the open mask, in the mode the Add row has chosen.
+    NewBrush,
+    /// Another stroke on that brush component, which is one more history entry named for it.
+    Component(String),
 }
 
 /// One list edit a Masks-panel row offers: the objects it addresses and the one value it changes.
@@ -241,6 +293,9 @@ pub(crate) enum RowEdit {
     ComponentMode { component: String, mode: String },
     /// `mask.set-component-invert`.
     ComponentInvert { component: String, invert: bool },
+    /// `mask.delete-stroke`: a forward edit that removes one stroke from a brush component and
+    /// appends one entry. It is not an undo, and the panel names it as its own thing.
+    DeleteStroke { component: String, stroke: String },
 }
 
 /// One pointer step of a crop gesture, already mapped to box pixels by the canvas.

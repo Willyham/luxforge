@@ -49,6 +49,15 @@ pub use brush::{BrushStrokes, SEGMENTS_PER_PIXEL, STROKES_PER_COMPONENT};
 pub use linear::{LinearGradient, POSITION_MAX, POSITION_MIN};
 pub use radial::{ANGLE_MAX, ANGLE_MIN, FEATHER_MAX, FEATHER_MIN, RadialGradient};
 
+/// The component kind a stroke reaches: the one kind whose geometry is a drawn path rather than
+/// declared numbers.
+///
+/// `mask.add-stroke` creates a component of this kind and appends to one, and refuses a component of
+/// any other kind by name — it cannot be read from [`component_geometry_is_drawn`] alone, which says
+/// *whether* a kind is drawn and not *which* kind a drawn path belongs to. It is the kind table's
+/// own token, so the command family still spells no kind of its own.
+pub const BRUSH: &str = brush::KIND;
+
 /// The smallest legal stored distance, in mask-space units, where one unit is the content stage's
 /// height. Every falloff divides by a stored distance, so this floor is what replaces a runtime
 /// guard against a vanishing divisor: it bounds every such division by `1e4`. It is below one pixel

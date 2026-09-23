@@ -500,7 +500,7 @@ impl Fixture {
         MaskTarget {
             mask: Some(mask.clone()),
             component: Some(component.id.clone()),
-            name: None,
+            ..MaskTarget::default()
         }
     }
 }

@@ -164,6 +164,9 @@ impl Driver for Json {
         if let Some(name) = &target.name {
             params.insert("name".into(), json!(name));
         }
+        if let Some(stroke) = &target.stroke {
+            params.insert("stroke".into(), json!(stroke.as_str()));
+        }
         self.send(method, Value::Object(params))
     }
 
@@ -299,7 +302,7 @@ fn mask_of(listing: &Value, name: &str) -> MaskTarget {
     MaskTarget {
         mask: Some(MaskId::parse(mask["id"].as_str().unwrap()).unwrap()),
         component: None,
-        name: None,
+        ..MaskTarget::default()
     }
 }
 
@@ -321,7 +324,7 @@ fn component_of(listing: &Value, mask: &str, component: &str) -> MaskTarget {
     MaskTarget {
         mask: Some(MaskId::parse(found["id"].as_str().unwrap()).unwrap()),
         component: Some(ComponentId::parse(id).unwrap()),
-        name: None,
+        ..MaskTarget::default()
     }
 }
 
@@ -1395,4 +1398,269 @@ impl crate::ToolModule for Colliding {
     ) -> Result<crate::Processing, Error> {
         unreachable!("registration is refused before anything is compiled")
     }
+}
+
+/// One painted stroke as a request: the path and the brush it was drawn with.
+fn stroke(points: Value, size: f64, feather: f64, flow: f64, erase: bool) -> Value {
+    json!({"points": points, "size": size, "feather": feather, "flow": flow, "erase": erase})
+}
+
+/// The strokes one component holds, in stored order, by content address.
+fn strokes_of(listing: &Value, mask: &str, component: &str) -> Vec<String> {
+    listing["masks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|candidate| candidate["name"] == json!(mask))
+        .unwrap_or_else(|| panic!("no mask named {mask} in {listing}"))["components"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|candidate| candidate["name"] == json!(component))
+        .unwrap_or_else(|| panic!("no component named {component}"))["payload"]["strokes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|address| address.as_str().unwrap().to_owned())
+        .collect()
+}
+
+/// One stroke's content address as a target's `stroke` field.
+fn at(target: &MaskTarget, address: &str) -> MaskTarget {
+    MaskTarget {
+        stroke: Some(crate::path::StrokeId::parse(address.to_owned()).unwrap()),
+        ..target.clone()
+    }
+}
+
+/// The whole brush journey, run once per driver: the first stroke draws a mask, later strokes update
+/// the component it made, a second brush joins the same mask in the mode it was given, and one
+/// stroke is deleted from the middle.
+fn painted(driver: &mut dyn Driver) -> (Value, Vec<Value>, Vec<Value>) {
+    let mut refusals = Vec::new();
+    // The first stroke on nothing: a mask, a brush component and the stroke, as one entry.
+    driver
+        .run(
+            commands::ADD_STROKE,
+            &MaskTarget::default(),
+            stroke(
+                json!([[0.2, 0.2], [0.4, 0.4], [0.6, 0.4]]),
+                0.1,
+                50.0,
+                100.0,
+                false,
+            ),
+            "paint-1",
+        )
+        .expect("the first stroke draws a mask");
+    let listing = driver.list();
+    let brush = component_of(&listing, "Mask 1", "Brush 1");
+    // Every later stroke on that component is one entry of its own, which is what makes undo walk
+    // back one stroke at a time.
+    for (index, path) in [json!([[0.3, 0.7], [0.5, 0.7]]), json!([[0.7, 0.2]])]
+        .into_iter()
+        .enumerate()
+    {
+        driver
+            .run(
+                commands::ADD_STROKE,
+                &brush,
+                stroke(path, 0.05, 20.0, 60.0, false),
+                &format!("paint-more-{index}"),
+            )
+            .expect("a further stroke");
+    }
+    // A second brush on the same mask, in the mode the gesture chose before it started.
+    let mask = mask_of(&driver.list(), "Mask 1");
+    let mut subtract = stroke(json!([[0.5, 0.5], [0.55, 0.55]]), 0.08, 0.0, 100.0, false);
+    subtract
+        .as_object_mut()
+        .unwrap()
+        .insert("mode".into(), json!("subtract"));
+    driver
+        .run(commands::ADD_STROKE, &mask, subtract, "paint-subtract")
+        .expect("a subtract brush");
+    // An erase stroke inside the first brush: a property of the stroke, not of the component.
+    driver
+        .run(
+            commands::ADD_STROKE,
+            &brush,
+            stroke(json!([[0.35, 0.35], [0.45, 0.4]]), 0.04, 30.0, 100.0, true),
+            "paint-erase",
+        )
+        .expect("an erase stroke");
+    let held = strokes_of(&driver.list(), "Mask 1", "Brush 1");
+    // A forward edit: one entry appended, the named stroke gone, every other stroke where it was.
+    driver
+        .run(
+            commands::DELETE_STROKE,
+            &at(&brush, &held[1]),
+            Value::Null,
+            "unpaint",
+        )
+        .expect("a stroke is deleted");
+    let after = strokes_of(&driver.list(), "Mask 1", "Brush 1");
+    assert_eq!(
+        after,
+        [held[0].clone(), held[2].clone(), held[3].clone()],
+        "only the named stroke goes and the rest keep their order"
+    );
+
+    // A stroke appended to a component that exists takes no mode: a component's mode is changed by
+    // the command that changes one, and an ignored field is never an answer.
+    let mut moded = stroke(json!([[0.1, 0.1]]), 0.05, 10.0, 50.0, false);
+    moded
+        .as_object_mut()
+        .unwrap()
+        .insert("mode".into(), json!("intersect"));
+    refusals.push(
+        driver
+            .run(commands::ADD_STROKE, &brush, moded, "refuse-mode")
+            .expect_err("a mode on an appended stroke"),
+    );
+    // A gradient is not painted on: its geometry is declared, and the refusal names the method that
+    // does edit it.
+    driver
+        .run(
+            "mask.create-linear",
+            &MaskTarget::default(),
+            linear(0.0, 0.0, 0.0, 1.0),
+            "a-gradient",
+        )
+        .expect("a gradient mask");
+    let gradient = component_of(&driver.list(), "Mask 2", "Linear 1");
+    refusals.push(
+        driver
+            .run(
+                commands::ADD_STROKE,
+                &gradient,
+                stroke(json!([[0.5, 0.5]]), 0.05, 10.0, 50.0, false),
+                "refuse-kind",
+            )
+            .expect_err("a stroke on a gradient"),
+    );
+    // A stroke the component does not hold, and the last stroke of a component, are both named
+    // refusals rather than something approximate.
+    refusals.push(
+        driver
+            .run(
+                commands::DELETE_STROKE,
+                &at(&brush, &"0".repeat(32)),
+                Value::Null,
+                "refuse-absent",
+            )
+            .expect_err("a stroke that is not there"),
+    );
+    let two = component_of(&driver.list(), "Mask 1", "Brush 2");
+    let only = strokes_of(&driver.list(), "Mask 1", "Brush 2");
+    refusals.push(
+        driver
+            .run(
+                commands::DELETE_STROKE,
+                &at(&two, &only[0]),
+                Value::Null,
+                "refuse-last",
+            )
+            .expect_err("a component's only stroke"),
+    );
+    (shape(&driver.list()), driver.labels(), refusals)
+}
+
+/// The brush's two commands, end to end and identically from both clients: the design's history
+/// granularity, the strokes-by-address payload, the forward delete and every refusal it states.
+#[test]
+fn painting_is_one_entry_a_stroke_and_a_delete_is_a_forward_edit() {
+    let dir = temp("brush");
+    let source = dir.join("orientation-1.jpg");
+    std::fs::copy(fixture(), &source).unwrap();
+    let (json_shape, json_labels, json_refusals) = {
+        let mut driver = Json::open(&dir.join("json.sqlite"), &source);
+        painted(&mut driver)
+    };
+    let (direct_shape, direct_labels, direct_refusals) = {
+        let mut driver = Direct::open(&dir.join("direct.sqlite"), &source);
+        painted(&mut driver)
+    };
+    assert_eq!(json_shape, direct_shape, "the same stack either way");
+    assert_eq!(json_labels, direct_labels, "the same history either way");
+    assert_eq!(
+        anonymous(&json_refusals),
+        anonymous(&direct_refusals),
+        "the same refusals either way"
+    );
+
+    // The design's granularity table, in the order the journey painted it. A mask's name prefixes a
+    // label once the stack holds more than one, which is the delivered rule and not the brush's.
+    let painted_entries: Vec<Value> = json_labels
+        .iter()
+        .filter(|entry| entry[0].as_str().unwrap().starts_with("mask."))
+        .map(|entry| entry[1].clone())
+        .collect();
+    assert_eq!(
+        painted_entries,
+        [
+            json!("Add brush"),
+            json!("Update Brush 1"),
+            json!("Update Brush 1"),
+            json!("Add subtract brush"),
+            json!("Update Brush 1"),
+            json!("Delete a stroke from Brush 1"),
+            // The delivered label rule, not the brush's: once the stack holds a second mask, every
+            // row names the mask it belongs to.
+            json!("Mask 2 · Add linear"),
+        ],
+        "one entry a stroke, named for what that stroke did"
+    );
+    // No coordinate is ever written into a component payload: a payload holds addresses and nothing
+    // else, which is what keeps one entry a stroke from copying every earlier stroke.
+    let payload = &json_shape[0]["components"][0]["payload"];
+    assert_eq!(
+        payload.as_object().unwrap().keys().collect::<Vec<_>>(),
+        ["strokes"],
+        "a brush payload carries the reserved strokes field and nothing else"
+    );
+    assert!(
+        payload["strokes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|address| address.as_str().is_some_and(|text| text.len() == 32)),
+        "every stroke is a content address, never a position"
+    );
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+/// Decimation happens where the store says it does, and it is idempotent, so a desktop that
+/// decimates before it posts and an agent that posts the path it captured reach the same stored
+/// stroke — the same address, and therefore the same coverage.
+#[test]
+fn a_decimated_path_and_the_path_it_came_from_are_the_same_stored_stroke() {
+    let dir = temp("decimation");
+    let source = dir.join("orientation-1.jpg");
+    std::fs::copy(fixture(), &source).unwrap();
+    // A path a pointer produces: many positions along a straight run, which two grid steps of
+    // tolerance reduce to its two ends.
+    let captured: Vec<[f64; 2]> = (0..=64)
+        .map(|step| [0.2 + f64::from(step) * 0.005, 0.3])
+        .collect();
+    let decimated = crate::path::decimate(&captured).unwrap();
+    assert_eq!(decimated.len(), 2, "a straight run keeps its ends");
+    let address = |path: &[[f64; 2]], request: &str| -> String {
+        let mut driver = Direct::open(&dir.join(format!("{request}.sqlite")), &source);
+        driver
+            .run(
+                commands::ADD_STROKE,
+                &MaskTarget::default(),
+                stroke(json!(path), 0.1, 50.0, 100.0, false),
+                request,
+            )
+            .expect("a stroke");
+        strokes_of(&driver.list(), "Mask 1", "Brush 1")[0].clone()
+    };
+    assert_eq!(
+        address(&captured, "raw"),
+        address(&decimated, "decimated"),
+        "the same path, however much of it the client posted"
+    );
+    std::fs::remove_dir_all(dir).unwrap();
 }

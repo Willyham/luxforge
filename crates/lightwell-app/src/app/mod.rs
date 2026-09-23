@@ -503,6 +503,13 @@ pub(crate) struct Editor {
     pub(crate) mask_map: Option<crate::mask_draft::ContentMap>,
     /// The mode the next Add-component gesture will use.
     pub(crate) mask_mode: lightwell_core::ComponentMode,
+    /// The brush the next stroke will be drawn with: per-client gesture state, never sent on its
+    /// own. It is copied into a painted draft when the gesture opens, because the brush a stroke was
+    /// begun with is the brush it was drawn with for the whole of its life.
+    pub(crate) brush: crate::mask_draft::Brush,
+    /// The erase modifier is held down. It is read when a stroke starts and then frozen, so letting
+    /// the key go mid-stroke does not turn an erase into an add halfway along the path.
+    pub(crate) brush_erase_held: bool,
     /// The open mask's name as it is being typed in the rename field.
     pub(crate) mask_name: String,
     /// The core draft behind the open shape gesture, known once `draft.begin` answers.
@@ -678,6 +685,8 @@ impl Editor {
             mask_draft: None,
             mask_map: None,
             mask_mode: lightwell_core::ComponentMode::Add,
+            brush: crate::mask_draft::NEUTRAL_BRUSH,
+            brush_erase_held: false,
             mask_name: String::new(),
             mask_draft_id: None,
             mask_draft_in_flight: false,
@@ -1849,6 +1858,8 @@ impl Editor {
             hidden_masks: &self.hidden_masks,
             mask_draft: self.mask_draft.as_ref(),
             mask_mode: self.mask_mode,
+            brush: self.brush,
+            brush_erase_held: self.brush_erase_held,
             mask_name: &self.mask_name,
             // The generated sections follow the open mask while Mask mode is active, and the global
             // layer everywhere else: one target at a time, so a field always shows the layer the
@@ -3896,6 +3907,7 @@ impl Editor {
             drafting: self.crop.is_some(),
             slider_drafting: self.slider_draft.is_some(),
             mask_drafting: self.mask_draft.is_some(),
+            mask_brush: self.mask_mode_active(),
             palette_open: self.palette_open,
             mode_active: self.session.workspace.mode != POINTER_MODE,
             modes: self

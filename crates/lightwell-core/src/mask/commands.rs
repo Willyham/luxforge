@@ -38,14 +38,15 @@
 //! and patchable by being *registered*, rather than by someone remembering a second table: this
 //! module declares no geometry of its own and knows no kind by name.
 use super::{
-    component_geometry_is_drawn, component_parameters, declared_geometry_kinds,
-    knows_component_kind,
+    BRUSH, DISTANCE_MIN, component_geometry_is_drawn, component_parameters,
+    declared_geometry_kinds, knows_component_kind,
 };
 use crate::{
     ActionDescriptor, ChoiceStyle, Component, ComponentId, ComponentMode, Control, Error,
     ErrorKind, Layer, LayerId, Mask, MaskId, ModuleRegistry, MutationResult, NumberStyle,
     ParameterDescriptor, ParameterKind, Recipe,
     model::{COMPONENTS_PER_MASK, MASKS_PER_RECIPE},
+    path::{self, POINTS_PER_STROKE, SIZE_MAX, Stroke, StrokeId},
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
@@ -53,6 +54,15 @@ use std::sync::LazyLock;
 
 /// The one read-only method of the family.
 pub const LIST: &str = "mask.list";
+
+/// The brush's two commands: the **only** way a stroke reaches a mask.
+///
+/// A brush component's geometry is drawn rather than typed, so it declares no parameters and
+/// generates no `mask.create-brush`, `mask.add-brush` or `mask.set-brush`. These two are declared
+/// here instead, by hand and not from the kind table, because what they carry is a *path* and a
+/// stroke's own settings rather than a kind's geometry fields.
+pub const ADD_STROKE: &str = "mask.add-stroke";
+pub const DELETE_STROKE: &str = "mask.delete-stroke";
 
 /// What a generated geometry method does to a component list. The kind it does it to is the other
 /// half of [`GeometryMethod`].
@@ -123,6 +133,44 @@ pub struct MaskTarget {
     pub component: Option<ComponentId>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
+    /// The stroke `mask.delete-stroke` removes, by its content address. It is an identity like the
+    /// two above and travels for the same reason: no declared parameter kind carries one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stroke: Option<StrokeId>,
+}
+
+/// Whether one envelope field belongs to a command, and whether it must be there.
+///
+/// Every command but one wants a fixed envelope, so [`Need::Required`] and [`Need::None`] are what
+/// almost all of them declare. `mask.add-stroke` is the exception, and deliberately: no mask draws a
+/// new one, a mask without a component puts a new brush on it, and both together append a stroke to
+/// that brush. Those are three history entries with three labels and **one** command, because a
+/// person painting does not choose between three gestures — they put the brush down, and where it
+/// lands decides which of the three that stroke was.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Need {
+    /// The command refuses this field by name.
+    None,
+    /// The command reads it when it is there and does something else when it is not.
+    Optional,
+    /// The command refuses its absence by name.
+    Required,
+}
+
+impl Need {
+    /// This command reads the field at all, which is what a client filling an envelope asks.
+    pub fn wanted(self) -> bool {
+        self != Self::None
+    }
+
+    fn required(self) -> bool {
+        self == Self::Required
+    }
+
+    /// The declaration a `(bool, bool, bool)` in the command table spells: required, or refused.
+    fn of(required: bool) -> Self {
+        if required { Self::Required } else { Self::None }
+    }
 }
 
 /// One declared `mask.*` method.
@@ -134,9 +182,10 @@ pub struct MaskCommand {
     /// that rather than assuming it.
     pub method: &'static str,
     pub mutates: bool,
-    pub needs_mask: bool,
-    pub needs_component: bool,
-    pub needs_name: bool,
+    pub needs_mask: Need,
+    pub needs_component: Need,
+    pub needs_name: Need,
+    pub needs_stroke: Need,
     /// Set on the generated geometry methods and on no other command: it is what says which kind's
     /// parameters this method declares and which kind's components it may touch.
     pub geometry: Option<GeometryMethod>,
@@ -156,14 +205,15 @@ impl MaskCommand {
                 "component",
             ),
             (target.name.is_some(), self.needs_name, "name"),
+            (target.stroke.is_some(), self.needs_stroke, "stroke"),
         ] {
-            if needed && !present {
+            if needed.required() && !present {
                 return Err(validation(format!(
                     "missing required field {field} for {}",
                     self.method
                 )));
             }
-            if present && !needed {
+            if present && !needed.wanted() {
                 return Err(validation(format!(
                     "unknown field {field} for {}",
                     self.method
@@ -195,11 +245,23 @@ impl MaskCommand {
                 "the component inside that mask",
             ),
             (self.needs_name, "name", "the display name to set"),
+            (
+                self.needs_stroke,
+                "stroke",
+                "the stroke's content address, as its component's strokes field lists it",
+            ),
         ] {
-            if needed {
-                required.push(json!(field));
-                optional.remove(field);
-                let _ = meaning;
+            match needed {
+                Need::Required => {
+                    required.push(json!(field));
+                    optional.remove(field);
+                }
+                // An envelope field a command *may* carry is listed where a client looks for what it
+                // may send, beside the optional parameters, with what leaving it out means.
+                Need::Optional => {
+                    optional.insert(field.to_owned(), json!(meaning));
+                }
+                Need::None => {}
             }
         }
         for parameter in &self.action.parameters {
@@ -370,6 +432,30 @@ pub(crate) fn report_of(
         }
         // The copy, not the source the request named.
         (_, "mask.duplicate") => (added_mask(after, before).map(|mask| mask.id.clone()), None),
+        // One stroke is one of three edits, and which one it was is written in the envelope the
+        // entry stored: no mask means it drew one, a mask alone means it put a brush on that mask,
+        // and both mean it appended to that brush. The minted identities are recovered the same way
+        // the generated methods' are, by comparing the entry's stack with its parent's.
+        (_, ADD_STROKE) => match (
+            named("mask").and_then(|id| MaskId::parse(id).ok()),
+            named("component").and_then(|id| ComponentId::parse(id).ok()),
+        ) {
+            (None, _) => {
+                let added = added_mask(after, before);
+                (
+                    added.map(|mask| mask.id.clone()),
+                    added
+                        .and_then(|mask| mask.components.first())
+                        .map(|component| component.id.clone()),
+                )
+            }
+            (Some(mask), None) => {
+                let component =
+                    added_component(after, before, &mask).map(|component| component.id.clone());
+                (Some(mask), component)
+            }
+            (mask, component) => (mask, component),
+        },
         _ => (
             named("mask").and_then(|id| MaskId::parse(id).ok()),
             named("component").and_then(|id| ComponentId::parse(id).ok()),
@@ -549,6 +635,9 @@ pub(crate) fn stored_parameters(
     }
     if let Some(name) = &target.name {
         stored.insert("name".to_owned(), json!(name));
+    }
+    if let Some(stroke) = &target.stroke {
+        stored.insert("stroke".to_owned(), json!(stroke.as_str()));
     }
     stored
 }
@@ -775,6 +864,8 @@ pub(crate) fn plan(
                     Vec::new(),
                 )
             }
+            ADD_STROKE => plan_add_stroke(&mut next, target, parameters)?,
+            DELETE_STROKE => plan_delete_stroke(&mut next, target)?,
             "mask.reorder-component" => {
                 let (mask_index, index) = component_at(&next, target)?;
                 let mask = &mut next.masks[mask_index];
@@ -945,6 +1036,243 @@ fn plan_geometry(
             Ok((base, false, Some(id), Some(component_id), Vec::new()))
         }
     }
+}
+
+/// `mask.add-stroke`: one painted stroke, and whichever of the three edits its envelope says it is.
+///
+/// The stroke is captured **before** anything is decided, so a malformed path refuses without having
+/// touched the mask table, and it is put in the recipe's own stroke table under its content address.
+/// **No coordinate is written into a component payload**: the payload carries the reserved `strokes`
+/// field holding addresses, which is what keeps one entry per stroke from copying every earlier
+/// stroke of that component into every later entry.
+///
+/// Capture is the host's, not the desktop's. The desktop decimates before it posts, on the same
+/// grid at the same tolerance, and that is idempotent — so an agent that posts a raw path and a hand
+/// that drew one reach the same stored bytes, the same address and the same coverage.
+fn plan_add_stroke(
+    next: &mut Recipe,
+    target: &MaskTarget,
+    parameters: &Map<String, Value>,
+) -> Result<Planned, Error> {
+    let stroke = captured_stroke(parameters)?;
+    let id = next.strokes.insert(stroke);
+    // The mode belongs to a component, and only a stroke that makes one may carry it. Appending to a
+    // component that already exists is refused rather than silently ignoring the mode, and the
+    // refusal names the command that does change one.
+    let declared_mode = || -> Result<(), Error> {
+        if parameters.contains_key("mode") {
+            return Err(validation(
+                "a stroke appended to an existing component takes no mode; change a component's \
+                 mode with mask.set-component-mode",
+            ));
+        }
+        Ok(())
+    };
+    match (&target.mask, &target.component) {
+        // The first stroke of a session: a mask, a brush component and the stroke, as one entry.
+        (None, _) => {
+            declared_mode()?;
+            if next.masks.len() >= MASKS_PER_RECIPE {
+                return Err(Error::new(
+                    ErrorKind::ResourceLimit,
+                    format!(
+                        "recipe already has {MASKS_PER_RECIPE} masks; the limit is {MASKS_PER_RECIPE} masks per recipe"
+                    ),
+                ));
+            }
+            let mut mask = Mask::new(next_mask_name(next));
+            let name = mask.next_component_name(BRUSH);
+            // The first component of a mask is always add, exactly as `mask.create-<kind>` makes it.
+            let component = Component::new(name, ComponentMode::Add, BRUSH, strokes_payload(&[id]));
+            let component_id = component.id.clone();
+            let mask_id = mask.id.clone();
+            mask.components.push(component);
+            mask.validate()?;
+            next.masks.push(mask);
+            Ok((
+                format!("Add {}", spoken(BRUSH)),
+                false,
+                Some(mask_id),
+                Some(component_id),
+                Vec::new(),
+            ))
+        }
+        // A further brush on a mask that exists, in the mode the gesture chose before it started.
+        (Some(_), None) => {
+            let index = mask_index(next, required_mask(target)?)?;
+            let mode = optional_mode(parameters)?.unwrap_or(ComponentMode::Add);
+            let mask = &mut next.masks[index];
+            if mask.components.len() >= COMPONENTS_PER_MASK {
+                return Err(Error::new(
+                    ErrorKind::ResourceLimit,
+                    format!(
+                        "mask {} has {COMPONENTS_PER_MASK} components; the limit is {COMPONENTS_PER_MASK} components per mask",
+                        mask.name
+                    ),
+                ));
+            }
+            let name = mask.next_component_name(BRUSH);
+            let component = Component::new(name, mode, BRUSH, strokes_payload(&[id]));
+            let component_id = component.id.clone();
+            mask.components.push(component);
+            mask.validate()?;
+            let base = if mode == ComponentMode::Add {
+                format!("Add {}", spoken(BRUSH))
+            } else {
+                format!("Add {} {}", mode.as_str(), spoken(BRUSH))
+            };
+            let mask_id = mask.id.clone();
+            Ok((base, false, Some(mask_id), Some(component_id), Vec::new()))
+        }
+        // Every later stroke on that component: one entry each, named for the component, which is
+        // what makes undo walk back one stroke at a time with no second history model.
+        (Some(_), Some(_)) => {
+            declared_mode()?;
+            let (mask_index, index) = component_at(next, target)?;
+            let mask = &mut next.masks[mask_index];
+            let mask_name = mask.name.clone();
+            let component = &mut mask.components[index];
+            strokes_reach(component)?;
+            let mut held = path::references(
+                &component.payload,
+                &format!("component {} of mask {mask_name}", component.name),
+            )?;
+            held.push(id);
+            component.payload = strokes_payload(&held);
+            let base = format!("Update {}", component.name);
+            let component_id = component.id.clone();
+            mask.validate()?;
+            let mask_id = mask.id.clone();
+            Ok((base, false, Some(mask_id), Some(component_id), Vec::new()))
+        }
+    }
+}
+
+/// `mask.delete-stroke`: a **forward edit**, not an undo.
+///
+/// It removes one stroke and appends one entry, so a stroke made ten entries ago goes while
+/// everything after it stays; `history.undo` still walks entries, and the two never mean the same
+/// thing. Deleting is well defined because the fold is over the stored order: the remaining strokes
+/// produce, bit for bit, the field they would have produced had the deleted one never been made.
+///
+/// A component holding the same address twice holds two strokes with the same content — painting one
+/// path twice builds up, and the second pass is a second object — so this removes the **first** of
+/// them, which is the one earliest in the fold.
+fn plan_delete_stroke(next: &mut Recipe, target: &MaskTarget) -> Result<Planned, Error> {
+    let wanted = target
+        .stroke
+        .as_ref()
+        .ok_or_else(|| validation("missing required field stroke"))?
+        .clone();
+    let (mask_index, index) = component_at(next, target)?;
+    let mask = &mut next.masks[mask_index];
+    let mask_name = mask.name.clone();
+    let component = &mut mask.components[index];
+    strokes_reach(component)?;
+    let mut held = path::references(
+        &component.payload,
+        &format!("component {} of mask {mask_name}", component.name),
+    )?;
+    let Some(at) = held.iter().position(|held| held == &wanted) else {
+        return Err(validation(format!(
+            "component {} holds no stroke {wanted}",
+            component.name
+        )));
+    };
+    // A component with no stroke covers nothing and is not a thing a person drew, so the last stroke
+    // is removed by removing the component — the same rule, and the same wording, that keeps a mask
+    // from existing empty.
+    if held.len() == 1 {
+        return Err(validation(format!(
+            "stroke {wanted} is the only stroke of {}; delete the component instead",
+            component.name
+        )));
+    }
+    held.remove(at);
+    component.payload = strokes_payload(&held);
+    let base = format!("Delete a stroke from {}", component.name);
+    let component_id = component.id.clone();
+    mask.validate()?;
+    let mask_id = mask.id.clone();
+    Ok((base, false, Some(mask_id), Some(component_id), Vec::new()))
+}
+
+/// The component a stroke may reach: one whose geometry is drawn as a path.
+///
+/// A component of a kind this build cannot evaluate is `incompatible`, exactly as rendering it is; a
+/// known kind whose geometry is declared numbers is a `validation` refusal naming the patch method
+/// that does edit it, because a client that picked the wrong command has to be told the right one.
+fn strokes_reach(component: &Component) -> Result<(), Error> {
+    if !knows_component_kind(&component.kind) {
+        return Err(unknown_kind(&component.kind));
+    }
+    if component.kind != BRUSH {
+        return Err(validation(format!(
+            "component {} is a {} component, whose geometry is declared rather than drawn; patch it \
+             with mask.set-{}",
+            component.name, component.kind, component.kind
+        )));
+    }
+    Ok(())
+}
+
+/// A brush component's stored payload: the host's reserved `strokes` field holding its strokes in
+/// order by content address, and nothing else.
+fn strokes_payload(strokes: &[StrokeId]) -> Value {
+    json!({ path::STROKES_FIELD: strokes })
+}
+
+/// The stroke one `mask.add-stroke` posted, captured on the stored grid.
+///
+/// The generic parameter check has already refused a path that is not a list of in-range positions
+/// and a setting outside its declared range; what happens here is the capture itself — snapping,
+/// decimation and the per-stroke bound — which is [`crate::path`]'s contract and not a second copy
+/// of it.
+fn captured_stroke(parameters: &Map<String, Value>) -> Result<Stroke, Error> {
+    Stroke::capture(
+        &points(parameters, "points")?,
+        number(parameters, "size")?,
+        number(parameters, "feather")?,
+        number(parameters, "flow")?,
+        boolean(parameters, "erase")?,
+    )
+}
+
+/// A checked `points` parameter as the pairs it declares.
+fn points(parameters: &Map<String, Value>, name: &str) -> Result<Vec<[f64; 2]>, Error> {
+    let listed = parameters
+        .get(name)
+        .and_then(Value::as_array)
+        .ok_or_else(|| validation(format!("missing required parameter {name}")))?;
+    listed
+        .iter()
+        .map(|point| {
+            let pair = point.as_array().ok_or_else(|| {
+                validation(format!(
+                    "parameter {name} must be a list of [x, y] positions"
+                ))
+            })?;
+            match (
+                pair.first().and_then(Value::as_f64),
+                pair.get(1).and_then(Value::as_f64),
+            ) {
+                (Some(x), Some(y)) if pair.len() == 2 => Ok([x, y]),
+                _ => Err(validation(format!(
+                    "parameter {name} must be a list of [x, y] positions"
+                ))),
+            }
+        })
+        .collect()
+}
+
+/// The mode a request carried, or none when it carried none. Unlike [`mode`], absence is an answer
+/// rather than a refusal: the one command that declares an optional mode does something different
+/// without it.
+fn optional_mode(parameters: &Map<String, Value>) -> Result<Option<ComponentMode>, Error> {
+    if !parameters.contains_key("mode") {
+        return Ok(None);
+    }
+    mode(parameters).map(Some)
 }
 
 /// The one label rule: the command's own text, prefixed with the mask's name whenever the resulting
@@ -1175,9 +1503,10 @@ fn command(
     MaskCommand {
         method,
         mutates,
-        needs_mask: needs.0,
-        needs_component: needs.1,
-        needs_name: needs.2,
+        needs_mask: Need::of(needs.0),
+        needs_component: Need::of(needs.1),
+        needs_name: Need::of(needs.2),
+        needs_stroke: Need::None,
         geometry: None,
         action: ActionDescriptor {
             id: method.to_owned(),
@@ -1252,9 +1581,10 @@ fn geometry_commands(kind: &'static str) -> Vec<MaskCommand> {
             MaskCommand {
                 method,
                 mutates: true,
-                needs_mask: needs.0,
-                needs_component: needs.1,
-                needs_name: needs.2,
+                needs_mask: Need::of(needs.0),
+                needs_component: Need::of(needs.1),
+                needs_name: Need::of(needs.2),
+                needs_stroke: Need::None,
                 geometry: Some(GeometryMethod { op, kind }),
                 action: ActionDescriptor {
                     id: method.to_owned(),
@@ -1411,6 +1741,122 @@ static COMMANDS: LazyLock<Vec<MaskCommand>> = LazyLock::new(|| {
             )],
         ),
     ];
+    // The brush's own two. They are declared here rather than generated from the kind table because
+    // a brush's geometry is drawn: there is no number a `mask.set-brush` could patch, and what these
+    // carry is a path and the brush it was drawn with.
+    //
+    // `mask.add-stroke` is one command over three edits because painting is one gesture: where the
+    // brush lands decides whether the stroke drew a mask, put a second brush on one, or added to the
+    // brush already there, and the envelope says which. The history label follows that — `Add brush`,
+    // `Add subtract brush`, `Update Brush 1` — so undo walks back one stroke at a time while
+    // rendering still sees one component whose strokes are already combined.
+    commands.push(MaskCommand {
+        method: ADD_STROKE,
+        mutates: true,
+        needs_mask: Need::Optional,
+        needs_component: Need::Optional,
+        needs_name: Need::None,
+        needs_stroke: Need::None,
+        geometry: None,
+        action: ActionDescriptor {
+            id: ADD_STROKE.to_owned(),
+            title: "Paint".to_owned(),
+            notes: "one brush stroke: with no mask it draws a new one whose first component is an \
+                    add brush, with a mask and no component it puts a further brush on that mask in \
+                    the mode given, and with both it appends the stroke to that brush. The path is \
+                    snapped to the stored grid and decimated there before it is stored, so the same \
+                    posted path always produces the same stored stroke"
+                .to_owned(),
+            summary: None,
+            patch: false,
+            parameters: vec![
+                parameter(
+                    "points",
+                    ParameterKind::Points {
+                        points_min: 1,
+                        points_max: POINTS_PER_STROKE,
+                    },
+                    true,
+                    "the stroke's path, in the content stage's normalized coordinates, in drawn \
+                     order; a one-position path is a single dab",
+                ),
+                ParameterDescriptor {
+                    step: Some(0.01),
+                    fine_step: Some(0.002),
+                    precision: Some(4),
+                    ..parameter(
+                        "size",
+                        ParameterKind::Number {
+                            // A stroke's radius is a stored distance and takes the study's own
+                            // floor; the ceiling is the path store's, which is the largest radius a
+                            // stored stroke can hold.
+                            min: DISTANCE_MIN,
+                            max: SIZE_MAX,
+                        },
+                        true,
+                        "the brush's radius in mask-space units, one unit being the content stage's \
+                         height on both axes, so a round brush is round at any aspect ratio",
+                    )
+                },
+                ParameterDescriptor {
+                    step: Some(5.0),
+                    precision: Some(0),
+                    ..parameter(
+                        "feather",
+                        ParameterKind::Number { min: 0.0, max: 100.0 },
+                        true,
+                        "the ramp's width as a percentage of the radius; 0 is an explicit hard edge",
+                    )
+                },
+                ParameterDescriptor {
+                    step: Some(5.0),
+                    precision: Some(0),
+                    ..parameter(
+                        "flow",
+                        ParameterKind::Number { min: 0.0, max: 100.0 },
+                        true,
+                        "the coverage one pass of this stroke reaches, 0..=100. There is no density: \
+                         its meaning depends on a build-up model along a single stroke, which would \
+                         make coverage depend on stamp spacing and therefore on resolution",
+                    )
+                },
+                parameter(
+                    "erase",
+                    ParameterKind::Boolean,
+                    true,
+                    "this stroke removes coverage rather than adding it, for the whole of its life",
+                ),
+                parameter(
+                    "mode",
+                    ParameterKind::Enum { options: modes() },
+                    false,
+                    "how the brush this stroke creates joins the components before it; only a \
+                     stroke that makes a component on an existing mask may carry one, and a mask's \
+                     first component is always add",
+                ),
+            ],
+        },
+    });
+    commands.push(MaskCommand {
+        method: DELETE_STROKE,
+        mutates: true,
+        needs_mask: Need::Required,
+        needs_component: Need::Required,
+        needs_name: Need::None,
+        needs_stroke: Need::Required,
+        geometry: None,
+        action: ActionDescriptor {
+            id: DELETE_STROKE.to_owned(),
+            title: "Delete stroke".to_owned(),
+            notes: "remove one stroke from a brush component. A forward edit and not an undo: it \
+                    appends one entry, so a stroke made ten entries ago goes while everything after \
+                    it stays. A component's last stroke is not deletable; delete the component"
+                .to_owned(),
+            summary: None,
+            patch: false,
+            parameters: Vec::new(),
+        },
+    });
     // The geometry methods, generated from the host's kind table: registering a kind with declared
     // geometry is what makes it creatable, addable and patchable, and nothing above has to be edited
     // for that to happen. A kind whose geometry is *drawn* declares no parameters and generates none
@@ -1585,6 +2031,11 @@ mod tests {
                 "mask.set-component-invert",
                 "mask.delete-component",
                 "mask.reorder-component",
+                // The brush's own two, declared rather than generated: a brush's geometry is drawn,
+                // so it has no create, add or set method and these are the only way a stroke reaches
+                // a mask.
+                "mask.add-stroke",
+                "mask.delete-stroke",
                 // Then three geometry methods per registered kind, generated from the host's own
                 // kind table and in its order.
                 "mask.create-linear",
@@ -1812,7 +2263,7 @@ mod tests {
         let target = MaskTarget {
             mask: Some(mask.clone()),
             component: Some(component.clone()),
-            name: None,
+            ..MaskTarget::default()
         };
         let mut patch = Map::new();
         patch.insert("y1".into(), json!(0.6));
@@ -1986,7 +2437,7 @@ mod tests {
         let target = MaskTarget {
             mask: Some(recipe.masks[0].id.clone()),
             component: Some(recipe.masks[0].components[0].id.clone()),
-            name: None,
+            ..MaskTarget::default()
         };
         let command = find("mask.set-linear").unwrap();
         // The drag ended where it began: the stored payload, in either JSON spelling of a number.
@@ -2027,7 +2478,7 @@ mod tests {
         let target = MaskTarget {
             mask: Some(mask),
             component: Some(component),
-            name: None,
+            ..MaskTarget::default()
         };
         let only = find("mask.delete-component").unwrap();
         assert_eq!(
@@ -2249,7 +2700,7 @@ mod tests {
                 &MaskTarget {
                     mask: Some(recipe.masks[0].id.clone()),
                     component: Some(absent.clone()),
-                    name: None,
+                    ..MaskTarget::default()
                 },
                 &Map::new(),
                 &registry()
@@ -2600,7 +3051,7 @@ mod tests {
             &MaskTarget {
                 mask: Some(mask),
                 component: Some(component),
-                name: None,
+                ..MaskTarget::default()
             },
             &patch,
             &registry(),

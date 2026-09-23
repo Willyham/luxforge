@@ -1,7 +1,7 @@
 //! The keyboard table, as one pure function. Key codes never reach the update function: an event
 //! becomes a semantic message here or nothing at all, so the whole mapping is testable without a
 //! window.
-use crate::app::message::{CropMessage, MaskMessage, Message, Panel};
+use crate::app::message::{BrushEdit, CropMessage, MaskMessage, Message, Panel};
 use iced::{
     Event,
     event::Status,
@@ -22,6 +22,10 @@ pub(crate) struct KeyContext {
     /// A mask shape gesture is open, so Enter applies it and Escape cancels it, exactly as the crop
     /// draft's keys do for its own gesture.
     pub(crate) mask_drafting: bool,
+    /// Mask mode is active, so the brush's own keys are live: the brackets size it, the shifted
+    /// brackets feather it, and the erase modifier erases while it is held. They are here rather
+    /// than only while a stroke is down, because the brush is sized before it is put down.
+    pub(crate) mask_brush: bool,
     /// The command palette is open, so Escape closes it rather than reaching a draft.
     pub(crate) palette_open: bool,
     /// A module's canvas mode is active, so Escape leaves it. A mode that owns a draft answers
@@ -69,6 +73,16 @@ pub(crate) fn keymap(event: &Event, status: Status, context: &KeyContext) -> Opt
     // The slider guard emits one release for keyboard stepping. The window keymap must not send a
     // second commit for the same key-up; it only handles Escape for an open gesture below.
     // The modifier the canvas reads lives in the app, so it follows every change while drafting.
+    // The brush's erase modifier is a hold, not a latch: it erases while it is down, and a stroke
+    // already on the photograph keeps the flag it started with, which the draft enforces. The
+    // modifier has to arrive whatever has focus, exactly as the crop's does.
+    if context.mask_brush
+        && let Keys::ModifiersChanged(modifiers) = keyboard
+    {
+        return Some(Message::Mask(MaskMessage::Brush(BrushEdit::EraseHeld(
+            modifiers.alt(),
+        ))));
+    }
     if context.drafting {
         match keyboard {
             Keys::ModifiersChanged(modifiers) => {
@@ -161,6 +175,20 @@ pub(crate) fn keymap(event: &Event, status: Status, context: &KeyContext) -> Opt
             Key::Named(Named::Enter) => return Some(Message::Mask(MaskMessage::Apply)),
             Key::Named(Named::Escape) => return Some(Message::Mask(MaskMessage::Cancel)),
             _ => {}
+        }
+    }
+    // The brush's own keys, in Mask mode: `[` and `]` size it, `Shift+[` and `Shift+]` feather it.
+    // They move by the parameter's **declared** step, so a key and the panel's own nudge can never
+    // disagree, and they repeat while held because sizing a brush is a held gesture. The panel
+    // toggles above already claimed the brackets with Command and Option, so these cannot collide.
+    if context.mask_brush {
+        for (letter, steps) in [("[", -1.0), ("]", 1.0)] {
+            if character(key, letter) {
+                return Some(Message::Mask(MaskMessage::Brush(BrushEdit::Nudge {
+                    name: if modifiers.shift() { "feather" } else { "size" }.to_owned(),
+                    steps,
+                })));
+            }
         }
     }
     // A canvas mode without a draft of its own — a pick mode — is left with Escape, which commits
@@ -266,6 +294,7 @@ mod tests {
             drafting: false,
             slider_drafting: false,
             mask_drafting: false,
+            mask_brush: false,
             palette_open: false,
             mode_active: false,
             modes: vec![('R', "lightwell.crop".into())],

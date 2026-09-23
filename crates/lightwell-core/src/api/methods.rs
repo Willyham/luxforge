@@ -904,6 +904,9 @@ fn mask_command(
         mask: optional_envelope(&mut parameters, "mask")?,
         component: optional_envelope(&mut parameters, "component")?,
         name: optional_envelope(&mut parameters, "name")?,
+        // A stroke's content address is an identity like the other two and travels here for the
+        // same reason: no declared parameter kind carries one.
+        stroke: optional_envelope(&mut parameters, "stroke")?,
     };
     value(service.apply_mask_command(
         &asset_id,
@@ -1509,6 +1512,9 @@ fn draft_begin(
         mask: p.mask,
         component: p.component,
         name: None,
+        // A stroke is deleted, never drafted: `mask.delete-stroke` requires one, so its own envelope
+        // check refuses drafting it, exactly as a rename's missing `name` does.
+        stroke: None,
     };
     let target = match mask_commands::find(&p.action) {
         Some(command) => {
@@ -1896,6 +1902,8 @@ mod tests {
                 "mask.set-component-invert",
                 "mask.delete-component",
                 "mask.reorder-component",
+                "mask.add-stroke",
+                "mask.delete-stroke",
                 "mask.create-linear",
                 "mask.add-linear",
                 "mask.set-linear",
