@@ -354,6 +354,62 @@ pub(crate) fn refresh_for(
     }
 }
 
+/// The Nikon Z6's camera matrix and as-shot gains, from the supplied NEF's metadata: a real camera
+/// whose as-shot white balance has a temperature and tint equivalent in range.
+pub(crate) const Z6_CAM_XYZ: [[f32; 3]; 4] = [
+    [0.9943, -0.3269, -0.0839],
+    [-0.5323, 1.3269, 0.2259],
+    [-0.1198, 0.2083, 0.7557],
+    [0.0; 3],
+];
+pub(crate) const Z6_AS_SHOT: [f32; 3] = [1.683_593_8, 1.0, 1.345_703_1];
+
+/// An entry whose stack is one RAW development layer holding `payload`.
+pub(crate) fn raw_entry(
+    asset: &AssetId,
+    sequence: u64,
+    parent: Option<&EntryId>,
+    payload: &lightwell_core::RawPayload,
+) -> HistoryEntry {
+    let mut entry = entry(asset, sequence, parent);
+    entry.snapshot = entry
+        .snapshot
+        .with_layer_inserted(0, payload.layer(LayerId::new()))
+        .expect("a RAW development layer");
+    entry
+}
+
+/// The refresh the owner answers for a RAW photograph showing `current`: a RAW source, and recipe
+/// rows the core's own RAW module described, values included.
+pub(crate) fn raw_refresh(asset: &AssetId, current: &HistoryEntry) -> Refresh {
+    use lightwell_core::ToolModule;
+    let mut refresh = refresh_for(asset, current, vec![current.clone()], &[current], false);
+    refresh.state.asset.source = lightwell_core::SourceKind::Raw {
+        metadata: json!({}),
+    };
+    let module = lightwell_core::RawModule::new();
+    refresh.recipe.layers = current
+        .snapshot
+        .recipe
+        .layers
+        .iter()
+        .map(|layer| lightwell_core::LayerDescription {
+            id: layer.id.clone(),
+            effect: layer.effect_id.clone(),
+            module: Some(module.descriptor().id.clone()),
+            title: Some(module.descriptor().title.clone()),
+            summary: module
+                .describe_layer(&layer.effect_id, layer.effect_format, &layer.payload)
+                .expect("a RAW summary"),
+            values: module
+                .values(&layer.effect_id, layer.effect_format, &layer.payload)
+                .expect("RAW values"),
+            available: true,
+        })
+        .collect();
+    refresh
+}
+
 /// An editor with the crop module discovered and one asset open at that revision, whose stack is
 /// those layers.
 pub(crate) fn opened(

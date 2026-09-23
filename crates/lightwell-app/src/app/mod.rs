@@ -475,6 +475,8 @@ pub(crate) struct Editor {
     pub(crate) expanded: BTreeMap<String, bool>,
     /// The displayed entry's layers as the recipe panel reads them.
     pub(crate) recipe: Option<RecipeDescription>,
+    /// The last `recipe.describe` for a displayed entry failed, so no rows will come for it.
+    pub(crate) recipe_failed: bool,
     pub(crate) menu: Option<MenuTarget>,
     pub(crate) palette_open: bool,
     pub(crate) palette_query: String,
@@ -644,6 +646,7 @@ impl Editor {
             displayed_draft_revision: None,
             expanded: BTreeMap::new(),
             recipe: None,
+            recipe_failed: false,
             menu: None,
             palette_open: false,
             palette_query: String::new(),
@@ -2082,6 +2085,7 @@ impl Editor {
             Message::PacedSliderTick => return self.slider_paced_tick(),
             Message::DoubleClickSecond => return self.double_click_second(),
             Message::Capture => {
+                let rows_shown = self.recipe_rows_shown();
                 let Some(evidence) = &mut self.evidence else {
                     return Task::none();
                 };
@@ -2097,6 +2101,7 @@ impl Editor {
                     || !self.presets.ready()
                     || self.curve_sample_in_flight
                     || self.curve_sample_pending.is_some()
+                    || !rows_shown
                 {
                     return Task::none();
                 }
@@ -2201,15 +2206,10 @@ impl Editor {
                         self.adopt(payload.session);
                         // History selection changes the authoritative values shown by generated
                         // controls. A field being edited in the previous entry must not pin its
-                        // text while the selected entry is read-only.
+                        // text while the selected entry is read-only; the entry's own values arrive
+                        // with its recipe rows, below.
                         self.editing = None;
                         self.dragging = None;
-                        self.fields.bind_raw(
-                            &self.modules,
-                            &payload.job.entry.snapshot.recipe,
-                            None,
-                            None,
-                        );
                         let entry = payload.job.entry.id.clone();
                         self.requested_render_entry = Some(payload.job.entry.clone());
                         self.show_entry(entry.clone());
@@ -2258,10 +2258,14 @@ impl Editor {
             }
             Message::RecipeDescribed(result) => match result {
                 Ok(recipe) => {
+                    self.recipe_failed = false;
                     self.recipe = Some(*recipe);
                     self.seed_values();
                 }
-                Err(error) => self.status = format!("Recipe unavailable: {error}"),
+                Err(error) => {
+                    self.recipe_failed = true;
+                    self.status = format!("Recipe unavailable: {error}");
+                }
             },
             Message::PanSynced(result) => {
                 self.pan_in_flight = false;
@@ -2625,18 +2629,11 @@ impl Editor {
                 match result {
                     Ok(modules) => {
                         self.fields = Fields::seeded(&modules);
-                        if let Some(state) = &self.state
-                            && matches!(state.asset.source, lightwell_core::SourceKind::Raw { .. })
-                        {
-                            self.fields.bind_raw(
-                                &modules,
-                                &state.current_entry.snapshot.recipe,
-                                self.editing.as_ref(),
-                                self.dragging.as_ref(),
-                            );
-                        }
                         self.event("modules_loaded", module_summary(&modules));
                         self.modules = modules;
+                        // A photograph that opened before discovery answered already has its
+                        // recipe rows: seed the new fields from them.
+                        self.seed_values();
                     }
                     Err(error) => {
                         self.status = format!("Tool discovery failed: {error}");
@@ -3573,17 +3570,7 @@ impl Editor {
             self.original_entry = refresh.original;
         }
         self.recipe = Some(refresh.recipe);
-        if matches!(
-            refresh.state.asset.source,
-            lightwell_core::SourceKind::Raw { .. }
-        ) {
-            self.fields.bind_raw(
-                &self.modules,
-                &refresh.job.entry.snapshot.recipe,
-                self.editing.as_ref(),
-                self.dragging.as_ref(),
-            );
-        }
+        self.recipe_failed = false;
         let revision = refresh.state.revision;
         let entry = refresh.state.current_entry.id.clone();
         self.state = Some(refresh.state);
@@ -3784,6 +3771,16 @@ impl Editor {
 
     /// The entry whose stack the canvas is showing: the uploaded preview's entry, or the current
     /// one before the first preview has arrived. A pick is answered against exactly this stack.
+    /// The recipe rows in hand describe the entry on screen, or none will come for it. The
+    /// generated fields are seeded from those rows, so an evidence frame waits for this: the
+    /// controls it records are then the displayed entry's own values.
+    pub(crate) fn recipe_rows_shown(&self) -> bool {
+        self.state.is_none()
+            || self.recipe_failed
+            || self.recipe.as_ref().map(|recipe| &recipe.entry_id)
+                == self.displayed_entry().as_ref()
+    }
+
     pub(crate) fn displayed_entry(&self) -> Option<lightwell_core::EntryId> {
         self.display_entry.clone().or_else(|| {
             self.state
@@ -4040,12 +4037,13 @@ mod tests {
     use super::*;
     use crate::state::histogram::HistogramStatus;
     use lightwell_core::{
-        AssetId, ContentPoint, EntryId, LayerId, POINTER_MODE, PreviewJob, PreviewSource,
-        RawPayload, SourceImage, SourceKind, WhiteBalanceMode, Zoom,
+        AssetId, ContentPoint, EntryId, POINTER_MODE, PreviewJob, PreviewSource, RawPayload,
+        SourceImage, WhiteBalanceMode, Zoom,
     };
     use testing::{
-        attach_log, boot, crop_descriptor, descriptors, entry, finish, logged, opened, pick_events,
-        pick_fields, pick_mode, picking, refresh_for, sample_mode,
+        Z6_AS_SHOT, Z6_CAM_XYZ, attach_log, boot, crop_descriptor, descriptors, entry, finish,
+        logged, opened, pick_events, pick_fields, pick_mode, picking, raw_entry, raw_refresh,
+        refresh_for, sample_mode,
     };
 
     #[test]
@@ -4442,16 +4440,35 @@ mod tests {
     /// the mosaic takes to redevelop, a second or more — and a reset sent then names the revision
     /// that commit is replacing, which the core refuses as stale. The reset now waits for the
     /// commit's answer and is sent once, against the revision it produced. Basic's patch field and
-    /// every RAW slider take the same path.
+    /// every RAW slider take the same path; what is sent is the field's own reset: As shot for the
+    /// RAW temperature and tint, the declared default for RAW and Basic exposure.
     #[test]
     fn a_reset_during_a_gesture_commit_waits_and_names_the_revision_the_commit_produced() {
         let cases = [
-            ("set-raw-exposure", "ev", 0.35),
-            ("set-raw-temperature", "kelvin", 5000.0),
-            ("set-raw-tint", "tint", 12.0),
-            ("set-basic", "exposure", 0.4),
+            (
+                "set-raw-exposure",
+                "ev",
+                0.35,
+                "set-raw-exposure",
+                json!({"ev": 0.0}),
+            ),
+            (
+                "set-raw-temperature",
+                "kelvin",
+                5000.0,
+                "use-as-shot-wb",
+                json!({}),
+            ),
+            ("set-raw-tint", "tint", 12.0, "use-as-shot-wb", json!({})),
+            (
+                "set-basic",
+                "exposure",
+                0.4,
+                "set-basic",
+                json!({"exposure": 0.0}),
+            ),
         ];
-        for (action, parameter, value) in cases {
+        for (action, parameter, value, reset, preset) in cases {
             let (mut editor, catalog, log, asset, _, _) = drafting();
             let revision = editor.state.as_ref().expect("an open asset").revision;
             let committed = double_click_before_the_commit_answers(
@@ -4484,13 +4501,130 @@ mod tests {
                 json!(revision + 1),
                 "{action}: against the commit's revision"
             );
-            let default = tools::declared_action(&editor.modules, action)
-                .and_then(|declared| declared.parameter(parameter))
-                .and_then(|declared| declared.default.clone())
-                .expect("a declared default");
-            assert_eq!(sent[0]["preset"], json!({ parameter: default }));
-            assert_eq!(editor.status, format!("Running edit.{action}…"));
+            assert_eq!(sent[0]["action"], json!(reset), "{action}");
+            assert_eq!(sent[0]["preset"], preset, "{action}");
+            assert_eq!(
+                sent[0]["field"],
+                json!({"action": action, "parameter": parameter})
+            );
+            assert_eq!(editor.status, format!("Running edit.{reset}…"));
             assert!(editor.busy && editor.pending_reset.is_none());
+            finish(editor, catalog);
+        }
+    }
+
+    /// A double-click on the RAW custom temperature or tint label, with nothing in flight, runs As
+    /// shot at once — the very request an independent JSON client builds from the control's reset
+    /// in `module.list` — and the field shows the authoritative value until the answer brings the
+    /// as-shot equivalent, never the 6504 K and 0 nothing set. RAW exposure and Basic's own
+    /// temperature, which declare no reset, still reset to their declared defaults.
+    #[test]
+    fn a_double_click_on_a_raw_white_balance_field_returns_to_as_shot() {
+        let listed = serde_json::to_value(descriptors()).unwrap();
+        for (action, parameter) in [("set-raw-temperature", "kelvin"), ("set-raw-tint", "tint")] {
+            let (mut editor, catalog) = opened_with_modules(descriptors(), 4);
+            let log = attach_log(&mut editor);
+            let asset = editor.state.as_ref().expect("open").asset.id.clone();
+            let original = RawPayload::for_as_shot(Z6_AS_SHOT, Z6_CAM_XYZ).unwrap();
+            let mut custom = original.clone();
+            custom.wb_mode = WhiteBalanceMode::Custom;
+            custom.temperature_kelvin = Some(5000.0);
+            custom.tint = Some(12.0);
+            custom.gains =
+                lightwell_core::gains_from_temperature_tint(5000.0, 12.0, Z6_CAM_XYZ).unwrap();
+            let current = raw_entry(&asset, 5, None, &custom);
+            let _ = editor.update(Message::Refreshed(Ok(Box::new(raw_refresh(
+                &asset, &current,
+            )))));
+            let committed = editor.fields.get(action, parameter).map(str::to_owned);
+            assert_eq!(
+                committed.as_deref(),
+                Some(if parameter == "kelvin" { "5000" } else { "12" })
+            );
+
+            // The JSON request a client builds from the control's declared reset.
+            let control = listed
+                .as_array()
+                .unwrap()
+                .iter()
+                .flat_map(|module| module["controls"][0]["controls"].as_array().cloned())
+                .flatten()
+                .find(|control| control["action"] == action && control["parameter"] == parameter)
+                .expect("the listed control");
+            let reset = &control["reset"];
+            assert_eq!(reset, &json!({"action": "use-as-shot-wb", "preset": {}}));
+            let mut params = json!({"asset_id": asset, "mutation": mutation(5)});
+            params
+                .as_object_mut()
+                .unwrap()
+                .extend(reset["preset"].as_object().unwrap().clone());
+            let independent = json!({"method": format!("edit.{}", reset["action"].as_str().unwrap()), "params": params});
+            let (sent, preset) = fields::field_reset(&editor.modules, action, parameter).unwrap();
+            // Each envelope mints its own request identity; everything else is the same request.
+            let without_request_id = |mut request: Value| {
+                request["params"]["mutation"]
+                    .as_object_mut()
+                    .expect("a mutation")
+                    .remove("request_id");
+                request
+            };
+            assert_eq!(
+                editor
+                    .request_for_preset(&sent, None, Some(&preset))
+                    .map(without_request_id),
+                Some(without_request_id(independent)),
+                "{action}: the desktop's reset request is the JSON client's"
+            );
+
+            // Typed but not committed, then double-clicked.
+            editor.fields.set(action, parameter, "7777".into());
+            editor.editing = Some((action.into(), parameter.into()));
+            let _ = editor.update(Message::ResetField {
+                action: action.into(),
+                parameter: parameter.into(),
+            });
+            let records = logged(&mut editor, &log);
+            let sent = draft_events(&records, "field_reset_sent");
+            assert_eq!(sent.len(), 1, "{action}: {records:?}");
+            assert_eq!(sent[0]["action"], json!("use-as-shot-wb"));
+            assert_eq!(sent[0]["preset"], json!({}));
+            assert_eq!(editor.status, "Running edit.use-as-shot-wb…");
+            assert!(editor.editing.is_none());
+            assert_eq!(
+                editor.fields.get(action, parameter).map(str::to_owned),
+                committed,
+                "{action}: the field shows the committed value until the answer, not a default"
+            );
+
+            // The answer: As shot, whose rows report the camera's equivalent.
+            let answered = raw_entry(&asset, 6, Some(&current.id), &original);
+            let _ = editor.update(Message::Refreshed(Ok(Box::new(raw_refresh(
+                &asset, &answered,
+            )))));
+            assert_eq!(
+                editor.fields.get(action, parameter),
+                Some(if parameter == "kelvin" { "4861" } else { "-50" }),
+                "{action}: the as-shot equivalent"
+            );
+            finish(editor, catalog);
+        }
+
+        // Exposure and Basic's temperature keep their declared defaults.
+        for (action, parameter, preset) in [
+            ("set-raw-exposure", "ev", json!({"ev": 0.0})),
+            ("set-basic", "temperature", json!({"temperature": 0.0})),
+        ] {
+            let (mut editor, catalog) = opened_with_modules(descriptors(), 4);
+            let log = attach_log(&mut editor);
+            let _ = editor.update(Message::ResetField {
+                action: action.into(),
+                parameter: parameter.into(),
+            });
+            let records = logged(&mut editor, &log);
+            let sent = draft_events(&records, "field_reset_sent");
+            assert_eq!(sent.len(), 1, "{action}");
+            assert_eq!(sent[0]["action"], json!(action));
+            assert_eq!(sent[0]["preset"], preset);
             finish(editor, catalog);
         }
     }
@@ -7393,63 +7527,102 @@ mod tests {
         finish(editor, catalog);
     }
 
+    /// The RAW fields follow the displayed entry's own `recipe.describe` row, exactly as every other
+    /// module's do: the desktop reads no RAW payload. Under As shot the temperature and tint show
+    /// the camera's as-shot equivalent the core reports, not the 6504 K and 0 no one set; a custom
+    /// value shows itself; a field being edited is left alone until the selection changes.
     #[test]
-    fn historical_raw_preview_rebinds_controls_and_return_restores_current_values() {
+    fn raw_fields_show_the_displayed_entrys_described_values() {
         let (mut editor, catalog, asset, _) = opened(Vec::new(), 4);
         // The real descriptors, because the RAW parameters' declared precision is what decides how
-        // a bound field reads: 1.2 sensor gain shows as `1.20`, the same as one the person set.
+        // a seeded field reads.
         let _ = editor.update(Message::ModulesLoaded(Ok(descriptors())));
-        let original = RawPayload::for_as_shot([2.0, 1.0, 1.5], [[0.0; 3]; 4]).unwrap();
-        let mut historical = entry(&asset, 0, None);
-        historical.snapshot = historical
-            .snapshot
-            .with_layer_inserted(0, original.layer(LayerId::new()))
-            .unwrap();
-        let mut current = entry(&asset, 4, Some(&historical.id));
+        let original = RawPayload::for_as_shot(Z6_AS_SHOT, Z6_CAM_XYZ).unwrap();
+        let historical = raw_entry(&asset, 0, None, &original);
         let mut adjusted = original.clone();
         adjusted.exposure_ev = 1.0;
         adjusted.wb_mode = WhiteBalanceMode::Custom;
-        adjusted.gains = [1.2, 1.0, 0.9];
-        current.snapshot = current
-            .snapshot
-            .with_layer_inserted(0, adjusted.layer(LayerId::new()))
-            .unwrap();
-        editor.state.as_mut().unwrap().asset.source = SourceKind::Raw {
-            metadata: json!({}),
-        };
-        editor.state.as_mut().unwrap().current_entry = current.clone();
-        editor
-            .fields
-            .bind_raw(&editor.modules, &current.snapshot.recipe, None, None);
-        assert_eq!(editor.fields.get("set-raw-exposure", "ev"), Some("1.00"));
-        assert_eq!(editor.fields.get("set-raw-red-gain", "gain"), Some("1.20"));
+        adjusted.temperature_kelvin = Some(3500.0);
+        adjusted.tint = Some(12.0);
+        adjusted.gains =
+            lightwell_core::gains_from_temperature_tint(3500.0, 12.0, Z6_CAM_XYZ).unwrap();
+        let current = raw_entry(&asset, 4, Some(&historical.id), &adjusted);
 
-        let job = |entry: lightwell_core::HistoryEntry| PreviewJob {
-            source: PreviewSource::Jpeg(SourceImage {
-                width: 1,
-                height: 1,
-                rgba: vec![0, 0, 0, 255].into(),
-                fingerprint: "test".into(),
-                orientation: 1,
-            }),
-            registry: Arc::new(ModuleRegistry::builtin()),
-            recipe: entry.snapshot.recipe.clone(),
-            layer_count: None,
-            draft_revision: None,
-            identity: lightwell_core::analysis::AnalysisIdentity::of(
-                &entry.asset_id,
-                "test",
-                &entry,
-                &entry.snapshot.recipe,
-                None,
-                Some((1, 1)),
-            )
-            .expect("a test analysis identity"),
-            analyse: false,
-            proxy: None,
-            entry,
+        let _ = editor.update(Message::Refreshed(Ok(Box::new(raw_refresh(
+            &asset, &current,
+        )))));
+        let shown = |editor: &Editor| {
+            [
+                "set-raw-exposure.ev",
+                "set-raw-temperature.kelvin",
+                "set-raw-tint.tint",
+            ]
+            .map(|key| editor.fields.summary()[key].as_str().map(str::to_owned))
         };
+        assert_eq!(
+            shown(&editor),
+            [Some("1.00"), Some("3500"), Some("12")].map(|text| text.map(str::to_owned))
+        );
+        // The explicit gains have no control, so no field shows them.
+        assert_eq!(editor.fields.get("set-raw-red-gain", "gain"), None);
+
+        // A historical As shot entry: the fields change when its rows arrive, not before, and the
+        // field being edited is released by the selection.
         editor.editing = Some(("set-raw-exposure".into(), "ev".into()));
+        let mut session = editor.session.clone();
+        session
+            .preview
+            .select(HistorySelection::Entry(historical.id.clone()));
+        session.revision += 1;
+        let job = raw_refresh(&asset, &historical).job;
+        let _ = editor.update(Message::PreviewLoaded(Ok(Box::new(
+            tasks::PreviewPayload {
+                job,
+                session,
+                sequence: 8,
+            },
+        ))));
+        assert_eq!(editor.display_entry, Some(historical.id.clone()));
+        assert!(editor.editing.is_none());
+        assert!(
+            !editor.recipe_rows_shown(),
+            "an evidence frame waits for the displayed entry's own rows"
+        );
+        let _ = editor.update(Message::RecipeDescribed(Ok(Box::new(
+            raw_refresh(&asset, &historical).recipe,
+        ))));
+        assert!(editor.recipe_rows_shown());
+        let [kelvin, tint] =
+            lightwell_core::temperature_tint_from_gains(Z6_AS_SHOT, Z6_CAM_XYZ).unwrap();
+        assert_eq!((kelvin.round(), tint.round()), (4861.0, -50.0));
+        assert_eq!(
+            shown(&editor),
+            [Some("0.00"), Some("4861"), Some("-50")].map(|text| text.map(str::to_owned)),
+            "As shot shows the camera's own white balance as a temperature and tint"
+        );
+
+        // Return to current: the custom values come back.
+        let mut session = editor.session.clone();
+        session.preview.return_current();
+        session.revision += 1;
+        let _ = editor.update(Message::PreviewLoaded(Ok(Box::new(
+            tasks::PreviewPayload {
+                job: raw_refresh(&asset, &current).job,
+                session,
+                sequence: 9,
+            },
+        ))));
+        let _ = editor.update(Message::RecipeDescribed(Ok(Box::new(
+            raw_refresh(&asset, &current).recipe,
+        ))));
+        assert_eq!(editor.display_entry, Some(current.id));
+        assert_eq!(
+            shown(&editor),
+            [Some("1.00"), Some("3500"), Some("12")].map(|text| text.map(str::to_owned))
+        );
+
+        // A describe that fails for the displayed entry does not hold a frame forever: it is
+        // captured with the failure in the status bar.
         let mut session = editor.session.clone();
         session
             .preview
@@ -7457,31 +7630,15 @@ mod tests {
         session.revision += 1;
         let _ = editor.update(Message::PreviewLoaded(Ok(Box::new(
             tasks::PreviewPayload {
-                job: job(historical.clone()),
+                job: raw_refresh(&asset, &historical).job,
                 session,
-                sequence: 8,
+                sequence: 10,
             },
         ))));
-        assert_eq!(editor.display_entry, Some(historical.id));
-        assert!(editor.editing.is_none());
-        assert_eq!(editor.fields.get("set-raw-exposure", "ev"), Some("0.00"));
-        assert_eq!(editor.fields.get("set-raw-red-gain", "gain"), Some("2.00"));
-        assert_eq!(editor.fields.get("set-raw-blue-gain", "gain"), Some("1.50"));
-
-        let mut session = editor.session.clone();
-        session.preview.return_current();
-        session.revision += 1;
-        let _ = editor.update(Message::PreviewLoaded(Ok(Box::new(
-            tasks::PreviewPayload {
-                job: job(current.clone()),
-                session,
-                sequence: 9,
-            },
-        ))));
-        assert_eq!(editor.display_entry, Some(current.id));
-        assert_eq!(editor.fields.get("set-raw-exposure", "ev"), Some("1.00"));
-        assert_eq!(editor.fields.get("set-raw-red-gain", "gain"), Some("1.20"));
-        assert_eq!(editor.fields.get("set-raw-blue-gain", "gain"), Some("0.90"));
+        assert!(!editor.recipe_rows_shown());
+        let _ = editor.update(Message::RecipeDescribed(Err("unavailable".into())));
+        assert!(editor.recipe_rows_shown());
+        assert_eq!(editor.status, "Recipe unavailable: unavailable");
         finish(editor, catalog);
     }
 

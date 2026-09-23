@@ -310,42 +310,30 @@ fn verify_displayed_raw_controls(frame: &Value) -> Result {
         .iter()
         .find(|layer| layer["effect"] == "lightwell.raw")
         .ok_or("Displayed RAW layer missing")?;
-    let payload = &raw["payload"];
+    let payload: lightwell_core::RawPayload = serde_json::from_value(raw["payload"].clone())?;
     let controls = &state["controls"];
-    let effective_gains = if payload["wb_mode"] == "as-shot" {
-        &payload["as_shot_gains"]
-    } else {
-        &payload["gains"]
-    };
-    for (action, parameter, value) in [
-        ("set-raw-exposure", "ev", &payload["exposure_ev"]),
-        ("set-raw-red-gain", "gain", &effective_gains[0]),
-        ("set-raw-blue-gain", "gain", &effective_gains[2]),
-    ] {
-        let key = format!("{action}.{parameter}");
-        let shown: f64 = controls[&key]
-            .as_str()
-            .ok_or("Displayed RAW control value missing")?
-            .parse()?;
-        let expected = value
-            .as_f64()
-            .ok_or("Displayed RAW payload value missing")?;
+    // The core's own answer for the displayed development: a custom temperature and tint, or
+    // under As shot the temperature and tint whose gains are the camera's as-shot gains, which
+    // the forward map must reproduce.
+    let [kelvin, tint] = payload.white_balance_controls();
+    if payload.wb_mode == lightwell_core::WhiteBalanceMode::AsShot
+        && let Ok(gains) =
+            lightwell_core::gains_from_temperature_tint(kelvin, tint, payload.cam_xyz)
+    {
         ensure(
-            (shown - expected).abs() <= displayed_tolerance(action, parameter)?,
-            format!("Displayed {key} control differs from displayed RAW layer"),
+            gains
+                .iter()
+                .zip(payload.as_shot_gains)
+                .all(|(gain, shot)| (gain - shot).abs() <= 1.0e-6 * shot),
+            format!(
+                "The as-shot equivalent {kelvin} K, {tint} does not reproduce the as-shot gains"
+            ),
         )?;
     }
     for (action, parameter, expected) in [
-        (
-            "set-raw-temperature",
-            "kelvin",
-            payload["temperature_kelvin"].as_f64().unwrap_or(6504.0),
-        ),
-        (
-            "set-raw-tint",
-            "tint",
-            payload["tint"].as_f64().unwrap_or(0.0),
-        ),
+        ("set-raw-exposure", "ev", payload.exposure_ev),
+        ("set-raw-temperature", "kelvin", kelvin),
+        ("set-raw-tint", "tint", tint),
     ] {
         let key = format!("{action}.{parameter}");
         let shown: f64 = controls[&key]

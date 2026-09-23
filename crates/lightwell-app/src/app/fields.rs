@@ -3,8 +3,7 @@
 //! was typed and commits nothing.
 use crate::state::tools::{Rendered, classify, declared_parameter};
 use lightwell_core::{
-    ActionDescriptor, Control, ModuleDescriptor, ParameterDescriptor, ParameterKind, RAW_EFFECT,
-    RawPayload, Recipe, WhiteBalanceMode, check_value,
+    ActionDescriptor, Control, ModuleDescriptor, ParameterDescriptor, ParameterKind, check_value,
 };
 use serde_json::{Map, Value};
 use std::collections::BTreeMap;
@@ -58,57 +57,6 @@ impl Fields {
         let text = value_text(parameter, value)?;
         self.set(action, &parameter.name, text);
         Ok(())
-    }
-
-    /// Reflect the displayed RAW history entry. While a person edits one field, keep their text;
-    /// all other controls follow authoritative recipe state across undo, redo and reopen.
-    ///
-    /// Each value is written with the decimals its own parameter declares, so a bound field reads
-    /// exactly like one the person set: the descriptors are the only place that knows, which is why
-    /// they are passed in rather than the RAW names being formatted by a rule of their own here.
-    pub(crate) fn bind_raw(
-        &mut self,
-        modules: &[ModuleDescriptor],
-        recipe: &Recipe,
-        editing: Option<&(String, String)>,
-        dragging: Option<&(String, String)>,
-    ) {
-        let Some(layer) = recipe
-            .layers
-            .first()
-            .filter(|layer| layer.effect_id == RAW_EFFECT)
-        else {
-            return;
-        };
-        let Ok(payload) = RawPayload::from_layer(layer) else {
-            return;
-        };
-        let gains = match payload.wb_mode {
-            WhiteBalanceMode::AsShot => payload.as_shot_gains,
-            WhiteBalanceMode::Custom => payload.gains,
-        };
-        for (action, parameter, value) in [
-            ("set-raw-exposure", "ev", payload.exposure_ev),
-            (
-                "set-raw-temperature",
-                "kelvin",
-                payload.temperature_kelvin.unwrap_or(6504.0),
-            ),
-            ("set-raw-tint", "tint", payload.tint.unwrap_or(0.0)),
-            ("set-raw-red-gain", "gain", f64::from(gains[0])),
-            ("set-raw-blue-gain", "gain", f64::from(gains[2])),
-        ] {
-            if editing.is_some_and(|field| field.0 == action && field.1 == parameter)
-                || dragging.is_some_and(|field| field.0 == action && field.1 == parameter)
-            {
-                continue;
-            }
-            let text = match declared(modules, action, parameter) {
-                Some(declared) => format_number(declared, value),
-                None => number_text(value),
-            };
-            self.set(action, parameter, text);
-        }
     }
 
     /// Correlated evidence: what every generated control held when a frame was captured.
