@@ -324,6 +324,7 @@ fn a_draft_whose_input_stage_fails_ends_explicitly_and_keeps_the_photograph() {
         payload: None,
         base_revision: 4,
         reapply: false,
+        queued: Vec::new(),
     });
     editor.draft_generation = Some(99);
     editor.draft_preview_failed(&error);
@@ -355,6 +356,7 @@ fn a_draft_whose_input_stage_fails_ends_explicitly_and_keeps_the_photograph() {
         payload: None,
         base_revision: 5,
         reapply: true,
+        queued: Vec::new(),
     });
     editor.draft_generation = Some(100);
     editor.draft_preview_failed(&error);
