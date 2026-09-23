@@ -324,17 +324,19 @@ fn min_feature_px_scales_with_the_stage_it_is_asked_about() {
 #[test]
 fn an_unknown_kind_is_refused_by_name_and_still_reads_back() {
     let mut mask = Mask::new("Mask 1");
-    let name = mask.next_component_name("radial");
+    // The brush is named in the masking design and is not delivered, so it is the kind this build
+    // does not claim.
+    let name = mask.next_component_name("brush");
     mask.components.push(Component::new(
         name,
         ComponentMode::Add,
-        "radial",
-        json!({"x": 0.5, "y": 0.5, "radius_x": 0.3, "radius_y": 0.2, "angle": 12.0, "feather": 50.0}),
+        "brush",
+        json!({"strokes": [{"points": [[0.25, 0.5]], "size": 0.1, "feather": 50.0, "flow": 100.0, "erase": false}]}),
     ));
     let error = CompiledMask::new(&mask, stage(64, 48)).unwrap_err();
     assert_eq!(
         error.to_string(),
-        "incompatible: unknown mask component radial"
+        "incompatible: unknown mask component brush"
     );
     // The stored mask is structurally valid — the model never asks what a kind means — and survives
     // a round trip byte for byte, which is what retention means.
