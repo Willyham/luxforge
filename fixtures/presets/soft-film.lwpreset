@@ -1,0 +1,23 @@
+{
+  "format": "lightwell.preset",
+  "version": 1,
+  "name": "Soft film",
+  "group": "Synthetic",
+  "settings": {
+    "set-basic": {
+      "contrast": 12,
+      "exposure": 0.35,
+      "temperature": 0,
+      "tint": 0
+    },
+    "set-mixer": {
+      "blue-saturation": -20
+    },
+    "set-vignette": {
+      "amount": -18,
+      "feather": 50,
+      "midpoint": 50,
+      "roundness": 0
+    }
+  }
+}

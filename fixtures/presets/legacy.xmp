@@ -1,0 +1,39 @@
+<x:xmpmeta xmlns:x="adobe:ns:meta/" x:xmptk="Lightwell synthetic fixture">
+ <rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
+  <rdf:Description rdf:about=""
+    xmlns:crs="http://ns.adobe.com/camera-raw-settings/1.0/"
+    crs:PresetType="Normal"
+    crs:UUID="11223344556677889900AABBCCDDEEFF"
+    crs:Version="6.7"
+    crs:ProcessVersion="5.7"
+    crs:WhiteBalance="As Shot"
+    crs:Exposure="+0.50"
+    crs:Contrast="+25"
+    crs:Brightness="+50"
+    crs:Shadows="5"
+    crs:FillLight="10"
+    crs:HighlightRecovery="20"
+    crs:Clarity="+15"
+    crs:AutoExposure="False"
+    crs:Vibrance="+10"
+    crs:Saturation="+5"
+    crs:Sharpness="25"
+    crs:ToneCurveName="Medium Contrast">
+   <crs:Name>
+    <rdf:Alt>
+     <rdf:li xml:lang="x-default">Legacy Warm</rdf:li>
+    </rdf:Alt>
+   </crs:Name>
+   <crs:ToneCurve>
+    <rdf:Seq>
+     <rdf:li>0, 0</rdf:li>
+     <rdf:li>32, 22</rdf:li>
+     <rdf:li>64, 56</rdf:li>
+     <rdf:li>128, 128</rdf:li>
+     <rdf:li>192, 196</rdf:li>
+     <rdf:li>255, 255</rdf:li>
+    </rdf:Seq>
+   </crs:ToneCurve>
+  </rdf:Description>
+ </rdf:RDF>
+</x:xmpmeta>

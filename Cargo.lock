@@ -1883,6 +1883,7 @@ dependencies = [
  "lightwell-raw",
  "moxcms",
  "rayon",
+ "roxmltree",
  "rusqlite",
  "serde",
  "serde_json",

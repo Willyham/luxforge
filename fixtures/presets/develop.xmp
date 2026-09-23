@@ -1,0 +1,115 @@
+<x:xmpmeta xmlns:x="adobe:ns:meta/" x:xmptk="Lightwell synthetic fixture">
+ <rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
+  <rdf:Description rdf:about=""
+    xmlns:crs="http://ns.adobe.com/camera-raw-settings/1.0/"
+    xmlns:xmp="http://ns.adobe.com/xap/1.0/"
+    xmp:CreatorTool="Lightwell fixture"
+    crs:PresetType="Normal"
+    crs:Cluster=""
+    crs:UUID="5E1F0A2B3C4D4E5F8091A2B3C4D5E6F7"
+    crs:SupportsAmount="True"
+    crs:SupportsColor="True"
+    crs:SupportsMonochrome="True"
+    crs:SupportsHighDynamicRange="True"
+    crs:SupportsNormalDynamicRange="True"
+    crs:SupportsSceneReferred="True"
+    crs:SupportsOutputReferred="True"
+    crs:RequiresRGBTables="False"
+    crs:CameraModelRestriction=""
+    crs:Copyright=""
+    crs:ContactInfo=""
+    crs:Version="16.0"
+    crs:ProcessVersion="11.0"
+    crs:WhiteBalance="Custom"
+    crs:IncrementalTemperature="+7"
+    crs:IncrementalTint="-3"
+    crs:Exposure2012="+0.35"
+    crs:Contrast2012="+12"
+    crs:Highlights2012="-40"
+    crs:Shadows2012="+25"
+    crs:Whites2012="+8"
+    crs:Blacks2012="-6"
+    crs:Texture="+15"
+    crs:Clarity2012="+10"
+    crs:Dehaze="+5"
+    crs:Vibrance="+20"
+    crs:Saturation="-5"
+    crs:HueAdjustmentRed="+4"
+    crs:HueAdjustmentOrange="0"
+    crs:SaturationAdjustmentBlue="-20"
+    crs:LuminanceAdjustmentOrange="+6"
+    crs:LuminanceAdjustmentGreen="-12.5"
+    crs:PostCropVignetteAmount="-18"
+    crs:PostCropVignetteMidpoint="40"
+    crs:PostCropVignetteRoundness="0"
+    crs:PostCropVignetteFeather="60"
+    crs:PostCropVignetteStyle="1"
+    crs:PostCropVignetteHighlightContrast="0"
+    crs:Sharpness="40"
+    crs:SharpenRadius="+1.0"
+    crs:SharpenDetail="25"
+    crs:SharpenEdgeMasking="0"
+    crs:GrainAmount="0"
+    crs:GrainSize="25"
+    crs:GrainFrequency="50"
+    crs:SplitToningShadowHue="220"
+    crs:SplitToningShadowSaturation="0"
+    crs:SplitToningHighlightHue="45"
+    crs:SplitToningHighlightSaturation="12"
+    crs:SplitToningBalance="0"
+    crs:ConvertToGrayscale="False"
+    crs:LensProfileEnable="0"
+    crs:AutoLateralCA="0"
+    crs:CameraProfile="Adobe Standard"
+    crs:ToneCurveName2012="Custom"
+    crs:HasSettings="True"
+    crs:SyntheticFutureControl="3">
+   <crs:Name>
+    <rdf:Alt>
+     <rdf:li xml:lang="fr-FR">Film doux</rdf:li>
+     <rdf:li xml:lang="x-default">Soft Film</rdf:li>
+    </rdf:Alt>
+   </crs:Name>
+   <crs:ShortName>
+    <rdf:Alt>
+     <rdf:li xml:lang="x-default"/>
+    </rdf:Alt>
+   </crs:ShortName>
+   <crs:Group>
+    <rdf:Alt>
+     <rdf:li xml:lang="x-default">Synthetic Looks</rdf:li>
+    </rdf:Alt>
+   </crs:Group>
+   <crs:Look>
+    <rdf:Description
+     crs:Name="Adobe Color"
+     crs:Amount="1"
+     crs:UUID="0A1B2C3D4E5F60718293A4B5C6D7E8F9"
+     crs:SupportsAmount="false"
+     crs:SupportsMonochrome="false"
+     crs:SupportsOutputReferred="false"
+     crs:Stubbed="true">
+     <crs:Group>
+      <rdf:Alt>
+       <rdf:li xml:lang="x-default">Profiles</rdf:li>
+      </rdf:Alt>
+     </crs:Group>
+    </rdf:Description>
+   </crs:Look>
+   <crs:ToneCurvePV2012>
+    <rdf:Seq>
+     <rdf:li>0, 0</rdf:li>
+     <rdf:li>64, 56</rdf:li>
+     <rdf:li>192, 200</rdf:li>
+     <rdf:li>255, 255</rdf:li>
+    </rdf:Seq>
+   </crs:ToneCurvePV2012>
+   <crs:ToneCurvePV2012Red>
+    <rdf:Seq>
+     <rdf:li>0, 0</rdf:li>
+     <rdf:li>255, 255</rdf:li>
+    </rdf:Seq>
+   </crs:ToneCurvePV2012Red>
+  </rdf:Description>
+ </rdf:RDF>
+</x:xmpmeta>
