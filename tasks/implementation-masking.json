@@ -1952,7 +1952,9 @@
       "extra_context": [
         "Lightroom's Auto Mask is edge- and connectivity-constrained. A per-pixel colour similarity to the colour sampled where the stroke began is the part that can be evaluated analytically and sampled in bounded time; it is not the same thing and must not be named as if it were.",
         "Proposal P7, a genuinely edge-aware refinement through a guided filter, stays out: it is a neighbourhood operation over what is currently a point function and needs its own design.",
-        "The control's name and its guide entry say what it does."
+        "The control's name and its guide entry say what it does.",
+        "P17, open and the one acceptance item TASK-023 left unfinished: the colour range's canvas pick is not wired. The host side is done - mask.add-colour-range-sample and mask.delete-colour-range-sample, generated from the kind table, with a duplicate sample writing no history entry - but the delivered pick machinery (CanvasInteraction::SampleApply) runs a module's query into a module's action, and a mask command is neither. The sampled pixel must be the operation's input, which is StageContext::sample_before's answer, so the client must not decode it itself. Settle the mechanism before building on it: the smallest honest change is to let the pick target a host command and carry the input pixel the host already computes.",
+        "P16, open and product-facing: the coverage overlay refuses a mask that reads pixels. The grid is a function of position over the finished frame, whose pixels are the masked operation's output, so painting a range selection from them would show a selection the render never made. Refusing is honest, but it leaves every mask holding a range component with no overlay at all - and the overlay is what makes a mask legible. This one is the owner's call, not an implementation detail."
       ],
       "context_links": [
         {
