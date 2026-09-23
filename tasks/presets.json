@@ -8,7 +8,7 @@
     {
       "id": "TASK-001",
       "description": "Add composite plans, the string and settings parameter kinds, the presets control and the lightwell.presets module with apply-preset.",
-      "status": "ready",
+      "status": "completed",
       "dependencies": [],
       "extra_context": [
         "The host runs each Compose step through the registry against the intermediate stack and commits once; a nested composite, a non-patch, unknown or unavailable action is refused and nothing is written.",
@@ -57,7 +57,7 @@
     {
       "id": "TASK-002",
       "description": "Build the preset importer: format detection, the Lightwell preset document, Lightroom XMP, .lrtemplate, the mapping table and the report.",
-      "status": "ready",
+      "status": "completed",
       "dependencies": [],
       "extra_context": [
         "Pure functions over text and the module registry: no catalog, no file access, no rendering.",
@@ -105,7 +105,7 @@
     {
       "id": "TASK-003",
       "description": "Store the preset library in catalog format 5 and expose preset.list, read, create, capture, update, delete, export, inspect and import.",
-      "status": "pending",
+      "status": "in_progress",
       "dependencies": [
         "TASK-001",
         "TASK-002"
