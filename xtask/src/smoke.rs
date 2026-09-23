@@ -1,7 +1,7 @@
 use crate::{
     basic_smoke as basic, controls_smoke as controls, crop_smoke as crop, gallery_smoke as gallery,
     histogram_smoke as histogram, mixer_smoke as mixer, presence_smoke as presence,
-    vignette_smoke as vignette, workspace_smoke as workspace, *,
+    presets_smoke as presets, vignette_smoke as vignette, workspace_smoke as workspace, *,
 };
 use std::{
     process::{Child, Stdio},
@@ -9,7 +9,7 @@ use std::{
 };
 /// Every rendered scenario, in the order `verify --tier rendered` runs them. One list: `main.rs`
 /// and `verify` both reach a scenario through [`dispatch`], so a new scenario is named here once.
-pub const SCENARIOS: [&str; 22] = [
+pub const SCENARIOS: [&str; 23] = [
     "empty",
     "load",
     "replacement",
@@ -29,6 +29,7 @@ pub const SCENARIOS: [&str; 22] = [
     "presence",
     "mixer",
     "vignette",
+    "presets",
     "gallery",
     "controls",
     "unavailable",
@@ -373,6 +374,11 @@ pub fn verify(evidence: &Path, scenario: &str, count: usize) -> Result<Value> {
         vignette::verify(evidence, &app, &events)?;
         return Ok(app);
     }
+    if let Some(frames) = presets::frames(scenario) {
+        let (app, events) = preamble(evidence, frames)?;
+        presets::verify(evidence, &app, &events)?;
+        return Ok(app);
+    }
     let (app, events) = preamble(evidence, count.max(1))?;
     let frames = app["frames"].as_array().ok_or("Missing frames")?;
     for (index, frame) in frames.iter().enumerate() {
@@ -516,6 +522,11 @@ pub fn run(root: &Path, out: &Path, scenario: &str, bin: &Path, timeout: Duratio
         scenario if vignette::source(scenario).is_some() => {
             vec![root.join(vignette::source(scenario).expect("the vignette fixture"))]
         }
+        // `presets` imports, applies, creates and deletes library presets over the quadrant
+        // fixture, whose flat colours each preset moves.
+        scenario if presets::source(scenario).is_some() => {
+            vec![root.join(presets::source(scenario).expect("the presets fixture"))]
+        }
         _ => return Err("Unknown smoke scenario".into()),
     };
     fs::create_dir_all(out)?;
@@ -571,6 +582,7 @@ pub fn run(root: &Path, out: &Path, scenario: &str, bin: &Path, timeout: Duratio
         .or_else(|| presence::script(scenario))
         .or_else(|| mixer::script(scenario))
         .or_else(|| vignette::script(scenario))
+        .or_else(|| presets::script(scenario))
     {
         let file = out.join("script.json");
         write_json(&file, &script)?;
