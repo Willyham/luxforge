@@ -601,7 +601,8 @@ impl FieldTarget {
     /// origin, peaking at [`BURST_PEAK_FRACTION`] of the smaller half of its declared range, each
     /// on the field's own step grid, as a slider on that step would produce. On an exposure field
     /// (origin 0, -5..5 EV, step 0.01) that is [`burst_values`] itself, value for value; on
-    /// Custom temperature it swings about 4700..8310 K from 6500 K, and on a -100..100 field ±40.
+    /// Custom temperature it swings from 6500 K to about 8300 K and 4710 K, and on a -100..100
+    /// field ±40.
     fn burst_values(&self) -> Vec<f64> {
         let amplitude = BURST_PEAK_FRACTION * (self.max - self.origin).min(self.origin - self.min);
         // A whole step divides exactly; a fractional one multiplies by its inverse, which is how
