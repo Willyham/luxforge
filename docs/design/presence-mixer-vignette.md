@@ -91,7 +91,7 @@ One `set-vignette` field patch, `reset-vignette`, labels like `Vignette amount â
 
 ## Controls and interaction
 
-All three sections render from descriptors with the delivered vocabulary; no new control kind and no desktop change is expected. Every slider is a `number` control of a field-patch action, so it drafts through the core lifecycle on the 16 ms tick, previews live and commits once on release, key-up or Enter; Escape cancels; a right-click copies the exact JSON request.
+All three sections render from descriptors with the delivered vocabulary; no new control kind and no desktop change is expected. Every slider is a `number` control of a field-patch action, so it drafts through the core lifecycle, previews live and commits once on release, key-up or Enter; Escape cancels; a right-click copies the exact JSON request.
 
 | Section | Registry position and initial state | Groups and controls |
 | --- | --- | --- |
