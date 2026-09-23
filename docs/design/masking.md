@@ -266,6 +266,8 @@ Two new canvas interactions join `point-pick`, `sample-apply` and `crop-frame`:
 
 ## The Develop workspace
 
+The panel's layout, rows, gestures and the kinds proposed next are designed in [Masks in the Develop workspace](masking-workspace.md), a proposal over the model below; this section records what is delivered.
+
 Mask is the canvas-takeover mode the [tool array](develop-workspace.md#tool-array) already reserves a row for, entered from the mode strip, from `M` or from the command palette.
 
 While it is active the tools panel shows the **Masks panel** in place of the module sections:
