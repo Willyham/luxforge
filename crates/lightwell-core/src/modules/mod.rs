@@ -53,9 +53,9 @@ pub use spatial::{
 pub use transform::TransformModule;
 pub use vignette::VignetteModule;
 
-use crate::{Error, Layer, artifacts::PreparedArtifact};
+use crate::{Error, Layer, artifacts::PreparedArtifact, capabilities::context::ModuleContext};
 use serde_json::{Map, Value};
-use std::sync::Arc;
+use std::{path::Path, sync::Arc};
 
 /// A normalized action request: the durable history action identity and the parameter object
 /// stored on the history entry.
@@ -209,5 +209,27 @@ pub trait ToolModule: Send + Sync {
     ) -> Result<Processing, Error> {
         let _ = artifacts;
         self.compile(effect_id, format, payload, stage)
+    }
+    /// Load what the module's declared activation needs, on the capability worker's module lane,
+    /// after the host checked every required setting and resource. `context` gives the installed
+    /// resources' paths, the settings and the declared secrets; the module keeps what it loads
+    /// until [`ToolModule::deactivate`]. Call `context.checkpoint()` between units of work and
+    /// return its error when cancelled. After an activation that does not succeed, or one cancelled
+    /// as it finished, the host calls `deactivate` itself, so partial state is released in one
+    /// place. Never called on the owner or UI thread, and never by discovery or catalog reopen.
+    fn activate(&self, context: &ModuleContext) -> Result<(), Error> {
+        let _ = context;
+        Ok(())
+    }
+    /// Release everything `activate` loaded. Called on the module lane, after any work queued
+    /// before it; it must tolerate being called when nothing is loaded.
+    fn deactivate(&self) {}
+    /// Check that a staged resource's bytes are the format the module declares, before the host
+    /// installs it. The bytes already match the pinned length and SHA-256. Called on the transfer
+    /// lane; a refusal leaves nothing installed. Read the file; never execute or load it with a
+    /// general object loader.
+    fn validate_resource(&self, resource_id: &str, path: &Path) -> Result<(), Error> {
+        let _ = (resource_id, path);
+        Ok(())
     }
 }

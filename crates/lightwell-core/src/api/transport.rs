@@ -1,6 +1,6 @@
 //! Loopback JSON-lines transport: one line per request and response, a per-run token and a
 //! session file for discovery. The same framing serves stdin/stdout for headless use.
-use super::{ApiRequest, ApiResponse, ClientId, OwnerHandle, PROTOCOL};
+use super::{ApiRequest, ApiResponse, ClientAuthority, ClientId, OwnerHandle, PROTOCOL};
 use crate::{Error, ErrorKind};
 use serde::{Deserialize, Serialize};
 use std::{
@@ -126,19 +126,32 @@ fn write_session_file(path: &Path, info: &LocalSessionInfo) -> Result<(), Error>
         .map_err(|error| Error::new(ErrorKind::Protocol, error.to_string()))
 }
 
+/// Serve one edit client over JSON lines, such as `lightwell-json` on its standard streams.
 pub fn serve_json_lines(
     reader: impl Read,
     writer: impl Write,
     owner: &OwnerHandle,
 ) -> Result<(), Error> {
-    serve(reader, writer, owner, None)
+    serve_json_lines_with(reader, writer, owner, ClientAuthority::Edit)
+}
+
+/// Serve one client over JSON lines with the authority its process was started with. Only a local
+/// process the person started explicitly for setup, such as `lightwell-json
+/// --permission-authority`, passes anything but `Edit`; the loopback listener never does.
+pub fn serve_json_lines_with(
+    reader: impl Read,
+    writer: impl Write,
+    owner: &OwnerHandle,
+    authority: ClientAuthority,
+) -> Result<(), Error> {
+    serve(reader, writer, owner, None, authority)
 }
 
 fn serve_stream(stream: TcpStream, owner: &OwnerHandle, token: Option<&str>) -> Result<(), Error> {
     let writer = stream
         .try_clone()
         .map_err(|error| Error::new(ErrorKind::Protocol, error.to_string()))?;
-    serve(stream, writer, owner, token)
+    serve(stream, writer, owner, token, ClientAuthority::Edit)
 }
 
 /// Registers a client for the connection's lifetime and forgets its session on every exit path.
@@ -158,10 +171,11 @@ fn serve(
     mut writer: impl Write,
     owner: &OwnerHandle,
     token: Option<&str>,
+    authority: ClientAuthority,
 ) -> Result<(), Error> {
     let registration = Registration {
         owner,
-        client: owner.register(),
+        client: owner.register_with(authority),
     };
     let mut reader = BufReader::new(reader);
     loop {

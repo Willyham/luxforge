@@ -5,6 +5,7 @@
 //! file. A file of any other format is refused and never rewritten. Secrets never enter this file:
 //! they go to the [`SecretStore`]. See `docs/design/module-capabilities.md#settings-store`.
 use super::{
+    atomic,
     descriptor::{
         AdapterAuth, ProfilesDescriptor, SettingDescriptor, SettingKind, SettingsDescriptor,
         check_plain_value,
@@ -19,8 +20,7 @@ use serde_json::{Map, Value};
 use sha2::{Digest, Sha256};
 use std::{
     collections::{BTreeMap, VecDeque},
-    fs::{self, File, OpenOptions},
-    io::{Read, Write},
+    fs::File,
     path::{Path, PathBuf},
 };
 
@@ -51,13 +51,6 @@ pub const REMOVE_PROFILE: &str = "module.profile.remove";
 
 fn validation(detail: impl Into<String>) -> Error {
     Error::new(ErrorKind::Validation, detail)
-}
-
-fn file_error(path: &Path, error: std::io::Error) -> Error {
-    Error::new(
-        ErrorKind::FileAccess,
-        format!("{}: {}", path.display(), error.kind()),
-    )
 }
 
 fn incompatible(path: &Path, reason: impl std::fmt::Display) -> Error {
@@ -1129,42 +1122,16 @@ impl SettingsStore {
     /// Take the advisory lock that serializes writers, across processes as well as threads. It is
     /// released when the returned handle drops.
     fn lock(&self) -> Result<File, Error> {
-        fs::create_dir_all(&self.dir).map_err(|error| file_error(&self.dir, error))?;
-        let path = self.dir.join(SETTINGS_LOCK);
-        let file = OpenOptions::new()
-            .create(true)
-            .truncate(false)
-            .write(true)
-            .open(&path)
-            .map_err(|error| file_error(&path, error))?;
-        file.lock().map_err(|error| file_error(&path, error))?;
-        Ok(file)
+        atomic::lock(&self.dir, SETTINGS_LOCK)
     }
 
     /// The whole file, bounded and checked. An absent file is an empty document; a file of another
     /// format, or one that is not the current shape, is refused and left exactly as it is.
     fn load(&self) -> Result<Document, Error> {
         let path = self.path();
-        let file = match File::open(&path) {
-            Ok(file) => file,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                return Ok(Document::empty());
-            }
-            Err(error) => return Err(file_error(&path, error)),
+        let Some(bytes) = atomic::read(&path, MAX_SETTINGS_BYTES)? else {
+            return Ok(Document::empty());
         };
-        let mut bytes = Vec::new();
-        file.take(MAX_SETTINGS_BYTES + 1)
-            .read_to_end(&mut bytes)
-            .map_err(|error| file_error(&path, error))?;
-        if bytes.len() as u64 > MAX_SETTINGS_BYTES {
-            return Err(Error::new(
-                ErrorKind::ResourceLimit,
-                format!(
-                    "{} is larger than {MAX_SETTINGS_BYTES} bytes; the file is kept unchanged",
-                    path.display()
-                ),
-            ));
-        }
         let value: Value = serde_json::from_slice(&bytes)
             .map_err(|error| incompatible(&path, format!("not valid JSON ({error})")))?;
         match value.get("format").and_then(Value::as_u64) {
@@ -1195,23 +1162,7 @@ impl SettingsStore {
                 ),
             ));
         }
-        let temporary = self.dir.join(SETTINGS_TEMPORARY);
-        let written = File::create(&temporary)
-            .and_then(|mut file| {
-                file.write_all(&bytes)?;
-                file.sync_all()
-            })
-            .and_then(|()| fs::rename(&temporary, self.path()));
-        if let Err(error) = written {
-            let _ = fs::remove_file(&temporary);
-            return Err(file_error(&temporary, error));
-        }
-        // The rename is durable only once the directory entry is.
-        #[cfg(unix)]
-        File::open(&self.dir)
-            .and_then(|dir| dir.sync_all())
-            .map_err(|error| file_error(&self.dir, error))?;
-        Ok(())
+        atomic::replace(&self.dir, SETTINGS_FILE, SETTINGS_TEMPORARY, &bytes)
     }
 }
 
@@ -1223,7 +1174,7 @@ mod tests {
         testing::{ADAPTER, capability_descriptor, temp},
     };
     use serde_json::json;
-    use std::sync::Arc;
+    use std::{fs, sync::Arc};
 
     fn mutation(revision: u64, request: &str) -> Mutation {
         Mutation {

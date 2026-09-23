@@ -1,11 +1,13 @@
 //! One thread owns the catalog and every client session; all clients call it in turn.
-use super::{ApiEvent, ApiRequest, ApiResponse, ClientSession, EventsResult, methods};
+use super::{
+    ApiEvent, ApiRequest, ApiResponse, ClientAuthority, ClientSession, EventsResult, methods,
+};
 use crate::{
     AnalysisPlan, AnalysisSelection, AssetId, DraftId, EditorService, EditorState, EntryId, Error,
     ErrorKind, HostConfig, JobId, ModuleRegistry, PreviewJob, ProxyBounds,
     analysis::{AnalysisIdentity, AnalysisJob, AnalysisQueue, AnalysisRead, AnalysisStore, Report},
     artifacts::{self, ArtifactId, ArtifactRead, Collected, Collection, VerifiedArtifact},
-    capabilities::host::CapabilityHost,
+    capabilities::{host::CapabilityHost, jobs::Origin},
     editor::{PreparedFile, RawDevelopment, SourceSignature},
     source::RawPrepared,
 };
@@ -70,6 +72,21 @@ enum OwnerMessage {
     },
     SourceStarted(String),
     SourceComplete(String, Result<SourceResult, Error>),
+    /// A client registered with more than edit authority. Sent by `register_with` before it
+    /// returns, so the channel orders it before any call the client makes.
+    Register {
+        client: ClientId,
+        authority: ClientAuthority,
+    },
+    /// A capability lane finished a job. Like the analysis worker, the lane posts it into this
+    /// channel, so nothing polls.
+    CapabilityFinished {
+        job_id: JobId,
+        result: Result<Value, Error>,
+    },
+    /// How many capability lane threads have started, for tests that prove discovery is inert.
+    #[cfg(test)]
+    CapabilityThreads(SyncSender<usize>),
     Disconnect(ClientId),
     Stop,
 }
@@ -780,7 +797,14 @@ impl OwnerHandle {
         // The analysis worker posts its results back through this same channel, so the owner needs
         // one clone of its own sender. The loop ends on `Stop`, never on the senders dropping.
         let completions = sender.clone();
-        let host = CapabilityHost::new(host);
+        // The capability lanes post their finished jobs the same way.
+        let capability_sender = sender.clone();
+        let host = CapabilityHost::new(
+            host,
+            Arc::new(move |job_id, result| {
+                let _ = capability_sender.send(OwnerMessage::CapabilityFinished { job_id, result });
+            }),
+        );
         let join = std::thread::spawn(move || {
             owner_loop(service, host, completions, receiver, source_sender, worker)
         });
@@ -793,9 +817,32 @@ impl OwnerHandle {
         ))
     }
 
-    /// Allocate a client identity; its session starts as default on first use.
+    /// Allocate an edit client's identity; its session starts as default on first use.
     pub fn register(&self) -> ClientId {
         ClientId(self.next_client.fetch_add(1, Ordering::Relaxed))
+    }
+
+    /// Allocate a client identity with a fixed authority. The owner learns it before any call the
+    /// client makes and forgets it when the client disconnects. Only the desktop's own client and
+    /// an explicitly started local setup process register with more than `Edit`.
+    pub fn register_with(&self, authority: ClientAuthority) -> ClientId {
+        let client = self.register();
+        if authority != ClientAuthority::Edit {
+            let _ = self
+                .sender
+                .send(OwnerMessage::Register { client, authority });
+        }
+        client
+    }
+
+    /// How many capability lane threads the owner has started.
+    #[cfg(test)]
+    pub(crate) fn capability_threads(&self) -> usize {
+        let (reply, answer) = sync_channel(1);
+        self.sender
+            .send(OwnerMessage::CapabilityThreads(reply))
+            .expect("the owner is running");
+        answer.recv().expect("the owner answered")
     }
 
     /// Forget a client's session. Its committed edits and jobs are unaffected.
@@ -878,6 +925,20 @@ fn owner_loop(
     while let Ok(message) = receiver.recv() {
         match message {
             OwnerMessage::Stop => break,
+            OwnerMessage::Register { client, authority } => {
+                sessions.entry(client).or_default().authority = authority;
+            }
+            OwnerMessage::CapabilityFinished { job_id, result } => {
+                let mut announced = Vec::new();
+                host.finished(&service, &job_id, result, &mut announced);
+                for origin in &announced {
+                    record_event(&mut events, &mut sequence, origin);
+                }
+            }
+            #[cfg(test)]
+            OwnerMessage::CapabilityThreads(reply) => {
+                let _ = reply.send(host.lanes_started());
+            }
             OwnerMessage::Disconnect(client) => {
                 sessions.remove(&client);
                 // A gone client releases its analysis interests exactly as a cancel does; a job
@@ -1162,16 +1223,19 @@ fn owner_loop(
                     // and the capability host's settings.
                     Some(method) if method.owner_answered() => {
                         let request = &call.request;
-                        if let Some(result) = host.answer(service.registry(), call.client, request)
+                        // A client's authority is part of its session, fixed when it registered.
+                        let authority = sessions
+                            .get(&call.client)
+                            .map_or(ClientAuthority::Edit, |session| session.authority);
+                        let mut announced = Vec::new();
+                        if let Some(result) =
+                            host.answer(&service, authority, request, &mut announced)
                         {
-                            // A committed capability write is announced like an edit; a read, a
-                            // no-op and a retry answered from the request log commit nothing and
-                            // are not.
-                            if result.as_ref().is_ok_and(|value| {
-                                methods::mutates(&method, Some(value))
-                                    && value.get("deduplicated") != Some(&Value::Bool(true))
-                            }) {
-                                record_event(&mut events, &mut sequence, request);
+                            // The host announces exactly what a request changed: a committed
+                            // write, a grant, a cancelled job or a deactivation. A read, a no-op
+                            // and a retry answered from a request log change nothing.
+                            for origin in &announced {
+                                record_event(&mut events, &mut sequence, origin);
                             }
                             let response = answer(request, sequence, result);
                             let _ = call.response.send(response);
@@ -1306,20 +1370,23 @@ fn owner_loop(
         job.cancelled.store(true, Ordering::Relaxed);
     }
     drop(jobs);
+    // The lanes post into the receiver, so it goes first: a lane finishing as it stops is never
+    // left waiting on a full channel while the owner waits for it.
     drop(receiver);
+    host.shutdown();
     let _ = worker.join();
 }
 
-/// Append one event for a committed mutation, dropping the oldest beyond the log's capacity.
-fn record_event(events: &mut VecDeque<ApiEvent>, sequence: &mut u64, request: &ApiRequest) {
+/// Append one event for a committed change, dropping the oldest beyond the log's capacity.
+fn record_event(events: &mut VecDeque<ApiEvent>, sequence: &mut u64, origin: &Origin) {
     *sequence = sequence.saturating_add(1);
     if events.len() == EVENT_CAPACITY {
         events.pop_front();
     }
     events.push_back(ApiEvent {
         sequence: *sequence,
-        method: request.method.clone(),
-        request_id: request.id.clone(),
+        method: origin.method.clone(),
+        request_id: origin.request_id.clone(),
     });
 }
 

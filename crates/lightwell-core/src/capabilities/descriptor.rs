@@ -196,15 +196,34 @@ pub enum AdapterAuth {
 /// What a request may carry. The host builds the body from the declared class only.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum DataClass {
-    /// An 8 × 8 grid of rendered sRGB point samples of the asset's current entry.
+    /// An 8 × 8 grid of rendered sRGB point samples of the asset's current entry. Its body is 192
+    /// bytes, `application/octet-stream`: the 64 samples row by row from the top-left, three
+    /// 8-bit sRGB channels each, in red, green, blue order.
     #[serde(rename = "sample-grid-8")]
     SampleGrid8,
 }
+
+/// The side of the `sample-grid-8` grid.
+pub const SAMPLE_GRID_SIDE: u32 = 8;
 
 impl DataClass {
     pub fn name(self) -> &'static str {
         match self {
             Self::SampleGrid8 => "sample-grid-8",
+        }
+    }
+
+    /// What the body carries, in the words a consent notice uses.
+    pub fn describe(self) -> &'static str {
+        match self {
+            Self::SampleGrid8 => "an 8 × 8 grid of rendered colour samples of this photo",
+        }
+    }
+
+    /// The exact size of the body the host sends for this class.
+    pub fn request_bytes(self) -> u64 {
+        match self {
+            Self::SampleGrid8 => u64::from(SAMPLE_GRID_SIDE * SAMPLE_GRID_SIDE * 3),
         }
     }
 }

@@ -205,7 +205,108 @@ pub(super) const METHODS: &[MethodSpec] = &[
         mutates: true,
         required: &["module_id", "profile_id", "mutation"],
         optional: &[],
-        notes: "clears the profile's secrets and removes it and its values; returns the removed profile",
+        notes: "clears the profile's secrets and removes it and its values, revokes the profile's grants and returns the removed profile",
+        handler: None,
+    },
+    // Permissions, activation, resources and capability jobs are answered by the catalog owner
+    // too: grants live beside the settings, and the jobs, lanes and activation state live there.
+    MethodSpec {
+        name: "module.permission.grant",
+        mutates: true,
+        required: &["module_id", "capability", "scope", "request_id"],
+        optional: &[],
+        notes: "grants one exact scope of a declared capability; only a client with permission authority may, otherwise forbidden; scope is {path} for read-user-file (the canonical path its file setting holds now), {resource, version, origin} for download-artifact (the declared version from the origin of its pinned URL) or {profile_id, adapter, origin, data, asset_id} for remote-image-request (an existing profile of that adapter whose endpoint has that origin, the capability's data class and an asset of this catalog); clears a matching denial; a retried request_id returns the same grant; returns {grant, outcome, deduplicated}",
+        handler: None,
+    },
+    MethodSpec {
+        name: "module.permission.deny",
+        mutates: true,
+        required: &["module_id", "capability", "scope"],
+        optional: &[],
+        notes: "records that the person did not allow one exact scope; the next consent-required for it reports denied: true; any client may; returns {denial}",
+        handler: None,
+    },
+    MethodSpec {
+        name: "module.permission.revoke",
+        mutates: true,
+        required: &["grant_id"],
+        optional: &[("reason", "1..256 characters; default revoked")],
+        notes: "marks the grant revoked and cancels the queued and running jobs that depend on it with cancelled: permission revoked; never touches recipes, history or artifacts; any client may; returns {grant, outcome, cancelled_jobs}",
+        handler: None,
+    },
+    MethodSpec {
+        name: "module.permission.list",
+        mutates: false,
+        required: &[],
+        optional: &[("module_id", "one module's grants and denials; default all")],
+        notes: "{grants, denials}: every grant, revoked ones with {revoked: {ms, reason}}, and every recorded denial; none holds a secret",
+        handler: None,
+    },
+    MethodSpec {
+        name: "module.activate",
+        mutates: true,
+        required: &["module_id"],
+        optional: &[],
+        notes: "checks the module's declared required settings and resources and fails with not-ready and data.requirements [{kind, id, state}] listing every missing one before anything is queued; otherwise queues its activation on the module lane, or joins the one queued or running; returns {module_id, activation, job_id?, status?}; an active module answers activation: active with no job",
+        handler: None,
+    },
+    MethodSpec {
+        name: "module.deactivate",
+        mutates: true,
+        required: &["module_id"],
+        optional: &[],
+        notes: "supersedes a queued activation, cancels a running one, or marks an active module inactive and queues the release of what it loaded after the module lane's earlier work; never deletes a resource or an edit; returns {module_id, activation, job_id?, status?}",
+        handler: None,
+    },
+    MethodSpec {
+        name: "module.status",
+        mutates: false,
+        required: &["module_id"],
+        optional: &[],
+        notes: "{module_id, activation: {state, reason?, job_id?, error?}, settings: {state, revision, missing}, resources, permissions: {grants, denials}, jobs}; state is inactive, activating, active or failed; reads settings, stats installed markers and reads grants, and loads nothing",
+        handler: None,
+    },
+    MethodSpec {
+        name: "module.resource.list",
+        mutates: false,
+        required: &["module_id"],
+        optional: &[],
+        notes: "{resources: [{id, title, version, bytes, sha256, license, provenance, url, state, path?, installed_ms?, job_id?, error?}], storage: {root, used_bytes, quota_bytes}}; state is not-installed, installing, installed or failed; stats only, no hashing",
+        handler: None,
+    },
+    MethodSpec {
+        name: "module.resource.install",
+        mutates: true,
+        required: &["module_id", "resource_id"],
+        optional: &[(
+            "source",
+            "{kind: download} (default), which needs the download-artifact grant, or {kind: file, path} to copy a local file, which needs none because only the pinned bytes are accepted",
+        )],
+        notes: "queues a transfer-lane job that streams into staging, checks the pinned length and SHA-256, asks the module to check the format, checks the storage quota and only then installs; consent-required and resource-limit are reported before anything is queued; an installed resource answers state: installed and a second request joins the running install; returns {module_id, resource_id, state, job_id?, status?}",
+        handler: None,
+    },
+    MethodSpec {
+        name: "module.resource.remove",
+        mutates: true,
+        required: &["module_id", "resource_id"],
+        optional: &[],
+        notes: "queues a transfer-lane job that deletes the installed version; a module that requires it and is active or activating is deactivated first; never touches a catalog, recipe or artifact; returns {module_id, resource_id, state, job_id?, status?}",
+        handler: None,
+    },
+    MethodSpec {
+        name: "module.job.read",
+        mutates: false,
+        required: &["job_id"],
+        optional: &[],
+        notes: "{job_id, kind, module_id, resource_id?, status, progress: {fraction?, message?}, result?, error?: {code, message, data?}, request_id?}; kind is activate, deactivate, install, remove or task; status is queued, running, succeeded, failed, cancelled or superseded; any client may read any capability job; the owner keeps the last 32 finished",
+        handler: None,
+    },
+    MethodSpec {
+        name: "module.job.cancel",
+        mutates: true,
+        required: &["job_id"],
+        optional: &[],
+        notes: "removes a queued job as cancelled, or asks a running one to stop at its next checkpoint; a finished job is returned unchanged; a deactivation cannot be cancelled; any client may; returns the job",
         handler: None,
     },
     MethodSpec {
@@ -1527,17 +1628,17 @@ mod tests {
                 "notes": listed["recipe.describe"]["notes"],
             })
         );
-        // The capability host's settings methods follow module.list in the table, are answered by
-        // the catalog owner and say which of them write.
+        // The capability host's methods follow module.list in the table, are answered by the
+        // catalog owner and say which of them write.
         let listing = METHODS
             .iter()
             .position(|spec| spec.name == "module.list")
             .unwrap();
-        for (offset, name) in crate::capabilities::host::METHODS.iter().enumerate() {
+        for (offset, (name, writes)) in crate::capabilities::host::METHODS.iter().enumerate() {
             let spec = &METHODS[listing + 1 + offset];
             assert_eq!(spec.name, *name);
             assert!(spec.handler.is_none(), "{name} is answered by the owner");
-            assert_eq!(spec.mutates, *name != "module.settings.read", "{name}");
+            assert_eq!(spec.mutates, *writes, "{name}");
             assert!(listed.contains_key(*name));
         }
         assert_eq!(
