@@ -397,7 +397,8 @@ a span or tile whose coverage the bounds rectangle proves is zero.
   rule and the payload contract do. The recommendation is `[-1, 2]` — one stage extent of overshoot
   on each side, which keeps every stored coordinate bounded and every derived distance inside the
   ceiling above. This is a product and validation decision, not a numerical fact, so it is recorded
-  here for the owner rather than decided.
+  here for the owner rather than decided. **Decided on 2026-09-23: widened to `[-1, 2]`**, as recommended; the
+  design and the validation rule carry it and nothing in the mathematics above changed.
 - **Composed coverage is C⁰ at component crossings**, measured above, and that is the price of the
   frozen algebra's exactness properties. If the crease turns out to matter in practice, the product
   algebra is the alternative and its cost is stated: reorder, duplicate and re-run stop being

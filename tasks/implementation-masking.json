@@ -83,7 +83,7 @@
     {
       "id": "TASK-002",
       "description": "Add the mask objects to the recipe model and the catalog: Mask, Component, Recipe.masks, Layer.mask, catalog format 5, structural validation and explicit retention of unknown component kinds.",
-      "status": "pending",
+      "status": "completed",
       "dependencies": [],
       "extra_context": [
         "Masks live in the recipe beside the layers, so every history entry's existing complete snapshot carries them and undo, redo, preview, Restore, versions and lineage keep working with no new machinery. Do not add a second persistence path.",
@@ -133,7 +133,6 @@
         "Layer carries an optional mask reference; a layer naming a mask absent from its snapshot fails compiling, rendering, sampling and planning with an incompatible error that names both, and nothing is rewritten.",
         "A mask may only be referenced by a layer before the geometry tail; attaching one to a geometry- or finish-stage layer is a validation error naming the stage.",
         "The catalog marker is 5; a format 4 catalog is refused with the existing explicit message and its file is left untouched.",
-        "A stored component whose kind this build does not know is retained byte for byte, listed by mask.list and recipe.describe, and fails rendering with incompatible: unknown mask component <kind> naming it.",
         "The declared per-recipe limits from the design (masks, components, points, serialized bytes) are enforced with resource-limit errors naming the limit."
       ],
       "test_strategy": {
@@ -167,7 +166,8 @@
       "extra_context": [
         "This is the change that gives masking every delivered adjustment at once: Basic, the colour mixer and Presence declare maskable and nothing else does. No module code parses, plans or compiles the target; it is entirely host-owned.",
         "single_layer becomes at most one layer of this effect per target, where the global layer and each mask are distinct targets. Two layers with the same target still fail with the existing ambiguous-layers validation error and nothing is rewritten.",
-        "Ordering is the part a person can see: masked layers of one effect follow the global one and are ordered by their mask's index, so overlapping masks apply in the order the mask list shows."
+        "Ordering is the part a person can see: masked layers of one effect follow the global one and are ordered by their mask's index, so overlapping masks apply in the order the mask list shows.",
+        "This task makes a masked layer creatable and the masked colour primitive task makes it evaluable. They must land in one integration, in that order, and never ship apart: between them a masked layer would render as if unmasked, which is exactly the silent omission the pillars forbid. The host compiles a stack before persisting it, so a temporary refusal in compile is not an option either — it would block the commit this task adds."
       ],
       "context_links": [
         {
@@ -259,7 +259,9 @@
       "extra_context": [
         "CompiledMask is the host's answer to what is this pixel's coverage, and it must answer for one pixel in bounded time so that render.sample can equal the rendered byte. No full-resolution mask plane is allocated anywhere, ever.",
         "The bounds rectangle is what makes a small mask cheap on a 60 MP frame: outside it coverage is exactly zero, so a colour run skips those spans and a spatial tiling copies those tiles.",
-        "The production evaluation is the study's frozen equation transcribed in the same written form and the same order as the reference, as the vignette unit is, so the two are bit-identical rather than merely close."
+        "The production evaluation is the study's frozen equation transcribed in the same written form and the same order as the reference, as the vignette unit is, so the two are bit-identical rather than merely close.",
+        "Stored positions are normalized fractions in [-1, 2], not [0, 1]: the frame is [0, 1] and one stage extent of overshoot per side is legal, because a gradient dragged from off the canvas and a radial centred outside the frame are ordinary edits. Decided 2026-09-23 on the mask study's recommendation; every frozen equation is total on finite inputs, so this is a validation rule only.",
+        "The study froze the legal distance range at 1e-4 to 64 mask-space units, and the zero-length-axis rejection is the l2 >= 1e-8 form rather than a sqrt. Transcribe those, do not re-derive them."
       ],
       "context_links": [
         {
@@ -311,7 +313,8 @@
         "A zero-length axis, a non-finite coordinate and an out-of-range normalized position are validation errors naming the field.",
         "Composition of several components follows the frozen algebra exactly, including a first component that is not add being refused with its reason.",
         "bounds is conservative and correct: coverage is exactly zero outside it for randomized component lists, verified by exhaustive evaluation on small stages.",
-        "Compilation cost is O(components) and is measured, not asserted."
+        "Compilation cost is O(components) and is measured, not asserted.",
+        "A stored component whose kind this build does not know fails compiling, rendering and sampling with incompatible: unknown mask component <kind> naming it, retains every byte, and still lists through the read paths."
       ],
       "test_strategy": {
         "approach": "unit",
@@ -343,7 +346,8 @@
       "extra_context": [
         "A masked operation stays one operation in its segment's ordered list. It is evaluated against a copy of the row span it was given and blended back before the run's single clamp and quantization, so an unmasked operation before or after it is unaffected.",
         "The row copy is scratch from the existing 64 MiB float budget, reserved before it allocates and released afterwards. No new budget and no new full-frame buffer.",
-        "The identity byte path matters: a neutral masked layer, and a mask whose coverage is zero over a span, must still return the shared source buffer where the delivered code does today."
+        "The identity byte path matters: a neutral masked layer, and a mask whose coverage is zero over a span, must still return the shared source buffer where the delivered code does today.",
+        "Integrated together with the mask target field, for the reason recorded there: a masked layer must never be creatable before it is evaluable."
       ],
       "context_links": [
         {
@@ -493,7 +497,7 @@
     {
       "id": "TASK-007",
       "description": "Add render.transform, the read-only affine between content coordinates and the output stage, so a gesture can map pointer positions locally with no round trip per move.",
-      "status": "pending",
+      "status": "completed",
       "dependencies": [],
       "extra_context": [
         "The geometry tail is exact transforms plus at most one crop, so the content-to-output map is always affine; this method is the only thing the desktop needs to draw a mask handle over a cropped, straightened, rotated photograph.",
@@ -903,7 +907,8 @@
         "Reopening the catalog restores the masks, their components, the bound layers and the history navigation with the same identities.",
         "editor-performance and editor-latency are recorded on 24 MP and 60 MP before and after the phase, with host, profile and cache state, and any miss against the provisional targets is stated with its figures.",
         "docs/features.md, docs/user-guide.md, docs/plan.md and the design's status line describe what is delivered and nothing more; the roadmap no longer describes masks as entirely unscoped.",
-        "The performance-rules review checklist is answered for every change under crates/."
+        "The performance-rules review checklist is answered for every change under crates/.",
+        "docs/user-guide.md lists render.transform alongside the other read-only methods, which landed with the affine and is not yet described for a reader."
       ],
       "test_strategy": {
         "approach": "end-to-end",
@@ -1426,6 +1431,7 @@
         "TASK-017"
       ],
       "extra_context": [
+        "The brush coverage field is not frozen anywhere yet. Unlike the gradients and the range selections, no study owns it, so this task freezes it first: extend docs/design/mask-study.md with the capsule profile, the per-stroke maximum, the screen union across add strokes and the multiply-complement for erase strokes, written in the exact form this task then transcribes, with an independent f64 reference beside the gradients' one in crates/lightwell-core/tests/reference/mask.rs. Reuse that study's smooth() and its distance floor rather than introducing a second convention. Do not transcribe from the design's prose.",
         "Maximum along a stroke and screen union across strokes is the frozen rule and the reason is worth keeping in the code: one pass of the brush has one density whatever the pointer's sampling rate, while a second pass is a second object and does build up.",
         "Density is not delivered; its Lightroom meaning depends on a build-up model along a single stroke that would make coverage depend on stamp spacing and therefore on resolution. Say so in the user guide rather than shipping a control that means something else.",
         "The grid index is what keeps a point query bounded: a pixel tests only the segments in the neighbouring cells, and the declared occupancy cap is checked when the mask compiles, before a pixel is read.",
@@ -1471,6 +1477,7 @@
         }
       ],
       "acceptance_criteria": [
+        "The brush coverage mathematics is frozen in the mask study with an independent f64 reference before any production unit is written, in the form the production unit transcribes, reusing the existing smooth() and distance-floor conventions.",
         "A brush component holds an ordered list of strokes, each with its own size, feather, flow and erase flag, and each individually deletable.",
         "A brush component references its strokes by hash from the host store and embeds no coordinates; the same stroke referenced by two components or two entries is stored once.",
         "The capsule coverage field is bit-identical to the frozen f64 reference across randomized strokes, sizes, feathers and positions, including a one-point stroke and a doubled-back path.",
@@ -1484,6 +1491,7 @@
       "test_strategy": {
         "approach": "mixed",
         "steps": [
+          "Freeze the capsule profile and the accumulation rules in the study against a new independent reference, and prove the properties the design claims (a stroke's density is independent of its point sampling; add strokes commute; erase strokes do not).",
           "Sweep production against the reference for randomized strokes and assert bit-identity.",
           "Check accumulation properties over randomized stroke sets.",
           "Measure evaluation cost against stroke count at fixed local density.",

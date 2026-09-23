@@ -2044,6 +2044,7 @@ mod tests {
             effect_id: TEST_DEGENERATE_EFFECT.into(),
             effect_format: EFFECT_FORMAT,
             payload: json!({}),
+            mask: None,
         }
     }
 
@@ -2624,12 +2625,14 @@ mod tests {
                     effect_id: crate::BASIC_EFFECT.into(),
                     effect_format: EFFECT_FORMAT,
                     payload: json!({"exposure": 0.4, "contrast": 20.0}),
+                    mask: None,
                 },
                 Layer {
                     id: LayerId::new(),
                     effect_id: crate::PRESENCE_EFFECT.into(),
                     effect_format: EFFECT_FORMAT,
                     payload: json!({"texture": 35.0}),
+                    mask: None,
                 },
                 Layer::crop(fitted_crop(width, height, 6.0, [0.2, 0.2, 0.55, 0.55])),
             ],
@@ -2657,7 +2660,11 @@ mod tests {
         let (width, height) = (40, 28);
         let source = gradient(width, height);
         for (case, layers, _) in geometry_tails(width, height) {
-            let recipe = Recipe { format: 1, layers };
+            let recipe = Recipe {
+                format: crate::RECIPE_FORMAT,
+                layers,
+                masks: Vec::new(),
+            };
             let transform = stage_transform(&registry, width, height, &recipe).unwrap();
             let (stage_width, stage_height) = extents(&registry, &source, &recipe).unwrap();
             assert_eq!(
@@ -2716,7 +2723,11 @@ mod tests {
         let (width, height) = (40, 28);
         let source = gradient(width, height);
         for (case, layers, resamples) in geometry_tails(width, height) {
-            let recipe = Recipe { format: 1, layers };
+            let recipe = Recipe {
+                format: crate::RECIPE_FORMAT,
+                layers,
+                masks: Vec::new(),
+            };
             let transform = stage_transform(&registry, width, height, &recipe).unwrap();
             let budget_x = 0.5 * (transform.inverse[0].abs() + transform.inverse[1].abs());
             let budget_y = 0.5 * (transform.inverse[3].abs() + transform.inverse[4].abs());
@@ -2780,7 +2791,11 @@ mod tests {
         let registry = registry();
         let (width, height) = (40, 28);
         for (case, layers, _) in geometry_tails(width, height) {
-            let recipe = Recipe { format: 1, layers };
+            let recipe = Recipe {
+                format: crate::RECIPE_FORMAT,
+                layers,
+                masks: Vec::new(),
+            };
             let transform = stage_transform(&registry, width, height, &recipe).unwrap();
             let mut rng = Lcg(0x5EED_0700);
             for _ in 0..400 {
@@ -2814,13 +2829,15 @@ mod tests {
 
         // An effect no module provides: `extents` and `locate` report it this way too.
         let recipe = Recipe {
-            format: 1,
+            format: crate::RECIPE_FORMAT,
             layers: vec![Layer {
                 id: LayerId::new(),
                 effect_id: "test.absent".into(),
                 effect_format: EFFECT_FORMAT,
                 payload: json!({}),
+                mask: None,
             }],
+            masks: Vec::new(),
         };
         let error = stage_transform(&registry, width, height, &recipe)
             .expect_err("an unavailable effect has no output stage");
@@ -2830,8 +2847,9 @@ mod tests {
         // A finite, non-empty resample that still collapses its stage onto a line. The compiler's
         // own checks pass it, so this is the one degenerate mapping that reaches the composition.
         let recipe = Recipe {
-            format: 1,
+            format: crate::RECIPE_FORMAT,
             layers: vec![degenerate_layer()],
+            masks: Vec::new(),
         };
         let error = stage_transform(&registry, width, height, &recipe)
             .expect_err("a collapsed stage has no mapping");
