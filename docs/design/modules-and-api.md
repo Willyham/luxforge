@@ -98,7 +98,7 @@ On the byte path each tile is decoded through the same table the colour run uses
 
 An action request goes through one path for the desktop, the JSON API and headless callers:
 
-1. Validate the mutation envelope; find the action in the registry, else `validation: unknown action`.
+1. Validate the mutation envelope; find the action in the registry, else `validation: unknown action`; refuse an action whose module is registered as unavailable with `incompatible: unavailable module <id>`.
 2. Generic parameter checks, then module `parse`. A patch action's check validates only the fields that were sent.
 3. Request deduplication: the stored input hash covers `{action: <durable action id>, mutation}` merged with the parsed parameters. A retry returns the original result; the same request ID with different input is a `conflict`.
 4. Revision check, then module `plan` against the current stack with the cached verified source.

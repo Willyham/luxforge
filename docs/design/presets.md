@@ -32,7 +32,7 @@ A settings set is a JSON object whose keys are field-patch action identities and
 
 **Bounds.** At most 16 actions and 64 fields per action. Each value is checked against the named action's own parameter descriptors when the set is stored and again when it is applied.
 
-**Apply semantics.** The fields a set names overwrite the current values, and every field it does not name keeps its value. A named field at its neutral value resets that field. This follows Lightroom's rule that a preset changes only the settings it contains. Because every presettable action updates its own module's one layer and the host places layers by stage and order, the result does not depend on the order of the steps.
+**Apply semantics.** The fields a set names overwrite the current values, and every field it does not name keeps its value. A named field at its neutral value resets that field. This follows Lightroom's rule that a preset changes only the settings it contains. Steps run in the set's key order, which is alphabetical because a JSON object carries no order. Basic, Presence, the mixer and the vignette each update their own module's one layer at a stage and order none of the others shares, so for them the order of the steps cannot change the result. Two effects of one stage and order would land in step order.
 
 ## Composite actions
 
@@ -72,17 +72,17 @@ A draft of a composite action resolves the same way. `EditorService::draft_recip
 | --- | --- | --- | --- |
 | `settings` | `settings` | yes | The settings set to apply |
 | `name` | `string {max_length: 128}` | yes | The history label and the provenance of the entry |
-| `preset_id` | `string {max_length: 96}` | no | The library preset the settings came from. This is provenance only; the host does not look it up |
+| `preset-id` | `string {max_length: 96}` | no | The library preset the settings came from. This is provenance only; the host does not look it up. The name is hyphenated because module parameter names are hyphenated words; host methods keep `preset_id` beside `asset_id` |
 
-`parse` checks that `name` is non-empty after trimming and has no control characters, then stores `{settings, name, preset_id?}` as sent. `plan` returns `Compose` with one step per settings key, in key order, and rejects an empty set. `label` returns `Preset: <name>`.
+`parse` checks that `name` is non-empty after trimming (the generic check has already refused control characters), then stores `{settings, name, preset-id?}` as sent. `plan` returns `Compose` with one step per settings key, in key order. `label` returns `Preset: <name>`. Like every action, `apply-preset` is refused with `incompatible: unavailable module lightwell.presets` when its own module is registered as unavailable; a module with no effects has nothing the commit-time compile could refuse, so the host checks the requested module's availability before planning any action.
 
-The request carries the settings rather than an ID for three reasons. The entry, request deduplication and Copy as JSON request each describe exactly what was applied. A later edit or deletion of the library preset cannot change what an entry means. And the module needs no access to the catalog. A client reads the library preset (`preset.list` or `preset.read`) and sends its `settings`, `name` and `id`.
+The request carries the settings rather than an ID for three reasons. The entry, request deduplication and Copy as JSON request each describe exactly what was applied. A later edit or deletion of the library preset cannot change what an entry means. And the module needs no access to the catalog. A client reads the library preset (`preset.list` or `preset.read`) and sends its `settings`, `name` and `id` as `preset-id`.
 
 ### Descriptor additions
 
 - **`string {max_length}` parameter kind.** Implemented as the [UI components](ui-components.md#parameter-kinds-and-hints) design specifies it: UTF-8 text of at most `max_length` characters, with `max_length` at most 256 and no control characters. The `text` control remains the second slice, because nothing here needs one.
 - **`settings` parameter kind.** The generic check validates only the shape: an object of 1 to 16 keys, each a valid action identity, each value a non-empty object of at most 64 keys. The host checks each step against its action when the set is applied or stored.
-- **`presets {action}` control.** The host renders its preset library here. Choosing a preset submits `action` once with that preset's `settings`, `name` and `preset_id`. Registration requires the action to be declared by the same module with a required `settings` parameter of kind `settings`, a required `name` of kind `string` and an optional `preset_id` of kind `string`. A module declares at most one such control. A client that cannot render it shows the explicit unsupported-control message.
+- **`presets {action}` control.** The host renders its preset library here. Choosing a preset submits `action` once with that preset's `settings`, `name` and `preset-id`. Registration requires the action to be declared by the same module, not as a field patch, with a required `settings` parameter of kind `settings` and a required `name` of kind `string`, neither with a default, an optional `preset-id` of kind `string` and nothing else. A module declares at most one such control. A client that cannot render it shows the explicit unsupported-control message.
 
 ## Library
 
@@ -224,7 +224,7 @@ A value is parsed as Lightroom writes it (`0.5`, `+0.50`, `-12`, `True`). A valu
 The Presets section is generated from the `presets` control and is the first section of the tools panel, collapsed until opened:
 
 - **Library.** Group headings in the order `preset.list` returns them, each followed by one row per preset. A partial preset shows a `Partial` badge whose tooltip gives the report counts, and a preset with unavailable actions shows why it cannot apply. A row is disabled while the editor is busy, while no photo is open and while a draft is open.
-- **Apply.** Clicking a row submits `edit.apply-preset` once with that preset's `settings`, `name` and `preset_id`. The ordinary completion path follows: `asset.state`, one preview job and a history merge.
+- **Apply.** Clicking a row submits `edit.apply-preset` once with that preset's `settings`, `name` and `preset-id`. The ordinary completion path follows: `asset.state`, one preview job and a history merge.
 - **Create.** A `+` button opens a form with the name, the group (default `User presets`) and one checkbox per group of presettable controls, labelled `Module · Group` and taken from the descriptors, all checked except white balance. Create calls `preset.capture` for the displayed entry with the checked groups' parameters, then `preset.create`.
 - **Import.** An Import button opens the native file dialog, filtered to `.xmp`, `.lrtemplate` and `.lwpreset`. The file is read on a worker and sent to `preset.import`. The status bar reports the result, for example `Imported "Soft film": 18 mapped, 2 unsupported, 1 refused`, and Copy copies the whole report as JSON. A duplicate name, or a file that maps nothing, appears as the error it is.
 - **Delete.** A row's context menu offers Delete, which calls `preset.delete`.

@@ -1267,6 +1267,15 @@ impl EditorService {
         let (module, action) = registry.action(action_id).ok_or_else(|| {
             Error::new(ErrorKind::Validation, format!("unknown action {action_id}"))
         })?;
+        // An unavailable provider keeps its descriptor so its stored layers stay readable, but it
+        // changes nothing. A module with effects would be refused by the whole-stack compile at
+        // commit anyway; one with none, such as presets, would otherwise commit through it.
+        if !module.descriptor().is_available() {
+            return Err(Error::new(
+                ErrorKind::Incompatible,
+                format!("unavailable module {}", module.descriptor().id),
+            ));
+        }
         let checked = check_parameters(action, &parameters)?;
         let input = module.parse(action_id, &checked)?;
         // The module labels a request its template cannot describe, such as a field patch; the

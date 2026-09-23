@@ -517,6 +517,33 @@ fn a_step_of_an_unavailable_module_is_refused() {
     fs::remove_file(path).expect("the catalog is removed");
 }
 
+/// A disabled presets module owns no effect the commit-time compile could refuse, so the host
+/// refuses its action by the module's own availability, and nothing is written.
+#[test]
+fn an_unavailable_presets_module_applies_nothing() {
+    let mut registry = ModuleRegistry::new();
+    for module in [
+        Disabled::wrap(Arc::new(lightwell_core::PresetsModule::new())),
+        Arc::new(lightwell_core::PixelModule::new()) as Arc<dyn ToolModule>,
+        Arc::new(lightwell_core::BasicModule::new()),
+        Arc::new(lightwell_core::TransformModule::new()),
+        Arc::new(lightwell_core::CropModule::new()),
+    ] {
+        registry.register(module).expect("a registered module");
+    }
+    let (mut service, asset, path) = opened("unavailable-presets", Some(registry));
+    assert_refused(
+        &mut service,
+        &asset,
+        "an unavailable presets module",
+        json!({"set-basic": {"exposure": 1}}),
+        ErrorKind::Incompatible,
+        "unavailable module lightwell.presets",
+    );
+    drop(service);
+    fs::remove_file(path).expect("the catalog is removed");
+}
+
 /// A test module with no effects whose actions plan composites of their own: `compose-steps`
 /// composes `count` Basic exposure steps, and `set-nested` is a field patch whose plan is itself a
 /// composite, which the host refuses as a step.
