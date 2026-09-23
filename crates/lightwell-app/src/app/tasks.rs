@@ -974,21 +974,25 @@ pub(crate) fn locate_task(
     )
 }
 
-/// One declared module query at a located content pixel, which is what a `sample-apply` canvas
-/// mode asks before it commits anything. This is `query.<id>`, the same read-only method an
-/// independent client calls: it mutates nothing, writes no history entry and emits no event, and
-/// the core answers it from point samples over the compiled evaluation a commit would plan
-/// against, so a pick renders no frame. The coordinate parameter names come from the declaration,
-/// not from this file.
+/// One declared read-only query at a located content pixel, which is what a `sample-apply` canvas
+/// mode asks before it commits anything.
+///
+/// `method` is the whole method name, because the two kinds of pick read two namespaces: a module's
+/// is `query.<id>` and the host's own is a `mask.*` read. Either way it mutates nothing, writes no
+/// history entry and emits no event, and the core answers it from point samples over the compiled
+/// evaluation a commit would plan against, so a pick renders no frame. The coordinate parameter names
+/// and the extra envelope fields — the mask a host pick addresses — come from the declaration and from
+/// the panel's own selection, not from this file.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn query_task(
     owner: OwnerHandle,
     client: ClientId,
     asset_id: AssetId,
     entry: EntryId,
-    query: String,
+    method: String,
     action: String,
     coordinates: (String, String),
+    envelope: serde_json::Map<String, Value>,
     point: (u32, u32),
 ) -> Task<Message> {
     let answered = entry.clone();
@@ -996,9 +1000,12 @@ pub(crate) fn query_task(
         async move {
             let mut params = json!({"asset_id":asset_id,"entry_id":entry});
             let object = params.as_object_mut().expect("the envelope is an object");
+            for (name, value) in envelope {
+                object.insert(name, value);
+            }
             object.insert(coordinates.0, Value::from(point.0));
             object.insert(coordinates.1, Value::from(point.1));
-            call(&owner, client, &format!("query.{query}"), params).map(|(value, _)| value)
+            call(&owner, client, &method, params).map(|(value, _)| value)
         },
         move |result| Message::SampleQueried {
             entry: answered.clone(),

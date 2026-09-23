@@ -118,6 +118,21 @@ pub(crate) struct CanvasModel {
     /// Mask mode is active, so the tools panel shows the Masks panel and the canvas draws the
     /// selected mask's handles and overlay.
     pub(crate) masking: bool,
+    /// The tools panel shows the Masks panel: Mask mode, or one of the host's picks, which is
+    /// entered from that panel and must not hide it.
+    pub(crate) mask_panel: bool,
+}
+
+/// Whether the workspace is on a mask: Mask mode itself, or one of the host's own canvas picks,
+/// which fill part of a mask and are entered from the Masks panel.
+///
+/// The panel a pick was started from has to stay on screen while the pick is taken — a button that
+/// hides the list it belongs to is not a control — so the tools panel, the maskable sections and the
+/// mask each adjustment is bound to all read this. The canvas's own `masking` flag is *not* this: a
+/// pick mode takes a click, while Mask mode drives a gesture, and only one of the two may own the
+/// pointer.
+pub(crate) fn mask_workspace(mode: &str) -> bool {
+    mode == MASK_MODE || lightwell_core::mask::commands::canvas_pick(mode).is_some()
 }
 
 pub(crate) fn derive(inputs: &Inputs<'_>) -> CanvasModel {
@@ -196,6 +211,7 @@ pub(crate) fn derive(inputs: &Inputs<'_>) -> CanvasModel {
         },
         option: inputs.crop_option,
         masking: inputs.session.workspace.mode == MASK_MODE,
+        mask_panel: mask_workspace(&inputs.session.workspace.mode),
     }
 }
 

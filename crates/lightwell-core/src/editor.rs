@@ -144,6 +144,38 @@ pub struct PixelSample {
     pub draft: Option<DraftStamp>,
 }
 
+/// One **input** pixel of a masked operation, which is what a mask's value-based parts are evaluated
+/// on, in linear sRGB, with the stage it was read from.
+///
+/// It is not a [`PixelSample`] and must not be confused with one: that is the *output* the picture
+/// shows, this is the input the operation a mask modulates receives. The two are different colours
+/// wherever the operation does anything at all, which is exactly why a client cannot read this one
+/// off the frame. `r`, `g` and `b` are top-level numbers because that is what a canvas pick submits
+/// to `mask.add-<kind>-sample`, whose own parameters carry those names.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PixelInput {
+    pub r: f64,
+    pub g: f64,
+    pub b: f64,
+    pub x: u32,
+    pub y: u32,
+    /// The stage the masked layer receives, which is the stage `x` and `y` address.
+    pub width: u32,
+    pub height: u32,
+}
+
+/// One 8-bit RGBA sample as the linear-sRGB triple a mask's value-based parts evaluate on, through the
+/// delivered decode and nothing else, so one definition of "linear sRGB" serves the whole editor.
+fn linear_triple(rgba: [u8; 4]) -> [f64; 3] {
+    let linear = crate::render::decode_pixel([rgba[0], rgba[1], rgba[2]]);
+    [
+        f64::from(linear[0]),
+        f64::from(linear[1]),
+        f64::from(linear[2]),
+    ]
+}
+
 /// Which evaluated stack an analysis job should describe: the asset's current entry, one frozen
 /// historical entry, or the caller's own open draft.
 #[derive(Clone, Copy, Debug)]
@@ -1511,7 +1543,13 @@ impl EditorService {
         let recipe = &state.current_entry.snapshot.recipe;
         validate_source_recipe(&state.asset, recipe)?;
         let registry = self.registry.clone();
-        match crate::mask::commands::plan(command, recipe, &target, &checked, &registry)? {
+        // A stroke that asks to be limited to a colour is seeded here, by the host, from the pixel
+        // the operation this mask modulates receives at the position the stroke began. The request
+        // named the limit and never the colour, so nothing a client sends can put a colour in a
+        // stroke that the photograph does not have at that position, and the planner below stays
+        // pure — it is handed the pixel rather than reading one.
+        let seed = self.mask_colour_seed(&state, command, recipe, &target, &checked)?;
+        match crate::mask::commands::plan(command, recipe, &target, &checked, &registry, seed)? {
             MaskOutcome::NoOp => Ok(MaskCommandResult::plain(
                 self.persist_noop(asset_id, &mutation, &request, &state)?,
             )),
@@ -1571,6 +1609,114 @@ impl EditorService {
             parent.as_ref(),
             &self.registry,
         ))
+    }
+
+    /// The pixel a limited stroke is seeded on, as the three sRGB codes the host sampled, or `None`
+    /// when the command asks for no limit.
+    ///
+    /// The **rule** — which layer's input, and what a mask no layer is bound to means — is the
+    /// command family's, stated once in `mask::commands::input_layer_index`; the **pixel** is read
+    /// here, because the editor is the only thing that can evaluate one. That split is what makes a
+    /// stored seed a colour the photograph has: a request carries a flag and a path, never a colour,
+    /// so no client can put anything else in a stroke.
+    fn mask_colour_seed(
+        &self,
+        state: &EditorState,
+        command: &MaskCommand,
+        recipe: &Recipe,
+        target: &MaskTarget,
+        parameters: &Map<String, Value>,
+    ) -> Result<Option<[u8; 3]>, Error> {
+        let Some(request) =
+            crate::mask::commands::colour_limit_request(command, recipe, target, parameters)?
+        else {
+            return Ok(None);
+        };
+        let source = self.verified_prepared(&state.asset)?;
+        self.with_stage_context(&source, recipe, |context| {
+            let stage = (context.stage_before)(request.layer)?;
+            // The stroke's positions are normalized against the stage its mask is compiled against,
+            // which is the stage this layer receives, so the pixel is that stage's own. A stroke that
+            // began outside the picture — an ordinary gesture, which the stored range allows — has no
+            // input pixel to read and is refused by name rather than clamped to an edge whose colour
+            // nobody chose.
+            let pixel = |value: f64, side: u32| -> Option<u32> {
+                let index = (value * f64::from(side)).floor();
+                (index >= 0.0 && index < f64::from(side)).then_some(index as u32)
+            };
+            let outside = || {
+                Error::new(
+                    ErrorKind::Validation,
+                    format!(
+                        "a stroke limited to a colour must begin inside the picture, and \
+                         ({:.4}, {:.4}) is outside the {}x{} stage the masked layer receives",
+                        request.x, request.y, stage.width, stage.height
+                    ),
+                )
+            };
+            let x = pixel(request.x, stage.width).ok_or_else(outside)?;
+            let y = pixel(request.y, stage.height).ok_or_else(outside)?;
+            let rgba = (context.sample_before)(request.layer, x, y)?.ok_or_else(outside)?;
+            // The codes, not the decoded colour: a stroke is addressed by the hash of its bytes, and
+            // an integer survives a JSON round trip exactly where an `f64` does not. Decoding is the
+            // delivered one and happens where the stroke is compiled.
+            Ok(Some([rgba[0], rgba[1], rgba[2]]))
+        })
+    }
+
+    /// `mask.sample-input`: the pixel the operation one mask modulates receives, at one content
+    /// position of the stage that operation's layer receives, in linear sRGB.
+    ///
+    /// Read-only: it reads one entry's snapshot, writes nothing, emits nothing and touches no session
+    /// state. It is where a canvas pick gets the colour a colour range's swatch is, and it exists so
+    /// a client never has to decode one: the frame a client can see holds the masked operation's
+    /// *output*, and a range selection is evaluated on its *input*, so a colour read from the picture
+    /// would be a different colour. Cost is one `O(layers)` point evaluation and no frame is
+    /// allocated.
+    pub fn mask_input_sample(
+        &self,
+        asset_id: &AssetId,
+        entry_id: &EntryId,
+        mask: &MaskId,
+        x: u32,
+        y: u32,
+    ) -> Result<PixelInput, Error> {
+        let state = self.state(asset_id)?;
+        let entry = self.entry(asset_id, entry_id)?;
+        let asset = &state.asset;
+        let recipe = &entry.snapshot.recipe;
+        validate_source_recipe(asset, recipe)?;
+        let layer = crate::mask::commands::input_layer_index(recipe, mask)?;
+        let source = self.verified_prepared(asset)?;
+        self.with_stage_context(&source, recipe, |context| {
+            let stage = (context.stage_before)(layer)?;
+            if x >= stage.width || y >= stage.height {
+                return Err(Error::new(
+                    ErrorKind::Validation,
+                    format!(
+                        "outside the stage: ({x}, {y}) is not inside the {}x{} stage the masked \
+                         layer receives",
+                        stage.width, stage.height
+                    ),
+                ));
+            }
+            let rgba = (context.sample_before)(layer, x, y)?.ok_or_else(|| {
+                Error::new(
+                    ErrorKind::Validation,
+                    format!("outside the stage: ({x}, {y}) has no pixel to read"),
+                )
+            })?;
+            let [r, g, b] = linear_triple(rgba);
+            Ok(PixelInput {
+                r,
+                g,
+                b,
+                x,
+                y,
+                width: stage.width,
+                height: stage.height,
+            })
+        })
     }
 
     /// `mask.list`: every mask of one stored stack with its components, its values and the layers
@@ -1810,8 +1956,11 @@ impl EditorService {
             validate_source_recipe(&state.asset, current)?;
             let checked = check_parameters(&command.action, &Value::Object(draft.fields.clone()))?;
             let target = draft.target.clone().unwrap_or_default();
+            // The same seed the commit will store, read the same way, so a drafted limited stroke
+            // previews the stroke it is about to become rather than an unlimited one.
+            let seed = self.mask_colour_seed(&state, command, current, &target, &checked)?;
             let recipe = match crate::mask::commands::plan(
-                command, current, &target, &checked, &registry,
+                command, current, &target, &checked, &registry, seed,
             )? {
                 MaskOutcome::NoOp => current.clone(),
                 MaskOutcome::Change(change) => change.recipe,

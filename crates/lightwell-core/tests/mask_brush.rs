@@ -19,14 +19,16 @@ use lightwell_core::{
     path::{Stroke, StrokeTable},
 };
 use reference::mask::{
-    Brush, BrushStroke, Stage as RefStage, brush_coverage, brush_segments, stroke_coverage,
+    Brush, BrushStroke, ColourLimit as RefColourLimit, Stage as RefStage, brush_coverage,
+    brush_segments, stroke_coverage,
 };
 use serde_json::json;
 
 /// The pixel value a geometric component is handed and ignores (proposal P12 of
-/// `docs/design/range-study.md`). These masks hold gradients and brushes, whose coverage is a
-/// function of position alone, so the value here is arbitrary and the same at every call;
-/// `mask_range.rs` proves that ignoring it is exact rather than approximate.
+/// `docs/design/range-study.md`). Most masks here hold gradients and unlimited brushes, whose
+/// coverage is a function of position alone, so the value is arbitrary and the same at every call;
+/// `mask_range.rs` proves that ignoring it is exact rather than approximate. The strokes that *are*
+/// limited to a colour have their own tests at the end of this file, and those pass real pixels.
 const ANY_PIXEL: [f64; 3] = [0.25, 0.5, 0.75];
 
 // ---------------------------------------------------------------------------
@@ -72,6 +74,13 @@ fn as_reference(stroke: &Stroke) -> BrushStroke {
         feather: stroke.feather(),
         flow: stroke.flow(),
         erase: stroke.erase(),
+        // The stored limit travels to the reference exactly as every other stored setting does:
+        // production reads it from the stroke and so does the oracle, so the two compare the same
+        // stroke rather than one limited and one not.
+        colour: stroke.colour_limit().map(|limit| RefColourLimit {
+            seed: limit.seed(),
+            refine: limit.refine(),
+        }),
     }
 }
 
@@ -144,7 +153,7 @@ fn the_capsule_field_is_bit_identical_to_the_frozen_reference() {
             for y in 0..height {
                 for x in 0..width {
                     let (u, v) = reference_stage.pixel_uv(x, y);
-                    let want = brush_coverage(&expected, &reference_stage, u, v);
+                    let want = brush_coverage(&expected, &reference_stage, u, v, ANY_PIXEL);
                     let got = compiled.coverage(x, y, ANY_PIXEL);
                     assert_eq!(
                         got.to_bits(),
@@ -182,7 +191,7 @@ fn a_one_point_stroke_and_a_doubled_back_path_match_the_reference() {
                     let (u, v) = reference_stage.pixel_uv(x, y);
                     assert_eq!(
                         compiled.coverage(x, y, ANY_PIXEL).to_bits(),
-                        brush_coverage(&expected, &reference_stage, u, v).to_bits(),
+                        brush_coverage(&expected, &reference_stage, u, v, ANY_PIXEL).to_bits(),
                         "{points:?} feather {feather} flow {flow} at ({x}, {y})"
                     );
                 }
@@ -624,7 +633,7 @@ fn evaluation_cost_does_not_grow_with_stroke_count() {
             for y in 20..70 {
                 for x in 20..70 {
                     let (u, v) = reference_stage.pixel_uv(x, y);
-                    total += brush_coverage(&unindexed, &reference_stage, u, v);
+                    total += brush_coverage(&unindexed, &reference_stage, u, v, ANY_PIXEL);
                 }
             }
         }
@@ -740,7 +749,7 @@ fn the_index_changes_no_answer_anywhere() {
                     let (u, v) = reference_stage.pixel_uv(x, y);
                     assert_eq!(
                         compiled.coverage(x, y, ANY_PIXEL).to_bits(),
-                        brush_coverage(&expected, &reference_stage, u, v).to_bits(),
+                        brush_coverage(&expected, &reference_stage, u, v, ANY_PIXEL).to_bits(),
                         "at ({x}, {y}) on {width}x{height}"
                     );
                 }
@@ -776,7 +785,7 @@ fn a_brush_combines_with_a_gradient_through_the_frozen_algebra() {
     for y in 0..size.height {
         for x in 0..size.width {
             let (u, v) = reference_stage.pixel_uv(x, y);
-            let c = brush_coverage(&brush, &reference_stage, u, v);
+            let c = brush_coverage(&brush, &reference_stage, u, v, ANY_PIXEL);
             let g = reference::mask::linear_coverage(&linear, &reference_stage, u, v);
             assert_eq!(
                 compiled.coverage(x, y, ANY_PIXEL).to_bits(),
@@ -801,7 +810,7 @@ fn a_single_add_stroke_is_its_own_coverage() {
             let (u, v) = reference_stage.pixel_uv(x, y);
             assert_eq!(
                 compiled.coverage(x, y, ANY_PIXEL).to_bits(),
-                stroke_coverage(&held, &segments, u, v).to_bits()
+                stroke_coverage(&held, &segments, u, v, ANY_PIXEL).to_bits()
             );
         }
     }

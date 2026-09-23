@@ -17,7 +17,9 @@ rectangle* and `min_feature_px`, the brush's grid index and its occupancy cap, a
 and spatial blend itself. What is frozen is mask space, the legality of a stored distance, the
 component composition algebra, the linear and radial coverage fields, and — added by TASK-018 — the
 brush's capsule profile, its per-stroke maximum, its accumulation rules and its mask-space support
-box.
+box. TASK-024 adds one block, [the colour constraint](#the-colour-constraint), which is where a
+stroke's coverage meets the [range study](range-study.md)'s colour metric; that study named the
+constrained brush as not frozen by it, and this section freezes it.
 
 No formula below claims Lightroom or darktable numeric equivalence. Where a choice differs from
 Lightroom's — a radial selecting inside rather than outside — the difference is stated as
@@ -435,6 +437,95 @@ randomized strokes):
 - **Exactly `0.0` at and beyond `d = R`** on the feathered branch, because `smooth(0)` is exactly
   `0.0`; and exactly `0.0` beyond `d = R` on the hard branch, which is closed at `R` itself.
 
+### The colour constraint
+
+A stroke may carry one, and it is the whole of the colour-constrained brush: the stroke's coverage is
+multiplied by a **similarity to the colour the stroke was seeded on**. The seed is part of the
+stroke's payload — `Stroke { …, colour: Option<{seed, refine}> }` — so it is sampled once, when the
+stroke is made, and never again: a stroke stays reproducible from its stored bytes after any later
+edit, and nothing is re-sampled at render time.
+
+**Both stored numbers are integers, for the same reason the positions and the radius are.** The seed
+is held as the three sRGB codes the host's own point sample answers, decoded to linear light by the
+delivered decode when the stroke is compiled, and the refine as tenths of a unit — the step its
+declared control moves in. A stroke is addressed by the hash of its canonical bytes, so a stored
+value that does not survive a JSON round trip *exactly* would give the reparsed stroke a different
+address from the one the recipe references, and `serde_json` does not round-trip every `f64`:
+`0.026241222396492958` reads back one ulp away, which is enough. The codes are also all the host can
+read — `sample_before` answers eight bits a channel — so nothing is given up against what could have
+been stored, and the plateau at the default refine is `0.0177` in Oklab against a code step three
+orders below it.
+
+**The similarity is the [range study](range-study.md#the-colour-range)'s colour range at one
+sample.** Not a similar function, not the same idea in a second spelling: the same Oklab
+chromaticity metric, the same `PLATEAU`/`SPAN` falloff and the same geometric
+[refine mapping](range-study.md#the-refine-mapping), evaluated with the seed as its only sample.
+There is no second colour space, no second radius mapping and no second constant in the editor
+because of this feature.
+
+```text
+-- once per stroke, at compile time
+(a0, b0) = the Oklab a and b of seed                 -- to_oklab, unchanged
+radius   = RADIUS_MAX * (RADIUS_MIN / RADIUS_MAX)^(refine / 100)
+
+-- per pixel
+lab = to_oklab(rgb)                                  -- the operation's input pixel
+da  = lab.a - a0
+db  = lab.b - b0
+d2  = da*da + db*db
+d   = sqrt(d2)
+r   = d / radius
+k   = smooth(clamp((1 - r) / SPAN, 0, 1))
+
+stroke = capsule_profile(d_geometry) * (flow / 100) * k
+```
+
+`k` is written as the range study's own block writes it, and
+`the_colour_similarity_is_the_frozen_colour_range_at_one_sample` proves that the spelled-out form
+above and the range's `colour_coverage` over a one-sample payload are the same `f64` bit for bit —
+which they are because folding one sample by `min` against `+infinity` returns that sample's squared
+distance exactly.
+
+**The multiply is last, after `flow`, and only a constrained stroke performs it.** An unconstrained
+stroke evaluates exactly the expression the profile above ends with, with no `* 1.0` appended, so the
+delivered brush's bit-identity is untouched by this section
+(`an_unconstrained_stroke_is_unchanged_by_the_colour_constraint`, by bit pattern). `(profile ·
+amount) · k` is the frozen association; `profile · (amount · k)` is algebraically equal, within
+tolerance and not bit-identical, and is forbidden by the [transcription rule](#transcription) like
+every other reassociation.
+
+**What the constraint cannot do, and is therefore not called.** It is a **point function of one
+pixel's colour**: it has no notion of an edge, a region or connectivity, so it is *not* Lightroom's
+Auto Mask, which is edge- and connectivity-constrained, and it is not named as if it were. A
+constrained stroke stops at a colour boundary it crosses and equally paints the same colour anywhere
+else the stroke passes over, however far from where it began. The genuinely edge-aware refinement is
+[P7](masking.md#proposals-with-recorded-defaults), which stays **out**: a guided filter is a
+neighbourhood operation over what is here a point function and needs its own study. The
+[user guide](../user-guide.md) states the difference in one sentence a person can act on.
+
+Four properties follow from the similarity's own range, and each is proved rather than assumed
+(`the_colour_constraint_only_ever_removes_coverage`):
+
+- `k` is in `[0, 1]` for every finite pixel, so a constrained stroke's coverage is **never above** the
+  same stroke unconstrained. The [conservative box](#the-conservative-box) therefore still bounds the
+  component exactly, unchanged: coverage is still exactly zero wherever `d > R`.
+- `k` is exactly `1.0` at the seed colour and out to `PLATEAU · radius` of it, because `smooth(1)` is
+  exactly `1.0` — so a constrained stroke over the colour it was seeded on is *the same stroke*, bit
+  for bit, as the unconstrained one.
+- `k` is exactly `0.0` at and beyond `radius`, because `smooth(0)` is exactly `0.0`.
+- the grid index's licence survives: a stroke the pixel cannot reach has `profile = 0`, and
+  `0.0 · amount · k` is exactly `0.0` for every finite `k`, so skipping it is still bit-identical
+  rather than merely close.
+
+**What it costs the rest of the mask.** A constrained stroke makes its component a *value-based* one
+in the sense the [range study](range-study.md#what-a-range-selection-reads) defines: coverage is no
+longer a function of position alone, so the component answers `reads_pixels`, the
+[overlay's refusal](range-study.md#proposals) applies to it, and what it selects moves when a layer
+ahead of the masked one changes the operation's input. Its **geometric** feature width is unaffected
+and is still the answer `min_feature_px` gives, because the colour test draws no ramp across the
+frame for a pixel grid to miss — the same answer, and the same reason, as
+[P13](range-study.md#proposals).
+
 ### Accumulation
 
 Strokes accumulate inside the component **in stored order**, starting from `c = 0`:
@@ -584,7 +675,10 @@ tolerance and not bit-identical:
   `c - c * s` rather than `c * (1 - s)`: both are the same union in the reals and only the frozen
   spellings are exact identities at `s = 0`, which is what the grid index depends on;
 - taking the square root per segment rather than once per stroke, or scaling a stroke's profile by
-  `flow` before the accumulation's multiply rather than in the `s * amount` the profile ends with.
+  `flow` before the accumulation's multiply rather than in the `s * amount` the profile ends with;
+- reassociating a constrained stroke's last multiply as `profile * (amount * k)`, folding its
+  similarity into the profile's own clamp, or appending `* 1.0` to an unconstrained stroke so that
+  both branches read alike.
 
 Permitted, and expected: hoisting `u0, v0, du, dv, l2`, `cu, cv, ca, sa, r0, span, hard`, a stroke's
 `R, band, hard, amount` and its segments' `ax, ay, ex, ey, len2`, and `amount / 100` to compile time;
@@ -639,10 +733,11 @@ randomized comparison uses a fixed SplitMix64 seed, so the figures are reproduci
 | File | Purpose |
 | --- | --- |
 | `docs/design/mask-study.md` | This document. |
-| [`crates/lightwell-core/tests/reference/mask.rs`](../../crates/lightwell-core/tests/reference/mask.rs) | The frozen `f64` reference: `Stage`, the distance rules, `smooth`, the linear and radial fields, both algebras, `coverage`, and the brush's segments, capsule profile, accumulation and support box. |
+| [`crates/lightwell-core/tests/reference/mask.rs`](../../crates/lightwell-core/tests/reference/mask.rs) | The frozen `f64` reference: `Stage`, the distance rules, `smooth`, the linear and radial fields, both algebras, `coverage`, and the brush's segments, capsule profile, colour constraint, accumulation and support box. |
 | [`crates/lightwell-core/tests/mask_reference.rs`](../../crates/lightwell-core/tests/mask_reference.rs) | The mask-space, composition and gradient proofs, and the ignored 24 MP figures test. |
 | [`crates/lightwell-core/tests/mask_brush_reference.rs`](../../crates/lightwell-core/tests/mask_brush_reference.rs) | The brush proofs and measurements above, and the ignored `brush_study_figures` test. |
 | [`crates/lightwell-core/tests/reference/mod.rs`](../../crates/lightwell-core/tests/reference/mod.rs) | Declares `pub mod mask;` beside the other studies' references. |
+| [`crates/lightwell-core/src/mask/brush.rs`](../../crates/lightwell-core/src/mask/brush.rs) | The production transcription of the brush: the compiled strokes, the grid index, the colour constraint and the per-pixel fold. |
 
 ## References
 
@@ -652,5 +747,6 @@ randomized comparison uses a fixed SplitMix64 seed, so the figures are reproduci
 - [Content-space edits](content-space-edits.md) — the content stage mask space is defined against.
 - [Instant previews](instant-preview.md) — why normalized storage keeps a masked recipe proxy eligible.
 - [Colour mixer mathematics](mixer-study.md) — the study format, and the Oklab basis the range selections will reuse.
+- [Range-selection mathematics](range-study.md) — the Oklab chromaticity metric, the refine mapping and the value-based answers [the colour constraint](#the-colour-constraint) reuses unchanged.
 - [Architecture](architecture.md) — the per-side and per-buffer limits the distance ceiling is reasoned against.
 - [Performance rules](../engineering/performance-rules.md) — the point-query and per-pixel cost rules the frozen forms are chosen under.

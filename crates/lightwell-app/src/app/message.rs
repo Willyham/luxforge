@@ -198,6 +198,10 @@ pub(crate) enum BrushEdit {
     /// The erase modifier went down or came up. It erases while it is held, and a stroke already
     /// down keeps the flag it started with.
     EraseHeld(bool),
+    /// The Limit to colour toggle: the next stroke is held to the colour under the brush where it
+    /// begins. It sends nothing on its own, exactly as the other brush settings do not — the flag
+    /// travels on the stroke's own request, and the colour is the host's to read.
+    LimitToColour(bool),
 }
 
 /// Every Masks-panel change is one message, so a script drives the whole panel through the update
@@ -246,6 +250,10 @@ pub(crate) enum MaskMessage {
     Name(String),
     /// Submit the rename field for that mask.
     Rename(String),
+    /// Enter or leave the canvas pick that fills the selected component's swatches, which is the
+    /// host's own declared pick for that component's kind. It is one `workspace.set`, exactly as a
+    /// module's picker control is.
+    Pick,
     /// One list edit from a row, run as the command it names.
     Row(RowEdit),
     /// The same edit, copied as the JSON request it would send rather than sent.
@@ -296,6 +304,13 @@ pub(crate) enum RowEdit {
     /// `mask.delete-stroke`: a forward edit that removes one stroke from a brush component and
     /// appends one entry. It is not an undo, and the panel names it as its own thing.
     DeleteStroke { component: String, stroke: String },
+    /// `mask.delete-<kind>-sample`: one sampled colour removed on its own, by its position in the
+    /// component's list, so a swatch picked by accident goes without clearing them all.
+    DeleteSample {
+        component: String,
+        kind: String,
+        index: usize,
+    },
 }
 
 /// One pointer step of a crop gesture, already mapped to box pixels by the canvas.

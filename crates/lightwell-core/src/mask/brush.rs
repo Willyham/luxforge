@@ -37,7 +37,7 @@
 //! Compiling uses the **stored position** spelling of mask space (`u = x · W/H`, `v = y`); the
 //! per-pixel path receives the pixel-centre spelling from [`super::CompiledMask`]. The two agree to
 //! `2.220e-16` and not bit for bit, so each is used only where the study froze it.
-use super::{DISTANCE_MAX, DISTANCE_MIN, smooth};
+use super::{DISTANCE_MAX, DISTANCE_MIN, range, smooth};
 use crate::{
     Component, Error, ErrorKind,
     modules::{Region, Stage},
@@ -207,6 +207,15 @@ struct CompiledStroke {
     amount: f64,
     erase: bool,
     segments: Vec<Segment>,
+    /// The colour similarity this stroke multiplies its coverage by, when it carries one, already
+    /// compiled: the seed's Oklab `(a, b)` and the radius its refine maps to, computed once here
+    /// because neither depends on the pixel.
+    ///
+    /// It is the [colour range](super::range)'s own compiled falloff at **one sample** — the same
+    /// type, the same metric, the same mapping — so there is no second colour space and no second
+    /// constant anywhere in the editor because of the colour-constrained brush
+    /// (`docs/design/mask-study.md#the-colour-constraint`).
+    colour: Option<range::CompiledColour>,
 }
 
 impl CompiledStroke {
@@ -229,15 +238,31 @@ impl CompiledStroke {
         }
     }
 
-    /// This stroke's coverage from the **squared** distance to its nearest reached segment.
+    /// This stroke's coverage from the **squared** distance to its nearest reached segment, and the
+    /// pixel the operation this mask modulates receives.
     ///
     /// The caller supplies that minimum, because the grid index is what decides which segments a
     /// pixel tests. A pixel that reached none of this stroke's segments does not call this at all:
     /// its coverage is exactly `0.0` and the fold is an exact identity there.
+    ///
+    /// ```text
+    /// s = capsule_profile(d) * (flow / 100)              -- unlimited
+    /// s = capsule_profile(d) * (flow / 100) * k          -- limited to a colour
+    /// ```
+    ///
+    /// The similarity is the **last** multiply and only a limited stroke performs one: an unlimited
+    /// stroke evaluates the expression it always did, with no `* 1.0` appended, so the delivered
+    /// brush's bit-identity with the frozen reference is untouched. `(profile · amount) · k` is the
+    /// frozen association; `profile · (amount · k)` is algebraically equal, within tolerance and not
+    /// bit-identical, and the study forbids it like every other reassociation.
     #[inline]
-    fn coverage_from(&self, nearest2: f64) -> f64 {
+    fn coverage_from(&self, nearest2: f64, rgb: [f64; 3]) -> f64 {
         let d = nearest2.sqrt();
-        self.profile(d) * self.amount
+        let s = self.profile(d) * self.amount;
+        match &self.colour {
+            None => s,
+            Some(limit) => s * limit.coverage(rgb),
+        }
     }
 }
 
@@ -504,6 +529,13 @@ impl Compiled {
                 amount,
                 erase: stroke.erase(),
                 segments,
+                // A stored limit is compiled here, once, for the same reason every other per-stroke
+                // term is: neither the seed's Oklab pair nor the refine radius depends on the pixel.
+                // The seed is read from the stroke and **never** sampled again — that is what makes a
+                // stroke reproducible from its own bytes after any later edit.
+                colour: stroke
+                    .colour_limit()
+                    .map(|limit| range::similarity(limit.seed(), limit.refine())),
             });
         }
         let index = Index::build(&compiled, mask, component)?;
@@ -536,7 +568,7 @@ impl Compiled {
     /// whole stroke would give: a segment the cell omits cannot reach the pixel, so it cannot be the
     /// nearest one unless every present segment is also out of reach — in which case both answers
     /// give exactly `0.0`.
-    pub(super) fn coverage(&self, u: f64, v: f64) -> f64 {
+    pub(super) fn coverage(&self, u: f64, v: f64, rgb: [f64; 3]) -> f64 {
         let listed = self.index.at(u, v);
         if listed.is_empty() {
             return 0.0;
@@ -554,7 +586,7 @@ impl Compiled {
                 }
                 at += 1;
             }
-            let s = stroke.coverage_from(nearest2);
+            let s = stroke.coverage_from(nearest2, rgb);
             c = if stroke.erase {
                 c * (1.0 - s)
             } else {
@@ -564,10 +596,23 @@ impl Compiled {
         c
     }
 
+    /// Whether any stroke of this component is limited to a colour, which is what makes the
+    /// component's coverage a function of the pixel's value and not of its position alone.
+    ///
+    /// The consequences are the range selections' own, stated there and not softened here: the
+    /// coverage overlay refuses such a mask, and what a limited stroke paints moves when a layer
+    /// ahead of the masked one changes the operation's input. Its **geometric** feature width is
+    /// unaffected, because a colour test draws no ramp across the frame for a pixel grid to miss.
+    pub(super) fn reads_pixels(&self) -> bool {
+        self.strokes.iter().any(|stroke| stroke.colour.is_some())
+    }
+
     /// A conservative pixel rectangle of this component's support.
     ///
     /// As drawn, coverage is exactly zero outside the add strokes' grown boxes, so the rectangle is
-    /// that box brought to pixel indices. Inverted, coverage is `1 - c`, which is exactly zero only
+    /// that box brought to pixel indices. A colour limit cannot widen it: its similarity is in
+    /// `[0, 1]`, so a limited stroke's coverage is never above the same stroke's unlimited coverage,
+    /// and the box that bounded one bounds the other. Inverted, coverage is `1 - c`, which is exactly zero only
     /// where `c` is exactly `1` — the strokes' cores — and non-zero over the whole of the rest of the
     /// stage, so the whole stage is the honest conservative answer, exactly as an inverted radial and
     /// a whole-mask inversion answer it.

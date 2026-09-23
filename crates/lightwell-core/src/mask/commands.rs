@@ -39,13 +39,14 @@
 //! module declares no geometry of its own and knows no kind by name.
 use super::SAMPLES_FIELD;
 use super::{
-    BRUSH, DISTANCE_MIN, component_geometry_is_drawn, component_parameters, component_sample_limit,
-    component_sample_parameters, declared_geometry_kinds, knows_component_kind, sampling_kinds,
+    BRUSH, DISTANCE_MIN, REFINE_DEFAULT, REFINE_MAX, REFINE_MIN, component_geometry_is_drawn,
+    component_parameters, component_sample_limit, component_sample_parameters,
+    declared_geometry_kinds, knows_component_kind, sampling_kinds,
 };
 use crate::{
-    ActionDescriptor, ChoiceStyle, Component, ComponentId, ComponentMode, Control, Error,
-    ErrorKind, Layer, LayerId, Mask, MaskId, ModuleRegistry, MutationResult, NumberStyle,
-    ParameterDescriptor, ParameterKind, Recipe,
+    ActionDescriptor, CanvasInteraction, ChoiceStyle, Component, ComponentId, ComponentMode,
+    Control, Error, ErrorKind, Layer, LayerId, Mask, MaskId, ModuleRegistry, MutationResult,
+    NumberStyle, ParameterDescriptor, ParameterKind, Recipe,
     model::{COMPONENTS_PER_MASK, MASKS_PER_RECIPE},
     path::{self, POINTS_PER_STROKE, SIZE_MAX, Stroke, StrokeId},
 };
@@ -53,8 +54,22 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 use std::sync::LazyLock;
 
-/// The one read-only method of the family.
+/// The read-only methods of the family.
 pub const LIST: &str = "mask.list";
+
+/// `mask.sample-input`: the **pixel the operation a mask modulates receives**, at one content
+/// position, in linear sRGB.
+///
+/// It is the host side of the canvas pick for every value-based part of a mask — a colour range's
+/// swatches today — and it exists because the client must not read that colour itself. A range
+/// selection is evaluated on the operation's *input*, while the frame a client can see holds that
+/// operation's *output*, so a colour decoded from the picture would be a different colour and the
+/// selection would not be the one the person picked (proposal P17 of `docs/design/range-study.md`).
+/// The host computes it from the same point sample a module's query uses, so it costs one
+/// `O(layers)` evaluation and rasterizes nothing.
+///
+/// Read-only in every sense: it writes no entry, emits no event and touches no session state.
+pub const SAMPLE_INPUT: &str = "mask.sample-input";
 
 /// The brush's two commands: the **only** way a stroke reaches a mask.
 ///
@@ -354,6 +369,54 @@ pub fn geometry(op: GeometryOp, kind: &str) -> Option<&'static MaskCommand> {
         command
             .geometry
             .is_some_and(|geometry| geometry.op == op && geometry.kind == kind)
+    })
+}
+
+/// The canvas picks the host declares for its own commands: one per sampling kind, generated from
+/// the kind table exactly as that kind's two sample methods are.
+///
+/// This is the host's side of the delivered pick machinery, in the delivered type
+/// ([`CanvasInteraction`]) with the delivered meaning, because a mask is a host object and no module
+/// declares one — so a pick that fills part of a mask had no way to be expressed until the
+/// interaction admitted a host target (proposal P17 of `docs/design/range-study.md`). Each entry runs
+/// [`SAMPLE_INPUT`] at the picked content pixel and submits the `r`, `g` and `b` it answers with to
+/// `mask.add-<kind>-sample`, whose own declared parameters carry exactly those names — so the
+/// delivered "every top-level number field of the result whose name is a parameter of the action"
+/// rule needs no exception and the client maps nothing.
+///
+/// **The colour is never the client's.** It is read by the host from the stage the masked layer
+/// receives and travels straight back into a host command; nothing on the way can decode a pixel,
+/// because nothing on the way has one. That is the whole of what this declaration buys.
+///
+/// The mode a pick belongs to is its **action's** method name, which is unique by construction and is
+/// what a client sets to enter the mode — there is no second table of mode names. No shortcut is
+/// declared: a mask's pick is offered beside the component it fills, the way a module's picker control
+/// is, and the canvas mode strip lists no pick mode at all.
+pub fn canvas() -> &'static [CanvasInteraction] {
+    &CANVAS
+}
+
+static CANVAS: LazyLock<Vec<CanvasInteraction>> = LazyLock::new(|| {
+    sampling_kinds()
+        .filter_map(|kind| {
+            let add = sample(SampleOp::Add, kind)?;
+            Some(CanvasInteraction::SampleApply {
+                query: SAMPLE_INPUT.to_owned(),
+                x: "x".to_owned(),
+                y: "y".to_owned(),
+                action: add.method.to_owned(),
+                title: format!("Pick {}", spoken(kind)),
+                shortcut: None,
+            })
+        })
+        .collect()
+});
+
+/// The canvas pick whose mode a client is in, or none when that mode is not one of the host's.
+pub fn canvas_pick(mode: &str) -> Option<&'static CanvasInteraction> {
+    CANVAS.iter().find(|pick| match pick {
+        CanvasInteraction::SampleApply { action, .. } => action == mode,
+        CanvasInteraction::PointPick { .. } | CanvasInteraction::CropFrame { .. } => false,
     })
 }
 
@@ -697,12 +760,18 @@ pub(crate) fn stored_parameters(
 /// Pure — it reads the recipe it is handed and returns a new one — so the same function answers a
 /// commit and a drafted preview, and a drafted gesture therefore previews exactly the stack
 /// committing it would write. It reads no pixels and costs `O(masks + components + layers)`.
+///
+/// `seed` is the pixel a limited stroke was seeded on, as the three sRGB codes the host read at the
+/// layer and position [`colour_limit_request`] named. It arrives as an argument rather than being read here because this
+/// function reads no pixels — that is what lets a drafted gesture preview exactly the stack its
+/// release commits, through the same call.
 pub(crate) fn plan(
     command: &MaskCommand,
     recipe: &Recipe,
     target: &MaskTarget,
     parameters: &Map<String, Value>,
     registry: &ModuleRegistry,
+    seed: Option<[u8; 3]>,
 ) -> Result<MaskOutcome, Error> {
     command.checked_target(target)?;
     let mut next = recipe.clone();
@@ -918,7 +987,7 @@ pub(crate) fn plan(
                     Vec::new(),
                 )
             }
-            ADD_STROKE => plan_add_stroke(&mut next, target, parameters)?,
+            ADD_STROKE => plan_add_stroke(&mut next, target, parameters, seed)?,
             DELETE_STROKE => plan_delete_stroke(&mut next, target)?,
             "mask.reorder-component" => {
                 let (mask_index, index) = component_at(&next, target)?;
@@ -1107,8 +1176,24 @@ fn plan_add_stroke(
     next: &mut Recipe,
     target: &MaskTarget,
     parameters: &Map<String, Value>,
+    seed: Option<[u8; 3]>,
 ) -> Result<Planned, Error> {
     let stroke = captured_stroke(parameters)?;
+    // A limit is stored with the stroke, from the colour the host read where the stroke began: never
+    // from the request, and never read again when the picture is drawn.
+    let stroke = match (boolean(parameters, "limit_to_colour")?, seed) {
+        (false, _) => stroke,
+        (true, Some(seed)) => stroke.with_colour_limit(path::ColourLimit::sampled(
+            seed,
+            number(parameters, "colour_refine")?,
+        )?),
+        (true, None) => {
+            return Err(validation(
+                "a stroke limited to a colour needs the pixel the masked operation receives, and \
+                 none was read",
+            ));
+        }
+    };
     let id = next.strokes.insert(stroke);
     // The mode belongs to a component, and only a stroke that makes one may carry it. Appending to a
     // component that already exists is refused rather than silently ignoring the mode, and the
@@ -1274,6 +1359,93 @@ fn strokes_reach(component: &Component) -> Result<(), Error> {
 /// order by content address, and nothing else.
 fn strokes_payload(strokes: &[StrokeId]) -> Value {
     json!({ path::STROKES_FIELD: strokes })
+}
+
+/// Which layer's input a mask's value-based parts read, and the refusal when there is none.
+///
+/// **The rule, stated once for everything that reads a pixel through a mask:** the pixel is taken at
+/// the stage the **first layer bound to this mask in evaluation order** receives. A mask several
+/// layers at different stages share therefore has one answer and not several, and that answer is the
+/// earliest operation the mask modulates — the one its components were drawn against first.
+///
+/// A mask no layer is bound to is **refused by name** rather than answered from the source or from
+/// the finished frame. It has no operation to be the input of: a colour sampled anywhere else would
+/// be in a different domain from the one the selection is evaluated in, and the
+/// [range study](../../../docs/design/range-study.md) measures what that costs — a `+0.75 EV` layer
+/// ahead of a band takes a sky from fully selected to not selected at all. Refusing says so; seeding
+/// from the wrong stage would silently select nothing.
+pub(crate) fn input_layer_index(recipe: &Recipe, mask: &MaskId) -> Result<usize, Error> {
+    let name = recipe
+        .masks
+        .iter()
+        .find(|held| &held.id == mask)
+        .map(|held| held.name.clone())
+        .unwrap_or_else(|| mask.as_str().to_owned());
+    recipe
+        .layers
+        .iter()
+        .position(|layer| layer.mask.as_ref() == Some(mask))
+        .ok_or_else(|| {
+            validation(format!(
+                "no layer is bound to mask {name}, and reading the pixel an operation receives \
+                 needs an operation; apply an adjustment through {name} first"
+            ))
+        })
+}
+
+/// What one `mask.add-stroke` needs read before it can be planned, when it asks for a colour limit:
+/// the layer whose input to read, the position to read it at, and the refine to compile with.
+///
+/// It is answered here, beside the command that asks for it, and the pixel itself is read by the
+/// host — the split is deliberate. **The rule** (which layer, and what a stroke starting outside the
+/// picture means) belongs with the command family; **the pixel** belongs to the editor, which is the
+/// only thing that can evaluate one. So a client cannot supply a colour at any point: the request
+/// carries a flag and a path, and the colour that ends up stored is the one the photograph has at
+/// the position the stroke started from.
+///
+/// The position is the stroke's **stored** first position, not the raw one posted, so a hand-drawn
+/// path and an agent's raw copy of it seed from the same pixel exactly as they store the same bytes.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct LimitRequest {
+    /// The layer whose input stage the seed is read from, by [`input_layer_index`].
+    pub layer: usize,
+    /// The stroke's first stored position, in the content stage's normalized coordinates.
+    pub x: f64,
+    pub y: f64,
+    pub refine: f64,
+}
+
+/// Whether this request asks for a colour limit, and everything the host needs to seed it.
+pub(crate) fn colour_limit_request(
+    command: &MaskCommand,
+    recipe: &Recipe,
+    target: &MaskTarget,
+    parameters: &Map<String, Value>,
+) -> Result<Option<LimitRequest>, Error> {
+    if command.method != ADD_STROKE || !boolean(parameters, "limit_to_colour")? {
+        return Ok(None);
+    }
+    let Some(mask) = target.mask.as_ref() else {
+        return Err(validation(
+            "a stroke that draws a new mask cannot be limited to a colour: the limit reads the pixel \
+             the operation the mask modulates receives, and a new mask is bound to no layer yet. \
+             Paint the mask, apply an adjustment through it, then limit the strokes after that",
+        ));
+    };
+    let layer = input_layer_index(recipe, mask)?;
+    // The stored first position, which is what makes the seed a property of the stroke the store
+    // holds rather than of the raw path one client happened to post.
+    let stroke = captured_stroke(parameters)?;
+    let [x, y] = stroke
+        .points()
+        .next()
+        .ok_or_else(|| validation("a stroke has no position to read a colour at"))?;
+    Ok(Some(LimitRequest {
+        layer,
+        x,
+        y,
+        refine: number(parameters, "colour_refine")?,
+    }))
 }
 
 /// The stroke one `mask.add-stroke` posted, captured on the stored grid.
@@ -1618,6 +1790,28 @@ fn modes() -> Vec<String> {
         .collect()
 }
 
+/// The largest content coordinate a pick can name: one below the per-side admission limit of
+/// `docs/design/architecture.md#rendering-and-limits`, exactly as the delivered neutral picker's
+/// coordinates are declared. A position inside the declared range but outside the stage the masked
+/// layer receives is refused by name when the pixel is read, because only the host knows that stage.
+const MAX_COORDINATE: i64 = 16383;
+
+/// One coordinate of a pick, declared as the delivered neutral picker declares its own.
+fn sample_coordinate(name: &str, notes: &str) -> ParameterDescriptor {
+    ParameterDescriptor {
+        unit: Some("px".to_owned()),
+        ..parameter(
+            name,
+            ParameterKind::Integer {
+                min: 0,
+                max: MAX_COORDINATE,
+            },
+            true,
+            notes,
+        )
+    }
+}
+
 /// The shared descriptor shape the kind-independent commands declare their own values with. A
 /// component kind's geometry is *not* declared here: it is declared once in that kind's own module,
 /// beside the parser that enforces the same ranges.
@@ -1847,6 +2041,27 @@ static COMMANDS: LazyLock<Vec<MaskCommand>> = LazyLock::new(|| {
             Vec::new(),
         ),
         command(
+            SAMPLE_INPUT,
+            "Sample input",
+            "the pixel the operation this mask modulates receives, at one content position, as \
+             linear-sRGB r, g and b. Read-only: it writes no history and emits no event. It is where \
+             a canvas pick gets the colour a colour range's swatch is, because a range selection is \
+             evaluated on the operation's input while the frame a client can see holds that \
+             operation's output — so a colour read from the picture would be a different colour. The \
+             position is a pixel of the stage that operation's layer receives, and one outside it is \
+             refused rather than clamped",
+            false,
+            (true, false, false),
+            false,
+            vec![
+                sample_coordinate(
+                    "x",
+                    "the content column to read, in the stage the masked layer receives",
+                ),
+                sample_coordinate("y", "the content row to read, in the same stage"),
+            ],
+        ),
+        command(
             "mask.delete",
             "Delete mask",
             "delete a mask and the layers bound to it; destructive, so the history label and the result both name the layers it removed",
@@ -2043,6 +2258,44 @@ static COMMANDS: LazyLock<Vec<MaskCommand>> = LazyLock::new(|| {
                     true,
                     "this stroke removes coverage rather than adding it, for the whole of its life",
                 ),
+                ParameterDescriptor {
+                    default: Some(json!(false)),
+                    ..parameter(
+                        "limit_to_colour",
+                        ParameterKind::Boolean,
+                        true,
+                        "limit this stroke to the colour under the brush where it began: the host \
+                         reads the pixel the operation this mask modulates receives at the stroke's \
+                         first position, stores it with the stroke, and multiplies the stroke's \
+                         coverage by the similarity to it. No colour is sent — a request names the \
+                         limit, never the colour, so what is stored is always a colour the \
+                         photograph has at that position. It is a per-pixel colour test and not \
+                         Lightroom's Auto Mask: it knows nothing about edges or connectivity, so it \
+                         also paints a matching colour anywhere else the stroke passes over. A mask \
+                         no layer is bound to has no operation to read an input from and is refused \
+                         by name",
+                    )
+                },
+                ParameterDescriptor {
+                    unit: Some("%".to_owned()),
+                    step: Some(1.0),
+                    precision: Some(1),
+                    fine_step: Some(0.1),
+                    zero: Some(REFINE_DEFAULT),
+                    default: Some(json!(REFINE_DEFAULT)),
+                    ..parameter(
+                        "colour_refine",
+                        ParameterKind::Number {
+                            min: REFINE_MIN,
+                            max: REFINE_MAX,
+                        },
+                        true,
+                        "how tight the colour limit is, on the colour range's own refine axis and \
+                         with the same meaning: a higher refine is always a narrower hold, \
+                         geometrically between a whole colour family at 0 and one flat patch at 100. \
+                         Ignored, and stored nowhere, by a stroke that carries no limit",
+                    )
+                },
                 parameter(
                     "mode",
                     ParameterKind::Enum { options: modes() },
@@ -2189,6 +2442,19 @@ mod tests {
         ModuleRegistry::builtin()
     }
 
+    /// Plan a command that needs no colour read, which is every command here: only a stroke asking to
+    /// be limited to a colour takes a seed, and the host reads that one — so the tests that cover it
+    /// call [`super::plan`] with the seed themselves.
+    fn plan(
+        command: &MaskCommand,
+        recipe: &Recipe,
+        target: &MaskTarget,
+        parameters: &Map<String, Value>,
+        registry: &ModuleRegistry,
+    ) -> Result<MaskOutcome, Error> {
+        super::plan(command, recipe, target, parameters, registry, None)
+    }
+
     fn linear(x0: f64, y0: f64, x1: f64, y1: f64) -> Map<String, Value> {
         let mut parameters = Map::new();
         for (name, value) in [("x0", x0), ("y0", y0), ("x1", x1), ("y1", y1)] {
@@ -2245,6 +2511,7 @@ mod tests {
             [
                 // The kind-independent commands, in the order the design's method table lists them.
                 "mask.list",
+                "mask.sample-input",
                 "mask.delete",
                 "mask.rename",
                 "mask.duplicate",
@@ -2293,13 +2560,13 @@ mod tests {
                 .all(|command| !crate::valid_name(command.method)),
             "a mask command identity can never be a module action identity"
         );
-        // Only `mask.list` reads; every other command is an ordinary mutation.
+        // `mask.list` and `mask.sample-input` read; every other command is an ordinary mutation.
         let reading: Vec<&str> = all()
             .iter()
             .filter(|command| !command.mutates)
             .map(|command| command.method)
             .collect();
-        assert_eq!(reading, [LIST]);
+        assert_eq!(reading, [LIST, SAMPLE_INPUT]);
     }
 
     /// Registering a kind is **sufficient** to make it creatable, addable and patchable: for every

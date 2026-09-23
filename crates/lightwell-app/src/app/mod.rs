@@ -3223,9 +3223,48 @@ impl Editor {
                             self.client,
                             asset,
                             entry,
+                            format!("query.{query}"),
+                            action,
+                            (x_parameter, y_parameter),
+                            Map::new(),
+                            (x, y),
+                        );
+                    }
+                    // The host's own pick: the same two steps, reaching the host's declarations
+                    // instead of a module's. The mask travels in the envelope because it is an
+                    // identity, and the component the answer lands on is the one the panel has
+                    // open — a pick fills the swatch list a person is looking at.
+                    PickTarget::HostSample {
+                        query,
+                        x: x_parameter,
+                        y: y_parameter,
+                        action,
+                    } => {
+                        let Some(state) = &self.state else {
+                            return Task::none();
+                        };
+                        let asset = state.asset.id.clone();
+                        let Some(mask) = self.selected_mask.clone() else {
+                            self.status = "Open a mask to pick a colour into it".into();
+                            self.settle_step(Settle::Pick);
+                            return Task::none();
+                        };
+                        let mut envelope = Map::new();
+                        envelope.insert("mask".into(), json!(mask.as_str()));
+                        self.event(
+                            "canvas_pick",
+                            json!({"query":query,"action":action,"mask":mask.as_str(),"view_x":view_x,"view_y":view_y,"x":x,"y":y}),
+                        );
+                        self.status = format!("Sampling ({x}, {y})…");
+                        return query_task(
+                            self.owner.clone(),
+                            self.client,
+                            asset,
+                            entry,
                             query,
                             action,
                             (x_parameter, y_parameter),
+                            envelope,
                             (x, y),
                         );
                     }
@@ -3259,8 +3298,15 @@ impl Editor {
                 };
                 // Every top-level number the query answered that the action declares as a
                 // parameter, and nothing else: the answer may carry metadata the action knows
-                // nothing about, and an unknown field would be refused by the generic check.
-                let fields = tools::declared_action(&self.modules, &action)
+                // nothing about, and an unknown field would be refused by the generic check. The
+                // declaration is read from whichever table owns the action — a module's or the
+                // host's command family — so one rule covers both kinds of pick.
+                let host = lightwell_core::mask::commands::find(&action);
+                let declared = match host {
+                    Some(command) => Some(&command.action),
+                    None => tools::declared_action(&self.modules, &action),
+                };
+                let fields = declared
                     .zip(answer.as_object())
                     .map(|(declared, answer)| {
                         answer
@@ -3294,10 +3340,30 @@ impl Editor {
                 }
                 let mut request =
                     json!({"asset_id":state.asset.id,"mutation":mutation(state.revision)});
-                request
-                    .as_object_mut()
-                    .expect("the envelope is an object")
-                    .extend(fields.clone());
+                let object = request.as_object_mut().expect("the envelope is an object");
+                object.extend(fields.clone());
+                // A host command addresses the objects it edits in the envelope, because no declared
+                // parameter kind carries an identity. The pick fills the component the panel has
+                // open, and a pick with nothing open is refused with its reason rather than sent.
+                let method = match host {
+                    None => format!("edit.{action}"),
+                    Some(command) => {
+                        let Some(mask) = self.selected_mask.clone() else {
+                            self.status = "Open a mask to pick a colour into it".into();
+                            self.settle_step(Settle::Pick);
+                            return Task::none();
+                        };
+                        let Some(component) = self.selected_component.clone() else {
+                            self.status =
+                                "Select the component this pick fills before picking".into();
+                            self.settle_step(Settle::Pick);
+                            return Task::none();
+                        };
+                        object.insert("mask".into(), json!(mask.as_str()));
+                        object.insert("component".into(), json!(component.as_str()));
+                        command.method.to_owned()
+                    }
+                };
                 self.event(
                     "canvas_sample",
                     json!({"action":action,"x":x,"y":y,"fields":fields}),
@@ -3305,8 +3371,8 @@ impl Editor {
                 // This pick commits, so its evidence is the render that follows rather than the
                 // status it leaves.
                 self.await_step(Settle::Preview);
-                // One command for the whole pick: one history entry, labelled by the module.
-                return self.command(format!("edit.{action}"), request);
+                // One command for the whole pick: one history entry, labelled by its own family.
+                return self.command(method, request);
             }
             Message::FocusNext => return operation::focus_next(),
             Message::FocusPrevious => return operation::focus_previous(),
@@ -4039,6 +4105,14 @@ enum PickTarget {
         y: String,
         action: String,
     },
+    /// The host's own pair: a `mask.*` read answers the pixel the masked operation receives and a
+    /// `mask.*` command receives it, addressed to the mask and component the panel has open.
+    HostSample {
+        query: String,
+        x: String,
+        y: String,
+        action: String,
+    },
 }
 
 impl PickTarget {
@@ -4055,6 +4129,17 @@ impl PickTarget {
                 y,
                 action,
             } => Some(Self::Sample {
+                query: query.to_owned(),
+                x: x.to_owned(),
+                y: y.to_owned(),
+                action: action.to_owned(),
+            }),
+            tools::CanvasPick::HostSample {
+                query,
+                x,
+                y,
+                action,
+            } => Some(Self::HostSample {
                 query: query.to_owned(),
                 x: x.to_owned(),
                 y: y.to_owned(),

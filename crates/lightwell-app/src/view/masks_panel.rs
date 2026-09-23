@@ -286,6 +286,25 @@ fn brush_section(model: &MasksModel) -> Element<'_, Message> {
         },
         |on| Message::Mask(MaskMessage::Brush(BrushEdit::Erase(on))),
     ));
+    // Limit to colour, and what it is not. It holds the stroke to the colour under the brush where
+    // the stroke begins — a per-pixel colour test with no notion of an edge or of connectivity — so
+    // it is **not** Lightroom's Auto Mask and is not labelled as if it were. The caption says the
+    // difference where a person would otherwise assume it, and the user guide says it in full.
+    block = block.push(toggle(
+        &ToggleModel {
+            label: brush.limit_label.clone(),
+            on: brush.limit,
+            enabled: brush.enabled && !brush.locked && brush.limit_reason.is_none(),
+        },
+        |on| Message::Mask(MaskMessage::Brush(BrushEdit::LimitToColour(on))),
+    ));
+    if let Some(reason) = &brush.limit_reason {
+        block = block.push(caption(reason.clone()));
+    } else if brush.limit {
+        block = block.push(caption(
+            "Holds the colour under the brush where the stroke starts · a colour test, not edge detection: it also paints that colour elsewhere the stroke reaches",
+        ));
+    }
     let mut actions = row![].spacing(theme::SPACING).align_y(Alignment::Center);
     actions = actions.push(text_button(
         "Paint new mask",
@@ -311,6 +330,28 @@ fn brush_section(model: &MasksModel) -> Element<'_, Message> {
         block = block.push(caption("Option held: the next stroke erases"));
     }
     block.into()
+}
+
+/// One sampled colour, drawn as the colour it is so a swatch list reads as swatches. The codes come
+/// from the model, which encoded the stored linear triple through the delivered encode; nothing here
+/// converts a colour.
+fn swatch_chip(codes: [u8; 3]) -> Element<'static, Message> {
+    iced::widget::container(
+        iced::widget::Space::new()
+            .width(iced::Length::Fixed(14.0))
+            .height(iced::Length::Fixed(14.0)),
+    )
+    .style(move |_: &iced::Theme| iced::widget::container::Style {
+        background: Some(iced::Background::Color(iced::Color::from_rgb8(
+            codes[0], codes[1], codes[2],
+        ))),
+        border: iced::Border {
+            radius: 3.0.into(),
+            ..iced::Border::default()
+        },
+        ..iced::widget::container::Style::default()
+    })
+    .into()
 }
 
 /// The open mask's rename field. A name is free text, which no declared parameter kind carries, so
@@ -604,6 +645,56 @@ fn component_row<'a>(
             if let Some(reason) = &stroke.delete_reason {
                 line = line.push(caption(reason.clone()));
             }
+            block = block.push(line);
+        }
+    }
+    // The colours this component has sampled, and the canvas pick that adds one. The pick is the
+    // host's own declared interaction, so the button's name is the host's and the click that fills a
+    // swatch runs a host read into a host command — the colour is never read from the frame, because
+    // the frame holds the masked operation's output and the selection is evaluated on its input.
+    if component.can_pick {
+        let mut line = row![text_button(
+            &component.pick_label,
+            if component.picking {
+                ButtonTone::Selected
+            } else {
+                ButtonTone::Quiet
+            },
+            ButtonSize::Compact,
+            component
+                .pick_reason
+                .is_none()
+                .then_some(Message::Mask(MaskMessage::Pick)),
+        )]
+        .spacing(theme::SPACING)
+        .align_y(Alignment::Center);
+        if component.picking {
+            line = line.push(caption("Click the photograph to sample a colour"));
+        }
+        block = block.push(line);
+        if let Some(reason) = &component.pick_reason {
+            block = block.push(caption(reason.clone()));
+        }
+        for sample in &component.samples {
+            let edit = RowEdit::DeleteSample {
+                component: id.clone(),
+                kind: component.kind.clone(),
+                index: sample.index,
+            };
+            let mut line = row![
+                swatch_chip(sample.swatch),
+                caption(sample.label.clone()),
+                caption(sample.text.clone()),
+            ]
+            .spacing(theme::SPACING)
+            .align_y(Alignment::Center);
+            line = line.push(text_button(
+                "Remove",
+                ButtonTone::Quiet,
+                ButtonSize::Compact,
+                sample.delete_reason.is_none().then(|| run(edit.clone())),
+            ));
+            line = line.push(copy_button("Copy request", edit));
             block = block.push(line);
         }
     }

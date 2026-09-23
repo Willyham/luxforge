@@ -103,6 +103,36 @@ pub(crate) struct ComponentRow {
     /// so every stroke is a thing a person can see and remove. Empty for a component that holds
     /// none, which is every component whose geometry is declared as numbers.
     pub(crate) strokes: Vec<StrokeRow>,
+    /// The colours this component has sampled, in the order it holds them, shown while the row is
+    /// selected so every swatch is a thing a person can see and remove one at a time. Empty for a
+    /// kind that samples nothing.
+    pub(crate) samples: Vec<SampleRow>,
+    /// This component's kind samples colours from the photograph, so the panel offers the host's own
+    /// canvas pick for it.
+    pub(crate) can_pick: bool,
+    /// The canvas pick is on, so a click on the photograph adds a swatch.
+    pub(crate) picking: bool,
+    /// What the pick button reads, from the host's own declaration.
+    pub(crate) pick_label: String,
+    /// Why a colour cannot be picked into this component right now.
+    pub(crate) pick_reason: Option<String>,
+}
+
+/// One sampled colour of a component that holds a list of them, as the panel lists it.
+///
+/// The swatch is the stored linear triple shown as the 8-bit codes a person can read; the panel
+/// converts nothing else and invents nothing — the numbers are the ones `mask.list` reports.
+#[allow(dead_code)]
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct SampleRow {
+    pub(crate) index: usize,
+    /// What the row reads: `Colour 1`.
+    pub(crate) label: String,
+    /// The stored linear-sRGB triple, formatted for the readout.
+    pub(crate) text: String,
+    /// The swatch as 8-bit sRGB, for the colour chip beside it.
+    pub(crate) swatch: [u8; 3],
+    pub(crate) delete_reason: Option<String>,
 }
 
 /// One stroke of a brush component, as the panel lists it.
@@ -264,6 +294,9 @@ impl Default for MasksModel {
                 fields: Vec::new(),
                 erase: false,
                 erase_label: String::new(),
+                limit: false,
+                limit_label: String::new(),
+                limit_reason: None,
                 erase_held: false,
                 locked: false,
                 armed: false,
@@ -323,6 +356,13 @@ impl MasksModel {
                     "index": stroke.index,
                     "delete_reason": stroke.delete_reason,
                 })).collect::<Vec<_>>(),
+                "samples": row.samples.iter().map(|sample| serde_json::json!({
+                    "index": sample.index,
+                    "text": sample.text,
+                    "swatch": sample.swatch,
+                })).collect::<Vec<_>>(),
+                "picking": row.picking,
+                "pick_reason": row.pick_reason,
             })).collect::<Vec<_>>(),
             "brush": serde_json::json!({
                 "fields": self.brush.fields.iter()
@@ -332,6 +372,8 @@ impl MasksModel {
                 "erase_held": self.brush.erase_held,
                 "armed": self.brush.armed,
                 "locked": self.brush.locked,
+                "limit_to_colour": self.brush.limit,
+                "limit_reason": self.brush.limit_reason,
             }),
             "kinds": self.kinds.iter().map(|kind| kind.kind.clone()).collect::<Vec<_>>(),
             "add_mode": self.modes.get(self.add_mode),
@@ -635,9 +677,121 @@ fn component_rows(report: &MaskReport, inputs: &Inputs<'_>, enabled: bool) -> Ve
                 } else {
                     Vec::new()
                 },
+                samples: if selected {
+                    sample_rows(&component.payload, &component.kind, enabled)
+                } else {
+                    Vec::new()
+                },
+                can_pick: lightwell_core::mask::component_sample_limit(&component.kind).is_some(),
+                picking: pick_mode(&component.kind)
+                    .is_some_and(|mode| inputs.session.workspace.mode == mode),
+                pick_label: pick_label(&component.kind),
+                pick_reason: pick_reason(report, component, enabled),
             }
         })
         .collect()
+}
+
+/// The canvas mode one kind's pick lives in, which is that pick's own action, or none when the kind
+/// samples nothing. The panel reads the host's declaration and names no mode of its own.
+pub(crate) fn pick_mode(kind: &str) -> Option<String> {
+    lightwell_core::mask::commands::canvas()
+        .iter()
+        .find_map(|pick| match pick {
+            lightwell_core::CanvasInteraction::SampleApply { action, .. }
+                if action.ends_with(&format!("{kind}-sample")) =>
+            {
+                Some(action.clone())
+            }
+            _ => None,
+        })
+}
+
+/// What the pick button reads, from the host's own declared title.
+fn pick_label(kind: &str) -> String {
+    lightwell_core::mask::commands::canvas()
+        .iter()
+        .find_map(|pick| match pick {
+            lightwell_core::CanvasInteraction::SampleApply { action, title, .. }
+                if action.ends_with(&format!("{kind}-sample")) =>
+            {
+                Some(title.clone())
+            }
+            _ => None,
+        })
+        .unwrap_or_else(|| "Pick".to_owned())
+}
+
+/// Why a colour cannot be picked into this component right now, in the words the command family
+/// would use. Every one of these is a state the host itself refuses, stated before the click rather
+/// than discovered by sending a request that will be rejected.
+fn pick_reason(report: &MaskReport, component: &ComponentReport, enabled: bool) -> Option<String> {
+    if !enabled {
+        return Some("Waiting for the last request".into());
+    }
+    if !component.available {
+        return Some(format!("unknown mask component {}", component.kind));
+    }
+    // A pick reads the pixel the operation this mask modulates receives, so there has to be an
+    // operation: the host refuses a mask no layer is bound to, and the panel says so first.
+    if report.layers.is_empty() {
+        return Some(format!(
+            "{} is not bound to a layer yet, and a pick reads the pixel the masked operation \
+             receives; apply an adjustment through it first",
+            report.name
+        ));
+    }
+    let limit = lightwell_core::mask::component_sample_limit(&component.kind)?;
+    let held = component.payload[lightwell_core::mask::SAMPLES_FIELD]
+        .as_array()
+        .map_or(0, Vec::len);
+    (held >= limit).then(|| {
+        format!(
+            "{} holds {limit} sampled colours, which is the limit; remove one to pick another",
+            component.name
+        )
+    })
+}
+
+/// The colours one component's stored payload holds, read through the host's own reserved field so
+/// the panel parses no payload of its own.
+fn sample_rows(payload: &serde_json::Value, kind: &str, enabled: bool) -> Vec<SampleRow> {
+    if lightwell_core::mask::component_sample_limit(kind).is_none() {
+        return Vec::new();
+    }
+    let held = payload[lightwell_core::mask::SAMPLES_FIELD]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+    held.iter()
+        .enumerate()
+        .filter_map(|(index, sample)| {
+            let channels: Vec<f64> = sample
+                .as_array()?
+                .iter()
+                .filter_map(serde_json::Value::as_f64)
+                .collect();
+            let [r, g, b] = <[f64; 3]>::try_from(channels).ok()?;
+            Some(SampleRow {
+                index,
+                label: format!("Colour {}", index + 1),
+                text: format!("{r:.3}, {g:.3}, {b:.3}"),
+                swatch: [code(r), code(g), code(b)],
+                delete_reason: (!enabled).then(|| "Waiting for the last request".to_owned()),
+            })
+        })
+        .collect()
+}
+
+/// One linear-sRGB channel as the 8-bit code a swatch draws, through the delivered encode so the chip
+/// shows the colour the value means rather than a guess at it.
+fn code(linear: f64) -> u8 {
+    let encoded = if linear <= 0.003_130_8 {
+        12.92 * linear
+    } else {
+        1.055 * linear.max(0.0).powf(1.0 / 2.4) - 0.055
+    };
+    (255.0 * encoded.clamp(0.0, 1.0) + 0.5).floor() as u8
 }
 
 /// The strokes one component's stored payload references, read through the host's own reserved
@@ -677,6 +831,13 @@ pub(crate) struct BrushModel {
     pub(crate) fields: Vec<DraftField>,
     pub(crate) erase: bool,
     pub(crate) erase_label: String,
+    /// The next stroke is held to the colour under the brush where it begins. It is **not** Auto
+    /// Mask: a per-pixel colour test with no notion of an edge, which the label and the guide say.
+    pub(crate) limit: bool,
+    pub(crate) limit_label: String,
+    /// Why the limit cannot apply to the next stroke, when it cannot: it reads the pixel the masked
+    /// operation receives, so the open mask has to be bound to a layer.
+    pub(crate) limit_reason: Option<String>,
     /// The erase modifier is held down, so the next stroke erases whatever the toggle says.
     pub(crate) erase_held: bool,
     /// A stroke is on the photograph, so the brush is frozen for the rest of its life.
@@ -715,10 +876,18 @@ fn brush_model(inputs: &Inputs<'_>, enabled: bool, open: Option<&MaskReport>) ->
             }
         })
         .collect();
+    // The limit reads the pixel the operation the open mask modulates receives, so it needs an
+    // operation: the host refuses a mask no layer is bound to by name, and the panel states that
+    // before the stroke rather than after it. `limit` is what the next stroke will actually carry,
+    // which is why it is the toggle's state *and* the condition, in one place.
+    let limit_reason = limit_reason(open);
     BrushModel {
         fields,
         erase: brush.erase,
         erase_label: lightwell_core::mask::kind_title("erase"),
+        limit: brush.limit_to_colour && limit_reason.is_none(),
+        limit_label: "Limit to colour".to_owned(),
+        limit_reason,
         erase_held: inputs.brush_erase_held,
         locked: painting,
         armed: inputs
@@ -727,6 +896,26 @@ fn brush_model(inputs: &Inputs<'_>, enabled: bool, open: Option<&MaskReport>) ->
         can_add: open.is_some(),
         enabled,
     }
+}
+
+/// Why the next stroke cannot be limited to a colour, or `None` when it can.
+///
+/// One predicate, read by the panel and by the gesture that builds the request, so what the panel
+/// says and what the stroke carries cannot disagree.
+pub(crate) fn limit_reason(open: Option<&MaskReport>) -> Option<String> {
+    let Some(report) = open else {
+        return Some(
+            "Limit to colour reads the pixel the masked operation receives, so open a mask first"
+                .into(),
+        );
+    };
+    report.layers.is_empty().then(|| {
+        format!(
+            "{} is not bound to a layer yet, and Limit to colour reads the pixel the masked \
+             operation receives; apply an adjustment through it first",
+            report.name
+        )
+    })
 }
 
 /// The one host command every stroke commits through.

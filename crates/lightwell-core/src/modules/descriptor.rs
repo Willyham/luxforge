@@ -394,11 +394,28 @@ pub enum CanvasInteraction {
         /// One uppercase ASCII letter that selects the mode, unique across the registry.
         shortcut: Option<String>,
     },
-    /// A pointer pick on the image runs a module query at the picked content pixel and, when the
-    /// query answers, submits its numeric result fields to `action` once. `query` names a query this
-    /// module declares and `x`/`y` name that query's integer coordinate parameters; the fields
-    /// submitted are every top-level number field of the result whose name is a parameter of
-    /// `action`. A refused query commits nothing and its reason is shown instead.
+    /// A pointer pick on the image runs a query at the picked content pixel and, when the query
+    /// answers, submits its numeric result fields to `action` once. `x`/`y` name that query's integer
+    /// coordinate parameters; the fields submitted are every top-level number field of the result
+    /// whose name is a parameter of `action`. A refused query commits nothing and its reason is shown
+    /// instead.
+    ///
+    /// **The pair may be a module's or the host's, and never one of each.** A module declaring this
+    /// names a query and an action it declares itself, which is what
+    /// [`ModuleDescriptor::validate`] checks. The **host** declares its own through
+    /// [`crate::mask::commands::canvas`], where both names are `mask.*` methods of the one command
+    /// family — a mask is a host object and no module declares one, so a pick that fills part of a
+    /// mask could not be expressed at all until this variant admitted a host target (proposal P17 of
+    /// `docs/design/range-study.md`). Everything else about the interaction is unchanged, which is the
+    /// point: one pick mechanism, one field-matching rule, one refusal path, and a client that knows
+    /// neither a module nor a mask by name.
+    ///
+    /// **Why a query at all, rather than a colour the client read.** The query is the only way the
+    /// picked *value* reaches the action. A mask's value-based parts are evaluated on the input the
+    /// masked operation receives, while the frame a client can see holds that operation's output, so a
+    /// colour decoded from the picture would be a different colour and the selection would not be the
+    /// one the person picked. The host answers with the pixel it already computes and the client
+    /// carries numbers it never interprets.
     SampleApply {
         query: String,
         x: String,
@@ -1349,7 +1366,10 @@ fn summary_value(value: &Value) -> String {
 /// mask component's display name is built from its kind the same way, so `luminance-range` reads as
 /// `Luminance range 1`.
 pub(crate) fn title_case(text: &str) -> String {
-    let spaced = text.replace('-', " ");
+    // A declared name reaches this as a kind (`colour-range`) or as a parameter (`colour_refine`),
+    // and both read as a phrase, so both separators become a space rather than one of them being
+    // shown to a person as it is spelled in a request.
+    let spaced = text.replace(['-', '_'], " ");
     let mut characters = spaced.chars();
     match characters.next() {
         Some(first) => first.to_uppercase().chain(characters).collect(),
