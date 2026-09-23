@@ -347,6 +347,7 @@ impl RawModule {
                 developer: false,
                 collapsed: false,
                 availability: Availability::Available,
+                ..ModuleDescriptor::default()
             },
         }
     }

@@ -271,6 +271,7 @@ impl PresenceModule {
                 developer: false,
                 collapsed: true,
                 availability: Availability::Available,
+                ..ModuleDescriptor::default()
             },
         }
     }

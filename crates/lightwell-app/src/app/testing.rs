@@ -239,6 +239,7 @@ pub(crate) fn crop_descriptor() -> ModuleDescriptor {
         developer: false,
         collapsed: false,
         availability: Availability::Available,
+        ..ModuleDescriptor::default()
     }
 }
 

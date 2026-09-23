@@ -1749,6 +1749,7 @@ mod tests {
                 developer: false,
                 collapsed: false,
                 availability: Availability::Available,
+                ..ModuleDescriptor::default()
             },
             seen: seen.clone(),
         };
@@ -1836,6 +1837,7 @@ mod tests {
                 developer: false,
                 collapsed: false,
                 availability,
+                ..ModuleDescriptor::default()
             }))
         }
 

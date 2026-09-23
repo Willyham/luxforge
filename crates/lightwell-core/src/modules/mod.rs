@@ -24,6 +24,7 @@ pub use crop::geometry::{
     BoxRect, COVERAGE_TOLERANCE, CropPayload, CropStage, Edge, MAX_ANGLE, MIN_ANGLE, OutputRect,
     guide_angle, largest_with_ratio_inside,
 };
+pub(crate) use descriptor::check_parameter_declarations;
 pub use descriptor::{
     ActionDescriptor, ActionStyle, Availability, CanvasInteraction, ChoiceStyle, ColorStyle,
     Control, CurveBackground, CurveChannel, EffectDescriptor, EffectStage, ModuleDescriptor,

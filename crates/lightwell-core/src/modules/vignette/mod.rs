@@ -420,6 +420,7 @@ impl VignetteModule {
                 developer: false,
                 collapsed: true,
                 availability: Availability::Available,
+                ..ModuleDescriptor::default()
             },
         }
     }

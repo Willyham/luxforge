@@ -393,6 +393,7 @@ impl MixerModule {
                 // A Presence module will later be registered between Basic and the mixer.
                 collapsed: true,
                 availability: Availability::Available,
+                ..ModuleDescriptor::default()
             },
         }
     }

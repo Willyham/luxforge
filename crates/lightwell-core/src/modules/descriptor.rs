@@ -1,6 +1,12 @@
 //! Plain-data module descriptors: one serializable source for API discovery, generated controls
 //! and every validation limit a module declares.
-use crate::{Error, ErrorKind};
+use crate::{
+    Error, ErrorKind,
+    capabilities::descriptor::{
+        ActivationDescriptor, CapabilityDescriptor, ResourceDescriptor, SettingsDescriptor,
+        TaskDescriptor,
+    },
+};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use std::collections::HashSet;
@@ -310,6 +316,9 @@ pub enum Control {
     /// module declares at most one, and a module that declares a pick canvas declares exactly one,
     /// so every pick mode is reachable from the panel.
     Picker { label: String },
+    /// A button that runs one of this module's own worker tasks through the client's consent and
+    /// progress flow; when the task declares `apply`, the client offers Apply with its result.
+    Task { task: String, label: String },
 }
 
 /// How a module lets the canvas drive its action. Neither kind commits by itself.
@@ -379,14 +388,19 @@ impl CanvasInteraction {
 }
 
 /// An unavailable provider keeps its descriptor and effect identities so stored data stays readable.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "kebab-case")]
 pub enum Availability {
+    #[default]
     Available,
-    Unavailable { reason: String },
+    Unavailable {
+        reason: String,
+    },
 }
 
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+/// `Default` is an empty, unregistrable descriptor: a base for struct update, so a module states
+/// only the fields it declares and every capability field stays empty unless it names one.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ModuleDescriptor {
     pub id: String,
@@ -416,6 +430,24 @@ pub struct ModuleDescriptor {
     #[serde(default)]
     pub collapsed: bool,
     pub availability: Availability,
+    /// User-level settings and provider profiles the host stores for this module, outside every
+    /// catalog. Discovery lists the declarations only, never a value or a secret.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub settings: Option<SettingsDescriptor>,
+    /// What the module may be granted: reading a file setting, sending an asset's data to a
+    /// profile's endpoint, or installing a declared resource.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub capabilities: Vec<CapabilityDescriptor>,
+    /// Pinned files the host may install for this module.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub resources: Vec<ResourceDescriptor>,
+    /// What explicit activation requires; `None` is a module with nothing to activate.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub activation: Option<ActivationDescriptor>,
+    /// Worker tasks, each reached through the generated `task.<id>` method. A task identity is
+    /// unique across the registry.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tasks: Vec<TaskDescriptor>,
 }
 
 impl ModuleDescriptor {
@@ -426,6 +458,7 @@ impl ModuleDescriptor {
                 check_raw_control_hints(control)?;
             }
         }
+        crate::capabilities::descriptor::check_raw(value)?;
         let descriptor: Self = serde_json::from_value(value.clone())
             .map_err(|error| validation(format!("invalid module descriptor: {error}")))?;
         descriptor.validate()?;
@@ -445,6 +478,20 @@ impl ModuleDescriptor {
 
     pub fn effect(&self, id: &str) -> Option<&EffectDescriptor> {
         self.effects.iter().find(|effect| effect.id == id)
+    }
+
+    pub fn capability(&self, id: &str) -> Option<&CapabilityDescriptor> {
+        self.capabilities
+            .iter()
+            .find(|capability| capability.id == id)
+    }
+
+    pub fn resource(&self, id: &str) -> Option<&ResourceDescriptor> {
+        self.resources.iter().find(|resource| resource.id == id)
+    }
+
+    pub fn task(&self, id: &str) -> Option<&TaskDescriptor> {
+        self.tasks.iter().find(|task| task.id == id)
     }
 
     pub fn is_available(&self) -> bool {
@@ -477,6 +524,9 @@ impl ModuleDescriptor {
         for query in &self.queries {
             check_declared(query, "query", &mut queries)?;
         }
+        // Settings, capabilities, resources, activation and tasks refer to each other and to the
+        // actions above, so they are checked together once those are known to be sound.
+        crate::capabilities::descriptor::validate(self)?;
         for control in &self.controls {
             self.check_control(control, 1)?;
         }
@@ -831,6 +881,20 @@ impl ModuleDescriptor {
                     }
                 }
             }
+            Control::Task { task, label } => {
+                if label.trim().is_empty() {
+                    return Err(validation(format!(
+                        "task control for {task} of module {} has no label",
+                        self.id
+                    )));
+                }
+                if self.task(task).is_none() {
+                    return Err(validation(format!(
+                        "task control of module {} names undeclared task {task}",
+                        self.id
+                    )));
+                }
+            }
         }
         Ok(())
     }
@@ -898,18 +962,29 @@ fn check_declared<'a>(
     if declared.title.trim().is_empty() {
         return Err(validation(format!("{kind} {} has no title", declared.id)));
     }
-    let mut parameters = HashSet::with_capacity(declared.parameters.len());
-    for parameter in &declared.parameters {
+    check_parameter_declarations(kind, &declared.id, &declared.parameters)?;
+    check_summary(declared)
+}
+
+/// The parameters one action, query or task declares: valid, unique names, sound kinds, hints and
+/// defaults, so every caller can be validated against them the same way.
+pub(crate) fn check_parameter_declarations(
+    kind: &str,
+    id: &str,
+    declared: &[ParameterDescriptor],
+) -> Result<(), Error> {
+    let mut parameters = HashSet::with_capacity(declared.len());
+    for parameter in declared {
         if !valid_name(&parameter.name) {
             return Err(validation(format!(
-                "invalid parameter name {} of {kind} {}",
-                parameter.name, declared.id
+                "invalid parameter name {} of {kind} {id}",
+                parameter.name
             )));
         }
         if !parameters.insert(parameter.name.as_str()) {
             return Err(validation(format!(
-                "duplicate parameter {} of {kind} {}",
-                parameter.name, declared.id
+                "duplicate parameter {} of {kind} {id}",
+                parameter.name
             )));
         }
         match &parameter.kind {
@@ -966,7 +1041,7 @@ fn check_declared<'a>(
             check_value(parameter, default)?;
         }
     }
-    check_summary(declared)
+    Ok(())
 }
 
 /// The largest number of decimals a client is asked to display. Beyond this a slider's text is
@@ -1617,6 +1692,7 @@ mod tests {
             developer: false,
             collapsed: false,
             availability: Availability::Available,
+            ..ModuleDescriptor::default()
         }
     }
 

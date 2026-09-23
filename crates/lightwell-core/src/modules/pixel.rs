@@ -139,6 +139,7 @@ notes: "three 8-bit sRGB channels".into(),
                 developer: true,
                 collapsed: false,
                 availability: Availability::Available,
+                ..ModuleDescriptor::default()
             },
         }
     }

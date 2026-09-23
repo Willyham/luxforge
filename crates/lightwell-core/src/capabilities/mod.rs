@@ -7,4 +7,6 @@ pub mod files;
 pub mod redact;
 pub mod secrets;
 pub mod settings;
+#[cfg(test)]
+pub(crate) mod testing;
 pub mod transport;

@@ -1,1 +1,1580 @@
-//! See `docs/design/module-capabilities.md`.
+//! Plain-data capability declarations a module adds to its descriptor: typed settings and provider
+//! profiles, the capabilities it may be granted, the resources it may install, what activation
+//! requires and the worker tasks it offers. Registration validates them and does no I/O. See
+//! `docs/design/module-capabilities.md#configuration-contract`.
+//!
+//! A setting and a capability are serialized flat, exactly as a parameter is: the kind's tag and its
+//! own fields sit beside the identity, e.g. `{"id": "strength", "label": "Strength", "kind":
+//! "number", "min": 0, "max": 1, "required": false, …}`. Flattening the kind rules out
+//! `deny_unknown_fields` on those two types, so an unknown field there is ignored on read; every
+//! other capability type refuses unknown fields.
+use super::{
+    files::FileMode,
+    transport::{EndpointClass, parse_endpoint},
+};
+use crate::{
+    Error, ErrorKind, ModuleDescriptor, ParameterDescriptor, ParameterKind,
+    modules::check_parameter_declarations, valid_name,
+};
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
+use std::collections::HashSet;
+use url::Url;
+
+/// Module-level and profile fields are each at most this many, so a settings panel and a read
+/// result stay bounded whatever a module declares.
+pub const MAX_SETTING_FIELDS: usize = 32;
+/// The most provider profiles one module may hold.
+pub const MAX_PROFILES: u8 = 16;
+/// The longest `text` or `secret` value a module may declare, in characters.
+pub const MAX_TEXT_LENGTH: u32 = 4096;
+/// The largest resource a module may pin, which is also the most a download may stream to disk.
+pub const MAX_RESOURCE_BYTES: u64 = 16 * 1024 * 1024 * 1024;
+/// The largest request body or response an adapter may declare. It is the artifact limit, since a
+/// response becomes at most one artifact, and it bounds the buffer the transport holds.
+pub const MAX_ADAPTER_BYTES: u64 = 256 * 1024 * 1024;
+/// The longest whole-request deadline an adapter may declare.
+pub const MAX_ADAPTER_TIMEOUT_MS: u64 = 10 * 60 * 1000;
+/// The largest number of decimals a number setting asks a client to show, as for parameters.
+const MAX_PRECISION: u8 = 6;
+/// A resource version names a directory under the resource root, so it is a short, plain name.
+const MAX_VERSION_LENGTH: usize = 64;
+
+fn validation(detail: impl Into<String>) -> Error {
+    Error::new(ErrorKind::Validation, detail)
+}
+
+/// A module's user-level settings: its own fields and, optionally, named provider profiles.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SettingsDescriptor {
+    /// The shape of the stored values. A stored entry with another schema is kept untouched and
+    /// reads as incompatible until the module's settings are reset.
+    pub schema: u32,
+    #[serde(default)]
+    pub fields: Vec<SettingDescriptor>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub profiles: Option<ProfilesDescriptor>,
+}
+
+impl SettingsDescriptor {
+    /// A module-level field.
+    pub fn field(&self, id: &str) -> Option<&SettingDescriptor> {
+        self.fields.iter().find(|field| field.id == id)
+    }
+}
+
+/// One typed setting. A secret declares only its presence anywhere it is reported.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct SettingDescriptor {
+    pub id: String,
+    pub label: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub help: Option<String>,
+    #[serde(flatten)]
+    pub kind: SettingKind,
+    /// A missing or invalid value makes the module or profile incomplete.
+    #[serde(default)]
+    pub required: bool,
+    /// The value a field reads while nothing is stored. A `secret`, `endpoint` or `file` field
+    /// never has one: a secret is never plain data, and a destination or a path is a person's
+    /// choice, never a module's.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default: Option<Value>,
+    /// Changing this field deactivates an active module, because what it loaded depends on it.
+    #[serde(default)]
+    pub invalidates_activation: bool,
+}
+
+/// The closed set of setting types.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "kebab-case")]
+pub enum SettingKind {
+    Boolean,
+    Integer {
+        min: i64,
+        max: i64,
+    },
+    /// A finite `f64` within the closed range. Step and precision are client hints, as for a
+    /// parameter; a stored value is never rounded to them.
+    Number {
+        min: f64,
+        max: f64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        step: Option<f64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        precision: Option<u8>,
+    },
+    Enum {
+        options: Vec<String>,
+    },
+    Text {
+        max_length: u32,
+    },
+    /// A URL the transport policy accepts as one of these classes, stored as the parsed URL.
+    Endpoint {
+        classes: Vec<EndpointClass>,
+    },
+    /// A file or directory that exists when it is set, stored as its canonical path.
+    File {
+        mode: FileMode,
+    },
+    /// A credential held only by the secret store.
+    Secret {
+        max_length: u32,
+    },
+}
+
+impl SettingKind {
+    /// The kind's tag as it is serialized, for messages.
+    pub fn name(&self) -> &'static str {
+        match self {
+            Self::Boolean => "boolean",
+            Self::Integer { .. } => "integer",
+            Self::Number { .. } => "number",
+            Self::Enum { .. } => "enum",
+            Self::Text { .. } => "text",
+            Self::Endpoint { .. } => "endpoint",
+            Self::File { .. } => "file",
+            Self::Secret { .. } => "secret",
+        }
+    }
+}
+
+/// Every setting kind tag, so a descriptor read from JSON names an unknown one precisely.
+const SETTING_KINDS: &[&str] = &[
+    "boolean", "integer", "number", "enum", "text", "endpoint", "file", "secret",
+];
+
+/// Named provider profiles: each profile names one declared adapter and holds its own values of
+/// `fields`, which include the endpoint it sends to.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProfilesDescriptor {
+    pub label: String,
+    /// At most this many profiles, 1..=16.
+    pub max: u8,
+    pub adapters: Vec<AdapterDescriptor>,
+    pub fields: Vec<SettingDescriptor>,
+}
+
+impl ProfilesDescriptor {
+    pub fn adapter(&self, id: &str) -> Option<&AdapterDescriptor> {
+        self.adapters.iter().find(|adapter| adapter.id == id)
+    }
+
+    pub fn field(&self, id: &str) -> Option<&SettingDescriptor> {
+        self.fields.iter().find(|field| field.id == id)
+    }
+}
+
+/// A typed provider contract, not a URL template: what the host may send, how much, how long it may
+/// take, how it authenticates and what the person is told about retention and cost.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AdapterDescriptor {
+    pub id: String,
+    pub title: String,
+    pub auth: AdapterAuth,
+    pub data: Vec<DataClass>,
+    pub max_request_bytes: u64,
+    pub max_response_bytes: u64,
+    pub timeout_ms: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retention: Option<String>,
+    pub cost: AdapterCost,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum AdapterAuth {
+    None,
+    /// `Authorization: Bearer` with the profile's one secret field.
+    Bearer,
+}
+
+/// What a request may carry. The host builds the body from the declared class only.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum DataClass {
+    /// An 8 × 8 grid of rendered sRGB point samples of the asset's current entry.
+    #[serde(rename = "sample-grid-8")]
+    SampleGrid8,
+}
+
+impl DataClass {
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::SampleGrid8 => "sample-grid-8",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum AdapterCost {
+    Free,
+    Paid,
+    Unknown,
+}
+
+/// One capability a module may be granted, and why.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CapabilityDescriptor {
+    pub id: String,
+    #[serde(flatten)]
+    pub kind: CapabilityKind,
+    /// Shown to the person in the consent notice.
+    pub purpose: String,
+}
+
+/// The implemented capabilities. `managed-storage` and `local-runtime` are refused by name until
+/// their first consumer defines them.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "kebab-case")]
+pub enum CapabilityKind {
+    /// Read the file or directory a declared module-level `file` setting holds.
+    ReadUserFile { setting: String },
+    /// Send one declared data class of one asset to a profile's endpoint through its adapter.
+    RemoteImageRequest { adapter: String, data: DataClass },
+    /// Install a declared resource from its pinned URL.
+    DownloadArtifact { resource: String },
+}
+
+const CAPABILITY_KINDS: &[&str] = &[
+    "read-user-file",
+    "remote-image-request",
+    "download-artifact",
+];
+const UNIMPLEMENTED_CAPABILITY_KINDS: &[&str] = &["managed-storage", "local-runtime"];
+
+/// A pinned file a module may install: exact bytes, hash and origin.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ResourceDescriptor {
+    pub id: String,
+    pub title: String,
+    /// A plain name that becomes the version's directory.
+    pub version: String,
+    /// HTTPS, or HTTP to loopback, as the transport policy accepts it.
+    pub url: String,
+    pub bytes: u64,
+    /// 64 lowercase hexadecimal digits.
+    pub sha256: String,
+    pub format: String,
+    pub license: String,
+    pub provenance: String,
+    /// The HTTPS origins a download may be redirected to; none allows no redirect.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub redirect_origins: Vec<String>,
+}
+
+/// What `module.activate` requires before anything is queued.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ActivationDescriptor {
+    /// Module-level settings that must hold a valid value.
+    #[serde(default)]
+    pub requires_settings: Vec<String>,
+    /// Resources that must be installed.
+    #[serde(default)]
+    pub requires_resources: Vec<String>,
+    pub notes: String,
+}
+
+/// A worker task, reached through the generated `task.<id>` method.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TaskDescriptor {
+    pub id: String,
+    pub title: String,
+    pub notes: String,
+    /// The request names one asset.
+    #[serde(default)]
+    pub asset: bool,
+    /// The request names one provider profile.
+    #[serde(default)]
+    pub profile: bool,
+    /// The module must be active.
+    #[serde(default)]
+    pub requires_active: bool,
+    /// The capabilities the task may use; each needs its grant.
+    #[serde(default)]
+    pub uses: Vec<String>,
+    /// Declared and validated exactly like an action's parameters.
+    #[serde(default)]
+    pub parameters: Vec<ParameterDescriptor>,
+    /// The action a client may offer to apply the task's artifact with.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub apply: Option<TaskApply>,
+}
+
+impl TaskDescriptor {
+    pub fn parameter(&self, name: &str) -> Option<&ParameterDescriptor> {
+        self.parameters
+            .iter()
+            .find(|parameter| parameter.name == name)
+    }
+}
+
+/// Apply names a declared action and its `artifact` parameter, which receives the task's result.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TaskApply {
+    pub action: String,
+    pub parameter: String,
+}
+
+/// Name an unknown or unimplemented kind before deserialization, which would otherwise report only
+/// serde's generic unknown variant without the setting or capability it belongs to.
+pub(crate) fn check_raw(descriptor: &Value) -> Result<(), Error> {
+    let id = |item: &Value| {
+        item.get("id")
+            .and_then(Value::as_str)
+            .unwrap_or("unknown")
+            .to_owned()
+    };
+    for capability in descriptor
+        .get("capabilities")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+    {
+        let Some(kind) = capability.get("kind").and_then(Value::as_str) else {
+            return Err(validation(format!(
+                "capability {} declares no kind",
+                id(capability)
+            )));
+        };
+        if UNIMPLEMENTED_CAPABILITY_KINDS.contains(&kind) {
+            return Err(validation(format!(
+                "capability kind {kind} is not implemented (capability {})",
+                id(capability)
+            )));
+        }
+        if !CAPABILITY_KINDS.contains(&kind) {
+            return Err(validation(format!(
+                "capability {} declares unknown kind {kind}",
+                id(capability)
+            )));
+        }
+    }
+    let settings = descriptor.get("settings");
+    let module_fields = settings.and_then(|settings| settings.get("fields"));
+    let profile_fields = settings
+        .and_then(|settings| settings.get("profiles"))
+        .and_then(|profiles| profiles.get("fields"));
+    for field in [module_fields, profile_fields]
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_array)
+        .flatten()
+    {
+        match field.get("kind").and_then(Value::as_str) {
+            Some(kind) if SETTING_KINDS.contains(&kind) => {}
+            Some(kind) => {
+                return Err(validation(format!(
+                    "setting {} declares unknown kind {kind}",
+                    id(field)
+                )));
+            }
+            None => {
+                return Err(validation(format!(
+                    "setting {} declares no kind",
+                    id(field)
+                )));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Every capability declaration of one module, checked against the rest of its descriptor. What is
+/// referred to is checked before what refers to it: settings and resources, then the capabilities
+/// over them, then activation and the tasks that use the capabilities.
+pub(crate) fn validate(module: &ModuleDescriptor) -> Result<(), Error> {
+    let id = &module.id;
+    if let Some(settings) = &module.settings {
+        validate_settings(id, settings)?;
+    }
+    let mut resources = HashSet::with_capacity(module.resources.len());
+    for resource in &module.resources {
+        validate_resource(resource, &mut resources)?;
+    }
+    let mut capabilities = HashSet::with_capacity(module.capabilities.len());
+    for capability in &module.capabilities {
+        validate_capability(module, capability, &mut capabilities)?;
+    }
+    if let Some(activation) = &module.activation {
+        validate_activation(module, activation)?;
+    }
+    let mut tasks = HashSet::with_capacity(module.tasks.len());
+    for task in &module.tasks {
+        validate_task(module, task, &mut tasks)?;
+    }
+    Ok(())
+}
+
+fn validate_settings(module: &str, settings: &SettingsDescriptor) -> Result<(), Error> {
+    if settings.schema == 0 {
+        return Err(validation(format!(
+            "module {module} declares settings schema 0; a schema is at least 1"
+        )));
+    }
+    validate_fields(module, "setting", &settings.fields)?;
+    let Some(profiles) = &settings.profiles else {
+        return Ok(());
+    };
+    if profiles.label.trim().is_empty() {
+        return Err(validation(format!(
+            "module {module} declares an unlabelled profile block"
+        )));
+    }
+    if !(1..=MAX_PROFILES).contains(&profiles.max) {
+        return Err(validation(format!(
+            "module {module} declares profiles max {}; max is 1..={MAX_PROFILES}",
+            profiles.max
+        )));
+    }
+    // A profile names one of these, so a block without one could never hold a profile.
+    if profiles.adapters.is_empty() {
+        return Err(validation(format!(
+            "module {module} declares a profile block with no adapters"
+        )));
+    }
+    let mut adapters = HashSet::with_capacity(profiles.adapters.len());
+    for adapter in &profiles.adapters {
+        validate_adapter(adapter, &mut adapters)?;
+    }
+    validate_fields(module, "profile setting", &profiles.fields)?;
+    if !profiles
+        .fields
+        .iter()
+        .any(|field| matches!(field.kind, SettingKind::Endpoint { .. }))
+    {
+        return Err(validation(format!(
+            "module {module} declares profile adapters but no endpoint profile field"
+        )));
+    }
+    // A bearer adapter sends one credential, so the profile must say unambiguously which it is.
+    let secrets = profiles
+        .fields
+        .iter()
+        .filter(|field| matches!(field.kind, SettingKind::Secret { .. }))
+        .count();
+    if let Some(adapter) = profiles
+        .adapters
+        .iter()
+        .find(|adapter| adapter.auth == AdapterAuth::Bearer)
+        && secrets != 1
+    {
+        return Err(validation(format!(
+            "adapter {} authenticates with bearer but the profile fields declare {secrets} secret fields; exactly one holds the credential",
+            adapter.id
+        )));
+    }
+    Ok(())
+}
+
+fn validate_fields(module: &str, what: &str, fields: &[SettingDescriptor]) -> Result<(), Error> {
+    if fields.len() > MAX_SETTING_FIELDS {
+        return Err(validation(format!(
+            "module {module} declares {} {what} fields; at most {MAX_SETTING_FIELDS}",
+            fields.len()
+        )));
+    }
+    let mut seen = HashSet::with_capacity(fields.len());
+    for field in fields {
+        if !valid_name(&field.id) {
+            return Err(validation(format!(
+                "invalid {what} identity {} of module {module}",
+                field.id
+            )));
+        }
+        if !seen.insert(field.id.as_str()) {
+            return Err(validation(format!(
+                "duplicate {what} {} of module {module}",
+                field.id
+            )));
+        }
+        validate_field(field)?;
+    }
+    Ok(())
+}
+
+fn validate_field(field: &SettingDescriptor) -> Result<(), Error> {
+    let id = &field.id;
+    if field.label.trim().is_empty() {
+        return Err(validation(format!("setting {id} has no label")));
+    }
+    match &field.kind {
+        SettingKind::Boolean => {}
+        SettingKind::Integer { min, max } => {
+            if min > max {
+                return Err(validation(format!(
+                    "setting {id} declares an empty range {min}..={max}"
+                )));
+            }
+        }
+        SettingKind::Number {
+            min,
+            max,
+            step,
+            precision,
+        } => {
+            if !min.is_finite() || !max.is_finite() || min > max {
+                return Err(validation(format!(
+                    "setting {id} declares an empty range {min}..={max}"
+                )));
+            }
+            if let Some(step) = step
+                && (!step.is_finite() || *step <= 0.0)
+            {
+                return Err(validation(format!(
+                    "setting {id} declares a step that is not finite and positive"
+                )));
+            }
+            if let Some(precision) = precision
+                && *precision > MAX_PRECISION
+            {
+                return Err(validation(format!(
+                    "setting {id} declares a precision above {MAX_PRECISION}"
+                )));
+            }
+        }
+        SettingKind::Enum { options } => {
+            if options.is_empty() {
+                return Err(validation(format!("setting {id} declares no options")));
+            }
+            let mut seen = HashSet::with_capacity(options.len());
+            if let Some(option) = options
+                .iter()
+                .find(|option| option.is_empty() || !seen.insert(option.as_str()))
+            {
+                return Err(validation(format!(
+                    "setting {id} declares an empty or duplicate option {option:?}"
+                )));
+            }
+        }
+        SettingKind::Text { max_length } | SettingKind::Secret { max_length } => {
+            if !(1..=MAX_TEXT_LENGTH).contains(max_length) {
+                return Err(validation(format!(
+                    "setting {id} declares max_length {max_length}; it is 1..={MAX_TEXT_LENGTH}"
+                )));
+            }
+        }
+        SettingKind::Endpoint { classes } => {
+            if classes.is_empty() {
+                return Err(validation(format!(
+                    "endpoint setting {id} declares no class"
+                )));
+            }
+            let mut seen = HashSet::with_capacity(classes.len());
+            if !classes.iter().all(|class| seen.insert(class)) {
+                return Err(validation(format!(
+                    "endpoint setting {id} declares a class twice"
+                )));
+            }
+        }
+        SettingKind::File { .. } => {}
+    }
+    let Some(default) = &field.default else {
+        return Ok(());
+    };
+    match field.kind {
+        SettingKind::Secret { .. } => Err(validation(format!(
+            "secret setting {id} declares a default; a secret never has one"
+        ))),
+        SettingKind::Endpoint { .. } | SettingKind::File { .. } => Err(validation(format!(
+            "{} setting {id} declares a default; a destination or a path is the person's choice",
+            field.kind.name()
+        ))),
+        _ => check_plain_value(field, default)
+            .map_err(|error| validation(format!("default of {}", error.detail))),
+    }
+}
+
+/// One value of a `boolean`, `integer`, `number`, `enum` or `text` setting. Pure: an endpoint, a
+/// file and a secret need the transport policy, the file system or the secret store, so the
+/// settings store checks those itself.
+pub(crate) fn check_plain_value(field: &SettingDescriptor, value: &Value) -> Result<(), Error> {
+    let id = &field.id;
+    match &field.kind {
+        SettingKind::Boolean => {
+            if !value.is_boolean() {
+                return Err(validation(format!("setting {id} must be a boolean")));
+            }
+        }
+        SettingKind::Integer { min, max } => {
+            let number = value
+                .as_i64()
+                .ok_or_else(|| validation(format!("setting {id} must be an integer")))?;
+            if number < *min || number > *max {
+                return Err(validation(format!(
+                    "setting {id} must be an integer within {min}..={max}"
+                )));
+            }
+        }
+        SettingKind::Number { min, max, .. } => {
+            let number = value
+                .as_f64()
+                .filter(|number| number.is_finite())
+                .ok_or_else(|| validation(format!("setting {id} must be a number")))?;
+            if number < *min || number > *max {
+                return Err(validation(format!(
+                    "setting {id} must be a number within {min}..={max}"
+                )));
+            }
+        }
+        SettingKind::Enum { options } => {
+            let text = value
+                .as_str()
+                .ok_or_else(|| validation(format!("setting {id} must be a string")))?;
+            if !options.iter().any(|option| option == text) {
+                return Err(validation(format!(
+                    "setting {id} must be one of {}",
+                    options.join(", ")
+                )));
+            }
+        }
+        SettingKind::Text { max_length } => {
+            let text = value
+                .as_str()
+                .ok_or_else(|| validation(format!("setting {id} must be a string")))?;
+            if text.chars().count() > *max_length as usize {
+                return Err(validation(format!(
+                    "setting {id} is longer than {max_length} characters"
+                )));
+            }
+        }
+        SettingKind::Endpoint { .. } | SettingKind::File { .. } | SettingKind::Secret { .. } => {
+            return Err(Error::new(
+                ErrorKind::Internal,
+                format!("setting {id} is not a plain value"),
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn validate_adapter<'a>(
+    adapter: &'a AdapterDescriptor,
+    seen: &mut HashSet<&'a str>,
+) -> Result<(), Error> {
+    let id = &adapter.id;
+    if !valid_name(id) {
+        return Err(validation(format!("invalid adapter identity {id}")));
+    }
+    if !seen.insert(id.as_str()) {
+        return Err(validation(format!("duplicate adapter {id}")));
+    }
+    if adapter.title.trim().is_empty() {
+        return Err(validation(format!("adapter {id} has no title")));
+    }
+    if adapter.data.is_empty() {
+        return Err(validation(format!("adapter {id} declares no data class")));
+    }
+    let mut classes = HashSet::with_capacity(adapter.data.len());
+    if !adapter.data.iter().all(|class| classes.insert(*class)) {
+        return Err(validation(format!(
+            "adapter {id} declares a data class twice"
+        )));
+    }
+    for (name, bytes) in [
+        ("max_request_bytes", adapter.max_request_bytes),
+        ("max_response_bytes", adapter.max_response_bytes),
+    ] {
+        if !(1..=MAX_ADAPTER_BYTES).contains(&bytes) {
+            return Err(validation(format!(
+                "adapter {id} declares {name} {bytes}; it is 1..={MAX_ADAPTER_BYTES}"
+            )));
+        }
+    }
+    if !(1..=MAX_ADAPTER_TIMEOUT_MS).contains(&adapter.timeout_ms) {
+        return Err(validation(format!(
+            "adapter {id} declares timeout_ms {}; it is 1..={MAX_ADAPTER_TIMEOUT_MS}",
+            adapter.timeout_ms
+        )));
+    }
+    if adapter
+        .retention
+        .as_ref()
+        .is_some_and(|retention| retention.trim().is_empty())
+    {
+        return Err(validation(format!(
+            "adapter {id} declares an empty retention note"
+        )));
+    }
+    Ok(())
+}
+
+fn validate_capability<'a>(
+    module: &ModuleDescriptor,
+    capability: &'a CapabilityDescriptor,
+    seen: &mut HashSet<&'a str>,
+) -> Result<(), Error> {
+    let id = &capability.id;
+    if !valid_name(id) {
+        return Err(validation(format!("invalid capability identity {id}")));
+    }
+    if !seen.insert(id.as_str()) {
+        return Err(validation(format!("duplicate capability {id}")));
+    }
+    if capability.purpose.trim().is_empty() {
+        return Err(validation(format!("capability {id} declares no purpose")));
+    }
+    let settings = module.settings.as_ref();
+    match &capability.kind {
+        CapabilityKind::ReadUserFile { setting } => {
+            let field = settings
+                .and_then(|settings| settings.field(setting))
+                .ok_or_else(|| {
+                    validation(format!(
+                        "capability {id} names undeclared setting {setting}"
+                    ))
+                })?;
+            if !matches!(field.kind, SettingKind::File { .. }) {
+                return Err(validation(format!(
+                    "capability {id} reads setting {setting}, which is not a file setting"
+                )));
+            }
+        }
+        CapabilityKind::RemoteImageRequest { adapter, data } => {
+            let declared = settings
+                .and_then(|settings| settings.profiles.as_ref())
+                .and_then(|profiles| profiles.adapter(adapter))
+                .ok_or_else(|| {
+                    validation(format!(
+                        "capability {id} names undeclared adapter {adapter}"
+                    ))
+                })?;
+            if !declared.data.contains(data) {
+                return Err(validation(format!(
+                    "capability {id} sends {} but adapter {adapter} does not declare it",
+                    data.name()
+                )));
+            }
+        }
+        CapabilityKind::DownloadArtifact { resource } => {
+            if module.resource(resource).is_none() {
+                return Err(validation(format!(
+                    "capability {id} names undeclared resource {resource}"
+                )));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn validate_resource<'a>(
+    resource: &'a ResourceDescriptor,
+    seen: &mut HashSet<&'a str>,
+) -> Result<(), Error> {
+    let id = &resource.id;
+    if !valid_name(id) {
+        return Err(validation(format!("invalid resource identity {id}")));
+    }
+    if !seen.insert(id.as_str()) {
+        return Err(validation(format!("duplicate resource {id}")));
+    }
+    for (name, value) in [
+        ("title", &resource.title),
+        ("format", &resource.format),
+        ("license", &resource.license),
+        ("provenance", &resource.provenance),
+    ] {
+        if value.trim().is_empty() {
+            return Err(validation(format!("resource {id} declares no {name}")));
+        }
+    }
+    let version = &resource.version;
+    let plain = !version.is_empty()
+        && version.len() <= MAX_VERSION_LENGTH
+        && version
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-' | b'_'))
+        && !version.starts_with('.');
+    if !plain {
+        return Err(validation(format!(
+            "resource {id} declares version {version:?}; a version is 1..={MAX_VERSION_LENGTH} ASCII letters, digits, '.', '-' or '_' and does not start with '.'"
+        )));
+    }
+    parse_endpoint(
+        &resource.url,
+        &[EndpointClass::Remote, EndpointClass::Loopback],
+    )
+    .map_err(|error| {
+        validation(format!(
+            "resource {id} declares url {}: {}",
+            resource.url, error.detail
+        ))
+    })?;
+    let hex = resource.sha256.len() == 64
+        && resource
+            .sha256
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte));
+    if !hex {
+        return Err(validation(format!(
+            "resource {id} declares sha256 {:?}; it is 64 lowercase hexadecimal digits",
+            resource.sha256
+        )));
+    }
+    if !(1..=MAX_RESOURCE_BYTES).contains(&resource.bytes) {
+        return Err(validation(format!(
+            "resource {id} declares bytes {}; it is 1..={MAX_RESOURCE_BYTES}",
+            resource.bytes
+        )));
+    }
+    for origin in &resource.redirect_origins {
+        if !https_origin(origin) {
+            return Err(validation(format!(
+                "resource {id} declares redirect origin {origin:?}; it must be an HTTPS origin written as https://host[:port]"
+            )));
+        }
+    }
+    Ok(())
+}
+
+/// `https://host[:port]` exactly as the origin serializes: no credentials, path, query or fragment,
+/// and the default port left out, so a redirect is matched by string equality with the origin the
+/// transport computes.
+fn https_origin(text: &str) -> bool {
+    Url::parse(text)
+        .is_ok_and(|url| url.scheme() == "https" && url.origin().ascii_serialization() == text)
+}
+
+fn validate_activation(
+    module: &ModuleDescriptor,
+    activation: &ActivationDescriptor,
+) -> Result<(), Error> {
+    let mut settings = HashSet::with_capacity(activation.requires_settings.len());
+    for setting in &activation.requires_settings {
+        if module
+            .settings
+            .as_ref()
+            .and_then(|settings| settings.field(setting))
+            .is_none()
+        {
+            return Err(validation(format!(
+                "activation of module {} requires undeclared setting {setting}",
+                module.id
+            )));
+        }
+        if !settings.insert(setting.as_str()) {
+            return Err(validation(format!(
+                "activation of module {} requires setting {setting} twice",
+                module.id
+            )));
+        }
+    }
+    let mut resources = HashSet::with_capacity(activation.requires_resources.len());
+    for resource in &activation.requires_resources {
+        if module.resource(resource).is_none() {
+            return Err(validation(format!(
+                "activation of module {} requires undeclared resource {resource}",
+                module.id
+            )));
+        }
+        if !resources.insert(resource.as_str()) {
+            return Err(validation(format!(
+                "activation of module {} requires resource {resource} twice",
+                module.id
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn validate_task<'a>(
+    module: &ModuleDescriptor,
+    task: &'a TaskDescriptor,
+    seen: &mut HashSet<&'a str>,
+) -> Result<(), Error> {
+    let id = &task.id;
+    if !valid_name(id) {
+        return Err(validation(format!("invalid task identity {id}")));
+    }
+    if !seen.insert(id.as_str()) {
+        return Err(validation(format!("duplicate task {id}")));
+    }
+    if task.title.trim().is_empty() {
+        return Err(validation(format!("task {id} has no title")));
+    }
+    check_parameter_declarations("task", id, &task.parameters)?;
+    let mut uses = HashSet::with_capacity(task.uses.len());
+    for used in &task.uses {
+        let capability = module
+            .capability(used)
+            .ok_or_else(|| validation(format!("task {id} uses undeclared capability {used}")))?;
+        if !uses.insert(used.as_str()) {
+            return Err(validation(format!(
+                "task {id} uses capability {used} twice"
+            )));
+        }
+        // A remote request sends one asset's data to one profile's endpoint, and its grant is
+        // scoped to both, so a task that could name neither could never be granted.
+        if matches!(capability.kind, CapabilityKind::RemoteImageRequest { .. })
+            && !(task.asset && task.profile)
+        {
+            return Err(validation(format!(
+                "task {id} uses remote-image-request capability {used} without declaring asset and profile"
+            )));
+        }
+    }
+    if task.profile
+        && module
+            .settings
+            .as_ref()
+            .and_then(|settings| settings.profiles.as_ref())
+            .is_none()
+    {
+        return Err(validation(format!(
+            "task {id} takes a profile but module {} declares no profiles",
+            module.id
+        )));
+    }
+    if task.requires_active && module.activation.is_none() {
+        return Err(validation(format!(
+            "task {id} requires activation but module {} declares none",
+            module.id
+        )));
+    }
+    if let Some(TaskApply { action, parameter }) = &task.apply {
+        let declared = module.action(action).ok_or_else(|| {
+            validation(format!("task {id} applies with undeclared action {action}"))
+        })?;
+        let declared = declared.parameter(parameter).ok_or_else(|| {
+            validation(format!(
+                "task {id} applies through undeclared parameter {parameter} of action {action}"
+            ))
+        })?;
+        if !matches!(declared.kind, ParameterKind::Artifact) {
+            return Err(validation(format!(
+                "task {id} applies through parameter {parameter} of action {action}, which is not an artifact parameter"
+            )));
+        }
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{
+        Control, ModuleRegistry,
+        capabilities::testing::{ADAPTER, MODULE, TASK, capability_descriptor, setting},
+        modules::TestModule,
+    };
+    use serde_json::json;
+
+    fn settings(descriptor: &mut ModuleDescriptor) -> &mut SettingsDescriptor {
+        descriptor.settings.as_mut().unwrap()
+    }
+
+    fn profiles(descriptor: &mut ModuleDescriptor) -> &mut ProfilesDescriptor {
+        settings(descriptor).profiles.as_mut().unwrap()
+    }
+
+    fn field<'a>(descriptor: &'a mut ModuleDescriptor, id: &str) -> &'a mut SettingDescriptor {
+        settings(descriptor)
+            .fields
+            .iter_mut()
+            .find(|field| field.id == id)
+            .unwrap()
+    }
+
+    fn rejection(descriptor: &ModuleDescriptor) -> String {
+        let error = descriptor
+            .validate()
+            .expect_err("the descriptor was expected to be refused");
+        assert_eq!(error.kind, ErrorKind::Validation, "{}", error.detail);
+        error.detail
+    }
+
+    fn parse_rejection(value: Value) -> String {
+        let error =
+            ModuleDescriptor::parse(&value).expect_err("the JSON was expected to be refused");
+        assert_eq!(error.kind, ErrorKind::Validation, "{}", error.detail);
+        error.detail
+    }
+
+    #[test]
+    fn a_full_capability_descriptor_round_trips_through_parse_and_serde() {
+        let descriptor = capability_descriptor();
+        descriptor.validate().unwrap();
+        let value = serde_json::to_value(&descriptor).unwrap();
+        assert_eq!(ModuleDescriptor::parse(&value).unwrap(), descriptor);
+        // A setting and a capability are flat, like a parameter: the kind's tag beside its fields.
+        assert_eq!(
+            value["settings"]["fields"][0],
+            json!({
+                "id": "strength", "label": "strength", "kind": "number", "min": 0.0, "max": 1.0,
+                "step": 0.01, "precision": 2, "required": false, "default": 0.5,
+                "invalidates_activation": false,
+            })
+        );
+        assert_eq!(
+            value["settings"]["profiles"]["fields"][1],
+            json!({
+                "id": "api-key", "label": "api key", "kind": "secret", "max_length": 128,
+                "required": true, "invalidates_activation": false,
+            }),
+            "a secret declares its presence and limit only"
+        );
+        assert_eq!(
+            value["capabilities"][1],
+            json!({
+                "id": "echo", "kind": "remote-image-request", "adapter": ADAPTER,
+                "data": "sample-grid-8", "purpose": "Ask the echo service for a tint.",
+            })
+        );
+        assert_eq!(
+            value["settings"]["profiles"]["adapters"][0]["auth"],
+            json!("bearer")
+        );
+        assert_eq!(
+            value["settings"]["profiles"]["adapters"][0]["cost"],
+            json!("free")
+        );
+        assert_eq!(
+            value["controls"][0],
+            json!({"kind": "task", "task": TASK, "label": "Generate tint"})
+        );
+        assert_eq!(
+            value["tasks"][0]["apply"],
+            json!({"action": "apply-test-tint", "parameter": "tint"})
+        );
+        assert_eq!(
+            value["activation"]["requires_resources"],
+            json!(["palette"])
+        );
+        assert_eq!(
+            value["resources"][0]["redirect_origins"],
+            json!(["https://cdn.example.com"])
+        );
+        // Loopback resources, and HTTP to loopback, are accepted: the proof endpoint is local.
+        let mut local = capability_descriptor();
+        local.resources[0].url = "http://127.0.0.1:8080/palette.bin".into();
+        local.validate().unwrap();
+    }
+
+    #[test]
+    fn descriptors_without_capabilities_serialize_exactly_as_before() {
+        for descriptor in ModuleRegistry::builtin().descriptors() {
+            let value = serde_json::to_value(descriptor).unwrap();
+            for key in [
+                "settings",
+                "capabilities",
+                "resources",
+                "activation",
+                "tasks",
+            ] {
+                assert!(
+                    value.get(key).is_none(),
+                    "{} serializes an empty {key}",
+                    descriptor.id
+                );
+            }
+            assert_eq!(&ModuleDescriptor::parse(&value).unwrap(), descriptor);
+        }
+    }
+
+    #[test]
+    fn every_named_rejection_names_its_field() {
+        type Change = fn(&mut ModuleDescriptor);
+        let cases: Vec<(Change, &str)> = vec![
+            // Identities: malformed and duplicate, in every namespace.
+            (
+                |d| field(d, "strength").id = "Strength".into(),
+                "invalid setting identity Strength of module test.capabilities",
+            ),
+            (
+                |d| {
+                    settings(d)
+                        .fields
+                        .push(setting("strength", SettingKind::Boolean, None))
+                },
+                "duplicate setting strength of module test.capabilities",
+            ),
+            (
+                |d| profiles(d).fields[2].id = "model_name".into(),
+                "invalid profile setting identity model_name",
+            ),
+            (
+                |d| {
+                    let copy = profiles(d).fields[2].clone();
+                    profiles(d).fields.push(copy);
+                },
+                "duplicate profile setting model of module test.capabilities",
+            ),
+            (
+                |d| profiles(d).adapters[0].id = "Echo".into(),
+                "invalid adapter identity Echo",
+            ),
+            (
+                |d| {
+                    let copy = profiles(d).adapters[0].clone();
+                    profiles(d).adapters.push(copy);
+                },
+                "duplicate adapter echo-adapter",
+            ),
+            (
+                |d| d.capabilities[0].id = "in put".into(),
+                "invalid capability identity in put",
+            ),
+            (
+                |d| d.capabilities[1].id = "input".into(),
+                "duplicate capability input",
+            ),
+            (
+                |d| d.resources[0].id = "palette.v1".into(),
+                "invalid resource identity palette.v1",
+            ),
+            (
+                |d| {
+                    let copy = d.resources[0].clone();
+                    d.resources.push(copy);
+                },
+                "duplicate resource palette",
+            ),
+            (
+                |d| d.tasks[0].id = "Generate".into(),
+                "invalid task identity Generate",
+            ),
+            (
+                |d| {
+                    let copy = d.tasks[0].clone();
+                    d.tasks.push(copy);
+                },
+                "duplicate task generate-test-tint",
+            ),
+            // Defaults outside their kind, and kinds that never take one.
+            (
+                |d| field(d, "strength").default = Some(json!(1.5)),
+                "default of setting strength must be a number within 0..=1",
+            ),
+            (
+                |d| field(d, "mode").default = Some(json!("slow")),
+                "default of setting mode must be one of fast, exact",
+            ),
+            (
+                |d| field(d, "count").default = Some(json!(0)),
+                "default of setting count must be an integer within 1..=8",
+            ),
+            (
+                |d| field(d, "enabled").default = Some(json!("yes")),
+                "default of setting enabled must be a boolean",
+            ),
+            (
+                |d| field(d, "note").default = Some(json!("x".repeat(17))),
+                "default of setting note is longer than 16 characters",
+            ),
+            (
+                |d| field(d, "token").default = Some(json!("abc")),
+                "secret setting token declares a default",
+            ),
+            (
+                |d| field(d, "input-file").default = Some(json!("/tmp/x")),
+                "file setting input-file declares a default",
+            ),
+            (
+                |d| field(d, "local-service").default = Some(json!("http://127.0.0.1/")),
+                "endpoint setting local-service declares a default",
+            ),
+            // Kinds whose own declaration is unsound.
+            (
+                |d| field(d, "count").kind = SettingKind::Integer { min: 5, max: 1 },
+                "setting count declares an empty range 5..=1",
+            ),
+            (
+                |d| {
+                    field(d, "strength").kind = SettingKind::Number {
+                        min: 0.0,
+                        max: f64::INFINITY,
+                        step: None,
+                        precision: None,
+                    }
+                },
+                "setting strength declares an empty range",
+            ),
+            (
+                |d| {
+                    field(d, "strength").kind = SettingKind::Number {
+                        min: 0.0,
+                        max: 1.0,
+                        step: Some(0.0),
+                        precision: None,
+                    }
+                },
+                "setting strength declares a step that is not finite and positive",
+            ),
+            (
+                |d| {
+                    field(d, "strength").kind = SettingKind::Number {
+                        min: 0.0,
+                        max: 1.0,
+                        step: None,
+                        precision: Some(7),
+                    }
+                },
+                "setting strength declares a precision above 6",
+            ),
+            (
+                |d| {
+                    field(d, "mode").kind = SettingKind::Enum {
+                        options: Vec::new(),
+                    }
+                },
+                "setting mode declares no options",
+            ),
+            (
+                |d| {
+                    field(d, "mode").kind = SettingKind::Enum {
+                        options: vec!["fast".into(), "fast".into()],
+                    }
+                },
+                "setting mode declares an empty or duplicate option",
+            ),
+            (
+                |d| field(d, "note").kind = SettingKind::Text { max_length: 4097 },
+                "setting note declares max_length 4097; it is 1..=4096",
+            ),
+            (
+                |d| field(d, "token").kind = SettingKind::Secret { max_length: 0 },
+                "setting token declares max_length 0; it is 1..=4096",
+            ),
+            (
+                |d| {
+                    field(d, "local-service").kind = SettingKind::Endpoint {
+                        classes: Vec::new(),
+                    }
+                },
+                "endpoint setting local-service declares no class",
+            ),
+            (
+                |d| field(d, "note").label = " ".into(),
+                "setting note has no label",
+            ),
+            (
+                |d| settings(d).schema = 0,
+                "module test.capabilities declares settings schema 0",
+            ),
+            // Bounds on the number of fields and profiles.
+            (
+                |d| {
+                    settings(d).fields.extend((0..25).map(|index| {
+                        setting(&format!("extra-{index}"), SettingKind::Boolean, None)
+                    }))
+                },
+                "module test.capabilities declares 33 setting fields; at most 32",
+            ),
+            (
+                |d| {
+                    profiles(d).fields.extend((0..30).map(|index| {
+                        setting(&format!("extra-{index}"), SettingKind::Boolean, None)
+                    }))
+                },
+                "module test.capabilities declares 33 profile setting fields; at most 32",
+            ),
+            (
+                |d| profiles(d).max = 0,
+                "declares profiles max 0; max is 1..=16",
+            ),
+            (
+                |d| profiles(d).max = 17,
+                "declares profiles max 17; max is 1..=16",
+            ),
+            // Profiles and adapters.
+            (
+                |d| profiles(d).fields.retain(|field| field.id != "endpoint"),
+                "module test.capabilities declares profile adapters but no endpoint profile field",
+            ),
+            (
+                |d| profiles(d).adapters.clear(),
+                "module test.capabilities declares a profile block with no adapters",
+            ),
+            (
+                |d| profiles(d).label = String::new(),
+                "module test.capabilities declares an unlabelled profile block",
+            ),
+            (
+                |d| profiles(d).fields.retain(|field| field.id != "api-key"),
+                "adapter echo-adapter authenticates with bearer but the profile fields declare 0 secret fields",
+            ),
+            (
+                |d| profiles(d).adapters[0].data.clear(),
+                "adapter echo-adapter declares no data class",
+            ),
+            (
+                |d| profiles(d).adapters[0].max_response_bytes = 0,
+                "adapter echo-adapter declares max_response_bytes 0",
+            ),
+            (
+                |d| profiles(d).adapters[0].max_request_bytes = MAX_ADAPTER_BYTES + 1,
+                "adapter echo-adapter declares max_request_bytes 268435457",
+            ),
+            (
+                |d| profiles(d).adapters[0].timeout_ms = 0,
+                "adapter echo-adapter declares timeout_ms 0",
+            ),
+            (
+                |d| profiles(d).adapters[0].title = String::new(),
+                "adapter echo-adapter has no title",
+            ),
+            (
+                |d| profiles(d).adapters[0].retention = Some(" ".into()),
+                "adapter echo-adapter declares an empty retention note",
+            ),
+            // Capabilities naming what the module does not declare.
+            (
+                |d| {
+                    d.capabilities[0].kind = CapabilityKind::ReadUserFile {
+                        setting: "missing".into(),
+                    }
+                },
+                "capability input names undeclared setting missing",
+            ),
+            (
+                |d| {
+                    d.capabilities[0].kind = CapabilityKind::ReadUserFile {
+                        setting: "note".into(),
+                    }
+                },
+                "capability input reads setting note, which is not a file setting",
+            ),
+            (
+                |d| {
+                    d.capabilities[1].kind = CapabilityKind::RemoteImageRequest {
+                        adapter: "missing".into(),
+                        data: DataClass::SampleGrid8,
+                    }
+                },
+                "capability echo names undeclared adapter missing",
+            ),
+            (
+                |d| {
+                    d.capabilities[2].kind = CapabilityKind::DownloadArtifact {
+                        resource: "missing".into(),
+                    }
+                },
+                "capability palette names undeclared resource missing",
+            ),
+            (
+                |d| d.capabilities[0].purpose = String::new(),
+                "capability input declares no purpose",
+            ),
+            // Resources.
+            (
+                |d| d.resources[0].url = "http://example.com/palette.bin".into(),
+                "resource palette declares url http://example.com/palette.bin: a remote endpoint must use https",
+            ),
+            (
+                |d| d.resources[0].url = "file:///etc/palette".into(),
+                "resource palette declares url file:///etc/palette: scheme file is not allowed",
+            ),
+            (
+                |d| d.resources[0].sha256 = "A".repeat(64),
+                "resource palette declares sha256",
+            ),
+            (
+                |d| d.resources[0].sha256 = "a".repeat(63),
+                "it is 64 lowercase hexadecimal digits",
+            ),
+            (
+                |d| d.resources[0].bytes = 0,
+                "resource palette declares bytes 0; it is 1..=17179869184",
+            ),
+            (
+                |d| d.resources[0].bytes = MAX_RESOURCE_BYTES + 1,
+                "resource palette declares bytes 17179869185",
+            ),
+            (
+                |d| d.resources[0].redirect_origins = vec!["http://cdn.example.com".into()],
+                "resource palette declares redirect origin \"http://cdn.example.com\"",
+            ),
+            (
+                |d| d.resources[0].redirect_origins = vec!["https://cdn.example.com/path".into()],
+                "resource palette declares redirect origin \"https://cdn.example.com/path\"",
+            ),
+            (
+                |d| d.resources[0].version = "../1".into(),
+                "resource palette declares version \"../1\"",
+            ),
+            (
+                |d| d.resources[0].license = String::new(),
+                "resource palette declares no license",
+            ),
+            // Activation.
+            (
+                |d| d.activation.as_mut().unwrap().requires_settings = vec!["missing".into()],
+                "activation of module test.capabilities requires undeclared setting missing",
+            ),
+            (
+                |d| d.activation.as_mut().unwrap().requires_resources = vec!["missing".into()],
+                "activation of module test.capabilities requires undeclared resource missing",
+            ),
+            // Tasks.
+            (
+                |d| d.tasks[0].uses.push("missing".into()),
+                "task generate-test-tint uses undeclared capability missing",
+            ),
+            (
+                |d| {
+                    d.tasks[0].apply = Some(TaskApply {
+                        action: "missing".into(),
+                        parameter: "tint".into(),
+                    })
+                },
+                "task generate-test-tint applies with undeclared action missing",
+            ),
+            (
+                |d| {
+                    d.tasks[0].apply = Some(TaskApply {
+                        action: "apply-test-tint".into(),
+                        parameter: "missing".into(),
+                    })
+                },
+                "task generate-test-tint applies through undeclared parameter missing of action apply-test-tint",
+            ),
+            (
+                |d| d.actions[0].parameters[0].kind = ParameterKind::Boolean,
+                "task generate-test-tint applies through parameter tint of action apply-test-tint, which is not an artifact parameter",
+            ),
+            (
+                |d| d.tasks[0].parameters[0].name = "Gain".into(),
+                "invalid parameter name Gain of task generate-test-tint",
+            ),
+            (
+                |d| d.tasks[0].title = String::new(),
+                "task generate-test-tint has no title",
+            ),
+            (
+                |d| d.tasks[0].profile = false,
+                "task generate-test-tint uses remote-image-request capability echo without declaring asset and profile",
+            ),
+            (
+                |d| d.activation = None,
+                "task generate-test-tint requires activation but module test.capabilities declares none",
+            ),
+            (
+                |d| {
+                    d.tasks[0].uses.retain(|used| used != "echo");
+                    d.capabilities.retain(|capability| capability.id != "echo");
+                    settings(d).profiles = None;
+                },
+                "task generate-test-tint takes a profile but module test.capabilities declares no profiles",
+            ),
+            // A task control names a task this module declares.
+            (
+                |d| {
+                    d.controls = vec![Control::Task {
+                        task: "missing".into(),
+                        label: "Run".into(),
+                    }]
+                },
+                "task control of module test.capabilities names undeclared task missing",
+            ),
+            (
+                |d| {
+                    d.controls = vec![Control::Task {
+                        task: TASK.into(),
+                        label: String::new(),
+                    }]
+                },
+                "task control for generate-test-tint of module test.capabilities has no label",
+            ),
+        ];
+        for (change, expected) in cases {
+            let mut descriptor = capability_descriptor();
+            change(&mut descriptor);
+            let detail = rejection(&descriptor);
+            assert!(
+                detail.contains(expected),
+                "expected {expected:?}, got {detail:?}"
+            );
+            // A descriptor read from JSON is refused with the same message, whenever JSON can
+            // express it: an infinite bound has no JSON form.
+            let value = serde_json::to_value(&descriptor).unwrap();
+            if serde_json::from_value::<ModuleDescriptor>(value.clone()).ok() == Some(descriptor) {
+                assert_eq!(parse_rejection(value), detail);
+            }
+        }
+    }
+
+    #[test]
+    fn managed_storage_and_local_runtime_are_refused_by_name() {
+        for kind in ["managed-storage", "local-runtime"] {
+            let mut value = serde_json::to_value(capability_descriptor()).unwrap();
+            value["capabilities"][0] =
+                json!({"id": "store", "kind": kind, "purpose": "Keep things."});
+            let detail = parse_rejection(value);
+            assert!(
+                detail.contains(&format!("capability kind {kind} is not implemented")),
+                "{detail}"
+            );
+            assert!(detail.contains("capability store"), "{detail}");
+        }
+    }
+
+    #[test]
+    fn unknown_setting_and_capability_kinds_are_named_when_parsed() {
+        let mut value = serde_json::to_value(capability_descriptor()).unwrap();
+        value["capabilities"][0]["kind"] = json!("open-socket");
+        assert_eq!(
+            parse_rejection(value),
+            "capability input declares unknown kind open-socket"
+        );
+        let mut value = serde_json::to_value(capability_descriptor()).unwrap();
+        value["settings"]["fields"][1]["kind"] = json!("colour");
+        assert_eq!(
+            parse_rejection(value),
+            "setting mode declares unknown kind colour"
+        );
+        let mut value = serde_json::to_value(capability_descriptor()).unwrap();
+        value["settings"]["profiles"]["fields"][0]
+            .as_object_mut()
+            .unwrap()
+            .remove("kind");
+        assert_eq!(parse_rejection(value), "setting endpoint declares no kind");
+        let mut value = serde_json::to_value(capability_descriptor()).unwrap();
+        value["tasks"][0]["unexpected"] = json!(true);
+        assert!(parse_rejection(value).contains("unknown field `unexpected`"));
+    }
+
+    #[test]
+    fn task_identities_are_unique_across_the_registry() {
+        let mut registry = ModuleRegistry::new();
+        registry
+            .register(TestModule::from_descriptor(capability_descriptor()))
+            .unwrap();
+        let (module, task) = registry.task(TASK).expect("the task is indexed");
+        assert_eq!(module.descriptor().id, MODULE);
+        assert_eq!(task.apply.as_ref().unwrap().action, "apply-test-tint");
+        assert!(registry.task("missing").is_none());
+        assert_eq!(registry.module(MODULE).unwrap().descriptor().id, MODULE);
+        assert!(registry.module("test.missing").is_none());
+        // A second module offering the same task would generate the same method.
+        let mut other = capability_descriptor();
+        other.id = "test.other".into();
+        other.effects[0].id = "test.other.tint".into();
+        for action in &mut other.actions {
+            action.id = format!("other-{}", action.id);
+        }
+        other.tasks[0].apply = Some(TaskApply {
+            action: "other-apply-test-tint".into(),
+            parameter: "tint".into(),
+        });
+        let error = registry
+            .register(TestModule::from_descriptor(other))
+            .unwrap_err();
+        assert_eq!(error.kind, ErrorKind::Validation);
+        assert_eq!(
+            error.detail,
+            "task generate-test-tint of module test.other is already provided by test.capabilities"
+        );
+        assert!(
+            registry.module("test.other").is_none(),
+            "nothing was registered"
+        );
+    }
+}

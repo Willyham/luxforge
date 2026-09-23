@@ -1,5 +1,6 @@
 //! The provider index: descriptors validated once at registration, then hash lookups by effect,
-//! action and query identity. Registration touches no image or catalog resource.
+//! action, query and task identity. Registration touches no image, catalog, settings, secret,
+//! network or resource file.
 use super::{
     ActionDescriptor, BasicModule, CanvasInteraction, CropModule, EffectDescriptor, EffectStage,
     MAX_COLOR_UNITS, MixerModule, ModuleDescriptor, PixelModule, PresenceModule, Processing,
@@ -7,6 +8,7 @@ use super::{
 };
 use crate::{
     Error, ErrorKind, Layer, RECIPE_FORMAT, Recipe, artifacts,
+    capabilities::descriptor::TaskDescriptor,
     render::{
         Compiled, Entry, Segment,
         spatial::{SpatialPlan, prefix_hash},
@@ -42,6 +44,9 @@ pub struct ModuleRegistry {
     /// Query identity to (module, query) position. Queries have their own namespace: `query.<id>`
     /// and `edit.<id>` are different methods, so an id claimed here does not claim an action name.
     queries: HashMap<String, (usize, usize)>,
+    /// Task identity to (module, task) position. A task generates the method `task.<id>`, so its
+    /// identity is unique across the registry in a namespace of its own.
+    tasks: HashMap<String, (usize, usize)>,
     /// Canvas mode shortcut to the module that claims it, so one letter selects one mode.
     shortcuts: HashMap<String, usize>,
 }
@@ -121,6 +126,16 @@ impl ModuleRegistry {
                 )));
             }
         }
+        for task in &descriptor.tasks {
+            if let Some((existing, _)) = self.tasks.get(&task.id) {
+                return Err(validation(format!(
+                    "task {} of module {} is already provided by {}",
+                    task.id,
+                    descriptor.id,
+                    self.modules[*existing].descriptor().id
+                )));
+            }
+        }
         let shortcut = descriptor
             .canvas
             .as_ref()
@@ -147,6 +162,9 @@ impl ModuleRegistry {
         for (position, query) in descriptor.queries.iter().enumerate() {
             self.queries.insert(query.id.clone(), (index, position));
         }
+        for (position, task) in descriptor.tasks.iter().enumerate() {
+            self.tasks.insert(task.id.clone(), (index, position));
+        }
         self.modules.push(module);
         Ok(())
     }
@@ -171,6 +189,22 @@ impl ModuleRegistry {
         let (module, position) = self.queries.get(id)?;
         let module = self.modules[*module].as_ref();
         Some((module, &module.descriptor().queries[*position]))
+    }
+
+    /// The module that offers this worker task, and the task's declaration.
+    pub fn task(&self, id: &str) -> Option<(&dyn ToolModule, &TaskDescriptor)> {
+        let (module, position) = self.tasks.get(id)?;
+        let module = self.modules[*module].as_ref();
+        Some((module, &module.descriptor().tasks[*position]))
+    }
+
+    /// The registered module with this identity. A linear scan: a registry holds a handful of
+    /// modules, and the capability methods that ask are not on a per-pixel path.
+    pub fn module(&self, id: &str) -> Option<&dyn ToolModule> {
+        self.modules
+            .iter()
+            .map(AsRef::as_ref)
+            .find(|module| module.descriptor().id == id)
     }
 
     pub fn effect(&self, id: &str) -> Option<(&dyn ToolModule, &EffectDescriptor)> {
@@ -611,6 +645,7 @@ pub(crate) mod tests {
                 developer: false,
                 collapsed: false,
                 availability,
+                ..ModuleDescriptor::default()
             })
         }
         /// A module whose descriptor is written by the test itself.
@@ -706,6 +741,7 @@ pub(crate) mod tests {
                 developer: false,
                 collapsed: false,
                 availability: Availability::Available,
+                ..ModuleDescriptor::default()
             }))
         }
 
@@ -864,6 +900,7 @@ pub(crate) mod tests {
                 developer: false,
                 collapsed: false,
                 availability: Availability::Available,
+                ..ModuleDescriptor::default()
             }))
         }
     }
