@@ -45,6 +45,7 @@ Doctor reports missing tools and the graphics environment without installing any
 | Rendered Vignette: section expand, an Amount drag and commit at Fit and 100%, roundness and feather extremes, a post-crop recentre and the module reset | `cargo xtask smoke --scenario vignette --output NEW_DIR` |
 | Rendered percentage zooms: 50%, 100%, 120%, 800% and 1600%, pans to the centre and the far corner at 1600%, and idle checks at Fit, 100% and 1600%, over the generated 24 MP and 60 MP JPEGs, one launch each | `cargo xtask smoke --scenario zoom --output NEW_DIR` |
 | Rendered Presets: section expand, an XMP and a Lightwell preset imported, each applied from its row, undo, the create form filled and submitted, a native preset applied to the Original, `preset.list` through the `api` step and a delete through the row menu | `cargo xtask smoke --scenario presets --output NEW_DIR` |
+| Rendered Performance section: collapsed with nothing read, expanded on its first read, a filled window, a straighten and a Presence Clarity commit whose render is listed as long work and then as finished, collapsed and asleep, over the generated 60 MP JPEG, with the editor's memory read by the runner from outside the process; `--source RAW` swaps the Clarity commit for a RAW temperature commit, outside `rendered` | `cargo xtask smoke --scenario performance --output NEW_DIR [--source RAW]` |
 | Rendered RAW section over a supplied RAW file, with Basic collapsed; a Custom temperature drag left open and then released, at Fit and at 100%, whose drafted frame differs from the one before, is labelled approximate and adopts no histogram, and whose release's exact frame is the first drawn after the commit, carries its own report and is within a code of the approximate one on average; then a double-click on each RAW slider and on Basic's Exposure: the first press's committed jump and the reset that follows it, each checked as two entries with the reset sent against the jump's revision and never refused; not in `rendered`, because no RAW photograph is checked in | `cargo xtask smoke --scenario raw-panel --source RAW --output NEW_DIR` |
 | Inspect a capture | `cargo xtask check-capture --image PNG [--orientation N]` |
 | Process failure checks; macOS measurement, `--samples` defaults to 5 launches per workload | `cargo xtask hardening --binary PATH --output NEW_DIR`, `cargo xtask measure --binary PATH --output NEW_DIR [--samples N]` |
@@ -61,7 +62,7 @@ Every evidence command refuses an existing output directory: use a fresh `artifa
 | Tier | What it runs |
 | --- | --- |
 | `quick` | `check` and `editor-acceptance` |
-| `rendered` | quick plus all 24 smoke scenarios, including `gallery` and `controls`, through a bounded pool |
+| `rendered` | quick plus all 25 smoke scenarios, including `gallery` and `controls`, through a bounded pool |
 | `timing` | quick plus `editor-performance`, `editor-latency` and `measure`, in that order, serially, after everything else in the tier and behind the host-wide timing lock |
 | `full` | rendered plus timing plus `raw-reference` and, with `--manifest FILE`, `raw-editor` |
 
@@ -138,7 +139,10 @@ therefore stays in `rendered`; `full` adds only the RAW components (`raw-referen
 `--manifest`, `raw-editor`), which is already the tier's composition. `zoom`, which is not in that
 workload, is two launches with three one-second idle waits each and took 13.5 s inside the default
 pool at a one-minute load average near 20; it stays in `rendered` as the only rendered check of the
-percentage zooms.
+percentage zooms. `performance` is one launch with 8.6 s of waits — the sampler needs real seconds
+to fill its window and to prove itself asleep — and took 12.5 s on its own at a one-minute load
+average near 30; it stays in `rendered` as the only rendered check of the Performance section and of
+its sampler's gating.
 
 | Scenario | Serial elapsed (`--jobs 1`) | Pooled elapsed (default `--jobs 3`) | Tier |
 | --- | --- | --- | --- |
@@ -436,6 +440,30 @@ codes, the XMP's own `green-luminance` and `red-hue` fields darken the green pat
 the red one by more than 5 codes, and each undo returns the patches of the stack it returns to within
 1.5 codes. It writes `app/presets-checks.json`. The scope is stored payloads and displayed direction,
 not a colorimetric claim, and not a claim that Lightwell renders what Lightroom renders.
+
+`performance` opens the generated `60mp.jpg` at 1440 × 900 and captures eight frames: the open, with
+the Performance section collapsed and nothing read; the section expanded; a 3600 ms `wait`; a 16:9
+`edit.crop-fit` at 3°; `edit.set-presence` with Clarity 100 over it, whose exact render — about
+0.8 to 1 s on the owner's M4, where Clarity alone is about 0.6 s — is long enough for the section to
+list; a 2500 ms `wait`; the section collapsed; and a 2500 ms `wait`. Each frame's
+`state.performance` records the flag, the reads asked for, the samples held, the last two
+`resources.read` answers as the owner sent them with the wall-clock time of the newer one, the last
+`activity.list`, the process id, the heading caption and the rows and job rows as shown. The runner
+re-derives, without the editor's code, the memory figure from the recorded `memory.bytes`, the CPU
+and GPU figures from the rate between the two recorded reads, each series' length from the sample
+count, and the job rows, `+N more` and caption from the recorded `activity.list` under the section's
+display rules; it requires at least four samples after the first wait, the finished render listed
+after the second, `footprint` memory with GPU time and unified GPU allocations on the M4, GPU time
+never decreasing across frames, one revision per edit and nothing else, and the collapsed frames'
+reads and samples unchanged across the last wait. While the editor runs, the runner reads the same
+pid with `ps -o rss=` every 100 ms and `footprint -f bytes --noCategories` on every other poll,
+which needs no privileges for the same user; each expanded frame's recorded resident memory and footprint must
+lie between the runner's last reading at or before the sample's wall-clock time and its first
+reading after it, within 8 MiB. While the editor idles the three agree to the byte. The readings are
+in `process-readings.json` beside `app/`, and `app/performance-checks.json` records every comparison
+and tolerance. With `--source RAW` the Clarity commit becomes a RAW temperature commit, which
+redevelops the mosaic, and the finished job is whichever of the redevelopment and its render ended
+last; that run is not part of `rendered`.
 
 `zoom` is two launches, one over each of the generated `24mp.jpg` (6000 × 4000) and `60mp.jpg`
 (10000 × 6000), each writing its own `24mp/` or `60mp/` directory beside the scenario's `result.json`.
