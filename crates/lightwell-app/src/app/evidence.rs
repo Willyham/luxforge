@@ -1199,6 +1199,13 @@ impl Editor {
         else {
             return self.fail_step("the module declares no control group at that path");
         };
+        if crate::state::tools::module_of(&self.modules, &step.module)
+            .is_some_and(|module| crate::state::tools::is_headerless_group(module, &step.path))
+        {
+            return self.fail_step(
+                "that group is the module's only one: the panel draws it without a header, so it has no disclosure",
+            );
+        }
         let key = crate::state::tools::group_key(&step.module, &step.path);
         let expanded = self
             .controls_ui

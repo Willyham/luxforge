@@ -2616,6 +2616,13 @@ impl Editor {
                 *open = !*open;
             }
             Message::ToggleGroup { module_id, path } => {
+                // A module's only group is drawn without a header and is always shown, so there is
+                // no disclosure to toggle and no per-client state to record for it.
+                if tools::module_of(&self.modules, &module_id)
+                    .is_some_and(|module| tools::is_headerless_group(module, &path))
+                {
+                    return Task::none();
+                }
                 let key = format!(
                     "{module_id}/{}",
                     path.iter()
@@ -4281,6 +4288,33 @@ mod tests {
             "release submits the whole action once"
         );
         assert!(editor.busy, "and exactly one request is in flight");
+        finish(editor, catalog);
+    }
+
+    /// A module's only group is drawn without a header, so its disclosure message records nothing,
+    /// while a group of a module with several still toggles.
+    #[test]
+    fn toggling_a_modules_only_group_records_nothing() {
+        let (mut editor, catalog, _, _, _, _) = drafting();
+        let _ = editor.update(Message::ToggleGroup {
+            module_id: "lightwell.presence".into(),
+            path: vec![0],
+        });
+        assert!(
+            editor.controls_ui.group_expanded.is_empty(),
+            "the only group has no disclosure"
+        );
+        let _ = editor.update(Message::ToggleGroup {
+            module_id: "lightwell.basic".into(),
+            path: vec![1],
+        });
+        assert_eq!(
+            editor
+                .controls_ui
+                .group_expanded
+                .get(&tools::group_key("lightwell.basic", &[1])),
+            Some(&false)
+        );
         finish(editor, catalog);
     }
 

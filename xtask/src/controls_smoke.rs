@@ -48,8 +48,10 @@ pub fn script(scenario: &str) -> Option<Value> {
         // Discrete controls commit exactly once each.
         {"controls":{"action":ACTION,"parameter":"enabled","gesture":"discrete","value":true}},
         {"controls":{"action":ACTION,"parameter":"mode","gesture":"discrete","value":"two"}},
-        {"group":{"module":MODULE,"path":[0],"expanded":false}},
-        {"group":{"module":MODULE,"path":[0],"expanded":true}},
+        // The proof's controls are its module's only group, which the panel draws without a
+        // header and cannot collapse; group disclosure is a group of a module with several.
+        {"group":{"module":"lightwell.basic","path":[2],"expanded":false}},
+        {"group":{"module":"lightwell.basic","path":[2],"expanded":true}},
         {"reset":{"module":MODULE}},
         // The pixel proof's section on its own: X and Y as labelled px fields, RGB, the picker
         // and Apply pixel.
@@ -324,9 +326,12 @@ pub fn verify(evidence: &Path, app: &Value, events: &[Value]) -> Result {
         "Choice did not commit",
     )?;
     ensure(
-        frames[20]["state"]["control_ui"]["group_expanded"]["lightwell.controls/0"] == false
-            && frames[21]["state"]["control_ui"]["group_expanded"]["lightwell.controls/0"] == true,
-        "The generic control group did not collapse and expand",
+        frames[20]["state"]["control_ui"]["group_expanded"]["lightwell.basic/2"] == false
+            && frames[21]["state"]["control_ui"]["group_expanded"]["lightwell.basic/2"] == true
+            && frames[21]["state"]["control_ui"]["group_expanded"]
+                .get("lightwell.controls/0")
+                .is_none(),
+        "A group of a multi-group module did not collapse and expand",
     )?;
     ensure(
         payload(&frames[22]).is_some_and(|p| p.as_object().is_some_and(|o| o.is_empty())),

@@ -310,13 +310,20 @@ fn registered_proof_descriptor_generates_the_whole_vocabulary() {
     assert_eq!(section.module_id, MODULE);
     let mut controls = Vec::new();
     flatten(&section.controls, &mut controls);
+    // The proof declares its whole vocabulary inside one group. A module's only group is drawn
+    // without a header, so the group kind is proven by the declaration here and drawn by Basic's
+    // three groups and by the fixtures with two.
+    assert!(
+        matches!(
+            proof.descriptor().controls.as_slice(),
+            [lightwell_core::Control::Group { reset: Some(_), .. }]
+        ),
+        "the proof declares one resettable group"
+    );
     let signatures: BTreeSet<String> = controls
         .iter()
         .map(|control| match control {
-            ControlModel::Group(group) => {
-                assert!(group.reset.is_some(), "proof group has a reset");
-                "group".into()
-            }
+            ControlModel::Group(_) => panic!("the proof's only group draws no header"),
             ControlModel::Slider(number) => format!("number:{:?}", number.style),
             ControlModel::Toggle(_) => "toggle".into(),
             ControlModel::Enum(choice) => format!("choice:{:?}", choice.style),
@@ -334,7 +341,6 @@ fn registered_proof_descriptor_generates_the_whole_vocabulary() {
         })
         .collect();
     let expected = BTreeSet::from([
-        "group".into(),
         "number:Slider".into(),
         "number:Field".into(),
         "number:Stepper".into(),
@@ -562,20 +568,30 @@ fn proof_action_styles_and_group_reset_reach_the_same_json_method() {
         });
         proof.post_preset(&preset);
     }
-    let group = proof.editor.workspace.tools.developer[0]
-        .controls
-        .iter()
-        .find_map(|control| match control {
-            ControlModel::Group(group) if group.reset.is_some() => Some(group.clone()),
-            _ => None,
-        })
-        .expect("a resettable group");
-    let reset = group.reset.unwrap();
+    // The proof's controls are one declared group, which the panel draws without a header: its
+    // reset is reached from the band, whose reset is the same declared action.
+    let section = &proof.editor.workspace.tools.developer[0];
+    assert!(
+        !section
+            .controls
+            .iter()
+            .any(|control| matches!(control, ControlModel::Group(_))),
+        "the module's only group is drawn without a header"
+    );
+    let Some(lightwell_core::Control::Group {
+        reset: Some(declared),
+        ..
+    }) = proof.descriptor().controls.first()
+    else {
+        panic!("the proof declares one resettable group");
+    };
+    let reset = section.reset.clone().expect("the band's reset");
     assert_eq!(reset.action, "reset-controls");
-    let _ = proof.editor.update(Message::ResetGroup {
-        module_id: MODULE.into(),
-        path: group.path,
-    });
+    assert_eq!(
+        reset.action, declared.action,
+        "the band resets what the group declares"
+    );
+    let _ = proof.editor.update(Message::ResetModule(MODULE.into()));
     let _ = proof.editor.update(Message::CopyRequest {
         action: reset.action.clone(),
         parameter: None,
@@ -627,14 +643,5 @@ fn proof_action_styles_and_group_reset_reach_the_same_json_method() {
             Some(expected.clone())
         );
     }
-    let group = proof.editor.workspace.tools.developer[0]
-        .controls
-        .iter()
-        .find_map(|control| match control {
-            ControlModel::Group(group) => Some(group),
-            _ => None,
-        })
-        .unwrap();
-    assert_eq!(group.state, Some(crate::state::tools::GroupState::Original));
     proof.finish();
 }

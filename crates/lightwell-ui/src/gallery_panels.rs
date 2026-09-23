@@ -159,8 +159,9 @@ pub(crate) fn gallery_panels() -> Vec<Element<'static, ()>> {
     );
     states.push(panel(basic));
 
-    // -- Bands: collapsed with a hint, unavailable, and an expanded section whose group is
-    // -- collapsed (the header keeps its caption and drops its rule).
+    // -- Bands: collapsed with a hint, unavailable, and an expanded section whose groups are
+    // -- collapsed (each header keeps its caption and drops its rule). Only a module with more than
+    // -- one group has group headers to collapse.
     let bands: Element<'static, ()> = column![
         section_header(
             &band("Presence", false, Some("Texture, clarity and dehaze"), None),
@@ -178,10 +179,14 @@ pub(crate) fn gallery_panels() -> Vec<Element<'static, ()>> {
             ()
         ),
         module_section(
-            &band("Vignette", true, None, None),
+            &band("Basic", true, None, None),
             (),
             (),
-            Some(vec![group("Vignette", false, false)]),
+            Some(vec![
+                group("White balance", false, false),
+                group("Tone", true, false),
+                group("Colour", false, false),
+            ]),
         ),
     ]
     .into();
@@ -362,21 +367,17 @@ pub(crate) fn gallery_panel_rows() -> Vec<Element<'static, ()>> {
             Some(()),
         )
     };
-    let transforms = section_body(vec![
-        group_plain("Exact transforms"),
-        icon_button_row(
-            vec![
-                cell(Icon::RotateLeft, "Rotate left"),
-                cell(Icon::RotateRight, "Rotate right"),
-                cell(Icon::Mirror, "Mirror horizontal"),
-                cell(Icon::Flip, "Flip vertical"),
-            ],
-            RowPlacement {
-                after_header: true,
-                followed: false,
-            },
-        ),
-    ]);
+    // The actions are the module's only group, so the row sits under the band with no sub-group
+    // header, as the first and last row of the body.
+    let transforms = section_body(vec![icon_button_row(
+        vec![
+            cell(Icon::RotateLeft, "Rotate left"),
+            cell(Icon::RotateRight, "Rotate right"),
+            cell(Icon::Mirror, "Mirror horizontal"),
+            cell(Icon::Flip, "Flip vertical"),
+        ],
+        RowPlacement::default(),
+    )]);
     states.push(panel(transforms));
 
     // -- Crop and straighten, drafting: Draft in the band, the Ratio group's lock (selected) and
@@ -560,8 +561,9 @@ pub(crate) fn gallery_panel_rows() -> Vec<Element<'static, ()>> {
         )
         .into()
     };
+    // The pixel proof's controls are its module's only group, so they sit under the band with no
+    // sub-group header.
     let fields = section_body(vec![
-        group_plain("Pixel proof"),
         field("X", "1204"),
         field("Y", "877"),
         channel_row(
@@ -616,20 +618,4 @@ pub(crate) fn gallery_panel_rows() -> Vec<Element<'static, ()>> {
     states.push(panel(idle));
 
     states
-}
-
-/// A group of request inputs: its label and rule, with no state caption or reset.
-fn group_plain(label: &str) -> Element<'static, ()> {
-    sub_group_header(
-        &SubGroupHeaderModel {
-            label: label.into(),
-            state: None,
-            state_accent: false,
-            expanded: Some(true),
-            reset: false,
-            enabled: true,
-        },
-        Some(()),
-        (),
-    )
 }

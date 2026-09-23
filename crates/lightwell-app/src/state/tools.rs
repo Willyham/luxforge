@@ -582,8 +582,20 @@ fn section(
             &frame, inputs, enabled,
         ))));
     }
-    for (index, control) in module.controls.iter().enumerate() {
-        controls.push(control_model(module, control, inputs, enabled, &[index]));
+    // A stacked module whose controls are one group draws that group's controls directly: a
+    // header naming the only group repeats the band above it. The children keep their declared
+    // paths under the group, so a nested group's key and reset still name its real position.
+    match headerless_group(module) {
+        Some(children) => {
+            for (index, control) in children.iter().enumerate() {
+                controls.push(control_model(module, control, inputs, enabled, &[0, index]));
+            }
+        }
+        None => {
+            for (index, control) in module.controls.iter().enumerate() {
+                controls.push(control_model(module, control, inputs, enabled, &[index]));
+            }
+        }
     }
     SectionModel {
         module_id: module.id.clone(),
@@ -605,6 +617,27 @@ fn section(
         disabled_reason,
         digest,
     }
+}
+
+/// The controls of the one group a stacked module's controls consist of, when that is their whole
+/// shape. The panel draws them flush under the module's band with no sub-group header, and so
+/// with no disclosure, no collapse state and no Original or Custom caption: the band already
+/// names the module, carries its reset and its active dot. The descriptor and the API are
+/// unchanged; this is how the desktop lays such a module out. A tabbed module is not affected,
+/// since its groups are its tabs.
+pub(crate) fn headerless_group(module: &ModuleDescriptor) -> Option<&[Control]> {
+    if module.layout == lightwell_core::ModuleLayout::Tabs {
+        return None;
+    }
+    match module.controls.as_slice() {
+        [Control::Group { controls, .. }] => Some(controls),
+        _ => None,
+    }
+}
+
+/// The declared group at `path` is drawn without a header, so it has nothing to collapse.
+pub(crate) fn is_headerless_group(module: &ModuleDescriptor, path: &[usize]) -> bool {
+    path == [0] && headerless_group(module).is_some()
 }
 
 /// Sections start expanded except developer ones and those whose descriptor declares `collapsed`,
