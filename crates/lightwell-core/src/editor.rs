@@ -1467,7 +1467,10 @@ impl EditorService {
             action_id: command.method.to_owned(),
             parameters: crate::mask::commands::stored_parameters(&checked, &target),
         };
-        let request = request_input(&input, &mutation)?;
+        // No separate mask argument: a mask command's target is already one of the stored
+        // parameters above, so it is hashed with them. The field a module action passes here names
+        // the *layer* an edit addressed, which is a different question a mask command never asks.
+        let request = request_input(&input, &mutation, None)?;
         if let Some(result) = self.request_result(asset_id, &mutation.request_id, &request)? {
             return self.mask_report(asset_id, result);
         }

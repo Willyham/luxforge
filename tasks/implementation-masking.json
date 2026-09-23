@@ -159,7 +159,7 @@
     {
       "id": "TASK-003",
       "description": "Introduce the maskable effect flag, the host-owned mask target field on maskable actions, per-target single-layer semantics, and the placement and ordering rule for masked layers.",
-      "status": "pending",
+      "status": "completed",
       "dependencies": [
         "TASK-002"
       ],
@@ -338,7 +338,7 @@
     {
       "id": "TASK-005",
       "description": "Extend the colour primitive with an optional mask: blend the operation's output against its own input in linear light, keep unmasked paths byte-identical, and keep sampling equal to rendering.",
-      "status": "pending",
+      "status": "completed",
       "dependencies": [
         "TASK-003",
         "TASK-004"
@@ -752,7 +752,8 @@
       "extra_context": [
         "The desktop layering rules are enforced by the repository check, not by review: no Iced under state/, no core under view/, no core in the widget crate. The Masks panel is a view model plus a view, and the mask handle editor is a draft state machine beside the delivered crop one.",
         "The adjustments inside a mask are not new controls. They are the delivered generated sections of Basic, Presence and the colour mixer, bound to the mask target, with the same widgets, the same draft lifecycle and the same Copy as JSON request, which now carries the mask.",
-        "Every handle has a number field, because no gesture may be reachable only by pointer."
+        "Every handle has a number field, because no gesture may be reachable only by pointer.",
+        "A draft carries a mask target for a mask command but not for a module action, so a masked slider gesture commits through the action and does not preview. Adding the target to a module-action draft is this task's, and it is what makes a masked slider follow the drag the way a global one does."
       ],
       "context_links": [
         {
@@ -1092,7 +1093,8 @@
       "extra_context": [
         "The mask changes nothing about the neighbourhood: the operation still reads the finished frame before it and writes the next one, and the halo is unchanged. Only the write is blended.",
         "A tile entirely outside the mask bounds is a copy, which is what keeps a small masked Presence layer affordable on a 60 MP frame.",
-        "Each masked spatial layer is a stage boundary and therefore a sequential full frame; the declared limit of four is the reason this must be measured, not assumed."
+        "Each masked spatial layer is a stage boundary and therefore a sequential full frame; the declared limit of four is the reason this must be measured, not assumed.",
+        "Until this lands, a layer carrying a mask on a spatial effect is refused by name at compile, so a masked Presence layer can be neither committed nor rendered. Replacing that refusal with evaluation is this task; the refusal is the guard that keeps it from silently applying everywhere in the meantime."
       ],
       "context_links": [
         {
