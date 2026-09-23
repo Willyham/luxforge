@@ -348,6 +348,17 @@ and undo present in 18 to 46 ms. The white-balance steps still take 354–364 ms
 the mosaic on the source worker before any proxy exists; that is the RAW white-balance drag listed
 in the [performance rules](../engineering/performance-rules.md#known-remaining-costs).
 
+A drafted RAW temperature or tint has no frame at all: every `draft.set` is accepted and its
+preview job answers preparation-required (30 of 30 in each run below), so `editor-latency` refuses
+to time a drag of it and `--mode commit` times its release instead, 30 commits per run on the same
+M4 Pro host (macOS 26.5.2, release build, warm cache) with other agents building: release to the committed frame on screen is 376 / 430 ms p50 /
+p95 for Z6 temperature at load average 11–13 (436 / 465 ms at 23), 441 / 1458 ms for Z6 tint at
+23–28, and 1516 / 3175 ms for X100VI temperature (15 commits, load average 20–22). RAW exposure
+on the Z6, for comparison, is 34.5 / 120.8 ms at 11–13. A wild RAW exposure drag (`--mode burst`)
+presents 45.0 frames per second with a staleness of 16.3 / 37.4 ms p50 / p95 on the Z6, against
+51.0 and 16.8 / 30.4 ms for Basic's Exposure on the same file in the run after it, both at load
+average 13.
+
 Memory and idle from the same timing tier, five launches per workload: sampled peak RSS 130.4 MiB
 empty, 389.7 MiB at 24 MP and 808.8 MiB at 60 MP (medians); idle CPU 1.53% of one core over 30 s
 with the 60 MP image open, a miss of the 1% target in the same range as the 1.29–1.46% recorded
@@ -365,7 +376,7 @@ blocker, and no approximate processing, cache or timer was added to reach any of
 | Instant preview: drained drag p95 ≤ 33 ms at Fit, 24 and 60 MP, full Basic layer, with and without a 7° crop | 24.8, 28.9 and 28.7 ms p95 (30 samples each) | **Pass** |
 | Instant preview: burst drag ≥ 30 presented frames per second | 53.7 (exposure), 41.7 and 42.5 (full Basic, 24 and 60 MP) | **Pass** |
 | Instant preview: burst staleness p95 ≤ 50 ms | 32.9, 34.1 and 34.1 ms | **Pass** |
-| Instant preview: RAW exposure step presented within 50 ms | 10.5 / 14.6 / 15.0 ms request to display on the Z6 / X100VI / Air 2S, one trial each; a drained-drag distribution on RAW is not measured yet | **Pass** (functional) |
+| Instant preview: RAW exposure step presented within 50 ms | Drained drag, `editor-latency --action set-raw-exposure --parameter ev`, 30 inputs each: 12.5 / 23.7 ms p50 / p95 on the Z6 (load average 15) and 16.2 / 24.5 ms on the X100VI (load average 43–52), against 12.1 / 31.0 ms for Basic's Exposure on the same Z6 (load average 15–17); earlier single trials 10.5 / 14.6 / 15.0 ms on the Z6 / X100VI / Air 2S | **Pass** (every run above the 8.0 load threshold, so the figures are upper bounds) |
 | Settled exact histogram p95 below 200 ms after the final input, 24 MP | 70.3 ms p95 (60.1 p50, 30 samples) exposure only; 158.6 ms with a full Basic layer (2 commits) | **Pass** |
 | Scratch aggregate at most 64 MiB | 13.46 MiB high-water at 24 MP, 12.82 MiB at 60 MP | **Pass** |
 | 24 MP single-image edit working set ≤ 600 MiB CPU-resident | 645.3 MiB peak in the process that commits the full Basic layer, which also retains two full-window capture readbacks; 568.2 MiB in a second process holding the same committed layer with no captures, settling to 408.0 MiB | **Miss by 45 MiB** on the capturing process, **pass** on the same stack without the harness's captures |

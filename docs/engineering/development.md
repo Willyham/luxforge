@@ -28,7 +28,7 @@ Doctor reports missing tools and the graphics environment without installing any
 | Run an agent's editor check without taking focus (macOS) | `cargo xtask develop --background --catalog FILE [--open PATH]` |
 | Exact current-editor journey, display-independent, including the Basic and histogram chapter | `cargo run --release --locked --package xtask -- editor-acceptance --output NEW_DIR` |
 | Core timing on a real-sized JPEG | `cargo run --release --locked --package xtask -- editor-performance --source JPEG --output NEW_DIR [--samples N]` |
-| Desktop slider/curve-to-presented-frame and settled-histogram timing, peak RSS, scratch and idle CPU; `--action`/`--parameter` measure any other field-patch slider (presence, mixer, vignette, ...) in place of the default Basic exposure | `cargo run --release --locked --package xtask -- editor-latency --source JPEG --output NEW_DIR [--binary PATH] [--samples N] [--mode drag\|commit\|burst] [--control slider\|curve] [--action ID --parameter NAME] [--crop DEGREES] [--basic] [--idle]` |
+| Desktop slider/curve-to-presented-frame and settled-histogram timing, peak RSS, scratch and idle CPU; `--action`/`--parameter` measure any other slider that drafts — a field-patch slider (presence, mixer, vignette, ...) or a RAW slider, whose action declares that one parameter, over a RAW `--source` — in place of the default Basic exposure | `cargo run --release --locked --package xtask -- editor-latency --source JPEG\|RAW --output NEW_DIR [--binary PATH] [--samples N] [--mode drag\|commit\|burst] [--control slider\|curve] [--action ID --parameter NAME] [--crop DEGREES] [--basic] [--idle]` |
 | Verify golden fixtures; generate 24 MP, 60 MP and the mixer and presence scenarios' own hue-wheel and gradient/edge/texture/flat workloads | `cargo xtask fixtures`, `cargo xtask generate-fixtures [--output NEW_DIR]` |
 | RAW corpus integrity; independent numerical stage references | `cargo xtask raw-corpus --manifest FILE --output NEW_DIR`, `cargo xtask raw-reference --output NEW_DIR` |
 | Authentic RAW editor journey, reopen and resource sampling; `--samples` defaults to 3 trials per source | `cargo run --release --locked --package xtask -- raw-editor --manifest FILE --output NEW_DIR [--samples N] [--binary PATH]` |
@@ -557,8 +557,15 @@ editor's own path to the texture and say nothing about the cost of putting that 
 screen. The last scripted value also
 releases, so its drafted preview is superseded by the commit — that is the queue cancellation the
 report counts — and it is measured through to the `analysis_adopted` of the committed frame, which
-is the settled exact histogram. A final burst step sends every value between two ticks to show the
-driver's coalescing. `--crop DEGREES` commits a straightening 16:9 crop first, so the measured stack
+is the settled exact histogram, and to that frame's own first `preview_displayed`
+(`commit_to_committed_frame`), which is what a person sees on release. A final burst step sends
+every value between two ticks to show the driver's coalescing. A slider whose drafted value the
+core does not render — a RAW temperature or tint, whose `draft.set` is accepted but whose preview
+job answers preparation-required, logged as `slider_draft_unpreviewed` — has no frame per input, so
+a drag of it is refused with that reason and `--mode commit` times its release instead. A RAW
+slider's gesture values start from zero when its range holds it and from its declared default
+otherwise (Custom temperature's 6504 K); `--mode burst` takes `--action`/`--parameter` too, for a
+slider whose range holds its ±2 values. `--crop DEGREES` commits a straightening 16:9 crop first, so the measured stack
 carries the crop resample as well as the colour pass. `--basic` commits a Basic layer with every
 field non-neutral first, so each measured frame runs every one of the module's colour units. `--idle` adds a second workload: one evidence
 run commits a Basic layer with all ten fields non-neutral into a catalog that outlives it, then an

@@ -60,6 +60,9 @@ struct FieldTarget {
     min: f64,
     max: f64,
     step: f64,
+    /// Where the gesture's values start from: zero when the range holds it, as every field-patch
+    /// slider's does, otherwise the declared default (RAW's Custom temperature, 2000..12000 K).
+    origin: f64,
 }
 
 impl FieldTarget {
@@ -73,23 +76,26 @@ impl FieldTarget {
             min: -5.0,
             max: 5.0,
             step: 0.01,
+            origin: 0.0,
         }
     }
 
     /// Resolve `--action <id> --parameter <name>` against the built-in module registry: the
-    /// action must be a field-patch action, which drafts through draft.begin/set/commit exactly as
-    /// set-basic does, and the parameter must be integer or number, so it declares a range and an
-    /// optional step (defaulting to 1, as an undeclared step means for every other client) this
-    /// harness can generate valid gesture values from.
+    /// action must be one whose slider drafts through draft.begin/set/commit exactly as set-basic
+    /// does — a field-patch action, or an action whose only parameter this is, as RAW's are — and
+    /// the parameter must be integer or number, so it declares a range and an optional step
+    /// (defaulting to 1, as an undeclared step means for every other client) this harness can
+    /// generate valid gesture values from.
     fn lookup(action: &str, parameter: &str) -> Result<Self> {
         let registry = ModuleRegistry::builtin();
         let (_, declared) = registry
             .action(action)
             .ok_or_else(|| format!("No module declares the action {action}"))?;
         ensure(
-            declared.patch,
+            declared.patch
+                || (declared.parameters.len() == 1 && declared.parameters[0].name == parameter),
             format!(
-                "Action {action} is not a field-patch action; editor-latency drives a field-patch slider exactly as it drives set-basic"
+                "Action {action} is neither a field-patch action nor one whose only parameter is {parameter}; editor-latency drives a slider that drafts exactly as set-basic does"
             ),
         )?;
         let parameter_descriptor = declared
@@ -110,12 +116,23 @@ impl FieldTarget {
             step.is_finite() && step > 0.0 && min < max,
             format!("Parameter {parameter} of {action} declares no usable range or step"),
         )?;
+        let origin = if (min..=max).contains(&0.0) {
+            0.0
+        } else {
+            parameter_descriptor
+                .default
+                .as_ref()
+                .and_then(Value::as_f64)
+                .filter(|default| (min..=max).contains(default))
+                .unwrap_or(min)
+        };
         Ok(Self {
             action: action.to_owned(),
             parameter: parameter.to_owned(),
             min,
             max,
             step,
+            origin,
         })
     }
 
@@ -127,7 +144,7 @@ impl FieldTarget {
     /// spacing this harness has always used.
     fn gesture_values(&self, count: usize) -> Vec<f64> {
         let preferred = 3.0 * self.step;
-        let headroom = self.max / (count as f64 + 1.0);
+        let headroom = (self.max - self.origin) / (count as f64 + 1.0);
         let spacing_steps = if preferred <= headroom {
             (preferred / self.step).round().max(1.0)
         } else {
@@ -136,7 +153,7 @@ impl FieldTarget {
         let spacing = spacing_steps * self.step;
         (0..count)
             .map(|index| {
-                let raw = (index + 1) as f64 * spacing;
+                let raw = self.origin + (index + 1) as f64 * spacing;
                 ((raw / self.step).round() * self.step).clamp(self.min, self.max)
             })
             .collect()
@@ -291,8 +308,11 @@ struct Input {
     /// `preview_displayed` for that job's generation: its raster became the surface's source and
     /// the redraw that draws it was requested.
     displayed_ms: f64,
-    generation: u64,
-    draft_revision: u64,
+    /// The preview job's generation and draft revision; `None` when the draft was accepted but its
+    /// preview job was refused (`slider_draft_unpreviewed`), as a RAW white balance the prepared
+    /// image does not hold is, so the input has no frame of its own.
+    generation: Option<u64>,
+    draft_revision: Option<u64>,
     /// The desktop's own measurement of the GPU upload inside the interval above, when the binary
     /// reports one. The photo surface writes its texture during the frame that draws it, so the
     /// current binary reports none and this stays `NaN`.
@@ -345,8 +365,28 @@ fn inputs(events: &[Value], control: Control, field: &FieldTarget) -> Result<Vec
                     sent_ms,
                     queued_ms: elapsed(event)?,
                     displayed_ms: f64::NAN,
-                    generation: detail["generation"].as_u64().ok_or("No generation")?,
-                    draft_revision: detail["draft_revision"].as_u64().ok_or("No revision")?,
+                    generation: Some(detail["generation"].as_u64().ok_or("No generation")?),
+                    draft_revision: Some(detail["draft_revision"].as_u64().ok_or("No revision")?),
+                    upload_ms: f64::NAN,
+                });
+            }
+            // The draft accepted the value but its preview job was refused: the input reached the
+            // owner and no frame of its own follows it.
+            Some("slider_draft_unpreviewed") => {
+                let (value, sent_ms) = pending
+                    .take()
+                    .ok_or("A slider_draft_unpreviewed answered no slider_draft_set")?;
+                ensure(
+                    event_value(&event["detail"]["value"], control) == Some(value),
+                    "An unpreviewed draft reports a value its draft.set did not send",
+                )?;
+                inputs.push(Input {
+                    value,
+                    sent_ms,
+                    queued_ms: elapsed(event)?,
+                    displayed_ms: f64::NAN,
+                    generation: None,
+                    draft_revision: None,
                     upload_ms: f64::NAN,
                 });
             }
@@ -357,10 +397,10 @@ fn inputs(events: &[Value], control: Control, field: &FieldTarget) -> Result<Vec
         let generation = event["detail"]["generation"].as_u64();
         if let Some(input) = inputs
             .iter_mut()
-            .find(|input| Some(input.generation) == generation)
+            .find(|input| input.generation.is_some() && input.generation == generation)
         {
             ensure(
-                event["detail"]["draft_revision"].as_u64() == Some(input.draft_revision),
+                event["detail"]["draft_revision"].as_u64() == input.draft_revision,
                 "A displayed frame names another draft revision than the job it answers",
             )?;
             input.displayed_ms = elapsed(event)?;
@@ -541,10 +581,10 @@ fn burst_values() -> Vec<f64> {
 
 /// The one scripted step a burst run sends: every value paced by its own timer, released at the
 /// end exactly as a real drag's release ends it.
-fn burst_gesture_step(values: &[f64], interval_ms: u64) -> Value {
+fn burst_gesture_step(field: &FieldTarget, values: &[f64], interval_ms: u64) -> Value {
     json!({"slider":{
-        "action":SET_BASIC,
-        "parameter":EXPOSURE,
+        "action":field.action,
+        "parameter":field.parameter,
         "values":values,
         "interval_ms":interval_ms,
         "release":true,
@@ -731,6 +771,18 @@ pub fn run(root: &Path, out: &Path, bin: &Path, options: Options) -> Result {
     } else {
         &[][..]
     };
+    let unpreviewed = measured
+        .iter()
+        .filter(|input| input.generation.is_none())
+        .count();
+    ensure(
+        !drained.iter().any(|input| input.generation.is_none()),
+        format!(
+            "{unpreviewed} of {} draft.set answers of {} carried no preview job (slider_draft_unpreviewed): the core does not render this field's drafted value, so a drag has no frame per input to time; --mode commit times its release",
+            measured.len(),
+            field.action
+        ),
+    )?;
     ensure(
         drained.iter().all(|input| input.displayed_ms.is_finite()),
         "An input's preview job was never displayed, so the gesture was not drained per step",
@@ -771,13 +823,28 @@ pub fn run(root: &Path, out: &Path, bin: &Path, options: Options) -> Result {
         .filter(|event| event["event"] == "analysis_adopted")
         .map(elapsed)
         .collect::<Result<Vec<_>>>()?;
+    // The committed frame on screen: the first undrafted `preview_displayed` after each commit,
+    // which is what a person sees on release, before its exact phase settles the histogram.
+    let committed_displayed: Vec<f64> = events
+        .iter()
+        .filter(|event| {
+            event["event"] == "preview_displayed" && event["detail"]["draft_revision"].is_null()
+        })
+        .map(elapsed)
+        .collect::<Result<Vec<_>>>()?;
     let mut settled_from_input = Vec::new();
     let mut settled_from_commit = Vec::new();
+    let mut presented_from_input = Vec::new();
+    let mut presented_from_commit = Vec::new();
     for commit in &commits {
-        let Some(report) = adopted.iter().find(|time| *time >= commit).copied() else {
+        let Some(input) = measured.iter().rfind(|input| input.sent_ms <= *commit) else {
             continue;
         };
-        let Some(input) = measured.iter().rfind(|input| input.sent_ms <= *commit) else {
+        if let Some(shown) = committed_displayed.iter().find(|time| *time >= commit) {
+            presented_from_input.push(shown - input.sent_ms);
+            presented_from_commit.push(shown - commit);
+        }
+        let Some(report) = adopted.iter().find(|time| *time >= commit).copied() else {
             continue;
         };
         settled_from_input.push(report - input.sent_ms);
@@ -810,7 +877,7 @@ pub fn run(root: &Path, out: &Path, bin: &Path, options: Options) -> Result {
     let superseded: Vec<u64> = measured
         .iter()
         .filter(|input| !input.displayed_ms.is_finite())
-        .map(|input| input.generation)
+        .filter_map(|input| input.generation)
         .collect();
 
     let result = json!({
@@ -837,7 +904,7 @@ pub fn run(root: &Path, out: &Path, bin: &Path, options: Options) -> Result {
         "effect_scope":match (options.control, field.action.as_str(), field.parameter.as_str()) {
             (Control::Curve, ..) => "Developer proof curve: identity colour operation. Draft/preview scheduling and GPU upload are timed while the curve canvas is visible; the curve does not alter photo pixels.".to_owned(),
             (Control::Slider, SET_BASIC, EXPOSURE) => "Basic exposure: the photograph's colour pass is measured with the generated slider.".to_owned(),
-            (Control::Slider, action, parameter) => format!("{action} {parameter}: the field-patch slider is measured through draft.begin/set/commit exactly as Basic exposure is."),
+            (Control::Slider, action, parameter) => format!("{action} {parameter}: the slider is measured through draft.begin/set/commit exactly as Basic exposure is."),
         },
         "view_setup":if options.control == Control::Curve {
             json!({"developer":true,"proof_section":CONTROLS_MODULE,
@@ -858,6 +925,8 @@ pub fn run(root: &Path, out: &Path, bin: &Path, options: Options) -> Result {
             "gpu_upload_note":"null when the binary's preview_displayed carries no upload_ms, which is true of the photo surface: the raster is written into the surface's own texture during the frame that draws it, so there is no upload step to time. render_and_upload then covers the render and the hand-over together.",
             "final_input_to_settled_histogram":distribution(settled_from_input),
             "commit_to_settled_histogram":distribution(settled_from_commit),
+            "final_input_to_committed_frame":distribution(presented_from_input),
+            "commit_to_committed_frame":distribution(presented_from_commit),
         },
         "queue":{
             "scripted_slider_values":if options.control == Control::Slider {
@@ -868,6 +937,7 @@ pub fn run(root: &Path, out: &Path, bin: &Path, options: Options) -> Result {
             } else { Value::Null },
             "draft_set_requests":counted("slider_draft_set"),
             "preview_jobs_requested":counted("slider_draft_preview"),
+            "draft_sets_without_preview":counted("slider_draft_unpreviewed"),
             "preview_jobs_superseded":superseded.len(),
             "superseded_generations":superseded,
             "commits":commits.len(),
@@ -943,7 +1013,7 @@ struct BurstAnalysis {
 }
 
 /// Read [`BurstAnalysis`] out of one run's events, in the order described on the struct's fields.
-fn analyze_burst(events: &[Value]) -> Result<BurstAnalysis> {
+fn analyze_burst(events: &[Value], field: &FieldTarget) -> Result<BurstAnalysis> {
     let value_events: Vec<f64> = events
         .iter()
         .filter(|event| event["event"] == "slider_step_value")
@@ -984,8 +1054,8 @@ fn analyze_burst(events: &[Value]) -> Result<BurstAnalysis> {
     // release's commit, so it never appears here, which is the one cancellation this gesture always
     // produces. A pipeline overwhelmed by the input rate can drop every one of them, which is a real
     // measurement of that pipeline, not a broken run, so an empty list is not refused.
-    // Burst mode drives the Basic exposure slider alone, so its inputs pair by that field.
-    let measured = inputs(events, Control::Slider, &FieldTarget::basic_exposure())?;
+    // The inputs pair by the one field the burst drove.
+    let measured = inputs(events, Control::Slider, field)?;
     let drafted: Vec<&Input> = measured
         .iter()
         .filter(|input| input.displayed_ms.is_finite())
@@ -1006,7 +1076,7 @@ fn analyze_burst(events: &[Value]) -> Result<BurstAnalysis> {
     let superseded: Vec<u64> = measured
         .iter()
         .filter(|input| !input.displayed_ms.is_finite())
-        .map(|input| input.generation)
+        .filter_map(|input| input.generation)
         .collect();
 
     // The proxy fields arrive with the desktop change this harness anticipates; against the current
@@ -1057,6 +1127,18 @@ fn run_burst(root: &Path, out: &Path, bin: &Path, options: &Options) -> Result {
     let source_hash = hash(&source)?;
     let values = burst_values();
     let interval_ms = burst_interval_ms();
+    // The burst's values are an exposure-shaped triangle wave, so it drives any slider whose
+    // declared range holds them: Basic's Exposure by default, RAW's with `--action`.
+    let field = resolve_field(options.control, options.action, options.parameter)?;
+    ensure(
+        values
+            .iter()
+            .all(|value| (field.min..=field.max).contains(value)),
+        format!(
+            "The burst's values leave {}'s declared range {}..{}",
+            field.parameter, field.min, field.max
+        ),
+    )?;
 
     let mut script = Vec::new();
     if let Some(angle) = options.crop {
@@ -1067,7 +1149,7 @@ fn run_burst(root: &Path, out: &Path, bin: &Path, options: &Options) -> Result {
     if options.basic {
         script.push(basic_precondition());
     }
-    script.push(burst_gesture_step(&values, interval_ms));
+    script.push(burst_gesture_step(&field, &values, interval_ms));
     let script_file = out.join("gesture-script.json");
     write_json(&script_file, &json!(script))?;
 
@@ -1108,7 +1190,7 @@ fn run_burst(root: &Path, out: &Path, bin: &Path, options: &Options) -> Result {
     let frames = app["frames"].as_array().ok_or("Missing frames")?;
     let last = frames.last().ok_or("No frame was captured")?;
 
-    let analysis = analyze_burst(&events)?;
+    let analysis = analyze_burst(&events, &field)?;
 
     let result = json!({
         "status":"passed",
@@ -1127,6 +1209,8 @@ fn run_burst(root: &Path, out: &Path, bin: &Path, options: &Options) -> Result {
         "crop_angle_deg":options.crop,
         "full_basic_layer":options.basic,
         "mode":"burst",
+        "control_action":field.action,
+        "control_parameter":field.parameter,
         "samples":Value::Null,
         "gesture_values":values,
         "method":format!("Background evidence launch of the release binary, warm filesystem cache. --samples is ignored: every burst run sends the same fixed {} values over {} s at {} values/s, paced one per tick of the desktop's own paced slider step rather than sent all at once, so the driver's real coalescing runs on them. Presented means preview_displayed: the update in which the rendered raster became the photo surface's source, drawn by the redraw that update requests; it is not display scanout.", values.len(), BURST_SECONDS, BURST_RATE_PER_SEC),
@@ -1302,8 +1386,8 @@ fn hold_and_idle(root: &Path, out: &Path, bin: &Path, source: &Path) -> Result {
 mod tests {
     use super::*;
 
-    /// The curve control ignores its `field` argument entirely, so every curve test passes the
-    /// default Basic exposure target as an unused placeholder.
+    /// The default Basic exposure target: the field the synthetic burst events carry, and a
+    /// placeholder for the curve control, which ignores its `field` argument entirely.
     fn unused_field() -> FieldTarget {
         FieldTarget::basic_exposure()
     }
@@ -1358,7 +1442,8 @@ mod tests {
 
     #[test]
     fn burst_analysis_reads_fps_staleness_gaps_and_counts_from_synthetic_events() {
-        let analysis = analyze_burst(&synthetic_events()).expect("a well-formed burst run");
+        let analysis =
+            analyze_burst(&synthetic_events(), &unused_field()).expect("a well-formed burst run");
         assert_eq!(analysis.sent_values, 4, "every slider_step_value counts");
         assert_eq!(
             analysis.presented_frames, 3,
@@ -1407,7 +1492,7 @@ mod tests {
             .expect("the committed frame's own preview_displayed");
         last["detail"]["proxy"] = json!(true);
         last["detail"]["proxy_dimensions"] = json!([960, 640]);
-        let analysis = analyze_burst(&events).expect("a well-formed burst run");
+        let analysis = analyze_burst(&events, &unused_field()).expect("a well-formed burst run");
         assert_eq!(analysis.proxy["proxy"], json!(true));
         assert_eq!(analysis.proxy["proxy_dimensions"], json!([960, 640]));
         assert!(analysis.proxy.get("note").is_none());
@@ -1418,7 +1503,7 @@ mod tests {
         let events = vec![
             json!({"event":"slider_step_value","elapsed_ms":0.0,"detail":{"value":0.5,"index":0}}),
         ];
-        assert!(analyze_burst(&events).is_err());
+        assert!(analyze_burst(&events, &unused_field()).is_err());
     }
 
     /// A pipeline overwhelmed by the input rate can drop every drafted frame: the render queue
@@ -1442,7 +1527,8 @@ mod tests {
             json!({"event":"preview_displayed","elapsed_ms":30.0,"detail":{"generation":102,"draft_revision":1}}),
         );
 
-        let analysis = analyze_burst(&events).expect("an empty drafted set is still a valid run");
+        let analysis = analyze_burst(&events, &unused_field())
+            .expect("an empty drafted set is still a valid run");
         assert_eq!(analysis.sent_values, 2);
         assert_eq!(
             analysis.presented_frames, 1,
@@ -1558,6 +1644,57 @@ mod tests {
         assert!(resolve_field(Control::Slider, Some("edit.nothing"), Some("x")).is_err());
         assert!(resolve_field(Control::Slider, Some("set-mixer"), Some("hue")).is_err());
         assert!(resolve_field(Control::Slider, Some("reset-mixer"), Some("red-hue")).is_err());
+
+        // A RAW slider's action declares that one parameter alone, so its slider drafts too.
+        let exposure =
+            resolve_field(Control::Slider, Some("set-raw-exposure"), Some("ev")).unwrap();
+        assert_eq!(
+            (exposure.min, exposure.max, exposure.origin),
+            (-5.0, 5.0, 0.0)
+        );
+        // Custom temperature's range holds no zero, so its gesture starts at the declared 6504 K
+        // and every value stays inside 2000..12000 on its 10 K step.
+        let kelvin =
+            resolve_field(Control::Slider, Some("set-raw-temperature"), Some("kelvin")).unwrap();
+        assert_eq!(
+            (kelvin.min, kelvin.max, kelvin.step),
+            (2000.0, 12000.0, 10.0)
+        );
+        assert_eq!(kelvin.origin, 6504.0);
+        let values = kelvin.gesture_values(31);
+        assert_eq!(values[0], 6530.0);
+        assert!(values.windows(2).all(|pair| pair[0] < pair[1]));
+        assert!(
+            values
+                .iter()
+                .all(|value| (2000.0..=12000.0).contains(value))
+        );
+        // The neutral pick declares two coordinates, so one of them is not a slider that drafts.
+        assert!(resolve_field(Control::Slider, Some("pick-raw-neutral"), Some("x")).is_err());
+    }
+
+    /// A draft that accepted its value but whose preview job was refused is an input with no frame
+    /// of its own: it pairs with its `draft.set`, keeps the next set's pairing intact, and a drag
+    /// made of them is refused with the reason rather than timed.
+    #[test]
+    fn an_unpreviewed_draft_is_an_input_without_a_frame() {
+        let field = resolve_field(Control::Slider, Some("set-raw-tint"), Some("tint")).unwrap();
+        let events = vec![
+            json!({"event":"slider_draft_set","elapsed_ms":1.0,"detail":{"fields":{"tint":3.0}}}),
+            json!({"event":"slider_draft_unpreviewed","elapsed_ms":2.0,"detail":{"value":3.0,"draft_revision":1,"error":"preparation-required: source-job-1"}}),
+            json!({"event":"slider_draft_set","elapsed_ms":3.0,"detail":{"fields":{"tint":6.0}}}),
+            json!({"event":"slider_draft_unpreviewed","elapsed_ms":4.0,"detail":{"value":6.0,"draft_revision":2,"error":"preparation-required: source-job-2"}}),
+        ];
+        let paired = inputs(&events, Control::Slider, &field).unwrap();
+        assert_eq!(paired.len(), 2);
+        assert!(paired.iter().all(|input| input.generation.is_none()));
+        assert_eq!(
+            paired.iter().map(|input| input.value).collect::<Vec<_>>(),
+            [3.0, 6.0]
+        );
+        let mut mismatched = events;
+        mismatched[1]["detail"]["value"] = json!(4.0);
+        assert!(inputs(&mismatched, Control::Slider, &field).is_err());
     }
 
     #[test]
@@ -1570,6 +1707,7 @@ mod tests {
             min: -100.0,
             max: 100.0,
             step: 1.0,
+            origin: 0.0,
         };
         let values = field.gesture_values(31);
         assert_eq!(values.len(), 31);
