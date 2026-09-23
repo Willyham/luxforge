@@ -224,27 +224,28 @@ fn combined_extremes_stay_finite_and_monotone_on_an_extended_ramp() {
 ///
 /// The minimum slope actually observed over this exact grid is **not**
 /// bounded by 0.02: it is `~2.03e-7`, at the corner
-/// `(contrast=-100, highlights=-100, shadows=-100, whites=100, blacks=100)`,
-/// x close to the domain's right edge. This is not a property of the revised
+/// `(contrast=100, highlights=-100, shadows=-100, whites=100, blacks=100)`,
+/// x close to the domain's right edge. This is not a property of the
 /// Highlights/Shadows family -- isolated, its own worst-case slope over this
-/// same extended domain is `~0.225`, far above 0.02 (see
+/// same extended domain is `~0.224`, far above 0.02 (see
 /// `highlights_shadows_stage_alone_has_a_strong_worst_case_slope` below). The
-/// bottleneck is the unchanged Contrast stage: at Whites = Blacks = +100 the
-/// endpoint remap's gap is only 0.5 (a 2x amplification), which combined with
-/// Contrast = -100 (alpha = -6) pushes the value Contrast receives far enough
+/// bottleneck is positive Contrast: at Whites = Blacks = +100 the endpoint
+/// remap's gap is only 0.5 (a 2x amplification), which combined with
+/// Contrast = +100 (alpha = 6) pushes the value Contrast receives far enough
 /// from the pivot (past x = 3 in the curve domain) that the logistic
-/// saturates to within float noise of its asymptote -- the same saturation
-/// documented in "Contrast" above, and present at the same order of magnitude
-/// (`2.055e-7`) in this design's first (bump-windowed) Highlights/Shadows
-/// family, before this revision. Restricted to the primary `[0, 1]` working
-/// domain (still all 312 combinations, still the same dense grid density),
-/// the minimum observed slope is `~0.0327`, clearing 0.02.
+/// saturates to within float noise of its asymptote -- the saturation
+/// documented in "Contrast". Negative Contrast has no such saturation: its
+/// slope never falls below `1 / sigma` (`~0.603` at -100), and the smallest
+/// slope over the grid among combinations with Contrast < 0 is `~0.118`, at
+/// `(contrast=-100, highlights=-100, shadows=100, whites=-100, blacks=-100)`.
+/// Restricted to the primary `[0, 1]` working domain (still all 312
+/// combinations, still the same dense grid density), the minimum observed
+/// slope is `~0.0328`, clearing 0.02, at the same positive corner as the
+/// extended-domain minimum.
 ///
-/// This is recorded here, in the design doc and in the revision's report
-/// rather than resolved silently: whether to also retune Contrast's
-/// `ALPHA_MAX` so the *extended*-domain bound holds too is a decision for
-/// whoever owns that trade-off, not this task (which was scoped to
-/// Highlights/Shadows and told to keep Contrast as it is).
+/// Whether to also retune Contrast's `ALPHA_MAX` so the *extended*-domain
+/// bound holds too is an open trade-off, recorded in the design doc rather
+/// than resolved silently.
 #[test]
 fn dense_forward_differences_prove_monotonicity_and_record_the_minimum_slope() {
     let grid = neutral_ramp(4000, -0.5, 2.0);
@@ -252,8 +253,9 @@ fn dense_forward_differences_prove_monotonicity_and_record_the_minimum_slope() {
     let samples = all_cube_samples();
     assert_eq!(samples.len(), 312);
 
-    let mut worst_full_domain = f64::INFINITY;
-    let mut worst_unit_domain = f64::INFINITY;
+    let mut worst_full_domain = (f64::INFINITY, ToneParams::NEUTRAL, 0.0);
+    let mut worst_unit_domain = (f64::INFINITY, ToneParams::NEUTRAL, 0.0);
+    let mut worst_negative_contrast = (f64::INFINITY, ToneParams::NEUTRAL, 0.0);
     for combo in &samples {
         let params = to_params(*combo);
         let mut previous: Option<(f64, f64)> = None;
@@ -265,23 +267,39 @@ fn dense_forward_differences_prove_monotonicity_and_record_the_minimum_slope() {
                     "{params:?}: forward difference decreased between x={prev_x} and x={x}"
                 );
                 let slope = (y - prev_y) / (x - prev_x);
-                worst_full_domain = worst_full_domain.min(slope);
-                if prev_x >= 0.0 && x <= 1.0 {
-                    worst_unit_domain = worst_unit_domain.min(slope);
+                if slope < worst_full_domain.0 {
+                    worst_full_domain = (slope, params, prev_x);
+                }
+                if prev_x >= 0.0 && x <= 1.0 && slope < worst_unit_domain.0 {
+                    worst_unit_domain = (slope, params, prev_x);
+                }
+                if params.contrast < 0.0 && slope < worst_negative_contrast.0 {
+                    worst_negative_contrast = (slope, params, prev_x);
                 }
             }
             previous = Some((x, y));
         }
     }
+    let (worst_full_domain, full_params, full_x) = worst_full_domain;
+    let (worst_unit_domain, unit_params, unit_x) = worst_unit_domain;
+    let (worst_negative_contrast, negative_params, negative_x) = worst_negative_contrast;
 
     println!(
-        "minimum forward-difference slope over [-0.5, 2.0], 312 combinations: {worst_full_domain}"
+        "minimum forward-difference slope over [-0.5, 2.0], 312 combinations: {worst_full_domain} \
+         at x={full_x} for {full_params:?}"
     );
-    println!("minimum forward-difference slope over [0, 1] alone: {worst_unit_domain}");
+    println!(
+        "minimum forward-difference slope over [0, 1] alone: {worst_unit_domain} at x={unit_x} \
+         for {unit_params:?}"
+    );
+    println!(
+        "minimum forward-difference slope over [-0.5, 2.0] with Contrast < 0: \
+         {worst_negative_contrast} at x={negative_x} for {negative_params:?}"
+    );
 
     // The provable, honest guarantee over the full required domain: strictly
     // positive everywhere (see the doc comment above for why 0.02 does not
-    // hold there, and why that is a pre-existing Contrast property).
+    // hold there: positive Contrast's saturation).
     assert!(
         worst_full_domain > 1e-9,
         "monotonicity must hold (strictly positive slope) everywhere on the extended domain, \
@@ -291,6 +309,13 @@ fn dense_forward_differences_prove_monotonicity_and_record_the_minimum_slope() {
     assert!(
         worst_unit_domain >= 0.02,
         "minimum slope within [0, 1] must be at least 0.02, got {worst_unit_domain}"
+    );
+    // Negative Contrast never saturates, so with it the 0.02 floor holds over
+    // the whole extended domain too, with a wide margin.
+    assert!(
+        worst_negative_contrast >= 0.1,
+        "minimum slope with Contrast < 0 over [-0.5, 2.0] must be at least 0.1, \
+         got {worst_negative_contrast}"
     );
 }
 
@@ -326,6 +351,157 @@ fn highlights_shadows_stage_alone_has_a_strong_worst_case_slope() {
         "the revised family's own worst-case slope should be far above the bump family's \
          former ~0.0575 bound, got {worst}"
     );
+}
+
+// ---------------------------------------------------------------------------
+// Contrast's sign
+// ---------------------------------------------------------------------------
+
+fn contrast_only(contrast: f64) -> ToneParams {
+    ToneParams {
+        contrast,
+        ..ToneParams::NEUTRAL
+    }
+}
+
+/// The whole curve's slope at the pivot, Contrast alone, by a central
+/// difference: an independent measurement, not the constructor's own `sigma`.
+fn pivot_slope(contrast: f64) -> f64 {
+    let h = 1e-5;
+    let params = contrast_only(contrast);
+    (tone_curve(0.5 + h, params) - tone_curve(0.5 - h, params)) / (2.0 * h)
+}
+
+/// Negative Contrast flattens the midtones by exactly the factor positive
+/// Contrast steepens them: at each tested magnitude the pivot slope at `-c` is
+/// the reciprocal of the pivot slope at `+c`. Measured: `+10` gives `~1.00749`
+/// and `-10` `~0.99257`; `+50` `~1.18083` and `-50` `~0.84687`; `+100`
+/// `~1.65719` and `-100` `~0.60343`. The products differ from 1 by under
+/// `1e-9`, the central difference's own truncation error.
+#[test]
+fn negative_contrast_has_the_reciprocal_pivot_slope_of_positive_contrast() {
+    for magnitude in [10.0, 50.0, 100.0] {
+        let steepened = pivot_slope(magnitude);
+        let flattened = pivot_slope(-magnitude);
+        println!(
+            "pivot slope at +{magnitude}: {steepened}; at -{magnitude}: {flattened}; \
+             product {}",
+            steepened * flattened
+        );
+        assert!(
+            steepened > 1.0,
+            "+{magnitude} must steepen the midtones, got {steepened}"
+        );
+        assert!(
+            flattened < 1.0,
+            "-{magnitude} must flatten the midtones, got {flattened}"
+        );
+        assert!(
+            (steepened * flattened - 1.0).abs() < 1e-8,
+            "the pivot slope at -{magnitude} ({flattened}) must be the reciprocal of the one at \
+             +{magnitude} ({steepened})"
+        );
+    }
+}
+
+/// Negative Contrast's slope is `1 + kappa * (1 - S'(x))`, which lies in
+/// `[1 / sigma, 1 + kappa)` because `S'` peaks at the pivot and tends to `0`
+/// far from it: it never approaches zero, on `[0, 1]` or past it, unlike
+/// positive Contrast's saturating logistic. Checked by forward differences over
+/// the same dense extended grid as the monotonicity proof, with `sigma` taken
+/// from the measured positive pivot slope.
+#[test]
+fn negative_contrast_alone_has_a_slope_between_its_pivot_slope_and_one_plus_kappa() {
+    let grid = neutral_ramp(4000, -0.5, 2.0);
+    for magnitude in [10.0, 50.0, 100.0] {
+        let sigma = pivot_slope(magnitude);
+        let kappa = 1.0 / sigma;
+        let params = contrast_only(-magnitude);
+        let mut least = f64::INFINITY;
+        let mut greatest = f64::NEG_INFINITY;
+        for pair in grid.windows(2) {
+            let slope =
+                (tone_curve(pair[1], params) - tone_curve(pair[0], params)) / (pair[1] - pair[0]);
+            least = least.min(slope);
+            greatest = greatest.max(slope);
+        }
+        println!(
+            "-{magnitude}: slope over [-0.5, 2.0] in [{least}, {greatest}], \
+             bounds [{}, {})",
+            1.0 / sigma,
+            1.0 + kappa
+        );
+        assert!(
+            least >= 1.0 / sigma - 1e-9,
+            "-{magnitude}: minimum slope {least} fell below 1 / sigma = {}",
+            1.0 / sigma
+        );
+        assert!(
+            greatest < 1.0 + kappa,
+            "-{magnitude}: maximum slope {greatest} reached 1 + kappa = {}",
+            1.0 + kappa
+        );
+    }
+}
+
+/// The output code (before rounding) a finished linear value lands on.
+fn unrounded_code(linear: f64) -> f64 {
+    let clamped = linear.clamp(0.0, 1.0);
+    let encoded = if clamped <= 0.003_130_8 {
+        12.92 * clamped
+    } else {
+        1.055 * clamped.powf(1.0 / 2.4) - 0.055
+    };
+    255.0 * encoded
+}
+
+fn standard_deviation(values: &[f64]) -> f64 {
+    let mean = values.iter().sum::<f64>() / values.len() as f64;
+    (values.iter().map(|v| (v - mean).powi(2)).sum::<f64>() / values.len() as f64).sqrt()
+}
+
+/// The owner-visible property: on a 256-code grey step wedge, negative
+/// Contrast pulls the output codes together (a smaller standard deviation than
+/// neutral) and positive Contrast pushes them apart, at every tested
+/// magnitude. Measured unrounded code standard deviations: neutral `~73.90`;
+/// `-10`/`+10` `~73.68`/`~74.12`; `-50`/`+50` `~69.87`/`~78.81`;
+/// `-100`/`+100` `~65.67`/`~88.89`. After rounding to 8-bit codes the same
+/// order holds at `+-50` and `+-100`; `+-10` moves no grey code at all on this
+/// wedge (its largest move is about a third of a code), so the rounded
+/// comparison starts at 50.
+#[test]
+fn negative_contrast_narrows_a_grey_step_wedge_and_positive_contrast_widens_it() {
+    let spread = |params: ToneParams| {
+        let (unrounded, rounded): (Vec<f64>, Vec<f64>) = (0u16..=255)
+            .map(|code| {
+                let linear = decode_srgb_u8(code as u8);
+                let out = tone_pixel([linear, linear, linear], params)[0];
+                (unrounded_code(out), f64::from(encode_srgb_u8(out)))
+            })
+            .unzip();
+        (standard_deviation(&unrounded), standard_deviation(&rounded))
+    };
+    let (neutral, neutral_rounded) = spread(ToneParams::NEUTRAL);
+    for magnitude in [10.0, 50.0, 100.0] {
+        let (narrowed, narrowed_rounded) = spread(contrast_only(-magnitude));
+        let (widened, widened_rounded) = spread(contrast_only(magnitude));
+        println!(
+            "wedge code standard deviation: -{magnitude} {narrowed} ({narrowed_rounded} rounded), \
+             neutral {neutral} ({neutral_rounded}), +{magnitude} {widened} ({widened_rounded})"
+        );
+        assert!(
+            narrowed < neutral && neutral < widened,
+            "+-{magnitude}: expected -{magnitude} {narrowed} < neutral {neutral} < +{magnitude} \
+             {widened}"
+        );
+        if magnitude >= 50.0 {
+            assert!(
+                narrowed_rounded < neutral_rounded && neutral_rounded < widened_rounded,
+                "+-{magnitude} after rounding: expected {narrowed_rounded} < {neutral_rounded} < \
+                 {widened_rounded}"
+            );
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -862,6 +1038,43 @@ fn build_tone_cases() -> Vec<ToneCase> {
                 ..ToneParams::NEUTRAL
             },
         );
+    }
+
+    // Contrast's sign: each magnitude on both sides, across the tonal range, on a saturated colour
+    // and past white (an extended-domain value an earlier unit such as Exposure can leave), so
+    // production is held to negative Contrast's reflected curve as closely as to the positive one.
+    let past_white = [1.6, 1.6, 1.6];
+    for amount in [-100.0, -50.0, -10.0, 10.0, 50.0, 100.0] {
+        for (region, input) in [
+            ("near-black", near_black),
+            ("mid-grey", mid_grey),
+            ("upper-tone", upper_tone),
+            ("near-white", near_white),
+            ("past-white", past_white),
+            ("saturated", saturated),
+        ] {
+            push(
+                format!("contrast-sign/{amount}/{region}"),
+                input,
+                single_param[0].1(amount),
+            );
+        }
+    }
+    // The endpoint remap's steepest corner (Whites = Blacks = +100) feeding Contrast values far
+    // outside [0, 1], on both sides of Contrast.
+    for amount in [-100.0, 100.0] {
+        for (region, input) in [("near-black", near_black), ("past-white", past_white)] {
+            push(
+                format!("contrast-sign/{amount}/whites-blacks-100/{region}"),
+                input,
+                ToneParams {
+                    contrast: amount,
+                    whites: 100.0,
+                    blacks: 100.0,
+                    ..ToneParams::NEUTRAL
+                },
+            );
+        }
     }
 
     cases
