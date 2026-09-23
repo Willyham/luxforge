@@ -91,6 +91,13 @@ impl PhotoRaster {
         (self.width, self.height)
     }
 
+    /// The same shared bytes for the standard image widget at percentage zooms. Its quad renderer
+    /// remains bounded by the window even when the scrollable content is larger than GPU viewport
+    /// limits.
+    pub fn pixels(&self) -> &Arc<[u8]> {
+        &self.pixels
+    }
+
     pub fn version(&self) -> u64 {
         self.version
     }
