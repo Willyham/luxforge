@@ -148,8 +148,14 @@ impl ToolModule for Disabled {
     }
 }
 
-/// The providers this run serves, with any `--disable-module` built-in wrapped as unavailable.
-fn registry(disabled: &[String], developer: bool) -> Result<ModuleRegistry, String> {
+/// The providers this run serves, with any `--disable-module` built-in wrapped as unavailable. In
+/// developer mode the controls proof joins them, and the capability proof too when a proof endpoint
+/// is named.
+fn registry(
+    disabled: &[String],
+    developer: bool,
+    proof_endpoint: Option<&str>,
+) -> Result<ModuleRegistry, String> {
     let mut registry = ModuleRegistry::new();
     let mut unknown: Vec<&str> = disabled.iter().map(String::as_str).collect();
     let mut modules = vec![
@@ -164,6 +170,9 @@ fn registry(disabled: &[String], developer: bool) -> Result<ModuleRegistry, Stri
     ];
     if developer {
         modules.push(Arc::new(lightwell_core::ControlsModule::new()));
+        if let Some(base) = proof_endpoint {
+            modules.push(Arc::new(lightwell_core::CapabilitiesProofModule::new(base)));
+        }
     }
     for module in modules {
         let id = module.descriptor().id.clone();
@@ -216,7 +225,11 @@ pub(crate) fn run(config: Config, size: (f32, f32)) -> Result<(), String> {
             .config
             .join("catalog.sqlite"),
     };
-    let registry = Arc::new(registry(&config.disabled, config.developer)?);
+    let registry = Arc::new(registry(
+        &config.disabled,
+        config.developer,
+        config.proof_endpoint.as_deref(),
+    )?);
     let (owner, join) = OwnerHandle::start_with_host(&catalog, registry, host_config(&config))
         .map_err(|error| match error.kind {
             ErrorKind::Conflict => format!(
@@ -5901,7 +5914,7 @@ mod tests {
 
     #[test]
     fn desktop_registry_contains_every_core_builtin_including_raw() {
-        let desktop = registry(&[], false).unwrap();
+        let desktop = registry(&[], false, None).unwrap();
         let core = ModuleRegistry::builtin();
         let ids = |registry: &ModuleRegistry| {
             registry
@@ -5912,11 +5925,12 @@ mod tests {
         };
         assert_eq!(ids(&desktop), ids(&core));
         assert!(!ids(&desktop).contains(&"lightwell.controls".to_owned()));
-        let developer = registry(&[], true).unwrap();
+        let developer = registry(&[], true, None).unwrap();
         assert!(ids(&developer).contains(&"lightwell.controls".to_owned()));
-        assert!(registry(&["lightwell.controls".into()], false).is_err());
+        assert!(!ids(&developer).contains(&"lightwell.capabilities".to_owned()));
+        assert!(registry(&["lightwell.controls".into()], false, None).is_err());
         assert!(
-            !registry(&["lightwell.controls".into()], true)
+            !registry(&["lightwell.controls".into()], true, None)
                 .unwrap()
                 .descriptors()
                 .iter()
@@ -5924,7 +5938,7 @@ mod tests {
                 .unwrap()
                 .is_available()
         );
-        let disabled = registry(&["lightwell.raw".into()], false).unwrap();
+        let disabled = registry(&["lightwell.raw".into()], false, None).unwrap();
         assert!(
             !disabled
                 .descriptors()
@@ -5933,6 +5947,24 @@ mod tests {
                 .unwrap()
                 .is_available()
         );
+        // The capability proof joins a developer run that names a proof endpoint, and no other.
+        let proof = registry(&[], true, Some("http://127.0.0.1:9")).unwrap();
+        let proof_module = proof
+            .descriptors()
+            .into_iter()
+            .find(|module| module.id == "lightwell.capabilities")
+            .expect("the capability proof is registered");
+        assert!(proof_module.developer);
+        assert_eq!(
+            proof_module.resources[0].url,
+            "http://127.0.0.1:9/proof-palette.bin"
+        );
+        assert!(
+            !ids(&registry(&[], false, Some("http://127.0.0.1:9")).unwrap())
+                .contains(&"lightwell.capabilities".to_owned())
+        );
+        let refused = registry(&[], true, Some("http://example.com")).unwrap_err();
+        assert!(refused.contains("proof-palette"), "{refused}");
     }
 
     #[test]

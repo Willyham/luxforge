@@ -4,14 +4,14 @@
 mod paths;
 
 use lightwell_core::{
-    ClientAuthority, HostConfig, OwnerHandle,
+    CapabilitiesProofModule, ClientAuthority, HostConfig, ModuleRegistry, OwnerHandle,
     capabilities::secrets::{MemorySecretStore, SecretStore, platform_secret_store},
     serve_json_lines_with,
 };
 use paths::Paths;
 use std::{path::PathBuf, sync::Arc};
 
-const HELP: &str = "lightwell-json --catalog CATALOG [--data-root DIRECTORY] [--secret-store keychain|memory] [--permission-authority] < requests.jsonl
+const HELP: &str = "lightwell-json --catalog CATALOG [--data-root DIRECTORY] [--secret-store keychain|memory] [--permission-authority] [--proof-endpoint URL] < requests.jsonl
 
 Serves one JSON-lines client on standard input and output.
 --data-root DIRECTORY    keep module settings, grants and resources under DIRECTORY, as the desktop
@@ -20,7 +20,10 @@ Serves one JSON-lines client on standard input and output.
                          memory keeps them for this process only, for tests and scripts.
 --permission-authority   let this client grant module permissions. It is an explicit local setup
                          step: a client without it, like every loopback live-session client, can
-                         deny or revoke a permission but never grant one.";
+                         deny or revoke a permission but never grant one.
+--proof-endpoint URL     register the developer capability proof module, lightwell.capabilities,
+                         whose palette resource is served at URL/proof-palette.bin. It is a test
+                         fixture for a proof endpoint a harness started, not a feature.";
 
 fn main() {
     if let Err(error) = run() {
@@ -42,6 +45,7 @@ fn run() -> Result<(), (String, String)> {
     let mut data_root: Option<PathBuf> = None;
     let mut authority = ClientAuthority::Edit;
     let mut memory_secrets = false;
+    let mut proof_endpoint: Option<String> = None;
     while let Some(argument) = args.next() {
         match argument.to_str() {
             Some("--catalog") => {
@@ -66,6 +70,13 @@ fn run() -> Result<(), (String, String)> {
                 };
             }
             Some("--permission-authority") => authority = ClientAuthority::Permissions,
+            Some("--proof-endpoint") => {
+                proof_endpoint = Some(
+                    args.next()
+                        .and_then(|url| url.into_string().ok())
+                        .ok_or_else(|| startup("--proof-endpoint requires a URL"))?,
+                );
+            }
             Some("--help") => {
                 println!("{HELP}");
                 return Ok(());
@@ -86,12 +97,14 @@ fn run() -> Result<(), (String, String)> {
         secrets,
         ..HostConfig::unconfigured()
     };
-    let (owner, join) = OwnerHandle::start_with_host(
-        &catalog,
-        Arc::new(lightwell_core::ModuleRegistry::builtin()),
-        host,
-    )
-    .map_err(|error| (error.kind.code().into(), error.detail))?;
+    let mut registry = ModuleRegistry::builtin();
+    if let Some(base) = &proof_endpoint {
+        registry
+            .register(Arc::new(CapabilitiesProofModule::new(base)))
+            .map_err(|error| startup(&format!("--proof-endpoint: {}", error.detail)))?;
+    }
+    let (owner, join) = OwnerHandle::start_with_host(&catalog, Arc::new(registry), host)
+        .map_err(|error| (error.kind.code().into(), error.detail))?;
     let served = serve_json_lines_with(
         std::io::stdin().lock(),
         std::io::stdout().lock(),
