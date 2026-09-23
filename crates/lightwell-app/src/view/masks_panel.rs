@@ -294,8 +294,11 @@ fn add_component(model: &MasksModel) -> Element<'_, Message> {
     block.into()
 }
 
-/// One button per registered kind. A kind this build cannot draw handles for says so rather than
-/// being hidden: its components are still editable through their declared number fields.
+/// One button per registered kind, each acting the way that kind's own declarations say: a kind with
+/// handles starts a gesture, a **typed** kind — one whose geometry is entirely defaulted, as a range
+/// selection's is — is created straight away as the selection those defaults describe. A kind that is
+/// neither says so rather than being hidden: its components are still editable through their declared
+/// number fields.
 fn kind_row<'a>(
     kinds: &'a [KindOption],
     enabled: bool,
@@ -307,9 +310,10 @@ fn kind_row<'a>(
             &kind.label,
             ButtonTone::Quiet,
             ButtonSize::Compact,
-            (enabled && kind.enabled && kind.drawable).then(|| message(kind.kind.clone())),
+            (enabled && kind.enabled && (kind.drawable || kind.typed))
+                .then(|| message(kind.kind.clone())),
         ));
-        if !kind.drawable {
+        if !kind.drawable && !kind.typed {
             line = line.push(caption("no handles in this build"));
         }
     }

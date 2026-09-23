@@ -1274,6 +1274,60 @@ fn hovering_a_row_shows_that_components_contribution_and_leaving_restores_the_ma
     );
 }
 
+/// A **typed** kind is created by its button and not by a gesture: no draft opens, the request is
+/// the generated `mask.create-<kind>` with no geometry in it, and the component that lands carries
+/// the payload the host's own declarations describe.
+///
+/// This is what makes a range selection reachable at all. It has nothing to drag — its geometry is
+/// a band on the histogram's axis and a list of sampled colours — so routing it through the handle
+/// gesture would open a draft with no shape and no preview. The panel names neither kind: it reads
+/// that every declared field carries a default and creates it directly, so a kind registered later
+/// with defaulted geometry arrives the same way.
+#[test]
+fn a_typed_kind_is_created_by_its_button_with_no_gesture() {
+    let mut masking = Masking::opened();
+    masking.enter_mask_mode();
+
+    let created = masking.run(MaskMessage::New("luminance-range".to_owned()));
+    assert_eq!(created["label"], json!("Add luminance range"));
+    assert!(
+        masking.editor.mask_draft.is_none(),
+        "a typed kind opens no gesture"
+    );
+    // The request carried the envelope and nothing else: the four numbers came from the host's own
+    // declarations, read once, rather than from a copy of them in the panel.
+    let sent = masking.sent().expect("the panel sent a request");
+    let keys: Vec<&String> = sent.as_object().expect("an object").keys().collect();
+    assert_eq!(keys, ["asset_id", "mutation"], "{sent}");
+
+    let listing = masking.listing();
+    let component = &listing.masks[0].components[0];
+    assert_eq!(component.kind, "luminance-range");
+    assert!(component.available);
+    // The whole tonal range with soft shoulders: a new band selects the picture and is narrowed,
+    // the way a crop starts at the whole frame.
+    assert_eq!(component.payload["low"], json!(0.0));
+    assert_eq!(component.payload["high"], json!(100.0));
+    assert_eq!(component.payload["low_feather"], json!(5.0));
+    assert_eq!(component.payload["high_feather"], json!(5.0));
+
+    // The other range kind added to the same mask, with its mode chosen up front exactly as a drawn
+    // kind's is.
+    masking.message(MaskMessage::SetAddMode(crate::state::masks::mode_index(
+        ComponentMode::Intersect,
+    )));
+    let added = masking.run(MaskMessage::Add("colour-range".to_owned()));
+    assert_eq!(added["label"], json!("Add intersect colour range"));
+    assert!(masking.editor.mask_draft.is_none());
+    let listing = masking.listing();
+    let component = &listing.masks[0].components[1];
+    assert_eq!(component.kind, "colour-range");
+    assert_eq!(component.mode, ComponentMode::Intersect);
+    assert_eq!(component.payload["refine"], json!(50.0));
+    // An unsampled colour range holds no swatches and selects nothing until one is picked.
+    assert_eq!(component.payload["samples"], json!([]));
+}
+
 /// The Add row offers each kind with its mode chosen up front, and the gesture that follows creates
 /// exactly that component — not one whose role was guessed from a modifier key afterwards.
 #[test]
@@ -1289,9 +1343,22 @@ fn the_add_row_chooses_the_mode_before_the_gesture() {
         kinds.contains(&LINEAR.to_owned()) && kinds.contains(&RADIAL.to_owned()),
         "{kinds:?}"
     );
+    // Each kind reaches the panel one of the two ways the host's own declarations allow: a
+    // gradient is drawn with handles, a range selection is typed and created from its defaults.
     for kind in &panel.kinds {
-        assert!(kind.drawable, "{} has no handles", kind.kind);
+        assert!(
+            kind.drawable || kind.typed,
+            "{} is neither drawn nor typed, so its button would do nothing",
+            kind.kind
+        );
     }
+    let typed: Vec<&str> = panel
+        .kinds
+        .iter()
+        .filter(|kind| !kind.drawable && kind.typed)
+        .map(|kind| kind.kind.as_str())
+        .collect();
+    assert_eq!(typed, ["luminance-range", "colour-range"]);
 
     for (mode, kind) in [
         (ComponentMode::Subtract, LINEAR),

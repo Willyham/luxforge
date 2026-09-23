@@ -23,6 +23,12 @@ use reference::mask::{
 };
 use serde_json::json;
 
+/// The pixel value a geometric component is handed and ignores (proposal P12 of
+/// `docs/design/range-study.md`). These masks hold gradients and brushes, whose coverage is a
+/// function of position alone, so the value here is arbitrary and the same at every call;
+/// `mask_range.rs` proves that ignoring it is exact rather than approximate.
+const ANY_PIXEL: [f64; 3] = [0.25, 0.5, 0.75];
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -139,7 +145,7 @@ fn the_capsule_field_is_bit_identical_to_the_frozen_reference() {
                 for x in 0..width {
                     let (u, v) = reference_stage.pixel_uv(x, y);
                     let want = brush_coverage(&expected, &reference_stage, u, v);
-                    let got = compiled.coverage(x, y);
+                    let got = compiled.coverage(x, y, ANY_PIXEL);
                     assert_eq!(
                         got.to_bits(),
                         want.to_bits(),
@@ -175,7 +181,7 @@ fn a_one_point_stroke_and_a_doubled_back_path_match_the_reference() {
                 for x in 0..80 {
                     let (u, v) = reference_stage.pixel_uv(x, y);
                     assert_eq!(
-                        compiled.coverage(x, y).to_bits(),
+                        compiled.coverage(x, y, ANY_PIXEL).to_bits(),
                         brush_coverage(&expected, &reference_stage, u, v).to_bits(),
                         "{points:?} feather {feather} flow {flow} at ({x}, {y})"
                     );
@@ -191,10 +197,10 @@ fn a_one_point_stroke_and_a_doubled_back_path_match_the_reference() {
     // number of steps either side of the centre are not exactly equidistant from it, and the field
     // is a disc to that precision and not beyond it.
     for offset in [5u32, 17, 33] {
-        let north = square.coverage(50, 50 - offset);
-        let south = square.coverage(50, 50 + offset);
-        let east = square.coverage(50 + offset, 50);
-        let west = square.coverage(50 - offset, 50);
+        let north = square.coverage(50, 50 - offset, ANY_PIXEL);
+        let south = square.coverage(50, 50 + offset, ANY_PIXEL);
+        let east = square.coverage(50 + offset, 50, ANY_PIXEL);
+        let west = square.coverage(50 - offset, 50, ANY_PIXEL);
         for (a, b) in [(north, south), (east, west), (north, east)] {
             assert!((a - b).abs() < 1e-12, "{a} against {b} at offset {offset}");
         }
@@ -227,7 +233,10 @@ fn add_strokes_commute_and_an_erase_stroke_does_not() {
             let permuted = CompiledMask::new(&permuted_mask, size, &permuted_table).unwrap();
             for y in 0..size.height {
                 for x in 0..size.width {
-                    worst = worst.max((ordered.coverage(x, y) - permuted.coverage(x, y)).abs());
+                    worst = worst.max(
+                        (ordered.coverage(x, y, ANY_PIXEL) - permuted.coverage(x, y, ANY_PIXEL))
+                            .abs(),
+                    );
                 }
             }
         }
@@ -247,7 +256,8 @@ fn add_strokes_commute_and_an_erase_stroke_does_not() {
     let mut divergence = 0.0f64;
     for y in 0..size.height {
         for x in 0..size.width {
-            divergence = divergence.max((painted.coverage(x, y) - erased.coverage(x, y)).abs());
+            divergence = divergence
+                .max((painted.coverage(x, y, ANY_PIXEL) - erased.coverage(x, y, ANY_PIXEL)).abs());
         }
     }
     assert!(
@@ -282,8 +292,8 @@ fn deleting_a_stroke_is_indistinguishable_from_one_never_made() {
         for y in 0..size.height {
             for x in 0..size.width {
                 assert_eq!(
-                    with_gap.coverage(x, y).to_bits(),
-                    never.coverage(x, y).to_bits()
+                    with_gap.coverage(x, y, ANY_PIXEL).to_bits(),
+                    never.coverage(x, y, ANY_PIXEL).to_bits()
                 );
             }
         }
@@ -317,8 +327,8 @@ fn one_pass_is_one_density_and_a_second_pass_builds_up() {
     let mut grew = 0usize;
     for y in 0..size.height {
         for x in 0..size.width {
-            let a = single.coverage(x, y);
-            let b = doubled.coverage(x, y);
+            let a = single.coverage(x, y, ANY_PIXEL);
+            let b = doubled.coverage(x, y, ANY_PIXEL);
             assert!(b >= a, "a second pass removed coverage at ({x}, {y})");
             if b > a {
                 grew += 1;
@@ -327,8 +337,8 @@ fn one_pass_is_one_density_and_a_second_pass_builds_up() {
     }
     assert!(grew > 0, "a second pass changed nothing anywhere");
     // One pass reaches exactly the flow, and a second reaches the screen union of two.
-    assert_eq!(single.coverage(32, 24), 0.4);
-    assert_eq!(doubled.coverage(32, 24), 0.4 + (1.0 - 0.4) * 0.4);
+    assert_eq!(single.coverage(32, 24, ANY_PIXEL), 0.4);
+    assert_eq!(doubled.coverage(32, 24, ANY_PIXEL), 0.4 + (1.0 - 0.4) * 0.4);
 }
 
 // ---------------------------------------------------------------------------
@@ -361,7 +371,7 @@ fn the_bounds_rectangle_is_conservative_and_correct_on_small_stages() {
                         x >= bounds.x0 && x < bounds.x1() && y >= bounds.y0 && y < bounds.y1();
                     if !inside {
                         assert_eq!(
-                            compiled.coverage(x, y),
+                            compiled.coverage(x, y, ANY_PIXEL),
                             0.0,
                             "coverage outside the rectangle at ({x}, {y}) on {width}x{height}, \
                              rectangle {bounds:?}"
@@ -391,7 +401,7 @@ fn a_component_that_cannot_add_coverage_bounds_nothing() {
         assert!(compiled.bounds().is_empty(), "{stroke:?} bounded something");
         for y in 0..size.height {
             for x in 0..size.width {
-                assert_eq!(compiled.coverage(x, y), 0.0);
+                assert_eq!(compiled.coverage(x, y, ANY_PIXEL), 0.0);
             }
         }
     }
@@ -399,7 +409,7 @@ fn a_component_that_cannot_add_coverage_bounds_nothing() {
     let (mask, table) = brush_mask(&[]);
     let compiled = CompiledMask::new(&mask, size, &table).unwrap();
     assert!(compiled.bounds().is_empty());
-    assert_eq!(compiled.coverage(20, 15), 0.0);
+    assert_eq!(compiled.coverage(20, 15, ANY_PIXEL), 0.0);
     assert_eq!(compiled.min_feature_px(size), f32::INFINITY);
 }
 
@@ -416,7 +426,7 @@ fn an_inverted_brush_bounds_the_whole_stage() {
     assert_eq!(compiled.bounds().height, size.height);
     // The corner is outside the capsule, so the component was exactly zero there and its inversion
     // is exactly one.
-    assert_eq!(compiled.coverage(0, 0), 1.0);
+    assert_eq!(compiled.coverage(0, 0, ANY_PIXEL), 1.0);
 }
 
 // ---------------------------------------------------------------------------
@@ -596,7 +606,7 @@ fn evaluation_cost_does_not_grow_with_stroke_count() {
         for _ in 0..rounds {
             for y in 20..70 {
                 for x in 20..70 {
-                    total += compiled.coverage(x, y);
+                    total += compiled.coverage(x, y, ANY_PIXEL);
                 }
             }
         }
@@ -625,7 +635,7 @@ fn evaluation_cost_does_not_grow_with_stroke_count() {
 
         println!(
             "{count:7}  {per_pixel:13.2}  {reference_per_pixel:15.2}  {:.6}",
-            compiled.coverage(45, 45)
+            compiled.coverage(45, 45, ANY_PIXEL)
         );
         if count == 2 {
             baseline = per_pixel;
@@ -671,10 +681,10 @@ fn strokes_nowhere_near_a_pixel_change_nothing() {
     let mut nonzero = 0usize;
     for y in 0..40 {
         for x in 0..50 {
-            let a = bare.coverage(x, y);
+            let a = bare.coverage(x, y, ANY_PIXEL);
             assert_eq!(
                 a.to_bits(),
-                padded.coverage(x, y).to_bits(),
+                padded.coverage(x, y, ANY_PIXEL).to_bits(),
                 "at ({x}, {y})"
             );
             if a > 0.0 {
@@ -729,7 +739,7 @@ fn the_index_changes_no_answer_anywhere() {
                 for x in 0..width {
                     let (u, v) = reference_stage.pixel_uv(x, y);
                     assert_eq!(
-                        compiled.coverage(x, y).to_bits(),
+                        compiled.coverage(x, y, ANY_PIXEL).to_bits(),
                         brush_coverage(&expected, &reference_stage, u, v).to_bits(),
                         "at ({x}, {y}) on {width}x{height}"
                     );
@@ -768,7 +778,10 @@ fn a_brush_combines_with_a_gradient_through_the_frozen_algebra() {
             let (u, v) = reference_stage.pixel_uv(x, y);
             let c = brush_coverage(&brush, &reference_stage, u, v);
             let g = reference::mask::linear_coverage(&linear, &reference_stage, u, v);
-            assert_eq!(compiled.coverage(x, y).to_bits(), c.min(g).to_bits());
+            assert_eq!(
+                compiled.coverage(x, y, ANY_PIXEL).to_bits(),
+                c.min(g).to_bits()
+            );
         }
     }
 }
@@ -787,7 +800,7 @@ fn a_single_add_stroke_is_its_own_coverage() {
         for x in 0..48 {
             let (u, v) = reference_stage.pixel_uv(x, y);
             assert_eq!(
-                compiled.coverage(x, y).to_bits(),
+                compiled.coverage(x, y, ANY_PIXEL).to_bits(),
                 stroke_coverage(&held, &segments, u, v).to_bits()
             );
         }

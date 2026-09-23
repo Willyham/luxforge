@@ -1,21 +1,23 @@
 # Range-selection mathematics
 
-Status: frozen. No production range code exists: this document, the independent [`f64`
+Status: frozen, and transcribed. This document, the independent [`f64`
 reference](../../crates/lightwell-core/tests/reference/range.rs) and its
 [proofs](../../crates/lightwell-core/tests/range_reference.rs) are the complete specification the
 luminance-range and colour-range units of the [masking design](masking.md) are checked against,
 answering its [phase-D component section](masking.md#luminance-range-and-colour-range-phase-d). It
 is the value-based companion to the [mask study](mask-study.md), which froze the position-based
 components; that study named the range metrics as **not** frozen by it, and this one freezes them.
+The production transcription is `crates/lightwell-core/src/mask/range.rs`, checked against the
+reference **bit for bit** by `crates/lightwell-core/tests/mask_range.rs`.
 
-Scope: this is a numerical/design task. It implements nothing, touches no crate's `src/`, and the
-reference under `tests/` never runs in a release build or against a real image row, so the
-[performance rules](../engineering/performance-rules.md) checklist applies to the transcription task
-rather than to the files this one adds. **Not frozen here**, and named so nothing assumes otherwise:
-the brush stroke's capsule profile and its accumulation rule, the colour-constrained brush (which
-will reuse this study's metric but has its own gesture and its own accumulation), and the masked
-colour and spatial blend itself. What is frozen is the luminance axis, the band and its shoulders,
-the Oklab colour metric, the multi-sample combination, the refine mapping and the tolerance.
+What is frozen here: the luminance axis, the band and its shoulders, the Oklab colour metric, the
+multi-sample combination, the refine mapping and the tolerance. **Not frozen here**, and named so
+nothing assumes otherwise: the brush stroke's capsule profile and its accumulation rule, the
+colour-constrained brush (which will reuse this study's metric but has its own gesture and its own
+accumulation), and the masked colour and spatial blend itself. The reference under `tests/` never
+runs in a release build or against a real image row, so the
+[performance rules](../engineering/performance-rules.md) checklist applies to the production unit
+rather than to it.
 
 Three reuses, so the editor keeps one of each rather than two that differ for no reason a person
 could name: the falloff is `smooth(s) = s²(3 − 2s)`, the shape the
@@ -413,12 +415,18 @@ metric's own units. `1.5` is the exact maximum slope of `smooth`. The two worst 
 its conclusion: a coverage error of that size moves the blended output by at most **one code** at
 every one of the 256 input codes, which is the repository's standing quantization promise.
 
-No production `f32` implementation exists to measure against yet. `1e-6` on the metric is the
-considered starting point for that implementation's own verification, to be tightened or loosened
-there against measured results, exactly as the mask and vignette studies state for their own bounds.
-If an `f32` Oklab conversion cannot hold `1e-6` on `d`, the remedies in order are to compute that
-one conversion in `f64` for this component, or to loosen the bound with the measurement beside it —
-not to widen the payload floors, which are what keep the derivation valid.
+**The delivered transcription takes the first of the stated remedies, so the tolerance above is
+not what it is verified against.** `crates/lightwell-core/src/mask/range.rs` widens the incoming
+`[f32; 3]` once, at the top of `CompiledMask::evaluate`, and every expression after it is this
+reference's own `f64` expression — the luminance dot product, the continued OETF, the Oklab matrices
+and the signed cube roots included. The whole coverage field was already `f64`, because the
+[mask study](mask-study.md) froze it that way, so nothing is paid for this that the geometric
+components were not already paying, and the result is **exact equality** with this reference rather
+than a bound: `the_luminance_band_is_bit_identical_to_the_frozen_reference` and
+`the_colour_range_is_bit_identical_to_the_frozen_reference` compare `f64` bit patterns over 24 000
+randomized pixels each, including pixels outside the gamut and shoulders at the feather floor. The
+derivation above stands as the justification for the payload floors, which are what keep the
+arithmetic bounded, and as the bound anyone writing an `f32` variant later would have to meet.
 
 ## Transcription
 
@@ -455,8 +463,20 @@ layer it is, because the mask reads the operation's input.
   function.
 - **The colour range's cost is one Oklab conversion per pixel**, the same conversion the delivered
   mixer performs, and it is the most expensive component kind. Unlike a geometric component it has
-  no bounds rectangle to skip spans with, so the cost is paid over the whole stage. That is a
-  measurement for the transcription task rather than a figure this study can state.
+  no bounds rectangle to skip spans with, so the cost is paid over the whole stage. The
+  transcription task measured it (`the_cost_of_a_whole_stage_rectangle`, release, M4 MacBook Pro,
+  one thread, one component over a 6000 × 4000 stage): a linear gradient placed low in the frame
+  bounds **40.0%** of the stage at **14.6 to 20.0 ns** per pixel inside it, while both range kinds
+  bound **100%** at **28.9 to 44.2 ns** (luminance) and **28.1 to 39.2 ns** (colour). So a value-based
+  component costs roughly **two to three times the per-pixel work over two and a half times the
+  area**, and a 24 MP masked layer pays about **0.7 to 1.1 s** of coverage field on one thread.
+  **Provisional, and only the shape is quotable**: the host's one-minute load average was 15.8 to
+  21.6 across five runs, far above the 8.0 a baseline needs, and the spread between runs is itself
+  larger than the difference between the two kinds — so no absolute number here is a baseline and
+  the two range kinds are not separable by these figures. What every run agrees on is the shape: the
+  rectangle is the whole stage where a placed gradient's is 40% of it, and the per-pixel cost stays
+  within a small factor of a gradient's rather than an order of magnitude above it. The rectangle
+  itself is exact rather than measured.
 - **No photographic corpus.** The repository holds no photographs that can be decoded from a test —
   the JPEG fixtures are synthetic colour blocks — so every claim here is numerical, over measured
   surface colours and constructed scenes. Rendered inspection of a real sky, a real face and a noisy
@@ -475,14 +495,17 @@ layer it is, because the mask reads the operation's input.
 ## Proposals
 
 Numbered continuing the [masking design's list](masking.md#proposals-with-recorded-defaults), which
-runs to P11. Each is a recommendation, not a decision.
+runs to P11. **P12 to P15 are decided**, on the transcription task and with the reasons below; P16
+and P17 are raised by that task and are recommendations, not decisions.
 
-| # | Question | Recommendation |
+| # | Question | Decision |
 | --- | --- | --- |
-| P12 | `CompiledMask::evaluate` is declared position-only, and a value-based component cannot be answered from position. What is the signature? | `evaluate(x, y, rgb) -> f32`, with the pixel the operation receives. Geometric components ignore `rgb` and stay bit-identical; `render.sample` passes the same input pixel it already computes, so a sampled byte still equals the rendered byte. The alternative — a second entry point — doubles the contract for one argument |
-| P13 | What does a value-based component answer for `bounds()` and `min_feature_px`, and is a proxy frame carrying one approximate? | Whole stage, and `f32::INFINITY`. Supersampling the mask cannot help, because the full-resolution pixels are not available at proxy scale, so the flag would name a condition nothing can fix. The proxy frame is still the exact recipe over the exact downscale, so **not** marked approximate; instead the overlay and the user guide state that a range selection is evaluated on what the current view can see and that the 100% view is the truth. The measured divergence is in [the limits above](#what-these-selections-do-not-select) |
-| P14 | Which way does Refine go, and what is its default? | Increasing refine narrows the selection; default `50`. The research does not establish Lightroom's behaviour, so this is Lightwell's own, and `50` is measured to be the setting that holds an ordinary surface across a stop of shading |
-| P15 | The band's numbers are on the histogram's axis, but the delivered histogram is three channel populations rather than a luminance trace. How is that labelled? | Label the slider `0..100` and state in the panel that it reads luminance on the histogram's own axis. Adding a luminance trace to the histogram is a larger change to a shipped, verified inspector and should be its own decision |
+| P12 | `CompiledMask::evaluate` is declared position-only, and a value-based component cannot be answered from position. What is the signature? | **Decided as recommended**: `evaluate(x, y, rgb) -> f32` and `coverage(x, y, rgb) -> f64`, with the pixel the operation receives. A geometric component ignores `rgb`, which `a_geometric_component_ignores_the_pixel_it_is_handed` proves is exact rather than approximate — the same `f64` bits for five very different pixels at every pixel of a stage, over all three position-only kinds, with both inversions and an amount applied — so the mask study's own bit-for-bit comparisons still hold unchanged. The colour run passes the snapshot it already takes to blend against, and the spatial tiling the tile-shaped snapshot it already cuts out, so `render.sample` and the rasterizing pass reach the mask through one call with the same arguments and a sampled byte still equals the rendered byte. The rejected alternative, a second entry point, doubles the contract for one argument |
+| P13 | What does a value-based component answer for `bounds()` and `min_feature_px`, and is a proxy frame carrying one approximate? | **Decided as recommended**: whole stage, and `f32::INFINITY`, so the thin-feature rule never fires for one and no proxy frame is marked approximate for it. Supersampling cannot help, because the full-resolution pixels are not available at proxy scale, so the flag would name a condition nothing can fix; a mixed mask is still supersampled for its *geometric* components, and its range components answer the same value at all four subsample positions, because the supersample moves the position and not the pixel. The overlay and the [user guide](../user-guide.md) state instead that a range selection is evaluated on what the current view can see and that the 100% view is the truth. The cost of the whole-stage rectangle is measured by `the_cost_of_a_whole_stage_rectangle` |
+| P14 | Which way does Refine go, and what is its default? | **Decided as recommended**: increasing refine narrows the selection, default `50`. The research does not establish Lightroom's behaviour, so this is Lightwell's own, and `50` is measured to be the setting that holds an ordinary surface across a stop of shading |
+| P15 | The band's numbers are on the histogram's axis, but the delivered histogram is three channel populations rather than a luminance trace. How is that labelled? | **Decided as recommended**: the four band parameters are declared `0..100` with the unit `%`, and their notes say they are on the histogram's own axis and that one unit is 2.55 output codes; the user guide says the same. Adding a luminance trace to the delivered, verified histogram is a larger change to a shipped inspector and stays its own decision, unmade |
+| P16 | The coverage overlay is a function of position over the finished frame, and a value-based component's coverage is a function of the pixel the masked *operation* receives. Where does the overlay get that pixel? | **Raised, not decided.** The frame the grid describes holds that operation's **output**, not its input, so painting it would draw a selection the render never makes; and the overlay addresses a mask, which several layers at different stages may share, so there is no single operation to ask. Today `analysis::coverage_grid` refuses a mask that reads pixels, naming the reason and that the 100% view is where such a selection can be read, and the preview reports no grid for it — honest, and a real gap in the panel for any mask holding a range component. The options are to give the overlay request the layer whose input to read and pay one prefix evaluation per cell; to let it read the frame and label the grid as the finished picture's selection rather than the operation's; or to leave it refused. This needs the owner |
+| P17 | The colour range's swatches are picked off the photograph, and the delivered pick machinery (`CanvasInteraction::SampleApply`) runs a **module's** query and submits to a **module's** action. A mask command is neither. How does a click become a swatch? | **Raised, not decided.** The host side is delivered: `mask.add-<kind>-sample` takes the linear triple and `mask.delete-<kind>-sample` an index, both as ordinary declared parameters, so a colour range is fully reachable from the API. What is missing is the canvas mode. The pixel must be the **operation's input**, which is what the delivered `StageContext::sample_before` answers for a layer's own stage, so the client must not decode it itself — that is editing logic and belongs in the host. The options are a host query beside `mask.list` that answers a mask's layers' input pixel, which needs a rule for a mask several layers at different stages share; or extending `CanvasInteraction` to name a host command. This needs the owner, and it is the one acceptance item of TASK-023 left open |
 
 ## Figures
 
@@ -505,6 +528,8 @@ randomized comparison uses a fixed SplitMix64 seed, so the figures are reproduci
 | [`crates/lightwell-core/tests/reference/range.rs`](../../crates/lightwell-core/tests/reference/range.rs) | The frozen `f64` reference: the luminance axis, the band, the legality rules, the colour metric, the refine mapping and the multi-sample combination. Reuses `reference/tone.rs`'s luminance and OETF, `reference/colour.rs`'s Oklab and `reference/mask.rs`'s `smooth` unchanged. |
 | [`crates/lightwell-core/tests/range_reference.rs`](../../crates/lightwell-core/tests/range_reference.rs) | The proofs and measurements above, the scenes chosen to fail, and the ignored figures test. |
 | [`crates/lightwell-core/tests/reference/mod.rs`](../../crates/lightwell-core/tests/reference/mod.rs) | Declares `pub mod range;` beside the other studies' references. |
+| [`crates/lightwell-core/src/mask/range.rs`](../../crates/lightwell-core/src/mask/range.rs) | The production transcription: both kinds' payloads, legality rules, declared parameters, compiled terms and per-pixel coverage, and the two answers a value-based component gives about the frame. |
+| [`crates/lightwell-core/tests/mask_range.rs`](../../crates/lightwell-core/tests/mask_range.rs) | The bit-identity sweeps, P12's condition on the geometric components, the byte and RAW linear renders, the sampled byte against the rendered byte, the composition with a gradient and a subtract brush, P13's answers and the whole-stage measurement. |
 
 ## References
 

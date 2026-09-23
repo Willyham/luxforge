@@ -22,6 +22,13 @@ use reference::mask::{
 };
 use serde_json::json;
 
+/// The pixel value a geometric component is handed and ignores (proposal P12 of
+/// `docs/design/range-study.md`). These masks hold gradients and brushes, whose coverage is a
+/// function of position alone, so the value here is arbitrary and the same at every call;
+/// `mask_range.rs` proves that ignoring it is exact rather than approximate.
+const ANY_PIXEL: [f64; 3] = [0.25, 0.5, 0.75];
+const ANY_PIXEL_F32: [f32; 3] = [0.25, 0.5, 0.75];
+
 /// SplitMix64, the same dependency-free generator the study's own figures use, so every sweep below
 /// is reproducible on any machine from its stated seed.
 struct SplitMix64(u64);
@@ -159,7 +166,7 @@ fn the_compiled_mask_is_bit_identical_to_the_frozen_reference() {
                     let y = rng.next_usize(height as usize) as u32;
                     let (u, v) = reference_stage.pixel_uv(x, y);
                     let expected = coverage(&reference, Algebra::Zadeh, &reference_stage, u, v);
-                    let actual = compiled.coverage(x, y);
+                    let actual = compiled.coverage(x, y, ANY_PIXEL);
                     assert_eq!(
                         actual.to_bits(),
                         expected.to_bits(),
@@ -198,7 +205,7 @@ fn bit_identity_holds_across_whole_rows_and_columns() {
                     for x in 0..width {
                         let (u, v) = reference_stage.pixel_uv(x, y);
                         assert_eq!(
-                            compiled.coverage(x, y).to_bits(),
+                            compiled.coverage(x, y, ANY_PIXEL).to_bits(),
                             coverage(&reference, Algebra::Zadeh, &reference_stage, u, v).to_bits(),
                             "{width}x{height} at ({x}, {y})"
                         );
@@ -226,9 +233,9 @@ fn evaluate_is_the_narrowed_field_and_stays_in_range() {
             .unwrap();
             for y in 0..29 {
                 for x in 0..41 {
-                    let coverage = compiled.coverage(x, y);
+                    let coverage = compiled.coverage(x, y, ANY_PIXEL);
                     assert_eq!(
-                        compiled.evaluate(x, y).to_bits(),
+                        compiled.evaluate(x, y, ANY_PIXEL_F32).to_bits(),
                         (coverage as f32).to_bits()
                     );
                     assert!((0.0..=1.0).contains(&coverage), "{coverage} at ({x}, {y})");
@@ -268,7 +275,7 @@ fn bounds_never_excludes_a_non_zero_pixel() {
                 }
                 for y in 0..height {
                     for x in 0..width {
-                        let coverage = compiled.coverage(x, y);
+                        let coverage = compiled.coverage(x, y, ANY_PIXEL);
                         if coverage != 0.0 {
                             assert!(
                                 bounds.contains(x, y),
@@ -316,7 +323,7 @@ fn a_gradient_entirely_off_the_frame_bounds_to_nothing() {
     assert!(compiled.bounds().is_empty());
     for y in 0..30 {
         for x in 0..40 {
-            assert_eq!(compiled.coverage(x, y), 0.0, "at ({x}, {y})");
+            assert_eq!(compiled.coverage(x, y, ANY_PIXEL), 0.0, "at ({x}, {y})");
         }
     }
 }
@@ -349,13 +356,13 @@ fn min_feature_px_scales_with_the_stage_it_is_asked_about() {
 #[test]
 fn an_unknown_kind_is_refused_by_name_and_still_reads_back() {
     let mut mask = Mask::new("Mask 1");
-    // The luminance range is named in the masking design and is not delivered, so it is a kind this
-    // build does not claim.
-    let name = mask.next_component_name("luminance-range");
+    // Every kind the masking design names is delivered, so the kind this build does not claim is one
+    // no design names — which is exactly the case retention exists for.
+    let name = mask.next_component_name("depth-range");
     mask.components.push(Component::new(
         name,
         ComponentMode::Add,
-        "luminance-range",
+        "depth-range",
         json!({"low": 0.2, "low_feather": 10.0, "high": 0.8, "high_feather": 10.0}),
     ));
     let error = CompiledMask::new(
@@ -366,7 +373,7 @@ fn an_unknown_kind_is_refused_by_name_and_still_reads_back() {
     .unwrap_err();
     assert_eq!(
         error.to_string(),
-        "incompatible: unknown mask component luminance-range"
+        "incompatible: unknown mask component depth-range"
     );
     // The stored mask is structurally valid — the model never asks what a kind means — and survives
     // a round trip byte for byte, which is what retention means.

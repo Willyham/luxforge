@@ -22,6 +22,12 @@ use reference::mask::{
 };
 use serde_json::json;
 
+/// The pixel value a geometric component is handed and ignores (proposal P12 of
+/// `docs/design/range-study.md`). These masks hold gradients, whose coverage is a function of
+/// position alone, so the value here is arbitrary and the same at every call; `mask_range.rs`
+/// proves that ignoring it is exact rather than approximate.
+const ANY_PIXEL: [f64; 3] = [0.25, 0.5, 0.75];
+
 /// SplitMix64, the same dependency-free generator the study's own figures use, so every sweep below
 /// is reproducible on any machine from its stated seed.
 struct SplitMix64(u64);
@@ -204,7 +210,7 @@ fn the_compiled_radial_is_bit_identical_to_the_frozen_reference() {
                     let y = rng.next_usize(height as usize) as u32;
                     let (u, v) = reference_stage.pixel_uv(x, y);
                     let expected = coverage(&reference, Algebra::Zadeh, &reference_stage, u, v);
-                    let actual = compiled.coverage(x, y);
+                    let actual = compiled.coverage(x, y, ANY_PIXEL);
                     assert_eq!(
                         actual.to_bits(),
                         expected.to_bits(),
@@ -246,7 +252,7 @@ fn radial_bit_identity_holds_over_whole_small_stages() {
                     for x in 0..width {
                         let (u, v) = reference_stage.pixel_uv(x, y);
                         assert_eq!(
-                            compiled.coverage(x, y).to_bits(),
+                            compiled.coverage(x, y, ANY_PIXEL).to_bits(),
                             coverage(&reference, Algebra::Zadeh, &reference_stage, u, v).to_bits(),
                             "{width}x{height} at ({x}, {y})"
                         );
@@ -317,7 +323,7 @@ fn a_mixed_radial_and_linear_mask_is_bit_identical() {
             for x in 0..64 {
                 let (u, v) = reference_stage.pixel_uv(x, y);
                 assert_eq!(
-                    compiled.coverage(x, y).to_bits(),
+                    compiled.coverage(x, y, ANY_PIXEL).to_bits(),
                     coverage(&reference_mask, Algebra::Zadeh, &reference_stage, u, v).to_bits(),
                     "at ({x}, {y})"
                 );
@@ -360,7 +366,7 @@ fn radial_bounds_never_excludes_a_non_zero_pixel() {
                 }
                 for y in 0..height {
                     for x in 0..width {
-                        let coverage = compiled.coverage(x, y);
+                        let coverage = compiled.coverage(x, y, ANY_PIXEL);
                         if coverage != 0.0 {
                             assert!(
                                 bounds.contains(x, y),
@@ -417,7 +423,7 @@ fn the_rotated_ellipse_box_is_conservative_at_every_angle() {
                 }
                 for y in 0..height {
                     for x in 0..width {
-                        let coverage = compiled.coverage(x, y);
+                        let coverage = compiled.coverage(x, y, ANY_PIXEL);
                         if coverage != 0.0 {
                             assert!(
                                 bounds.contains(x, y),
@@ -462,10 +468,10 @@ fn an_inverted_radial_bounds_to_the_whole_stage() {
     assert_eq!(compiled.bounds().width, 40);
     assert_eq!(compiled.bounds().height, 30);
     for (x, y) in [(0u32, 0u32), (39, 0), (0, 29), (39, 29)] {
-        assert_eq!(compiled.coverage(x, y), 1.0, "at ({x}, {y})");
+        assert_eq!(compiled.coverage(x, y, ANY_PIXEL), 1.0, "at ({x}, {y})");
     }
     // The inner ellipse is where the inversion is exactly zero.
-    assert_eq!(compiled.coverage(20, 15), 0.0);
+    assert_eq!(compiled.coverage(20, 15, ANY_PIXEL), 0.0);
 }
 
 /// A radial centred entirely off the frame bounds to nothing, and every pixel of the stage is
@@ -487,7 +493,7 @@ fn a_radial_entirely_off_the_frame_bounds_to_nothing() {
     assert!(compiled.bounds().is_empty());
     for y in 0..30 {
         for x in 0..40 {
-            assert_eq!(compiled.coverage(x, y), 0.0, "at ({x}, {y})");
+            assert_eq!(compiled.coverage(x, y, ANY_PIXEL), 0.0, "at ({x}, {y})");
         }
     }
 }
@@ -518,7 +524,7 @@ fn feather_zero_is_a_hard_edge_by_both_routes() {
         let mut ones = 0usize;
         for y in 0..90 {
             for x in 0..120 {
-                let coverage = compiled.coverage(x, y);
+                let coverage = compiled.coverage(x, y, ANY_PIXEL);
                 assert!(
                     coverage == 0.0 || coverage == 1.0,
                     "feather {feather} at ({x}, {y}) gave {coverage}, which is neither end"
@@ -564,7 +570,7 @@ fn feather_zero_is_a_hard_edge_by_both_routes() {
         900,
     );
     let partial = (0..1200)
-        .map(|x| compiled.coverage(x, 450))
+        .map(|x| compiled.coverage(x, 450, ANY_PIXEL))
         .filter(|c| *c > 0.0 && *c < 1.0)
         .count();
     assert!(partial > 0, "a feather of 2 produced no ramp at all");
@@ -587,12 +593,12 @@ fn feather_one_hundred_ramps_from_the_centre() {
         401,
         401,
     );
-    assert_eq!(compiled.coverage(200, 200), 1.0);
+    assert_eq!(compiled.coverage(200, 200, ANY_PIXEL), 1.0);
     // Nonincreasing outward along the row, and nothing but the centre is at full coverage.
     let mut previous = 1.0;
     let mut plateau = 0usize;
     for x in 200..401 {
-        let coverage = compiled.coverage(x, 200);
+        let coverage = compiled.coverage(x, 200, ANY_PIXEL);
         assert!(coverage <= previous, "coverage rose outward at x = {x}");
         if coverage == 1.0 {
             plateau += 1;
@@ -601,7 +607,7 @@ fn feather_one_hundred_ramps_from_the_centre() {
     }
     assert_eq!(plateau, 1, "feather 100 left a plateau of {plateau} pixels");
     // Past the boundary, 0.25 units is 100.25 px, coverage is exactly zero.
-    assert_eq!(compiled.coverage(320, 200), 0.0);
+    assert_eq!(compiled.coverage(320, 200, ANY_PIXEL), 0.0);
 }
 
 /// Inside is selected, and the component's own `invert` is the exact complement of it: the two sum
@@ -622,8 +628,8 @@ fn invert_is_the_exact_complement_and_inside_is_selected() {
         .unwrap();
         for y in 0..47 {
             for x in 0..61 {
-                let c = drawn.coverage(x, y);
-                let i = inverted.coverage(x, y);
+                let c = drawn.coverage(x, y, ANY_PIXEL);
+                let i = inverted.coverage(x, y, ANY_PIXEL);
                 assert_eq!(i.to_bits(), (1.0 - c).to_bits(), "at ({x}, {y})");
                 assert_eq!(c + i, 1.0, "at ({x}, {y}): {c} + {i}");
             }
@@ -643,9 +649,9 @@ fn invert_is_the_exact_complement_and_inside_is_selected() {
         101,
         101,
     );
-    assert_eq!(compiled.coverage(50, 50), 1.0);
-    assert_eq!(compiled.coverage(0, 0), 0.0);
-    assert_eq!(compiled.coverage(100, 100), 0.0);
+    assert_eq!(compiled.coverage(50, 50, ANY_PIXEL), 1.0);
+    assert_eq!(compiled.coverage(0, 0, ANY_PIXEL), 0.0);
+    assert_eq!(compiled.coverage(100, 100, ANY_PIXEL), 0.0);
 }
 
 /// The ellipse is defined in mask space, so a circle is a circle in pixels at any aspect ratio: the
@@ -665,12 +671,12 @@ fn a_circle_is_a_circle_at_every_aspect_ratio() {
         let compiled = compile(radial, width, height);
         let cx = width / 2;
         let cy = height / 2;
-        assert_eq!(compiled.coverage(cx, cy), 1.0);
+        assert_eq!(compiled.coverage(cx, cy, ANY_PIXEL), 1.0);
         let across = (cx..width)
-            .take_while(|x| compiled.coverage(*x, cy) > 0.0)
+            .take_while(|x| compiled.coverage(*x, cy, ANY_PIXEL) > 0.0)
             .count();
         let down = (cy..height)
-            .take_while(|y| compiled.coverage(cx, *y) > 0.0)
+            .take_while(|y| compiled.coverage(cx, *y, ANY_PIXEL) > 0.0)
             .count();
         // 0.2 mask-space units is 0.2 · H pixels on both axes, whatever the width is.
         let nominal = 0.2 * f64::from(height);
@@ -723,7 +729,7 @@ fn min_feature_px_is_the_measured_ramp_width() {
     );
     let rows = (0..1000)
         .filter(|y| {
-            let c = counted.coverage(500, *y);
+            let c = counted.coverage(500, *y, ANY_PIXEL);
             c > 0.0 && c < 1.0
         })
         .count();
@@ -905,7 +911,7 @@ fn legal_payloads_never_produce_non_finite_coverage() {
         for _ in 0..40 {
             let x = rng.next_usize(6000) as u32;
             let y = rng.next_usize(4000) as u32;
-            let coverage = compiled.coverage(x, y);
+            let coverage = compiled.coverage(x, y, ANY_PIXEL);
             assert!(
                 coverage.is_finite() && (0.0..=1.0).contains(&coverage),
                 "{radial:?} at ({x}, {y}) gave {coverage}"
@@ -952,7 +958,7 @@ fn the_falloff_alone_is_bit_identical_to_the_reference() {
                 let (u, v) = reference_stage.pixel_uv(x, y);
                 let expected = radial_coverage(&as_reference(radial), &reference_stage, u, v);
                 assert_eq!(
-                    compiled.coverage(x, y).to_bits(),
+                    compiled.coverage(x, y, ANY_PIXEL).to_bits(),
                     expected.to_bits(),
                     "{radial:?} on {width}x{height} at ({x}, {y})"
                 );
