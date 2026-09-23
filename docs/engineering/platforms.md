@@ -8,6 +8,8 @@ Accepted target scope with provisional engineering baselines. These are intended
 | `x86_64-pc-windows-msvc` | Windows 11 24H2 or later | Executable and notices in a ZIP | wgpu DX12, native Win32 picker | Hosted build and package only; native desktop check deferred, no machine available |
 | `x86_64-unknown-linux-gnu` | Ubuntu 24.04 LTS, glibc 2.39 | Directory in a `.tar.gz` | Vulkan; GNOME Wayland primary, X11 required | Hosted build, package and Xvfb software-Vulkan smoke; native desktop check deferred |
 
+Module secrets use the macOS Keychain, verified natively by an opt-in test on the M4. Windows Credential Manager and Linux Secret Service are not implemented: there, every secret method answers `not-ready` and nothing is stored in plain text, so a module that needs a secret cannot be configured yet. The module transport verifies TLS with the operating system's verifier on macOS and Windows and native roots on Linux; only macOS has been exercised.
+
 A build on a newer SDK does not prove execution on the floor. Desktop results must name the actual OS, architecture and backend. Linux ARM64 or Windows ARM emulation may supplement the x64 matrix, never replace it. No VM is installed or verified.
 
 ## Prerequisites
