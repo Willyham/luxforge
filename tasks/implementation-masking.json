@@ -1006,7 +1006,7 @@
     {
       "id": "TASK-013",
       "description": "Deliver the combination vocabulary: add, subtract and intersect modes across component kinds, per-component and per-mask inversion, mask amount, and mask reorder, duplicate and delete with their layer consequences.",
-      "status": "pending",
+      "status": "completed",
       "dependencies": [
         "TASK-008",
         "TASK-012"

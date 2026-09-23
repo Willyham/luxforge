@@ -12,9 +12,9 @@
 //! Compiling uses the **stored position** spelling of mask space (`u = x · W/H`, `v = y`); the
 //! per-pixel path receives the pixel-centre spelling from [`super::CompiledMask`]. The two agree to
 //! `2.220e-16` and not bit for bit, so each is used only where the study froze it.
-use super::{DISTANCE_MAX, DISTANCE_MIN, smooth};
+use super::{DISTANCE_MAX, DISTANCE_MIN, parameters::position, smooth};
 use crate::{
-    Component, Error, ErrorKind,
+    Component, Error, ErrorKind, ParameterDescriptor,
     modules::{Region, Stage},
 };
 use serde::{Deserialize, Serialize};
@@ -42,6 +42,42 @@ pub struct LinearGradient {
     pub y0: f64,
     pub x1: f64,
     pub y1: f64,
+}
+
+/// What this kind declares to the API: one parameter per stored field, in the order the two
+/// endpoints are drawn, each carrying the range [`parse`] enforces below.
+///
+/// This is the *only* declaration of a linear gradient's geometry. The host's kind table reads it,
+/// the generated `mask.create-linear`, `mask.add-linear` and `mask.set-linear` methods declare
+/// exactly these parameters, `schema.list` publishes them, the generic parameter check validates
+/// against them, and the stored payload's field names are their names — so a control's range and a
+/// parser's range cannot disagree, because there is one of each.
+///
+/// `required` is false for the patch method, where every field is optional and the ones a request
+/// names are merged over the stored payload.
+pub(super) fn parameters(required: bool) -> Vec<ParameterDescriptor> {
+    vec![
+        position(
+            "x0",
+            required,
+            "p0 across the frame: the end of the axis at coverage 0",
+        ),
+        position(
+            "y0",
+            required,
+            "p0 down the frame: the end of the axis at coverage 0",
+        ),
+        position(
+            "x1",
+            required,
+            "p1 across the frame: the end of the axis at coverage 1",
+        ),
+        position(
+            "y1",
+            required,
+            "p1 down the frame: the end of the axis at coverage 1",
+        ),
+    ]
 }
 
 /// Parse and range-check one stored `linear` payload, without a stage.

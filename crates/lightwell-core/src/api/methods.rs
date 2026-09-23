@@ -1589,20 +1589,25 @@ mod tests {
         assert_eq!(
             masks,
             [
+                // The kind-independent commands, then three geometry methods per registered
+                // component kind, generated from the host's own kind table.
                 "mask.list",
-                "mask.create",
                 "mask.delete",
                 "mask.rename",
                 "mask.duplicate",
                 "mask.set-amount",
                 "mask.set-invert",
                 "mask.reorder",
-                "mask.add-component",
-                "mask.set-component",
                 "mask.set-component-mode",
                 "mask.set-component-invert",
                 "mask.delete-component",
-                "mask.reorder-component"
+                "mask.reorder-component",
+                "mask.create-linear",
+                "mask.add-linear",
+                "mask.set-linear",
+                "mask.create-radial",
+                "mask.add-radial",
+                "mask.set-radial"
             ]
         );
         let schema = schemas(service.registry());

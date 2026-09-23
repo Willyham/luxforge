@@ -3,7 +3,7 @@
 //! asks for it commits nothing.
 //!
 //! Everything here goes through the same owner every client reaches — `catalog.import`,
-//! `mask.create`, `mask.add-component`, `edit.set-basic`, `workspace.set` and `session.state` — and
+//! `mask.create-linear`, `mask.add-linear`, `edit.set-basic`, `workspace.set` and `session.state` — and
 //! the frames come from the real [`PreviewQueue`], so nothing is proved against a hand-built job.
 //! The expected bytes are computed from [`CompiledMask`] directly, not from the unit that filled
 //! the grid.
@@ -237,7 +237,7 @@ fn expected_grid(
 }
 
 fn linear(x0: f64, y0: f64, x1: f64, y1: f64) -> Value {
-    json!({"kind": "linear", "x0": x0, "y0": y0, "x1": x1, "y1": y1})
+    json!({"x0": x0, "y0": y0, "x1": x1, "y1": y1})
 }
 
 fn mask_id(result: &Value) -> MaskId {
@@ -253,7 +253,7 @@ fn mask_id(result: &Value) -> MaskId {
 #[test]
 fn the_returned_grid_is_the_masks_field_over_the_frame_it_arrived_with() {
     let f = Fixture::open("field");
-    let created = f.mask_command("mask.create", linear(0.5, 0.0, 0.5, 1.0), "create");
+    let created = f.mask_command("mask.create-linear", linear(0.5, 0.0, 0.5, 1.0), "create");
     let mask = mask_id(&created);
     f.edit(
         "set-basic",
@@ -350,7 +350,7 @@ fn the_returned_grid_is_the_masks_field_over_the_frame_it_arrived_with() {
 #[test]
 fn the_grid_follows_the_picture_through_the_geometry_tail() {
     let f = Fixture::open("tail");
-    let created = f.mask_command("mask.create", linear(0.5, 0.0, 0.5, 1.0), "create");
+    let created = f.mask_command("mask.create-linear", linear(0.5, 0.0, 0.5, 1.0), "create");
     let mask = mask_id(&created);
     f.edit(
         "set-basic",
@@ -399,7 +399,7 @@ fn the_grid_follows_the_picture_through_the_geometry_tail() {
 #[test]
 fn one_components_grid_is_that_components_own_contribution() {
     let f = Fixture::open("component");
-    let created = f.mask_command("mask.create", linear(0.5, 0.0, 0.5, 1.0), "create");
+    let created = f.mask_command("mask.create-linear", linear(0.5, 0.0, 0.5, 1.0), "create");
     let mask = mask_id(&created);
     let mut second = linear(0.0, 0.5, 1.0, 0.5);
     second
@@ -410,7 +410,7 @@ fn one_components_grid_is_that_components_own_contribution() {
         .as_object_mut()
         .unwrap()
         .insert("mask".into(), Value::from(mask.as_str()));
-    f.mask_command("mask.add-component", second, "add-component");
+    f.mask_command("mask.add-linear", second, "add-component");
     f.edit(
         "set-basic",
         json!({"mask": mask.as_str(), "exposure": 1.0}),
@@ -486,7 +486,7 @@ fn one_components_grid_is_that_components_own_contribution() {
 #[test]
 fn a_mask_with_nothing_to_describe_has_no_grid() {
     let f = Fixture::open("absent");
-    let created = f.mask_command("mask.create", linear(0.5, 0.0, 0.5, 1.0), "create");
+    let created = f.mask_command("mask.create-linear", linear(0.5, 0.0, 0.5, 1.0), "create");
     let mask = mask_id(&created);
     f.edit(
         "set-basic",
@@ -535,7 +535,7 @@ fn a_mask_with_nothing_to_describe_has_no_grid() {
 #[test]
 fn the_cell_cap_bounds_the_grid_on_a_stage_that_exceeds_it() {
     let f = Fixture::open("cap");
-    let created = f.mask_command("mask.create", linear(0.5, 0.0, 0.5, 1.0), "create");
+    let created = f.mask_command("mask.create-linear", linear(0.5, 0.0, 0.5, 1.0), "create");
     let mask = mask_id(&created);
 
     for (cells_w, cells_h) in [(MAX_OVERLAY_CELLS + 1, 8), (8, MAX_OVERLAY_CELLS + 1)] {
@@ -622,7 +622,7 @@ fn the_cell_cap_bounds_the_grid_on_a_stage_that_exceeds_it() {
 #[test]
 fn the_overlay_view_state_round_trips_and_commits_nothing() {
     let f = Fixture::open("view-state");
-    let created = f.mask_command("mask.create", linear(0.5, 0.0, 0.5, 1.0), "create");
+    let created = f.mask_command("mask.create-linear", linear(0.5, 0.0, 0.5, 1.0), "create");
     let mask = mask_id(&created);
     f.edit(
         "set-basic",

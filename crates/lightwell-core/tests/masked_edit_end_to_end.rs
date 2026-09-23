@@ -1,9 +1,9 @@
-//! The phase A vertical slice, end to end: create a mask through `mask.create`, edit through it with
+//! The phase A vertical slice, end to end: create a mask through `mask.create-linear`, edit through it with
 //! `edit.set-basic`, and prove the picture changed only where the mask covers it.
 //!
 //! This is the one thing neither half of the work could prove on its own. The command family was
 //! written before a layer could carry a mask, so its tests never rendered; the masked colour
-//! primitive was written before `mask.create` existed, so its tests planted a mask table by hand.
+//! primitive was written before the command family existed, so its tests planted a mask table by hand.
 //! Both are honest, and together they still leave the question a person actually asks — *does
 //! dragging a gradient and raising exposure change one part of the picture and not the other* —
 //! unanswered. It is answered here, over the same service every client reaches.
@@ -94,9 +94,9 @@ fn a_gradient_mask_lifts_one_side_of_the_picture_and_leaves_the_other_byte_ident
 
     // A vertical gradient: no coverage at the top row, full coverage at the bottom row.
     let mask = f.mask_command(
-        "mask.create",
+        "mask.create-linear",
         MaskTarget::default(),
-        json!({"kind": "linear", "x0": 0.5, "y0": 0.0, "x1": 0.5, "y1": 1.0}),
+        json!({"x0": 0.5, "y0": 0.0, "x1": 0.5, "y1": 1.0}),
         "create",
     );
 
@@ -148,9 +148,9 @@ fn a_gradient_mask_lifts_one_side_of_the_picture_and_leaves_the_other_byte_ident
 fn a_global_and_a_masked_layer_of_one_effect_coexist_in_mask_order() {
     let mut f = Fixture::open("coexist");
     let mask = f.mask_command(
-        "mask.create",
+        "mask.create-linear",
         MaskTarget::default(),
-        json!({"kind": "linear", "x0": 0.0, "y0": 0.5, "x1": 1.0, "y1": 0.5}),
+        json!({"x0": 0.0, "y0": 0.5, "x1": 1.0, "y1": 0.5}),
         "create",
     );
 
@@ -283,14 +283,14 @@ mod json_client {
 
         let created = c
             .send(
-                "mask.create",
+                "mask.create-linear",
                 json!({
                     "asset_id": c.asset,
                     "mutation": c.mutation("create"),
-                    "kind": "linear", "x0": 0.5, "y0": 0.0, "x1": 0.5, "y1": 1.0
+                    "x0": 0.5, "y0": 0.0, "x1": 0.5, "y1": 1.0
                 }),
             )
-            .expect("mask.create answers an external client");
+            .expect("mask.create-linear answers an external client");
         let mask = created["mask"]
             .as_str()
             .expect("the created mask's id")
