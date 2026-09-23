@@ -115,6 +115,7 @@ Tracked in [product decisions](../tasks/product-decisions.json).
 - What is the first external module the owner would use, and what enablement and recovery behavior does it need?
 - For the proposed [Corrections module](design/corrections.md), should AI Remove enter the accepted scope, should a changed RAW source-development prefix require regeneration of a saved AI patch, and should remote-photo consent be per asset or remembered?
 - Which measured workloads and responsiveness budgets become acceptance requirements?
+- Should the [Performance section](design/performance-panel.md#open-decisions) open collapsed on every launch, as built, or remember its state once host-owned app settings exist, and do Activity Monitor's units (binary sizes labelled MB and GB, CPU as percent of one core) stand?
 - Which of the [presets defaults](design/presets.md#decisions-taken-on-defaults) stand, and should RAW white balance import get a calibrated conversion?
 - Which of the [Presence, colour mixer and vignette proposals](design/presence-mixer-vignette.md#proposals-with-recorded-defaults) (section names, stage order, mixer layout, vignette style, JPEG spatial precision, spatial gesture latency, sample cost) stand? Implementation was authorized on 2026-09-22 on the recorded defaults and is delivered; the owner refines the defaults after review, including whether spatial sliders should draft at a bounded resolution now that the measured misses are recorded.
 
