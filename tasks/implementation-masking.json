@@ -1447,7 +1447,7 @@
     {
       "id": "TASK-018",
       "description": "Build the brush component on the host stroke primitives: ordered strokes referenced from the content-addressed store, each with its own size, feather, flow and erase flag, the capsule coverage field, the grid index over segments, and the accumulation rules.",
-      "status": "pending",
+      "status": "completed",
       "dependencies": [
         "TASK-001",
         "TASK-004",
@@ -1548,7 +1548,10 @@
         "One stroke is one draft and therefore one history entry, with the delivered conflict, Discard and Reapply behaviour unchanged.",
         "Pointer positions map through the affine from render.transform, locally, with no hop per move.",
         "The owner's requirement is Lightroom's granularity: the first stroke reads Add brush, every later stroke on the same component reads Update <component name>, undo walks back one stroke at a time, and rendering still sees one combined coverage field rather than one operation per stroke.",
-        "The interaction is brush-paint, not mask-brush: it fills the declared parameters of whatever action declares it, because the corrections design needs the same capture for Clone, Heal and AI Remove. Nothing in its name, its parameters or its implementation may assume a mask."
+        "The interaction is brush-paint, not mask-brush: it fills the declared parameters of whatever action declares it, because the corrections design needs the same capture for Clone, Heal and AI Remove. Nothing in its name, its parameters or its implementation may assume a mask.",
+        "The brush component landed with its geometry declared as drawn rather than typed: it declares no parameters, so no mask.create-brush, mask.add-brush or mask.set-brush is generated and no number field is derived. mask.add-stroke and mask.delete-stroke are this task's, and they are the only way a stroke reaches a mask. The panel's Add row is built from declared_geometry_kinds() for exactly this reason, so a brush is created by a different route and the row must not grow a Brush button.",
+        "The frozen accumulation is c = c + (1-c)*s for an add stroke and c = c*(1-s) for an erase, in that spelling. It is not the design's earlier 1 - (1-c)(1-s): the two agree in the reals, but only the frozen spelling is an exact identity at s = 0, which is what licenses the grid index skipping a stroke and staying bit-identical. Transcribe the study, not the prose.",
+        "Density is deliberately not delivered, because its Lightroom meaning needs a build-up model along one stroke that would make coverage depend on stamp spacing and so on resolution. The gesture offers size, feather, flow and erase, and the user guide says why density is absent rather than the panel implying it exists."
       ],
       "context_links": [
         {
