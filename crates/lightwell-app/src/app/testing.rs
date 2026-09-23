@@ -352,21 +352,18 @@ pub(crate) fn opened(
     (editor, catalog, asset, entry_id)
 }
 
-/// An editor with an evidence run attached and a script queued, so steps can be driven without a
-/// window. Nothing is captured here: the capture itself needs a real renderer.
-pub(crate) fn scripted(steps: &str) -> (Editor, PathBuf, AssetId, PathBuf) {
-    let script = parse_script(steps).expect("a valid script");
-    let (mut editor, catalog, asset, _) = opened(Vec::new(), 4);
-    let dir = std::env::temp_dir().join(format!(
-        "lightwell-script-{}-{}",
-        std::process::id(),
-        REQUEST_NUMBER.fetch_add(1, Ordering::Relaxed)
-    ));
-    editor.evidence = Some(Evidence {
-        dir: dir.clone(),
+/// An evidence run with a script queued and one open frame already captured, for an editor built
+/// any way a test likes. Nothing is captured here: the capture itself needs a real renderer.
+pub(crate) fn scripted_evidence(steps: &str) -> Evidence {
+    Evidence {
+        dir: std::env::temp_dir().join(format!(
+            "lightwell-script-{}-{}",
+            std::process::id(),
+            REQUEST_NUMBER.fetch_add(1, Ordering::Relaxed)
+        )),
         queue: VecDeque::new(),
         opens: 1,
-        script,
+        script: parse_script(steps).expect("a valid script"),
         step: 0,
         awaiting: None,
         current: None,
@@ -377,7 +374,17 @@ pub(crate) fn scripted(steps: &str) -> (Editor, PathBuf, AssetId, PathBuf) {
         had_errors: false,
         paced_slider: None,
         tools_scroll: None,
-    });
+        capability_wait: None,
+    }
+}
+
+/// An editor with an evidence run attached and a script queued, so steps can be driven without a
+/// window. Nothing is captured here: the capture itself needs a real renderer.
+pub(crate) fn scripted(steps: &str) -> (Editor, PathBuf, AssetId, PathBuf) {
+    let evidence = scripted_evidence(steps);
+    let (mut editor, catalog, asset, _) = opened(Vec::new(), 4);
+    let dir = evidence.dir.clone();
+    editor.evidence = Some(evidence);
     editor.activity.requested = 1;
     (editor, catalog, asset, dir)
 }

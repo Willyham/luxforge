@@ -2,6 +2,7 @@
 //! texture or calls the owner, and no framework type appears in any model, so every rule the screen
 //! follows is testable without a window.
 pub(crate) mod canvas;
+pub(crate) mod capabilities;
 pub(crate) mod histogram;
 pub(crate) mod palette;
 pub(crate) mod panel;
@@ -89,6 +90,9 @@ pub(crate) struct Inputs<'a> {
     pub(crate) palette_open: bool,
     pub(crate) palette_query: &'a str,
     pub(crate) palette_selected: usize,
+    /// What the desktop knows about every capability-declaring module, and the open consent
+    /// notice.
+    pub(crate) capabilities: &'a capabilities::CapabilityStore,
 }
 
 /// The whole screen as plain data. The tools panel keeps its sections across derivations so an
@@ -197,6 +201,7 @@ mod tests {
         analysis: Option<histogram::Analysis>,
         analysis_updating: bool,
         readout: Option<histogram::Readout>,
+        capabilities: capabilities::CapabilityStore,
     }
 
     impl Scene {
@@ -229,6 +234,7 @@ mod tests {
                 analysis: None,
                 analysis_updating: false,
                 readout: None,
+                capabilities: capabilities::CapabilityStore::default(),
             }
         }
 
@@ -315,6 +321,7 @@ mod tests {
                 palette_open: false,
                 palette_query: "",
                 palette_selected: 0,
+                capabilities: &self.capabilities,
             }
         }
 

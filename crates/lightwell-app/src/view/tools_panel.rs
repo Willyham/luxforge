@@ -8,6 +8,7 @@ use crate::{
         message::{ClipEndpoint, CropMessage, MenuTarget, Message},
     },
     state::{
+        capabilities::CapabilityView,
         histogram::{HIGHLIGHT_RULE, HistogramModel, SHADOW_RULE},
         tools::{
             ActionControl, ActionControlStyle, ChoiceControlStyle, ColorControl, ColorControlStyle,
@@ -212,6 +213,14 @@ fn section_view<'a>(
     // An unavailable module cannot expand, per the design; nothing under it is drawn. Otherwise a
     // disabled section (busy, a historical preview) still shows its values, just not interactive.
     if section.expanded && section.unavailable.is_none() {
+        // A capability module's status sits above its controls; its settings are a sub-view of
+        // the section that stands in for them until Done.
+        if let Some(capability) = &section.capability {
+            block = block.push(super::capabilities::block(capability));
+            if capability.view == CapabilityView::Settings && !capability.loading {
+                return block.into();
+            }
+        }
         for control in &section.controls {
             block = block.push(control_view(
                 &section.module_id,
@@ -241,6 +250,7 @@ fn control_view<'a>(
         ControlModel::Group(group) => group_view(module_id, enabled, group, menu, plot),
         ControlModel::Action(action) => action_view(action, menu),
         ControlModel::Picker(picker) => picker_view(picker, menu),
+        ControlModel::Task(task) => super::capabilities::task_view(task, enabled, menu),
         ControlModel::Unsupported(message) => error_caption(message.clone()),
         ControlModel::CropFrame(frame) => crop_section_view(frame, menu),
     }

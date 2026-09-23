@@ -153,9 +153,13 @@ fn seed_controls(module: &ModuleDescriptor, controls: &[Control], fields: &mut F
                     }
                 }
             }
-            // Neither carries a field of its own: an action button submits the fields already
-            // seeded, and a picker only enters its module's canvas mode.
-            Rendered::Action { .. } | Rendered::Picker { .. } | Rendered::Unsupported(_) => {}
+            // None carries a field of its own: an action button submits the fields already
+            // seeded, a picker only enters its module's canvas mode, and a task sends the open
+            // asset and a profile.
+            Rendered::Action { .. }
+            | Rendered::Picker { .. }
+            | Rendered::Task { .. }
+            | Rendered::Unsupported(_) => {}
         }
     }
 }

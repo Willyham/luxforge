@@ -1,6 +1,9 @@
 //! The Iced application: the editor's own state, the update function and the effects it starts.
 //! Every change to authoritative state goes through an owner call; the view models are re-derived
 //! after each message and the view renders those alone.
+pub(crate) mod capabilities;
+#[cfg(test)]
+mod capabilities_tests;
 pub(crate) mod controls;
 #[cfg(test)]
 mod controls_tests;
@@ -24,6 +27,7 @@ use crate::{
     paths::Paths,
     state::{
         self, Workspace,
+        capabilities::CapabilityStore,
         histogram::{Analysis, Readout},
         tools,
     },
@@ -503,6 +507,14 @@ pub(crate) struct Editor {
     /// session already reports it, so the mode strip shows Crop selected during every draft
     /// however it was opened, and pointer again however it ended.
     pub(crate) mode_sync: Option<String>,
+    /// What the desktop knows about every capability-declaring module: its last settings and
+    /// status reads, the jobs it follows, task runs and the open consent notice. The owner holds
+    /// the authoritative state; this is what was last read back.
+    pub(crate) capabilities: CapabilityStore,
+    /// Every capability operation the update function started, in order, so a test can run
+    /// exactly those through the owner and hand the answers back.
+    #[cfg(test)]
+    pub(crate) capability_started: Vec<(String, state::capabilities::Operation)>,
     /// The whole screen as plain data, re-derived after every message.
     pub(crate) workspace: Workspace,
 }
@@ -537,6 +549,7 @@ impl Editor {
                 had_errors: false,
                 paced_slider: None,
                 tools_scroll: None,
+                capability_wait: None,
             }
         });
         let initial = config.files.pop_front();
@@ -649,6 +662,9 @@ impl Editor {
             crop_option: false,
             crop_space: false,
             mode_sync: None,
+            capabilities: CapabilityStore::default(),
+            #[cfg(test)]
+            capability_started: Vec::new(),
             workspace: Workspace::default(),
         };
         // Both workers wake the event loop through one channel instead of a poll. The closure is
@@ -778,7 +794,7 @@ impl Editor {
                 entry.as_ref(),
             );
         }
-        json!({"run_id":self.run_id,"mode":if self.evidence.is_some() {"evidence"} else {"editor"},"selection":self.session.preview.selection,"orientation":self.activity.orientation,"phase":self.activity.phase,"requested_generation":self.activity.requested,"displayed_generation":self.activity.displayed,"displayed_draft_revision":self.displayed_draft_revision,"source_dimensions":self.activity.source_dimensions,"preview_dimensions":self.activity.preview_dimensions,"backend":self.activity.backend,"status":self.status,"error_code":self.activity.error_code,"modules":module_summary(&self.modules),"controls":self.fields.summary(),"control_ui":{"group_expanded":self.controls_ui.group_expanded,"curve_channels":curve_channels,"curve_points":curve_points,"picker_open":picker_open,"curves":curves,"pickers":pickers},"gallery":gallery,"tools_scroll":tools_scroll,"crop":self.crop_summary(),"draft":self.draft_summary(),"stack":self.stack_summary(),"workspace":serde_json::to_value(&self.session.workspace).unwrap_or(Value::Null),"developer":self.developer,"expanded":self.workspace.expanded(),"pickers":self.workspace.pickers(),"notices":self.notice_titles(),"compare":self.compare_return.is_some(),"render_error":self.render_error_summary(),"palette":{"open":self.palette_open,"query":self.palette_query},"histogram":self.histogram_summary(),"readout":self.readout_summary(),"proxy":self.proxy_summary(),"scratch":Self::scratch_summary()})
+        json!({"run_id":self.run_id,"mode":if self.evidence.is_some() {"evidence"} else {"editor"},"selection":self.session.preview.selection,"orientation":self.activity.orientation,"phase":self.activity.phase,"requested_generation":self.activity.requested,"displayed_generation":self.activity.displayed,"displayed_draft_revision":self.displayed_draft_revision,"source_dimensions":self.activity.source_dimensions,"preview_dimensions":self.activity.preview_dimensions,"backend":self.activity.backend,"status":self.status,"error_code":self.activity.error_code,"modules":module_summary(&self.modules),"controls":self.fields.summary(),"control_ui":{"group_expanded":self.controls_ui.group_expanded,"curve_channels":curve_channels,"curve_points":curve_points,"picker_open":picker_open,"curves":curves,"pickers":pickers},"gallery":gallery,"tools_scroll":tools_scroll,"crop":self.crop_summary(),"draft":self.draft_summary(),"stack":self.stack_summary(),"workspace":serde_json::to_value(&self.session.workspace).unwrap_or(Value::Null),"developer":self.developer,"expanded":self.workspace.expanded(),"pickers":self.workspace.pickers(),"notices":self.notice_titles(),"compare":self.compare_return.is_some(),"render_error":self.render_error_summary(),"palette":{"open":self.palette_open,"query":self.palette_query},"histogram":self.histogram_summary(),"readout":self.readout_summary(),"proxy":self.proxy_summary(),"scratch":Self::scratch_summary(),"capabilities":state::capabilities::summary(&self.capabilities,&self.modules,self.state.as_ref())})
     }
 
     /// The process-wide colour scratch budget as it stands when the frame is captured, with the
@@ -904,14 +920,14 @@ impl Editor {
                     .layers
                     .iter()
                     .map(|layer| {
-                        json!({"id":layer.id.as_str(),"effect":layer.effect_id,"payload":layer.payload})
+                        json!({"id":layer.id.as_str(),"effect":layer.effect_id,"payload":layer.payload,"artifacts":layer.artifacts})
                     })
                     .collect();
                 let displayed = self.rendered_entry.as_ref().map(|entry| json!({
                     "entry": entry.id.as_str(),
                     "snapshot": entry.snapshot.id.as_str(),
                     "dimensions": self.dimensions,
-                    "layers": entry.snapshot.recipe.layers.iter().map(|layer| json!({"id":layer.id.as_str(),"effect":layer.effect_id,"payload":layer.payload})).collect::<Vec<_>>(),
+                    "layers": entry.snapshot.recipe.layers.iter().map(|layer| json!({"id":layer.id.as_str(),"effect":layer.effect_id,"payload":layer.payload,"artifacts":layer.artifacts})).collect::<Vec<_>>(),
                 }));
                 json!({"revision":state.revision,"entry":state.current_entry.id.as_str(),"label":state.current_entry.label,"layers":layers,"displayed":displayed})
             }
@@ -1095,6 +1111,12 @@ impl Editor {
         self.refresh_overlay();
         let rederive_started = Instant::now();
         self.rederive();
+        // A capability section is read for the first time once it is on screen: its first read is
+        // what the section then shows, so the screen is derived again to show it loading.
+        let loads = self.request_capability_loads();
+        if loads.is_some() {
+            self.rederive();
+        }
         let mut timing = self.loop_timing.get();
         timing.last_rederive_ms = rederive_started.elapsed().as_secs_f64() * 1000.0;
         self.loop_timing.set(timing);
@@ -1106,7 +1128,7 @@ impl Editor {
         } else {
             Task::none()
         };
-        Task::batch([task, zoomed, refit, woken])
+        Task::batch([task, zoomed, refit, woken, loads.unwrap_or_else(Task::none)])
     }
 
     /// A newer frame has been requested than the one the histogram describes, so the plotted counts
@@ -1747,6 +1769,7 @@ impl Editor {
             palette_open: self.palette_open,
             palette_query: &self.palette_query,
             palette_selected: self.palette_selected,
+            capabilities: &self.capabilities,
         };
         workspace.derive(&inputs);
         self.workspace = workspace;
@@ -2081,8 +2104,24 @@ impl Editor {
             Message::Synced(result) => {
                 self.syncing = false;
                 match result {
-                    Ok(SyncResult::Unchanged { sequence }) => self.api_sequence = sequence,
-                    Ok(SyncResult::Changed(refresh)) => self.accept(*refresh),
+                    Ok(SyncResult::Unchanged {
+                        sequence,
+                        capabilities,
+                    }) => {
+                        self.api_sequence = sequence;
+                        if capabilities {
+                            return self.reload_capabilities();
+                        }
+                    }
+                    Ok(SyncResult::Changed {
+                        refresh,
+                        capabilities,
+                    }) => {
+                        self.accept(*refresh);
+                        if capabilities {
+                            return self.reload_capabilities();
+                        }
+                    }
                     Err(error) => self.status = format!("Live refresh failed: {error}"),
                 }
             }
@@ -2373,6 +2412,7 @@ impl Editor {
             }
             Message::Resized(width, height) => self.window = (width, height),
             Message::Crop(message) => return self.crop_update(message),
+            Message::Capability(message) => return self.capability_update(message),
             Message::ModulesLoaded(result) => {
                 self.modules_ready = true;
                 match result {
@@ -2789,6 +2829,14 @@ impl Editor {
                     return Task::none();
                 };
                 self.status = format!("Copied the edit.{action} request");
+                // A copied request passes through the same redaction as every recorded one.
+                let request = json!({
+                    "method": request["method"],
+                    "params": lightwell_core::redact_params(
+                        request["method"].as_str().unwrap_or_default(),
+                        &request["params"],
+                    ),
+                });
                 return iced::clipboard::write(
                     serde_json::to_string_pretty(&request).unwrap_or_default(),
                 );
@@ -3341,6 +3389,9 @@ impl Editor {
         }
         let revision = refresh.state.revision;
         let entry = refresh.state.current_entry.id.clone();
+        if self.state.as_ref().map(|state| &state.asset.id) != Some(&refresh.state.asset.id) {
+            self.capabilities_asset_changed(&refresh.state.asset.id);
+        }
         self.state = Some(refresh.state);
         self.show_entry(refresh.job.entry.id.clone());
         self.requested_render_entry = Some(refresh.job.entry.clone());
@@ -3638,6 +3689,9 @@ impl Editor {
                 );
             }
         }
+        // Capability jobs are read while one the desktop follows is queued or running, and never
+        // otherwise; the interval is justified where it is declared.
+        subscriptions.extend(self.capability_poll_subscription());
         Subscription::batch(subscriptions)
     }
 }
@@ -4312,7 +4366,10 @@ mod tests {
         // Somebody else committed, which is also what this desktop's own undo looks like.
         let newer = entry(&asset, 9, None);
         let refresh = refresh_for(&asset, &newer, vec![newer.clone()], &[&newer], false);
-        let _ = editor.update(Message::Synced(Ok(SyncResult::Changed(Box::new(refresh)))));
+        let _ = editor.update(Message::Synced(Ok(SyncResult::Changed {
+            refresh: Box::new(refresh),
+            capabilities: false,
+        })));
         let draft = editor.slider_draft.as_ref().expect("the draft is kept");
         assert!(draft.conflicted);
         assert_eq!(

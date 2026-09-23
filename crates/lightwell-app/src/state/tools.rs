@@ -10,7 +10,10 @@ use crate::{
         message::{MenuTarget, PaletteAction},
     },
     crop_draft::{AspectPreset, CropDraft},
-    state::Inputs,
+    state::{
+        Inputs,
+        capabilities::{self, CapabilityModel, TaskControl},
+    },
 };
 use lightwell_core::{
     ActionDescriptor, ActionStyle, AssetId, CanvasInteraction, ChoiceStyle, ColorStyle, Control,
@@ -147,6 +150,9 @@ pub(crate) struct SectionModel {
     pub(crate) active: bool,
     pub(crate) unavailable: Option<String>,
     pub(crate) reset: Option<ResetRef>,
+    /// The module's status and settings, above its controls, when it declares settings,
+    /// resources, an activation or tasks.
+    pub(crate) capability: Option<CapabilityModel>,
     pub(crate) controls: Vec<ControlModel>,
     pub(crate) version: u64,
     pub(crate) enabled: bool,
@@ -402,6 +408,9 @@ pub(crate) enum ControlModel {
     Group(GroupControl),
     Action(ActionControl),
     Picker(PickerControl),
+    /// A button that runs one of the module's worker tasks through consent and progress, and
+    /// offers Apply with its result when the task declares one.
+    Task(TaskControl),
     /// A control this build cannot draw keeps its name on screen rather than disappearing.
     Unsupported(String),
     /// The host's crop-frame editor, at the top of the declaring module's section.
@@ -533,6 +542,7 @@ fn section(
         // rather than dropping it, because a header that loses its icon changes height and every
         // control under it moves on each commit round trip. The disabled header offers no press.
         reset: ResetRef::of(module.reset.as_ref()),
+        capability: capabilities::section(module, inputs),
         controls,
         version: previous.map(|previous| previous.version + 1).unwrap_or(1),
         enabled,
@@ -716,6 +726,24 @@ fn digest(
                 layer.payload.to_string().hash(&mut hasher);
             }
         }
+    }
+    // What the desktop knows about this module's capabilities changes this section alone: its
+    // version moves on every answer, the consent notice names one module, and a task's run belongs
+    // to the asset it was started for.
+    if capabilities::declares(module) {
+        inputs
+            .capabilities
+            .modules
+            .get(&module.id)
+            .map(|state| state.version)
+            .hash(&mut hasher);
+        inputs
+            .capabilities
+            .consent
+            .as_ref()
+            .is_some_and(|open| open.consent.module_id == module.id)
+            .hash(&mut hasher);
+        inputs.state.map(|state| &state.asset.id).hash(&mut hasher);
     }
     // This module's picker reads selected while its own canvas mode is active, so entering and
     // leaving that mode re-derives this section and nothing else.
@@ -908,6 +936,9 @@ fn control_model(
             },
             enabled,
         }),
+        Rendered::Task { task, label } => ControlModel::Task(capabilities::task_control(
+            module, task, label, inputs, enabled,
+        )),
         Rendered::Unsupported(kind) => ControlModel::Unsupported(unsupported_label(&kind)),
     }
 }
@@ -1474,6 +1505,11 @@ pub(crate) enum Rendered<'a> {
     Picker {
         label: &'a str,
     },
+    /// One of the declaring module's worker tasks.
+    Task {
+        task: &'a str,
+        label: &'a str,
+    },
     Unsupported(String),
 }
 
@@ -1561,6 +1597,7 @@ pub(crate) fn classify(control: &Control) -> Rendered<'_> {
             icon: icon.as_deref(),
         },
         Control::Picker { label } => Rendered::Picker { label },
+        Control::Task { task, label } => Rendered::Task { task, label },
         // A kind added to the descriptor later is reported, never dropped.
         #[allow(unreachable_patterns)]
         other => Rendered::Unsupported(control_kind(other)),

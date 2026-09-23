@@ -552,7 +552,10 @@ mod tests {
         // Somebody else committed: the draft survives and says so, and Apply is refused.
         let newer = entry(&asset, 9, None);
         let refresh = refresh_for(&asset, &newer, vec![newer.clone()], &[&newer], false);
-        let _ = editor.update(Message::Synced(Ok(SyncResult::Changed(Box::new(refresh)))));
+        let _ = editor.update(Message::Synced(Ok(SyncResult::Changed {
+            refresh: Box::new(refresh),
+            capabilities: false,
+        })));
         let draft = editor.crop.as_ref().expect("the draft is kept");
         assert!(draft.conflicted);
         assert_eq!(draft.rect, composed, "the composition is untouched");

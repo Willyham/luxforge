@@ -74,10 +74,24 @@ pub(crate) struct Upload {
     pub(crate) reason: Option<&'static str>,
 }
 
+/// What one live-refresh poll found. `capabilities` says another client used a capability method
+/// (`module.*` or `task.*`), whose changes the asset state does not show.
 #[derive(Clone, Debug)]
 pub(crate) enum SyncResult {
-    Unchanged { sequence: u64 },
-    Changed(Box<Refresh>),
+    Unchanged {
+        sequence: u64,
+        capabilities: bool,
+    },
+    Changed {
+        refresh: Box<Refresh>,
+        capabilities: bool,
+    },
+}
+
+/// A capability method's event: it changes a module's settings, grants, resources, activation or
+/// jobs, never an asset's history.
+pub(crate) fn capability_event(method: &str) -> bool {
+    method.starts_with("module.") || method.starts_with("task.")
 }
 
 /// Offer a job the display bounds the caller computed, when there are any.
@@ -857,12 +871,29 @@ pub(crate) fn sync_task(
         async move {
             let (events, sequence) = call(&owner, client, "events.since", json!({"after":after}))?;
             let events: EventsResult = parse(events)?;
-            if events.events.is_empty() && !events.gap {
-                Ok(SyncResult::Unchanged { sequence })
+            let capabilities = events
+                .events
+                .iter()
+                .any(|event| capability_event(&event.method));
+            // Only an event that is not a capability method's, or a gap, can have changed the
+            // asset: capability events alone refresh the modules and render nothing.
+            if !events.gap
+                && events
+                    .events
+                    .iter()
+                    .all(|event| capability_event(&event.method))
+            {
+                Ok(SyncResult::Unchanged {
+                    sequence,
+                    capabilities,
+                })
             } else {
-                refresh(&owner, client, asset_id, true, sequence, proxy)
-                    .map(Box::new)
-                    .map(SyncResult::Changed)
+                refresh(&owner, client, asset_id, true, sequence, proxy).map(|refresh| {
+                    SyncResult::Changed {
+                        refresh: Box::new(refresh),
+                        capabilities,
+                    }
+                })
             }
         },
         Message::Synced,

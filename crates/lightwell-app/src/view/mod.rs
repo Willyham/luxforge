@@ -8,6 +8,7 @@
 //! takes whatever remains. Every region is styled from [`lightwell_ui::theme`], never an ad hoc
 //! colour, and the window carries no outer padding: the canvas pads its photo itself.
 pub(crate) mod canvas;
+mod capabilities;
 mod gallery;
 pub(crate) mod palette;
 pub(crate) mod state_panel;
