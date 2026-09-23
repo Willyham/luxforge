@@ -3,6 +3,7 @@ use super::{ApiEvent, ApiRequest, ApiResponse, ClientSession, EventsResult, meth
 use crate::{
     AnalysisPlan, AnalysisSelection, AssetId, DraftId, EditorService, EditorState, EntryId, Error,
     ErrorKind, JobId, ModuleRegistry, PreviewJob, ProxyBounds,
+    activity::{ActivityBoard, ActivitySpec, Outcome},
     analysis::{AnalysisIdentity, AnalysisJob, AnalysisQueue, AnalysisRead, AnalysisStore, Report},
     editor::{PreparedFile, RawDevelopment, SourceSignature},
     source::RawPrepared,
@@ -448,10 +449,52 @@ fn queue_preparation(
     Ok(id)
 }
 
+/// Where a test holds the source worker: after a task's activity has begun and before any of its
+/// work, so the test can read the task as running for as long as it needs to. Outside tests it is
+/// empty and holds nothing.
+#[derive(Clone, Default)]
+struct SourceHold(#[cfg(test)] Option<Arc<dyn Fn() + Send + Sync>>);
+
+impl SourceHold {
+    fn wait(&self) {
+        #[cfg(test)]
+        if let Some(hold) = &self.0 {
+            hold();
+        }
+    }
+}
+
+/// The activity one source task publishes. A development request names its asset but carries no
+/// file name, so it has no detail line.
+fn source_activity(task: &SourceTask) -> ActivitySpec {
+    match &task.kind {
+        SourceTaskKind::File => ActivitySpec {
+            kind: "source.prepare",
+            label: "Preparing original",
+            detail: task
+                .key
+                .path
+                .file_name()
+                .map(|name| name.to_string_lossy().into_owned()),
+            asset_id: None,
+            job_id: Some(task.id.clone()),
+        },
+        SourceTaskKind::Develop(request) => ActivitySpec {
+            kind: "source.develop",
+            label: "Developing RAW",
+            detail: None,
+            asset_id: Some(request.asset_id.clone()),
+            job_id: Some(task.id.clone()),
+        },
+    }
+}
+
 fn source_worker(
     receiver: Receiver<SourceTask>,
     owner: SyncSender<OwnerMessage>,
     live_planes: Arc<Mutex<Vec<Weak<Vec<f32>>>>>,
+    board: Arc<ActivityBoard>,
+    hold: SourceHold,
 ) {
     while let Ok(task) = receiver.recv() {
         if task.cancelled.load(Ordering::Relaxed) {
@@ -484,12 +527,16 @@ fn source_worker(
             ));
             continue;
         }
+        // The activity begins before the owner marks the job as preparing, so a client that reads
+        // it as preparing always finds it listed. Leaving the loop drops the guard as cancelled.
+        let activity = board.begin(source_activity(&task));
         if owner
             .send(OwnerMessage::SourceStarted(task.id.clone()))
             .is_err()
         {
             break;
         }
+        hold.wait();
         let result = match task.kind {
             SourceTaskKind::File => {
                 EditorService::prepare_file_cancel(&task.key.path, &task.cancelled).and_then(
@@ -538,6 +585,13 @@ fn source_worker(
                     .push(raw.storage_weak());
             }
         }
+        // The activity ends before the owner learns the result, so a client that reads the job as
+        // ready or failed never still finds it listed as running. A cancelled preparation fails
+        // with a conflict rather than `Cancelled`, so the job's own flag says which it was.
+        activity.finish(match &result {
+            Err(_) if task.cancelled.load(Ordering::Relaxed) => Outcome::Cancelled,
+            result => Outcome::of(result),
+        });
         if owner
             .send(OwnerMessage::SourceComplete(task.id, result))
             .is_err()
@@ -573,6 +627,7 @@ fn parse_params<T: serde::de::DeserializeOwned>(value: &Value) -> Result<T, Erro
 pub struct OwnerHandle {
     sender: SyncSender<OwnerMessage>,
     next_client: Arc<AtomicU64>,
+    activity: Arc<ActivityBoard>,
 }
 
 impl OwnerHandle {
@@ -586,27 +641,78 @@ impl OwnerHandle {
         catalog: &Path,
         registry: Arc<ModuleRegistry>,
     ) -> Result<(Self, JoinHandle<()>), Error> {
+        Self::launch(
+            catalog,
+            registry,
+            ActivityBoard::new(),
+            SourceHold::default(),
+        )
+    }
+
+    /// [`Self::start_with`] publishing to a board the test supplies, usually one whose recent
+    /// threshold is zero so a small fixture's short work is kept, and with the source worker
+    /// calling `hold` after each task's activity begins and before its work.
+    #[cfg(test)]
+    pub(crate) fn start_observed(
+        catalog: &Path,
+        registry: Arc<ModuleRegistry>,
+        activity: Arc<ActivityBoard>,
+        hold: Option<Arc<dyn Fn() + Send + Sync>>,
+    ) -> Result<(Self, JoinHandle<()>), Error> {
+        Self::launch(catalog, registry, activity, SourceHold(hold))
+    }
+
+    fn launch(
+        catalog: &Path,
+        registry: Arc<ModuleRegistry>,
+        activity: Arc<ActivityBoard>,
+        hold: SourceHold,
+    ) -> Result<(Self, JoinHandle<()>), Error> {
         let mut service = EditorService::open_with(catalog, registry)?;
         service.disable_sync_source();
         let (sender, receiver) = sync_channel(64);
         let (source_sender, source_receiver) = sync_channel(SOURCE_QUEUE_CAPACITY);
         let worker_sender = sender.clone();
         let live_planes = Arc::new(Mutex::new(Vec::new()));
-        let worker =
-            std::thread::spawn(move || source_worker(source_receiver, worker_sender, live_planes));
+        let worker_activity = activity.clone();
+        let worker = std::thread::spawn(move || {
+            source_worker(
+                source_receiver,
+                worker_sender,
+                live_planes,
+                worker_activity,
+                hold,
+            )
+        });
         // The analysis worker posts its results back through this same channel, so the owner needs
         // one clone of its own sender. The loop ends on `Stop`, never on the senders dropping.
         let completions = sender.clone();
+        let owner_activity = activity.clone();
         let join = std::thread::spawn(move || {
-            owner_loop(service, completions, receiver, source_sender, worker)
+            owner_loop(
+                service,
+                completions,
+                receiver,
+                source_sender,
+                worker,
+                owner_activity,
+            )
         });
         Ok((
             Self {
                 sender,
                 next_client: Arc::new(AtomicU64::new(1)),
+                activity,
             },
             join,
         ))
+    }
+
+    /// The board this owner's workers publish their long-running work to, which `activity.list`
+    /// answers from. The desktop hands it to its preview queue, so a preview job is listed beside
+    /// the owner's own work without passing through the owner.
+    pub fn activity(&self) -> Arc<ActivityBoard> {
+        self.activity.clone()
     }
 
     /// Allocate a client identity; its session starts as default on first use.
@@ -669,6 +775,7 @@ fn owner_loop(
     receiver: Receiver<OwnerMessage>,
     source_sender: SyncSender<SourceTask>,
     worker: JoinHandle<()>,
+    activity: Arc<ActivityBoard>,
 ) {
     let mut jobs = SourceJobs {
         sender: source_sender,
@@ -689,6 +796,7 @@ fn owner_loop(
             result: result.map(Box::new),
         });
     }));
+    queue.set_activity(activity.clone());
     let mut latest_import: HashMap<ClientId, String> = HashMap::new();
     while let Ok(message) = receiver.recv() {
         match message {
@@ -905,11 +1013,15 @@ fn owner_loop(
                 // Discovery and dispatch resolve through the same registry-aware lookup.
                 let method = methods::find(&service, &call.request.method);
                 let response = match method {
-                    // The methods the owner answers from its own state: the event log, and the
-                    // analysis jobs, whose store, worker slots and client drafts all live here.
+                    // The methods the owner answers from its own state: the event log, the
+                    // analysis jobs, whose store, worker slots and client drafts all live here, and
+                    // the activity board its workers publish to.
                     Some(method) if method.owner_answered() => {
                         let request = &call.request;
                         match request.method.as_str() {
+                            "activity.list" => {
+                                answer(request, sequence, activity_list(&activity, &request.params))
+                            }
                             "analysis.request" => answer(
                                 request,
                                 sequence,
@@ -1030,6 +1142,20 @@ fn answer(request: &ApiRequest, sequence: u64, result: Result<Value, Error>) -> 
         Ok(result) => ApiResponse::success(request.id.clone(), sequence, result),
         Err(error) => ApiResponse::failure(request.id.clone(), sequence, error),
     }
+}
+
+/// `activity.list`: one lock and a copy of at most 80 small entries. It takes no parameters; an
+/// omitted `params` is accepted and a named one is refused, so a misspelt filter is never silently
+/// ignored.
+fn activity_list(board: &ActivityBoard, params: &Value) -> Result<Value, Error> {
+    #[derive(Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct Params {}
+    if !params.is_null() {
+        methods::params::<Params>(params)?;
+    }
+    serde_json::to_value(board.snapshot())
+        .map_err(|error| Error::new(ErrorKind::Internal, error.to_string()))
 }
 
 /// Which evaluated stack the caller wants analysed.
@@ -2658,6 +2784,256 @@ mod tests {
         owner.stop();
         join.join().unwrap();
         std::fs::remove_file(catalog).unwrap();
+    }
+
+    /// Read `activity.list` until `wanted` holds. The work under test is held at a gate, so what
+    /// this waits for is a worker reaching that gate, never a race with how fast it works.
+    fn listed(owner: &OwnerHandle, client: ClientId, wanted: impl Fn(&Value) -> bool) -> Value {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+        loop {
+            let list = ok(owner, client, "list", "activity.list", json!({}));
+            if wanted(&list) {
+                return list;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "activity.list never showed the work: {list}"
+            );
+            std::thread::yield_now();
+        }
+    }
+
+    fn active_kind(list: &Value, kind: &str) -> bool {
+        list["active"]
+            .as_array()
+            .is_some_and(|active| active.iter().any(|entry| entry["kind"] == json!(kind)))
+    }
+
+    /// Every worker of one owner publishes to one board, and `activity.list` answers from it. A
+    /// source preparation and an analysis job are listed while they run, each held at a gate the
+    /// test controls, and as recent work once they end; a preview job from a queue given the same
+    /// board, as the desktop's is, is listed beside them. The board's recent threshold is zero, so
+    /// this small fixture's short work is kept. The method needs no asset, refuses parameters and
+    /// emits no event, and discovery lists it.
+    #[test]
+    fn workers_publish_to_the_owners_board_and_activity_list_answers_from_it() {
+        let catalog = temp("activity.sqlite");
+        let photo = temp("activity-photo.jpg");
+        let _ = std::fs::remove_file(&catalog);
+        std::fs::copy(fixture(), &photo).unwrap();
+        let source_gate = crate::modules::RenderGate::open_gate();
+        let render_gate = crate::modules::RenderGate::open_gate();
+        let mut registry = ModuleRegistry::builtin();
+        registry
+            .register(crate::modules::HeldModule::shared(render_gate.clone()))
+            .expect("a valid holding module");
+        let board = ActivityBoard::with_recent_threshold(Duration::ZERO);
+        let hold = source_gate.clone();
+        let (owner, join) = OwnerHandle::start_observed(
+            &catalog,
+            Arc::new(registry),
+            board.clone(),
+            Some(Arc::new(move || hold.pass())),
+        )
+        .unwrap();
+        assert!(
+            Arc::ptr_eq(&owner.activity(), &board),
+            "the handle shares the owner's board"
+        );
+        let client = owner.register();
+
+        // Nothing has run, and no asset is needed to ask.
+        assert_eq!(
+            ok(&owner, client, "idle", "activity.list", json!({})),
+            json!({"sequence": 0, "active": [], "recent": [], "untracked": 0})
+        );
+        assert!(
+            send(&owner, client, "omitted", "activity.list", Value::Null)
+                .error
+                .is_none(),
+            "omitted parameters are no parameters"
+        );
+        assert_eq!(
+            failure(
+                &owner,
+                client,
+                "filtered",
+                "activity.list",
+                json!({"kind": "source.prepare"}),
+            )
+            .code,
+            "validation",
+            "a parameter is refused, not ignored"
+        );
+
+        // A source preparation, held after its activity began.
+        source_gate.shut();
+        let queued = ok(
+            &owner,
+            client,
+            "import",
+            "catalog.import",
+            json!({"path": photo}),
+        );
+        let job_id = queued["job_id"].clone();
+        let running = listed(&owner, client, |list| active_kind(list, "source.prepare"));
+        let entry = &running["active"][0];
+        assert_eq!(entry["label"], json!("Preparing original"));
+        assert_eq!(
+            entry["detail"],
+            json!(photo.file_name().unwrap().to_str().unwrap()),
+            "the detail is the file name"
+        );
+        assert_eq!(entry["job_id"], job_id);
+        assert!(
+            entry.get("asset_id").is_none(),
+            "a new import has no asset yet"
+        );
+        assert!(entry["elapsed_ms"].is_u64());
+        // The worker begins the activity and then tells the owner it started, so the job reads as
+        // preparing a moment after it is listed; it is held there, and still listed, until the
+        // gate opens.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+        while request(&owner, client, "job.status", json!({"job_id": job_id}))
+            .result
+            .unwrap()["state"]
+            != json!("preparing")
+        {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the held job never read as preparing"
+            );
+            std::thread::yield_now();
+        }
+        assert!(active_kind(
+            &ok(&owner, client, "held", "activity.list", json!({})),
+            "source.prepare"
+        ));
+        source_gate.open();
+        assert_eq!(
+            wait_source(&owner, client, job_id.as_str().unwrap())["state"],
+            json!("ready")
+        );
+        // The entry ended before the owner learned the result, so it is recent already.
+        let prepared = ok(&owner, client, "prepared", "activity.list", json!({}));
+        assert_eq!(prepared["active"], json!([]));
+        assert_eq!(prepared["recent"][0]["kind"], json!("source.prepare"));
+        assert_eq!(prepared["recent"][0]["outcome"], json!("completed"));
+        assert_eq!(prepared["recent"][0]["job_id"], job_id);
+        let asset = ok(
+            &owner,
+            client,
+            "adopt",
+            "job.adopt",
+            json!({"job_id": job_id}),
+        )["asset"]["asset"]["id"]
+            .clone();
+
+        // An analysis job, held on its worker by a committed colour layer.
+        ok(
+            &owner,
+            client,
+            "hold",
+            &format!("edit.{}", crate::modules::HELD_ACTION),
+            json!({
+                "asset_id": asset,
+                "mutation": {"expected_revision": 0, "request_id": "hold", "actor": "test"},
+            }),
+        );
+        render_gate.shut();
+        let requested = ok(
+            &owner,
+            client,
+            "request",
+            "analysis.request",
+            json!({"asset_id": asset, "target": {"kind": "current"}}),
+        );
+        let running = listed(&owner, client, |list| {
+            active_kind(list, "analysis.histogram")
+        });
+        let entry = &running["active"][0];
+        assert_eq!(entry["label"], json!("Measuring histogram"));
+        assert_eq!(entry["job_id"], requested["job_id"]);
+        assert_eq!(entry["asset_id"], asset);
+        render_gate.open();
+        assert_eq!(
+            settled(&owner, client, &requested["job_id"])["status"],
+            json!("ready")
+        );
+        let measured = ok(&owner, client, "measured", "activity.list", json!({}));
+        assert_eq!(measured["active"], json!([]));
+        assert_eq!(measured["recent"][0]["kind"], json!("analysis.histogram"));
+        assert_eq!(measured["recent"][0]["outcome"], json!("completed"));
+        assert_eq!(measured["recent"][0]["job_id"], requested["job_id"]);
+
+        // A preview job from a queue given the owner's board, as the desktop's is.
+        let asset_id = AssetId::parse(asset.as_str().unwrap()).unwrap();
+        let job = owner
+            .preview_job(PreviewRequest::new(client, asset_id).proxy(ProxyBounds {
+                width: 64,
+                height: 64,
+            }))
+            .expect("a preview job");
+        let mut queue = crate::PreviewQueue::default();
+        queue.set_activity(owner.activity());
+        queue.request(job);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+        while queue.is_busy() {
+            let _ = queue.poll();
+            assert!(std::time::Instant::now() < deadline, "no preview arrived");
+            std::thread::yield_now();
+        }
+
+        let events = ok(
+            &owner,
+            client,
+            "events",
+            "events.since",
+            json!({"after": 0}),
+        );
+        let captured = ok(&owner, client, "captured", "activity.list", json!({}));
+        // The answer a client reads, printed for the record under `--nocapture`.
+        println!("activity.list: {captured}");
+        let kinds: Vec<&str> = captured["recent"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|entry| entry["kind"].as_str().unwrap())
+            .collect();
+        assert_eq!(
+            kinds,
+            ["preview.render", "analysis.histogram", "source.prepare"],
+            "newest first"
+        );
+        assert_eq!(captured["active"], json!([]));
+        assert_eq!(captured["recent"][0]["phase"], json!("exact"));
+        assert_eq!(captured["recent"][0]["asset_id"], asset);
+        assert_eq!(
+            ok(
+                &owner,
+                client,
+                "events-after",
+                "events.since",
+                json!({"after": 0})
+            ),
+            events,
+            "reading the board emitted no event"
+        );
+
+        let schema = ok(&owner, client, "schema", "schema.list", json!({}));
+        let method = &schema["methods"]["activity.list"];
+        assert_eq!(method["mutates"], json!(false));
+        assert_eq!(method["required"], json!([]));
+        assert_eq!(method["optional"], json!({}));
+        let notes = method["notes"].as_str().unwrap();
+        assert!(notes.contains("250 ms"), "{notes}");
+        assert!(notes.contains("needs no asset"), "{notes}");
+        assert!(notes.contains("emits no event"), "{notes}");
+        assert!(notes.contains("job.status"), "{notes}");
+        owner.stop();
+        join.join().unwrap();
+        std::fs::remove_file(catalog).unwrap();
+        std::fs::remove_file(photo).unwrap();
     }
 
     /// Clipping overlay settings are per-client session state, reported by `session.state` and set

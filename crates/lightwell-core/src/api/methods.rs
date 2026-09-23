@@ -49,6 +49,16 @@ pub(super) const METHODS: &[MethodSpec] = &[
         notes: "this client's bounded source job state; ready includes the committed asset state",
         handler: None,
     },
+    // The activity board belongs to the catalog owner, whose workers publish to it, so the owner
+    // answers from it: one lock and a copy, nothing rendered or read.
+    MethodSpec {
+        name: "activity.list",
+        mutates: false,
+        required: &[],
+        optional: &[],
+        notes: "{sequence, active, recent, untracked}: the host's running work oldest first, and up to 16 recent entries that ran at least 250 ms, newest first; each entry has id, kind, label and elapsed_ms, or outcome (completed, cancelled or failed), duration_ms and ended_ms_ago, plus detail, asset_id, phase, progress {done, total} and job_id when known; job_id names the job that job.status (source work) or analysis.read (histograms) also answers; sequence changes exactly when the contents do; needs no asset, takes no parameters, mutates nothing and emits no event",
+        handler: None,
+    },
     MethodSpec {
         name: "job.adopt",
         mutates: false,

@@ -672,6 +672,8 @@ impl Editor {
         // its signals comes and goes with the queues' business.
         editor.preview_queue.set_waker(waker::waker());
         editor.overlay_queue.set_waker(waker::waker());
+        // Preview jobs are listed on the owner's activity board beside its own work.
+        editor.preview_queue.set_activity(editor.owner.activity());
         if editor.live_server.is_none() {
             editor.status = "Editor ready; live API unavailable on this host".into();
         }
