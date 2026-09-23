@@ -16,9 +16,18 @@ use crate::{
     },
 };
 use iced::Task;
+use iced::advanced::{Layout, Widget, layout, mouse, renderer, widget::Tree};
 use lightwell_ui::{ColorPickerEvent, CurveEditorEvent};
 use serde_json::{Map, Value, json};
-use std::{collections::VecDeque, path::PathBuf, time::Duration};
+use std::{
+    collections::VecDeque,
+    path::PathBuf,
+    sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+    },
+    time::{Duration, Instant},
+};
 
 /// An evidence run that has not finished by then is stuck; exit so the harness reaps nothing.
 pub(crate) const EVIDENCE_DEADLINE: Duration = Duration::from_secs(25);
@@ -29,6 +38,9 @@ pub(crate) const SCRIPT_EVIDENCE_DEADLINE: Duration = Duration::from_secs(60);
 /// The most steps one evidence run accepts, so a script cannot outlive the evidence deadline
 /// unnoticed.
 const MAX_SCRIPT_STEPS: usize = 64;
+
+/// The longest one `wait` step may idle, so a script cannot spend its deadline doing nothing.
+const MAX_WAIT_MS: u64 = 10_000;
 
 pub(crate) struct Evidence {
     pub(crate) dir: PathBuf,
@@ -58,7 +70,127 @@ pub(crate) struct Evidence {
     /// The module a running capability step waits on, and whether it waits for that module's jobs
     /// to finish as well as for its round trips.
     pub(crate) capability_wait: Option<(String, bool)>,
+    /// A scripted double-click's second press, waiting for its gap to pass. Its one-shot timer
+    /// exists only while this is set.
+    pub(crate) second_click: Option<SecondClick>,
+    /// When a `wait` step's frame may be captured. The evidence tick checks it, so a wait adds no
+    /// timer of its own.
+    pub(crate) wait_until: Option<Instant>,
+    pub(crate) sync: CaptureSync,
 }
+
+/// What keeps a capture's pixels and its recorded state the same moment. A screenshot reads back
+/// the frame the window renderer drew last rather than drawing a fresh one, so a message handled
+/// after that frame was built — a preview result arriving in the same batch as the capture tick —
+/// would otherwise leave the state describing a picture the capture does not show. A capture is
+/// therefore taken only when the frame drawn last was built after every update so far, and the
+/// state is recorded at that moment, beside the request for the screenshot.
+pub(crate) struct CaptureSync {
+    /// Updates handled so far.
+    pub(crate) updates: u64,
+    /// `updates` as it stood when the frame drawn last was built, stored by that frame's
+    /// [`DrawnMarker`] as it is drawn; `u64::MAX` until the first frame is.
+    pub(crate) drawn: Arc<AtomicU64>,
+    /// The state and the requested generation recorded with the screenshot being taken.
+    pub(crate) state: Option<(Value, u64)>,
+}
+
+impl Default for CaptureSync {
+    fn default() -> Self {
+        Self {
+            updates: 0,
+            drawn: Arc::new(AtomicU64::new(u64::MAX)),
+            state: None,
+        }
+    }
+}
+
+impl CaptureSync {
+    /// Whether the frame drawn last shows the state as it is now.
+    pub(crate) fn current(&self) -> bool {
+        self.drawn.load(Ordering::Relaxed) == self.updates
+    }
+}
+
+/// A widget that draws nothing and, each time it is drawn, stores how many updates the view it
+/// belongs to was built after. Present only in evidence runs, as the top layer of the window.
+struct DrawnMarker {
+    updates: u64,
+    sink: Arc<AtomicU64>,
+}
+
+impl<Message, Theme, Renderer> Widget<Message, Theme, Renderer> for DrawnMarker
+where
+    Renderer: iced::advanced::Renderer,
+{
+    fn size(&self) -> iced::Size<iced::Length> {
+        iced::Size::new(iced::Length::Shrink, iced::Length::Shrink)
+    }
+
+    fn layout(
+        &mut self,
+        _tree: &mut Tree,
+        _renderer: &Renderer,
+        _limits: &layout::Limits,
+    ) -> layout::Node {
+        layout::Node::new(iced::Size::ZERO)
+    }
+
+    fn draw(
+        &self,
+        _tree: &Tree,
+        _renderer: &mut Renderer,
+        _theme: &Theme,
+        _style: &renderer::Style,
+        _layout: Layout<'_>,
+        _cursor: mouse::Cursor,
+        _viewport: &iced::Rectangle,
+    ) {
+        self.sink.store(self.updates, Ordering::Relaxed);
+    }
+}
+
+/// `content` with a [`DrawnMarker`] over it, for an evidence run's window.
+pub(crate) fn marked<'a>(
+    content: iced::Element<'a, Message>,
+    sync: &CaptureSync,
+) -> iced::Element<'a, Message> {
+    iced::widget::stack![
+        content,
+        iced::Element::new(DrawnMarker {
+            updates: sync.updates,
+            sink: sync.drawn.clone(),
+        })
+    ]
+    .into()
+}
+
+/// The second press of a scripted double-click: what the wrapper publishes, `gap_ms` after the
+/// first press's release.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct SecondClick {
+    pub(crate) action: String,
+    pub(crate) parameter: String,
+    pub(crate) gap_ms: u64,
+}
+
+/// One double-click on a generated slider's rail, as the rail's wrapper and iced's slider turn it
+/// into messages: the first press moves the value to `value`, which opens the control's gesture,
+/// and its release commits it; `gap_ms` after that release, the second press is the wrapper's
+/// reset of the field. The step never waits between the two presses for anything but the gap, so
+/// the reset meets whatever the first press's commit is still doing, exactly as a person's does.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct DoubleClickStep {
+    pub(crate) action: String,
+    pub(crate) parameter: String,
+    pub(crate) value: f64,
+    pub(crate) gap_ms: u64,
+}
+
+/// The longest gap a scripted double-click may leave between its release and its second press.
+/// Iced classifies two presses as a double-click only within 300 ms of each other, and the first
+/// press's own hold comes out of that too.
+pub(crate) const MAX_DOUBLE_CLICK_GAP_MS: u64 = 250;
 
 /// The state of a slider step sent by a timer rather than all at once. Each tick sends the next
 /// value through the same messages [`Editor::slider_step`] sends synchronously, then advances or,
@@ -89,6 +221,8 @@ pub(crate) enum Step {
     Draft(DraftStep),
     /// One slider gesture on a generated control: the exact messages a drag sends.
     Slider(SliderStep),
+    /// A double-click on a slider's rail: a committed jump, then the reset, `gap_ms` apart.
+    DoubleClick(DoubleClickStep),
     /// A first-slice generated slider (fraction) or discrete control gesture.
     Controls(ControlsStep),
     Picker(PickerStep),
@@ -127,6 +261,16 @@ pub(crate) enum Step {
     /// Import one file through the section's own import task, bypassing only the native dialog.
     /// The path is as the script wrote it, relative to the editor's working directory.
     PresetImport(String),
+    /// Ask nothing of the editor for at least this many milliseconds, then capture. The evidence
+    /// tick keeps rebuilding the view meanwhile, as the editor's own event sync does while a
+    /// photograph is open, so the frame shows what idling did to the screen.
+    Wait(u64),
+    /// Scroll the percent-zoom surface to a fraction of its scrollable range on each axis, as a
+    /// pan does, and capture once the offset it reports has reached the owner's session.
+    Pan {
+        x: f32,
+        y: f32,
+    },
     /// One gesture on a module's capability section, task control or consent notice.
     Capability(CapabilityStep),
 }
@@ -474,6 +618,12 @@ impl Step {
                 }
                 json!({"slider": object})
             }
+            Self::DoubleClick(step) => json!({"double_click":{
+                "action": step.action,
+                "parameter": step.parameter,
+                "value": step.value,
+                "gap_ms": step.gap_ms,
+            }}),
             Self::Controls(ControlsStep::Slider {
                 action,
                 parameter,
@@ -571,6 +721,8 @@ impl Step {
                 json!({"preset_create":value})
             }
             Self::PresetImport(path) => json!({"preset_import":{"path":path}}),
+            Self::Wait(ms) => json!({"wait":{"ms":ms}}),
+            Self::Pan { x, y } => json!({"pan":{"x":x,"y":y}}),
             Self::Capability(step) => step.record(),
         }
     }
@@ -658,6 +810,12 @@ pub(crate) enum Settle {
     Presets,
     /// A host method a script called directly answered.
     Host,
+    /// The percent-zoom surface reported a new scroll offset and the owner answered the
+    /// `view.set` that carried it.
+    Pan,
+    /// Nothing this client started is in flight: no gesture, no request, no waiting reset, and the
+    /// newest requested frame is on screen with its exact phase.
+    Quiet,
     /// A capability step's round trips have answered and, unless it said otherwise, the jobs it
     /// started have finished.
     Capability,
@@ -687,6 +845,7 @@ impl Editor {
             Step::Api { method, params } => self.api_step(method, params),
             Step::Draft(draft) => self.draft_step(draft),
             Step::Slider(slider) => self.slider_step(slider),
+            Step::DoubleClick(step) => self.double_click_step(step),
             Step::Controls(control) => self.controls_step(control),
             Step::Picker(picker) => self.picker_step(picker),
             Step::Curve(curve) => self.curve_step(curve),
@@ -708,6 +867,8 @@ impl Editor {
             Step::PresetCreate(step) => self.preset_create_step(step),
             Step::PresetDelete(pick) => self.preset_delete_step(pick),
             Step::PresetImport(path) => self.preset_import_step(path),
+            Step::Wait(ms) => self.wait_step(ms),
+            Step::Pan { x, y } => self.pan_step(x, y),
             Step::Capability(step) => self.capability_step(step),
         }
     }
@@ -919,6 +1080,95 @@ impl Editor {
         Task::batch(tasks)
     }
 
+    /// The first press of a scripted double-click and its release: the rail's jump to `value`
+    /// opens the control's gesture exactly as a press does, and the release commits it. The second
+    /// press is sent by its own one-shot timer `gap_ms` later, whatever the commit is doing then.
+    fn double_click_step(&mut self, step: DoubleClickStep) -> Task<Message> {
+        let Some(revision) = self.state.as_ref().map(|state| state.revision) else {
+            return self.fail_step("no photograph is open");
+        };
+        if !crate::state::tools::drafts(&self.modules, &step.action, &step.parameter) {
+            return self.fail_step(format!(
+                "{}.{} is not a slider whose one field is a whole request",
+                step.action, step.parameter
+            ));
+        }
+        self.note_step(json!({ "revision_before": revision }));
+        let mut tasks = vec![
+            self.update(Message::SliderMoved {
+                action: step.action.clone(),
+                parameter: step.parameter.clone(),
+                value: step.value,
+            }),
+            self.update(Message::SliderDraftTick),
+        ];
+        if self.slider_draft.is_none() {
+            return self.fail_step(format!(
+                "the first press opened no gesture: {}",
+                self.status
+            ));
+        }
+        tasks.push(self.update(Message::ControlReleased {
+            action: step.action.clone(),
+            parameter: step.parameter.clone(),
+        }));
+        self.event(
+            "double_click_first",
+            json!({"action":step.action,"parameter":step.parameter,"value":step.value}),
+        );
+        if let Some(evidence) = &mut self.evidence {
+            evidence.awaiting = None;
+            evidence.second_click = Some(SecondClick {
+                action: step.action,
+                parameter: step.parameter,
+                gap_ms: step.gap_ms,
+            });
+        }
+        Task::batch(tasks)
+    }
+
+    /// The scripted double-click's second press: the reset the rail's wrapper publishes. The frame
+    /// is captured once nothing the two presses started is still running.
+    pub(crate) fn double_click_second(&mut self) -> Task<Message> {
+        let Some(second) = self
+            .evidence
+            .as_mut()
+            .and_then(|evidence| evidence.second_click.take())
+        else {
+            return Task::none();
+        };
+        self.event(
+            "double_click_second",
+            json!({"action":second.action,"parameter":second.parameter,
+                "revision":self.state.as_ref().map(|state| state.revision),
+                "gesture_open":self.slider_draft.is_some()}),
+        );
+        self.await_step(Settle::Quiet);
+        self.update(Message::ResetField {
+            action: second.action,
+            parameter: second.parameter,
+        })
+    }
+
+    /// Settle a step waiting for quiet once this client has nothing in flight: no gesture, no
+    /// request, no waiting reset, and the newest requested frame on screen with its exact phase.
+    pub(crate) fn settle_when_quiet(&mut self) {
+        let waiting = self
+            .evidence
+            .as_ref()
+            .is_some_and(|evidence| evidence.awaiting == Some(Settle::Quiet));
+        if waiting
+            && self.slider_draft.is_none()
+            && !self.busy
+            && self.pending_reset.is_none()
+            && !self.preview_queue.is_busy()
+            && self.held_by_proxy.is_none()
+            && self.presented_generation == self.preview_generation
+        {
+            self.settle_step(Settle::Quiet);
+        }
+    }
+
     /// One tick of a paced slider step: send its next value through the same messages a fast
     /// pointer drag sends, record it as its own event so the harness can time an input that never
     /// reaches the owner, and, on the last value, end the gesture exactly as the unpaced step does.
@@ -991,6 +1241,15 @@ impl Editor {
             // drained, so the pixels belong to the newest value it sent.
             SliderEnd::Open => {
                 self.await_step(Settle::SliderDraft);
+                // A value whose preview job was refused has already drained with no frame of its
+                // own to wait for, so the frame on screen is the step's evidence.
+                if self
+                    .slider_draft
+                    .as_ref()
+                    .is_some_and(|draft| draft.drained() && draft.unpreviewed)
+                {
+                    self.settle_step(Settle::SliderDraft);
+                }
                 Task::none()
             }
         }
@@ -1209,6 +1468,13 @@ impl Editor {
         else {
             return self.fail_step("the module declares no control group at that path");
         };
+        if crate::state::tools::module_of(&self.modules, &step.module)
+            .is_some_and(|module| crate::state::tools::is_headerless_group(module, &step.path))
+        {
+            return self.fail_step(
+                "that group is the module's only one: the panel draws it without a header, so it has no disclosure",
+            );
+        }
         let key = crate::state::tools::group_key(&step.module, &step.path);
         let expanded = self
             .controls_ui
@@ -1272,6 +1538,50 @@ impl Editor {
         }
         self.await_step(Settle::Session);
         self.update(Message::Gallery(page))
+    }
+
+    /// Ask nothing of the editor until `ms` have passed; the evidence tick captures the frame then.
+    fn wait_step(&mut self, ms: u64) -> Task<Message> {
+        if let Some(evidence) = &mut self.evidence {
+            evidence.wait_until = Some(Instant::now() + Duration::from_millis(ms));
+        }
+        Task::none()
+    }
+
+    /// Called by every evidence tick: a `wait` step whose time is up captures its frame.
+    pub(crate) fn wait_elapsed(&mut self) {
+        let due = self.evidence.as_ref().is_some_and(|evidence| {
+            evidence
+                .wait_until
+                .is_some_and(|until| Instant::now() >= until)
+        });
+        if due {
+            if let Some(evidence) = &mut self.evidence {
+                evidence.wait_until = None;
+            }
+            self.capture_next_frame();
+        }
+    }
+
+    /// Scroll the percent-zoom surface through the same scrollable a Space drag scrolls. The
+    /// scrollable reports the new offset on its next frame, which reaches the owner as the pan any
+    /// scroll sends; the step settles on that answer, so the captured state carries the offset the
+    /// frame was drawn at.
+    fn pan_step(&mut self, x: f32, y: f32) -> Task<Message> {
+        if self.state.is_none() {
+            return self.fail_step("no photograph is open");
+        }
+        if !matches!(
+            self.session.preview.view.zoom,
+            lightwell_core::Zoom::Percent { .. }
+        ) {
+            return self.fail_step("pan needs a percentage zoom");
+        }
+        self.await_step(Settle::Pan);
+        iced::widget::operation::snap_to(
+            crate::app::crop::SURFACE_ID,
+            iced::widget::scrollable::RelativeOffset { x, y },
+        )
     }
 
     fn tools_scroll_step(&mut self, fraction: f64) -> Task<Message> {
@@ -1868,6 +2178,7 @@ fn parse_step(step: &Value) -> Result<Step, String> {
         "api" => parse_api(value),
         "draft" => Ok(Step::Draft(parse_draft(value)?)),
         "slider" => Ok(Step::Slider(parse_slider(value)?)),
+        "double_click" => Ok(Step::DoubleClick(parse_double_click(value)?)),
         "controls" => Ok(Step::Controls(parse_controls(value)?)),
         "picker" => Ok(Step::Picker(parse_picker(value)?)),
         "curve" => Ok(Step::Curve(parse_curve(value)?)),
@@ -1892,9 +2203,11 @@ fn parse_step(step: &Value) -> Result<Step, String> {
             "preset_delete",
         )?)),
         "preset_import" => parse_preset_import(value),
+        "wait" => parse_wait(value),
+        "pan" => parse_pan(value),
         "capability" => Ok(Step::Capability(parse_capability(value)?)),
         other => Err(format!(
-            "unknown step kind {other}; expected api, draft, slider, controls, picker, curve, group, tab, section, gallery, tools_scroll, slider_draft, field, reset, pick, view, workspace, preview, palette, hover, preset, preset_create, preset_delete, preset_import or capability"
+            "unknown step kind {other}; expected api, draft, slider, double_click, controls, picker, curve, group, tab, section, gallery, tools_scroll, slider_draft, field, reset, pick, view, workspace, preview, palette, hover, preset, preset_create, preset_delete, preset_import, wait, pan or capability"
         )),
     }
 }
@@ -2303,6 +2616,38 @@ fn parse_slider(value: &Value) -> Result<SliderStep, String> {
     })
 }
 
+/// `{"action": "...", "parameter": "...", "value": 0.35, "gap_ms": 120}`: where the first press
+/// lands, and how long after its release the second press comes, at most
+/// [`MAX_DOUBLE_CLICK_GAP_MS`].
+fn parse_double_click(value: &Value) -> Result<DoubleClickStep, String> {
+    let object = value
+        .as_object()
+        .ok_or("double_click takes an object with an action, a parameter, a value and gap_ms")?;
+    known_fields(
+        object,
+        &["action", "parameter", "value", "gap_ms"],
+        "double_click",
+    )?;
+    let first = object
+        .get("value")
+        .and_then(Value::as_f64)
+        .filter(|value| value.is_finite())
+        .ok_or("double_click value is a finite number")?;
+    let gap_ms = object
+        .get("gap_ms")
+        .and_then(Value::as_u64)
+        .filter(|gap| *gap <= MAX_DOUBLE_CLICK_GAP_MS)
+        .ok_or_else(|| {
+            format!("double_click gap_ms is an integer from 0 to {MAX_DOUBLE_CLICK_GAP_MS}")
+        })?;
+    Ok(DoubleClickStep {
+        action: required_text(object, "action", "double_click")?,
+        parameter: required_text(object, "parameter", "double_click")?,
+        value: first,
+        gap_ms,
+    })
+}
+
 fn parse_slider_draft(value: &Value) -> Result<SliderDraftStep, String> {
     match value.as_str().map(str::trim) {
         Some("discard") => Ok(SliderDraftStep::Discard),
@@ -2708,6 +3053,42 @@ fn parse_hover(value: &Value) -> Result<Step, String> {
     })
 }
 
+fn parse_wait(value: &Value) -> Result<Step, String> {
+    let object = value.as_object().ok_or("wait takes an object with ms")?;
+    for key in object.keys() {
+        if key != "ms" {
+            return Err(format!("unknown wait field {key}"));
+        }
+    }
+    object
+        .get("ms")
+        .and_then(Value::as_u64)
+        .filter(|ms| (1..=MAX_WAIT_MS).contains(ms))
+        .map(Step::Wait)
+        .ok_or_else(|| format!("wait ms takes an integer from 1 to {MAX_WAIT_MS}"))
+}
+
+fn parse_pan(value: &Value) -> Result<Step, String> {
+    let object = value
+        .as_object()
+        .ok_or("pan takes an object with an x and a y")?;
+    for key in object.keys() {
+        if !matches!(key.as_str(), "x" | "y") {
+            return Err(format!("unknown pan field {key}"));
+        }
+    }
+    let fraction = |name: &str| -> Result<f32, String> {
+        unit_fraction(
+            object.get(name).ok_or(format!("pan needs {name}"))?,
+            &format!("pan {name}"),
+        )
+    };
+    Ok(Step::Pan {
+        x: fraction("x")?,
+        y: fraction("y")?,
+    })
+}
+
 fn parse_preview(value: &Value) -> Result<PreviewStep, String> {
     match value {
         Value::String(text) if text.trim() == "current" => Ok(PreviewStep::Current),
@@ -3080,6 +3461,34 @@ mod tests {
     /// The gesture, field, reset and conflict-resolution steps parse into exactly the shapes the
     /// runner writes, and record themselves back in the same shape.
     #[test]
+    fn a_double_click_step_parses_strictly_and_records_what_was_written() {
+        let script = r#"[{"double_click":{"action":"set-raw-temperature","parameter":"kelvin","value":5000,"gap_ms":120}}]"#;
+        let steps = parse_script(script).expect("a valid script");
+        assert_eq!(
+            steps,
+            vec![Step::DoubleClick(DoubleClickStep {
+                action: "set-raw-temperature".into(),
+                parameter: "kelvin".into(),
+                value: 5000.0,
+                gap_ms: 120,
+            })]
+        );
+        assert_eq!(
+            steps[0].record(),
+            json!({"double_click":{"action":"set-raw-temperature","parameter":"kelvin","value":5000.0,"gap_ms":120}})
+        );
+        for refused in [
+            // Past the window iced gives two presses.
+            r#"[{"double_click":{"action":"a","parameter":"p","value":1,"gap_ms":251}}]"#,
+            r#"[{"double_click":{"action":"a","parameter":"p","value":1}}]"#,
+            r#"[{"double_click":{"action":"a","parameter":"p","gap_ms":0}}]"#,
+            r#"[{"double_click":{"action":"a","parameter":"p","value":1,"gap_ms":0,"x":1}}]"#,
+        ] {
+            assert!(parse_script(refused).is_err(), "{refused}");
+        }
+    }
+
+    #[test]
     fn the_slider_field_and_reset_steps_round_trip_their_scripts() {
         let steps = parse_script(
             r#"[{"slider":{"action":"set-basic","parameter":"exposure","values":[0.25,0.5,0.75],"release":true}},
@@ -3199,8 +3608,11 @@ mod tests {
             saving: false,
             had_errors: false,
             paced_slider: None,
+            second_click: None,
             tools_scroll: None,
             capability_wait: None,
+            wait_until: None,
+            sync: CaptureSync::default(),
         });
         editor.activity.requested = 1;
 
@@ -3356,6 +3768,81 @@ mod tests {
         // The script is exhausted, and every step was recorded as sent.
         assert!(evidence(&editor).script.is_empty());
         finish(editor, catalog);
+    }
+
+    /// `wait` and `pan` parse strictly and record themselves back in the shape the script wrote.
+    #[test]
+    fn wait_and_pan_steps_parse_strictly_and_round_trip() {
+        let steps = parse_script(r#"[{"wait":{"ms":1000}},{"pan":{"x":0.5,"y":1.0}}]"#)
+            .expect("a valid script");
+        assert_eq!(steps, vec![Step::Wait(1000), Step::Pan { x: 0.5, y: 1.0 }]);
+        assert_eq!(steps[0].record(), json!({"wait":{"ms":1000}}));
+        assert_eq!(steps[1].record(), json!({"pan":{"x":0.5,"y":1.0}}));
+        for (script, expected) in [
+            (r#"[{"wait":{"ms":0}}]"#, "integer from 1 to 10000"),
+            (r#"[{"wait":{"ms":10001}}]"#, "integer from 1 to 10000"),
+            (r#"[{"wait":{"ms":1.5}}]"#, "integer from 1 to 10000"),
+            (r#"[{"wait":{"seconds":1}}]"#, "unknown wait field"),
+            (r#"[{"wait":5}]"#, "an object with ms"),
+            (r#"[{"pan":{"x":0.5}}]"#, "pan needs y"),
+            (r#"[{"pan":{"x":1.5,"y":0}}]"#, "fraction from 0 to 1"),
+            (r#"[{"pan":{"x":0,"y":0,"z":0}}]"#, "unknown pan field"),
+        ] {
+            let error = parse_script(script).expect_err(script);
+            assert!(error.contains(expected), "{script}: {error}");
+        }
+    }
+
+    /// A `wait` step captures nothing until its interval has passed, and then exactly one frame,
+    /// on the evidence tick that finds it due.
+    #[test]
+    fn a_scripted_wait_captures_once_its_interval_has_passed() {
+        let (mut editor, catalog, _, _) = scripted(r#"[{"wait":{"ms":20}}]"#);
+        let _ = editor.next_step();
+        assert!(!evidence(&editor).capture_pending);
+        assert!(evidence(&editor).wait_until.is_some());
+        let _ = editor.update(Message::EvidenceTick);
+        assert!(
+            !evidence(&editor).capture_pending,
+            "a tick before the interval captures nothing"
+        );
+        std::thread::sleep(Duration::from_millis(30));
+        let _ = editor.update(Message::EvidenceTick);
+        assert!(evidence(&editor).capture_pending);
+        assert!(evidence(&editor).wait_until.is_none());
+        finish(editor, catalog);
+    }
+
+    /// A pan scrolls the percent-zoom scrollable, which does not exist at Fit: the step is refused
+    /// there, recorded, and still captured.
+    #[test]
+    fn a_scripted_pan_needs_a_percentage_zoom() {
+        let (mut editor, catalog, _, _) = scripted(r#"[{"pan":{"x":0.5,"y":0.5}}]"#);
+        let _ = editor.next_step();
+        let record = evidence(&editor).current.clone().expect("a step record");
+        assert_eq!(record["status"], json!("failed"));
+        assert!(
+            record["reason"]
+                .as_str()
+                .is_some_and(|reason| reason.contains("percentage zoom")),
+            "{record}"
+        );
+        assert!(evidence(&editor).capture_pending);
+        finish(editor, catalog);
+    }
+
+    /// A capture is allowed only when the frame drawn last was built after every update so far:
+    /// before the first frame is drawn, and after any update since, it is not.
+    #[test]
+    fn a_capture_waits_for_a_frame_built_after_every_update() {
+        let mut sync = CaptureSync::default();
+        assert!(!sync.current(), "nothing has been drawn yet");
+        sync.drawn.store(sync.updates, Ordering::Relaxed);
+        assert!(sync.current());
+        sync.updates += 1;
+        assert!(!sync.current(), "an update since the frame was built");
+        sync.drawn.store(sync.updates, Ordering::Relaxed);
+        assert!(sync.current());
     }
 
     #[test]

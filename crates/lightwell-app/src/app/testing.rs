@@ -399,8 +399,11 @@ pub(crate) fn scripted_evidence(steps: &str) -> Evidence {
         saving: false,
         had_errors: false,
         paced_slider: None,
+        second_click: None,
         tools_scroll: None,
         capability_wait: None,
+        wait_until: None,
+        sync: crate::app::evidence::CaptureSync::default(),
     }
 }
 

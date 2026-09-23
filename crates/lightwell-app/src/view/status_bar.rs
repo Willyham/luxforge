@@ -1,15 +1,22 @@
 //! The status bar: the last message and the one control that makes it usable elsewhere, then the
-//! run's own facts at the trailing edge — who else is connected, what the renderer did and what the
-//! current zoom means on this display.
+//! pointer readout, then the run's own facts at the trailing edge — who else is connected, what the
+//! renderer did and what the current zoom means on this display.
 use crate::{app::message::Message, state::status::StatusBarModel};
 use iced::{
     Alignment, Element, Length,
-    widget::{Row, button, row, text},
+    alignment::Horizontal,
+    widget::{Row, Space, button, container, row, text},
 };
 use lightwell_ui::{caption, theme};
 
 /// The separator between the trailing captions.
 const DOT: &str = "\u{00b7}";
+
+/// The pointer readout's slot. It is always laid out, empty while the pointer is off the
+/// photograph, so the readout appearing, changing width or clearing never moves the message or the
+/// trailing facts. Wide enough for the longest readout there can be — three codes of 255 at
+/// coordinates of five digits, the 16384 px side limit — with its separator.
+pub(crate) const READOUT_WIDTH: f32 = 240.0;
 
 pub(crate) fn status_bar(model: &StatusBarModel) -> Element<'_, Message> {
     let mut trailing = Row::new()
@@ -26,6 +33,23 @@ pub(crate) fn status_bar(model: &StatusBarModel) -> Element<'_, Message> {
         }
         trailing = trailing.push(caption(field));
     }
+    let readout: Element<'_, Message> = match &model.readout {
+        Some(readout) => row![
+            text(readout.clone())
+                .size(theme::SIZE_CAPTION)
+                .color(theme::TEXT_SECONDARY)
+                .wrapping(text::Wrapping::None),
+            caption(DOT),
+        ]
+        .spacing(theme::SPACING / 2.0)
+        .align_y(Alignment::Center)
+        .into(),
+        None => Space::new().into(),
+    };
+    let readout = container(readout)
+        .width(Length::Fixed(READOUT_WIDTH))
+        .align_x(Horizontal::Right)
+        .clip(true);
     row![
         text(&model.message)
             .size(theme::SIZE_CONTROL)
@@ -34,7 +58,8 @@ pub(crate) fn status_bar(model: &StatusBarModel) -> Element<'_, Message> {
             .padding([2.0, 6.0])
             .style(theme::button_plain)
             .on_press(Message::CopyStatus),
-        iced::widget::Space::new().width(Length::Fill),
+        Space::new().width(Length::Fill),
+        readout,
         trailing,
     ]
     .spacing(theme::SPACING / 2.0)

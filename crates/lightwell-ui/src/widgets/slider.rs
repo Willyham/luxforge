@@ -8,7 +8,7 @@
 
 use crate::geometry::{self, Side};
 use crate::theme;
-use crate::widgets::double_click::double_click;
+use crate::widgets::double_click::double_click_when;
 use crate::widgets::number_field::{NumberFieldModel, field_header};
 use crate::widgets::slider_guard::SliderGuard;
 use crate::widgets::text::error_caption;
@@ -162,11 +162,9 @@ pub(crate) fn rail_line<'a, M: Clone + 'a>(
         on_release,
     }
     .into();
-    let handle = if rail.enabled {
-        double_click(handle, on_reset)
-    } else {
-        handle
-    };
+    // Always wrapped, and told whether to listen, so the tree keeps one shape: a rail disabled for
+    // a moment between the two presses of a double-click keeps the first press.
+    let handle = double_click_when(handle, on_reset, rail.enabled);
     let drawing = RailDrawing::from_rail(rail);
     let mut layers = stack![
         canvas(drawing)

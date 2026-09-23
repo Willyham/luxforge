@@ -30,6 +30,7 @@ mod smoke;
 mod verify;
 mod vignette_smoke;
 mod workspace_smoke;
+mod zoom_smoke;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::{

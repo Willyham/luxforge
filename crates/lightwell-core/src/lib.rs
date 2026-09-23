@@ -33,8 +33,8 @@ pub use preview::*;
 pub use proxy::{ProxyBounds, ProxyCache, ProxyIdentity, ProxyKey, ProxyPlan};
 pub use render::{
     Cancel, ContentPoint, LinearImage, LinearSettings, Raster, Sample, ScratchBudget,
-    SpatialBudget, cached_estimates, clear_estimates, extents, locate, render, render_cancellable,
-    render_linear, render_linear_cancellable, sample, sample_linear,
+    SpatialBudget, WhiteBalanceApproximation, cached_estimates, clear_estimates, extents, locate,
+    render, render_cancellable, render_linear, render_linear_cancellable, sample, sample_linear,
 };
 use sha2::{Digest, Sha256};
 use std::{

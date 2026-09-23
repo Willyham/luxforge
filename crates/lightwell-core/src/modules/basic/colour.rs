@@ -123,7 +123,16 @@ pub(crate) fn to_oklab(rgb: [f32; 3]) -> Oklab {
     }
 }
 
+/// Oklab to linear sRGB. An achromatic colour (`a = b = 0`, either sign of zero) reconstructs to
+/// `L^3` in all three channels, which is what the exact matrices give it: `M2^-1`'s first column is
+/// one and each row of `M1^-1` sums to one. The published rows are rounded, though, so in f32 the
+/// general path returns three channels a few ulps apart, and where they straddle an output code
+/// threshold a fully desaturated grey would render with one channel a code off.
 pub(crate) fn from_oklab(lab: Oklab) -> [f32; 3] {
+    if lab.a == 0.0 && lab.b == 0.0 {
+        let grey = lab.l * lab.l * lab.l;
+        return [grey, grey, grey];
+    }
     let lms_root = matvec(&M2_INV, [lab.l, lab.a, lab.b]);
     let lms = [
         lms_root[0] * lms_root[0] * lms_root[0],
@@ -296,6 +305,55 @@ mod tests {
     use super::*;
     use serde::Deserialize;
     use std::{fs, path::PathBuf};
+
+    /// An achromatic Oklab colour reconstructs to three bit-identical channels, `L^3`, for either
+    /// sign of zero, over a million evenly spaced `L` in `[0, 1]`. Without the achromatic branch the
+    /// rounded `M1^-1` rows leave the three channels up to about `5e-7` apart, and a few of those
+    /// land on different output codes.
+    #[test]
+    fn an_achromatic_colour_reconstructs_to_three_identical_channels() {
+        let samples = 1_000_000;
+        for step in 0..=samples {
+            let l = step as f32 / samples as f32;
+            for (a, b) in [(0.0f32, 0.0f32), (-0.0, 0.0), (0.0, -0.0), (-0.0, -0.0)] {
+                let [r, g, bl] = from_oklab(Oklab { l, a, b });
+                assert!(
+                    r == g && g == bl && r == l * l * l,
+                    "L = {l}: {:?}",
+                    [r, g, bl]
+                );
+            }
+        }
+    }
+
+    /// Saturation `-100` makes every pixel an exact grey: three equal output codes, however
+    /// colourful, dark or near-grey the input was.
+    #[test]
+    fn saturation_minus_100_renders_three_equal_codes_for_every_pixel() {
+        let unit = ColourAdjust::new(0.0, -100.0);
+        let mut row: Vec<[f32; 3]> = Vec::new();
+        for r in (0..=255u16).step_by(5) {
+            for g in (0..=255u16).step_by(5) {
+                for b in (0..=255u16).step_by(5) {
+                    row.push([r as u8, g as u8, b as u8].map(code_to_linear));
+                }
+            }
+        }
+        // Near-greys a code or two off the axis, where the conversion's own noise lives.
+        for code in 0..=255u8 {
+            let near = code.saturating_add(1);
+            row.push([code, code, near].map(code_to_linear));
+            row.push([near, code, code].map(code_to_linear));
+        }
+        unit.apply_row(0, 0, &mut row);
+        for pixel in &row {
+            let codes = crate::render::quantize_pixel(*pixel);
+            assert!(
+                codes[0] == codes[1] && codes[1] == codes[2],
+                "{pixel:?} renders {codes:?}"
+            );
+        }
+    }
 
     fn code_to_linear(code: u8) -> f32 {
         let encoded = f64::from(code) / 255.0;

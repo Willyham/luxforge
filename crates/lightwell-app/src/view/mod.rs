@@ -153,3 +153,24 @@ pub(crate) fn surface_columns(logical_width: f32, scale: f32, model: &Workspace)
         (right_edge * scale).round() as u32,
     ]
 }
+
+/// The canvas region inside a captured frame as `[left, top, right, bottom]` physical pixels: the
+/// area between the panels' dividers and between the rules under the title bar and over the status
+/// bar. At a percentage zoom this is exactly the scrollable the photograph pans in, so evidence can
+/// map a captured pixel back to the source pixel the zoom and the pan put there.
+pub(crate) fn canvas_rect(logical: (f32, f32), scale: f32, model: &Workspace) -> [u32; 4] {
+    let divider = theme::BORDER_WIDTH;
+    let left = if model.title.state_panel_open {
+        STATE_PANEL_WIDTH + divider
+    } else {
+        0.0
+    };
+    let right = if model.title.tools_panel_open {
+        logical.0 - TOOLS_PANEL_WIDTH - divider
+    } else {
+        logical.0
+    };
+    let top = TITLE_BAR_HEIGHT + divider;
+    let bottom = logical.1 - STATUS_BAR_HEIGHT - divider;
+    [left, top, right, bottom].map(|edge| (edge * scale).round().max(0.0) as u32)
+}

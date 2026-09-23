@@ -26,9 +26,10 @@ const LUMA_B: f64 = 0.0722;
 const PIVOT: f64 = 0.5;
 
 /// Contrast steepness scale: the logistic exponent at Contrast = +-100 is
-/// +-ALPHA_MAX. See "Contrast" in the design doc for the derivative proof this
-/// value does not affect (the derivative is provably positive for any finite,
-/// nonzero alpha).
+/// ALPHA_MAX (the sign selects the curve, not the exponent's sign). See
+/// "Contrast" in the design doc for the derivative proof this value does not
+/// affect (the derivative is provably positive for any finite, nonzero alpha,
+/// on both sides).
 const ALPHA_MAX: f64 = 6.0;
 
 /// Whites/Blacks endpoint range: at Whites = +-100 the white point moves by
@@ -204,21 +205,35 @@ fn highlights_shadows_stage(x: f64, highlights: f64, shadows: f64) -> f64 {
     highlights_stage(shadows_stage(x, shadows), highlights)
 }
 
-/// Stage 3: Contrast. A logistic S-curve normalized to fix `(0, 0)` and
-/// `(1, 1)`: `f(x) = (g(x) - g(0)) / (g(1) - g(0))` with
+/// Stage 3: Contrast. `S(x) = (g(x) - g(0)) / (g(1) - g(0))` is a logistic
+/// S-curve normalized to fix `(0, 0)` and `(1, 1)`, with
 /// `g(u) = 1 / (1 + exp(-alpha * (u - PIVOT)))` and
-/// `alpha = ALPHA_MAX * contrast / 100`. Contrast = 0 is the identity
-/// (handled as an explicit branch, since alpha = 0 makes the logistic formula
-/// a 0/0 form).
+/// `alpha = ALPHA_MAX * |contrast| / 100`, so it is built from the slider's
+/// magnitude only. Positive Contrast is `S` itself. Negative Contrast reflects
+/// `S`'s deviation from the identity, `x - kappa * (S(x) - x)`, scaled by
+/// `kappa = 1 / sigma`, where `sigma = S'(PIVOT)` is the positive curve's
+/// slope at the pivot: the pivot slope becomes `1 / sigma`, so `-c` flattens
+/// the midtones by exactly the factor `+c` steepens them. (Negating `alpha`
+/// instead is not a flattening: `g` at `-alpha` is `1 - g` at `alpha`, and the
+/// endpoint normalization cancels that reflection, giving `+c`'s curve.)
+/// Contrast = 0 is the identity (handled as an explicit branch, since
+/// alpha = 0 makes the logistic formula a 0/0 form).
 fn contrast_stage(x: f64, contrast: f64) -> f64 {
     if contrast == 0.0 {
         return x;
     }
-    let alpha = ALPHA_MAX * (contrast / 100.0);
+    let alpha = ALPHA_MAX * (contrast.abs() / 100.0);
     let g = |u: f64| 1.0 / (1.0 + (-alpha * (u - PIVOT)).exp());
     let g0 = g(0.0);
     let g1 = g(1.0);
-    (g(x) - g0) / (g1 - g0)
+    let s = (g(x) - g0) / (g1 - g0);
+    if contrast > 0.0 {
+        return s;
+    }
+    // S'(x) = alpha * g(x) * (1 - g(x)) / (g1 - g0), and g(PIVOT) = 1/2.
+    let sigma = (alpha / 4.0) / (g1 - g0);
+    let kappa = 1.0 / sigma;
+    x - kappa * (s - x)
 }
 
 /// The complete tone curve in the encoded working domain: Whites/Blacks, then
@@ -285,6 +300,27 @@ mod internal_tests {
         assert!(odds_bias(0.5, 1.5) > 0.5);
         assert!(odds_bias(0.5, -1.5) < 0.5);
         assert_eq!(odds_bias(0.5, 0.0), 0.5);
+    }
+
+    #[test]
+    fn contrast_fixes_both_endpoints_exactly_on_both_sides() {
+        for contrast in [-100.0, -50.0, -10.0, -0.5, 0.5, 10.0, 50.0, 100.0] {
+            assert_eq!(contrast_stage(0.0, contrast), 0.0, "contrast={contrast}");
+            assert_eq!(contrast_stage(1.0, contrast), 1.0, "contrast={contrast}");
+        }
+    }
+
+    /// Negative Contrast tends to the identity as the slider approaches 0 from
+    /// below, as positive Contrast does from above: no jump at the neutral
+    /// value on either side.
+    #[test]
+    fn contrast_tends_to_the_identity_near_zero_on_both_sides() {
+        for x in [-0.5, 0.1, 0.3, 0.5, 0.7, 0.9, 2.0] {
+            for contrast in [-1e-3, 1e-3] {
+                let y = contrast_stage(x, contrast);
+                assert!((y - x).abs() < 1e-6, "contrast={contrast} x={x} y={y}");
+            }
+        }
     }
 
     #[test]

@@ -221,10 +221,10 @@ fn mixer_parameter(field: &str) -> ParameterDescriptor {
     let label = range_label(range);
     let notes = match property {
         HUE => format!(
-            "rotates hue within the {label} range toward the neighbouring range by a bounded angle; the sign chooses the direction of travel"
+            "moves the {label} range's hues toward a neighbouring range: +100 carries its centre colour 85% of the way to the next range's centre and -100 85% of the way to the previous one; two neighbours driven at each other share one slider's travel"
         ),
         SATURATION => format!(
-            "scales chroma within the {label} range; -100 is exactly neutral grey for that range's own colour and +100 doubles chroma"
+            "scales chroma within the {label} range; -100 is exactly neutral grey for that range's own colour and +100 doubles chroma; every saturation slider at -100 makes the whole photo exactly grey"
         ),
         LUMINANCE => format!(
             "scales Oklab L within the {label} range through a compressive response with the near-black rule"

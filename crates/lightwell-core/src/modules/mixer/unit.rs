@@ -1,20 +1,22 @@
 //! The colour mixer's one pointwise unit.
 //!
 //! This is the production transcription of the equations frozen in
-//! `docs/design/mixer-study.md`: the eight-centre raised-cosine hue basis, the chroma ramp, the
-//! per-range and per-direction bounded rotation, the chroma factor and the Oklab `L` gamma
-//! response, composed hue then chroma then luminance from weights evaluated once on the **input**
-//! pixel. The study is the only place the justifications live; this file restates the constants
-//! and nothing else.
+//! `docs/design/mixer-study.md`: the eight range centres, the monotone hue warp the hue sliders
+//! drive, the raised-cosine weights the saturation and luminance sliders are distributed by, the
+//! chroma ramp, the chroma factor and the Oklab `L` gamma response, composed hue then chroma then
+//! luminance from amounts evaluated once on the **input** pixel. The study is the only place the
+//! justifications live; this file restates the constants and nothing else.
 //!
 //! The Oklab conversion is **not** restated here: it is the one accepted in
 //! `docs/design/basic-colour.md` and implemented in [`crate::modules::basic::colour`], reused
-//! unchanged so the two colour modules cannot drift apart and the matrices exist once.
+//! unchanged so the two colour modules cannot drift apart and the matrices exist once; that
+//! conversion also gives an achromatic result three bit-identical channels.
 //!
-//! Coefficients are computed in f64 — the frozen centres, the eight gaps derived from them and the
-//! twenty-four slider amounts — and cast once into the small fixed-size f32 arrays the unit holds.
-//! The per-pixel path is f32 throughout, ignores the row coordinates and touches nothing but the
-//! pixel it was given and those arrays.
+//! Coefficients are computed in f64 — the frozen centres, the eight gaps derived from them, the
+//! hue warp's knots, slopes and per-segment cubics, and the sixteen saturation and luminance
+//! amounts — and cast once into the small fixed-size f32 arrays the unit holds. The per-pixel path
+//! is f32 throughout, ignores the row coordinates and touches nothing but the pixel it was given
+//! and those arrays.
 use crate::modules::{
     PointwiseColor,
     basic::colour::{self, Oklab},
@@ -59,8 +61,9 @@ const CENTRE_HUES_DEG: [f64; RANGE_COUNT] = [
 ];
 
 /// Chroma ramp edge `C0`: the Oklab chroma at and above which a colour is fully affected. Below it
-/// the three effects fade smoothly to nothing and reach exactly zero on the achromatic axis, which
-/// is what keeps a grey, a near-grey and shadow noise uncoloured by every slider.
+/// the hue rotation, the luminance amount and a chroma *increase* fade smoothly to nothing and
+/// reach exactly zero on the achromatic axis, which is what keeps a grey, a near-grey and shadow
+/// noise from being rotated, relit or coloured by any slider. A chroma decrease is not ramped.
 const CHROMA_RAMP_EDGE_F64: f64 = 0.02;
 
 /// Saturation gain `k_s`: `-100` at a range's own centre gives the factor `0` (exact grey) and
@@ -70,6 +73,12 @@ const SATURATION_GAIN_F64: f64 = 1.0;
 /// Luminance response base: the Oklab `L` exponent is `2^(-m)` for the weighted amount `m` in
 /// `[-1, 1]`, so `+100` is a square root and `-100` a square.
 const LUMINANCE_GAMMA_BASE_F64: f64 = 2.0;
+
+/// Hue reach `KAPPA`: at `±100` a range's hue slider carries its centre colour this fraction of the
+/// way to the neighbouring centre in the direction of travel. It is also the most two neighbouring
+/// centres may close the gap between them together, so every gap keeps at least `1 - KAPPA` of its
+/// width and the hue warp stays strictly increasing under any combination of sliders.
+const HUE_REACH_F64: f64 = 0.85;
 
 const CHROMA_RAMP_EDGE: f32 = CHROMA_RAMP_EDGE_F64 as f32;
 const LUMINANCE_GAMMA_BASE: f32 = LUMINANCE_GAMMA_BASE_F64 as f32;
@@ -99,16 +108,84 @@ const fn gaps_deg() -> [f64; RANGE_COUNT] {
 
 const GAPS_DEG: [f64; RANGE_COUNT] = gaps_deg();
 
-/// The rotation a range's hue slider reaches at `±100`: half the gap to the neighbouring centre
-/// **in the direction of travel**, so `+100` means the same fraction of the way to the next colour
-/// everywhere, and the hue map stays strictly monotone under any one slider.
-const fn max_rotation_deg(range: usize, positive: bool) -> f64 {
+/// The displacement in degrees a range's hue slider gives its own centre at `±100` when no
+/// neighbour limits it: [`HUE_REACH_F64`] of the gap to the neighbouring centre **in the direction
+/// of travel**, so `+100` means the same fraction of the way to the next colour everywhere.
+fn full_travel_deg(range: usize, positive: bool) -> f64 {
     let gap = if positive {
         GAPS_DEG[range]
     } else {
         GAPS_DEG[(range + RANGE_COUNT - 1) % RANGE_COUNT]
     };
-    0.5 * gap
+    HUE_REACH_F64 * gap
+}
+
+/// The signed displacement of each centre, degrees, after the limiting rule: two neighbouring
+/// centres driven at each other may together close the gap between them by at most
+/// `HUE_REACH * gap`, what one slider at full strength does alone, and where they would close it
+/// further both displacements are scaled by the same factor. Both are measured in that same gap, so
+/// this is "two opposing neighbours whose magnitudes sum past 100 share one slider's travel". Only
+/// an opposing pair can exceed the limit and a centre has one sign, so each centre belongs to at
+/// most one such pair and the rule needs no iteration.
+fn knot_displacements(hue: &[f64; RANGE_COUNT]) -> [f64; RANGE_COUNT] {
+    let raw: [f64; RANGE_COUNT] = std::array::from_fn(|range| {
+        let amount = hue[range] / 100.0;
+        amount * full_travel_deg(range, amount >= 0.0)
+    });
+    let mut scale = [1.0f64; RANGE_COUNT];
+    for range in 0..RANGE_COUNT {
+        let next = (range + 1) % RANGE_COUNT;
+        let approach = raw[range] - raw[next];
+        let limit = HUE_REACH_F64 * GAPS_DEG[range];
+        if approach > limit {
+            let shrink = limit / approach;
+            scale[range] = scale[range].min(shrink);
+            scale[next] = scale[next].min(shrink);
+        }
+    }
+    std::array::from_fn(|range| raw[range] * scale[range])
+}
+
+/// The hue warp's per-segment cubics, in displacement form `D(h) = H(h) - h`.
+///
+/// `H` is the periodic monotone piecewise-cubic Hermite interpolant (PCHIP) through the eight knots
+/// `(c_i, c_i + delta_i)`: every secant `m_i = 1 + (delta_{i+1} - delta_i) / g_i` is at least
+/// `1 - HUE_REACH` after the limiting rule, and each knot's slope is the Fritsch–Butland weighted
+/// harmonic mean of the secants either side, which lies strictly inside `(0, 3 min(m_{i-1}, m_i))`
+/// and so satisfies the Fritsch–Carlson condition for a strictly increasing cubic on every segment.
+///
+/// Segment `i`, at the fraction `t` across it, is `c0 + t (c1 + t (c2 + t c3))` degrees. A segment
+/// whose two knots have zero displacement and slope exactly one has four exact zeros, so it moves
+/// no hue at all.
+fn hue_warp(hue: &[f64; RANGE_COUNT]) -> [[f32; 4]; RANGE_COUNT] {
+    let displacement = knot_displacements(hue);
+    let secant: [f64; RANGE_COUNT] = std::array::from_fn(|range| {
+        let next = (range + 1) % RANGE_COUNT;
+        1.0 + (displacement[next] - displacement[range]) / GAPS_DEG[range]
+    });
+    // `d_i - 1`: the knot slope of `D` rather than of `H`, exactly zero where both neighbouring
+    // secants are exactly one.
+    let slope_offset: [f64; RANGE_COUNT] = std::array::from_fn(|range| {
+        let before = (range + RANGE_COUNT - 1) % RANGE_COUNT;
+        let (gap_before, gap_after) = (GAPS_DEG[before], GAPS_DEG[range]);
+        let weight_before = 2.0 * gap_after + gap_before;
+        let weight_after = gap_after + 2.0 * gap_before;
+        let slope = (weight_before + weight_after)
+            / (weight_before / secant[before] + weight_after / secant[range]);
+        slope - 1.0
+    });
+    std::array::from_fn(|range| {
+        let next = (range + 1) % RANGE_COUNT;
+        let gap = GAPS_DEG[range];
+        let (d0, d1) = (displacement[range], displacement[next]);
+        let (s0, s1) = (gap * slope_offset[range], gap * slope_offset[next]);
+        [
+            d0 as f32,
+            s0 as f32,
+            (3.0 * (d1 - d0) - 2.0 * s0 - s1) as f32,
+            (2.0 * (d0 - d1) + s0 + s1) as f32,
+        ]
+    })
 }
 
 const fn as_f32(values: [f64; RANGE_COUNT]) -> [f32; RANGE_COUNT] {
@@ -125,7 +202,7 @@ const CENTRES: [f32; RANGE_COUNT] = as_f32(CENTRE_HUES_DEG);
 const GAPS: [f32; RANGE_COUNT] = as_f32(GAPS_DEG);
 
 /// The chroma ramp `w_c(C)`: exactly `0` on the achromatic axis, smoothstep to exactly `1` at and
-/// above [`CHROMA_RAMP_EDGE`].
+/// above [`CHROMA_RAMP_EDGE`]. It scales the rotation, the luminance amount and a chroma increase.
 fn chroma_ramp(chroma: f32) -> f32 {
     let t = (chroma / CHROMA_RAMP_EDGE).clamp(0.0, 1.0);
     t * t * (3.0 - 2.0 * t)
@@ -142,7 +219,8 @@ fn normalize_hue_deg(hue_deg: f32) -> f32 {
 }
 
 /// The segment a hue falls in: the centre most recently passed going counter-clockwise, and the
-/// fraction `t` of the way across that pair's gap.
+/// fraction `t` of the way across that pair's gap. The hue warp's cubic and the saturation and
+/// luminance weights are both evaluated at this one `(segment, t)`.
 ///
 /// Chosen by `argmin` over the wrapped distances rather than by an interval test, exactly as the
 /// reference does, so no hue is left unassigned whatever rounding does at a segment edge: a hue a
@@ -170,21 +248,21 @@ fn luminance_response(l: f32, amount: f32) -> f32 {
     core.powf(gamma) + (l - core)
 }
 
-/// The colour mixer unit: twenty-four sliders reduced to three per-range f32 coefficient arrays.
+/// The colour mixer unit: twenty-four sliders reduced to the hue warp's eight cubics and two
+/// per-range f32 coefficient arrays.
 ///
 /// The stored f64 values are kept only for [`PointwiseColor::describe`] and the finiteness check;
-/// nothing per-pixel reads them. The three coefficient arrays are the whole of the unit's state:
-/// 24 f32 values, a fixed 96 bytes, allocated once when a layer compiles and never again.
+/// nothing per-pixel reads them. The coefficient arrays are the whole of the unit's state: 48 f32
+/// values, a fixed 192 bytes, computed once when a layer compiles and never again.
 #[derive(Debug)]
 pub(super) struct Mixer {
     hue: [f64; RANGE_COUNT],
     saturation: [f64; RANGE_COUNT],
     luminance: [f64; RANGE_COUNT],
-    /// `(hue_i / 100) * theta_i(sign)`: the rotation in degrees this range contributes at weight
-    /// one. The direction of travel, and so which half-gap bounds it, depends only on the slider's
-    /// sign, never on the pixel, so the whole product is a per-range constant.
-    rotation_deg: [f32; RANGE_COUNT],
-    /// `(saturation_i / 100) * k_s`: this range's contribution to the chroma factor's sum.
+    /// The hue warp's displacement `D(h) = H(h) - h` on each segment, as the power-basis cubic
+    /// `[c0, c1, c2, c3]` in the fraction `t` across it, degrees.
+    hue_warp: [[f32; 4]; RANGE_COUNT],
+    /// `(saturation_i / 100) * k_s`: this range's contribution to the saturation sum.
     chroma_gain: [f32; RANGE_COUNT],
     /// `luminance_i / 100`: this range's contribution to the luminance amount `m`.
     luminance_amount: [f32; RANGE_COUNT],
@@ -197,43 +275,47 @@ impl Mixer {
         saturation: [f64; RANGE_COUNT],
         luminance: [f64; RANGE_COUNT],
     ) -> Self {
-        let rotation_deg = std::array::from_fn(|range| {
-            let amount = hue[range] / 100.0;
-            (amount * max_rotation_deg(range, amount >= 0.0)) as f32
-        });
         let chroma_gain =
             std::array::from_fn(|range| (saturation[range] / 100.0 * SATURATION_GAIN_F64) as f32);
         let luminance_amount = std::array::from_fn(|range| (luminance[range] / 100.0) as f32);
         Self {
+            hue_warp: hue_warp(&hue),
             hue,
             saturation,
             luminance,
-            rotation_deg,
             chroma_gain,
             luminance_amount,
         }
     }
 
-    /// The three weighted amounts one pixel sees, from weights evaluated once on that pixel: the
-    /// rotation in degrees, the chroma factor and the luminance amount `m`.
+    /// The three amounts one pixel sees, evaluated once on that pixel: the rotation in degrees, the
+    /// chroma factor and the luminance amount `m`.
     ///
-    /// Exactly two range weights are non-zero, so this reads two entries of each coefficient array
-    /// rather than summing over eight; the other six terms are `+0.0` in the frozen equations and
-    /// adding `+0.0` is exact.
+    /// The rotation is the hue warp's cubic on the pixel's segment, scaled by the ramp. Exactly two
+    /// range weights are non-zero, so the saturation and luminance sums read two entries of each
+    /// coefficient array rather than summing over eight; the other six terms are `+0.0` in the
+    /// frozen equations and adding `+0.0` is exact.
     fn amounts(&self, ramp: f32, hue_deg: f32) -> (f32, f32, f32) {
         let (lower, t) = segment(hue_deg);
         let upper = (lower + 1) % RANGE_COUNT;
+        let [c0, c1, c2, c3] = self.hue_warp[lower];
+        let rotation = ramp * (c0 + t * (c1 + t * (c2 + t * c3)));
         let weight = 0.5 * (1.0 + (std::f32::consts::PI * t).cos());
         let other = 1.0 - weight;
-        let rotation =
-            ramp * (weight * self.rotation_deg[lower] + other * self.rotation_deg[upper]);
-        let saturation =
-            ramp * (weight * self.chroma_gain[lower] + other * self.chroma_gain[upper]);
+        let saturation = weight * self.chroma_gain[lower] + other * self.chroma_gain[upper];
+        // A decrease is applied in full and only an increase is ramped: the ramp keeps a slider
+        // from colouring a near-grey, not from greying it. `weight + other` is exactly one, so
+        // every saturation slider at -100 makes this sum exactly -1 and the factor exactly 0.
+        let factor = if saturation < 0.0 {
+            1.0 + saturation
+        } else {
+            1.0 + ramp * saturation
+        };
         let amount =
             ramp * (weight * self.luminance_amount[lower] + other * self.luminance_amount[upper]);
         // The factor cannot be negative in exact arithmetic; the clamp is the frozen guard against
         // a rounded sum landing a hair below -1.
-        (rotation, (1.0 + saturation).max(0.0), amount)
+        (rotation, factor.max(0.0), amount)
     }
 }
 
@@ -241,20 +323,22 @@ impl PointwiseColor for Mixer {
     /// One Oklab round trip per pixel, with the row coordinates ignored: the mixer is pointwise in
     /// the strict sense.
     ///
-    /// The two branches are exactness, not approximation. A pixel whose chroma ramp is zero — every
-    /// grey and near-grey — has all three amounts exactly zero, where the frozen equations
-    /// multiply by `cos 0 = 1`, `sin 0 = 0`, factor `1` and `L^1`; skipping the rotation and the
-    /// response computes the identical numbers without the transcendental calls. The same holds
-    /// per effect when only some of the sliders are set.
+    /// The branches are exactness, not approximation. A pixel with `a = b = 0` exactly — black,
+    /// for one — has a ramp of zero, so its rotation and luminance amount are exactly zero and any
+    /// chroma factor leaves `(0, 0)` where it is: the frozen equations reconstruct it as `L^3`, and
+    /// the branch computes that without the hue angle. A zero rotation skips `sin_cos` where the
+    /// equations multiply by `cos 0 = 1` and `sin 0 = 0`, and a zero luminance amount skips the
+    /// response where they raise to the power `1`.
     fn apply_row(&self, _y: u32, _x0: u32, rgb: &mut [[f32; 3]]) {
         for pixel in rgb {
             let lab = colour::to_oklab(*pixel);
+            if lab.a == 0.0 && lab.b == 0.0 {
+                *pixel = colour::from_oklab(lab);
+                continue;
+            }
             let ramp = chroma_ramp(colour::chroma(lab));
-            let (rotation, factor, amount) = if ramp == 0.0 {
-                (0.0, 1.0, 0.0)
-            } else {
-                self.amounts(ramp, normalize_hue_deg(colour::hue_degrees(lab)))
-            };
+            let (rotation, factor, amount) =
+                self.amounts(ramp, normalize_hue_deg(colour::hue_degrees(lab)));
             // Hue, then chroma, applied to the `(a, b)` vector directly — rotate, then scale —
             // rather than by recomposing `C` and `h`: a rotation and a non-negative scalar commute,
             // so this realizes the frozen `(C, h)` equations exactly while leaving a zero rotation
@@ -285,8 +369,9 @@ impl PointwiseColor for Mixer {
             .chain(&self.luminance)
             .all(|value| value.is_finite());
         let derived = self
-            .rotation_deg
+            .hue_warp
             .iter()
+            .flatten()
             .chain(&self.chroma_gain)
             .chain(&self.luminance_amount)
             .all(|value| value.is_finite());
@@ -376,36 +461,159 @@ mod tests {
         assert!((total - 360.0).abs() < 1e-9, "the eight gaps span one turn");
     }
 
-    /// `+100` reaches half the gap to the neighbour in the direction of travel, and `-100` half the
-    /// gap behind: the study's per-range, per-direction bound, read off the coefficients the unit
-    /// actually holds.
+    fn hue_only(hue: [f64; RANGE_COUNT]) -> Mixer {
+        Mixer::new(hue, [0.0; RANGE_COUNT], [0.0; RANGE_COUNT])
+    }
+
+    fn srgb_codes(codes: [u8; 3]) -> [f32; 3] {
+        codes.map(|code| code_to_linear(code) as f32)
+    }
+
+    fn hue_of(rgb: [f32; 3]) -> f64 {
+        f64::from(normalize_hue_deg(colour::hue_degrees(colour::to_oklab(
+            rgb,
+        ))))
+    }
+
+    /// `+100` displaces a centre by the reach of the gap to the neighbour in the direction of
+    /// travel, and `-100` by the reach of the gap behind: read off the knot values the unit holds,
+    /// then measured on the reference colour itself through the whole unit.
     #[test]
-    fn the_rotation_coefficient_is_half_the_gap_in_the_direction_of_travel() {
+    fn a_full_hue_slider_moves_its_centre_the_reach_of_the_gap_in_the_direction_of_travel() {
         for range in 0..RANGE_COUNT {
-            let mut hue = [0.0; RANGE_COUNT];
-            hue[range] = 100.0;
-            let forward = Mixer::new(hue, [0.0; RANGE_COUNT], [0.0; RANGE_COUNT]);
-            assert!(
-                (f64::from(forward.rotation_deg[range]) - 0.5 * GAPS_DEG[range]).abs() < 1e-4,
-                "{}",
-                RANGE_NAMES[range]
-            );
-            hue[range] = -100.0;
-            let backward = Mixer::new(hue, [0.0; RANGE_COUNT], [0.0; RANGE_COUNT]);
-            let behind = GAPS_DEG[(range + RANGE_COUNT - 1) % RANGE_COUNT];
-            assert!(
-                (f64::from(backward.rotation_deg[range]) + 0.5 * behind).abs() < 1e-4,
-                "{}",
-                RANGE_NAMES[range]
-            );
+            let colour = srgb_codes(RANGE_REFERENCE_CODES[range]);
+            let start = hue_of(colour);
+            for (value, gap) in [
+                (100.0, GAPS_DEG[range]),
+                (-100.0, -GAPS_DEG[(range + RANGE_COUNT - 1) % RANGE_COUNT]),
+            ] {
+                let mut hue = [0.0; RANGE_COUNT];
+                hue[range] = value;
+                let unit = hue_only(hue);
+                let expected = HUE_REACH_F64 * gap;
+                assert!(
+                    (f64::from(unit.hue_warp[range][0]) - expected).abs() < 1e-5,
+                    "{} at {value}: knot displacement {} against {expected}",
+                    RANGE_NAMES[range],
+                    unit.hue_warp[range][0]
+                );
+                let travelled =
+                    (hue_of(apply(colour, &unit)) - start + 540.0).rem_euclid(360.0) - 180.0;
+                assert!(
+                    (travelled - expected).abs() < 2e-3,
+                    "{} at {value}: the reference colour travelled {travelled} degrees, expected \
+                     {expected}",
+                    RANGE_NAMES[range]
+                );
+            }
         }
     }
 
-    /// Every one of the 256 grey codes is returned bit for bit by every single slider at both
-    /// extremes: the chroma ramp is exactly zero on the achromatic axis, so the unit takes the
-    /// identity branch and the only arithmetic left is the Oklab round trip the neutral unit does.
+    /// Two neighbours driven at each other share one slider's travel: at `+100`/`-100` each moves
+    /// half the reach, at `+60`/`-60` the pair is scaled by `100 / 120`, and at `+50`/`-50` the
+    /// limit is exactly met and nothing is scaled.
     #[test]
-    fn greys_are_bit_identical_to_the_neutral_round_trip_under_every_slider() {
+    fn opposing_neighbours_share_one_sliders_travel() {
+        for range in 0..RANGE_COUNT {
+            let next = (range + 1) % RANGE_COUNT;
+            let reach = HUE_REACH_F64 * GAPS_DEG[range];
+            for (magnitude, expected_each) in [
+                (100.0, 0.5 * reach),
+                (60.0, 0.5 * reach),
+                (50.0, 0.5 * reach),
+                (30.0, 0.3 * reach),
+            ] {
+                let mut hue = [0.0; RANGE_COUNT];
+                hue[range] = magnitude;
+                hue[next] = -magnitude;
+                let unit = hue_only(hue);
+                assert!(
+                    (f64::from(unit.hue_warp[range][0]) - expected_each).abs() < 1e-5
+                        && (f64::from(unit.hue_warp[next][0]) + expected_each).abs() < 1e-5,
+                    "{} +{magnitude} against {} -{magnitude}: displacements {} and {}, expected \
+                     ±{expected_each}",
+                    RANGE_NAMES[range],
+                    RANGE_NAMES[next],
+                    unit.hue_warp[range][0],
+                    unit.hue_warp[next][0]
+                );
+            }
+        }
+    }
+
+    /// The warp `H(h) = h + D(h)` the unit evaluates, in f32 exactly as the pixel path does, is
+    /// strictly increasing around the whole circle for every one of the 3^8 combinations of the
+    /// eight hue sliders at `-100`, `0` and `+100`, sampled 450 times per segment.
+    #[test]
+    fn the_hue_warp_is_strictly_increasing_for_every_three_level_combination() {
+        const SAMPLES: u32 = 450;
+        let mut worst = f64::INFINITY;
+        for combination in 0..3usize.pow(RANGE_COUNT as u32) {
+            let mut code = combination;
+            let hue: [f64; RANGE_COUNT] = std::array::from_fn(|_| {
+                let level = code % 3;
+                code /= 3;
+                [-100.0, 0.0, 100.0][level]
+            });
+            let unit = hue_only(hue);
+            let mut previous = f64::NEG_INFINITY;
+            for (range, [c0, c1, c2, c3]) in unit.hue_warp.iter().enumerate() {
+                for step in 0..SAMPLES {
+                    let t = step as f32 / SAMPLES as f32;
+                    let displacement = c0 + t * (c1 + t * (c2 + t * c3));
+                    let input = CENTRE_HUES_DEG[range] + f64::from(t) * GAPS_DEG[range];
+                    let output = input + f64::from(displacement);
+                    assert!(
+                        output > previous,
+                        "{hue:?}: the warp folds at {input} degrees ({output} after {previous})"
+                    );
+                    if previous.is_finite() {
+                        worst = worst.min(output - previous);
+                    }
+                    previous = output;
+                }
+            }
+            let wrapped = CENTRE_HUES_DEG[0] + 360.0 + f64::from(unit.hue_warp[0][0]);
+            assert!(
+                wrapped > previous,
+                "{hue:?}: the warp folds across the seam"
+            );
+        }
+        assert!(worst > 0.0);
+    }
+
+    /// A single hue slider moves the knot it owns and changes the slopes of that knot and its two
+    /// neighbours, so its warp is confined to the four segments between the centres two ranges
+    /// either side. Every other segment's cubic is four exact zeros, so it rotates nothing.
+    #[test]
+    fn a_hue_slider_leaves_every_segment_beyond_its_neighbours_exactly_unmoved() {
+        for range in 0..RANGE_COUNT {
+            for value in [-100.0, -35.0, 20.0, 100.0] {
+                let mut hue = [0.0; RANGE_COUNT];
+                hue[range] = value;
+                let unit = hue_only(hue);
+                for (segment, coefficients) in unit.hue_warp.iter().enumerate() {
+                    let offset = (segment + RANGE_COUNT - range) % RANGE_COUNT;
+                    let inside = matches!(offset, 0 | 1 | 6 | 7);
+                    assert_eq!(
+                        coefficients.iter().all(|c| *c == 0.0),
+                        !inside,
+                        "{} at {value}: segment {segment} holds {coefficients:?}",
+                        RANGE_NAMES[range]
+                    );
+                }
+            }
+        }
+    }
+
+    /// Every one of the 256 grey codes is returned bit for bit by every hue and luminance slider
+    /// and every saturation increase at both extremes: those three are ramped, the ramp on a grey's
+    /// noise chroma rounds every amount to its identity in f32, and the only arithmetic left is the
+    /// round trip the neutral unit does. A saturation decrease is not ramped, so it may shrink a
+    /// grey's noise chroma further; the grey then still renders as the same code in all three
+    /// channels.
+    #[test]
+    fn greys_are_unchanged_under_every_slider() {
         let neutral = neutral();
         for code in 0u8..=255 {
             let linear = code_to_linear(code) as f32;
@@ -417,10 +625,54 @@ mod tests {
                         let mut sliders = [[0.0; RANGE_COUNT]; 3];
                         sliders[property][range] = value;
                         let unit = Mixer::new(sliders[0], sliders[1], sliders[2]);
+                        let produced = apply(grey, &unit);
+                        if property == 1 && value < 0.0 {
+                            assert_eq!(
+                                crate::render::quantize_pixel(produced),
+                                [code; 3],
+                                "grey {code} changed code under {} saturation {value}",
+                                RANGE_NAMES[range]
+                            );
+                        } else {
+                            assert_eq!(
+                                produced, expected,
+                                "grey {code} moved under {} {property} at {value}",
+                                RANGE_NAMES[range]
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// Hue and saturation reach a colour two centres away through their shared segment weights
+    /// and luminance does too; each is exactly `+0.0` beyond them, so saturation and luminance
+    /// change nothing two centres away. The hue warp's support is one segment wider (see
+    /// `a_hue_slider_leaves_every_segment_beyond_its_neighbours_exactly_unmoved`), so a hue slider
+    /// is checked three centres away. Equality, not a tolerance.
+    #[test]
+    fn a_colour_outside_a_sliders_support_is_bit_identical_under_it() {
+        let neutral = neutral();
+        for range in 0..RANGE_COUNT {
+            for property in 0..3 {
+                let offsets = if property == 0 {
+                    [3usize, RANGE_COUNT - 3]
+                } else {
+                    [2usize, RANGE_COUNT - 2]
+                };
+                for offset in offsets {
+                    let rgb = srgb_codes(RANGE_REFERENCE_CODES[(range + offset) % RANGE_COUNT]);
+                    let expected = apply(rgb, &neutral);
+                    for value in [-100.0, 50.0, 100.0] {
+                        let mut sliders = [[0.0; RANGE_COUNT]; 3];
+                        sliders[property][range] = value;
+                        let unit = Mixer::new(sliders[0], sliders[1], sliders[2]);
                         assert_eq!(
-                            apply(grey, &unit),
+                            apply(rgb, &unit),
                             expected,
-                            "grey {code} moved under {} {property} at {value}",
+                            "{} at {value} (property {property}) moved the colour {offset} \
+                             centres away",
                             RANGE_NAMES[range]
                         );
                     }
@@ -429,33 +681,94 @@ mod tests {
         }
     }
 
-    /// A range's weight is exactly `+0.0` outside the two segments beside its centre, so its three
-    /// sliders change nothing there — equality, not a tolerance.
-    #[test]
-    fn a_zero_weight_colour_is_bit_identical_under_that_range() {
-        let neutral = neutral();
-        for range in 0..RANGE_COUNT {
-            for offset in [2usize, RANGE_COUNT - 2] {
-                let codes = RANGE_REFERENCE_CODES[(range + offset) % RANGE_COUNT];
-                let rgb = [
-                    code_to_linear(codes[0]) as f32,
-                    code_to_linear(codes[1]) as f32,
-                    code_to_linear(codes[2]) as f32,
-                ];
-                let expected = apply(rgb, &neutral);
-                for value in [-100.0, 50.0, 100.0] {
-                    for property in 0..3 {
-                        let mut sliders = [[0.0; RANGE_COUNT]; 3];
-                        sliders[property][range] = value;
-                        let unit = Mixer::new(sliders[0], sliders[1], sliders[2]);
-                        assert_eq!(
-                            apply(rgb, &unit),
-                            expected,
-                            "{} at {value} (property {property}) moved a two-centres-away colour",
-                            RANGE_NAMES[range]
-                        );
-                    }
+    /// A pseudo-random stream of pixels: saturated, pastel, near-grey, very dark and out of the
+    /// `[0, 1]` range.
+    fn awkward_pixels(count: usize) -> Vec<[f32; 3]> {
+        let mut state = 0x9e37_79b9_7f4a_7c15u64;
+        let mut next = move || {
+            state = state
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1_442_695_040_888_963_407);
+            (state >> 40) as f32 / (1u64 << 24) as f32
+        };
+        (0..count)
+            .map(|index| match index % 4 {
+                0 => [next(), next(), next()],
+                1 => {
+                    let grey = next();
+                    let noise = 0.01 * grey;
+                    [
+                        grey + noise * (next() - 0.5),
+                        grey + noise * (next() - 0.5),
+                        grey + noise * (next() - 0.5),
+                    ]
                 }
+                2 => [0.004 * next(), 0.004 * next(), 0.004 * next()],
+                _ => [1.6 * next() - 0.2, 1.6 * next() - 0.2, 1.6 * next() - 0.2],
+            })
+            .collect()
+    }
+
+    /// Every saturation slider at `-100` gives every pixel a chroma factor of exactly zero —
+    /// near-greys and the darkest pixels included, because a decrease is not ramped — and the
+    /// achromatic result reconstructs to three bit-identical channels.
+    #[test]
+    fn every_saturation_slider_at_minus_100_makes_every_pixel_exactly_grey() {
+        let unit = Mixer::new(
+            [0.0; RANGE_COUNT],
+            [-100.0; RANGE_COUNT],
+            [0.0; RANGE_COUNT],
+        );
+        for step in 0..36_000 {
+            let hue = step as f32 / 100.0;
+            for ramp in [0.0, 1e-6, 0.3, 1.0] {
+                assert_eq!(unit.amounts(ramp, hue).1, 0.0, "hue {hue}, ramp {ramp}");
+            }
+        }
+        for (index, pixel) in awkward_pixels(200_000).into_iter().enumerate() {
+            let [r, g, b] = apply(pixel, &unit);
+            assert!(
+                r == g && g == b,
+                "pixel {index} {pixel:?} came out as {:?}",
+                [r, g, b]
+            );
+        }
+        // The same with every luminance slider set too: the grey then carries the response.
+        let lit = Mixer::new(
+            [0.0; RANGE_COUNT],
+            [-100.0; RANGE_COUNT],
+            [60.0; RANGE_COUNT],
+        );
+        for pixel in awkward_pixels(20_000) {
+            let [r, g, b] = apply(pixel, &lit);
+            assert!(r == g && g == b, "{pixel:?} came out as {:?}", [r, g, b]);
+        }
+    }
+
+    /// A decrease is applied in full whatever the chroma, and only an increase is scaled by the
+    /// ramp: at a range's own centre, `-50` gives the factor `0.5` at any ramp and `+50` gives
+    /// `1 + 0.5 * ramp`.
+    #[test]
+    fn a_saturation_decrease_is_not_ramped_and_an_increase_is() {
+        for range in 0..RANGE_COUNT {
+            let centre = CENTRES[range];
+            for (value, ramp, expected) in [
+                (-50.0, 0.0, 0.5),
+                (-50.0, 0.25, 0.5),
+                (-50.0, 1.0, 0.5),
+                (50.0, 0.0, 1.0),
+                (50.0, 0.25, 1.125),
+                (50.0, 1.0, 1.5),
+            ] {
+                let mut saturation = [0.0; RANGE_COUNT];
+                saturation[range] = value;
+                let unit = Mixer::new([0.0; RANGE_COUNT], saturation, [0.0; RANGE_COUNT]);
+                let factor = unit.amounts(ramp, centre).1;
+                assert!(
+                    (factor - expected).abs() < 1e-6,
+                    "{} at {value}, ramp {ramp}: factor {factor}, expected {expected}",
+                    RANGE_NAMES[range]
+                );
             }
         }
     }
@@ -490,7 +803,7 @@ mod tests {
         std::array::from_fn(|range| values[range].as_f64().expect("a number"))
     }
 
-    /// Production against every one of the 414 frozen cases, in linear light, within the study's
+    /// Production against every one of the 576 frozen cases, in linear light, within the study's
     /// frozen tolerance `1e-5 + 1e-5 * |reference|`. The 8-bit inputs are decoded in f64 exactly as
     /// the reference decodes them and cast to f32, so what this measures is the unit's own f32
     /// error and nothing else; the quantization boundary is checked through the real render path in
@@ -510,7 +823,7 @@ mod tests {
         );
         let sets = file["parameter_sets"].as_array().expect("the sets");
         let cases = file["cases"].as_array().expect("the cases");
-        assert_eq!(cases.len(), 414, "every frozen case is checked");
+        assert_eq!(cases.len(), 576, "every frozen case is checked");
 
         let mut worst = 0.0f64;
         let mut worst_case = String::new();

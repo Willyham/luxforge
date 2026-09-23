@@ -170,7 +170,7 @@ fn same(what: &str, a: f64, b: f64) -> Result {
     )
 }
 
-pub fn verify(evidence: &Path, app: &Value, _events: &[Value]) -> Result {
+pub fn verify(evidence: &Path, app: &Value, events: &[Value]) -> Result {
     let frames = app["frames"].as_array().ok_or("Missing frames")?.clone();
     ensure(
         app["had_input_errors"] == json!(false),
@@ -522,10 +522,15 @@ pub fn verify(evidence: &Path, app: &Value, _events: &[Value]) -> Result {
         json!({"revision": revision(&frames[10])?, "mean_luminance": luminance[10]}),
     );
 
+    // Every drafted and committed frame the gesture presented reports its own render time, and the
+    // status bar in each captured frame states one of them, not the time since the open.
+    let render_times = crate::smoke::expect_render_times(events, &frames)?;
+
     write_json(
         &evidence.join("basic-checks.json"),
         &json!({
             "checks": checks,
+            "render_times": render_times,
             "mean_luminance_per_frame": luminance,
             "brighter_margin": BRIGHTER,
             "same_tolerance": SAME,

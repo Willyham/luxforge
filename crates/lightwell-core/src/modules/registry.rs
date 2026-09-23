@@ -941,6 +941,127 @@ pub(crate) mod tests {
         }
     }
 
+    pub(crate) const HELD_EFFECT: &str = "test.held.effect";
+    pub(crate) const HELD_ACTION: &str = "hold-render";
+
+    /// A gate a test shuts to hold every render that reaches it. It is a pointwise colour unit that
+    /// leaves its pixels exactly as it found them, so a stack carrying one renders the image it
+    /// would render without it; all it changes is *when* that render finishes.
+    ///
+    /// Shut it only while nothing samples a stack that holds the layer: a point sample evaluates
+    /// the same unit on the calling thread, so the caller would wait with it.
+    pub(crate) struct RenderGate {
+        shut: std::sync::Mutex<bool>,
+        opened: std::sync::Condvar,
+    }
+
+    impl RenderGate {
+        /// A gate that is open, which is how a test builds the stack before it holds anything.
+        pub(crate) fn open_gate() -> Arc<Self> {
+            Arc::new(Self {
+                shut: std::sync::Mutex::new(false),
+                opened: std::sync::Condvar::new(),
+            })
+        }
+        /// Hold every render that reaches this gate from now on.
+        pub(crate) fn shut(&self) {
+            *self.shut.lock().expect("the render gate") = true;
+        }
+        /// Release whatever is waiting and let every later render through.
+        pub(crate) fn open(&self) {
+            *self.shut.lock().expect("the render gate") = false;
+            self.opened.notify_all();
+        }
+    }
+
+    impl crate::PointwiseColor for RenderGate {
+        fn apply_row(&self, _: u32, _: u32, _: &mut [[f32; 3]]) {
+            let mut shut = self.shut.lock().expect("the render gate");
+            while *shut {
+                shut = self.opened.wait(shut).expect("the render gate");
+            }
+        }
+        fn is_finite(&self) -> bool {
+            true
+        }
+        fn describe(&self) -> String {
+            "held render".into()
+        }
+    }
+
+    /// A module whose one colour effect compiles to a [`RenderGate`]. A test that is about the
+    /// analysis worker's slots commits one of these layers and shuts the gate: the job on the
+    /// worker then stays there until the test opens it, so what the single pending slot does is
+    /// decided by the queue's rule and never by how fast this machine renders a frame.
+    pub(crate) struct HeldModule {
+        descriptor: ModuleDescriptor,
+        gate: Arc<RenderGate>,
+    }
+
+    impl HeldModule {
+        pub(crate) fn shared(gate: Arc<RenderGate>) -> Arc<dyn ToolModule> {
+            Arc::new(Self {
+                descriptor: ModuleDescriptor {
+                    id: "test.held".into(),
+                    title: "Held".into(),
+                    hint: None,
+                    effects: vec![EffectDescriptor {
+                        id: HELD_EFFECT.into(),
+                        format: EFFECT_FORMAT,
+                        stage: EffectStage::Color,
+                        order: 0,
+                        artifacts: false,
+                    }],
+                    actions: vec![ActionDescriptor {
+                        id: HELD_ACTION.into(),
+                        title: "Hold render".into(),
+                        notes: "commits one colour layer whose render waits for the test's gate"
+                            .into(),
+                        summary: None,
+                        patch: false,
+                        parameters: Vec::new(),
+                    }],
+                    queries: Vec::new(),
+                    controls: Vec::new(),
+                    reset: None,
+                    canvas: None,
+                    developer: false,
+                    collapsed: false,
+                    layout: crate::ModuleLayout::Stacked,
+                    availability: Availability::Available,
+                    ..ModuleDescriptor::default()
+                },
+                gate,
+            })
+        }
+    }
+
+    impl ToolModule for HeldModule {
+        fn descriptor(&self) -> &ModuleDescriptor {
+            &self.descriptor
+        }
+        fn parse(&self, action_id: &str, _: &Map<String, Value>) -> Result<ActionInput, Error> {
+            Ok(ActionInput {
+                action_id: action_id.into(),
+                parameters: Map::new(),
+            })
+        }
+        fn plan(&self, _: &ActionInput, _: &StageContext<'_>) -> Result<ActionPlan, Error> {
+            Ok(ActionPlan::Commit(test_layer(HELD_EFFECT)))
+        }
+        fn validate_payload(&self, _: &str, _: u32, _: &Value) -> Result<(), Error> {
+            Ok(())
+        }
+        fn describe_layer(&self, _: &str, _: u32, _: &Value) -> Result<String, Error> {
+            Ok("held render".into())
+        }
+        fn compile(&self, _: &str, _: u32, _: &Value, _: Stage) -> Result<Processing, Error> {
+            Ok(Processing::Color(crate::ColorOperation::new(vec![
+                self.gate.clone(),
+            ])))
+        }
+    }
+
     pub(crate) fn test_layer(effect: &str) -> Layer {
         Layer {
             id: LayerId::new(),

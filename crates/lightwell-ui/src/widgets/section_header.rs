@@ -208,13 +208,15 @@ mod tests {
     #[test]
     fn section_heights_follow_the_density() {
         assert_eq!(collapsed_section_height(), 33.0);
-        // Presence: one group header (with its margin) and three sliders.
+        // A module whose controls are one group draws them with no sub-group header, so
+        // Presence, Vignette, Transforms and RAW are their rows alone.
+        // Presence: three sliders.
         let group = theme::GROUP_MARGIN + theme::GROUP_HEADER_HEIGHT;
-        let presence = expanded_section_height(group + 3.0 * theme::SLIDER_ROW_HEIGHT, 4);
-        // Vignette: one group header and four sliders.
-        let vignette = expanded_section_height(group + 4.0 * theme::SLIDER_ROW_HEIGHT, 5);
-        assert_eq!(presence, 165.0);
-        assert_eq!(vignette, 195.0);
+        let presence = expanded_section_height(3.0 * theme::SLIDER_ROW_HEIGHT, 3);
+        // Vignette: four sliders.
+        let vignette = expanded_section_height(4.0 * theme::SLIDER_ROW_HEIGHT, 4);
+        assert_eq!(presence, 135.0);
+        assert_eq!(vignette, 165.0);
         // Basic: three group headers, ten sliders and the picker's button row.
         let basic = expanded_section_height(
             3.0 * group
@@ -229,29 +231,25 @@ mod tests {
             14,
         );
         assert_eq!(basic, 465.0);
-        // Transforms: one group header and its icon row straight under it.
+        // Transforms: its icon row alone, the first and last row of the body, as Crop's idle
+        // button row is.
         let transforms = expanded_section_height(
-            group
-                + super::super::button_row_height(
-                    super::super::ButtonSize::Regular,
-                    super::super::RowPlacement {
-                        after_header: true,
-                        followed: false,
-                    },
-                ),
-            2,
+            super::super::button_row_height(
+                super::super::ButtonSize::Regular,
+                super::super::RowPlacement::default(),
+            ),
+            1,
         );
-        assert_eq!(transforms, 105.0);
-        // RAW: one group header, three sliders and the picker row ending the section.
+        assert_eq!(transforms, 77.0);
+        // RAW: three sliders and the picker row ending the section.
         let raw = expanded_section_height(
-            group
-                + 3.0 * theme::SLIDER_ROW_HEIGHT
+            3.0 * theme::SLIDER_ROW_HEIGHT
                 + super::super::button_row_height(
                     super::super::ButtonSize::Compact,
                     super::super::RowPlacement::default(),
                 ),
-            5,
+            4,
         );
-        assert_eq!(raw, 193.0);
+        assert_eq!(raw, 163.0);
     }
 }

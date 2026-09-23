@@ -73,9 +73,16 @@ pub(crate) struct Upload {
     /// These proxy pixels approximate the exact render at display size, because the stack holds
     /// a spatial-stage layer whose neighbourhoods scale with the stage.
     pub(crate) proxy_approximate: bool,
+    /// These pixels approximate a drafted RAW white balance on planes developed at another one,
+    /// at either phase ([`lightwell_core::PreviewResult::approximate_white_balance`]).
+    pub(crate) approximate_white_balance: bool,
     /// Why these pixels are being uploaded when no render asked for it: `Some("zoom")` is the
     /// retained raster a zoom change needed. `None` is the ordinary path, a rendered frame.
     pub(crate) reason: Option<&'static str>,
+    /// How long these pixels took to render: the preview worker's own time for the phase that
+    /// produced them, carried with a retained frame when a zoom hands it back. `None` only when
+    /// nothing recorded one for a retained raster.
+    pub(crate) render_ms: Option<f64>,
 }
 
 /// What one live-refresh poll found. One poll answers every kind of change: the asset's state is

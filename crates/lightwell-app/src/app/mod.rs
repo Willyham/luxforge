@@ -39,7 +39,7 @@ use crate::{
 };
 use crop::PendingDraft;
 use evidence::{EVIDENCE_DEADLINE, Evidence, SCRIPT_EVIDENCE_DEADLINE, Settle};
-use fields::{Fields, action_params, number_text, reset_field_preset, submit_preset};
+use fields::{Fields, action_params, number_text, submit_preset};
 use iced::{Element, Subscription, Task, widget::operation};
 use iced_runtime::image as image_memory;
 use lightwell_core::{
@@ -82,10 +82,15 @@ pub(crate) struct Activity {
     pub(crate) preview_dimensions: Option<(u32, u32)>,
     pub(crate) orientation: Option<u8>,
     pub(crate) backend: Option<Value>,
+    /// When the newest open or commit-style request began. Only the events that measure a request
+    /// end to end read it (`open_to_raster_ms`, `request_to_capture_ms`); a frame's own render time
+    /// is [`Self::render`], because slider drafts, zoom hand-overs, refits and exact phases all
+    /// present frames long after this was last reset.
     pub(crate) request_started: Instant,
-    /// How long the displayed preview took from its request to reaching the screen, for the
-    /// status bar.
-    pub(crate) render_ms: Option<f64>,
+    /// How long the frame on the photo surface took to render, as the preview worker measured that
+    /// frame's own phase, for the status bar. Set by every presented frame, including a retained
+    /// one a zoom hands back, which brings the time recorded with it.
+    pub(crate) render: Option<state::status::RenderTime>,
 }
 
 /// Catalog ownership and the live service start before the window so failures are reported, not panics.
@@ -312,6 +317,12 @@ pub(crate) struct ProxyFrame {
     pub(crate) built: bool,
     /// The frame approximates the exact render at display size: the stack holds a spatial layer.
     pub(crate) approximate: bool,
+    /// The frame approximates a drafted RAW white balance on planes developed at another one, as
+    /// the exact phase of the same job does.
+    pub(crate) approximate_white_balance: bool,
+    /// The proxy phase's own worker time, so a zoom that hands this frame back to the surface
+    /// reports how long this picture took rather than whatever was presented last.
+    pub(crate) render_ms: f64,
 }
 
 /// What a presented proxy frame holds back until its generation's exact phase lands.
@@ -333,6 +344,8 @@ pub(crate) struct HeldByProxy {
 /// whether a message waited on the desktop's own work or on the runtime.
 #[derive(Clone, Copy, Debug, Default)]
 pub(crate) struct LoopTiming {
+    /// How many times the view has been built, over the life of the process.
+    pub(crate) views: u64,
     pub(crate) last_update_ms: f64,
     pub(crate) last_rederive_ms: f64,
     pub(crate) last_view_ms: f64,
@@ -390,6 +403,15 @@ pub(crate) struct Editor {
     /// still rendering does not, so the mask always describes the photograph on screen — a drafted
     /// one during a gesture exactly as much as a committed one.
     pub(crate) raster: Option<(u64, Arc<lightwell_core::Raster>)>,
+    /// The retained raster approximates a drafted RAW white balance: it is the full-size phase of
+    /// such a job, which carries no report. A clipping overlay derived from it says `approximate`,
+    /// and it replaces no report.
+    pub(crate) raster_approximate_white_balance: bool,
+    /// The exact phase's own worker time for the generation it names, recorded when that phase is
+    /// taken up, so a zoom that hands the retained exact raster to the surface reports that
+    /// picture's render time. Keyed by generation like [`Self::raster`], and only read for the
+    /// generation on screen.
+    pub(crate) exact_render_ms: Option<(u64, f64)>,
     /// The displayed frame's histogram report, adopted with the pixels under the same generation.
     pub(crate) analysis: Option<Analysis>,
     /// The report and raster of a frame whose pixels have not reached the GPU yet. The histogram
@@ -406,6 +428,9 @@ pub(crate) struct Editor {
     pub(crate) presented_generation: u64,
     /// The texture on screen is the display proxy rather than the exact render.
     pub(crate) presented_proxy: bool,
+    /// The frame on screen approximates a drafted RAW white balance on planes developed at another
+    /// one. The histogram is never adopted from such a frame.
+    pub(crate) presented_approximate_white_balance: bool,
     /// The bounds each requested job was given, by generation, until its frame is presented. The
     /// bounds are decided when the job is requested, on this thread, so the frame reflects the
     /// window, the panels and the display scale of that moment rather than of the moment its
@@ -483,6 +508,8 @@ pub(crate) struct Editor {
     /// The open slider gesture's draft, when a control of a patch action is being moved. At most
     /// one draft exists per client, so this and the crop draft exclude each other.
     pub(crate) slider_draft: Option<SliderDraft>,
+    /// A field reset waiting for the gesture commit or request in flight to answer.
+    pub(crate) pending_reset: Option<slider::PendingReset>,
     /// The draft revision the displayed preview was rendered from, for correlation.
     pub(crate) displayed_draft_revision: Option<u64>,
     /// Sections the person collapsed or expanded; every other follows the default.
@@ -566,8 +593,11 @@ impl Editor {
                 saving: false,
                 had_errors: false,
                 paced_slider: None,
+                second_click: None,
                 tools_scroll: None,
                 capability_wait: None,
+                wait_until: None,
+                sync: evidence::CaptureSync::default(),
             }
         });
         let initial = config.files.pop_front();
@@ -590,7 +620,7 @@ impl Editor {
                 orientation: None,
                 backend: None,
                 request_started: Instant::now(),
-                render_ms: None,
+                render: None,
             },
             evidence,
             diagnostics: config.diagnostics.clone(),
@@ -616,10 +646,13 @@ impl Editor {
             preview_queue: PreviewQueue::default(),
             preview_generation: 0,
             raster: None,
+            raster_approximate_white_balance: false,
+            exact_render_ms: None,
             analysis: None,
             incoming: None,
             presented_generation: 0,
             presented_proxy: false,
+            presented_approximate_white_balance: false,
             pending_bounds: BTreeMap::new(),
             presented_bounds: None,
             refit_pending: false,
@@ -659,6 +692,7 @@ impl Editor {
             editing: None,
             dragging: None,
             slider_draft: None,
+            pending_reset: None,
             displayed_draft_revision: None,
             expanded: BTreeMap::new(),
             recipe: None,
@@ -820,7 +854,7 @@ impl Editor {
                 entry.as_ref(),
             );
         }
-        json!({"run_id":self.run_id,"mode":if self.evidence.is_some() {"evidence"} else {"editor"},"selection":self.session.preview.selection,"orientation":self.activity.orientation,"phase":self.activity.phase,"requested_generation":self.activity.requested,"displayed_generation":self.activity.displayed,"displayed_draft_revision":self.displayed_draft_revision,"source_dimensions":self.activity.source_dimensions,"preview_dimensions":self.activity.preview_dimensions,"backend":self.activity.backend,"status":self.status,"error_code":self.activity.error_code,"modules":module_summary(&self.modules),"controls":self.fields.summary(),"control_ui":{"group_expanded":self.controls_ui.group_expanded,"selected_tab":self.controls_ui.selected_tab,"curve_channels":curve_channels,"curve_points":curve_points,"picker_open":picker_open,"curves":curves,"pickers":pickers},"gallery":gallery,"tools_scroll":tools_scroll,"crop":self.crop_summary(),"draft":self.draft_summary(),"stack":self.stack_summary(),"workspace":serde_json::to_value(&self.session.workspace).unwrap_or(Value::Null),"developer":self.developer,"expanded":self.workspace.expanded(),"pickers":self.workspace.pickers(),"notices":self.notice_titles(),"compare":self.compare_return.is_some(),"render_error":self.render_error_summary(),"palette":{"open":self.palette_open,"query":self.palette_query},"presets":self.presets_summary(),"histogram":self.histogram_summary(),"readout":self.readout_summary(),"proxy":self.proxy_summary(),"scratch":Self::scratch_summary(),"capabilities":state::capabilities::summary(&self.capabilities,&self.modules,self.state.as_ref())})
+        json!({"run_id":self.run_id,"mode":if self.evidence.is_some() {"evidence"} else {"editor"},"selection":self.session.preview.selection,"orientation":self.activity.orientation,"phase":self.activity.phase,"requested_generation":self.activity.requested,"displayed_generation":self.activity.displayed,"displayed_draft_revision":self.displayed_draft_revision,"source_dimensions":self.activity.source_dimensions,"preview_dimensions":self.activity.preview_dimensions,"backend":self.activity.backend,"status":self.status,"error_code":self.activity.error_code,"modules":module_summary(&self.modules),"controls":self.fields.summary(),"control_ui":{"group_expanded":self.controls_ui.group_expanded,"selected_tab":self.controls_ui.selected_tab,"curve_channels":curve_channels,"curve_points":curve_points,"picker_open":picker_open,"curves":curves,"pickers":pickers},"gallery":gallery,"tools_scroll":tools_scroll,"crop":self.crop_summary(),"draft":self.draft_summary(),"stack":self.stack_summary(),"workspace":serde_json::to_value(&self.session.workspace).unwrap_or(Value::Null),"developer":self.developer,"expanded":self.workspace.expanded(),"pickers":self.workspace.pickers(),"notices":self.notice_titles(),"compare":self.compare_return.is_some(),"render_error":self.render_error_summary(),"palette":{"open":self.palette_open,"query":self.palette_query},"presets":self.presets_summary(),"histogram":self.histogram_summary(),"readout":self.readout_summary(),"status_bar":self.status_bar_summary(),"proxy":self.proxy_summary(),"approximate_white_balance":self.presented_approximate_white_balance,"surface":self.surface_summary(),"scratch":Self::scratch_summary(),"capabilities":state::capabilities::summary(&self.capabilities,&self.modules,self.state.as_ref())})
     }
 
     /// The Presets section as the frame drew it: its rows, the create form and whether the section
@@ -872,7 +906,10 @@ impl Editor {
 
     /// The histogram inspector as a captured frame reports it: its status, the render identity the
     /// counts belong to, all ten endpoint counters and the count one full-height bin stands for, so
-    /// a frame's plot can be checked against an independent reduction of the same fixture.
+    /// a frame's plot can be checked against an independent reduction of the same fixture. Beside
+    /// them, where the inspector's words are drawn: `caption` is the domain the plot states on
+    /// hover, `notice` the text drawn inside the plot's own area (null while there is a report),
+    /// and `tooltips` what the plot and the two triangles state on hover.
     fn histogram_summary(&self) -> Value {
         let model = &self.workspace.histogram;
         let counters = &model.counters;
@@ -882,7 +919,8 @@ impl Editor {
             }
             None => Value::Null,
         };
-        json!({"status":model.status.as_str(),"stale":model.stale,"caption":model.caption,"identity":identity,"plotted_max":model.plotted_max,"reason":model.reason,"counters":{"r0":counters.r0,"g0":counters.g0,"b0":counters.b0,"r255":counters.r255,"g255":counters.g255,"b255":counters.b255,"any_shadow":counters.any_shadow,"any_highlight":counters.any_highlight,"all_shadow":counters.all_shadow,"all_highlight":counters.all_highlight,"both":counters.both},"overlay":self.overlay_summary()})
+        let tooltips = json!({"plot":model.caption,"shadow":model.shadow_tooltip(),"highlight":model.highlight_tooltip()});
+        json!({"status":model.status.as_str(),"stale":model.stale,"caption":model.caption,"notice":model.notice(),"tooltips":tooltips,"identity":identity,"plotted_max":model.plotted_max,"reason":model.reason,"counters":{"r0":counters.r0,"g0":counters.g0,"b0":counters.b0,"r255":counters.r255,"g255":counters.g255,"b255":counters.b255,"any_shadow":counters.any_shadow,"any_highlight":counters.any_highlight,"all_shadow":counters.all_shadow,"all_highlight":counters.all_highlight,"both":counters.both},"overlay":self.overlay_summary()})
     }
 
     /// The clipping overlay a captured frame was drawn with: its cell grid, which flags it covers
@@ -894,6 +932,25 @@ impl Editor {
             }
             None => Value::Null,
         }
+    }
+
+    /// The photograph's surface as a captured frame reports it: the view it is drawn at, the preview
+    /// generation whose raster it holds, that raster's size and version, how many rasters the
+    /// surface has written into its texture and how many times the view has been built. Two frames
+    /// with the same version and the same write count prove nothing was written between them,
+    /// however often the view was rebuilt meanwhile.
+    fn surface_summary(&self) -> Value {
+        json!({
+            "view": serde_json::to_value(&self.session.preview.view).unwrap_or(Value::Null),
+            "generation": self.presented_generation,
+            "raster": self.photo.as_ref().map(|photo| {
+                let (width, height) = photo.size();
+                json!([width, height])
+            }),
+            "version": self.photo.as_ref().map(lightwell_ui::PhotoRaster::version),
+            "texture_writes": lightwell_ui::photo_surface::texture_writes(),
+            "views": self.loop_timing.get().views,
+        })
     }
 
     /// The display proxy as a captured frame reports it: the bounds the next job will offer, what
@@ -929,6 +986,13 @@ impl Editor {
             }
             None => Value::Null,
         }
+    }
+
+    /// The status bar as the captured frame drew it: the pointer readout's slot (null when empty)
+    /// and the renderer's figure for the picture on screen.
+    fn status_bar_summary(&self) -> Value {
+        let model = &self.workspace.status;
+        json!({"readout":model.readout,"render":model.render,"render_ms":self.activity.render.map(|time| time.ms),"render_proxy":self.activity.render.map(|time| time.proxy),"render_approximate":self.activity.render.map(|time| time.approximate)})
     }
 
     /// The notices the captured frame drew, by title, so a frame's chrome is observable.
@@ -1130,6 +1194,9 @@ impl Editor {
     pub(crate) fn update(&mut self, message: Message) -> Task<Message> {
         let started = Instant::now();
         let task = self.update_inner(message);
+        if let Some(evidence) = &mut self.evidence {
+            evidence.sync.updates += 1;
+        }
         let mut timing = self.loop_timing.get();
         timing.last_update_ms = started.elapsed().as_secs_f64() * 1000.0;
         timing.last_update_end = Some(Instant::now());
@@ -1142,6 +1209,9 @@ impl Editor {
         let busy = self.preview_queue.is_busy() || self.overlay_queue.is_busy();
         let before_entry = self.displayed_entry();
         let task = self.dispatch(message);
+        // A reset that waited for this client's commit or request runs once nothing is in flight.
+        let task = Task::batch([task, self.run_pending_reset()]);
+        self.settle_when_quiet();
         if self.displayed_entry() != before_entry {
             self.controls_ui.curve_samples.clear();
             self.curve_sample_requested_source.clear();
@@ -1256,8 +1326,14 @@ impl Editor {
         identity: lightwell_core::analysis::AnalysisIdentity,
         report: Option<lightwell_core::analysis::Report>,
         raster: lightwell_core::Raster,
+        render_ms: f64,
+        approximate_white_balance: bool,
     ) -> Task<Message> {
         let dimensions = (identity.width, identity.height);
+        // Recorded beside the retained raster, so a zoom to 100% that hands it to the surface
+        // reports this render's time. The status bar keeps the proxy's figure meanwhile: the proxy
+        // is the picture on screen.
+        self.exact_render_ms = Some((generation, render_ms));
         // Shares the render's own `Arc<[u8]>`: retaining it copies no pixels.
         let retained = Arc::new(raster);
         match report {
@@ -1275,19 +1351,34 @@ impl Editor {
                 // not arrive.
                 self.adopt_analysis(generation);
             }
-            None => {
-                self.incoming = None;
-                self.analysis = None;
-                self.raster = Some((generation, retained));
-            }
+            None => self.retain_unreduced(generation, retained, approximate_white_balance),
         }
         self.event(
             "preview_exact_adopted",
-            json!({"generation":generation,"dimensions":[dimensions.0,dimensions.1]}),
+            json!({"generation":generation,"dimensions":[dimensions.0,dimensions.1],"render_ms":render_ms,"approximate_white_balance":approximate_white_balance}),
         );
         self.release_held(generation);
         // The queue may hold its next result; nothing else would ask for it.
         Task::done(Message::Poll)
+    }
+
+    /// Retain an exact-phase raster that carries no report. It replaces the retained raster now,
+    /// so no overlay is derived from an older image. A frame with no reduction for an ordinary
+    /// reason clears the report too; a frame that approximates a drafted RAW white balance never
+    /// had one to give, so the last exact report stays plotted, marked updating, until an exact
+    /// frame's report replaces it: the histogram is never adopted from an approximate frame.
+    fn retain_unreduced(
+        &mut self,
+        generation: u64,
+        raster: Arc<lightwell_core::Raster>,
+        approximate_white_balance: bool,
+    ) {
+        self.incoming = None;
+        if !approximate_white_balance {
+            self.analysis = None;
+        }
+        self.raster = Some((generation, raster));
+        self.raster_approximate_white_balance = approximate_white_balance;
     }
 
     /// Release what the presented proxy of this generation was holding back: the scripted step it
@@ -1348,6 +1439,7 @@ impl Editor {
             // beside it. One preview job produces the display-size frame this zoom wants, and it is
             // the only render any view change asks for.
             self.event("preview_proxy_requested", json!({ "zoom": zoom }));
+            self.await_requested_frame();
             return self.request_current_preview();
         }
         if !wants_proxy && self.presented_exact_raster().is_none() {
@@ -1377,28 +1469,51 @@ impl Editor {
             let Some(frame) = self.presented_proxy_frame() else {
                 return Task::none();
             };
-            let (generation, raster, dimensions, built, approximate) = (
+            let (generation, raster, dimensions, built, approximate, white_balance, render_ms) = (
                 frame.generation,
                 frame.raster.clone(),
                 frame.dimensions,
                 frame.built,
                 frame.approximate,
+                frame.approximate_white_balance,
+                frame.render_ms,
             );
-            return self.hand_retained(generation, raster, Some(dimensions), built, approximate);
+            return self.hand_retained(
+                generation,
+                raster,
+                Some(dimensions),
+                built,
+                approximate,
+                white_balance,
+                Some(render_ms),
+            );
         }
         let Some(raster) = self.presented_exact_raster().cloned() else {
             return Task::none();
         };
         let generation = self.presented_generation;
-        self.hand_retained(generation, raster, None, false, false)
+        let render_ms = self
+            .exact_render_ms
+            .filter(|(recorded, _)| *recorded == generation)
+            .map(|(_, ms)| ms);
+        let white_balance = self.raster_approximate_white_balance;
+        self.hand_retained(
+            generation,
+            raster,
+            None,
+            false,
+            false,
+            white_balance,
+            render_ms,
+        )
     }
 
     /// One preview job for the entry on screen, at the bounds the view now asks for. The zoom rule
     /// is the only caller, and only when the pixels it needs do not exist.
     /// Queue one preview job with the bounds of this moment. Every job goes through here: the
     /// bounds a task carried from the owner are replaced by what the window, the panels and the
-    /// display scale ask for now, so the first frame after launch is already at the display's
-    /// scale and a job requested during a resize is sized for the window it will be shown in. A
+    /// display scale ask for now, so a job requested once the display scale is known is already at
+    /// it and a job requested during a resize is sized for the window it will be shown in. A
     /// truncated job never gets a proxy.
     pub(crate) fn request_preview(&mut self, mut job: lightwell_core::PreviewJob) -> u64 {
         job.proxy = if job.layer_count.is_some() {
@@ -1438,14 +1553,22 @@ impl Editor {
             "preview_proxy_requested",
             json!({"reason":"bounds","bounds":{"width":bounds.width,"height":bounds.height}}),
         );
-        // A scripted step waiting on the session round trip now waits for the refitted frame, so
-        // the capture never shows a proxy of the previous bounds.
+        self.await_requested_frame();
+        self.request_current_preview()
+    }
+
+    /// A view change has just asked for the frame it needs. A scripted step whose frame is still
+    /// to be captured — waiting on the session round trip, or already settled by it earlier in this
+    /// same update — waits for that frame instead, so the capture never shows the picture the view
+    /// has already replaced, such as a proxy of the previous bounds.
+    fn await_requested_frame(&mut self) {
         if let Some(evidence) = &mut self.evidence
-            && evidence.awaiting == Some(Settle::Session)
+            && (evidence.awaiting == Some(Settle::Session)
+                || (evidence.awaiting.is_none() && evidence.capture_pending))
         {
+            evidence.capture_pending = false;
             evidence.awaiting = Some(Settle::Preview);
         }
-        self.request_current_preview()
     }
 
     fn request_current_preview(&mut self) -> Task<Message> {
@@ -1467,6 +1590,7 @@ impl Editor {
     /// is the only caller: preferring a retained raster over a render whenever the pixels exist is
     /// what keeps a view change free. No write happens here at all — the next redraw's `prepare`
     /// puts these bytes in the texture — so a zoom costs the desktop one `Arc` clone.
+    #[allow(clippy::too_many_arguments)]
     fn hand_retained(
         &mut self,
         generation: u64,
@@ -1474,6 +1598,8 @@ impl Editor {
         proxy_dimensions: Option<(u32, u32)>,
         proxy_built: bool,
         proxy_approximate: bool,
+        approximate_white_balance: bool,
+        render_ms: Option<f64>,
     ) -> Task<Message> {
         // The texture is a proxy exactly when there are proxy dimensions to describe it.
         let proxy = proxy_dimensions.is_some();
@@ -1492,7 +1618,9 @@ impl Editor {
             proxy_dimensions,
             proxy_built,
             proxy_approximate,
+            approximate_white_balance,
             reason: Some("zoom"),
+            render_ms,
         };
         self.present(upload, &raster);
         Task::none()
@@ -1522,6 +1650,7 @@ impl Editor {
         self.dimensions = Some((upload.width, upload.height));
         self.presented_generation = upload.generation;
         self.presented_proxy = upload.proxy;
+        self.presented_approximate_white_balance = upload.approximate_white_balance;
         if let Some(bounds) = self.pending_bounds.remove(&upload.generation) {
             self.presented_bounds = bounds;
         }
@@ -1540,8 +1669,14 @@ impl Editor {
         }
         // A frame on screen is the proof the last failure is over.
         self.render_error = None;
-        self.activity.render_ms =
-            Some(self.activity.request_started.elapsed().as_secs_f64() * 1000.);
+        // The status bar's figure is this frame's own render time, measured on the worker for the
+        // phase that produced it — never the time since the last open or commit, which a drag, a
+        // zoom hand-over or a refit presents long after.
+        self.activity.render = upload.render_ms.map(|ms| state::status::RenderTime {
+            ms,
+            proxy: upload.proxy,
+            approximate: upload.approximate_white_balance,
+        });
         self.event(
             "preview_displayed",
             json!({
@@ -1555,7 +1690,9 @@ impl Editor {
                 "proxy_dimensions":upload.proxy_dimensions.map(|(width,height)| json!([width,height])),
                 "proxy_built":upload.proxy_built,
                 "proxy_approximate":upload.proxy_approximate,
+                "approximate_white_balance":upload.approximate_white_balance,
                 "reason":upload.reason,
+                "render_ms":upload.render_ms,
             }),
         );
         // A scripted preview selection settles on these same pixels, whether or not this frame also
@@ -1607,6 +1744,8 @@ impl Editor {
             return;
         }
         self.raster = Some((generation, raster));
+        // A reduced frame is exact: an approximate one is never reduced.
+        self.raster_approximate_white_balance = false;
         self.event(
             "analysis_adopted",
             json!({"generation":generation,"entry_id":analysis.identity.entry_id.as_str(),"draft_revision":analysis.identity.draft.as_ref().map(|draft| draft.draft_revision),"width":analysis.identity.width,"height":analysis.identity.height,"any_shadow":analysis.report.any_shadow,"any_highlight":analysis.report.any_highlight,"both":analysis.report.both}),
@@ -1685,15 +1824,17 @@ impl Editor {
         })
     }
 
-    /// The raster a clipping overlay is derived from, with whether it is the display proxy.
+    /// The raster a clipping overlay is derived from, with whether the mask is approximate: derived
+    /// from the display proxy, or from a frame that approximates a drafted RAW white balance.
     ///
     /// Only the frame on screen qualifies: a mask is never derived from an image the person is not
     /// looking at. The exact raster is preferred, and the proxy stands in for it until that phase
-    /// lands, at which point the request changes and the mask is re-derived exactly.
+    /// lands, at which point the request changes and the mask is re-derived exactly. The full-size
+    /// phase of an approximate white balance is still approximate, and says so.
     fn overlay_source(&self) -> Option<(u64, &Arc<lightwell_core::Raster>, bool)> {
         let generation = self.presented_generation;
         if let Some(raster) = self.presented_exact_raster() {
-            return Some((generation, raster, false));
+            return Some((generation, raster, self.raster_approximate_white_balance));
         }
         self.presented_proxy_frame()
             .map(|frame| (generation, &frame.raster, true))
@@ -1803,7 +1944,7 @@ impl Editor {
             photo: self.photo.is_some(),
             clients: self.live_server.as_ref().map(LocalServer::connected),
             rendering: self.preview_queue.is_busy() || self.uploading,
-            render_ms: self.activity.render_ms,
+            render: self.activity.render,
             render_error: self.render_error.as_ref(),
             pointer: self.pointer,
             analysis: self.analysis.as_ref(),
@@ -1921,6 +2062,9 @@ impl Editor {
                     }
                     Err(error) => {
                         self.status = error.clone();
+                        // Recorded, so a refused request is visible in the evidence log even when
+                        // a later frame's status line has replaced it.
+                        self.event("command_failed", json!({ "error": error }));
                         // A failed Apply keeps the draft; a stale revision makes it conflicted so
                         // the user chooses Discard or Reapply rather than losing the composition.
                         if self.crop_applying.take().is_some() {
@@ -1961,16 +2105,21 @@ impl Editor {
                     eprintln!("Evidence deadline exceeded; inspect retained subprocess output");
                     std::process::exit(3);
                 }
+                self.wait_elapsed();
             }
             Message::PacedSliderTick => return self.slider_paced_tick(),
+            Message::DoubleClickSecond => return self.double_click_second(),
             Message::Capture => {
                 let Some(evidence) = &mut self.evidence else {
                     return Task::none();
                 };
                 // Wait for the backend, for tool discovery and for the preset library, so a frame
                 // always shows real controls and the library rather than their loading lines.
+                // The screenshot reads back the frame drawn last, so it waits for a frame built
+                // after every update so far; the next frame tick tries again.
                 if !evidence.capture_pending
                     || evidence.saving
+                    || !evidence.sync.current()
                     || self.activity.backend.is_none()
                     || !self.modules_ready
                     || !self.presets.ready()
@@ -1981,6 +2130,10 @@ impl Editor {
                 }
                 evidence.capture_pending = false;
                 evidence.saving = true;
+                let recorded = (self.snapshot(), self.activity.requested);
+                if let Some(evidence) = &mut self.evidence {
+                    evidence.sync.state = Some(recorded);
+                }
                 return iced::window::oldest()
                     .and_then(iced::window::screenshot)
                     .map(Message::Captured);
@@ -1990,12 +2143,22 @@ impl Editor {
                     "frame_captured",
                     json!({"displayed_generation":self.activity.displayed,"request_to_capture_ms":self.activity.request_started.elapsed().as_secs_f64()*1000.}),
                 );
-                let state = self.snapshot();
-                let generation = self.activity.requested;
+                // The state as it stood when the screenshot was asked for, which is the state the
+                // frame it reads back was built from.
+                let (state, generation) = self
+                    .evidence
+                    .as_mut()
+                    .and_then(|evidence| evidence.sync.state.take())
+                    .unwrap_or_else(|| (self.snapshot(), self.activity.requested));
                 let scale = shot.scale_factor;
                 let logical_width = shot.size.width as f32 / scale;
                 // The photo surface spans the window minus padding, the sidebar and their spacing.
                 let columns = view::surface_columns(logical_width, scale, &self.workspace);
+                let canvas = view::canvas_rect(
+                    (logical_width, shot.size.height as f32 / scale),
+                    scale,
+                    &self.workspace,
+                );
                 let Some(evidence) = &self.evidence else {
                     return Task::none();
                 };
@@ -2017,7 +2180,7 @@ impl Editor {
                             ::image::ColorType::Rgba8,
                         )
                         .map_err(|e| e.to_string())?;
-                        let frame = json!({"file":name,"state":state,"step":step,"capture_provenance":"window-renderer-readback","color":"sRGB","physical_size":[shot.size.width,shot.size.height],"scale":scale,"surface_columns":columns});
+                        let frame = json!({"file":name,"state":state,"step":step,"capture_provenance":"window-renderer-readback","color":"sRGB","physical_size":[shot.size.width,shot.size.height],"scale":scale,"surface_columns":columns,"canvas_rect":canvas});
                         std::fs::write(
                             dir.join(format!("state-{number}.json")),
                             serde_json::to_vec_pretty(&frame).expect("frame is serializable"),
@@ -2137,6 +2300,7 @@ impl Editor {
                 if let Some((x, y)) = self.pending_pan.take() {
                     return self.pan(x, y);
                 }
+                self.settle_step(Settle::Pan);
             }
             Message::VersionsLoaded(result) => {
                 self.busy = false;
@@ -2240,6 +2404,8 @@ impl Editor {
                     let proxy_dimensions = result.proxy_dimensions;
                     let proxy_built = result.proxy_built;
                     let proxy_approximate = result.proxy_approximate;
+                    let approximate_white_balance = result.approximate_white_balance;
+                    let render_ms = result.render_ms;
                     if !for_draft {
                         if proxy {
                             self.awaiting_exact = Some(generation);
@@ -2265,7 +2431,14 @@ impl Editor {
                                 && self.presented_proxy
                                 && self.proxy_bounds().is_some()
                             {
-                                return self.adopt_exact(generation, identity, report, raster);
+                                return self.adopt_exact(
+                                    generation,
+                                    identity,
+                                    report,
+                                    raster,
+                                    render_ms,
+                                    approximate_white_balance,
+                                );
                             }
                             if for_draft {
                                 // The crop draft's input stage is the one photo path left that
@@ -2311,8 +2484,11 @@ impl Editor {
                                         dimensions: proxy_dimensions.unwrap_or(stage),
                                         built: proxy_built,
                                         approximate: proxy_approximate,
+                                        approximate_white_balance,
+                                        render_ms,
                                     });
                                 } else {
+                                    self.exact_render_ms = Some((generation, render_ms));
                                     match report {
                                         Some(report) => {
                                             self.incoming = Some((
@@ -2326,11 +2502,11 @@ impl Editor {
                                         }
                                         // A frame with no reduction still replaces the retained
                                         // raster now, so no overlay is derived from an older image.
-                                        None => {
-                                            self.incoming = None;
-                                            self.analysis = None;
-                                            self.raster = Some((generation, retained));
-                                        }
+                                        None => self.retain_unreduced(
+                                            generation,
+                                            retained,
+                                            approximate_white_balance,
+                                        ),
                                     }
                                 }
                             }
@@ -2346,7 +2522,9 @@ impl Editor {
                                 proxy_dimensions,
                                 proxy_built,
                                 proxy_approximate,
+                                approximate_white_balance,
                                 reason: None,
+                                render_ms: Some(render_ms),
                             };
                             if for_draft {
                                 let handle = iced::widget::image::Handle::from_rgba(
@@ -2579,6 +2757,13 @@ impl Editor {
                 *open = !*open;
             }
             Message::ToggleGroup { module_id, path } => {
+                // A module's only group is drawn without a header and is always shown, so there is
+                // no disclosure to toggle and no per-client state to record for it.
+                if tools::module_of(&self.modules, &module_id)
+                    .is_some_and(|module| tools::is_headerless_group(module, &path))
+                {
+                    return Task::none();
+                }
                 let key = format!(
                     "{module_id}/{}",
                     path.iter()
@@ -2627,6 +2812,9 @@ impl Editor {
                 if self.slider_draft.is_some() {
                     return self.slider_commit();
                 }
+                if tools::drafts(&self.modules, &action, &parameter) {
+                    return self.release_without_draft(&action, &parameter);
+                }
                 return self.dispatch(Message::Submit {
                     action,
                     parameter: Some(parameter),
@@ -2653,23 +2841,7 @@ impl Editor {
                 return self.dispatch(Message::RunAction { action, preset });
             }
             Message::ResetField { action, parameter } => {
-                let default = tools::declared_action(&self.modules, &action)
-                    .and_then(|declared| declared.parameter(&parameter))
-                    .map(fields::seed_text);
-                let Some(default) = default else {
-                    self.status = fields::undeclared_label(&action, &parameter);
-                    return Task::none();
-                };
-                self.fields.set(&action, &parameter, default);
-                self.editing = None;
-                // One field is one action when the action merges it or declares nothing else; an
-                // action with a second parameter has no way to send one field alone, so the
-                // double-click only refills the text there.
-                if let Some(preset) = reset_field_preset(&self.modules, &action, &parameter)
-                    .filter(|_| self.editable())
-                {
-                    return self.dispatch(Message::RunAction { action, preset });
-                }
+                return self.reset_field(action, parameter);
             }
             Message::SliderDraftTick => return self.slider_tick(),
             Message::SliderDraftBegun(result) => {
@@ -3677,23 +3849,29 @@ impl Editor {
 
     fn view(&self) -> Element<'_, Message> {
         let started = Instant::now();
-        if let Some(page) = self.gallery_page() {
-            return view::gallery(page);
-        }
-        let element = view::workspace(
-            &self.workspace,
-            view::Surfaces {
-                photo: self.photo.as_ref(),
-                draft_photo: self.draft_photo.as_ref(),
-                overlay: self.overlay_surface(),
-                draft: self.crop.as_ref(),
-            },
-        );
+        let element = match self.gallery_page() {
+            Some(page) => view::gallery(page),
+            None => view::workspace(
+                &self.workspace,
+                view::Surfaces {
+                    photo: self.photo.as_ref(),
+                    draft_photo: self.draft_photo.as_ref(),
+                    overlay: self.overlay_surface(),
+                    draft: self.crop.as_ref(),
+                },
+            ),
+        };
         let mut timing = self.loop_timing.get();
+        timing.views += 1;
         timing.last_view_ms = started.elapsed().as_secs_f64() * 1000.0;
         timing.last_view_end = Some(Instant::now());
         self.loop_timing.set(timing);
-        element
+        match &self.evidence {
+            // An evidence run marks which update each drawn frame was built after, so a capture
+            // records the state of the frame it reads back.
+            Some(evidence) => evidence::marked(element, &evidence.sync),
+            None => element,
+        }
     }
 
     /// What the keyboard table depends on right now.
@@ -3751,6 +3929,13 @@ impl Editor {
                 subscriptions.push(
                     iced::time::every(Duration::from_millis(paced.interval_ms))
                         .map(|_| Message::PacedSliderTick),
+                );
+            }
+            // A scripted double-click's gap before its second press, which the first tick ends.
+            if let Some(second) = &evidence.second_click {
+                subscriptions.push(
+                    iced::time::every(Duration::from_millis(second.gap_ms.max(1)))
+                        .map(|_| Message::DoubleClickSecond),
                 );
             }
         }
@@ -4252,6 +4437,261 @@ mod tests {
             "release submits the whole action once"
         );
         assert!(editor.busy, "and exactly one request is in flight");
+        finish(editor, catalog);
+    }
+
+    /// One double-click on a drafting slider, as the rail's wrapper and iced's slider deliver it:
+    /// the first press moves the value (the gesture opens, `draft.begin` and `draft.set` answer),
+    /// its release sends `draft.commit`, and the second press — the reset — arrives before that
+    /// commit has answered. Returns the entry the commit would produce.
+    fn double_click_before_the_commit_answers(
+        editor: &mut Editor,
+        asset: &AssetId,
+        action: &str,
+        parameter: &str,
+        value: f64,
+    ) -> lightwell_core::HistoryEntry {
+        let current = editor
+            .state
+            .as_ref()
+            .expect("an open asset")
+            .current_entry
+            .clone();
+        let _ = editor.update(Message::SliderMoved {
+            action: action.into(),
+            parameter: parameter.into(),
+            value,
+        });
+        begun(editor, asset, action, current.sequence);
+        let _ = editor.update(Message::SliderDraftTick);
+        was_set(editor, asset, &current);
+        let _ = editor.update(Message::ControlReleased {
+            action: action.into(),
+            parameter: parameter.into(),
+        });
+        assert!(
+            editor
+                .slider_draft
+                .as_ref()
+                .is_some_and(|draft| draft.in_flight),
+            "the release's commit is in flight"
+        );
+        let _ = editor.update(Message::ResetField {
+            action: action.into(),
+            parameter: parameter.into(),
+        });
+        entry(asset, current.sequence + 1, Some(&current.id))
+    }
+
+    /// The double-click race that lost every RAW white balance reset. The first press's commit is
+    /// still answering when the second press arrives — for a RAW temperature or tint for as long as
+    /// the mosaic takes to redevelop, a second or more — and a reset sent then names the revision
+    /// that commit is replacing, which the core refuses as stale. The reset now waits for the
+    /// commit's answer and is sent once, against the revision it produced. Basic's patch field and
+    /// every RAW slider take the same path.
+    #[test]
+    fn a_reset_during_a_gesture_commit_waits_and_names_the_revision_the_commit_produced() {
+        let cases = [
+            ("set-raw-exposure", "ev", 0.35),
+            ("set-raw-temperature", "kelvin", 5000.0),
+            ("set-raw-tint", "tint", 12.0),
+            ("set-basic", "exposure", 0.4),
+        ];
+        for (action, parameter, value) in cases {
+            let (mut editor, catalog, log, asset, _, _) = drafting();
+            let revision = editor.state.as_ref().expect("an open asset").revision;
+            let committed = double_click_before_the_commit_answers(
+                &mut editor,
+                &asset,
+                action,
+                parameter,
+                value,
+            );
+            let records = logged(&mut editor, &log);
+            let queued = draft_events(&records, "field_reset_queued");
+            assert_eq!(queued.len(), 1, "{action}: the reset waits: {records:?}");
+            assert_eq!(queued[0]["revision"], json!(revision));
+            assert!(
+                draft_events(&records, "field_reset_sent").is_empty(),
+                "{action}: nothing is sent against the revision the commit is replacing"
+            );
+            assert!(!editor.busy, "{action}: no request was started");
+            assert!(editor.pending_reset.is_some());
+
+            // The commit answers with the next revision; the reset goes out in the same update.
+            let log = attach_log(&mut editor);
+            let refresh = refresh_for(&asset, &committed, Vec::new(), &[&committed], false);
+            let _ = editor.update(Message::SliderDraftCommitted(Ok(Some(Box::new(refresh)))));
+            let records = logged(&mut editor, &log);
+            let sent = draft_events(&records, "field_reset_sent");
+            assert_eq!(sent.len(), 1, "{action}: sent once");
+            assert_eq!(
+                sent[0]["revision"],
+                json!(revision + 1),
+                "{action}: against the commit's revision"
+            );
+            let default = tools::declared_action(&editor.modules, action)
+                .and_then(|declared| declared.parameter(parameter))
+                .and_then(|declared| declared.default.clone())
+                .expect("a declared default");
+            assert_eq!(sent[0]["preset"], json!({ parameter: default }));
+            assert_eq!(editor.status, format!("Running edit.{action}…"));
+            assert!(editor.busy && editor.pending_reset.is_none());
+            finish(editor, catalog);
+        }
+    }
+
+    /// A reset that arrives while another request is in flight waits for its answer too, and is
+    /// dropped, with its reason, if what it was asked for is no longer on screen by then.
+    #[test]
+    fn a_waiting_reset_runs_after_a_request_and_is_dropped_on_a_historical_entry() {
+        let (mut editor, catalog, log, asset, _, _) = drafting();
+        let (action, parameter) = single_parameter_control(&editor);
+        let current = editor
+            .state
+            .as_ref()
+            .expect("an open asset")
+            .current_entry
+            .clone();
+        editor.busy = true;
+        let _ = editor.update(Message::ResetField {
+            action: action.clone(),
+            parameter: parameter.clone(),
+        });
+        assert!(editor.pending_reset.is_some(), "it waits for the request");
+        let next = entry(&asset, current.sequence + 1, Some(&current.id));
+        let refresh = refresh_for(&asset, &next, Vec::new(), &[&next], false);
+        let _ = editor.update(Message::Refreshed(Ok(Box::new(refresh))));
+        let sent = draft_events(&logged(&mut editor, &log), "field_reset_sent")
+            .into_iter()
+            .cloned()
+            .collect::<Vec<_>>();
+        assert_eq!(sent.len(), 1);
+        assert_eq!(sent[0]["revision"], json!(current.sequence + 1));
+
+        // Asked for while a request is in flight, then the session shows a historical entry.
+        let log = attach_log(&mut editor);
+        let _ = editor.update(Message::ResetField {
+            action: action.clone(),
+            parameter: parameter.clone(),
+        });
+        assert!(editor.pending_reset.is_some());
+        editor.session.preview.selection =
+            lightwell_core::HistorySelection::Entry(current.id.clone());
+        editor.busy = false;
+        let _ = editor.update(Message::Sync);
+        let records = logged(&mut editor, &log);
+        let dropped = draft_events(&records, "field_reset_dropped");
+        assert_eq!(dropped.len(), 1, "{records:?}");
+        assert_eq!(dropped[0]["reason"], json!("a historical entry is shown"));
+        assert!(editor.pending_reset.is_none());
+        assert!(draft_events(&records, "field_reset_sent").is_empty());
+        assert!(
+            editor
+                .status
+                .ends_with("was not reset: a historical entry is shown")
+        );
+        finish(editor, catalog);
+    }
+
+    /// A RAW draft is accepted, but its preview job answers preparation-required: the development
+    /// is not in memory, because a redevelopment or a source preparation is in flight, and the core
+    /// renders no stale frame. (A drafted temperature over a development that is in memory previews
+    /// approximately instead; this is what is left.) The status bar says what the person will see
+    /// rather than the error code, and the gesture stays open and drained, so its release still
+    /// commits.
+    #[test]
+    fn a_draft_the_core_cannot_preview_says_so_and_stays_open() {
+        let (mut editor, catalog, log, asset, _, _) = drafting();
+        let _ = editor.update(Message::SliderMoved {
+            action: "set-raw-temperature".into(),
+            parameter: "kelvin".into(),
+            value: 5000.0,
+        });
+        begun(&mut editor, &asset, "set-raw-temperature", 4);
+        let _ = editor.update(Message::SliderDraftSet(Err(
+            "preparation-required: source-job-7".into(),
+        )));
+        assert_eq!(
+            editor.status,
+            "Custom temperature cannot be previewed until the RAW development is ready; it shows on release"
+        );
+        assert!(
+            editor
+                .slider_draft
+                .as_ref()
+                .is_some_and(slider::SliderDraft::drained),
+            "the gesture is still open and has nothing in flight"
+        );
+        assert!(
+            editor
+                .slider_draft
+                .as_ref()
+                .is_some_and(|draft| draft.unpreviewed),
+            "and no frame of its own is coming for the value it holds"
+        );
+        let records = logged(&mut editor, &log);
+        let unpreviewed = draft_events(&records, "slider_draft_unpreviewed");
+        assert_eq!(
+            unpreviewed.last().map(|detail| &detail["error"]),
+            Some(&json!("preparation-required: source-job-7"))
+        );
+        assert_eq!(unpreviewed.last().unwrap()["value"], json!(5000.0));
+        finish(editor, catalog);
+    }
+
+    /// A drafting slider opens its draft on its first change, so a release with no draft open
+    /// changed nothing and sends nothing — not the unchanged field, which would hold the section
+    /// busy through the moment a double-click's second press arrives, and which for a RAW custom
+    /// white balance under As shot would switch it to Custom.
+    #[test]
+    fn releasing_a_drafting_slider_that_never_moved_sends_nothing() {
+        for (action, parameter) in [("set-raw-temperature", "kelvin"), ("set-basic", "exposure")] {
+            let (mut editor, catalog, log, _, _, _) = drafting();
+            let _ = editor.update(Message::ControlReleased {
+                action: action.into(),
+                parameter: parameter.into(),
+            });
+            let _ = editor.update(Message::SliderReleased {
+                action: action.into(),
+                parameter: parameter.into(),
+            });
+            assert!(!editor.busy, "{action}: no request is in flight");
+            assert!(editor.editable());
+            assert!(
+                !editor.status.starts_with("Running"),
+                "{action}: {}",
+                editor.status
+            );
+            assert!(draft_events(&logged(&mut editor, &log), "slider_draft_begin").is_empty());
+            finish(editor, catalog);
+        }
+    }
+
+    /// A module's only group is drawn without a header, so its disclosure message records nothing,
+    /// while a group of a module with several still toggles.
+    #[test]
+    fn toggling_a_modules_only_group_records_nothing() {
+        let (mut editor, catalog, _, _, _, _) = drafting();
+        let _ = editor.update(Message::ToggleGroup {
+            module_id: "lightwell.presence".into(),
+            path: vec![0],
+        });
+        assert!(
+            editor.controls_ui.group_expanded.is_empty(),
+            "the only group has no disclosure"
+        );
+        let _ = editor.update(Message::ToggleGroup {
+            module_id: "lightwell.basic".into(),
+            path: vec![1],
+        });
+        assert_eq!(
+            editor
+                .controls_ui
+                .group_expanded
+                .get(&tools::group_key("lightwell.basic", &[1])),
+            Some(&false)
+        );
         finish(editor, catalog);
     }
 
@@ -5506,7 +5946,8 @@ mod tests {
         assert_eq!(model.status, HistogramStatus::Updating);
         assert!(model.stale);
         assert!(model.bins.is_some(), "the previous plot is still shown");
-        assert_eq!(model.notice().as_deref(), Some("Updating\u{2026}"));
+        // The dimmed plot is the stale label; no words are drawn over it.
+        assert_eq!(model.notice(), None);
         finish(editor, catalog);
     }
 
@@ -5830,20 +6271,30 @@ mod tests {
         assert_eq!(readout.rgba, [128, 64, 255, 255]);
         assert!(!editor.sample_in_flight);
         editor.rederive();
-        // No frame has been analysed in this test, so the caption row carries the pending notice
-        // as well as the readout: both share that one row rather than taking one each.
+        // The readout is the status bar's. No frame has been analysed in this test, so the plot
+        // draws its pending notice inside its own area, and neither reaches the other.
         assert_eq!(
-            editor.workspace.histogram.caption_line(),
-            "Output \u{b7} sRGB \u{b7} after crop \u{b7} R 128 \u{b7} G 64 \u{b7} B 255 \u{b7} 7, 8 \u{b7} No analysis yet"
+            editor.workspace.status.readout.as_deref(),
+            Some("R 128 \u{b7} G 64 \u{b7} B 255 \u{b7} 7, 8")
         );
         assert_eq!(
-            editor.snapshot()["readout"]["rgba"],
-            json!([128, 64, 255, 255])
+            editor.workspace.histogram.notice().as_deref(),
+            Some("No analysis yet")
         );
+        let snapshot = editor.snapshot();
+        assert_eq!(snapshot["readout"]["rgba"], json!([128, 64, 255, 255]));
+        assert_eq!(
+            snapshot["status_bar"]["readout"],
+            json!("R 128 \u{b7} G 64 \u{b7} B 255 \u{b7} 7, 8")
+        );
+        assert_eq!(snapshot["histogram"]["notice"], json!("No analysis yet"));
 
         // The pointer leaving clears the readout and any waiting position.
         let _ = editor.update(Message::PointerMoved(None));
         assert!(editor.readout.is_none() && editor.pending_sample.is_none());
+        editor.rederive();
+        assert_eq!(editor.workspace.status.readout, None);
+        assert_eq!(editor.snapshot()["status_bar"]["readout"], Value::Null);
         finish(editor, catalog);
     }
 
@@ -5996,8 +6447,18 @@ mod tests {
             dimensions: (1200, 900),
             built: true,
             approximate: false,
+            approximate_white_balance: false,
+            render_ms: 12.0,
         });
         editor.raster = Some((7, pixels(2)));
+        editor.exact_render_ms = Some((7, 85.0));
+        // What the status bar reports is the time of the picture on screen, and each retained
+        // frame brings its own: the proxy's while the proxy is shown, the exact render's at 100%.
+        editor.activity.render = Some(state::status::RenderTime {
+            ms: 12.0,
+            proxy: true,
+            approximate: false,
+        });
 
         // Fit to 100%: the retained exact raster becomes the surface's source and no job is
         // queued. Nothing is written here; the next redraw's `prepare` writes it once.
@@ -6009,6 +6470,15 @@ mod tests {
         );
         let exact = editor.photo_version;
         assert!(exact > 0, "the exact raster was handed to the surface");
+        assert_eq!(
+            editor.activity.render,
+            Some(state::status::RenderTime {
+                ms: 85.0,
+                proxy: false,
+                approximate: false,
+            }),
+            "the exact raster on screen reports its own render time"
+        );
         assert_eq!(
             editor.preview_generation, 7,
             "no preview job was requested: nothing was rendered for a view change"
@@ -6034,9 +6504,226 @@ mod tests {
             "the retained proxy was handed to the surface"
         );
         assert_eq!(
+            editor.activity.render,
+            Some(state::status::RenderTime {
+                ms: 12.0,
+                proxy: true,
+                approximate: false,
+            }),
+            "the proxy on screen reports its own render time again"
+        );
+        assert_eq!(
             editor.preview_generation, 7,
             "no preview job was requested: nothing was rendered for a view change"
         );
+        finish(editor, catalog);
+    }
+
+    /// A frame that approximates a drafted RAW white balance is presented like any frame and says
+    /// so — in the status bar, the `preview_displayed` event and the state summary, at Fit and at
+    /// 100% — but it is never taken for a report: the last exact report stays plotted, marked
+    /// updating, through both phases of the approximate job, and the next exact report replaces it.
+    /// An overlay derived from its full-size phase is approximate too.
+    #[test]
+    fn an_approximate_white_balance_frame_is_shown_and_labelled_but_never_replaces_the_report() {
+        let (mut editor, catalog, _, entry_id) = opened(Vec::new(), 4);
+        let log = attach_log(&mut editor);
+        editor.window = (1440.0, 900.0);
+        editor.dimensions = Some((4000, 3000));
+        editor.session.preview.view.zoom = Zoom::Fit;
+        editor.preview_queue = PreviewQueue::default();
+        let pixels = [
+            [0, 0, 0, 255],
+            [255, 255, 255, 255],
+            [0, 200, 255, 255],
+            [12, 34, 56, 255],
+        ];
+        let (analysis, raster) = analysed(&editor, 7, &pixels, 2, 2);
+        let identity = analysis.identity.clone();
+        editor.preview_generation = 7;
+        editor.incoming = Some((analysis, raster.clone()));
+        editor.adopt_analysis(7);
+
+        // The drafted job's proxy phase is presented.
+        editor.preview_generation = 8;
+        editor.proxy_frame = Some(ProxyFrame {
+            generation: 8,
+            raster: raster.clone(),
+            dimensions: (2, 2),
+            built: false,
+            approximate: false,
+            approximate_white_balance: true,
+            render_ms: 9.2,
+        });
+        let upload = Upload {
+            generation: 8,
+            draft_revision: Some(1),
+            width: 4000,
+            height: 3000,
+            entry_id: entry_id.clone(),
+            snapshot_id: raster.snapshot_id.to_string(),
+            source_fingerprint: raster.source_fingerprint.clone(),
+            proxy: true,
+            proxy_dimensions: Some((2, 2)),
+            proxy_built: false,
+            proxy_approximate: false,
+            approximate_white_balance: true,
+            reason: None,
+            render_ms: Some(9.2),
+        };
+        editor.present(upload, &raster);
+        editor.rederive();
+        assert_eq!(
+            editor.workspace.status.render,
+            "Rendered in 9 ms (proxy, approximate)"
+        );
+        let histogram = |editor: &Editor| {
+            let model = &editor.workspace.histogram;
+            (
+                model.status,
+                model.identity.as_ref().map(|identity| identity.generation),
+            )
+        };
+        assert_eq!(
+            histogram(&editor),
+            (HistogramStatus::Updating, Some(7)),
+            "the last exact report stays plotted and says it is updating"
+        );
+
+        // Its exact phase lands with no report, as an approximate job's always does.
+        let _ = editor.adopt_exact(8, identity, None, (*raster).clone(), 140.0, true);
+        editor.rederive();
+        assert_eq!(
+            histogram(&editor),
+            (HistogramStatus::Updating, Some(7)),
+            "an approximate frame never replaces the report, not even with nothing"
+        );
+        assert_eq!(
+            editor.raster.as_ref().map(|(generation, _)| *generation),
+            Some(8),
+            "its pixels are retained for the overlay and the 100% view"
+        );
+        assert_eq!(
+            editor
+                .overlay_source()
+                .map(|(_, _, approximate)| approximate),
+            Some(true),
+            "a mask derived from it is approximate"
+        );
+        let snapshot = editor.snapshot();
+        assert_eq!(snapshot["approximate_white_balance"], json!(true));
+        assert_eq!(snapshot["status_bar"]["render_approximate"], json!(true));
+        assert_eq!(snapshot["histogram"]["status"], json!("updating"));
+
+        // At 100% the retained full-size phase is shown, and says so.
+        editor.session.preview.view.zoom = Zoom::Percent { value: 100.0 };
+        let _ = editor.zoom_changed(&Zoom::Fit);
+        editor.rederive();
+        assert!(!editor.presented_proxy);
+        assert_eq!(
+            editor.workspace.status.render,
+            "Rendered in 140 ms (approximate)"
+        );
+        let records = logged(&mut editor, &log);
+        let displayed: Vec<_> = records
+            .iter()
+            .filter(|record| record["event"] == "preview_displayed")
+            .map(|record| record["detail"]["approximate_white_balance"].clone())
+            .collect();
+        assert_eq!(displayed, vec![json!(true), json!(true)]);
+        assert!(
+            !records
+                .iter()
+                .any(|record| record["event"] == "analysis_adopted"
+                    && record["detail"]["generation"] == json!(8)),
+            "no report was adopted for the approximate generation"
+        );
+
+        // The exact frame the release produces replaces the report, and the flag.
+        let (analysis, raster) = analysed(&editor, 9, &pixels, 2, 2);
+        editor.preview_generation = 9;
+        editor.incoming = Some((analysis, raster.clone()));
+        let upload = Upload {
+            generation: 9,
+            draft_revision: None,
+            width: 4000,
+            height: 3000,
+            entry_id,
+            snapshot_id: raster.snapshot_id.to_string(),
+            source_fingerprint: raster.source_fingerprint.clone(),
+            proxy: false,
+            proxy_dimensions: None,
+            proxy_built: false,
+            proxy_approximate: false,
+            approximate_white_balance: false,
+            reason: None,
+            render_ms: Some(150.0),
+        };
+        editor.present(upload, &raster);
+        editor.rederive();
+        assert_eq!(histogram(&editor), (HistogramStatus::Ready, Some(9)));
+        assert!(!editor.raster_approximate_white_balance);
+        assert_eq!(editor.snapshot()["approximate_white_balance"], json!(false));
+        assert_eq!(editor.workspace.status.render, "Rendered in 150 ms");
+        finish(editor, catalog);
+    }
+
+    /// The status bar's "Rendered in" figure is the presented frame's own worker time, not the
+    /// time since the last open or commit. A drafted frame, a zoom hand-over or a refit is
+    /// presented long after that request; before this was measured on the worker, a frame
+    /// presented minutes after the open reported minutes.
+    #[test]
+    fn the_render_figure_is_the_presented_frames_own_time_not_the_time_since_the_request() {
+        let (mut editor, catalog, _, entry_id) = opened(Vec::new(), 4);
+        let log = attach_log(&mut editor);
+        // The last open or commit began long ago, as it has in any real session after a while.
+        editor.activity.request_started = Instant::now()
+            .checked_sub(std::time::Duration::from_secs(500))
+            .unwrap_or_else(Instant::now);
+        let raster = lightwell_core::Raster {
+            width: 2,
+            height: 2,
+            rgba: vec![7; 16].into(),
+            source_fingerprint: "source-1".into(),
+            snapshot_id: lightwell_core::SnapshotId::new(),
+        };
+        let upload = |generation: u64, proxy: bool, render_ms: f64| Upload {
+            generation,
+            draft_revision: None,
+            width: 480,
+            height: 320,
+            entry_id: entry_id.clone(),
+            snapshot_id: raster.snapshot_id.to_string(),
+            source_fingerprint: raster.source_fingerprint.clone(),
+            proxy,
+            proxy_dimensions: proxy.then_some((240, 160)),
+            proxy_built: false,
+            proxy_approximate: false,
+            approximate_white_balance: false,
+            reason: None,
+            render_ms: Some(render_ms),
+        };
+        // The renderer is idle, so the bar reports a figure rather than "Rendering…".
+        editor.preview_queue = PreviewQueue::default();
+        editor.present(upload(5, true, 12.4), &raster);
+        editor.rederive();
+        assert_eq!(
+            editor.workspace.status.render, "Rendered in 12 ms (proxy)",
+            "the proxy's own time, not the 500 s since the request"
+        );
+        // An exact frame presented later (a 100% view) reports its own time and says nothing of a
+        // proxy.
+        editor.present(upload(6, false, 85.2), &raster);
+        editor.rederive();
+        assert_eq!(editor.workspace.status.render, "Rendered in 85 ms");
+        // The evidence event carries the same figure, so a run can assert it is plausible.
+        let records = logged(&mut editor, &log);
+        let displayed: Vec<_> = records
+            .iter()
+            .filter(|record| record["event"] == "preview_displayed")
+            .map(|record| record["detail"]["render_ms"].clone())
+            .collect();
+        assert_eq!(displayed, vec![json!(12.4), json!(85.2)]);
         finish(editor, catalog);
     }
 
@@ -6884,7 +7571,9 @@ mod tests {
             proxy_dimensions: None,
             proxy_built: false,
             proxy_approximate: false,
+            approximate_white_balance: false,
             reason: None,
+            render_ms: Some(3.0),
         };
         assert!(
             editor.displayed_status(&upload).starts_with("Current · "),
@@ -7182,7 +7871,7 @@ mod tests {
 
     /// The bounds a job renders for are the window, the panels and the display scale of the
     /// moment it is requested, not of the moment its owner task was created: the display scale
-    /// arrives after launch, and the first frame must already be at it.
+    /// arrives after launch, and every job requested after it must already be at it.
     #[test]
     fn a_preview_job_takes_the_bounds_of_the_moment_it_is_requested() {
         let (mut editor, catalog, _, _) = opened(Vec::new(), 4);
@@ -7239,6 +7928,32 @@ mod tests {
             })
             .count();
         assert_eq!(refits, 1, "a refit is asked for once, not per event");
+        finish(editor, catalog);
+    }
+
+    /// A scripted step whose frame is due — its session round trip settled it earlier in the same
+    /// update — waits instead for the refit the view just asked for, so its capture never shows a
+    /// proxy made for the previous bounds.
+    #[test]
+    fn a_settled_step_waits_for_the_refit_its_view_asked_for() {
+        let (mut editor, catalog, _, _) = crate::app::testing::scripted(r#"[{"wait":{"ms":1}}]"#);
+        editor.window = (1440.0, 900.0);
+        editor.dimensions = Some((4000, 3000));
+        editor.session.preview.view.zoom = Zoom::Fit;
+        editor.scale_factor = 1.0;
+        editor.presented_generation = 7;
+        editor.presented_proxy = true;
+        editor.preview_generation = 7;
+        editor.presented_bounds = editor.proxy_bounds();
+        if let Some(evidence) = &mut editor.evidence {
+            evidence.awaiting = None;
+            evidence.capture_pending = true;
+        }
+        let _ = editor.update(Message::ScaleFactor(2.0));
+        assert!(editor.refit_pending, "the new bounds asked for a frame");
+        let evidence = crate::app::testing::evidence(&editor);
+        assert!(!evidence.capture_pending, "the old proxy is not captured");
+        assert_eq!(evidence.awaiting, Some(Settle::Preview));
         finish(editor, catalog);
     }
 }

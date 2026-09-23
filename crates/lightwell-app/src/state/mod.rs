@@ -75,8 +75,9 @@ pub(crate) struct Inputs<'a> {
     pub(crate) clients: Option<usize>,
     /// A preview job is in flight or its pixels are still being uploaded.
     pub(crate) rendering: bool,
-    /// How long the displayed preview took from request to upload.
-    pub(crate) render_ms: Option<f64>,
+    /// How long the frame on the photo surface took to render, measured on the preview worker for
+    /// that frame's own phase. `None` before any frame is on screen.
+    pub(crate) render: Option<status::RenderTime>,
     /// The last preview failure, cleared by the next successful upload.
     pub(crate) render_error: Option<&'a (ErrorKind, String)>,
     pub(crate) pointer: Option<(u32, u32)>,
@@ -323,7 +324,11 @@ mod tests {
                 photo: true,
                 clients: Some(1),
                 rendering: false,
-                render_ms: Some(41.0),
+                render: Some(status::RenderTime {
+                    ms: 41.0,
+                    proxy: false,
+                    approximate: false,
+                }),
                 render_error: self.render_error.as_ref(),
                 pointer: None,
                 analysis: self.analysis.as_ref(),
@@ -1199,13 +1204,64 @@ mod tests {
         assert_eq!(workspace.status.clients, "3 clients");
         assert_eq!(workspace.status.render, "Rendering…");
 
+        // A display-size proxy on screen says so beside its own time.
+        let mut inputs = scene.inputs();
+        inputs.render = Some(status::RenderTime {
+            ms: 7.6,
+            proxy: true,
+            approximate: false,
+        });
+        workspace.derive(&inputs);
+        assert_eq!(workspace.status.render, "Rendered in 8 ms (proxy)");
+
+        // A drafted RAW white balance approximated on the developed planes says that too.
+        let mut inputs = scene.inputs();
+        inputs.render = Some(status::RenderTime {
+            ms: 9.4,
+            proxy: true,
+            approximate: true,
+        });
+        workspace.derive(&inputs);
+        assert_eq!(
+            workspace.status.render,
+            "Rendered in 9 ms (proxy, approximate)"
+        );
+
         // No local server is a stated fact, never a client count of zero.
         let mut inputs = scene.inputs();
         inputs.clients = None;
-        inputs.render_ms = None;
+        inputs.render = None;
         workspace.derive(&inputs);
         assert_eq!(workspace.status.clients, "live API unavailable");
         assert_eq!(workspace.status.render, "Idle");
+    }
+
+    /// The pointer readout is the status bar's, and only the status bar's: moving the pointer onto
+    /// the photograph changes nothing in the histogram inspector, so no control in the tools panel
+    /// can move, and nothing else in the bar changes either.
+    #[test]
+    fn the_pointer_readout_is_in_the_status_bar_and_leaves_the_inspector_unchanged() {
+        let mut scene = Scene::new(vec![crop_descriptor()]).opened(Vec::new());
+        let without = scene.derive();
+        assert_eq!(without.status.readout, None);
+        scene.readout = Some(histogram::Readout {
+            x: 360,
+            y: 240,
+            rgba: [0, 128, 255, 255],
+        });
+        let with = scene.derive();
+        assert_eq!(
+            with.status.readout.as_deref(),
+            Some("R 0 \u{b7} G 128 \u{b7} B 255 \u{b7} 360, 240")
+        );
+        assert_eq!(with.histogram, without.histogram);
+        assert_eq!(
+            status::StatusBarModel {
+                readout: None,
+                ..with.status.clone()
+            },
+            without.status
+        );
     }
 
     #[test]
@@ -1279,11 +1335,16 @@ mod tests {
         let mut workspace = Workspace::default();
         workspace.derive(&scene.inputs());
         let fixture_section = section(&workspace, &fixture.id);
-        let ControlModel::Group(group) = &fixture_section.controls[0] else {
-            panic!("declared group")
-        };
-        assert!(group.expanded);
-        let ControlModel::Slider(amount) = &group.controls[0] else {
+        // The fixture declares its controls inside one group, which the panel draws without a
+        // header: the group's controls are the section's own rows.
+        let controls = &fixture_section.controls;
+        assert!(
+            !controls
+                .iter()
+                .any(|control| matches!(control, ControlModel::Group(_))),
+            "a module's only group draws no header"
+        );
+        let ControlModel::Slider(amount) = &controls[0] else {
             panic!("number")
         };
         assert_eq!(
@@ -1296,23 +1357,23 @@ mod tests {
         );
         assert!(matches!(amount.rail, tools::RailStyle::Temperature));
         assert!(
-            matches!(group.controls[1], ControlModel::Slider(ref field) if field.style == tools::NumberControlStyle::Stepper)
+            matches!(controls[1], ControlModel::Slider(ref field) if field.style == tools::NumberControlStyle::Stepper)
         );
         assert!(
-            matches!(group.controls[2], ControlModel::Slider(ref field) if field.style == tools::NumberControlStyle::Field)
+            matches!(controls[2], ControlModel::Slider(ref field) if field.style == tools::NumberControlStyle::Field)
         );
-        assert!(matches!(group.controls[3], ControlModel::Toggle(ref field) if !field.on));
+        assert!(matches!(controls[3], ControlModel::Toggle(ref field) if !field.on));
         assert!(
-            matches!(group.controls[4], ControlModel::Enum(ref field) if field.style == tools::ChoiceControlStyle::Menu)
-        );
-        assert!(
-            matches!(group.controls[5], ControlModel::Color(ref field) if field.style == tools::ColorControlStyle::Picker && field.rgb == [32,64,128])
+            matches!(controls[4], ControlModel::Enum(ref field) if field.style == tools::ChoiceControlStyle::Menu)
         );
         assert!(
-            matches!(group.controls[6], ControlModel::Curve(ref field) if field.channels.len() == 2 && field.sample_query == "fixture-samples" && field.points.len() == 3)
+            matches!(controls[5], ControlModel::Color(ref field) if field.style == tools::ColorControlStyle::Picker && field.rgb == [32,64,128])
         );
         assert!(
-            matches!(group.controls[7], ControlModel::Action(ref field) if field.style == tools::ActionControlStyle::Icon && field.icon.as_deref() == Some("reset"))
+            matches!(controls[6], ControlModel::Curve(ref field) if field.channels.len() == 2 && field.sample_query == "fixture-samples" && field.points.len() == 3)
+        );
+        assert!(
+            matches!(controls[7], ControlModel::Action(ref field) if field.style == tools::ActionControlStyle::Icon && field.icon.as_deref() == Some("reset"))
         );
         let crop_version = section(&workspace, "lightwell.crop").version;
         let fixture_version = fixture_section.version;
@@ -1334,6 +1395,8 @@ mod tests {
                 version: 7,
             },
         );
+        // A recorded collapse of the only group changes nothing: that group has no header, so
+        // its controls are always shown.
         scene
             .control_ui
             .group_expanded
@@ -1342,12 +1405,13 @@ mod tests {
         let fixture_section = section(&workspace, &fixture.id);
         assert_eq!(fixture_section.version, fixture_version + 1);
         assert_eq!(section(&workspace, "lightwell.crop").version, crop_version);
-        let ControlModel::Group(group) = &fixture_section.controls[0] else {
-            panic!("group")
-        };
-        assert!(!group.expanded);
+        assert_eq!(
+            fixture_section.controls.len(),
+            8,
+            "every control is still drawn"
+        );
         assert!(
-            matches!(group.controls[6], ControlModel::Curve(ref field) if field.selected_channel == 1 && field.selected_point == Some(2) && field.sampled.len() == 2)
+            matches!(fixture_section.controls[6], ControlModel::Curve(ref field) if field.selected_channel == 1 && field.selected_point == Some(2) && field.sampled.len() == 2)
         );
         workspace.derive(&scene.inputs());
         assert_eq!(
@@ -1356,11 +1420,8 @@ mod tests {
         );
         let original_entry = scene.display_entry.replace(EntryId::new()).unwrap();
         workspace.derive(&scene.inputs());
-        let ControlModel::Group(group) = &section(&workspace, &fixture.id).controls[0] else {
-            panic!("group")
-        };
         assert!(
-            matches!(group.controls[6], ControlModel::Curve(ref field) if field.sampled.is_empty()),
+            matches!(section(&workspace, &fixture.id).controls[6], ControlModel::Curve(ref field) if field.sampled.is_empty()),
             "a different entry cannot reuse sampled geometry for identical control points"
         );
         scene.display_entry = Some(original_entry);
@@ -1371,14 +1432,123 @@ mod tests {
             "[[0.0,0.0],[0.5,0.7],[1.0,1.0]]".into(),
         );
         workspace.derive(&scene.inputs());
-        let ControlModel::Group(group) = &section(&workspace, &fixture.id).controls[0] else {
-            panic!("group")
-        };
         assert!(
-            matches!(group.controls[6], ControlModel::Curve(ref field) if field.sampled.is_empty()),
+            matches!(section(&workspace, &fixture.id).controls[6], ControlModel::Curve(ref field) if field.sampled.is_empty()),
             "old sampled geometry is hidden until the query matches the current points"
         );
         assert_eq!(section(&workspace, "lightwell.crop").version, crop_version);
+    }
+
+    /// A stacked module whose controls are one group draws that group's controls straight under
+    /// its band: no sub-group header, no disclosure and no caption, and a recorded collapse of that
+    /// group changes nothing. The band keeps the module's reset. Modules with more than one group
+    /// keep their headers, a tabbed module keeps its groups as tabs, and the descriptors that
+    /// `module.list` returns are untouched.
+    #[test]
+    fn a_modules_only_group_is_drawn_without_a_header_and_never_collapses() {
+        let modules = descriptors();
+        let mut scene = Scene::new(modules.clone()).opened(Vec::new());
+        scene.developer = true;
+        if let Some(state) = &mut scene.state {
+            state.asset.source = lightwell_core::SourceKind::Raw {
+                metadata: json!({}),
+            };
+        }
+        let workspace = scene.derive();
+        let groups = |section: &tools::SectionModel| {
+            section
+                .controls
+                .iter()
+                .filter(|control| matches!(control, ControlModel::Group(_)))
+                .count()
+        };
+        for id in [
+            "lightwell.raw",
+            "lightwell.transform",
+            "lightwell.pixel",
+            "lightwell.presence",
+            "lightwell.vignette",
+        ] {
+            let module = modules.iter().find(|module| module.id == id).unwrap();
+            let [lightwell_core::Control::Group { controls, .. }] = module.controls.as_slice()
+            else {
+                panic!("{id} declares exactly one group");
+            };
+            let drawn = section(&workspace, id);
+            assert_eq!(groups(drawn), 0, "{id} draws no sub-group header");
+            assert_eq!(
+                drawn.controls.len(),
+                controls.len(),
+                "{id} draws every control of its only group directly"
+            );
+            assert_eq!(
+                drawn.reset.as_ref().map(|reset| reset.action.as_str()),
+                module.reset.as_ref().map(|reset| reset.action.as_str()),
+                "{id} keeps the band's own reset"
+            );
+        }
+        let raw = section(&workspace, "lightwell.raw");
+        let labels: Vec<&str> = raw
+            .controls
+            .iter()
+            .map(|control| match control {
+                ControlModel::Slider(slider) => slider.label.as_str(),
+                ControlModel::Picker(picker) => picker.label.as_str(),
+                ControlModel::Action(action) => action.label.as_str(),
+                other => panic!("unexpected RAW control {other:?}"),
+            })
+            .collect();
+        assert_eq!(
+            labels,
+            [
+                "Exposure",
+                "Custom temperature",
+                "Custom tint",
+                "Neutral WB",
+                "As shot"
+            ]
+        );
+        assert_eq!(groups(section(&workspace, "lightwell.basic")), 3);
+        let mixer = section(&workspace, "lightwell.mixer");
+        assert_eq!(groups(mixer), 3, "a tabbed module keeps its groups as tabs");
+        assert!(matches!(mixer.layout, tools::SectionLayout::Tabs { .. }));
+
+        // The only group has nothing to collapse: a recorded collapse, however it got there,
+        // leaves every control drawn.
+        let before = raw.controls.clone();
+        scene
+            .control_ui
+            .group_expanded
+            .insert(tools::group_key("lightwell.raw", &[0]), false);
+        let collapsed = scene.derive();
+        assert_eq!(section(&collapsed, "lightwell.raw").controls, before);
+        // A group of a multi-group module still collapses.
+        scene
+            .control_ui
+            .group_expanded
+            .insert(tools::group_key("lightwell.basic", &[1]), false);
+        let toggled = scene.derive();
+        let ControlModel::Group(tone) = &section(&toggled, "lightwell.basic").controls[1] else {
+            panic!("Basic's second group")
+        };
+        assert!(!tone.expanded);
+        // The descriptors are what the API lists, unchanged.
+        assert_eq!(scene.modules, modules);
+    }
+
+    /// A one-group tabbed module is still tabs: the rule is for stacked sections only.
+    #[test]
+    fn a_tabbed_module_with_one_group_keeps_it() {
+        let mut tabs = tabs_descriptor();
+        tabs.controls.truncate(1);
+        let scene = Scene::new(vec![tabs.clone()]).opened(Vec::new());
+        let workspace = scene.derive();
+        let drawn = section(&workspace, &tabs.id);
+        assert!(matches!(
+            drawn.controls.as_slice(),
+            [ControlModel::Group(_)]
+        ));
+        assert_eq!(drawn.layout, tools::SectionLayout::Tabs { selected: 0 });
     }
 
     /// Selecting a tab in a `layout: tabs` module is per-client view state exactly like a group's
@@ -1444,11 +1614,10 @@ mod tests {
         let mut workspace = Workspace::default();
         workspace.derive(&scene.inputs());
         let versions = |workspace: &Workspace| {
-            let ControlModel::Group(group) = &section(workspace, &fixture.id).controls[0] else {
-                panic!("group")
-            };
+            // The fixture's only group draws no header, so its controls are the section's rows.
+            let controls = &section(workspace, &fixture.id).controls;
             let (ControlModel::Color(color), ControlModel::Curve(curve)) =
-                (&group.controls[5], &group.controls[6])
+                (&controls[5], &controls[6])
             else {
                 panic!("canvas controls")
             };

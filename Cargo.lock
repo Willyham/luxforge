@@ -1923,6 +1923,7 @@ name = "lightwell-ui"
 version = "0.0.0"
 dependencies = [
  "iced",
+ "iced_wgpu",
  "wgpu",
 ]
 

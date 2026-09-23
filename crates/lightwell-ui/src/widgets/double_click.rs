@@ -13,7 +13,8 @@
 //! - A double-click on the rail **away from the handle** is a jump and then a reset. The first
 //!   click reaches the slider, which moves the handle to the pointer and commits that value on
 //!   release; the second click is swallowed here and resets the field. The committed jump stays in
-//!   history as its own entry.
+//!   history as its own entry, and the host holds the reset until that commit has answered, so the
+//!   reset names the revision the jump produced.
 //! - A double-click **on the handle's own position** is a reset alone: iced's slider publishes no
 //!   value when the pointer maps to the value the handle already has, so the first click commits
 //!   nothing.
@@ -33,9 +34,26 @@ pub fn double_click<'a, M: Clone + 'a>(
     content: impl Into<Element<'a, M>>,
     on_double_click: M,
 ) -> Element<'a, M> {
+    double_click_when(content, on_double_click, true)
+}
+
+/// [`double_click`] that only listens while `enabled`.
+///
+/// The wrapper is there whether or not it is enabled, so the widget tree has the same shape either
+/// way and its state — the last press it classified — survives a control being disabled for a
+/// moment, such as while a request is in flight. Swapping the wrapper in and out instead would
+/// replace that state every time the flag flipped, and a double-click whose two presses straddled
+/// the flip would read as two single clicks. While disabled every press goes to the content
+/// unclassified and unrecorded, so a press the control ignored never counts as a first click.
+pub fn double_click_when<'a, M: Clone + 'a>(
+    content: impl Into<Element<'a, M>>,
+    on_double_click: M,
+    enabled: bool,
+) -> Element<'a, M> {
     Element::new(DoubleClick {
         content: content.into(),
         on_double_click,
+        enabled,
     })
 }
 
@@ -51,6 +69,8 @@ fn resets(kind: mouse::click::Kind) -> bool {
 struct DoubleClick<'a, M, Theme = iced::Theme, Renderer = iced::Renderer> {
     content: Element<'a, M, Theme, Renderer>,
     on_double_click: M,
+    /// Presses are classified only while this is set; the wrapper stays in the tree either way.
+    enabled: bool,
 }
 
 /// The wrapper's own state: the last left press it saw, which is all `mouse::Click` needs to
@@ -125,7 +145,8 @@ where
     ) {
         // The press is classified before the content sees it, which is the whole point: a content
         // that captures the press (iced's slider does) would otherwise hide every double click.
-        if let Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)) = event
+        if self.enabled
+            && let Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)) = event
             && let Some(position) = cursor.position_over(layout.bounds())
             && self.record(tree, position)
         {
@@ -228,6 +249,94 @@ mod tests {
         assert!(
             !resets(Kind::Triple),
             "a third click does not reset a second time"
+        );
+    }
+
+    /// The wrapper over an empty 40 × 12 content, with the unit renderer: enough to drive `update`
+    /// and the tree reconciliation exactly as the runtime does, without a window or a GPU.
+    type Wrapper = DoubleClick<'static, u8, iced::Theme, ()>;
+
+    fn wrapper(enabled: bool) -> Wrapper {
+        DoubleClick {
+            content: Element::new(iced::widget::Space::new().width(40).height(12)),
+            on_double_click: 7,
+            enabled,
+        }
+    }
+
+    /// One left press in the middle of the content, and what it published.
+    fn press(widget: &mut Wrapper, tree: &mut Tree) -> Vec<u8> {
+        let node = layout::Node::new(Size::new(40.0, 12.0));
+        let mut published = Vec::new();
+        let mut shell = Shell::new(&mut published);
+        widget.update(
+            tree,
+            &Event::Mouse(mouse::Event::ButtonPressed(Button::Left)),
+            Layout::new(&node),
+            mouse::Cursor::Available(Point::new(20.0, 6.0)),
+            &(),
+            &mut iced::advanced::clipboard::Null,
+            &mut shell,
+            &Rectangle::new(Point::ORIGIN, Size::new(40.0, 12.0)),
+        );
+        published
+    }
+
+    /// Rebuild the widget as the next view would and reconcile the retained tree against it.
+    fn rebuild(tree: &mut Tree, widget: &Wrapper) {
+        tree.diff(widget as &dyn Widget<u8, iced::Theme, ()>);
+    }
+
+    /// A control that is disabled between the two presses of a double-click — which is what a
+    /// request in flight does to a whole section — keeps the wrapper and its first press, so the
+    /// second press still resets. A press while disabled publishes nothing and is not counted.
+    #[test]
+    fn a_disabled_moment_between_the_presses_keeps_the_first_press() {
+        let mut widget = wrapper(true);
+        let mut tree = Tree::new(&widget as &dyn Widget<u8, iced::Theme, ()>);
+        assert!(press(&mut widget, &mut tree).is_empty(), "the first press");
+
+        let mut disabled = wrapper(false);
+        rebuild(&mut tree, &disabled);
+        assert_eq!(
+            tree.tag,
+            tree::Tag::of::<State>(),
+            "the wrapper is still in the tree"
+        );
+        assert!(
+            press(&mut disabled, &mut tree).is_empty(),
+            "a disabled wrapper publishes nothing"
+        );
+
+        let mut enabled = wrapper(true);
+        rebuild(&mut tree, &enabled);
+        // `mouse::Click` needs the second press strictly later than the first.
+        std::thread::sleep(std::time::Duration::from_millis(2));
+        assert_eq!(
+            press(&mut enabled, &mut tree),
+            vec![7],
+            "the second press completes the double-click begun before the control was disabled"
+        );
+    }
+
+    /// Why the wrapper must stay in the tree: reconciling it against a different widget, as the
+    /// slider did by dropping the wrapper while its rail was disabled, replaces the retained state,
+    /// so the first press is forgotten and the second is a single click.
+    #[test]
+    fn swapping_the_wrapper_out_forgets_the_first_press() {
+        let mut widget = wrapper(true);
+        let mut tree = Tree::new(&widget as &dyn Widget<u8, iced::Theme, ()>);
+        assert!(press(&mut widget, &mut tree).is_empty());
+
+        let bare: Element<'static, u8, iced::Theme, ()> =
+            Element::new(iced::widget::Space::new().width(40).height(12));
+        tree.diff(bare.as_widget());
+        let mut again = wrapper(true);
+        rebuild(&mut tree, &again);
+        std::thread::sleep(std::time::Duration::from_millis(2));
+        assert!(
+            press(&mut again, &mut tree).is_empty(),
+            "the retained click history went with the swapped-out wrapper"
         );
     }
 

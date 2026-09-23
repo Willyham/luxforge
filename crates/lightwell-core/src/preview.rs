@@ -6,9 +6,12 @@ use crate::{
     render, render_cancellable, render_linear, render_linear_cancellable,
 };
 use serde::{Deserialize, Serialize};
-use std::sync::{
-    Arc,
-    mpsc::{Receiver, SyncSender, TryRecvError, sync_channel},
+use std::{
+    sync::{
+        Arc,
+        mpsc::{Receiver, SyncSender, TryRecvError, sync_channel},
+    },
+    time::Instant,
 };
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -129,6 +132,14 @@ impl PreviewSource {
         }
     }
 
+    /// Whether this source evaluates a RAW white balance its developed planes do not hold, through
+    /// a [`crate::WhiteBalanceApproximation`]. Only the preview of an open draft is planned that
+    /// way. Every frame rendered from such a source is approximate, at the proxy scale and at full
+    /// size alike, and none is ever reduced into a report.
+    pub fn approximate_white_balance(&self) -> bool {
+        matches!(self, Self::Raw { settings, .. } if settings.white_balance.is_some())
+    }
+
     /// The content-stage dimensions a recipe is compiled against.
     pub fn dimensions(&self) -> (u32, u32) {
         match self {
@@ -229,6 +240,11 @@ pub struct PreviewJob {
     pub identity: AnalysisIdentity,
     /// Reduce the rendered raster into a [`Report`] and return it with the frame, so the displayed
     /// target needs no second render. Refused together with [`PreviewJob::layer_count`].
+    ///
+    /// Ignored when the source approximates its white balance
+    /// ([`PreviewSource::approximate_white_balance`]): an approximate frame is never reduced into a
+    /// report, whatever the job asked, so every histogram and clipping count comes from an exact
+    /// render.
     pub analyse: bool,
     /// The physical pixels the display can show this frame in. `Some` asks for a proxy phase before
     /// the exact one; `None` is the exact path alone, as a percentage zoom at or above 100% takes.
@@ -265,8 +281,10 @@ pub struct PreviewResult {
     pub draft_revision: Option<u64>,
     pub result: Result<Raster, Error>,
     /// The exact reduction of the raster in `result`, when the job asked for it. `None` means the
-    /// job did not ask, the render failed, or this is the proxy phase — a proxy raster is never
-    /// reduced. It never means an empty histogram.
+    /// job did not ask, the render failed, this is the proxy phase — a proxy raster is never
+    /// reduced — or the frame approximates its white balance
+    /// ([`Self::approximate_white_balance`]), which is never reduced either. It never means an
+    /// empty histogram.
     pub report: Option<Report>,
     /// Which phase produced this frame.
     pub phase: PreviewPhase,
@@ -284,6 +302,29 @@ pub struct PreviewResult {
     /// holds a spatial-stage layer whose neighbourhoods scale with the stage. Always `false` on the
     /// exact phase, which is the frame every number comes from.
     pub proxy_approximate: bool,
+    /// Whether this frame approximates a RAW white balance the developed planes do not hold — a
+    /// drafted temperature or tint, previewed during its gesture before the release redevelops the
+    /// mosaic ([`PreviewSource::approximate_white_balance`]). Set on **both** phases of such a job:
+    /// the matrix is linear and the proxy's box filter is linear, so it applies to the proxy
+    /// exactly as it does to the full frame, and neither phase is the exact picture. Such a job
+    /// never carries a [`Self::report`], even when it asked for one.
+    pub approximate_white_balance: bool,
+    /// Milliseconds of wall-clock time the preview worker spent producing this phase's result, and
+    /// nothing else.
+    ///
+    /// - [`PreviewPhase::Proxy`]: building the proxy source when this job built it
+    ///   ([`Self::proxy_built`]), plus rendering the recipe against it. A cache hit costs only the
+    ///   render.
+    /// - [`PreviewPhase::Exact`]: rendering the prepared source, plus reducing the frame into
+    ///   [`Self::report`] when the job asked for one. A proxy phase that was attempted and declined
+    ///   is not counted here; it produced no frame.
+    ///
+    /// It excludes everything outside the worker's own work on this phase: the wait in the queue's
+    /// pending slot, preparing or redeveloping the source on the source worker, the other phase of
+    /// the same job, and handing the result to the display. It is measured on a failed or cancelled
+    /// phase too, up to the moment it stopped. So it answers "how long did this picture take to
+    /// render", not "how long after the request did it appear".
+    pub render_ms: f64,
 }
 
 /// What the worker sends back: one result, and the proxy source it built for it, which the queue
@@ -303,7 +344,9 @@ enum ProxyStep {
     /// Render this plan, against the cached source when the key already held one.
     Planned {
         key: ProxyKey,
-        cached: Option<PreviewSource>,
+        /// Boxed: a source carries its linear settings, which make it far larger than the other
+        /// variants, and this step is moved onto the worker once per job.
+        cached: Option<Box<PreviewSource>>,
     },
 }
 
@@ -443,7 +486,7 @@ impl PreviewQueue {
                 let cached = self
                     .cache
                     .get(&key)
-                    .map(|source| source.with_settings_of(&job.source));
+                    .map(|source| Box::new(source.with_settings_of(&job.source)));
                 ProxyStep::Planned { key, cached }
             }
             Ok(None) => ProxyStep::Declined(
@@ -553,6 +596,10 @@ fn run(
     let entry_id = job.entry.id.clone();
     let draft_revision = job.draft_revision;
     let snapshot_id = job.entry.snapshot.id.clone();
+    // Both phases of a job share its source, so both are approximate or neither is. An approximate
+    // frame is never reduced, which is the rule on `PreviewJob::analyse`.
+    let approximate_white_balance = job.source.approximate_white_balance();
+    let analyse = job.analyse && !approximate_white_balance;
     // A truncated job copies the layer prefix only; the whole stack is rendered in place.
     let prefix = job.layer_count.map(|count| Recipe {
         format: job.recipe.format,
@@ -567,8 +614,10 @@ fn run(
         ProxyStep::Skipped => None,
         ProxyStep::Declined(reason) => Some(reason),
         ProxyStep::Planned { key, cached } => {
+            // The proxy phase's own clock: the build when this job builds, then the render.
+            let started = Instant::now();
             let built = match cached {
-                Some(source) => Ok((source, false)),
+                Some(source) => Ok((*source, false)),
                 None => job.source.proxy(key.plan).map(|source| (source, true)),
             };
             match built {
@@ -598,6 +647,8 @@ fn run(
                                     proxy_declined: None,
                                     proxy_built: fresh,
                                     proxy_approximate: job.registry.proxy_approximate(&job.recipe),
+                                    approximate_white_balance,
+                                    render_ms: milliseconds_since(started),
                                 },
                                 built: fresh.then_some((key, source)),
                             };
@@ -613,6 +664,9 @@ fn run(
         }
     };
 
+    // The exact phase's own clock starts here, after the proxy phase has sent its frame, so the
+    // two phases' times never overlap and neither includes the other.
+    let started = Instant::now();
     let rendered = job
         .source
         .render_cancellable(&job.registry, snapshot_id, recipe, &exact_cancel);
@@ -621,7 +675,7 @@ fn run(
     // cancelled one means the job was superseded mid-reduce, and the frame it describes is as stale
     // as the reduction, so the phase answers cancelled rather than a frame nothing will adopt.
     let (result, report) = match rendered {
-        Ok(raster) if job.analyse => {
+        Ok(raster) if analyse => {
             match crate::analysis::reduce_raster_cancellable(&raster, &exact_cancel) {
                 Ok(report) => (Ok(raster), Some(report)),
                 Err(error) if error.kind == ErrorKind::Cancelled => (Err(error), None),
@@ -630,6 +684,7 @@ fn run(
         }
         rendered => (rendered, None),
     };
+    let render_ms = milliseconds_since(started);
     let sent = sender.send(WorkerMessage {
         result: PreviewResult {
             generation,
@@ -643,12 +698,19 @@ fn run(
             proxy_declined: declined,
             proxy_built: false,
             proxy_approximate: false,
+            approximate_white_balance,
+            render_ms,
         },
         built: None,
     });
     if sent.is_ok() {
         wake();
     }
+}
+
+/// Wall-clock milliseconds since `started`, as [`PreviewResult::render_ms`] reports them.
+fn milliseconds_since(started: Instant) -> f64 {
+    started.elapsed().as_secs_f64() * 1000.0
 }
 
 #[cfg(test)]
@@ -1029,10 +1091,28 @@ mod tests {
             .expect("a proxy is worthwhile");
 
         let mut queue = PreviewQueue::default();
+        let requested = Instant::now();
         let generation = queue.request(job);
         let results = drain_all(&mut queue);
+        let lifetime_ms = requested.elapsed().as_secs_f64() * 1000.0;
         assert_eq!(results.len(), 2, "one proxy frame and one exact frame");
         let [proxy, exact] = <[PreviewResult; 2]>::try_from(results).ok().unwrap();
+
+        // Each phase reports its own worker time: finite, and inside the job's own lifetime. The
+        // two clocks run one after the other on the worker, so together they fit inside it too —
+        // neither phase counts the other, and neither counts anything before the request.
+        for (phase, ms) in [("proxy", proxy.render_ms), ("exact", exact.render_ms)] {
+            assert!(
+                ms.is_finite() && ms >= 0.0 && ms <= lifetime_ms,
+                "the {phase} phase reports {ms} ms of a {lifetime_ms} ms job"
+            );
+        }
+        assert!(
+            proxy.render_ms + exact.render_ms <= lifetime_ms,
+            "the phases overlap: {} + {} ms of a {lifetime_ms} ms job",
+            proxy.render_ms,
+            exact.render_ms
+        );
 
         assert_eq!(proxy.generation, generation);
         assert_eq!(exact.generation, generation);
@@ -1265,6 +1345,152 @@ mod tests {
         assert_eq!(session.selection, HistorySelection::Current);
     }
 
+    /// A RAW job over planes developed at one white balance, rendering them at `white_balance`, at
+    /// display bounds that give it a proxy phase, asking for a report.
+    fn raw_job(white_balance: Option<crate::WhiteBalanceApproximation>) -> PreviewJob {
+        use crate::{LinearImage, LinearSettings};
+        let (width, height) = (240, 160);
+        let planes: Vec<f32> = (0..3 * width * height)
+            .map(|index| 0.02 + ((index * 37) % 1009) as f32 / 1100.0)
+            .collect();
+        let image = LinearImage::with_fingerprint(width, height, planes, "sha256:raw-wb").unwrap();
+        let mut job = job(1, true);
+        // The stock test job carries a pixel-stage layer, which is not proxy-eligible.
+        job.recipe.layers.clear();
+        job.source = PreviewSource::Raw {
+            image,
+            settings: LinearSettings {
+                exposure_ev: 0.25,
+                white_balance,
+            },
+        };
+        job.proxy = Some(ProxyBounds {
+            width: 60,
+            height: 60,
+        });
+        job
+    }
+
+    fn approximation() -> crate::WhiteBalanceApproximation {
+        crate::WhiteBalanceApproximation::from_matrix([
+            [1.35, 0.08, -0.04],
+            [0.03, 0.98, 0.02],
+            [-0.06, 0.04, 0.71],
+        ])
+        .unwrap()
+    }
+
+    /// A job whose source approximates its white balance says so on both of its phases and is
+    /// never reduced into a report, although it asked for one. Otherwise it is an ordinary job:
+    /// the proxy phase is the approximate recipe rendered against the exact downscale of the
+    /// developed planes, byte for byte, and the exact phase the approximate recipe at full size.
+    #[test]
+    fn an_approximate_white_balance_is_labelled_on_both_phases_and_never_analysed() {
+        let job = raw_job(Some(approximation()));
+        assert!(job.analyse, "the job asked for a report");
+        assert!(job.source.approximate_white_balance());
+        let (registry, source, recipe) =
+            (job.registry.clone(), job.source.clone(), job.recipe.clone());
+        let snapshot = job.entry.snapshot.id.clone();
+        let plan = source
+            .proxy_plan(&registry, &recipe, job.proxy.unwrap())
+            .unwrap()
+            .expect("a proxy is worthwhile");
+
+        let mut queue = PreviewQueue::default();
+        let generation = queue.request(job);
+        let results = drain_all(&mut queue);
+        assert_eq!(results.len(), 2, "one proxy frame and one exact frame");
+        let [proxy, exact] = <[PreviewResult; 2]>::try_from(results).ok().unwrap();
+        assert_eq!(
+            (proxy.generation, exact.generation),
+            (generation, generation)
+        );
+        assert_eq!(
+            (proxy.phase, exact.phase),
+            (PreviewPhase::Proxy, PreviewPhase::Exact)
+        );
+        assert!(proxy.approximate_white_balance && exact.approximate_white_balance);
+        assert!(proxy.report.is_none());
+        assert!(
+            exact.report.is_none(),
+            "an approximate frame is never reduced, whatever the job asked"
+        );
+
+        let reference = source
+            .proxy(plan)
+            .expect("the exact downscale")
+            .render(&registry, snapshot.clone(), &recipe)
+            .expect("the approximate recipe at proxy size");
+        assert_eq!(
+            proxy.result.expect("a proxy frame").rgba.as_ref(),
+            reference.rgba.as_ref(),
+            "the proxy frame is the approximate recipe over the exact downscale"
+        );
+        let reference = source
+            .render(&registry, snapshot, &recipe)
+            .expect("the approximate recipe at full size");
+        assert_eq!(
+            exact.result.expect("an exact frame").rgba.as_ref(),
+            reference.rgba.as_ref()
+        );
+    }
+
+    /// The proxy cache keys on the developed planes and takes the settings from the job, so a
+    /// drafted white balance renders against the proxy the committed frame built — a cache hit —
+    /// through its own matrix, and says so.
+    #[test]
+    fn a_drafted_white_balance_hits_the_proxy_the_exact_job_built() {
+        let exact = raw_job(None);
+        let mut drafted = raw_job(Some(approximation()));
+        // The same developed planes: a drafted job reads the planes the committed one did.
+        drafted.source = PreviewSource::Raw {
+            image: match &exact.source {
+                PreviewSource::Raw { image, .. } => image.clone(),
+                PreviewSource::Jpeg(_) => unreachable!(),
+            },
+            settings: match &drafted.source {
+                PreviewSource::Raw { settings, .. } => *settings,
+                PreviewSource::Jpeg(_) => unreachable!(),
+            },
+        };
+        let mut queue = PreviewQueue::default();
+        queue.request(exact);
+        let first = drain_all(&mut queue);
+        assert!(first[0].proxy_built && !first[0].approximate_white_balance);
+        queue.request(drafted);
+        let second = drain_all(&mut queue);
+        assert_eq!(second[0].phase, PreviewPhase::Proxy);
+        assert!(!second[0].proxy_built, "the drafted job reuses the proxy");
+        assert!(second[0].approximate_white_balance);
+        assert_ne!(
+            second[0].result.as_ref().unwrap().rgba,
+            first[0].result.as_ref().unwrap().rgba,
+            "the cached pixels render through the drafted matrix, not the cached settings"
+        );
+    }
+
+    /// The same job over planes that hold its white balance is exact: unlabelled, and reduced.
+    #[test]
+    fn an_exact_raw_job_is_unlabelled_and_analysed() {
+        let job = raw_job(None);
+        assert!(!job.source.approximate_white_balance());
+        let mut queue = PreviewQueue::default();
+        queue.request(job);
+        let results = drain_all(&mut queue);
+        assert_eq!(results.len(), 2);
+        assert!(
+            results
+                .iter()
+                .all(|result| !result.approximate_white_balance)
+        );
+        assert!(
+            results[0].report.is_none(),
+            "a proxy frame is never reduced"
+        );
+        assert!(results[1].report.is_some(), "the exact frame is");
+    }
+
     /// A cached RAW proxy is pixels, not settings: a second job over the same developed planes
     /// with another exposure is a cache hit that renders at its own exposure.
     #[test]
@@ -1287,7 +1513,10 @@ mod tests {
             job.recipe.layers.clear();
             job.source = PreviewSource::Raw {
                 image: image.clone(),
-                settings: LinearSettings { exposure_ev: ev },
+                settings: LinearSettings {
+                    exposure_ev: ev,
+                    white_balance: None,
+                },
             };
             job.proxy = Some(bounds);
             job

@@ -106,7 +106,7 @@ pub fn gallery_named_states() -> Vec<(&'static str, iced::Element<'static, ()>)>
         "Curve · disabled",
         "Named vector icons · 12 and 16 points",
         "Basic · expanded module section",
-        "Module bands · collapsed, unavailable, collapsed group",
+        "Module bands · collapsed, unavailable, collapsed groups",
         "Colour mixer · tab row per selected tab",
         "Neutral picker · labelled buttons",
         "Truncation · band hints and history labels on one line",

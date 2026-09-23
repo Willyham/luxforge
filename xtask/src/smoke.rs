@@ -2,7 +2,7 @@ use crate::{
     basic_smoke as basic, controls_smoke as controls, crop_smoke as crop, gallery_smoke as gallery,
     histogram_smoke as histogram, mixer_smoke as mixer, presence_smoke as presence,
     presets_smoke as presets, raw_panel_smoke as raw_panel, vignette_smoke as vignette,
-    workspace_smoke as workspace, *,
+    workspace_smoke as workspace, zoom_smoke as zoom, *,
 };
 use std::{
     process::{Child, Stdio},
@@ -10,7 +10,7 @@ use std::{
 };
 /// Every rendered scenario, in the order `verify --tier rendered` runs them. One list: `main.rs`
 /// and `verify` both reach a scenario through [`dispatch`], so a new scenario is named here once.
-pub const SCENARIOS: [&str; 24] = [
+pub const SCENARIOS: [&str; 25] = [
     "empty",
     "load",
     "replacement",
@@ -19,6 +19,7 @@ pub const SCENARIOS: [&str; 24] = [
     "alternating",
     "large24",
     "large60",
+    "zoom",
     "crop",
     "crop-draft",
     "workspace",
@@ -37,13 +38,15 @@ pub const SCENARIOS: [&str; 24] = [
     "unavailable",
 ];
 
-/// Run one scenario, including the three that are not a single plain launch: a module can only be
-/// disabled at startup, persistence across a restart needs a second process, and the capability
-/// scenario runs its proof endpoint in this process.
+/// Run one scenario, including the four that are not a single plain launch: a module can only be
+/// disabled at startup, persistence across a restart needs a second process, `zoom` runs its
+/// script over the 24 MP and the 60 MP photograph in turn, and the capability scenario runs its
+/// proof endpoint in this process.
 pub fn dispatch(root: &Path, out: &Path, scenario: &str, bin: &Path, timeout: Duration) -> Result {
     match scenario {
         "unavailable" => workspace::run_unavailable(root, out, bin, timeout),
         "basic-restart" => basic::run_restart(root, out, bin, timeout),
+        zoom::SCENARIO => zoom::run(root, out, bin, timeout),
         "capabilities" => crate::capabilities_smoke::run(root, out, bin, timeout),
         _ => run(root, out, scenario, bin, timeout),
     }
@@ -248,6 +251,117 @@ pub fn columns(frame: &Value) -> Result<Option<[u32; 2]>> {
         }
     }
 }
+/// The longest plausible render of one preview phase on the fixtures a scenario opens, in
+/// milliseconds. A release render of the 60 MP fixture's exact phase is well under a second; the
+/// bound exists to catch a figure that is not a render time at all, such as the time since the last
+/// request, which grows with the length of the run.
+pub const RENDER_MS_BOUND: f64 = 5000.0;
+
+/// The status bar's wording of one frame's render time, exactly as the editor's
+/// `state::status::RenderTime` formats it, so a captured frame's text is checked against its own
+/// figure rather than against a copy of the text. `approximate` is a frame that approximates a
+/// drafted RAW white balance.
+pub fn render_text(ms: f64, proxy: bool, approximate: bool) -> String {
+    let figure = if ms < 0.5 {
+        "<1".to_owned()
+    } else {
+        format!("{}", ms.round() as i64)
+    };
+    let phase = match (proxy, approximate) {
+        (true, true) => " (proxy, approximate)",
+        (true, false) => " (proxy)",
+        (false, true) => " (approximate)",
+        (false, false) => "",
+    };
+    format!("Rendered in {figure} ms{phase}")
+}
+
+/// Every presented frame's render time, from its `preview_displayed` event: the preview worker's
+/// own time for the phase on screen. Each must be a finite number of milliseconds in
+/// `0..RENDER_MS_BOUND`, and there must be at least one. Then, for every captured frame, the status
+/// bar either says the renderer is busy or states a figure that one of those events carried, in
+/// exactly the editor's wording, with `(proxy)` exactly when the frame on screen is the proxy and
+/// `approximate` exactly when it approximates a drafted RAW white balance. Returns the evidence
+/// record.
+pub fn expect_render_times(events: &[Value], frames: &[Value]) -> Result<Value> {
+    let mut displayed = Vec::new();
+    for event in events.iter().filter(|e| e["event"] == "preview_displayed") {
+        let detail = &event["detail"];
+        let ms = detail["render_ms"]
+            .as_f64()
+            .ok_or_else(|| format!("A preview_displayed event carries no render_ms: {detail}"))?;
+        ensure(
+            ms.is_finite() && (0.0..RENDER_MS_BOUND).contains(&ms),
+            format!(
+                "Generation {} reports a render of {ms} ms, outside 0..{RENDER_MS_BOUND}",
+                detail["generation"]
+            ),
+        )?;
+        displayed.push(json!({"generation":detail["generation"],"proxy":detail["proxy"],"reason":detail["reason"],"render_ms":ms}));
+    }
+    ensure(
+        !displayed.is_empty(),
+        "No preview_displayed event: nothing reported a render time",
+    )?;
+    let figures: Vec<f64> = displayed
+        .iter()
+        .filter_map(|d| d["render_ms"].as_f64())
+        .collect();
+    let mut shown = Vec::new();
+    for frame in frames {
+        let bar = &frame["state"]["status_bar"];
+        let text = bar["render"]
+            .as_str()
+            .ok_or("A frame records no status bar render text")?;
+        if text == "Rendering\u{2026}" {
+            shown.push(json!({"frame":frame["file"],"render":text}));
+            continue;
+        }
+        let Some(ms) = bar["render_ms"].as_f64() else {
+            ensure(
+                text == "Idle",
+                format!(
+                    "{}: the status bar says {text:?} with no render time",
+                    frame["file"]
+                ),
+            )?;
+            continue;
+        };
+        ensure(
+            figures.contains(&ms),
+            format!(
+                "{}: the status bar's {ms} ms is no presented frame's own render time",
+                frame["file"]
+            ),
+        )?;
+        let proxy = bar["render_proxy"] == json!(true);
+        ensure(
+            proxy == (frame["state"]["proxy"]["presented"] == json!(true)),
+            format!(
+                "{}: the status bar's proxy label disagrees with the frame on screen",
+                frame["file"]
+            ),
+        )?;
+        let approximate = bar["render_approximate"] == json!(true);
+        ensure(
+            approximate == (frame["state"]["approximate_white_balance"] == json!(true)),
+            format!(
+                "{}: the status bar's approximate label disagrees with the frame on screen",
+                frame["file"]
+            ),
+        )?;
+        ensure(
+            text == render_text(ms, proxy, approximate),
+            format!(
+                "{}: the status bar says {text:?} for {ms} ms",
+                frame["file"]
+            ),
+        )?;
+        shown.push(json!({"frame":frame["file"],"render":text,"render_ms":ms,"proxy":proxy,"approximate":approximate}));
+    }
+    Ok(json!({"bound_ms":RENDER_MS_BOUND,"preview_displayed":displayed,"status_bar":shown}))
+}
+
 pub fn events(path: &Path) -> Result<Vec<Value>> {
     fs::read_to_string(path)?
         .lines()
@@ -383,9 +497,14 @@ pub fn verify(evidence: &Path, scenario: &str, count: usize) -> Result<Value> {
         presets::verify(evidence, &app, &events)?;
         return Ok(app);
     }
+    if let Some(frames) = zoom::frames(scenario) {
+        let (app, events) = preamble(evidence, frames)?;
+        zoom::verify(evidence, &app, &events)?;
+        return Ok(app);
+    }
     if let Some(frames) = raw_panel::frames(scenario) {
-        let (app, _) = preamble(evidence, frames)?;
-        raw_panel::verify(evidence, &app)?;
+        let (app, events) = preamble(evidence, frames)?;
+        raw_panel::verify(evidence, &app, &events)?;
         return Ok(app);
     }
     let (app, events) = preamble(evidence, count.max(1))?;
@@ -478,6 +597,24 @@ pub fn verify(evidence: &Path, scenario: &str, count: usize) -> Result<Value> {
                 "Missing upload readiness",
             )?;
         }
+    }
+    if scenario.starts_with("large") {
+        // A photo-sized source at Fit is shown as its display proxy, so the status bar's figure is
+        // the proxy phase's own render time and says so. A capture can land while a refit or the
+        // exact phase is still running, when the bar says "Rendering…"; the figure behind it is
+        // still recorded, and it must be the proxy's.
+        let record = expect_render_times(&events, frames)?;
+        ensure(
+            frames.iter().all(|frame| {
+                let bar = &frame["state"]["status_bar"];
+                bar["render_proxy"] == json!(true)
+                    && bar["render"].as_str().is_some_and(|text| {
+                        text.ends_with("(proxy)") || text == "Rendering\u{2026}"
+                    })
+            }),
+            "A photo-sized frame at Fit does not report the proxy's render time",
+        )?;
+        write_json(&evidence.join("render-times.json"), &record)?;
     }
     Ok(app)
 }
@@ -609,6 +746,7 @@ pub fn run_sources(
         .or_else(|| mixer::script(scenario))
         .or_else(|| vignette::script(scenario))
         .or_else(|| presets::script(scenario))
+        .or_else(|| zoom::script(scenario))
     {
         let file = out.join("script.json");
         write_json(&file, &script)?;
@@ -674,6 +812,61 @@ pub fn run_sources(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The render-time check accepts a presented frame's own figure in the editor's wording and
+    /// refuses what the status bar used to show: a figure that is the time since the last request,
+    /// a missing one, and a status bar that states a figure no frame reported.
+    #[test]
+    fn render_times_must_be_each_frames_own_and_plausible() {
+        let displayed = |ms: Value| json!({"event":"preview_displayed","detail":{"generation":2,"proxy":true,"render_ms":ms}});
+        let frame = |render: &str, ms: f64, proxy: bool| json!({"file":"frame-1.png","state":{"proxy":{"presented":proxy},"status_bar":{"render":render,"render_ms":ms,"render_proxy":proxy}}});
+        assert_eq!(render_text(12.4, true, false), "Rendered in 12 ms (proxy)");
+        assert_eq!(render_text(0.3, false, false), "Rendered in <1 ms");
+        assert_eq!(
+            render_text(9.2, true, true),
+            "Rendered in 9 ms (proxy, approximate)"
+        );
+        assert_eq!(
+            render_text(140.0, false, true),
+            "Rendered in 140 ms (approximate)"
+        );
+        let good = expect_render_times(
+            &[displayed(json!(12.4))],
+            &[frame("Rendered in 12 ms (proxy)", 12.4, true)],
+        );
+        assert!(good.is_ok(), "{good:?}");
+        // The old figure: half a million milliseconds since the open.
+        assert!(expect_render_times(&[displayed(json!(500_000.0))], &[]).is_err());
+        assert!(expect_render_times(&[displayed(Value::Null)], &[]).is_err());
+        assert!(
+            expect_render_times(&[], &[]).is_err(),
+            "nothing was presented"
+        );
+        // A status bar stating a figure no presented frame carried.
+        assert!(
+            expect_render_times(
+                &[displayed(json!(12.4))],
+                &[frame("Rendered in 90 ms (proxy)", 90.0, true)]
+            )
+            .is_err()
+        );
+        // The proxy label must match the frame on screen.
+        assert!(
+            expect_render_times(
+                &[displayed(json!(12.4))],
+                &[frame("Rendered in 12 ms", 12.4, false)
+                    .as_object()
+                    .map(|object| {
+                        let mut object = object.clone();
+                        object["state"]["proxy"]["presented"] = json!(true);
+                        Value::Object(object)
+                    })
+                    .unwrap()]
+            )
+            .is_err()
+        );
+    }
+
     #[test]
     fn missing_binary_retains_failure() {
         let tmp = tempfile::tempdir().unwrap();

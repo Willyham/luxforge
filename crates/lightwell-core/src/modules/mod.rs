@@ -53,7 +53,8 @@ pub use raw::{RawModule, RawPayload, WhiteBalanceMode};
 pub use registry::ModuleRegistry;
 #[cfg(test)]
 pub(crate) use registry::tests::{
-    PATCH_ACTION, PATCH_MODULE, PatchModule, STAGE_ACTION, STAGE_EFFECT, StageModule, TestModule,
+    HELD_ACTION, HeldModule, PATCH_ACTION, PATCH_MODULE, PatchModule, RenderGate, STAGE_ACTION,
+    STAGE_EFFECT, StageModule, TestModule,
 };
 pub use spatial::{
     ESTIMATE_REDUCTION, ESTIMATE_STORE_ENTRIES, Global, MAX_GLOBAL_BYTES, MAX_GLOBAL_VALUES,
