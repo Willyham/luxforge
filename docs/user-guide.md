@@ -28,7 +28,17 @@ Choose Copy beside the status text at the bottom of the window to copy the compl
 
 The window has five regions: a title bar with the file name, Open, the view control, Compare, Undo, Redo and two panel toggles; the state panel on the left (versions, history, recipe); the photograph in the middle with a floating mode strip under it; the tools panel on the right; and a status bar. Cmd+Option+[ and Cmd+Option+] hide and show the side panels, and the canvas takes whatever remains. Panel visibility, the canvas mode and the thirds overlay are session state, reported by `session.state` and settable through `workspace.set` like zoom.
 
-Cmd+K opens the command palette: type to filter every module action, reset and canvas mode plus Fit, 100%, Undo, Redo, Return to current, Restore, Pointer, Thirds and the panel toggles, then Enter or click runs the entry through the same path the control uses. Right-click any generated control and choose Copy as JSON request to put the exact `edit.<action>` request for its current values, with the current expected revision, on the clipboard; the crop draft's Apply offers its `edit.crop` request the same way.
+Cmd+K opens the command palette: type to filter every module action, reset and canvas mode plus Fit, 100%, Undo, Redo, Return to current, Restore, Pointer, Thirds, the panel toggles and Show or Hide performance, then Enter or click runs the entry through the same path the control uses. Right-click any generated control and choose Copy as JSON request to put the exact `edit.<action>` request for its current values, with the current expected revision, on the clipboard; the crop draft's Apply offers its `edit.crop` request the same way.
+
+### Performance
+
+The last block of the state panel, pinned under History and Recipe, is **Performance**. Click its heading to open it. It then shows the editor's own memory, CPU and GPU use, each with its value and a sparkline of the last minute, and the long-running work in progress: preparing an original, developing a RAW, rendering a preview or measuring a histogram, once it has run for half a second, with how long it has been running. When nothing long is running it shows the last long piece of work for ten seconds after it finished, then No background work.
+
+- **Memory** is the process's memory footprint, the figure Activity Monitor's Memory column shows; on Apple silicon it includes the GPU's allocations. Hover it for the peak since launch, the resident memory and the GPU allocations.
+- **CPU** is a percentage of one core, as Activity Monitor counts it, so a busy 14-core machine can read over 100%.
+- **GPU** is the share of time the GPU spent on the editor's work. It is measured on macOS only; elsewhere the row shows a dash and its tooltip says why.
+
+The section reads the same `resources.read` and `activity.list` methods any client can call, once a second, and only while it is open and the state panel is shown; closed, it costs nothing. It starts closed on every launch. Show performance and Hide performance in the command palette do the same as the heading.
 
 ## Edit and inspect
 

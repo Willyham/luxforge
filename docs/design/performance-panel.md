@@ -1,6 +1,6 @@
 # Performance panel, activity board and resource counters
 
-Status: design for implementation, requested by the owner on 2026-09-23. It adds a Performance section at the bottom of the state panel that shows the editor's own memory, CPU and GPU use with a one-minute sparkline each, and the long-running work in progress. Behind it are two host services with their own API methods: an **activity board** that any worker publishes its work to and any client reads, and **resource counters** that report what the operating system accounts to this process. Neither changes a recipe, history, render or export.
+Status: implemented and verified on the M4 Mac on 2026-09-23, requested by the owner the same day; the two [open decisions](#open-decisions) are recorded defaults. It adds a Performance section at the bottom of the state panel that shows the editor's own memory, CPU and GPU use with a one-minute sparkline each, and the long-running work in progress. Behind it are two host services with their own API methods: an **activity board** that any worker publishes its work to and any client reads, and **resource counters** that report what the operating system accounts to this process. Neither changes a recipe, history, render or export.
 
 ## Why a host inspector and a board, not a tool module and a bus
 
@@ -36,16 +36,18 @@ Publishers today:
 
 | Kind | Label | Published by | Detail | Phases |
 | --- | --- | --- | --- | --- |
-| `source.prepare` | Preparing original | Source worker, `SourceTaskKind::File` | File name | none |
-| `source.develop` | Developing RAW | Source worker, `SourceTaskKind::Develop` | File name when known | none |
-| `preview.render` | Rendering preview | The preview queue's job thread, from start to its last phase | none | `proxy`, then `exact` |
-| `analysis.histogram` | Measuring histogram | The owner's analysis worker | none | none |
+| `source.prepare` | Preparing original | Source worker, `SourceTaskKind::File`, from before the owner marks the job preparing to before it learns the result | File name | none |
+| `source.develop` | Developing RAW | Source worker, `SourceTaskKind::Develop` | File name | none |
+| `preview.render` | Rendering preview | The preview queue's job thread, from its start to the end of its exact phase, before the exact result is sent | none | `proxy` (when a proxy plan exists), then `exact` |
+| `analysis.histogram` | Measuring histogram | The owner's analysis job thread, until before its result is posted | none | none |
+
+Every entry but `source.prepare` names its `asset_id`; a new import has no asset yet. A source job's `job_id` is the one `job.status` answers, an analysis job's the one `analysis.read` answers. Each entry ends before its result reaches a reader, so a client that sees the job finished never still finds it running. A cancelled source job, a superseded or abandoned exact phase and `ErrorKind::Cancelled` end `cancelled`; any other error ends `failed`.
 
 The clipping overlay and preset import are left out: the first is a desktop-local reduction measured in milliseconds, the second runs synchronously on the owner.
 
 ### `activity.list`
 
-No parameters, no asset required, mutates nothing, emits no event.
+No parameters (an omitted or empty `params` is accepted and any key is refused, so a misspelt filter is never ignored), no asset required, mutates nothing, emits no event. The owner answers it from its board.
 
 ```json
 {
@@ -77,13 +79,13 @@ A new leaf crate, `crates/lightwell-process`, holds the platform code. It is the
 | GPU time | Sum of `accumulatedGPUTime` (ns) over this pid's `IOAccelerator` user clients in the IORegistry | unavailable | unavailable |
 | GPU allocations | `currentAllocatedSize` of the system default Metal device, which is the process-wide device wgpu also uses | unavailable | unavailable |
 
-Two facts were measured on the M4 on 2026-09-23 with a Metal compute probe: `task_power_info_v2.gpu_energy.task_gpu_utilisation` stays 0 on Apple silicon and cannot be used; the IORegistry `AppUsage` entries report nanoseconds (0.80 s against 0.82 s of command-buffer time), and `MTLCreateSystemDefaultDevice` returns the one device object whose `currentAllocatedSize` counts the process's allocations. `AppUsage` is an undocumented key the driver publishes; if it is missing the counter reports unavailable with that reason, never zero. Walking the accelerator's children costs 0.35 ms p50 and 1.1 ms p95 (84 user clients on the owner's machine), so the sampler caches this process's user-client entries and walks again only when one disappears or none was found.
+Two facts were measured on the M4 on 2026-09-23 with a Metal compute probe: `task_power_info_v2.gpu_energy.task_gpu_utilisation` stays 0 on Apple silicon and cannot be used; the IORegistry `AppUsage` entries report nanoseconds (0.80 s against 0.82 s of command-buffer time), and `MTLCreateSystemDefaultDevice` returns the one device object whose `currentAllocatedSize` counts the process's allocations. `AppUsage` is an undocumented key the driver publishes; if it is missing the counter reports unavailable with that reason, never zero. Walking the accelerator's children costs 0.35 ms p50 and 1.1 ms p95 (84 user clients on the owner's machine), so the sampler keeps this process's user-client entries and asks only them on later reads, walking again every 10 s, whether or not it found any, and sooner when a cached client stops answering. Releasing a command queue removes its entry from `AppUsage`, so the sampler folds a vanished entry's last value into a retired total and GPU time never decreases.
 
 The counters belong to the process, not to a catalog owner, so `lightwell_core::resources` keeps one process-wide sampler, as the colour-scratch budget is process-wide. Reading the Metal device creates one in a process that has none, so GPU allocations are read only after the host calls `lightwell_core::resources::declare_gpu_presenter()`: the desktop does at startup, before its first frame; the headless `lightwell-json` owner does not, and reports the reason.
 
 ### `resources.read`
 
-No parameters, no asset required, mutates nothing, emits no event. Counters are cumulative, so a client computes a rate from two reads: CPU percent of one core is `100 × Δcpu.time_ns / Δmonotonic_ns`, as Activity Monitor counts it (a 14-core machine can reach 1400%), and GPU percent is the same over `gpu.time_ns`.
+No parameters (refused like `activity.list`'s), no asset required, mutates nothing, emits no event. Counters are cumulative, so a client computes a rate from two reads: CPU percent of one core is `100 × Δcpu.time_ns / Δmonotonic_ns`, as Activity Monitor counts it (a 14-core machine can reach 1400%), and GPU percent is the same over `gpu.time_ns`.
 
 ```json
 {
@@ -100,11 +102,11 @@ No parameters, no asset required, mutates nothing, emits no event. Counters are 
 
 `monotonic_ns` is only meaningful as a difference. A counter the platform cannot give is omitted, and its object gains `"unavailable": {"<key>": "<reason>"}`, for example `"gpu": {"unavailable": {"time_ns": "GPU time is not reported on Linux yet", "allocated_bytes": "…"}}`. The two budgets are the existing process-wide colour-scratch and spatial targets with their high-water marks; they are exact and cost nothing to read.
 
-A read runs on the owner thread: a handful of system calls plus, with the entry cache warm, a few IORegistry property reads. It is bookkeeping, not frame work (performance rule 5), and its cost is measured and recorded.
+`unified_memory` is omitted, with no reason, when no device was read, since it is a property rather than a counter. A read runs on the owner thread: a handful of system calls plus, with the entry cache warm, a few IORegistry property reads, 4 to 8 µs in all ([verification](#verification)). It is bookkeeping, not frame work (performance rule 5). The first read after `declare_gpu_presenter()` opens the Metal device handle: 0.6 ms in the desktop, whose device already exists, and 37 ms in a process that has none.
 
 ## Performance section
 
-The last block of the state panel, outside its scrollable so it stays pinned to the bottom while History scrolls above it; a 1 px rule in the band-border colour separates the two. It is collapsed by default and **samples only while it is expanded and the state panel is shown**: collapsed, it sets no timer and makes no request, so idle stays asleep (performance rule 8). Expanded, it reads `resources.read` and `activity.list` once a second through one owner task, skips a tick while the previous read is in flight, and keeps the last 60 samples; expanding clears the history and reads at once. Expanded state is local to this client and this launch, like a tools-panel section's; a per-session or persisted preference is an open question below.
+The last block of the state panel, outside its scrollable so it stays pinned to the bottom while History scrolls above it; a 1 px rule in the band-border colour separates the two. It is collapsed by default and **samples only while it is expanded and the state panel is shown** (the developer components gallery, which replaces the workspace, counts as hidden): collapsed, it sets no timer and makes no request, so idle stays asleep (performance rule 8). Expanded, it reads `resources.read` and `activity.list` once a second through one owner task, skips a tick while the previous read is in flight, and keeps the last 60 samples; expanding clears the history and reads at once. Expanded state is local to this client and this launch, like a tools-panel section's; a per-session or persisted preference is an open question below. Show performance and Hide performance in the command palette toggle it, and the evidence step `{"performance": {"expanded": …}}` drives it in scripted runs ([development](../engineering/development.md)).
 
 ![Performance section mockup](performance-panel/mockup.png)
 
@@ -120,11 +122,11 @@ Layout at the panel's 240 pt, inside its 8 pt padding:
 
 Values and scales, all derived by pure functions in the view model:
 
-- **Memory** shows `memory.bytes` in binary units with Activity Monitor's labels: `812 MB` below 1 GiB, `1.42 GB` above, `12.4 GB` from 10 GiB. Scale 0 to 110% of the window's largest sample, at least 64 MiB. Tooltip: the kind in words (Activity Monitor's Memory for `footprint`), peak, resident and, on unified memory, the GPU allocations it includes.
+- **Memory** shows `memory.bytes` in binary units with Activity Monitor's labels: `812 MB` below 1 GiB, `1.42 GB` above, `12.4 GB` from 10 GiB. Scale 0 to 110% of the window's largest sample, at least 64 MiB. Tooltip: the kind in words (Activity Monitor's Memory for `footprint`), the peak since launch, resident memory and, on unified memory, the GPU allocations it includes.
 - **CPU** shows percent of one core: one decimal below 10% (`3.2%`), whole numbers above (`38%`, `420%`). Scale 0 to the larger of 100% and the window's peak. Tooltip: the convention in words with the machine's ceiling (`14 cores: 1400%`) and the window's peak.
 - **GPU** shows percent of GPU time the same way, scale 0 to 100%. Tooltip: the window's peak and the GPU allocations. When a counter is unavailable the row shows `–`, draws only its baseline and its tooltip gives the reason.
 - CPU and GPU need two samples; the first second after expanding shows `–` for both.
-- **Jobs**: every active entry that has run for at least 500 ms, oldest first, at most four and then a `+N more` caption; when there is none, the newest recent entry that ran for at least 500 ms and ended within the last 10 s, dimmed with a hollow marker, its duration on the right and `Finished 4 s ago` (or `Cancelled`, `Failed`) as its detail; otherwise one dimmed `No background work` row. There is always at least one job line, so the section's height changes only when two or more long jobs overlap. Elapsed reads `0.8 s`, `12 s`, `1 min 4 s`.
+- **Jobs**: every active entry that has run for at least 500 ms, oldest first, at most four and then a `+N more` caption; when there is none, the newest recent entry that ran for at least 500 ms and ended within the last 10 s, dimmed with a hollow marker, its duration on the right and `Finished 4 s ago` (or `Cancelled`, `Failed`) as its detail; otherwise one dimmed `No background work` row. There is always at least one job line, and a job line without a detail keeps an empty detail line beneath it, so the section's height changes only when two or more long jobs overlap. Elapsed reads `0.8 s`, `12 s`, `1 min 4 s`.
 
 At one sample a second, a job shorter than about a second may never be seen running; it is still in `activity.list` and appears here as finished. The 500 ms display threshold is a view rule; the API reports every active entry.
 
@@ -145,6 +147,16 @@ At one sample a second, a job shorter than about a second may never be seen runn
 - Desktop: view-model tests for rates from counter pairs, every formatter's boundaries, the scale rules, the job display rules and the unavailable row; the section's timer exists only while expanded and the state panel is shown; widgets have pure geometry tests (sparkline points, clamping of non-finite and out-of-range values, an empty series) and gallery states.
 - Rendered: a `performance` smoke scenario on the owner's M4 that captures the collapsed heading, the expanded section after at least three samples, a finished long job and the collapsed section again, and checks each frame's recorded samples against the displayed text, the rates against the recorded counters, the job rows against the recorded `activity.list`, the sample count unchanged while collapsed, and the memory figure against an independent reading of the same process taken by the runner.
 - Measured and recorded in [performance](../specs/performance.md): the owner-side cost of each method, idle CPU with the section collapsed and expanded, and the Exposure drag before and after.
+
+## Verification
+
+On the owner's M4 Mac, 2026-09-23, release builds:
+
+- `cargo xtask check` passes: the board's unit tests (active to recent with its last phase, drop as cancelled, panic as failed, the 64-entry cap and `untracked`, the threshold and the 16-entry cap, `sequence` changing exactly with the contents, the JSON shape), an owner test that holds a source preparation and an analysis job at test gates while `activity.list` lists them and then reads them as recent, preview-queue tests for `proxy` then `exact` and for a superseded job ending `cancelled`, the counters' tests (CPU time grows by at least 150 ms over a 200 ms spin and falls within `getrusage`'s readings; footprint grows by at least 48 MiB after touching 64 MiB; a 256 MiB Metal buffer raises GPU allocations by at least its size; a blit raises GPU time to within 4× of Metal's own command-buffer time, and releasing the queue never lowers it; a headless process reports both GPU counters unavailable with their reasons), both methods through the method table and the owner, and the desktop's view-model, gate and sampler tests.
+- `verify --tier rendered` passes with every smoke scenario. `smoke --scenario performance` opens the generated 60 MP JPEG and captures eight frames: collapsed with no read, expanded on its first read, after 3.6 s, a 16:9 straighten at 3°, Presence Clarity 100 over it (an exact render of about 1 s, listed running as "Rendering preview · exact phase" and then as finished), 2.5 s later, collapsed, and 2.5 s later with the reads and samples unchanged. The runner re-derives every displayed figure, series length and job row from the recorded `resources.read` and `activity.list` answers without the editor's code, requires footprint memory with GPU time and unified GPU allocations, and checks each expanded frame's resident memory and footprint against its own `ps` and `footprint` readings of the same process taken just before and after the sample: they agree to the byte while the editor idles. With `--source` the owner's X100VI RAF it lists "Preparing original" and "Developing RAW" as finished; a live Developing RAW frame was not caught, because the one-second read landed after the 1.4 s development ended in both runs.
+- Timing, idle CPU and each method's cost are in [performance](../specs/performance.md#performance-section-activity-board-and-resource-counters): no drag regression; the expanded section costs 0.3 to 0.6% of one core and the collapsed one nothing; each method answers in a few microseconds.
+
+Not verified: native Linux and Windows runs (their counters compile, and the unavailable rows are unit-tested); the `+N more` caption and the tooltips in a rendered frame (unit-tested); the heading's hover, which no scripted step moves the pointer over.
 
 ## Open decisions
 

@@ -9,7 +9,6 @@ Each JSON file is an independent plan. IDs start at `TASK-001` inside every file
 | [Shared module capabilities](module-capabilities.json) | Proposed host-owned settings, permissions, secure credentials, resource jobs and durable derived artifacts for modules |
 | [Corrections](corrections.json) | Proposed offline Clone/Heal and optional provider-agnostic AI Remove, with a qualified local-model path and explicit owner decisions |
 | [Dependency advisories](dependency-advisories.json) | Remove or re-review the two expiring advisory exceptions the dependency audit enforces |
-| [Performance panel](implementation-performance-panel.json) | The state panel's Performance section over a host activity board and process resource counters, per the [design](../docs/design/performance-panel.md) |
 | [Product decisions](product-decisions.json) | Open product questions |
 
 The shared capabilities and Corrections plans are planning proposals. AI implementation depends on the shared capability outcome and on owner acceptance of the scope and consequential product choices in the [Corrections design](../docs/design/corrections.md).

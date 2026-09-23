@@ -682,6 +682,22 @@ Native Apple M4 Pro (14 cores, 48 GiB), macOS 26.5.2, Rust 1.94.0, release `--lo
 
 The XML parser checks each element's attributes against each other, so its cost grows with the square of an element's attribute count. Before the prescan bounded that work to 2,000,000 comparisons, the first shape took 4.1 s p50 and 7.4 s max. The prescan also bounds nesting, which the parser descends recursively, and namespace declarations, which it scans for every prefix.
 
+## Performance section, activity board and resource counters
+
+Native Apple M4 Pro (14 cores, 48 GiB), macOS 26.5.2, Rust 1.94.0, release builds, 2026-09-23, on a host shared with other sessions: one-minute load averages are given per run. The baseline is commit 9fb1fbb, the tree before this work, built in its own worktree.
+
+| Measurement | Result | Scope |
+| --- | --- | --- |
+| `resources.read` in the desktop, cache warm (`declare_gpu_presenter` called, this process's GPU clients cached) | p50 4.2 µs, p95 7.1 µs; 5.2 / 7.8 µs with JSON encoding | 1000 reads, `cargo test --release --locked -p lightwell-core --test resources_cost -- --ignored --nocapture`, load 22 to 30 |
+| One full walk of the GPU registry (82 to 84 user clients) | p50 0.31 to 0.35 ms, p95 0.39 to 1.1 ms | 200 walks, `cargo test --release --locked -p lightwell-process --test cost -- --ignored --nocapture`; taken at most every 10 s |
+| First read after `declare_gpu_presenter` | 0.6 ms when the Metal device already exists (the desktop), 37.5 ms in a process that has none | One read each |
+| `activity.list` / `resources.read` / `session.state` round trip through the headless `lightwell-json` owner, stdio and JSON included | p50 14.8 / 19.5 / 18.8 µs, p95 23.0 / 28.1 / 30.9 µs | 2000 requests each after 50 warm-up, load 12 to 18 |
+| Activity `begin` + `finish`, uncontended | p50 83 ns, p95 84 to 125 ns | 100,000 iterations; the timer resolves 42 ns |
+| Exposure drag input to presented frame, 24 MP, baseline then this work, then reversed | p50: baseline 14.7 and 16.0 ms, this work 11.1 and 15.4 ms; p95 38.9 (baseline), 44.9, 19.0 (this work) and 35.0 ms (baseline) in run order | `editor-latency --source fixtures/generated/24mp.jpg --samples 30`, one launch each, load 19 to 23. No regression; the p95s follow the host in both builds and set no baseline. The settled histogram read 60 to 68 ms p50 in this work's runs against 93 to 94 ms in the baseline's, in both orders; nothing in this work touches the exact render or its reduction, so that difference is not claimed |
+| Idle CPU, 24 MP open, Performance section collapsed / expanded | 0.75% and 0.79% collapsed, 1.37% and 1.08% expanded, of one core, in the order collapsed, expanded, expanded, collapsed | One 24 s window per launch, 2 s after the first scripted step; evidence launches (`--evidence-script` with the section's step and three 10 s waits), so both carry the evidence mode's own 250 ms tick; the expanded runs made 31 reads each and the collapsed runs none; load 11 to 15 |
+
+Expanding the section costs 0.3 to 0.6% of one core, which is one sample a second: two owner calls of a few microseconds each, the state panel's re-derivation and the window's redraw. Collapsed it costs nothing, and it starts collapsed, so the idle figures of the timing tier are unaffected.
+
 ## Method
 
 Optimized builds only, with commit, lockfile, OS, CPU/GPU, RAM, display and storage recorded. Report cold and warm runs separately and say which cold is meant. Keep at least 30 samples and never drop failures or tails silently. Measure user event to presented frame, not shader time, and account CPU RSS, cache bytes, GPU allocations and transient copies without double-counting unified memory. Capture idle after all background work stops. No timing gates in CI; CI enforces exactness, deterministic bounds and coverage. VM checks record hypervisor, guest graphics path and software versus accelerated rendering, and never stand in for native timings.
