@@ -569,10 +569,10 @@
     {
       "id": "TASK-008",
       "description": "Declare and dispatch the mask.* host command set with the same descriptor, validation, draft, deduplication and history machinery modules use, including mask.list and the mask lifecycle and component commands.",
-      "status": "pending",
+      "status": "completed",
       "dependencies": [
         "TASK-002",
-        "TASK-003"
+        "TASK-004"
       ],
       "extra_context": [
         "Masks are host commands in their own namespace like history.* and version.*, not a tool module: a module commits layers and must not rewrite the recipe. They reuse ActionDescriptor, ParameterDescriptor and Control so there is exactly one validation path and one control-generation path.",
@@ -1013,7 +1013,9 @@
       "extra_context": [
         "This is the phase-B heart and the answer to the owner's complaint about Lightroom: a component's mode, inversion and position are properties you can change afterwards, not a consequence of which button created it.",
         "The first component of a mask is always add; adding a subtract or intersect component to an empty mask is refused with its reason rather than silently creating an empty selection.",
-        "Reordering masks re-sorts the masked layers by the ordering rule in one transaction and moves nothing else."
+        "Reordering masks re-sorts the masked layers by the ordering rule in one transaction and moves nothing else.",
+        "mask.duplicate is delivered copying the mask and its components only, because the mask target on module actions did not exist when it was written and fabricating masked layers against an unseen rule would have been a guess. Completing it here is required: a duplicate must copy the layers bound to the mask as well, since a mask without its adjustments is not a useful copy, and the per-target single-layer rule is what makes the copy legal.",
+        "A re-sort of masked layers by mask order already exists as resort_masked_layers in the mask command module, written before the placement rule landed. Reconcile the two into one rule with one call site rather than leaving both; the placement rule is the authority."
       ],
       "context_links": [
         {
@@ -1177,7 +1179,8 @@
       "extra_context": [
         "This is the visible UX improvement. The component list is always present, each row carries its own mode control, invert toggle, drag handle and delete, and the mode for the next component is chosen before the gesture rather than inferred from a modifier afterwards.",
         "Hovering a component row shows that component's own contribution in the overlay, which is what makes a subtract on top of a gradient legible instead of guesswork.",
-        "The radial handle set is four radius handles, a centre, a rotation grip and a feather ring, each with a number field beside the row."
+        "The radial handle set is four radius handles, a centre, a rotation grip and a feather ring, each with a number field beside the row.",
+        "The command set refuses deleting a mask's only component and refuses an edit that would leave a non-add component leading. The panel must therefore offer Delete mask in that position rather than a delete button that would be refused, and must show the refusal's own reason when one is hit."
       ],
       "context_links": [
         {

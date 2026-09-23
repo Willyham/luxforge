@@ -215,6 +215,8 @@ Masks are host commands in their own namespace, as `history.*` and `version.*` a
 | `mask.add-stroke {mask, component, points, size, feather, flow, erase}` | One brush stroke, phase C |
 | `mask.delete-stroke {mask, component, stroke}` | Undo a single stroke without undoing the history entries after it |
 
+A mask, a component and a name are **envelope fields** beside `asset_id`, not declared parameters: the closed parameter vocabulary has no string kind and the only kind masking adds is `points`, so an identity travels with the request rather than pretending to be a value a control could edit. Everything a control *can* edit — an amount, an endpoint, a mode, an inversion — is a declared parameter validated by the same generic check a module action goes through, and `schema.list` publishes both the commands and their controls.
+
 Every one of them is a normal mutation: mutation envelope, request deduplication, revision check, one history entry, one immutable snapshot. A gradient drag and a brush stroke are each **one** entry, because each is one draft: `draft.begin` on pointer-down, `draft.set` for the accumulated geometry, `draft.commit` on release, with the existing conflict, Discard and Reapply behaviour unchanged.
 
 ### History granularity
@@ -314,6 +316,10 @@ Why this shape and not another:
 It does **not** make storage linear, and the design does not claim that. An entry still holds one reference per stroke, so the growth stays quadratic; what changes is the constant, from about 1.8 KiB per stroke per entry to about 35 bytes, a factor of roughly 53. That is decisive at the sizes a person reaches — 200 strokes is 1 MB rather than 37 MB — and it returns at sizes they do not: about 19 MB at 1000 strokes and 105 MB at 2400. If that ever binds, the escape hatch is to content-address the *list* as a hash chain, one constant-size node per stroke, which is genuinely linear at the cost of an O(strokes) walk to rebuild a list; it is recorded here and not built.
 
 The store changes the catalog format again, to 6. Pre-release rules allow that: an unsupported format is refused explicitly without rewriting anything ([current shapes only](../../AGENTS.md)). It lands in phase C **before the first brush ships**, so no catalog ever holds embedded stroke points. Until it lands, the declared caps below are what bound the growth, and they refuse the excess with `resource-limit` rather than letting a catalog grow without limit.
+
+### Deleting the last component
+
+A mask never exists empty from a command, so `mask.delete-component` refuses a mask's only component and says to delete the mask instead. The alternative — deleting the last component deletes the mask — destroys the mask's adjustments as a side effect of a smaller gesture, and there is no promotion rule that could preserve them. The panel therefore offers Delete mask in that position rather than a delete that would be refused, and the same refusal protects an ordering or deletion that would leave a non-`add` component leading.
 
 ### An unknown component kind
 
