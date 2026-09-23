@@ -1,6 +1,6 @@
 # Presets
 
-Status: design accepted for implementation on the defaults recorded under [decisions](#decisions-taken-on-defaults); the owner reviews them afterwards. The [task plan](../../tasks/presets.json) tracks the work.
+Status: implemented and verified on the M4 Mac on the defaults recorded under [decisions](#decisions-taken-on-defaults), which the owner reviews afterwards. What remains is under [later](#later) and on the [roadmap](../plan.md).
 
 A preset is a named, reusable set of adjustment settings. Applying one changes only the settings it holds, as one history entry, through the same command service every client uses. Lightwell keeps its own presets in the catalog and imports Lightroom Classic presets by converting the settings whose meaning it can carry and reporting every other one.
 
@@ -248,7 +248,7 @@ The library is listed at startup, after each of the desktop's own preset calls, 
 - **Core unit and integration tests.** They cover the kinds' generic checks, registry validation of the `presets` control and composite plans, and one entry per apply with the exact stack and label. They also cover no-op, partial fields keeping untouched values, undo and restore, unknown, non-patch, unavailable and nested steps, duplicate names, bounds and format 4 refusal.
 - **Importer tests.** They run on checked-in fixture presets: an XMP with attributes and child elements, a nested default `crs:Look`, a non-`crs` prefix, a profile, an earlier process version, an out-of-range value, a sidecar with crop, a `.lrtemplate` with `ZSTR`, flat curve arrays and a `false` panel switch, and a Lightwell document. Each asserts the exact settings and report.
 - **JSON CLI parity.** A test imports, lists, applies, undoes, captures, creates, exports, re-imports and deletes through `lightwell-json`. It asserts that the resulting stacks and pixels equal the same edits made with `edit.set-*`.
-- **Rendered check.** A `presets` smoke scenario imports a fixture preset, applies it from the section, captures the frame with the correlated history and recipe, and checks the rendered pixels against the equivalent `edit.set-*` stack.
+- **Rendered check.** The `presets` smoke scenario imports an XMP and a Lightwell preset through the section, applies each from its row, undoes, creates a preset through the form, applies it and deletes it. Every frame carries the correlated revision, entry, history label, stored layer payloads and section rows, and the photograph's pixels move in each preset's direction. Pixel equality with the equivalent `edit.set-*` stack is the JSON CLI test's claim, not the rendered one's ([scenario](../engineering/development.md#evidence-scripts)).
 - **Performance.** No render or source access on any preset path except the apply's ordinary preview. Import parse time for a 1 MiB document is measured on the M4.
 
 ## Decisions taken on defaults
