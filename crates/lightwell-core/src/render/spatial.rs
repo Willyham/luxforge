@@ -2086,4 +2086,99 @@ pub(crate) mod tests {
         }
         reset_masked_tile_counts();
     }
+
+    /// Release-only measurement, run explicitly:
+    ///
+    /// ```sh
+    /// cargo test --release --locked --package lightwell-core -- --ignored masked_spatial_component_timing --nocapture
+    /// ```
+    ///
+    /// What a **mask with many components** costs, which is the other half of the masked spatial
+    /// cost: `masked_spatial_timing` above varies the layer count with one component per mask, and
+    /// this varies the component count with one layer. Every component is a linear gradient across
+    /// the whole frame, so the bounds rectangle is the whole stage and every component is evaluated
+    /// at every covered pixel — the worst case, and the one the design's limit of
+    /// [`crate::COMPONENTS_PER_MASK`] exists for. The modes cycle through all three, because a
+    /// subtraction and an intersection are each one more `min` per pixel and nothing else.
+    #[test]
+    #[ignore = "measurement, run explicitly in release"]
+    fn masked_spatial_component_timing() {
+        use crate::{
+            COMPONENTS_PER_MASK, Component, ComponentMode, EFFECT_FORMAT, Layer, LayerId, Mask,
+            PRESENCE_EFFECT,
+        };
+
+        let _guard = spatial_guard();
+        let registry = ModuleRegistry::builtin();
+        // A mask of `count` whole-frame linear gradients, the first an add and the rest cycling
+        // through the three modes, each offset so no two are the same field.
+        let mask = |count: usize| -> Mask {
+            let mut mask = Mask::new("Mask 1");
+            for index in 0..count {
+                let name = mask.next_component_name("linear");
+                // Index 0 falls on `Add`, which is the rule for a mask's first component.
+                let mode = match index % 3 {
+                    0 => ComponentMode::Add,
+                    1 => ComponentMode::Subtract,
+                    _ => ComponentMode::Intersect,
+                };
+                // Each component's ramp ends a little further on, so no two are the same field,
+                // and every one of them ends left of the frame: the whole stage is beyond `p1`, so
+                // each is at coverage 1 everywhere and the bounds rectangle is the whole frame.
+                let shift = index as f64 * 0.01;
+                mask.components.push(Component::new(
+                    name,
+                    mode,
+                    "linear",
+                    json!({"x0": -1.0, "y0": 0.5, "x1": -0.5 + shift, "y1": 0.5}),
+                ));
+            }
+            mask
+        };
+        for (width, height) in [(6000_u32, 4000_u32), (10_000, 6000)] {
+            let source = gradient(width, height);
+            for count in [1, 4, 16, COMPONENTS_PER_MASK] {
+                let mask = mask(count);
+                let stack = crate::Recipe {
+                    format: crate::RECIPE_FORMAT,
+                    layers: vec![Layer {
+                        id: LayerId::new(),
+                        effect_id: PRESENCE_EFFECT.into(),
+                        effect_format: EFFECT_FORMAT,
+                        payload: json!({"clarity": 100.0}),
+                        mask: Some(mask.id.clone()),
+                    }],
+                    masks: vec![mask],
+                    ..Recipe::default()
+                };
+                // Warm the source and the estimate store, then measure.
+                crate::render(&registry, &source, SnapshotId::new(), &stack).unwrap();
+                SpatialBudget::default().reset_peak();
+                reset_masked_tile_counts();
+                let mut samples = Vec::new();
+                for _ in 0..5 {
+                    let started = std::time::Instant::now();
+                    let raster =
+                        crate::render(&registry, &source, SnapshotId::new(), &stack).unwrap();
+                    samples.push(started.elapsed().as_secs_f64() * 1000.0);
+                    assert_eq!((raster.width, raster.height), (width, height));
+                }
+                samples.sort_by(f64::total_cmp);
+                let p50 = samples[samples.len() / 2];
+                let p95 = samples[samples.len() - 1];
+                let (copied, evaluated) = masked_tile_counts();
+                let runs = samples.len() as u64;
+                println!(
+                    "{width}x{height} presence clarity +100 x1, mask of {count} whole-frame \
+                     components: p50 {p50:.0} ms, p95 {p95:.0} ms over {runs} runs; tiles per run \
+                     copied {}, evaluated {}; budget peak {:.1} MiB of {:.1} MiB",
+                    copied / runs,
+                    evaluated / runs,
+                    SpatialBudget::default().peak() as f64 / MIB,
+                    SpatialBudget::default().limit() as f64 / MIB,
+                );
+            }
+        }
+        reset_masked_tile_counts();
+    }
 }

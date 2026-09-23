@@ -282,7 +282,11 @@ impl Editor {
             json!({"method":method,"params":request.clone()}),
         );
         self.last_mask_request = Some((method.to_owned(), request.clone()));
-        self.command(method, request)
+        let task = self.command(method, request);
+        // `command` refuses while a request is in flight, but `mask_command` has already answered
+        // that case above, so reaching here means this one went out and its answer is ours.
+        self.mask_command_in_flight = true;
+        task
     }
 
     /// Why an edit is refused right now, in the words the status bar uses.

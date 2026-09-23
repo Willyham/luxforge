@@ -384,8 +384,15 @@ pub(crate) fn opened(
 /// An editor with an evidence run attached and a script queued, so steps can be driven without a
 /// window. Nothing is captured here: the capture itself needs a real renderer.
 pub(crate) fn scripted(steps: &str) -> (Editor, PathBuf, AssetId, PathBuf) {
-    let script = parse_script(steps).expect("a valid script");
     let (mut editor, catalog, asset, _) = opened(Vec::new(), 4);
+    let dir = attach_script(&mut editor, steps);
+    (editor, catalog, asset, dir)
+}
+
+/// Attach an evidence run with this script to an editor that is already open, for the suites that
+/// build their own. Returns the run's directory.
+pub(crate) fn attach_script(editor: &mut Editor, steps: &str) -> PathBuf {
+    let script = parse_script(steps).expect("a valid script");
     let dir = std::env::temp_dir().join(format!(
         "lightwell-script-{}-{}",
         std::process::id(),
@@ -408,7 +415,7 @@ pub(crate) fn scripted(steps: &str) -> (Editor, PathBuf, AssetId, PathBuf) {
         tools_scroll: None,
     });
     editor.activity.requested = 1;
-    (editor, catalog, asset, dir)
+    dir
 }
 
 /// An editor with the registered modules discovered and one empty-stack asset open, which is what

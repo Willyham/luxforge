@@ -197,6 +197,8 @@ Masked layers stay in the recipe list on the left, in the durable processing ord
 
 Leaving Mask mode with a gesture open is refused with the reason rather than discarding what you drew, as the crop draft is; so is holding Compare. If anything else changes the photograph while a gesture is open the gesture is kept and marked "Changed elsewhere", with Discard and Reapply, exactly as a crop or slider draft is.
 
+A mask made of several components is ordinary, not a special case: draw a radial, take a region back out of it with a Subtract, confine what is left with an Intersect, and adjust through the result exactly as through a single gradient. Order matters, and the list is the order: an Add moved above a Subtract is no longer cut by it, and moving a row is an ordinary history entry like any other edit.
+
 Brushes, luminance and colour range selections are not built.
 
 ### Vignette
@@ -207,7 +209,7 @@ Amount 0 is the identity whatever the other three hold, so a layer with the amou
 
 ### Masks
 
-Masks are being built and are not yet in the workspace: there is no Masks panel and no way to paint one from the canvas. What exists today is the model underneath — a mask is a list of shapes in the photograph's own coordinates, and the adjustments you already have apply through it — and the linear gradient, the radial gradient and the brush, each with the mathematics of its coverage frozen and tested before any control ships.
+The Masks panel, the linear and radial gradients and their handle editors are built, and so is combining them: several components in one mask, each Add, Subtract or Intersect, reorderable, with Basic, Presence and the Colour mixer all applying through the result. That is described under [Masks](#masks) above. What is not built is the brush's own canvas gesture — the brush's coverage mathematics and its stroke storage exist, but there is no way to paint one — and the luminance and colour range selections.
 
 One thing about the brush is worth stating now, because it is a control you may go looking for and will not find. A brush stroke has **Size**, **Feather**, **Flow** and an erase modifier, and it has no **Density**. In Lightroom, Density and Flow interact through a build-up model *along a single stroke*: coverage accumulates from overlapping stamps, so what you get depends on how densely the stroke was stamped, and therefore on the size of the picture it was stamped on. Lightwell's stroke is a path rather than a row of stamps: one pass of the brush reaches its Flow and no more, however fast your hand moved, however finely the pointer was sampled and whatever the picture's resolution. A second pass over the same place is a second stroke and does build up, and each stroke stays an object you can delete on its own. A control called Density on top of that would have to mean something other than Lightroom's, so it is left out and named here rather than shipped under a familiar label with unfamiliar behaviour.
 

@@ -157,13 +157,16 @@ fn recipe(model: &StatePanelModel) -> Element<'_, Message> {
         // A mask's own heading sits above the first of its layers, in the durable processing order
         // rather than in place of it: the list's whole job is to show the order edits are applied
         // in, so a masked layer is labelled where it is rather than moved under its mask.
+        //
+        // The heading is the mask's name and nothing else. A default-named mask is called `Mask 1`
+        // because it is the first mask, so spelling its position beside its name read `Mask 1 ·
+        // mask 1`: the same fact twice, and a second ordering in a list whose whole subject is the
+        // processing order. The position a mask composes in belongs to the Masks panel, whose list
+        // *is* that order.
         if let Some(mask) = &layer.mask
             && mask.heading
         {
-            block = block.push(section_label(match mask.index {
-                Some(index) => format!("{} · mask {}", mask.name, index + 1),
-                None => mask.name.clone(),
-            }));
+            block = block.push(section_label(mask.heading_label()));
         }
         block = block.push(recipe_row(
             index,

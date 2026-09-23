@@ -1534,6 +1534,149 @@ fn the_panel_refuses_a_first_component_that_is_not_add_and_a_list_at_its_limit()
     );
 }
 
+/// The generated Amount slider shows the amount the open mask actually holds, at every value.
+///
+/// It is the host's own `mask.set-amount` control, read from the same field store a module's
+/// controls read, so nothing seeds it unless the panel does: an unseeded number control falls back
+/// to its declared minimum, which here is zero, and the panel would then read `0` beside a row
+/// reading `100%` — one mask, two numbers, and the one the pointer can grab is the wrong one.
+#[test]
+fn the_amount_slider_reads_the_amount_the_mask_holds() {
+    use crate::state::tools::ControlModel;
+
+    let amount = |masking: &Masking| -> (f64, String, String) {
+        let panel = &masking.editor.workspace.masks;
+        let slider = panel
+            .controls
+            .iter()
+            .find_map(|control| match control {
+                ControlModel::Slider(slider) if slider.action == "mask.set-amount" => Some(slider),
+                _ => None,
+            })
+            .expect("the panel generates the whole-mask Amount control");
+        (
+            slider.value,
+            slider.display.clone(),
+            panel.masks[0].amount.clone(),
+        )
+    };
+
+    let mut masking = Masking::opened();
+    masking.enter_mask_mode();
+    masking.draw_mask();
+    assert_eq!(
+        amount(&masking),
+        (100.0, "100".to_owned(), "100%".to_owned()),
+        "a freshly drawn mask is at full amount in both places"
+    );
+
+    // And after an amount this desktop did not choose: the control follows the stack, so a mask
+    // another client turned down is read correctly here the moment the refresh lands.
+    let mask = masking.listing().masks[0].id.clone();
+    let revision = masking.editor.state.as_ref().unwrap().revision;
+    call(
+        &masking.owner(),
+        masking.agent,
+        "mask.set-amount",
+        json!({"asset_id":masking.asset,"mutation":tasks::mutation(revision),
+               "mask":mask,"amount":40.0}),
+    )
+    .expect("the amount is set");
+    masking.refresh();
+    assert_eq!(
+        amount(&masking),
+        (40.0, "40".to_owned(), "40%".to_owned()),
+        "the slider follows the amount the stack holds"
+    );
+}
+
+/// A `mask.*` command the host refuses ends the script step that sent it.
+///
+/// The panel states the rules it knows on the controls themselves rather than offering a button the
+/// host would reject, so this is the one refusal that can only arrive from the host: an arbitrary
+/// reorder index, which no button offers, that would leave a component that is not an `add` at the
+/// front of the list. It changes nothing and renders nothing, so the step waiting for its pixels
+/// would otherwise wait out the whole run's deadline on a request that was answered a round trip
+/// ago.
+#[test]
+fn a_refused_mask_command_ends_the_step_that_sent_it() {
+    use crate::app::{
+        evidence::Settle,
+        testing::{attach_script, evidence},
+    };
+
+    let mut masking = Masking::opened();
+    masking.enter_mask_mode();
+    masking.draw_mask();
+    masking.add_component(LINEAR, ComponentMode::Subtract);
+    let listed = masking.listing().masks[0].clone();
+    assert_eq!(listed.components.len(), 2);
+    assert_eq!(listed.components[1].mode, ComponentMode::Subtract);
+
+    // The panel already refuses this move on the row itself, which is why a script has to ask for
+    // it by position to reach the host's own refusal at all.
+    assert!(
+        masking.editor.workspace.masks.components[1]
+            .up_reason
+            .is_some(),
+        "the row states the rule rather than offering the move"
+    );
+
+    attach_script(
+        &mut masking.editor,
+        r#"[{"mask":{"row":{"component":1,"index":0}}}]"#,
+    );
+    let _ = masking.editor.next_step();
+    assert_eq!(
+        evidence(&masking.editor).awaiting,
+        Some(Settle::Preview),
+        "the command went out and the step is waiting for its pixels"
+    );
+    assert!(!evidence(&masking.editor).capture_pending);
+
+    // The host's answer, as the runtime delivers it.
+    let (method, params) = masking
+        .editor
+        .last_mask_request
+        .clone()
+        .expect("the step sent the row's own command");
+    let error = call(&masking.owner(), masking.editor.client, &method, params)
+        .expect_err("the host refuses a move that would leave a subtract leading");
+    let _ = masking
+        .editor
+        .update(Message::Refreshed(Err(error.to_string())));
+
+    let run = evidence(&masking.editor);
+    assert_eq!(run.awaiting, None, "the refusal ended the wait");
+    assert!(
+        run.capture_pending,
+        "and the frame on screen is captured as the evidence of it"
+    );
+    assert!(run.had_errors, "the run records the refusal");
+    let step = run.current.clone().expect("the step's own record");
+    assert_eq!(step["status"], json!("failed"));
+    assert!(
+        step["reason"]
+            .as_str()
+            .is_some_and(|reason| reason.to_lowercase().contains("add")),
+        "the refusal's own reason is what is recorded: {step}"
+    );
+    // Nothing moved.
+    let after = masking.listing().masks[0].clone();
+    assert_eq!(
+        after
+            .components
+            .iter()
+            .map(|component| component.id.clone())
+            .collect::<Vec<_>>(),
+        listed
+            .components
+            .iter()
+            .map(|component| component.id.clone())
+            .collect::<Vec<_>>(),
+    );
+}
+
 /// One request with its deduplication id replaced by a marker.
 ///
 /// Two sends of the same edit are two requests and must carry two ids, so the id is the one field a
