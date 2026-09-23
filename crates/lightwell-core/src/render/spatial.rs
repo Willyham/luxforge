@@ -629,7 +629,7 @@ pub(crate) mod tests {
             Processing, SpatialUnit, StageContext, ToolModule,
         },
         render::{
-            linear::render_linear_tiled,
+            linear::{render_linear_tiled, sample_linear_tiled},
             render_tiled,
             tests::{CropReference, crop_layer, fitted_crop, geometry_registry, gradient, turn},
         },
@@ -1507,6 +1507,103 @@ pub(crate) mod tests {
                 );
             }
         }
+    }
+
+    /// A linear point sample evaluates only the tile its pixel falls in and still equals the
+    /// rendered byte everywhere: across tile boundaries, in partial edge tiles, through a rotated
+    /// crop whose four bilinear neighbours straddle tiles, and after an earlier spatial layer
+    /// whose output the last one reads whole neighbourhoods of and whose mean the second shift
+    /// reduces.
+    #[test]
+    fn a_linear_sample_evaluates_its_tile_and_equals_the_tiled_render() {
+        let _guard = spatial_guard();
+        clear_estimates();
+        let registry = spatial_registry();
+        let source = linear_source(70, 52);
+        let crop = fitted_crop(70, 52, 6.0, [0.15, 0.2, 0.6, 0.55]);
+        for (case, stack) in [
+            ("spatial", recipe(vec![spatial_layer(&["blur:3", "shift"])])),
+            (
+                "spatial then a rotated crop",
+                recipe(vec![spatial_layer(&["blur:2", "shift"]), crop_layer(crop)]),
+            ),
+            (
+                "two spatial layers then a rotated crop",
+                recipe(vec![
+                    spatial_layer(&["blur:2"]),
+                    spatial_layer(&["blur:1", "shift"]),
+                    crop_layer(crop),
+                ]),
+            ),
+        ] {
+            let rendered = render_linear_tiled(
+                &registry,
+                &source,
+                SnapshotId::new(),
+                &stack,
+                LinearSettings::default(),
+                &Cancel::new(),
+                16,
+            )
+            .unwrap();
+            for y in 0..rendered.height {
+                for x in 0..rendered.width {
+                    let sampled = sample_linear_tiled(
+                        &registry,
+                        &source,
+                        &stack,
+                        LinearSettings::default(),
+                        x,
+                        y,
+                        16,
+                    )
+                    .unwrap();
+                    assert_eq!(
+                        sampled.rgba,
+                        rendered.pixel(x, y),
+                        "{case}, tile 16: sample at ({x}, {y})"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_linear_sample_through_a_spatial_layer_reserves_one_working_set() {
+        let _guard = spatial_guard();
+        clear_estimates();
+        let registry = spatial_registry();
+        let source = linear_source(600, 400);
+        let stack = recipe(vec![spatial_layer(&["blur:4"])]);
+        let operation = SpatialOperation::new(vec![Arc::new(BoxBlur { radius: 4 })]).unwrap();
+        let plan = SpatialPlan::new(
+            &operation,
+            Stage {
+                width: 600,
+                height: 400,
+            },
+            SPATIAL_TILE,
+        )
+        .unwrap();
+        let budget = SpatialBudget::default();
+        assert_eq!(budget.in_use(), 0, "nothing is held between evaluations");
+        budget.reset_peak();
+        let sampled = crate::sample_linear(
+            &registry,
+            &source,
+            &stack,
+            LinearSettings::default(),
+            300,
+            200,
+        )
+        .unwrap();
+        assert!(sampled.rgba.is_some());
+        assert_eq!(
+            budget.peak(),
+            plan.working_set(),
+            "a linear sample reserves exactly one tile working set"
+        );
+        assert_eq!(budget.in_use(), 0, "and releases it");
     }
 
     #[test]

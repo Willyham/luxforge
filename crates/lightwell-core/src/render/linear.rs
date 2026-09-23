@@ -14,10 +14,10 @@ use super::{
 };
 use crate::{
     Error, ErrorKind, Recipe, SnapshotId,
-    modules::{Global, ModuleRegistry, SpatialOperation, Stage},
+    modules::{Global, ModuleRegistry, Region, SpatialOperation, Stage},
 };
 use rayon::prelude::*;
-use std::sync::{Arc, Weak};
+use std::sync::{Arc, Mutex, Weak};
 
 const MAX_PIXELS: u64 = lightwell_raw::MAX_PIXELS as u64;
 const MAX_SIDE: u32 = 16_384;
@@ -25,6 +25,10 @@ const MAX_SOURCE_BYTES: u64 = lightwell_raw::MAX_RGB_BYTES as u64;
 const MAX_RGBA_BYTES: u64 = 512 * 1024 * 1024;
 const MAX_RESAMPLES: usize = 1;
 const PARALLEL_RENDER_PIXELS: u64 = 1_000_000;
+/// The tiles a point evaluation keeps for its spatial segment: a pixel after a resample blends four
+/// neighbours, which straddle at most a 2 × 2 block of tiles. Each holds one tile's output planes,
+/// 3 MiB at the production tile size.
+const POINT_TILES: usize = 4;
 
 fn layout(width: u32, height: u32) -> Result<(usize, usize), Error> {
     if width == 0 || height == 0 {
@@ -70,7 +74,7 @@ fn layout(width: u32, height: u32) -> Result<(usize, usize), Error> {
     if bytes > MAX_SOURCE_BYTES {
         return Err(Error::new(
             ErrorKind::ResourceLimit,
-            "linear RGB source exceeds 512 MiB",
+            "linear RGB source exceeds 1.5 GiB",
         ));
     }
     let values = usize::try_from(values)
@@ -220,7 +224,7 @@ impl LinearImage {
         if capacity_bytes > MAX_SOURCE_BYTES {
             return Err(Error::new(
                 ErrorKind::ResourceLimit,
-                "linear RGB source capacity exceeds 512 MiB",
+                "linear RGB source capacity exceeds 1.5 GiB",
             ));
         }
         if planes.iter().any(|value| !value.is_finite()) {
@@ -660,6 +664,34 @@ fn linear_bilinear(
     }
 }
 
+/// How a [`LinearEvaluation`] answers the pixels of its spatial segments.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum SpatialMode {
+    /// Materialize every spatial operation's output once over its whole stage, for a pass that
+    /// reads every pixel.
+    Frames,
+    /// Evaluate the last spatial segment only in the tiles the requested pixels fall in, for a
+    /// point query, which is the declared exception to performance rule 4. A spatial segment before
+    /// it is still materialized: the last one reads whole neighbourhoods of it, and a global
+    /// estimate reduces all of it.
+    Point,
+}
+
+/// The one spatial segment a [`SpatialMode::Point`] evaluation answers tile by tile.
+struct PointSegment {
+    index: usize,
+    state: Mutex<PointState>,
+}
+
+#[derive(Default)]
+struct PointState {
+    /// The segment's plan and global estimates, resolved for its first pixel.
+    prepared: Option<Arc<(SpatialPlan, Vec<Option<Global>>)>>,
+    /// The tiles evaluated so far, oldest first and at most [`POINT_TILES`]: each stage tile with
+    /// the rectangle and planar values its last unit wrote, which contain it.
+    tiles: Vec<(Region, Region, Vec<f32>)>,
+}
+
 struct LinearEvaluation<'a> {
     source: &'a LinearImage,
     compiled: Compiled,
@@ -668,10 +700,13 @@ struct LinearEvaluation<'a> {
     white_balance: Option<WhiteBalanceApproximation>,
     /// The frame a spatial entry produces, at the index of the segment it enters. The linear path
     /// pulls single pixels through the compiled prefix, and a neighbourhood cannot be pulled one
-    /// pixel at a time, so each spatial operation's output is materialized once, in stage order,
-    /// as three `f32` planes inside the 512 MiB frame limit. Nothing is quantized here: the values
-    /// stay float until the terminal boundary.
+    /// pixel at a time, so for a pass over every pixel each spatial operation's output is
+    /// materialized once, in stage order, as three `f32` planes inside the RAW planar limit. Nothing
+    /// is quantized here: the values stay float until the terminal boundary. The segment `point`
+    /// names has none.
     spatial_frames: Vec<Option<Arc<Vec<f32>>>>,
+    /// In [`SpatialMode::Point`], the last spatial segment, answered from its tiles.
+    point: Option<PointSegment>,
     /// The output tile a spatial entry is evaluated in; [`PRODUCTION_TILE`] outside the tests that
     /// prove the result does not depend on it.
     tile: u32,
@@ -685,6 +720,7 @@ impl<'a> LinearEvaluation<'a> {
         settings: LinearSettings,
         cancel: &Cancel,
         tile: u32,
+        mode: SpatialMode,
     ) -> Result<Self, Error> {
         let exposure_multiplier = settings.multiplier()?;
         let compiled = registry.compile(source.width(), source.height(), recipe)?;
@@ -700,16 +736,32 @@ impl<'a> LinearEvaluation<'a> {
             ));
         }
         let spatial_frames = vec![None; compiled.segments.len()];
+        let point = match mode {
+            SpatialMode::Frames => None,
+            SpatialMode::Point => compiled
+                .segments
+                .iter()
+                .rposition(|segment| matches!(segment.entry, Some(Entry::Spatial { .. })))
+                .map(|index| PointSegment {
+                    index,
+                    state: Mutex::default(),
+                }),
+        };
+        let point_index = point.as_ref().map(|point| point.index);
         let mut evaluation = Self {
             source,
             compiled,
             exposure_multiplier,
             white_balance: settings.white_balance,
             spatial_frames,
+            point,
             tile,
         };
         // In order, because a later spatial operation pulls its input through the earlier one.
         for index in 0..evaluation.compiled.segments.len() {
+            if Some(index) == point_index {
+                continue;
+            }
             let Some(Entry::Spatial {
                 operation,
                 prefix_hash,
@@ -740,40 +792,12 @@ impl<'a> LinearEvaluation<'a> {
         prefix_hash: &str,
         cancel: &Cancel,
     ) -> Result<Vec<f32>, Error> {
-        let previous = &self.compiled.segments[index - 1];
-        let stage = Stage {
-            width: previous.width,
-            height: previous.height,
-        };
-        // The frame limit applies to this float frame exactly as it does to a byte frame.
+        let stage = self.spatial_stage(index);
+        // The RAW planar limit applies to this float frame exactly as it does to the source's.
         let (values, _) = layout(stage.width, stage.height)?;
-        let read = |x: u32, y: u32| -> Result<[f32; 3], Error> {
-            let pixel = self.pixel_in(index - 1, x, y)?.ok_or_else(|| {
-                Error::new(
-                    ErrorKind::Render,
-                    "a spatial read was outside its input stage",
-                )
-            })?;
-            Ok(pixel.map(|value| value as f32))
-        };
+        let read = |x: u32, y: u32| self.spatial_read(index, x, y);
         let plan = SpatialPlan::new(operation, stage, self.tile)?;
-        // The estimate store is keyed by the recipe prefix, which an approximate white balance
-        // does not change: the drafted recipe names the target gains whichever planes it is
-        // evaluated over. So an approximate evaluation keys its estimates apart, and a committed
-        // render of the same recipe never takes one estimated from approximate pixels.
-        let approximate_prefix = self.white_balance.map(|balance| {
-            format!(
-                "{prefix_hash}+white-balance-approximation:{}",
-                balance.key()
-            )
-        });
-        let globals: Vec<Option<Global>> = resolve_globals(
-            operation,
-            stage,
-            self.source.fingerprint(),
-            approximate_prefix.as_deref().unwrap_or(prefix_hash),
-            || build_reduction(stage, read),
-        )?;
+        let globals = self.spatial_globals(index, operation, stage, prefix_hash)?;
         let mut frame = vec![0.0_f32; values];
         let plane = (u64::from(stage.width) * u64::from(stage.height)) as usize;
         run_batches(
@@ -799,6 +823,124 @@ impl<'a> LinearEvaluation<'a> {
             },
         )?;
         Ok(frame)
+    }
+
+    /// The stage spatial segment `index` reads, which is the stage it writes.
+    fn spatial_stage(&self, index: usize) -> Stage {
+        let previous = &self.compiled.segments[index - 1];
+        Stage {
+            width: previous.width,
+            height: previous.height,
+        }
+    }
+
+    /// One pixel of the stage spatial segment `index` reads: the previous segment's output, pulled
+    /// through `pixel_in`, which already applies the source exposure, every colour unit and every
+    /// replacement.
+    fn spatial_read(&self, index: usize, x: u32, y: u32) -> Result<[f32; 3], Error> {
+        let pixel = self.pixel_in(index - 1, x, y)?.ok_or_else(|| {
+            Error::new(
+                ErrorKind::Render,
+                "a spatial read was outside its input stage",
+            )
+        })?;
+        Ok(pixel.map(|value| value as f32))
+    }
+
+    /// The global estimates of spatial segment `index`, from the store or from one reduction of
+    /// its input stage. A frame and a point evaluation of the same recipe ask with the same key, so
+    /// they use the same estimate.
+    fn spatial_globals(
+        &self,
+        index: usize,
+        operation: &SpatialOperation,
+        stage: Stage,
+        prefix_hash: &str,
+    ) -> Result<Vec<Option<Global>>, Error> {
+        // The estimate store is keyed by the recipe prefix, which an approximate white balance
+        // does not change: the drafted recipe names the target gains whichever planes it is
+        // evaluated over. So an approximate evaluation keys its estimates apart, and a committed
+        // render of the same recipe never takes one estimated from approximate pixels.
+        let approximate_prefix = self.white_balance.map(|balance| {
+            format!(
+                "{prefix_hash}+white-balance-approximation:{}",
+                balance.key()
+            )
+        });
+        resolve_globals(
+            operation,
+            stage,
+            self.source.fingerprint(),
+            approximate_prefix.as_deref().unwrap_or(prefix_hash),
+            || build_reduction(stage, |x, y| self.spatial_read(index, x, y)),
+        )
+    }
+
+    /// One pixel of the point segment's output without its frame: the stage-aligned tile that
+    /// contains it, run through [`run_tile`] with the plan, estimates and input pulls a frame would
+    /// use, so the value is the frame's value by construction rather than by agreement. It costs
+    /// `O((tile + halo)² × layers)` and one tile working set from the spatial budget, plus one
+    /// reduction of the stage when an estimate is not in the store. A tile evaluated once serves
+    /// every later pixel of this evaluation that falls in it.
+    ///
+    /// The input region is pulled serially. On the shared pool its rows would wait behind whatever
+    /// render already holds the pool, and a sample on the catalog owner would wait with them.
+    fn point_pixel(
+        &self,
+        index: usize,
+        operation: &SpatialOperation,
+        prefix_hash: &str,
+        x: u32,
+        y: u32,
+    ) -> Result<[f64; 3], Error> {
+        let point = self
+            .point
+            .as_ref()
+            .filter(|point| point.index == index)
+            .expect("a spatial segment without a frame is the point segment");
+        let lock = || {
+            point
+                .state
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+        };
+        // The lock is never held across evaluation: a reduction runs on the shared pool, and a job
+        // this thread picks up while it waits could ask for the same lock.
+        let prepared = {
+            let state = lock();
+            if let Some((_, region, values)) =
+                state.tiles.iter().find(|(tile, ..)| tile.contains(x, y))
+            {
+                return Ok(spatial::plane_pixel(*region, values, x, y).map(f64::from));
+            }
+            state.prepared.clone()
+        };
+        let prepared = match prepared {
+            Some(prepared) => prepared,
+            None => {
+                let stage = self.spatial_stage(index);
+                let prepared = Arc::new((
+                    SpatialPlan::new(operation, stage, self.tile)?,
+                    self.spatial_globals(index, operation, stage, prefix_hash)?,
+                ));
+                lock().prepared.get_or_insert(prepared).clone()
+            }
+        };
+        let (plan, globals) = &*prepared;
+        let tile = plan.tile_containing(x, y);
+        let (region, values) = {
+            let _reservation = spatial::reserve_one(plan);
+            run_tile(plan, operation, globals, tile, |region, planes| {
+                fill_planes(region, planes, |x, y| self.spatial_read(index, x, y))
+            })?
+        };
+        let pixel = spatial::plane_pixel(region, &values, x, y).map(f64::from);
+        let mut state = lock();
+        if state.tiles.len() == POINT_TILES {
+            state.tiles.remove(0);
+        }
+        state.tiles.push((tile, region, values));
+        Ok(pixel)
     }
 
     fn stage(&self) -> (u32, u32) {
@@ -842,20 +984,29 @@ impl<'a> LinearEvaluation<'a> {
         };
         let mut pixel = match &segment.entry {
             None => self.source_pixel(resolved.input_x, resolved.input_y)?,
-            Some(Entry::Spatial { .. }) => {
-                let previous = &self.compiled.segments[index - 1];
-                let frame = self.spatial_frames[index]
-                    .as_ref()
-                    .expect("a spatial segment's frame is built before any pixel is pulled");
-                let plane = (u64::from(previous.width) * u64::from(previous.height)) as usize;
-                let offset = (u64::from(resolved.input_y) * u64::from(previous.width)
-                    + u64::from(resolved.input_x)) as usize;
-                [
-                    f64::from(frame[offset]),
-                    f64::from(frame[plane + offset]),
-                    f64::from(frame[2 * plane + offset]),
-                ]
-            }
+            Some(Entry::Spatial {
+                operation,
+                prefix_hash,
+            }) => match &self.spatial_frames[index] {
+                Some(frame) => {
+                    let previous = &self.compiled.segments[index - 1];
+                    let plane = (u64::from(previous.width) * u64::from(previous.height)) as usize;
+                    let offset = (u64::from(resolved.input_y) * u64::from(previous.width)
+                        + u64::from(resolved.input_x)) as usize;
+                    [
+                        f64::from(frame[offset]),
+                        f64::from(frame[plane + offset]),
+                        f64::from(frame[2 * plane + offset]),
+                    ]
+                }
+                None => self.point_pixel(
+                    index,
+                    operation,
+                    prefix_hash,
+                    resolved.input_x,
+                    resolved.input_y,
+                )?,
+            },
             Some(Entry::Resample(resample)) => {
                 let resample = *resample;
                 let previous = &self.compiled.segments[index - 1];
@@ -971,7 +1122,15 @@ pub(super) fn render_linear_tiled(
 ) -> Result<Raster, Error> {
     // A token already cancelled when the call arrives costs no frame at all.
     cancel.check()?;
-    let evaluation = LinearEvaluation::new(registry, source, recipe, settings, cancel, tile)?;
+    let evaluation = LinearEvaluation::new(
+        registry,
+        source,
+        recipe,
+        settings,
+        cancel,
+        tile,
+        SpatialMode::Frames,
+    )?;
     let (width, height) = evaluation.stage();
     let output_len = output_len(width, height)?;
     let row_bytes = usize::try_from(u64::from(width) * 4).map_err(|_| {
@@ -1018,7 +1177,10 @@ pub(super) fn render_linear_tiled(
     })
 }
 
-/// Evaluate one terminal output pixel without allocating a frame.
+/// Evaluate one terminal output pixel, equal to the byte [`render_linear`] writes there. Through a
+/// spatial layer it evaluates the one tile that contains the pixel, as the byte path's sample does,
+/// which is the declared exception to performance rule 4; a stack with more than one spatial
+/// segment still materializes every one but the last.
 pub fn sample_linear(
     registry: &ModuleRegistry,
     source: &LinearImage,
@@ -1027,13 +1189,28 @@ pub fn sample_linear(
     x: u32,
     y: u32,
 ) -> Result<super::Sample, Error> {
+    sample_linear_tiled(registry, source, recipe, settings, x, y, PRODUCTION_TILE)
+}
+
+/// [`sample_linear`] with the spatial tile size as a parameter, for the tests that prove a sample
+/// equals the render at any tile size.
+pub(super) fn sample_linear_tiled(
+    registry: &ModuleRegistry,
+    source: &LinearImage,
+    recipe: &Recipe,
+    settings: LinearSettings,
+    x: u32,
+    y: u32,
+    tile: u32,
+) -> Result<super::Sample, Error> {
     let evaluation = LinearEvaluation::new(
         registry,
         source,
         recipe,
         settings,
         &Cancel::new(),
-        PRODUCTION_TILE,
+        tile,
+        SpatialMode::Point,
     )?;
     let (width, height) = evaluation.stage();
     let _ = output_len(width, height)?;
@@ -1047,8 +1224,8 @@ pub fn sample_linear(
 
 /// [`super::sample_grid`] on the linear path: the terminal bytes at the centres of a `side` ×
 /// `side` grid, row by row from the top-left, through one evaluation of the stack, so each equals
-/// the rendered byte there. A spatial operation materializes its output once for all of them, as
-/// it does for one [`sample_linear`].
+/// the rendered byte there. A spatial operation materializes its output once for all of them: the
+/// points spread over the whole stage, one tile each, so the frame costs no more than their tiles.
 pub(crate) fn sample_grid_linear(
     registry: &ModuleRegistry,
     source: &LinearImage,
@@ -1064,6 +1241,7 @@ pub(crate) fn sample_grid_linear(
         settings,
         &Cancel::new(),
         PRODUCTION_TILE,
+        SpatialMode::Frames,
     )?;
     let (width, height) = evaluation.stage();
     let _ = output_len(width, height)?;
@@ -1265,6 +1443,7 @@ mod tests {
             LinearSettings::default(),
             &Cancel::new(),
             PRODUCTION_TILE,
+            SpatialMode::Point,
         )
         .unwrap();
         assert_eq!(
@@ -1765,5 +1944,142 @@ mod tests {
         )
         .expect_err("a cancelled token refuses the linear render");
         assert_eq!(error.kind, crate::ErrorKind::Cancelled);
+    }
+
+    fn presence_stack(payload: serde_json::Value) -> Recipe {
+        Recipe {
+            format: crate::RECIPE_FORMAT,
+            layers: vec![Layer {
+                id: crate::LayerId::new(),
+                effect_id: crate::PRESENCE_EFFECT.into(),
+                effect_format: crate::EFFECT_FORMAT,
+                payload,
+                artifacts: Vec::new(),
+            }],
+        }
+    }
+
+    #[test]
+    fn a_point_evaluation_builds_no_frame_for_its_spatial_segment() {
+        let _guard = crate::render::spatial::tests::spatial_guard();
+        crate::render::spatial::clear_estimates();
+        let source = cancellation_image(96, 64);
+        let registry = ModuleRegistry::builtin();
+        let stack = presence_stack(serde_json::json!({"clarity": 40.0}));
+        let evaluate = |mode| {
+            LinearEvaluation::new(
+                &registry,
+                &source,
+                &stack,
+                LinearSettings::default(),
+                &Cancel::new(),
+                PRODUCTION_TILE,
+                mode,
+            )
+            .unwrap()
+        };
+        let frames = evaluate(SpatialMode::Frames);
+        assert!(frames.point.is_none());
+        assert_eq!(
+            frames.spatial_frames.iter().flatten().count(),
+            1,
+            "a render materializes the spatial output"
+        );
+        let point = evaluate(SpatialMode::Point);
+        assert!(
+            point.spatial_frames.iter().all(Option::is_none),
+            "a point evaluation materializes nothing"
+        );
+        for (x, y) in [(5, 7), (90, 60), (5, 7)] {
+            assert_eq!(point.pixel(x, y).unwrap(), frames.pixel(x, y).unwrap());
+        }
+        let state = point.point.as_ref().unwrap().state.lock().unwrap();
+        assert_eq!(
+            state.tiles.len(),
+            1,
+            "one tile answers every pixel inside it"
+        );
+    }
+
+    /// On a real RAW file, through Presence: a point sample equals the byte `render_linear` writes
+    /// there, at points spread over the stage and the far corner, and the timings of the tile and
+    /// of the frame a whole-stage evaluation builds are printed. Run in release with
+    /// LIGHTWELL_RAW_FIXTURE pointing to a private qualified NEF, RAF or DNG:
+    ///
+    /// ```text
+    /// LIGHTWELL_RAW_FIXTURE=/path/to/file.NEF cargo test --release -p lightwell-core --lib \
+    ///   a_raw_point_sample_through_presence -- --ignored --nocapture
+    /// ```
+    #[test]
+    #[ignore = "requires a photo-sized RAW fixture; run explicitly on the owner's Mac"]
+    fn a_raw_point_sample_through_presence_equals_the_render() {
+        use std::time::Instant;
+        let path =
+            std::path::PathBuf::from(std::env::var("LIGHTWELL_RAW_FIXTURE").expect("fixture path"));
+        let bytes = std::fs::read(&path).unwrap();
+        let cancel = std::sync::atomic::AtomicBool::new(false);
+        let prepared =
+            crate::source::RawPrepared::decode(bytes, "sha256:point-sample".into(), &cancel)
+                .unwrap();
+        let image = prepared.linear.clone().unwrap();
+        let registry = ModuleRegistry::builtin();
+        let settings = LinearSettings::default();
+        let ms = |start: Instant| start.elapsed().as_secs_f64() * 1e3;
+        let median = |mut values: Vec<f64>| {
+            values.sort_by(f64::total_cmp);
+            (values[values.len() / 2], values[values.len() - 1])
+        };
+        println!("{}: {}x{}", path.display(), image.width(), image.height());
+        for payload in [
+            serde_json::json!({"clarity": 60.0}),
+            serde_json::json!({"clarity": 60.0, "dehaze": 30.0}),
+        ] {
+            let stack = presence_stack(payload.clone());
+            crate::render::spatial::clear_estimates();
+            let raster =
+                render_linear(&registry, &image, SnapshotId::new(), &stack, settings).unwrap();
+            let mut state = 0x2545_f491_4f6c_dd1d_u64;
+            let mut points: Vec<(u32, u32)> = (0..40)
+                .map(|_| {
+                    state ^= state << 13;
+                    state ^= state >> 7;
+                    state ^= state << 17;
+                    (
+                        (state % u64::from(raster.width)) as u32,
+                        ((state >> 32) % u64::from(raster.height)) as u32,
+                    )
+                })
+                .collect();
+            points.push((raster.width - 1, raster.height - 1));
+            let mut samples = Vec::new();
+            for &(x, y) in &points {
+                let start = Instant::now();
+                let sampled = sample_linear(&registry, &image, &stack, settings, x, y).unwrap();
+                samples.push(ms(start));
+                assert_eq!(sampled.rgba, raster.pixel(x, y), "{payload} at ({x}, {y})");
+            }
+            let mut frames = Vec::new();
+            for _ in 0..3 {
+                let start = Instant::now();
+                LinearEvaluation::new(
+                    &registry,
+                    &image,
+                    &stack,
+                    settings,
+                    &Cancel::new(),
+                    PRODUCTION_TILE,
+                    SpatialMode::Frames,
+                )
+                .unwrap();
+                frames.push(ms(start));
+            }
+            let (sample_p50, sample_max) = median(samples);
+            let (frame_p50, _) = median(frames);
+            println!(
+                "{payload}: {} point samples equal the render; sample p50 {sample_p50:.1} ms, \
+                 max {sample_max:.1} ms; the spatial frame alone p50 {frame_p50:.0} ms",
+                points.len()
+            );
+        }
     }
 }

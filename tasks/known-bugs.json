@@ -51,50 +51,75 @@
     },
     {
       "id": "TASK-002",
-      "description": "Keep a pointer readout over a RAW with a Presence layer from blocking the catalog owner thread.",
-      "status": "in_progress",
+      "description": "Answer `render.sample` through a spatial layer off the catalog owner thread, so a pointer readout never delays another client's request.",
+      "status": "ready",
       "dependencies": [],
       "extra_context": [
-        "Hovering over a RAW whose stack holds a spatial layer sends `render.sample`, which on the linear path builds the spatial layer's whole frame on the owner thread: 0.5 to 2 s per sample was measured while hovering, and every other request waits behind it.",
-        "The performance rules allow a point sample through a spatial layer to evaluate its own tile; the RAW path does not honour that bound.",
-        "A separate session is working on this."
+        "A point sample through a spatial layer now evaluates only the tile that contains its pixel on both paths, equal to the render by construction: about 20 ms with Clarity and 38 ms with Clarity and Dehaze on the Z6 and X100VI, 11 and 34 ms on a 24 MP JPEG. It still runs on the owner, so while another client samples in a loop every other owner call, the desktop's synchronous `draft.set` included, waits up to one sample: p50 19 to 20 ms against 0.3 ms idle, one to three frames at 120 Hz during a drag.",
+        "Proposed shape: the owner only plans the sample (state read, cached source verification, the draft's effective recipe when `draft_id` is named, an `O(layers)` compile, the prepared artifacts pinned), as `EditorService::sample_plan` already binds the current entry for capability tasks, and hands the plan with the call's own reply channel (`OwnerCall::response`) to a point worker that evaluates it and answers. The owner loop already answers the source-job methods outside the plain handler table; this would be the first method answered after the owner has moved on to other calls.",
+        "Clients see no change: the loopback transport serves each connection serially and every call carries its own reply channel. The answer keeps naming the entry and snapshot it was planned against, which the desktop already checks before showing a readout, and carries the event sequence the owner had when it planned the sample.",
+        "Bounds: one worker thread, blocked on its queue while idle (rule 8); a queue no longer than the live-client limit plus the desktop, since a connection has one call outstanding and the desktop keeps one sample in flight, with a full queue answering `resource-limit` (rule 6). A disconnect drops that client's queued sample. The readout is not on the gesture path, so the hop costs no frame under rule 12.",
+        "Keep the tile's input pull serial, or measure it again on the worker: pulled on the shared pool it waited behind a render holding the pool (p50 116 ms against 21 ms serially on the Z6).",
+        "Out of scope unless measured: the samplers a module's planning and queries use (`with_stage_context`) stay on the owner, because a commit is planned against them; in the canonical stage order their prefix holds no spatial layer.",
+        "Separately, the estimate store reduces the whole stage on a miss even when no unit asks for a global estimate (Clarity alone), which adds 23 to 113 ms to a stack's first sample on the owner; skipping that reduction is a small saving on both paths."
       ],
       "context_links": [
         {
           "kind": "file",
-          "label": "Linear evaluation",
+          "label": "Owner loop",
+          "target": "crates/lightwell-core/src/api/owner.rs",
+          "relevance": "`OwnerCall` carries the reply channel; the loop's special-cased methods and its analysis worker are the pattern for a deferred answer and a bounded worker."
+        },
+        {
+          "kind": "file",
+          "label": "Sample planning",
+          "target": "crates/lightwell-core/src/editor.rs",
+          "relevance": "`sample_entry`, `sample_draft` and `SamplePlan`, which binds a stack for sampling off the owner."
+        },
+        {
+          "kind": "file",
+          "label": "Loopback transport",
+          "target": "crates/lightwell-core/src/api/transport.rs",
+          "relevance": "Serves one call at a time per connection, so a deferred answer keeps each client's order."
+        },
+        {
+          "kind": "file",
+          "label": "Linear point evaluation",
           "target": "crates/lightwell-core/src/render/linear.rs",
-          "relevance": "`LinearEvaluation::new` materialises each spatial frame before any pixel is read."
+          "relevance": "`sample_linear` and the point evaluation of the last spatial segment."
         },
         {
           "kind": "file",
           "label": "Performance rules",
           "target": "docs/engineering/performance-rules.md",
-          "relevance": "The owner does no frame work; the declared point-sample exception for spatial layers."
+          "relevance": "Rule 5 and the declared point-sample exception, whose owner-thread part this removes."
         },
         {
           "kind": "file",
-          "label": "Presence design",
-          "target": "docs/design/presence-mixer-vignette.md",
-          "relevance": "The point-sample exception as the Presence design states it."
+          "label": "Point-sample measurements",
+          "target": "docs/specs/performance.md",
+          "locator": "Point samples through a spatial layer",
+          "relevance": "The before and after figures and the method to repeat them."
         }
       ],
       "acceptance_criteria": [
-        "A RAW point sample through a spatial layer evaluates at most its own tile, or runs off the owner thread, with a measured latency bound.",
-        "The sampled value equals the full render's value at that pixel.",
-        "Other owner requests are not delayed by hovering."
+        "`render.sample` through a spatial layer is evaluated off the owner on both paths, with the same request and response, and the sampled value still equals the full render's value at that pixel.",
+        "While another client samples in a loop over a real RAW with Presence, the desktop's `draft.set` and `asset.state` stay within a few milliseconds of their idle latency, measured on the Z6 and X100VI with load and sample counts recorded.",
+        "The worker sleeps when idle, its queue is bounded with a `resource-limit` answer when full, and a disconnect or a newer commit never shows a readout for the wrong entry.",
+        "The performance rules' known-costs row for the point-sample exception is updated to the owner-free cost."
       ],
       "test_strategy": {
         "approach": "mixed",
         "steps": [
-          "Core test comparing a tile-bounded RAW sample with the full linear render through Presence.",
-          "Measure sample latency and owner responsiveness while hovering over a real RAW with Presence."
+          "Core tests: a deferred sample answers the calling client in order, the queue bound refuses with `resource-limit`, a disconnect drops the queued sample, and the answer names the entry it was planned against across a concurrent commit.",
+          "Live-API measurement with two clients against a `develop --background` editor, one sampling in a loop and one timing `draft.set` and `asset.state`, before and after, back to back and reversed on the shared host.",
+          "A background evidence run with `hover` steps over a RAW with Presence."
         ],
         "commands": [
           "cargo xtask check"
         ],
         "expected_results": [
-          "Hover readouts over a RAW with Presence stay interactive and exact."
+          "Hover readouts over a RAW with Presence stay exact and no other owner request waits behind them."
         ]
       }
     },
