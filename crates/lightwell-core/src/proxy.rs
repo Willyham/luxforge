@@ -67,6 +67,59 @@ impl ProxyBounds {
     }
 }
 
+/// Why a proxy frame is an approximation of the exact render at display size, rather than the same
+/// picture.
+///
+/// A proxy frame is normally the exact recipe at proxy size: every layer a gesture can draft is
+/// resolution independent and a mask's geometry is normalized, so the same equations produce the
+/// same picture at display size. Two things break that, and both are reported rather than assumed.
+/// Neither one is a reason to decline the proxy: the frame is still what a drag presents, and the
+/// exact phase still produces every number, the overlays and the 100% view.
+///
+/// One word, `approximate`, reaches the client; this is what it means in each case, so a person can
+/// tell a thin mask from a spatial layer when both are present.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProxyApproximation {
+    /// A spatial-stage layer is in the stack. Its neighbourhoods scale with the stage it is
+    /// rendered at, so a proxy frame is close to the exact render at display size rather than equal
+    /// to it.
+    pub spatial: bool,
+    /// A mask in the stack draws a feature narrower than two pixels of the proxy stage, so its
+    /// field — never the effect — is evaluated with a 2 x 2 supersample per pixel
+    /// ([masking](../../docs/design/masking.md#point-queries-and-proxies), proposal P5). Without
+    /// that rule a hard edge would alias differently on every frame of a drag.
+    pub mask: bool,
+}
+
+impl ProxyApproximation {
+    /// Whether this frame is approximate at all. `false` is the ordinary case: the proxy render is
+    /// the exact recipe at proxy size, byte for byte with the exact recipe over the exact
+    /// downscale of the source.
+    pub fn is_approximate(self) -> bool {
+        self.spatial || self.mask
+    }
+
+    /// Why, in one sentence, or `None` when the frame is not approximate. Both reasons are named
+    /// when both are present.
+    pub fn reason(self) -> Option<&'static str> {
+        const SPATIAL: &str =
+            "a spatial-stage layer's neighbourhoods scale with the stage it is rendered at";
+        const MASK: &str = "a mask draws a feature narrower than two proxy pixels, so its field is \
+             evaluated with a 2x2 supersample per pixel";
+        match (self.spatial, self.mask) {
+            (false, false) => None,
+            (true, false) => Some(SPATIAL),
+            (false, true) => Some(MASK),
+            (true, true) => Some(
+                "a spatial-stage layer's neighbourhoods scale with the stage it is rendered at, \
+                 and a mask draws a feature narrower than two proxy pixels, so its field is \
+                 evaluated with a 2x2 supersample per pixel",
+            ),
+        }
+    }
+}
+
 /// The proxy source dimensions a job will render against, with the bounds they were derived from.
 /// The bounds are part of the plan because they are part of the cache identity: a resized window
 /// produces a different plan even when the rounded dimensions happen to agree.
@@ -535,8 +588,8 @@ mod tests {
     use super::*;
     use crate::{
         BASIC_EFFECT, BoxRect, CROP_EFFECT, CropStage, EFFECT_FORMAT, Layer, LayerId,
-        LinearSettings, Orientation, PIXEL_EFFECT, RECIPE_FORMAT, SnapshotId,
-        render::srgb_to_linear_f64,
+        LinearSettings, Mask, Orientation, PIXEL_EFFECT, RECIPE_FORMAT, SnapshotId, Stage,
+        render::{Cancel, srgb_to_linear_f64},
     };
     use serde_json::json;
 
@@ -1369,6 +1422,140 @@ mod tests {
             samples[0],
             samples[samples.len() - 1]
         );
+    }
+
+    /// What a **mask** costs the proxy phase on photo-sized sources: the render a drag presents,
+    /// unmasked, masked and point sampled, and masked under the thin-feature rule, at the display
+    /// bounds the owner's screen offers. Ignored by default for the same two reasons as the build
+    /// measurement above:
+    ///
+    /// ```text
+    /// cargo run --release --locked --package xtask -- generate-fixtures --output fixtures/generated
+    /// cargo test --release --package lightwell-core --lib proxy:: -- --ignored --nocapture
+    /// ```
+    #[test]
+    #[ignore = "needs fixtures/generated and is a measurement, not a gate"]
+    fn measure_the_masked_proxy_render_on_photo_sized_sources() {
+        for fixture in ["24mp.jpg", "60mp.jpg"] {
+            let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../fixtures/generated")
+                .join(fixture);
+            let source =
+                PreviewSource::Jpeg(crate::open_source(&path).expect("a generated fixture"));
+            let registry = ModuleRegistry::builtin();
+            let bounds = ProxyBounds {
+                width: 2880,
+                height: 1800,
+            };
+            // Every Basic field non-neutral, so each frame runs the module's whole colour chain —
+            // the stack the latency target is stated over.
+            let payload = json!({
+                "exposure": 0.5, "contrast": 25.0, "highlights": -30.0, "shadows": 30.0,
+                "whites": -15.0, "blacks": 15.0, "temperature": 20.0, "tint": -10.0,
+                "vibrance": 30.0, "saturation": 15.0,
+            });
+            let unmasked = recipe(vec![basic_layer(payload.clone())]);
+            // A gradient over the middle half of the frame: a mask a person would draw, whose ramp
+            // is hundreds of proxy pixels wide, so it is point sampled.
+            let broad = gradient_mask(0.5);
+            // A gradient whose ramp is a thousandth of the frame height: about 1.8 px at a 1800 px
+            // proxy, which is what trips the 2 x 2 supersample of the mask field.
+            let thin = gradient_mask(0.001);
+            let masked_with = |mask: &Mask| Recipe {
+                format: RECIPE_FORMAT,
+                layers: vec![Layer {
+                    mask: Some(mask.id.clone()),
+                    ..basic_layer(payload.clone())
+                }],
+                masks: vec![mask.clone()],
+            };
+            let broad_stack = masked_with(&broad);
+            let thin_stack = masked_with(&thin);
+
+            let plan = source
+                .proxy_plan(&registry, &unmasked, bounds)
+                .expect("a plan")
+                .expect("a photo-sized source needs a proxy at this size");
+            let proxy = source.proxy(plan).expect("a proxy");
+            let stage = Stage {
+                width: plan.width,
+                height: plan.height,
+            };
+            assert!(
+                registry
+                    .proxy_approximation(&broad_stack, stage.width, stage.height)
+                    .mask
+                    .eq(&false),
+                "the broad mask must be resolvable at this proxy size"
+            );
+            assert!(
+                registry
+                    .proxy_approximation(&thin_stack, stage.width, stage.height)
+                    .mask,
+                "the thin mask must trip the supersample at this proxy size"
+            );
+
+            // `true` is the proxy phase's own entry point, which applies the thin-feature rule;
+            // `false` is the same render with the mask point sampled, which is what the exact phase
+            // does. Running one stack through both is the only comparison that isolates the rule's
+            // cost: same bounds rectangle, same effect, four coverage evaluations against one.
+            let measure = |name: &str, stack: &Recipe, thin_rule: bool| {
+                let once = || {
+                    if thin_rule {
+                        proxy.render_proxy_cancellable(
+                            &registry,
+                            SnapshotId::new(),
+                            stack,
+                            &Cancel::never(),
+                        )
+                    } else {
+                        proxy.render_cancellable(
+                            &registry,
+                            SnapshotId::new(),
+                            stack,
+                            &Cancel::never(),
+                        )
+                    }
+                    .expect("the stack renders at proxy size")
+                };
+                once();
+                let mut samples = Vec::new();
+                for _ in 0..25 {
+                    let start = std::time::Instant::now();
+                    let frame = once();
+                    samples.push(start.elapsed());
+                    std::hint::black_box(frame);
+                }
+                samples.sort_unstable();
+                println!(
+                    "{fixture} proxy {}x{} {name}: p50 {:?}, p95 {:?}, min {:?}, max {:?}",
+                    plan.width,
+                    plan.height,
+                    samples[samples.len() / 2],
+                    samples[samples.len() * 95 / 100],
+                    samples[0],
+                    samples[samples.len() - 1]
+                );
+            };
+            measure("unmasked full Basic", &unmasked, true);
+            measure("broad mask, point sampled", &broad_stack, true);
+            measure("thin mask, point sampled", &thin_stack, false);
+            measure("thin mask, 2x2 supersampled", &thin_stack, true);
+        }
+    }
+
+    /// A linear gradient down the frame whose ramp is `length` mask-space units, which is
+    /// `length x stage.height` pixels of whatever stage it is compiled against.
+    fn gradient_mask(length: f64) -> Mask {
+        let mut mask = Mask::new("Mask 1");
+        let name = mask.next_component_name("linear");
+        mask.components.push(crate::Component::new(
+            name,
+            crate::ComponentMode::Add,
+            "linear",
+            json!({"x0": 0.5, "y0": 0.5 - length / 2.0, "x1": 0.5, "y1": 0.5 + length / 2.0}),
+        ));
+        mask
     }
 
     #[test]

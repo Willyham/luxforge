@@ -5,7 +5,7 @@
 //! [`spatial`](super::spatial): [`SpatialOperation`] and the [`SpatialUnit`](super::SpatialUnit)
 //! trait it holds are re-exported through this module's parent alongside everything here.
 use super::spatial::SpatialOperation;
-use crate::mask::CompiledMask;
+use crate::mask_field::MaskField;
 use std::sync::Arc;
 
 /// One image stage: the dimensions a layer's payload addresses.
@@ -81,7 +81,7 @@ pub trait PointwiseColor: Send + Sync {
 /// the host modulates that run by.
 ///
 /// The mask is the host's half of the primitive and a module never sets it: a module compiles its
-/// payload into units, and [`ColorOperation::with_mask`] attaches the [`CompiledMask`] the layer's
+/// payload into units, and [`ColorOperation::with_mask`] attaches the [`MaskField`] the layer's
 /// own `mask` reference names. A masked operation is still one operation in its segment's ordered
 /// list; what changes is that the host blends its output against **its own input**, per channel, in
 /// linear light, before the run's single clamp and quantization
@@ -89,7 +89,7 @@ pub trait PointwiseColor: Send + Sync {
 #[derive(Clone, Default)]
 pub struct ColorOperation {
     units: Vec<Arc<dyn PointwiseColor>>,
-    mask: Option<Arc<CompiledMask>>,
+    mask: Option<MaskField>,
 }
 
 impl ColorOperation {
@@ -101,14 +101,14 @@ impl ColorOperation {
 
     /// The same operation modulated by one compiled mask. Host-only: the mask comes from the
     /// layer's `mask` reference, which no module parses, plans or compiles.
-    pub(crate) fn with_mask(mut self, mask: Arc<CompiledMask>) -> Self {
+    pub(crate) fn with_mask(mut self, mask: MaskField) -> Self {
         self.mask = Some(mask);
         self
     }
 
     /// The mask this operation is modulated by, or `None` for an operation that applies everywhere
     /// and therefore keeps today's exact byte path.
-    pub(crate) fn mask(&self) -> Option<&Arc<CompiledMask>> {
+    pub(crate) fn mask(&self) -> Option<&MaskField> {
         self.mask.as_ref()
     }
 
@@ -145,7 +145,7 @@ impl PartialEq for ColorOperation {
     fn eq(&self, other: &Self) -> bool {
         let masks = match (&self.mask, &other.mask) {
             (None, None) => true,
-            (Some(left), Some(right)) => Arc::ptr_eq(left, right),
+            (Some(left), Some(right)) => left.same_as(right),
             _ => false,
         };
         masks
@@ -161,10 +161,15 @@ impl std::fmt::Debug for ColorOperation {
         list.entries(self.units.iter().map(|unit| unit.describe()));
         if let Some(mask) = &self.mask {
             list.entry(&format!(
-                "masked by {} components over {}x{}",
+                "masked by {} components over {}x{}{}",
                 mask.components(),
                 mask.stage().width,
-                mask.stage().height
+                mask.stage().height,
+                if mask.supersampled() {
+                    ", supersampled 2x2"
+                } else {
+                    ""
+                }
             ));
         }
         list.finish()

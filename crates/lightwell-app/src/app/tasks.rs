@@ -66,9 +66,10 @@ pub(crate) struct Upload {
     pub(crate) proxy_dimensions: Option<(u32, u32)>,
     /// The proxy source was built for this frame rather than taken from the queue's cache.
     pub(crate) proxy_built: bool,
-    /// These proxy pixels approximate the exact render at display size, because the stack holds
-    /// a spatial-stage layer whose neighbourhoods scale with the stage.
-    pub(crate) proxy_approximate: bool,
+    /// Whether these proxy pixels approximate the exact render at display size, and why: a
+    /// spatial-stage layer whose neighbourhoods scale with the stage, a mask drawing a feature
+    /// narrower than two proxy pixels, or both.
+    pub(crate) proxy_approximation: lightwell_core::ProxyApproximation,
     /// Why these pixels are being uploaded when no render asked for it: `Some("zoom")` is the
     /// retained raster a zoom change needed. `None` is the ordinary path, a rendered frame.
     pub(crate) reason: Option<&'static str>,

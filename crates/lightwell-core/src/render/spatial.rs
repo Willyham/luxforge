@@ -9,7 +9,7 @@
 pub(crate) use super::Cancel;
 use crate::{
     Error, ErrorKind,
-    mask::CompiledMask,
+    mask_field::MaskField,
     modules::{
         ESTIMATE_REDUCTION, ESTIMATE_STORE_ENTRIES, Global, MAX_REDUCTION_PIXELS, MAX_SPATIAL_HALO,
         Planes, PlanesMut, Reduction, Region, SPATIAL_BUDGET_BYTES, SPATIAL_TILE, SpatialOperation,
@@ -359,7 +359,7 @@ const NON_FINITE_SPATIAL: &str = "spatial processing produced a non-finite value
 /// tile alignment, what a unit reads, the scratch or the cached global estimates:
 ///
 /// - **A tile the mask cannot reach is a copy.** Coverage is exactly zero outside
-///   [`CompiledMask::bounds`], so the blend there is the identity and no unit is evaluated at all.
+///   [`MaskField::bounds`], so the blend there is the identity and no unit is evaluated at all.
 ///   The tile is filled directly, which reads the tile and not the tile grown by the summed halo,
 ///   and that is what keeps a small masked Presence layer affordable on a 60 MP frame.
 /// - **Every other tile runs the whole chain unchanged** and the *write* is blended in place:
@@ -459,12 +459,12 @@ fn cut_out(region: Region, values: &[f32], tile: Region) -> Vec<f32> {
 /// It is the colour primitive's spelling on purpose, and for the same reason: `M = 0` leaves
 /// `1·in + 0·u`, which is `in`, and `M = 1` leaves `0·in + 1·u`, which is `u` — both bit for bit,
 /// which the algebraically equal `in + M·(u − in)` is not. The coverage comes from
-/// [`CompiledMask::evaluate`] at the tile's own stage coordinates, which are the mask's own stage
+/// [`MaskField::evaluate`] at the tile's own stage coordinates, which are the mask's own stage
 /// coordinates because a spatial operation opens its segment at the stage its layer received.
 ///
 /// `input` is the tile-shaped snapshot [`cut_out`] took before the chain ran; `output` is the whole
 /// of the last unit's rectangle, and only the `tile` part of it is touched.
-fn blend(mask: &CompiledMask, region: Region, tile: Region, input: &[f32], output: &mut [f32]) {
+fn blend(mask: &MaskField, region: Region, tile: Region, input: &[f32], output: &mut [f32]) {
     let source = region.pixels() as usize;
     let target = tile.pixels() as usize;
     let width = tile.width as usize;

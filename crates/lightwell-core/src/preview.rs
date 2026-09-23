@@ -1,7 +1,8 @@
+use crate::render::{render_linear_proxy_cancellable, render_proxy_cancellable};
 use crate::{
     Cancel, Component, ComponentId, ComponentMode, EntryId, Error, ErrorKind, HistoryEntry,
-    LinearImage, LinearSettings, Mask, MaskId, ModuleRegistry, ProxyBounds, ProxyCache, ProxyKey,
-    Raster, Recipe, SourceImage,
+    LinearImage, LinearSettings, Mask, MaskId, ModuleRegistry, ProxyApproximation, ProxyBounds,
+    ProxyCache, ProxyKey, Raster, Recipe, SourceImage,
     analysis::{AnalysisIdentity, MAX_OVERLAY_CELLS, MaskOverlay, Report},
     mask::CompiledMask,
     modules::Stage,
@@ -169,6 +170,38 @@ impl PreviewSource {
             Self::Raw { image, settings } => {
                 render_linear_cancellable(registry, image, snapshot_id, recipe, *settings, cancel)
             }
+        }
+    }
+
+    /// [`Self::render_cancellable`] against a **proxy** source: the proxy phase of a preview job.
+    ///
+    /// The same code, the same colour arithmetic and the same compiled path as the exact phase —
+    /// the recipe is resolution independent and a mask's geometry is normalized, so this frame is
+    /// the exact recipe at proxy size. The one thing it adds is the thin-feature rule: a mask whose
+    /// narrowest feature is under two pixels of this smaller stage has its **field** supersampled
+    /// 2 x 2 per pixel, never the effect, and the caller reports the frame approximate through
+    /// [`ProxyApproximation`](crate::ProxyApproximation). A mask the proxy grid resolves is sampled
+    /// exactly as the exact phase samples it, which is what makes a proxy frame byte for byte the
+    /// exact recipe over the exact downscale of the source.
+    pub fn render_proxy_cancellable(
+        &self,
+        registry: &ModuleRegistry,
+        snapshot_id: crate::SnapshotId,
+        recipe: &Recipe,
+        cancel: &Cancel,
+    ) -> Result<Raster, Error> {
+        match self {
+            Self::Jpeg(image) => {
+                render_proxy_cancellable(registry, image, snapshot_id, recipe, cancel)
+            }
+            Self::Raw { image, settings } => render_linear_proxy_cancellable(
+                registry,
+                image,
+                snapshot_id,
+                recipe,
+                *settings,
+                cancel,
+            ),
         }
     }
 
@@ -365,10 +398,19 @@ pub struct PreviewResult {
     /// Whether this proxy frame's source was built by the worker rather than taken from the queue's
     /// cache. Always `false` on the exact phase.
     pub proxy_built: bool,
-    /// Whether this proxy frame is an approximation of the exact render at display size: the stack
-    /// holds a spatial-stage layer whose neighbourhoods scale with the stage. Always `false` on the
+    /// Whether this proxy frame is an approximation of the exact render at display size, and why:
+    /// a spatial-stage layer whose neighbourhoods scale with the stage, a mask drawing a feature
+    /// narrower than two proxy pixels, or both. Always the default — approximate in no way — on the
     /// exact phase, which is the frame every number comes from.
-    pub proxy_approximate: bool,
+    pub proxy_approximation: ProxyApproximation,
+}
+
+impl PreviewResult {
+    /// Whether this frame is approximate at all. The one word a client reads; the reason beside it
+    /// says which of the two made it so.
+    pub fn proxy_approximate(&self) -> bool {
+        self.proxy_approximation.is_approximate()
+    }
 }
 
 /// What the worker sends back: one result, and the proxy source it built for it, which the queue
@@ -663,7 +705,7 @@ fn run(
                 Err(error) => Some(error.detail),
                 Ok((source, fresh)) => {
                     let dimensions = (key.plan.width, key.plan.height);
-                    match source.render_cancellable(
+                    match source.render_proxy_cancellable(
                         &job.registry,
                         snapshot_id.clone(),
                         &job.recipe,
@@ -690,7 +732,14 @@ fn run(
                                     proxy_dimensions: Some(dimensions),
                                     proxy_declined: None,
                                     proxy_built: fresh,
-                                    proxy_approximate: job.registry.proxy_approximate(&job.recipe),
+                                    // Read at exactly the dimensions this frame was rendered
+                                    // against, because whether a mask draws a feature the proxy's
+                                    // pixel grid can resolve is a fact about that grid.
+                                    proxy_approximation: job.registry.proxy_approximation(
+                                        &job.recipe,
+                                        dimensions.0,
+                                        dimensions.1,
+                                    ),
                                 },
                                 built: fresh.then_some((key, source)),
                             };
@@ -745,7 +794,7 @@ fn run(
             proxy_dimensions: None,
             proxy_declined: declined,
             proxy_built: false,
-            proxy_approximate: false,
+            proxy_approximation: ProxyApproximation::default(),
         },
         built: None,
     });
@@ -815,6 +864,7 @@ mod tests {
         AssetId, BASIC_EFFECT, BoxRect, CropStage, EFFECT_FORMAT, Layer, LayerId, Orientation,
         PIXEL_EFFECT, RECIPE_FORMAT, Snapshot, SnapshotId, Transform,
     };
+    use crate::{Component, ComponentMode};
     use serde_json::json;
     use std::{
         sync::atomic::{AtomicU64, Ordering},
@@ -1067,11 +1117,23 @@ mod tests {
         layers: Vec<Layer>,
         proxy: Option<ProxyBounds>,
     ) -> PreviewJob {
+        stacked_with_masks(width, height, layers, Vec::new(), proxy)
+    }
+
+    /// [`stacked`] over a stack that carries a mask table, which is where a masked layer's `mask`
+    /// reference is resolved.
+    fn stacked_with_masks(
+        width: u32,
+        height: u32,
+        layers: Vec<Layer>,
+        masks: Vec<Mask>,
+        proxy: Option<ProxyBounds>,
+    ) -> PreviewJob {
         let asset = AssetId::new();
         let recipe = Recipe {
             format: RECIPE_FORMAT,
             layers,
-            masks: Vec::new(),
+            masks,
         };
         let snapshot = Snapshot {
             id: SnapshotId::new(),
@@ -1237,6 +1299,288 @@ mod tests {
             frame.width > proxy_size.0 && frame.height > proxy_size.1,
             "the exact phase renders the prepared source, not the proxy: {:?} against {proxy_size:?}",
             (frame.width, frame.height)
+        );
+    }
+
+    /// A mask whose narrowest feature spans `length x stage.height` pixels. The gradient runs down
+    /// the frame, so its ramp is `length` mask-space units — the one number the thin-feature rule
+    /// reads.
+    fn gradient_mask(length: f64) -> Mask {
+        let mut mask = Mask::new("Mask 1");
+        let name = mask.next_component_name("linear");
+        mask.components.push(Component::new(
+            name,
+            ComponentMode::Add,
+            "linear",
+            json!({"x0": 0.5, "y0": 0.5 - length / 2.0, "x1": 0.5, "y1": 0.5 + length / 2.0}),
+        ));
+        mask
+    }
+
+    /// One Basic layer bound to `mask`, which is the masked colour stack every assertion below
+    /// renders. No geometry, so the stage a proxy is fitted into is the source itself.
+    fn masked_basic(mask: &Mask) -> Vec<Layer> {
+        vec![Layer {
+            id: LayerId::new(),
+            effect_id: BASIC_EFFECT.into(),
+            effect_format: EFFECT_FORMAT,
+            payload: json!({"exposure": 0.8, "contrast": 25.0}),
+            mask: Some(mask.id.clone()),
+        }]
+    }
+
+    /// The same stack without its mask reference, for the comparisons that have to show the mask
+    /// is doing something.
+    fn without_masks(recipe: &Recipe) -> Recipe {
+        Recipe {
+            format: recipe.format,
+            masks: Vec::new(),
+            layers: recipe
+                .layers
+                .iter()
+                .map(|layer| Layer {
+                    mask: None,
+                    ..layer.clone()
+                })
+                .collect(),
+        }
+    }
+
+    /// The delivered proxy contract over a **masked** stack: the recipe is proxy eligible, the job
+    /// yields both phases, and the proxy frame is byte for byte the exact recipe rendered against
+    /// the exact downscale of the source.
+    ///
+    /// This is the assertion
+    /// [`a_job_with_bounds_yields_the_proxy_phase_then_the_exact_phase`] makes, over a stack whose
+    /// colour layer is modulated by a mask. It holds because a mask's geometry is stored
+    /// normalized: the mask compiled against the proxy stage is the same field at a smaller scale,
+    /// so nothing about the equation changed, and the only sampling question — whether the proxy's
+    /// pixel grid resolves the mask's narrowest feature — is answered yes here, at nine proxy
+    /// pixels of ramp.
+    #[test]
+    fn a_masked_recipe_is_proxy_eligible_and_its_proxy_frame_is_the_exact_recipe_at_proxy_size() {
+        let display = bounds(40, 40);
+        let mask = gradient_mask(0.3);
+        let job = stacked_with_masks(
+            64,
+            48,
+            masked_basic(&mask),
+            vec![mask.clone()],
+            Some(display),
+        );
+        let registry = job.registry.clone();
+        let source = job.source.clone();
+        let recipe = job.recipe.clone();
+        let snapshot = job.entry.snapshot.id.clone();
+        registry
+            .proxy_eligible(&recipe)
+            .expect("a masked colour stack is proxy eligible");
+        let plan = source
+            .proxy_plan(&registry, &recipe, display)
+            .expect("a plan")
+            .expect("a proxy is worthwhile");
+        assert!(
+            0.3 * f64::from(plan.height) >= 2.0,
+            "this mask's ramp must be at least two proxy pixels for the equality to be claimed"
+        );
+
+        let mut queue = PreviewQueue::default();
+        let generation = queue.request(job);
+        let results = drain_all(&mut queue);
+        assert_eq!(results.len(), 2, "one proxy frame and one exact frame");
+        let [proxy, exact] = <[PreviewResult; 2]>::try_from(results).ok().unwrap();
+        assert_eq!(
+            (proxy.generation, proxy.phase),
+            (generation, PreviewPhase::Proxy)
+        );
+        assert_eq!(
+            (exact.generation, exact.phase),
+            (generation, PreviewPhase::Exact)
+        );
+        assert_eq!(exact.proxy_declined, None, "the proxy phase ran");
+        assert_eq!(proxy.proxy_dimensions, Some((plan.width, plan.height)));
+        assert!(
+            !proxy.proxy_approximate(),
+            "a mask the proxy grid resolves is not an approximation: {:?}",
+            proxy.proxy_approximation
+        );
+        assert_eq!(proxy.proxy_approximation.reason(), None);
+
+        let reference = source
+            .proxy(plan)
+            .expect("the exact downscale")
+            .render(&registry, snapshot.clone(), &recipe)
+            .expect("the masked recipe renders at proxy size");
+        let frame = proxy.result.expect("a proxy frame");
+        assert_eq!(
+            (frame.width, frame.height),
+            (reference.width, reference.height)
+        );
+        assert_eq!(
+            frame.rgba.as_ref(),
+            reference.rgba.as_ref(),
+            "the masked proxy frame is the exact recipe over the exact downscale"
+        );
+        // The mask did something: the same units applied everywhere are a different picture, so the
+        // equality above is not the equality of two unmasked renders.
+        let global = source
+            .proxy(plan)
+            .expect("the exact downscale")
+            .render(&registry, snapshot.clone(), &without_masks(&recipe))
+            .expect("the unmasked recipe renders at proxy size");
+        assert_ne!(
+            frame.rgba.as_ref(),
+            global.rgba.as_ref(),
+            "the mask must modulate the frame, or this proves nothing about masks"
+        );
+
+        let reference = source
+            .render(&registry, snapshot, &recipe)
+            .expect("the exact render");
+        let frame = exact.result.expect("an exact frame");
+        assert_eq!(frame.rgba.as_ref(), reference.rgba.as_ref());
+    }
+
+    /// The thin-feature rule, on both sides of its threshold, over the same stack and the same
+    /// bounds: only the mask's ramp changes.
+    ///
+    /// Above two proxy pixels the frame is the exact recipe at proxy size and reports no
+    /// approximation. Below it the **mask field** is evaluated with a 2 x 2 supersample per pixel —
+    /// the effect is not — so the frame is no longer the point-sampled render, and it says so with
+    /// the word the spatial layer already uses.
+    #[test]
+    fn a_mask_thinner_than_two_proxy_pixels_is_supersampled_and_reported_approximate() {
+        let display = bounds(40, 40);
+        // A 40x30 proxy of a 64x48 source: 0.3 x 30 = 9 px of ramp resolves, 0.05 x 30 = 1.5 px
+        // does not — and 0.05 x 48 = 2.4 px still resolves at full resolution, so the rule is about
+        // the grid the frame is sampled on and not about the mask alone.
+        let resolvable = gradient_mask(0.3);
+        let thin = gradient_mask(0.05);
+
+        let frame_of = |mask: &Mask| -> PreviewResult {
+            let job = stacked_with_masks(
+                64,
+                48,
+                masked_basic(mask),
+                vec![mask.clone()],
+                Some(display),
+            );
+            let mut queue = PreviewQueue::default();
+            queue.request(job);
+            let mut results = drain_all(&mut queue);
+            assert_eq!(results.len(), 2);
+            results.remove(0)
+        };
+
+        let coarse = frame_of(&resolvable);
+        assert!(!coarse.proxy_approximate());
+        assert!(!coarse.proxy_approximation.mask);
+
+        let fine = frame_of(&thin);
+        assert!(
+            fine.proxy_approximate(),
+            "a ramp of 1.5 proxy pixels is below the threshold"
+        );
+        assert!(fine.proxy_approximation.mask);
+        assert!(
+            !fine.proxy_approximation.spatial,
+            "there is no spatial layer in this stack"
+        );
+        let reason = fine.proxy_approximation.reason().expect("a reason");
+        assert!(
+            reason.contains("narrower than two proxy pixels"),
+            "{reason}"
+        );
+        assert!(reason.contains("supersample"), "{reason}");
+
+        // The supersample changes the picture it is applied to, which is why it is reported: the
+        // point-sampled render of the same stack at the same size is a different frame.
+        let source = synthetic(64, 48);
+        let registry = ModuleRegistry::builtin();
+        let recipe = Recipe {
+            format: RECIPE_FORMAT,
+            layers: masked_basic(&thin),
+            masks: vec![thin.clone()],
+        };
+        let plan = source
+            .proxy_plan(&registry, &recipe, display)
+            .unwrap()
+            .unwrap();
+        let point_sampled = source
+            .proxy(plan)
+            .unwrap()
+            .render(&registry, SnapshotId::new(), &recipe)
+            .unwrap();
+        assert_ne!(
+            fine.result.expect("a proxy frame").rgba.as_ref(),
+            point_sampled.rgba.as_ref(),
+            "the thin mask was supersampled, so its frame differs from the point-sampled one"
+        );
+    }
+
+    /// A mask with no components draws no feature at all, so `min_feature_px` answers
+    /// `f32::INFINITY` and the comparison against two pixels reads it correctly: the supersample
+    /// path is not tripped and the frame reports no approximation.
+    #[test]
+    fn a_mask_with_no_components_reports_no_approximation() {
+        let display = bounds(40, 40);
+        let empty = Mask::new("Mask 1");
+        let job = stacked_with_masks(
+            64,
+            48,
+            masked_basic(&empty),
+            vec![empty.clone()],
+            Some(display),
+        );
+        let registry = job.registry.clone();
+        let recipe = job.recipe.clone();
+        let mut queue = PreviewQueue::default();
+        queue.request(job);
+        let results = drain_all(&mut queue);
+        assert_eq!(results.len(), 2);
+        let proxy = &results[0];
+        assert_eq!(proxy.phase, PreviewPhase::Proxy);
+        assert!(!proxy.proxy_approximate());
+        assert!(!proxy.proxy_approximation.mask);
+        assert_eq!(registry.proxy_approximation(&recipe, 40, 30).reason(), None);
+    }
+
+    /// Both reasons at once: a spatial layer and a thin mask in one stack. The frame is approximate
+    /// for two separate reasons and names both, so a person can tell which is which.
+    #[test]
+    fn a_spatial_layer_and_a_thin_mask_are_reported_separately() {
+        let registry = ModuleRegistry::builtin();
+        let thin = gradient_mask(0.05);
+        let spatial_and_mask = Recipe {
+            format: RECIPE_FORMAT,
+            layers: masked_basic(&thin)
+                .into_iter()
+                .chain([Layer {
+                    id: LayerId::new(),
+                    effect_id: crate::PRESENCE_EFFECT.into(),
+                    effect_format: EFFECT_FORMAT,
+                    payload: json!({"texture": 40.0}),
+                    mask: None,
+                }])
+                .collect(),
+            masks: vec![thin.clone()],
+        };
+        let both = registry.proxy_approximation(&spatial_and_mask, 40, 30);
+        assert!(both.spatial && both.mask);
+        let reason = both.reason().expect("a reason");
+        assert!(reason.contains("neighbourhoods"), "{reason}");
+        assert!(
+            reason.contains("narrower than two proxy pixels"),
+            "{reason}"
+        );
+
+        // The spatial layer alone still says only what it is.
+        let only = registry.proxy_approximation(&without_masks(&spatial_and_mask), 40, 30);
+        assert!(only.spatial && !only.mask);
+        let reason = only.reason().expect("a reason");
+        assert!(
+            !reason.contains("narrower than two proxy pixels"),
+            "{reason}"
         );
     }
 

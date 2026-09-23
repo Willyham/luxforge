@@ -220,6 +220,59 @@ the delivered retained-frame rule rather than a measurement, and is a finding fo
 retained for the whole render, so four masked spatial layers at 60 MP retain about 2.9 GB of float
 frames. The byte path has no equivalent cost because its frames are sequential and dropped.
 
+### Masks in the proxy phase
+
+A masked recipe is proxy eligible by construction: mask geometry is stored normalized, so the mask
+compiled against the proxy stage is the same field at a smaller scale and the proxy frame is the
+exact recipe at proxy size. The only thing that changes with the stage is sampling, and the recorded
+default ([masking](../design/masking.md#point-queries-and-proxies), proposal P5) supersamples the
+**mask field only**, 2 × 2 per pixel, when the mask's narrowest feature is under two pixels of the
+proxy stage.
+
+Core cost of the proxy render a drag presents, measured on the host above, release, 25 measured
+renders after one warm pass against a cached proxy source, display bounds 2880 × 1800
+(`proxy::tests::measure_the_masked_proxy_render_on_photo_sized_sources`, an ignored measurement
+test). One-minute load average 6.8 at the start and 7.1 at the end, so these are **provisional**
+figures on a host shared with other sessions, not a quiesced baseline.
+
+| Proxy render, full Basic layer | 24 MP → 2700 × 1800 | 60 MP → 2880 × 1728 |
+| --- | --- | --- |
+| Unmasked | 26.6 / 28.9 ms | 29.3 / 32.8 ms |
+| Masked, broad gradient, point sampled | 23.7 / 27.0 ms | 25.7 / 29.2 ms |
+| Masked, thin gradient, point sampled | 17.7 / 20.0 ms | 19.0 / 23.6 ms |
+| Masked, thin gradient, 2 × 2 supersampled | 19.8 / 21.2 ms | 20.4 / 22.3 ms |
+
+p50 / p95. The last two rows are the **same stack at the same size**, so their difference is the
+thin-feature rule alone: **+2.1 ms p50 at 24 MP and +1.4 ms at 60 MP**, 7–12%, for four coverage
+evaluations per covered pixel instead of one. A mask never costs more than no mask here, because its
+bounds rectangle skips the spans it cannot reach — the same saving the masked colour primitive's own
+run records — so the rule's cost is paid only inside the selection.
+
+Desktop input-to-presented-frame for a slider drag at Fit, full Basic layer, `editor-latency --mode
+drag --basic`, 30 samples, two runs at each size:
+
+| Drained drag at Fit | 24 MP | 60 MP |
+| --- | --- | --- |
+| p50 | 17.8 / 17.6 ms | 21.5 / 17.6 ms |
+| p95 | 48.2 / 123.5 ms | 26.2 / 26.0 ms |
+| min | 16.1 / 16.4 ms | 15.8 / 15.5 ms |
+
+Against the provisional target of p95 below 16 ms with 32 ms acceptable: **the p50 is 17.6–17.8 ms on
+both sources and the minimum is 15.5–16.4 ms, so the target is missed at the median by under two
+milliseconds; the p95 is not a usable figure from this host.** The one-minute load average was 11.1
+and 8.8 for the first pair and 5.8 and 6.5 for the second, all at or above the 8.0 the reliability
+rule in [provisional targets](#provisional-targets-measured) sets for quoting a baseline, and the
+24 MP p95 of 123.5 ms comes from a single outlier against a maximum of 123.9 ms and a p50 of 17.6 ms.
+These figures are recorded as provisional and are a finding for the owner, not a verdict. `draft.set`
+round trip was 0.21 ms p50 in every run, unchanged, which is the hop rule holding.
+
+**Not measured: an end-to-end masked slider drag.** The desktop has no mask control to drive — the
+Mask panel and a mask target on a *module* action's draft are both outstanding
+([masking](../design/masking.md)) — and the evidence script cannot name a mask that an earlier step
+in the same script created, because `mask.create` assigns the identity. So the drag above is the
+delivered global Basic gesture and the mask's own contribution to a presented frame is the core row
+above. The end-to-end figure is outstanding and must be taken once a masked gesture can be driven.
+
 ### Desktop slider-to-presented-frame and settled histogram
 
 `editor-latency`, release, warm cache, background evidence launches on the host above, 30 samples

@@ -6,7 +6,7 @@
 //! halo bookkeeping, the scratch, the scheduling, the global estimate and the point-sample path.
 //! Nothing here reads a frame or allocates one; the execution side lives in
 //! [`crate::render`](crate::render).
-use crate::{Error, ErrorKind, mask::CompiledMask, modules::Stage};
+use crate::{Error, ErrorKind, mask_field::MaskField, modules::Stage};
 use std::sync::Arc;
 
 /// The side of one output tile the host streams. The stage is covered by tiles of this size
@@ -506,7 +506,7 @@ pub trait SpatialUnit: Send + Sync {
 ///
 /// The mask is the host's half of the primitive and a module never sets it: a module compiles its
 /// payload into units and returns a plain operation, and [`SpatialOperation::with_mask`] attaches
-/// the [`CompiledMask`] the layer's own `mask` reference names. **A mask changes nothing about the
+/// the [`MaskField`] the layer's own `mask` reference names. **A mask changes nothing about the
 /// neighbourhood** — the halo, the tiling, the scratch, the batch concurrency and the global
 /// estimate are all what they were, and every unit still reads the finished frame before the
 /// operation and writes the next one. What changes is the *write*: the host blends the chain's
@@ -516,7 +516,7 @@ pub trait SpatialUnit: Send + Sync {
 #[derive(Clone, Default)]
 pub struct SpatialOperation {
     units: Vec<Arc<dyn SpatialUnit>>,
-    mask: Option<Arc<CompiledMask>>,
+    mask: Option<MaskField>,
 }
 
 impl SpatialOperation {
@@ -532,14 +532,14 @@ impl SpatialOperation {
 
     /// The same operation modulated by one compiled mask. Host-only: the mask comes from the
     /// layer's `mask` reference, which no module parses, plans or compiles.
-    pub(crate) fn with_mask(mut self, mask: Arc<CompiledMask>) -> Self {
+    pub(crate) fn with_mask(mut self, mask: MaskField) -> Self {
         self.mask = Some(mask);
         self
     }
 
     /// The mask this operation is modulated by, or `None` for an operation that applies everywhere
     /// and therefore keeps today's exact tile path, byte for byte.
-    pub(crate) fn mask(&self) -> Option<&Arc<CompiledMask>> {
+    pub(crate) fn mask(&self) -> Option<&MaskField> {
         self.mask.as_ref()
     }
 
@@ -621,7 +621,7 @@ impl PartialEq for SpatialOperation {
     fn eq(&self, other: &Self) -> bool {
         let masks = match (&self.mask, &other.mask) {
             (None, None) => true,
-            (Some(left), Some(right)) => Arc::ptr_eq(left, right),
+            (Some(left), Some(right)) => left.same_as(right),
             _ => false,
         };
         masks
@@ -637,10 +637,15 @@ impl std::fmt::Debug for SpatialOperation {
         list.entries(self.units.iter().map(|unit| unit.describe()));
         if let Some(mask) = &self.mask {
             list.entry(&format!(
-                "masked by {} components over {}x{}",
+                "masked by {} components over {}x{}{}",
                 mask.components(),
                 mask.stage().width,
-                mask.stage().height
+                mask.stage().height,
+                if mask.supersampled() {
+                    ", supersampled 2x2"
+                } else {
+                    ""
+                }
             ));
         }
         list.finish()
