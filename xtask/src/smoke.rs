@@ -1,8 +1,9 @@
 use crate::{
     basic_smoke as basic, controls_smoke as controls, crop_smoke as crop, gallery_smoke as gallery,
-    histogram_smoke as histogram, mask_combine_smoke as mask_combine, mask_smoke as mask,
-    mixer_smoke as mixer, presence_smoke as presence, presets_smoke as presets,
-    raw_panel_smoke as raw_panel, vignette_smoke as vignette, workspace_smoke as workspace, *,
+    histogram_smoke as histogram, mask_brush_smoke as mask_brush,
+    mask_combine_smoke as mask_combine, mask_smoke as mask, mixer_smoke as mixer,
+    presence_smoke as presence, presets_smoke as presets, raw_panel_smoke as raw_panel,
+    vignette_smoke as vignette, workspace_smoke as workspace, *,
 };
 use std::{
     process::{Child, Stdio},
@@ -10,7 +11,7 @@ use std::{
 };
 /// Every rendered scenario, in the order `verify --tier rendered` runs them. One list: `main.rs`
 /// and `verify` both reach a scenario through [`dispatch`], so a new scenario is named here once.
-pub const SCENARIOS: [&str; 25] = [
+pub const SCENARIOS: [&str; 26] = [
     "empty",
     "load",
     "replacement",
@@ -33,6 +34,7 @@ pub const SCENARIOS: [&str; 25] = [
     "presets",
     mask::SCENARIO,
     mask_combine::SCENARIO,
+    mask_brush::SCENARIO,
     "gallery",
     "controls",
     "unavailable",
@@ -49,6 +51,9 @@ pub fn dispatch(root: &Path, out: &Path, scenario: &str, bin: &Path, timeout: Du
         mask::SCENARIO => mask::run(root, out, bin, timeout),
         // Four components in three modes in one mask, its coverage read off the overlay.
         mask_combine::SCENARIO => mask_combine::run(root, out, bin, timeout),
+        // Two launches again: strokes painted, erased and deleted in the first, and painting
+        // carried on in the second over the edge, at 100% and under a rotated crop.
+        mask_brush::SCENARIO => mask_brush::run(root, out, bin, timeout),
         _ => run(root, out, scenario, bin, timeout),
     }
 }

@@ -10,6 +10,7 @@ mod fixtures;
 mod gallery_smoke;
 mod histogram_smoke;
 mod launch;
+mod mask_brush_smoke;
 mod mask_combine_smoke;
 mod mask_smoke;
 mod mixer_smoke;

@@ -4976,6 +4976,141 @@ mod tests {
         }
     }
 
+    /// One brush mask over these strokes, with the resolved table its addresses read through.
+    fn brush_mask(strokes: &[crate::path::Stroke]) -> (crate::Mask, crate::path::StrokeTable) {
+        let mut table = crate::path::StrokeTable::new("the brush measurement");
+        let addresses: Vec<String> = strokes
+            .iter()
+            .map(|stroke| table.insert(stroke.clone()).to_string())
+            .collect();
+        let mut mask = crate::Mask::new("Mask 1");
+        let name = mask.next_component_name("brush");
+        mask.components.push(crate::Component::new(
+            name,
+            crate::ComponentMode::Add,
+            "brush",
+            json!({ "strokes": addresses }),
+        ));
+        (mask, table)
+    }
+
+    /// `count` strokes of a plausible retouching brush, laid out so they neither coincide nor leave
+    /// the frame: each is a three-position path across its own column, at a radius of 0.05 mask-space
+    /// units — a twentieth of the frame's height, which is 200 px on a 24 MP stage — and softly
+    /// feathered, which is the brush the panel starts with.
+    fn painted_strokes(count: usize) -> Vec<crate::path::Stroke> {
+        (0..count)
+            .map(|index| {
+                let t = (index as f64 + 0.5) / count as f64;
+                let y = 0.1 + 0.8 * t;
+                crate::path::Stroke::capture(
+                    &[[0.1, y], [0.5, y + 0.02], [0.9, y]],
+                    0.05,
+                    50.0,
+                    100.0,
+                    false,
+                )
+                .expect("a legal stroke")
+            })
+            .collect()
+    }
+
+    /// What a **brush** mask costs on a photo-sized frame: the grid index it compiles to, the
+    /// rectangle it bounds, the render it modulates, and the point query it answers. Ignored by
+    /// default because it is a recorded measurement rather than a pass/fail property:
+    ///
+    /// ```sh
+    /// cargo test --release --package lightwell-core --lib \
+    ///     render::tests::masked_brush_cost_on_photo_sized_frames -- --ignored --nocapture
+    /// ```
+    ///
+    /// Four stroke counts are measured, up to the delivered per-component limit, against the
+    /// unmasked render and against a whole-frame gradient mask — the case
+    /// [`masked_colour_cost_on_a_24_megapixel_frame`] already records — so what a brush costs is
+    /// stated as a difference from a mask whose cost is known rather than on its own.
+    #[test]
+    #[ignore = "a recorded measurement, not an assertion"]
+    fn masked_brush_cost_on_photo_sized_frames() {
+        let registry = colour_registry();
+        for (label, width, height) in [("24 MP", 6000u32, 4000u32), ("60 MP", 9000, 6667)] {
+            let source = gradient(width, height);
+            let stage = Stage { width, height };
+            let pixels = f64::from(width) * f64::from(height);
+            let measure = |name: &str, recipe: &Recipe| {
+                // One warm pass, then three measured ones: the frame allocation dominates a single
+                // run.
+                render(&registry, &source, SnapshotId::new(), recipe).unwrap();
+                let started = std::time::Instant::now();
+                for _ in 0..3 {
+                    std::hint::black_box(
+                        render(&registry, &source, SnapshotId::new(), recipe).unwrap(),
+                    );
+                }
+                println!(
+                    "{label} {name}: {:.1} ms per render",
+                    started.elapsed().as_secs_f64() * 1000.0 / 3.0
+                );
+            };
+            measure("identity", &colour_recipe(vec![]));
+            measure(
+                "unmasked exposure",
+                &colour_recipe(vec![exposure_layer(&[1.0])]),
+            );
+            let gradient_mask = linear_mask(0.5, 0.0, 0.5, 1.0);
+            measure(
+                "whole-frame gradient mask",
+                &masked_recipe(
+                    vec![masked(exposure_layer(&[1.0]), &gradient_mask)],
+                    vec![gradient_mask],
+                ),
+            );
+
+            for count in [1usize, 8, 32, 64] {
+                let strokes = painted_strokes(count);
+                let (mask, table) = brush_mask(&strokes);
+                // The compile is where the grid index is built and the occupancy cap is checked,
+                // before a pixel is read. It is charged to the gesture, not to the frame, so it is
+                // measured on its own.
+                let started = std::time::Instant::now();
+                let rounds = 20;
+                for _ in 0..rounds {
+                    std::hint::black_box(
+                        crate::mask::CompiledMask::new(&mask, stage, &table).unwrap(),
+                    );
+                }
+                let compile = started.elapsed().as_secs_f64() * 1000.0 / f64::from(rounds);
+                let compiled = crate::mask::CompiledMask::new(&mask, stage, &table).unwrap();
+                println!(
+                    "{label} {count} strokes: {compile:.3} ms to compile, rectangle admits \
+                     {:.2}% of the frame",
+                    100.0 * compiled.bounds().pixels() as f64 / pixels
+                );
+                let recipe = Recipe {
+                    format: crate::RECIPE_FORMAT,
+                    layers: vec![masked(exposure_layer(&[1.0]), &mask)],
+                    masks: vec![mask.clone()],
+                    strokes: table.clone(),
+                };
+                measure(&format!("{count}-stroke brush mask"), &recipe);
+
+                // The point query, which is the rule-4 claim: a sample through a masked layer costs
+                // `O(layers)` and never rasterizes, so its cost must not grow with the stroke count.
+                // A thousand of them, spread over the frame, because one is too fast to time.
+                let queries = 1000u32;
+                let started = std::time::Instant::now();
+                for index in 0..queries {
+                    let x = (index * 7919) % width;
+                    let y = (index * 6271) % height;
+                    std::hint::black_box(sample(&registry, &source, &recipe, x, y).unwrap());
+                }
+                println!(
+                    "{label} {count} strokes: {:.4} ms per point query",
+                    started.elapsed().as_secs_f64() * 1000.0 / f64::from(queries)
+                );
+            }
+        }
+    }
+
     // ---------------------------------------------------------------------------------------
     // Cooperative cancellation.
     // ---------------------------------------------------------------------------------------

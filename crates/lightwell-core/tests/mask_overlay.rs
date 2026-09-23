@@ -539,6 +539,61 @@ fn a_mask_with_nothing_to_describe_has_no_grid() {
         "an amount of zero is no grid at all, not a grid of zeros"
     );
     assert!(silent.result.is_ok(), "the frame still came back");
+    // Nothing to describe is an ordinary absence and carries no reason: there is nothing to tell a
+    // client that a frame of the photograph does not already say.
+    assert!(
+        silent.mask_overlay_absent.is_none(),
+        "{:?}",
+        silent.mask_overlay_absent
+    );
+    assert!(plain.mask_overlay_absent.is_none());
+}
+
+/// A mask that reads pixels has no coverage grid, and the frame says so in the host's own words
+/// rather than arriving with a silent absence.
+///
+/// The refusal itself is [`analysis::coverage_grid`]'s and stays exactly as it is: the grid is a
+/// function of position over the finished frame, a value-based component's coverage is a function of
+/// the pixel the masked operation *receives*, and painting one as the other would draw a selection
+/// the render never makes (proposal P16 of `docs/design/range-study.md`, open). What is asserted here
+/// is that the reason reaches the client with the frame — a client that asked for an overlay and
+/// waits for its texture has nothing else to stop waiting on.
+#[test]
+fn a_mask_that_reads_pixels_says_why_it_has_no_grid() {
+    let f = Fixture::open("reads-pixels");
+    let created = f.mask_command("mask.create-linear", linear(0.5, 0.0, 0.5, 1.0), "create");
+    let mask = mask_id(&created);
+    let request = MaskOverlayRequest {
+        mask: mask.clone(),
+        component: None,
+        cells_w: 12,
+        cells_h: 9,
+    };
+
+    // The gradient alone has a grid, so the difference below is the range component and nothing else.
+    let geometric = exact(f.job(f.preview().mask_overlay(request.clone())));
+    assert!(geometric.mask_overlay.is_some());
+    assert!(geometric.mask_overlay_absent.is_none());
+
+    f.mask_command(
+        "mask.add-luminance-range",
+        json!({"mask": mask.as_str(), "mode": "intersect", "low": 20.0, "low_feather": 5.0,
+               "high": 80.0, "high_feather": 5.0}),
+        "add-range",
+    );
+    let reading = exact(f.job(f.preview().mask_overlay(request)));
+    assert!(
+        reading.result.is_ok(),
+        "the frame itself still renders: only the overlay is refused"
+    );
+    assert!(reading.mask_overlay.is_none());
+    let reason = reading
+        .mask_overlay_absent
+        .expect("the host's own reason travels with the frame");
+    assert!(
+        reason.contains("depends on the pixel it reads") && reason.contains("100%"),
+        "{reason}"
+    );
 }
 
 /// The delivered cell cap bounds the grid however large the stage is, and the request that would

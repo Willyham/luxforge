@@ -26,11 +26,12 @@ use lightwell_core::{
     AssetId, BASIC_EFFECT, Component, ComponentMode, EFFECT_FORMAT, EditorService, Layer, LayerId,
     Mask, MaskId, ModuleRegistry, Mutation, RECIPE_FORMAT, Raster, Recipe, SnapshotId, SourceImage,
     mask::commands::{self, MaskTarget},
+    path::Stroke,
     render,
 };
 use reference::mask::{
-    Algebra, Component as RefComponent, Kind, Linear, Mask as RefMask, Mode, Radial,
-    Stage as RefStage, axis_is_legal, blend, coverage,
+    Algebra, Brush, BrushStroke, Component as RefComponent, Kind, Linear, Mask as RefMask, Mode,
+    Radial, Stage as RefStage, axis_is_legal, blend, brush_coverage, combine, coverage,
 };
 use reference::{code_threshold, linear_to_srgb_code, srgb_to_linear};
 use serde_json::{Value, json};
@@ -799,5 +800,163 @@ fn a_components_mode_and_inversion_are_editable_after_it_exists() {
             "Amount 50",
         ],
         "a mode change and an inversion are each one command and one readable entry"
+    );
+}
+
+// ---------------------------------------------------------------------------------------------
+// A brush over a gradient, rendered (TASK-021)
+// ---------------------------------------------------------------------------------------------
+
+/// The reference's view of a **stored** stroke, which is what production evaluates: the positions
+/// snapped to the path grid and decimated there, and the radius quantized to that same grid.
+fn as_reference(stroke: &Stroke) -> BrushStroke {
+    BrushStroke {
+        points: stroke.points().collect(),
+        size: stroke.size(),
+        feather: stroke.feather(),
+        flow: stroke.flow(),
+        erase: stroke.erase(),
+        colour: None,
+    }
+}
+
+/// One random stroke, posted the way a client posts one — through the host's own capture — so every
+/// stroke below is one a gesture could have produced, on the grid a stored stroke is held on.
+fn sample_stroke(rng: &mut SplitMix64, erase: bool) -> Stroke {
+    let count = 1 + rng.next_usize(4);
+    let mut points = Vec::with_capacity(count);
+    let mut x = rng.next_range(0.1, 0.9);
+    let mut y = rng.next_range(0.1, 0.9);
+    for _ in 0..count {
+        points.push([x, y]);
+        x = (x + rng.next_range(-0.3, 0.3)).clamp(-1.0, 2.0);
+        y = (y + rng.next_range(-0.3, 0.3)).clamp(-1.0, 2.0);
+    }
+    Stroke::capture(
+        &points,
+        rng.next_range(0.05, 0.45),
+        rng.next_range(0.0, 100.0),
+        rng.next_range(20.0, 100.0),
+        erase,
+    )
+    .expect("a legal stroke")
+}
+
+/// A brush subtracting from a gradient renders exactly what the frozen algebra and the frozen
+/// accumulation rules compose, over randomized strokes and randomized radials, on every pixel.
+///
+/// This is phase C's claim in its strongest form and the one the owner asked for: *a brush can take
+/// a region out of a gradient*. The frame is compared and not the coverage field, so it covers the
+/// accumulation inside the component (screen union for an add stroke, multiply-complement for an
+/// erase, in stored order), the Zadeh composition between the two components, the compiled brush's
+/// grid index, the conservative bounds rectangle a masked colour run skips spans with — a rectangle
+/// that wrongly excluded a covered span would show here as an unblended pixel and nowhere in a
+/// coverage test — and the blend itself.
+///
+/// The oracle is `tests/reference/mask.rs`, which shares no code with `lightwell-core`: its
+/// `brush_coverage` over the same stored strokes, its `radial_coverage`, and its own `combine`.
+#[test]
+fn a_brush_subtracting_from_a_gradient_renders_exactly_as_the_reference_composes_it() {
+    let registry = ModuleRegistry::builtin();
+    let source = byte_source();
+    let reference_stage = RefStage::new(WIDTH, HEIGHT);
+    let mut rng = SplitMix64(0x0BB5_2101);
+    let mut partial_total = 0usize;
+    let mut erased_total = 0usize;
+    let mut checked = 0usize;
+
+    for round in 0..12 {
+        // One gradient to take a region out of, and one brush of two to four strokes to take it
+        // with — one of them an erase, so the component's own accumulation is exercised and not
+        // only its composition.
+        let radial = sample_radial(&mut rng);
+        let held: Vec<Stroke> = (0..2 + rng.next_usize(3))
+            .map(|index| sample_stroke(&mut rng, index == 1))
+            .collect();
+        let mut table = lightwell_core::path::StrokeTable::new("the brush-over-gradient test");
+        let addresses: Vec<String> = held
+            .iter()
+            .map(|stroke| table.insert(stroke.clone()).to_string())
+            .collect();
+
+        let mut mask = Mask::new("Mask 1");
+        let radial_name = mask.next_component_name("radial");
+        mask.components.push(Component::new(
+            radial_name,
+            ComponentMode::Add,
+            "radial",
+            radial_payload(&radial),
+        ));
+        let brush_name = mask.next_component_name("brush");
+        mask.components.push(Component::new(
+            brush_name,
+            ComponentMode::Subtract,
+            "brush",
+            json!({ "strokes": addresses }),
+        ));
+        mask.validate().expect("the sampled mask is structural");
+
+        let stack = Recipe {
+            format: RECIPE_FORMAT,
+            layers: vec![Layer {
+                id: LayerId::new(),
+                effect_id: BASIC_EFFECT.into(),
+                effect_format: EFFECT_FORMAT,
+                payload: json!({"exposure": MASKED_EV}),
+                mask: Some(mask.id.clone()),
+            }],
+            masks: vec![mask],
+            strokes: table,
+        };
+        let rendered = render(&registry, &source, SnapshotId::new(), &stack)
+            .unwrap_or_else(|error| panic!("round {round}: {error}"));
+
+        let brush = Brush {
+            strokes: held.iter().map(as_reference).collect(),
+        };
+        erased_total += held.iter().filter(|stroke| stroke.erase()).count();
+        for y in 0..HEIGHT {
+            for x in 0..WIDTH {
+                let (u, v) = reference_stage.pixel_uv(x, y);
+                // The composition, in the reference's own spelling: the gradient into an empty
+                // mask, then the brush taken out of it.
+                let gradient = reference::mask::radial_coverage(&radial, &reference_stage, u, v);
+                let painted = brush_coverage(&brush, &reference_stage, u, v, ANY_PIXEL);
+                let m = combine(
+                    Algebra::Zadeh,
+                    combine(Algebra::Zadeh, 0.0, Mode::Add, gradient),
+                    Mode::Subtract,
+                    painted,
+                );
+                if m > 0.0 && m < 1.0 {
+                    partial_total += 1;
+                }
+                let offset = ((y * WIDTH + x) * 4) as usize;
+                let pixel = rendered.pixel(x, y).expect("a pixel of the stage");
+                for (channel, &code) in pixel.iter().enumerate().take(3) {
+                    let input = srgb_to_linear(source.rgba[offset + channel]);
+                    let effect = input * 2.0_f64.powf(MASKED_EV);
+                    let blended = blend(input, effect, m);
+                    assert_code(
+                        code,
+                        linear_to_srgb_code(blended),
+                        blended,
+                        &format!("round {round}, ({x}, {y}) channel {channel}"),
+                    );
+                    checked += 1;
+                }
+            }
+        }
+    }
+    assert!(erased_total > 0, "no erase stroke was sampled at all");
+    assert!(
+        partial_total > 200,
+        "only {partial_total} partially covered samples: the sweep is all endpoints"
+    );
+    assert_eq!(checked, 12 * (WIDTH * HEIGHT * 3) as usize);
+    println!(
+        "{checked} rendered channels over a brush subtracting from a radial, {partial_total} of \
+         them partially covered, {erased_total} erase strokes, all within the colour-study \
+         tolerance of the reference"
     );
 }

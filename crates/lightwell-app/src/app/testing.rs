@@ -409,6 +409,7 @@ pub(crate) fn attach_script(editor: &mut Editor, steps: &str) -> PathBuf {
         steps: Vec::new(),
         frames: Vec::new(),
         capture_pending: false,
+        capture_overlay: false,
         saving: false,
         had_errors: false,
         paced_slider: None,

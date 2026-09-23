@@ -565,6 +565,7 @@ impl Editor {
                 steps: Vec::new(),
                 frames: Vec::new(),
                 capture_pending: false,
+                capture_overlay: false,
                 saving: false,
                 had_errors: false,
                 paced_slider: None,
@@ -2065,6 +2066,7 @@ impl Editor {
                 };
                 // Wait for the backend, for tool discovery and for the preset library, so a frame
                 // always shows real controls and the library rather than their loading lines.
+                let overlay_wanted = evidence.capture_overlay;
                 if !evidence.capture_pending
                     || evidence.saving
                     || self.activity.backend.is_none()
@@ -2075,7 +2077,18 @@ impl Editor {
                 {
                     return Task::none();
                 }
+                // And, for a step the overlay armed, the grid of the frame that is on screen: an
+                // upload belongs to one generation, and a newer frame presented after it leaves the
+                // canvas drawing the photograph alone. This subscription runs per window frame, so
+                // waiting costs nothing and the grid of that newer frame arrives a message later.
+                if overlay_wanted && self.mask_overlay_surface().is_none() {
+                    return Task::none();
+                }
+                let Some(evidence) = &mut self.evidence else {
+                    return Task::none();
+                };
                 evidence.capture_pending = false;
+                evidence.capture_overlay = false;
                 evidence.saving = true;
                 return iced::window::oldest()
                     .and_then(iced::window::screenshot)
@@ -2341,6 +2354,13 @@ impl Editor {
                     // whatever this arm returns.
                     if let Some(overlay) = result.mask_overlay.take() {
                         self.mask_overlay_pending = Some((generation, overlay));
+                    } else if let Some(reason) = result.mask_overlay_absent.take() {
+                        // The overlay was asked for and the host will not draw it: a mask whose
+                        // coverage depends on the pixel it reads has no coverage grid at all. The
+                        // reason is the host's own and it is said rather than left as an absence —
+                        // an overlay switched on and silently not drawn is exactly what
+                        // "never silently omit an effect" forbids.
+                        self.mask_overlay_unavailable(generation, &reason);
                     }
                     if !for_draft {
                         if proxy {
@@ -2588,6 +2608,7 @@ impl Editor {
                 return self.mask_draft_reapplied(result.map(|draft| *draft));
             }
             Message::MaskOverlayUploaded(generation, dimensions, result) => {
+                let uploaded = result.is_ok();
                 match result {
                     Ok(allocation) => self.mask_overlay_photo = Some((generation, allocation)),
                     Err(_) => {
@@ -2603,6 +2624,11 @@ impl Editor {
                 // Released either way: a refused overlay is visible in the evidence rather than
                 // leaving the run waiting for a frame nothing will arm.
                 self.settle_step(Settle::MaskOverlay);
+                if !uploaded && let Some(evidence) = &mut self.evidence {
+                    // And with no texture to draw, the capture is the frame as it is: waiting for
+                    // the overlay of the frame on screen would wait for one that failed.
+                    evidence.capture_overlay = false;
+                }
             }
             Message::Preset(message) => return self.preset_update(message),
             Message::HostAnswered(result) => self.host_answered(result.map(|answer| *answer)),

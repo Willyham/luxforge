@@ -264,6 +264,57 @@ is not a performance limit at these sizes; it is a limit on how much a person ca
 This is the worst case by construction: a real mask's components have bounded supports, and a
 component whose support the tile does not touch is not evaluated there at all.
 
+### The brush's own workload
+
+What a painted mask costs, as against the gradients whose cost is already recorded above: its compile
+(the grid index over segments, built before a pixel is read), the rectangle it bounds, the render it
+modulates, and the point query it answers. `cargo test --release --locked --package lightwell-core
+--lib -- --ignored masked_brush_cost_on_photo_sized_frames --nocapture`
+(`render::tests::masked_brush_cost_on_photo_sized_frames`, an ignored measurement test), on the M4
+MacBook Pro, release, one warm-up render then the mean of three, twenty compiles, and a thousand
+point queries spread over the frame. **One-minute load average 3.96 before the run and 9.87 after**,
+the run itself taking 8.8 s; the figures below are therefore taken on a quiet host by the
+[reliability rule](#provisional-targets-measured), and the rise is this measurement's own tail.
+
+Every stroke is the panel's own brush — radius 0.05 mask-space units, which is 200 px on a 24 MP
+stage, feather 50, flow 100 — laid as a three-position path across its own band of the frame, so the
+strokes neither coincide nor leave it. The masked layer is one Exposure unit, the same one the
+masked-colour row above uses, so the difference between the rows is the mask and nothing else.
+
+| Mask on one Exposure layer | 24 MP ms | 60 MP ms | Rectangle |
+| --- | --- | --- | --- |
+| None (unmasked exposure) | 35.2 | 83.4 | — |
+| Whole-frame linear gradient | 66.6 | 174.6 | 100% |
+| Brush, 1 stroke | 41.5 | 105.3 | 10.5% |
+| Brush, 8 strokes | 103.2 | 250.4 | 71.2% |
+| Brush, 32 strokes | 152.3 | 384.8 | 77.7% |
+| Brush, 64 strokes — [the limit](../design/masking.md) | 213.9 | 537.0 | 78.8% |
+
+- **A brush is a gradient with a smaller rectangle.** One stroke costs 41.5 ms against the
+  whole-frame gradient's 66.6 at 24 MP, because its conservative rectangle admits a tenth of the
+  frame and the pass skips the rest — the same saving the masked colour primitive's own rows record.
+  A mask is never free: one stroke is 6.3 ms over no mask at all at 24 MP and 21.9 at 60 MP.
+- **Each further stroke costs about 2 ms per 24 MP frame and 5 ms per 60 MP frame**, once the
+  rectangle has stopped growing: 8 → 32 strokes is 2.0 and 5.6 ms a stroke, 32 → 64 is 1.9 and
+  4.8 ms, a ratio of 2.5 against the 2.5 the pixel counts predict. That is what a per-pixel field
+  evaluation looks like, and it is the same shape the component table above measures.
+- **The compile is not a cost worth naming.** Building the grid index and checking the occupancy cap
+  takes 0.003 ms for one stroke and 0.029 ms for sixty-four at 24 MP, and less at 60 MP because the
+  work is in the strokes rather than the stage. It is charged to the gesture, once, before a pixel is
+  read — a thousandth of the frame it precedes.
+- **A point query stays a point query.** `render::sample` through a brush mask answers in 0.0023 ms
+  at one stroke and 0.0385 ms at sixty-four, on both stage sizes: it rasterizes nothing
+  ([rule 4](../engineering/performance-rules.md#rules)), and the cost it does have is the segments
+  the index leaves near that pixel. Even at the stroke limit it is a four-hundredth of a display
+  frame, so the pointer readout and the eyedropper are unaffected by how much has been painted.
+
+**Scope.** These are exact-phase renders of the whole frame on the calling thread, which is what the
+histogram, the overlays and the 100% view take; what a hand feels during a stroke is the proxy phase,
+whose masked figures are in [Masks in the proxy phase](#masks-in-the-proxy-phase) below. The 64-stroke
+row is a worst case by construction — sixty-four full-width strokes is far past the point where a
+second component is the better answer — and it is the delivered per-component limit rather than a
+recommendation.
+
 ### Masks in the proxy phase
 
 A masked recipe is proxy eligible by construction: mask geometry is stored normalized, so the mask

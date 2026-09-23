@@ -50,6 +50,15 @@ pub(crate) struct Evidence {
     pub(crate) steps: Vec<Value>,
     pub(crate) frames: Vec<Value>,
     pub(crate) capture_pending: bool,
+    /// This capture was armed by the mask overlay, so it must show one.
+    ///
+    /// The grid is uploaded a message after the frame it describes, and the canvas draws it only
+    /// over that frame — so a newer frame presented between the upload and the redraw leaves the
+    /// surface without an overlay, and the capture would be evidence of a photograph where the step
+    /// asked for evidence of a mask. A brush re-arming itself after every stroke makes exactly that
+    /// sequence ordinary. The capture therefore waits for the grid of the frame on screen, however
+    /// many frames it takes; a refusal clears this, because there is then no grid to wait for.
+    pub(crate) capture_overlay: bool,
     pub(crate) saving: bool,
     pub(crate) had_errors: bool,
     /// A paced slider step's values still to send, one per tick of its own gated timer. `None` when
@@ -858,6 +867,11 @@ impl Editor {
     /// What a Masks-panel step waits for: the coverage grid's own texture when the overlay is on —
     /// settling on the frame would capture the photograph before the grid it is evidence of reached
     /// the GPU — and the frame itself when it is off.
+    ///
+    /// Waiting for a texture is only safe because the host says when it will not fill one: a grid
+    /// the worker refuses ends the step through [`Editor::mask_overlay_refused_step`] with that
+    /// refusal's own words, so an overlay asked for on a mask that reads pixels fails here rather
+    /// than running the step to its deadline.
     fn mask_settle(&self) -> Settle {
         if self.mask_overlay_request().is_some() {
             Settle::MaskOverlay
@@ -2431,6 +2445,28 @@ impl Editor {
         self.capture_next_frame();
     }
 
+    /// The coverage grid the running step is waiting for was refused by the host.
+    ///
+    /// This is the same case as [`Editor::mask_command_failed`] one step further out. A step that
+    /// asked for the overlay waits for the grid's own texture, because settling on the frame would
+    /// capture the photograph before the overlay it is evidence of reached the GPU — so a refusal
+    /// the host makes on the worker, one round trip later, leaves it waiting for pixels that will
+    /// never come. A mask whose coverage depends on the pixel it reads is refused a grid by design
+    /// ([proposal P16](../../../../docs/design/range-study.md#proposals), open), and before this the
+    /// step ran to its deadline instead of recording that reason. Only a step waiting for the
+    /// overlay is ended: the absence is nothing to any other step.
+    pub(crate) fn mask_overlay_refused_step(&mut self, reason: &str) {
+        if self
+            .evidence
+            .as_ref()
+            .is_none_or(|evidence| evidence.awaiting != Some(Settle::MaskOverlay))
+        {
+            return;
+        }
+        self.refuse_step(reason);
+        self.capture_next_frame();
+    }
+
     /// A request the running step sent was refused. The refusal still captures a frame, so it is
     /// recorded on the step and on the run rather than passing for a success.
     pub(crate) fn refuse_step(&mut self, reason: &str) {
@@ -2462,14 +2498,20 @@ impl Editor {
         {
             evidence.awaiting = None;
             evidence.capture_pending = true;
+            // A step that waited for the overlay is captured with the overlay on screen, not merely
+            // after one arrived: see [`Evidence::capture_overlay`].
+            evidence.capture_overlay = settle == Settle::MaskOverlay;
         }
     }
 
-    /// Capture the frame the next redraw presents. Used by the steps that only change draft state.
+    /// Capture the frame the next redraw presents. Used by the steps that only change draft state,
+    /// and by every refusal — including a refused grid, which is why the overlay wait is dropped
+    /// here rather than left for a texture nothing will fill.
     fn capture_next_frame(&mut self) {
         if let Some(evidence) = &mut self.evidence {
             evidence.awaiting = None;
             evidence.capture_pending = true;
+            evidence.capture_overlay = false;
         }
     }
 
@@ -4296,6 +4338,7 @@ mod tests {
             steps: Vec::new(),
             frames: Vec::new(),
             capture_pending: false,
+            capture_overlay: false,
             saving: false,
             had_errors: false,
             paced_slider: None,

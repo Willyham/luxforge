@@ -1900,6 +1900,106 @@ fn a_refused_mask_command_ends_the_step_that_sent_it() {
     );
 }
 
+/// A coverage grid the host refuses ends the step that was waiting for its texture, with the host's
+/// own reason on it.
+///
+/// This is the refusal one step further out than
+/// [`a_refused_mask_command_ends_the_step_that_sent_it`]: the request is accepted, the frame is
+/// rendered, and it is the **grid** that is refused, on the worker, a round trip after the step
+/// returned. A mask holding a component whose coverage depends on the pixel it reads has no
+/// coverage grid at all — the grid is a function of position over the finished frame, which that
+/// coverage is not (proposal P16 of `docs/design/range-study.md`, open) — so a step that asked for
+/// the overlay would otherwise wait out the run's whole deadline for a texture nothing will fill.
+#[test]
+fn a_refused_coverage_grid_ends_the_step_waiting_for_it() {
+    use crate::app::{
+        evidence::Settle,
+        testing::{attach_script, evidence},
+    };
+    use lightwell_core::{MaskOverlayRequest, PreviewRequest};
+
+    let mut masking = Masking::opened();
+    masking.enter_mask_mode();
+    masking.draw_mask();
+    let mask = masking.listing().masks[0].id.clone();
+
+    // One luminance-range component, through the generated command a person's own button sends, is
+    // what makes this mask read pixels.
+    let revision = masking.editor.state.as_ref().unwrap().revision;
+    call(
+        &masking.owner(),
+        masking.editor.client,
+        "mask.add-luminance-range",
+        json!({"asset_id": masking.asset, "mutation": tasks::mutation(revision), "mask": mask,
+               "mode": "intersect", "low": 20.0, "low_feather": 5.0, "high": 80.0,
+               "high_feather": 5.0}),
+    )
+    .expect("the range component is added");
+    masking.refresh();
+    masking.message(MaskMessage::ToggleOverlay);
+    assert_eq!(
+        masking.editor.session.workspace.mask_overlay,
+        MaskOverlayMode::Tint
+    );
+
+    // A step that asks for the overlay waits for the grid's own texture, not for the frame.
+    // The pointer off the list, so the overlay is asked for the **composition**: hovering one row
+    // would ask for that component alone, and the gradient on its own has a perfectly good grid.
+    attach_script(&mut masking.editor, r#"[{"mask":{"hover":null}}]"#);
+    let _ = masking.editor.next_step();
+    assert_eq!(
+        evidence(&masking.editor).awaiting,
+        Some(Settle::MaskOverlay),
+        "the step is waiting for the coverage grid"
+    );
+
+    // The job the panel's own refresh would send, run through the editor's real queue and the real
+    // worker, so what ends the step is the host's answer and not a message this test wrote.
+    let request = masking
+        .editor
+        .mask_overlay_request()
+        .expect("the overlay names the mask whose grid it wants");
+    let job = masking
+        .owner()
+        .preview_job(
+            PreviewRequest::new(masking.editor.client, masking.asset.clone()).mask_overlay(
+                MaskOverlayRequest {
+                    mask: mask.clone(),
+                    component: None,
+                    cells_w: request.cells_w,
+                    cells_h: request.cells_h,
+                },
+            ),
+        )
+        .expect("a preview job");
+    masking.editor.request_preview(job);
+    let deadline = Instant::now() + Duration::from_secs(60);
+    while evidence(&masking.editor).awaiting.is_some() {
+        assert!(Instant::now() < deadline, "the frame never arrived");
+        let _ = masking.editor.update(Message::Poll);
+        std::thread::sleep(Duration::from_millis(1));
+    }
+
+    let run = evidence(&masking.editor);
+    assert!(
+        run.capture_pending,
+        "the frame on screen is captured as the evidence of the refusal"
+    );
+    assert!(run.had_errors, "the run records the refusal");
+    let step = run.current.clone().expect("the step's own record");
+    assert_eq!(step["status"], json!("failed"));
+    assert!(
+        step["reason"]
+            .as_str()
+            .is_some_and(|reason| reason.contains("depends on the pixel it reads")),
+        "the host's own reason is what is recorded: {step}"
+    );
+    assert!(
+        masking.editor.mask_overlay_surface().is_none(),
+        "nothing is drawn over the photograph for a mask that has no grid"
+    );
+}
+
 /// One request with its deduplication id replaced by a marker.
 ///
 /// Two sends of the same edit are two requests and must carry two ids, so the id is the one field a
@@ -2239,5 +2339,70 @@ fn a_commit_waits_for_the_geometry_the_gesture_has_not_sent_yet() {
         held[0].as_str(),
         Some(expected.as_str()),
         "the committed stroke is the whole path the pointer drew"
+    );
+}
+
+/// A slider gesture started with the brush in hand takes the draft the brush was holding.
+///
+/// At most one core draft exists per client, so the adjustments under the component list — which are
+/// exactly where a hand goes after painting — could not reach one while the brush held it. Every
+/// other gesture and every `mask.*` command already give an **armed** brush's draft up, because a
+/// brush that has painted nothing has nothing to Apply and nothing to lose; this is that same rule on
+/// the slider path, where its absence left the gesture with a `draft.begin` the host refused a round
+/// trip later and a picture that never followed the drag.
+#[test]
+fn a_slider_gesture_takes_an_armed_brushs_draft() {
+    let mut masking = Masking::opened();
+    masking.enter_mask_mode();
+
+    // One stroke painted, and the brush left armed on the component it landed on, which is where the
+    // gesture leaves itself after every stroke.
+    masking.message(MaskMessage::Paint(PaintTarget::NewMask));
+    masking.open_gesture();
+    masking.paint(&[(0.3, 0.3), (0.5, 0.35)]);
+    masking.open_gesture();
+    assert!(masking.editor.armed_brush(), "the brush is armed");
+
+    let _ =
+        masking
+            .editor
+            .control_moved("set-presence".to_owned(), "dehaze".to_owned(), json!(30.0));
+    assert!(
+        masking.editor.slider_draft.is_some(),
+        "the slider gesture opened: {}",
+        masking.editor.status
+    );
+    assert!(
+        masking.editor.mask_draft.is_none(),
+        "the armed brush gave up the draft it was holding"
+    );
+}
+
+/// The other case: a gesture that has drawn something has an Apply to answer, so a slider started
+/// over it is refused with that gesture's own reason rather than discarding a half-drawn gradient.
+#[test]
+fn a_slider_gesture_is_refused_while_a_drawn_mask_gesture_is_open() {
+    let mut masking = Masking::opened();
+    masking.enter_mask_mode();
+    masking.message(MaskMessage::New(LINEAR.to_owned()));
+    masking.open_gesture();
+    masking.sweep((0.2, 0.2), (0.8, 0.8));
+    let before = masking.editor.mask_draft.clone();
+    assert!(before.is_some() && !masking.editor.armed_brush());
+    let _ =
+        masking
+            .editor
+            .control_moved("set-presence".to_owned(), "dehaze".to_owned(), json!(20.0));
+    assert!(
+        masking
+            .editor
+            .status
+            .contains("Apply or Cancel the mask gesture"),
+        "{}",
+        masking.editor.status
+    );
+    assert_eq!(
+        masking.editor.mask_draft, before,
+        "the refused slider left the drawn gesture exactly as it was"
     );
 }

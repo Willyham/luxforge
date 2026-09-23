@@ -386,6 +386,16 @@ pub struct PreviewResult {
     /// the mask had nothing to describe. It never means a mask whose coverage happens to be zero
     /// everywhere: that is a grid of zeros, and this is its absence.
     pub mask_overlay: Option<MaskOverlay>,
+    /// Why the grid the job asked for is not in `mask_overlay`, in the host's own words.
+    ///
+    /// A client that asked for an overlay and waits for its texture has to be able to stop waiting:
+    /// the grid is refused for reasons that belong to the mask rather than to the frame — a mask
+    /// whose coverage depends on the pixel it reads has no grid at all
+    /// ([proposal P16](../../docs/design/range-study.md#proposals)) — and an absence with no reason
+    /// beside it is indistinguishable from a grid still on its way. `None` means the job asked for
+    /// no overlay, this is the proxy phase, the render itself failed, or a newer request is coming
+    /// with its own grid; in the last case the wait is correct and this must stay empty.
+    pub mask_overlay_absent: Option<String>,
     /// Which phase produced this frame.
     pub phase: PreviewPhase,
     /// The proxy source dimensions this frame was rendered against. `Some` only on a
@@ -729,6 +739,7 @@ fn run(
                                     // (performance rule 11).
                                     report: None,
                                     mask_overlay: None,
+                                    mask_overlay_absent: None,
                                     phase: PreviewPhase::Proxy,
                                     proxy_dimensions: Some(dimensions),
                                     proxy_declined: None,
@@ -776,11 +787,11 @@ fn run(
     // The coverage grid is filled beside the frame it describes, from the very stack that produced
     // it, so the two travel together under one generation. It reads no pixel of that frame and
     // allocates one byte per display cell.
-    let mask_overlay = match (&result, &job.mask_overlay) {
+    let (mask_overlay, mask_overlay_absent) = match (&result, &job.mask_overlay) {
         (Ok(_), Some(request)) => {
             mask_overlay_for(&job.registry, &job.source, recipe, request, &exact_cancel)
         }
-        _ => None,
+        _ => (None, None),
     };
     let sent = sender.send(WorkerMessage {
         result: PreviewResult {
@@ -791,6 +802,7 @@ fn run(
             result,
             report,
             mask_overlay,
+            mask_overlay_absent,
             phase: PreviewPhase::Exact,
             proxy_dimensions: None,
             proxy_declined: declined,
@@ -810,52 +822,87 @@ fn run(
 /// the grid describes the frame it arrives with and a prefix has its own geometry tail. The mask
 /// table travels with a prefix, so a mask is still found there.
 ///
-/// Every reason this answers `None` is a reason there is no grid to draw, never a silently empty
-/// one. The mask or component the request named was validated against this stack when the job was
-/// planned, and the stack rendered, so compiling it cannot fail here for a reason the frame did
-/// not already fail for; a cancel means a newer request is on its way with its own grid. The one
-/// ordinary `None` is a mask with nothing to describe, which [`analysis::coverage_grid`] decides in
-/// closed form.
+/// Every reason there is no grid is a reason there is none to draw, never a silently empty one, and
+/// the reason travels with the frame in the second half of the pair — the host's own words, for a
+/// client that asked for an overlay and would otherwise wait for a texture nothing will fill. The
+/// mask or component the request named was validated against this stack when the job was planned,
+/// and the stack rendered, so compiling it cannot fail here for a reason the frame did not already
+/// fail for. Two absences carry **no** reason on purpose: a mask with nothing to describe, which
+/// [`crate::analysis::coverage_grid`] decides in closed form and which a grid of zeros would
+/// misreport, and a cancel, where a newer request is already on its way with its own grid and
+/// waiting for it is correct.
 fn mask_overlay_for(
     registry: &ModuleRegistry,
     source: &PreviewSource,
     recipe: &Recipe,
     request: &MaskOverlayRequest,
     cancel: &Cancel,
-) -> Option<MaskOverlay> {
-    let held = recipe.masks.iter().find(|mask| mask.id == request.mask)?;
+) -> (Option<MaskOverlay>, Option<String>) {
+    let refused = |error: Error| match error.kind {
+        ErrorKind::Cancelled => (None, None),
+        _ => (None, Some(error.detail)),
+    };
+    let Some(held) = recipe.masks.iter().find(|mask| mask.id == request.mask) else {
+        return (
+            None,
+            Some(format!(
+                "mask {} is not in the stack this frame was rendered from",
+                request.mask
+            )),
+        );
+    };
     let derived;
     let mask = match &request.component {
         None => held,
-        Some(component) => {
-            derived = one_component(held, component)?;
-            &derived
-        }
+        Some(component) => match one_component(held, component) {
+            Some(one) => {
+                derived = one;
+                &derived
+            }
+            None => {
+                return (
+                    None,
+                    Some(format!("mask {} holds no component {component}", held.name)),
+                );
+            }
+        },
     };
     let (width, height) = source.dimensions();
     // `O(layers)`: it composes the geometry tail of the stack already compiled for this frame and
     // reads no pixel.
-    let transform = stage_transform(registry, width, height, recipe).ok()?;
+    let transform = match stage_transform(registry, width, height, recipe) {
+        Ok(transform) => transform,
+        Err(error) => return refused(error),
+    };
     let stage = Stage {
         width: transform.content.width,
         height: transform.content.height,
     };
-    let compiled = CompiledMask::new(mask, stage, &recipe.strokes).ok()?;
-    let coverage = crate::analysis::coverage_grid(
+    let compiled = match CompiledMask::new(mask, stage, &recipe.strokes) {
+        Ok(compiled) => compiled,
+        Err(error) => return refused(error),
+    };
+    let coverage = match crate::analysis::coverage_grid(
         &compiled,
         &transform,
         request.cells_w,
         request.cells_h,
         cancel,
+    ) {
+        Ok(Some(coverage)) => coverage,
+        Ok(None) => return (None, None),
+        Err(error) => return refused(error),
+    };
+    (
+        Some(MaskOverlay {
+            mask: request.mask.clone(),
+            component: request.component.clone(),
+            cells_w: request.cells_w,
+            cells_h: request.cells_h,
+            coverage,
+        }),
+        None,
     )
-    .ok()??;
-    Some(MaskOverlay {
-        mask: request.mask.clone(),
-        component: request.component.clone(),
-        cells_w: request.cells_w,
-        cells_h: request.cells_h,
-        coverage,
-    })
 }
 
 #[cfg(test)]

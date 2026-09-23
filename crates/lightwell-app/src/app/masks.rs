@@ -204,7 +204,7 @@ impl Editor {
 
     /// Disarm a brush that has drawn nothing, so another gesture can open. It commits nothing,
     /// because there is nothing painted to commit.
-    fn disarm_brush(&mut self) -> Option<Task<Message>> {
+    pub(crate) fn disarm_brush(&mut self) -> Option<Task<Message>> {
         self.armed_brush().then(|| {
             let draft_id = self.mask_draft_id.take();
             self.mask_draft = None;
@@ -1522,6 +1522,26 @@ impl Editor {
         );
         image_memory::allocate(handle)
             .map(move |result| Message::MaskOverlayUploaded(generation, (width, height), result))
+    }
+
+    /// The frame asked for a coverage grid and arrived without one, for a reason the host named.
+    ///
+    /// The last grid is dropped rather than left over a frame it does not describe, the host's own
+    /// reason is logged, and a scripted step waiting for the overlay's own texture is ended with it.
+    /// A mask whose coverage depends on the pixel it reads is the case this exists for: it has no
+    /// grid at all, by [proposal P16](../../../../docs/design/range-study.md#proposals), which is
+    /// open — and what such a mask shows a person instead is that proposal's to settle, not this
+    /// function's. The reason deliberately does not go to the status line: the frame this arrives
+    /// with writes its own status in the same update, so a line written here would be replaced
+    /// before it was ever drawn.
+    pub(crate) fn mask_overlay_unavailable(&mut self, generation: u64, reason: &str) {
+        self.mask_overlay_pending = None;
+        self.mask_overlay_photo = None;
+        self.event(
+            "mask_overlay_absent",
+            json!({"generation":generation,"detail":reason}),
+        );
+        self.mask_overlay_refused_step(reason);
     }
 
     /// The mask overlay to draw over the photograph: the one on the GPU, when it belongs to the

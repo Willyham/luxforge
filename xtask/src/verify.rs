@@ -123,13 +123,18 @@ impl Launches {
         let Some(result) = result else { return 0 };
         match self {
             Self::None => 0,
-            // A scenario records one exit code per launch it made: the two-launch scenarios
-            // (`unavailable`, `basic-restart`) record `launch1_exit_code` and `launch2_exit_code`,
-            // every other one a single `exit_code`.
-            Self::Smoke => ["exit_code", "launch1_exit_code", "launch2_exit_code"]
-                .iter()
-                .filter(|key| !result[**key].is_null())
-                .count() as u64,
+            // A scenario records one exit code per launch it made: the multi-launch scenarios
+            // (`unavailable`, `basic-restart`, `mask-linear`, `mask-brush`) record
+            // `launch1_exit_code` and its siblings, every other one a single `exit_code`.
+            Self::Smoke => [
+                "exit_code",
+                "launch1_exit_code",
+                "launch2_exit_code",
+                "launch3_exit_code",
+            ]
+            .iter()
+            .filter(|key| !result[**key].is_null())
+            .count() as u64,
             // One launch per measured run, plus the idle process, which is recorded separately.
             Self::Measure => runs(result) as u64 + u64::from(!result["idle"].is_null()),
             // One scripted gesture launch; `--idle` adds the hold and idle pair, and that pair is
