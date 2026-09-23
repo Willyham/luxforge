@@ -35,6 +35,10 @@ use crate::{
     modules::{Region, Stage},
 };
 
+#[cfg(test)]
+mod command_contracts;
+/// The `mask.*` host command family: what each command declares, does and labels.
+pub mod commands;
 mod linear;
 
 pub use linear::{LinearGradient, POSITION_MAX, POSITION_MIN};

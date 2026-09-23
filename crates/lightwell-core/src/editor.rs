@@ -3,6 +3,9 @@ use crate::{
     ModuleRegistry, Mutation, PreviewJob, PreviewSource, ProxyBounds, Raster, Recipe, Snapshot,
     SnapshotId, StageTransform, Transform,
     analysis::AnalysisIdentity,
+    mask::commands::{
+        MaskChange, MaskCommand, MaskCommandResult, MaskListing, MaskOutcome, MaskTarget,
+    },
     modules::{
         ActionInput, ActionPlan, EffectStage, Stage, StageContext, action_label, check_parameters,
     },
@@ -1412,6 +1415,121 @@ impl EditorService {
         )
     }
 
+    /// One `mask.*` host command.
+    ///
+    /// Masks are host commands in their own namespace and not a tool module, because a module commits
+    /// layers through [`ActionPlan`] and must never rewrite the recipe, while every one of these
+    /// rewrites the mask table beside the layers. Everything else is the delivered path and not a
+    /// second implementation of it: the parameters go through the same [`check_parameters`], the
+    /// request identity and its deduplication are built by the same [`request_input`], the revision
+    /// is checked by the same [`ensure_revision`], a change is persisted by the same
+    /// [`Self::commit_snapshot`] — one history entry, one immutable snapshot, one validated and
+    /// compiled recipe — and a change that changes nothing takes the same [`Self::persist_noop`].
+    pub fn apply_mask_command(
+        &mut self,
+        asset_id: &AssetId,
+        mutation: Mutation,
+        command: &'static MaskCommand,
+        parameters: Value,
+        target: MaskTarget,
+    ) -> Result<MaskCommandResult, Error> {
+        mutation.validate()?;
+        command.checked_target(&target)?;
+        let checked = check_parameters(&command.action, &parameters)?;
+        // The entry stores the declared parameters and the envelope fields naming what they addressed,
+        // which is also the deduplication identity: the same request id with a different mask is a
+        // different request and must conflict rather than return the first one's result.
+        let input = ActionInput {
+            action_id: command.method.to_owned(),
+            parameters: crate::mask::commands::stored_parameters(&checked, &target),
+        };
+        let request = request_input(&input, &mutation)?;
+        if let Some(result) = self.request_result(asset_id, &mutation.request_id, &request)? {
+            return self.mask_report(asset_id, result);
+        }
+        let state = self.state(asset_id)?;
+        ensure_revision(&state, mutation.expected_revision)?;
+        let recipe = &state.current_entry.snapshot.recipe;
+        validate_source_recipe(&state.asset, recipe)?;
+        let registry = self.registry.clone();
+        match crate::mask::commands::plan(command, recipe, &target, &checked, &registry)? {
+            MaskOutcome::NoOp => Ok(MaskCommandResult::plain(
+                self.persist_noop(asset_id, &mutation, &request, &state)?,
+            )),
+            MaskOutcome::Change(MaskChange {
+                recipe,
+                label,
+                mask,
+                component,
+                removed_layers,
+            }) => {
+                let snapshot = Snapshot {
+                    id: SnapshotId::new(),
+                    asset_id: asset_id.clone(),
+                    recipe,
+                };
+                let mutation = self.commit_snapshot(
+                    asset_id,
+                    mutation,
+                    request,
+                    snapshot,
+                    &state.asset,
+                    CommittedAction {
+                        input,
+                        label: label.clone(),
+                    },
+                )?;
+                Ok(MaskCommandResult {
+                    mutation,
+                    label: Some(label),
+                    mask,
+                    component,
+                    removed_layers,
+                })
+            }
+        }
+    }
+
+    /// The report of a deduplicated retry, read back from the entry the original call wrote so the
+    /// retry answers identically. A retried no-op wrote no entry and reports the envelope alone,
+    /// exactly as the no-op itself did.
+    fn mask_report(
+        &self,
+        asset_id: &AssetId,
+        result: MutationResult,
+    ) -> Result<MaskCommandResult, Error> {
+        let Some(entry_id) = result.created_entry_id.clone() else {
+            return Ok(MaskCommandResult::plain(result));
+        };
+        let entry = self.entry(asset_id, &entry_id)?;
+        let parent = match &entry.undo_parent {
+            Some(parent) => Some(self.entry(asset_id, parent)?),
+            None => None,
+        };
+        Ok(crate::mask::commands::report_of(
+            result,
+            &entry,
+            parent.as_ref(),
+            &self.registry,
+        ))
+    }
+
+    /// `mask.list`: every mask of one stored stack with its components, its values and the layers
+    /// bound to it. Read-only in every sense — it reads one entry's snapshot and writes nothing,
+    /// emits nothing and touches no session state.
+    pub fn mask_listing(
+        &self,
+        asset_id: &AssetId,
+        entry_id: &EntryId,
+    ) -> Result<MaskListing, Error> {
+        let entry = self.entry(asset_id, entry_id)?;
+        Ok(crate::mask::commands::listing(
+            entry.id.clone(),
+            &entry.snapshot.recipe,
+            &self.registry,
+        ))
+    }
+
     /// Ask a module what one parsed request would do to this stack. The stack is compiled once and
     /// every question the module may ask is a point query or a prefix compile, so planning costs
     /// `O(layers)` and rasterizes nothing. Shared by a commit and by a draft's effective recipe, so
@@ -1588,6 +1706,22 @@ impl EditorService {
             ));
         }
         let registry = self.registry.clone();
+        // A drafted host command previews through the same planner that commits it, so a gesture
+        // shows exactly the stack releasing it would write.
+        if let Some(command) = crate::mask::commands::find(&draft.action) {
+            let state = self.state(asset_id)?;
+            let current = &state.current_entry.snapshot.recipe;
+            validate_source_recipe(&state.asset, current)?;
+            let checked = check_parameters(&command.action, &Value::Object(draft.fields.clone()))?;
+            let target = draft.target.clone().unwrap_or_default();
+            let recipe = match crate::mask::commands::plan(
+                command, current, &target, &checked, &registry,
+            )? {
+                MaskOutcome::NoOp => current.clone(),
+                MaskOutcome::Change(change) => change.recipe,
+            };
+            return Ok((recipe, state));
+        }
         let (module, action) = registry.action(&draft.action).ok_or_else(|| {
             Error::new(
                 ErrorKind::Validation,
