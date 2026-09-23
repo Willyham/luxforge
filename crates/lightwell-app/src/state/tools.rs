@@ -1118,6 +1118,12 @@ fn value_model(
         ParameterKind::Curve { .. } => ControlModel::Unsupported(format!(
             "curve parameter {parameter} of action {action} needs a curve control"
         )),
+        ParameterKind::String { .. } => ControlModel::Unsupported(format!(
+            "string parameter {parameter} of action {action} needs a text control"
+        )),
+        ParameterKind::Settings => ControlModel::Unsupported(format!(
+            "settings parameter {parameter} of action {action} needs a presets control"
+        )),
     }
 }
 

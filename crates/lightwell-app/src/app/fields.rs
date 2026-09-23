@@ -230,6 +230,17 @@ pub(crate) fn seed_text(parameter: &ParameterDescriptor) -> String {
                 Value::Array(xs.into_iter().map(|x| serde_json::json!([x, x])).collect())
                     .to_string()
             }),
+        ParameterKind::String { .. } => parameter
+            .default
+            .as_ref()
+            .and_then(Value::as_str)
+            .map(str::to_owned)
+            .unwrap_or_default(),
+        ParameterKind::Settings => parameter
+            .default
+            .as_ref()
+            .map(Value::to_string)
+            .unwrap_or_else(|| "{}".into()),
     }
 }
 
@@ -267,7 +278,9 @@ pub(crate) fn decimals_for(parameter: &ParameterDescriptor) -> usize {
         ParameterKind::Color
         | ParameterKind::Enum { .. }
         | ParameterKind::Boolean
-        | ParameterKind::Curve { .. } => return 0,
+        | ParameterKind::Curve { .. }
+        | ParameterKind::String { .. }
+        | ParameterKind::Settings => return 0,
     };
     if let Some(precision) = parameter.precision {
         return usize::from(precision).min(lightwell_ui::geometry::MAX_DECIMALS);
@@ -380,6 +393,20 @@ pub(crate) fn parse_field(parameter: &ParameterDescriptor, text: &str) -> Result
                     .map_err(|error| error.detail)
                     .map(|_| value)
             }),
+        // Text is taken as typed, untrimmed: the parameter's own check decides what it accepts.
+        ParameterKind::String { .. } => {
+            let value = Value::from(text);
+            check_value(parameter, &value)
+                .map_err(|error| error.detail)
+                .map(|_| value)
+        }
+        ParameterKind::Settings => serde_json::from_str::<Value>(text.trim())
+            .map_err(|_| format!("{name} must be a JSON settings object"))
+            .and_then(|value| {
+                check_value(parameter, &value)
+                    .map_err(|error| error.detail)
+                    .map(|_| value)
+            }),
     }
 }
 
@@ -398,7 +425,8 @@ pub(crate) fn value_text(parameter: &ParameterDescriptor, value: &Value) -> Resu
             .collect::<Vec<_>>()
             .join(","),
         ParameterKind::Boolean => value.as_bool().unwrap().to_string(),
-        ParameterKind::Curve { .. } => value.to_string(),
+        ParameterKind::Curve { .. } | ParameterKind::Settings => value.to_string(),
+        ParameterKind::String { .. } => value.as_str().unwrap().to_owned(),
     })
 }
 
@@ -1142,13 +1170,26 @@ mod tests {
                 "{kind} is rendered"
             );
         }
-        // Every control the registered modules declare has a real rendering.
+        // The presets library has no widget in this build, so its control is named, not dropped.
+        let presets = Control::Presets {
+            action: "apply-preset".into(),
+        };
+        assert_eq!(control_kind(&presets), "presets");
+        assert!(matches!(
+            classify(&presets),
+            Rendered::Unsupported(kind) if kind == "presets"
+        ));
+        // Every other control the registered modules declare has a real rendering.
         for module in descriptors() {
             let mut queue: Vec<&Control> = module.controls.iter().collect();
             while let Some(control) = queue.pop() {
                 match classify(control) {
                     Rendered::Group { controls, .. } => queue.extend(controls),
-                    Rendered::Unsupported(kind) => panic!("{} declares {kind}", module.id),
+                    Rendered::Unsupported(kind)
+                        if !(module.id == "lightwell.presets" && kind == "presets") =>
+                    {
+                        panic!("{} declares {kind}", module.id)
+                    }
                     _ => {}
                 }
             }
