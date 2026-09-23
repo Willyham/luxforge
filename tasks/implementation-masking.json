@@ -1637,7 +1637,7 @@
     {
       "id": "TASK-020",
       "description": "Verify and bound the growth of brush-heavy recipes across history against the content-addressed store's predicted figures, and enforce the per-recipe serialized bound.",
-      "status": "pending",
+      "status": "completed",
       "dependencies": [
         "TASK-018"
       ],
