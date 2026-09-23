@@ -2192,7 +2192,7 @@
     {
       "id": "TASK-027",
       "description": "Give the coverage overlay the pixel a value-based component reads, by evaluating the recipe prefix up to the mask's first bound layer, and keep the refusal for a mask no layer is bound to.",
-      "status": "pending",
+      "status": "completed",
       "dependencies": [
         "TASK-023",
         "TASK-024"
