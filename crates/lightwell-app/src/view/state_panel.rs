@@ -12,7 +12,7 @@ use iced::{
 };
 use lightwell_ui::{
     ChipModel, Icon, IconButtonModel, ListRowModel, Marker, chip, icon_button, inline_menu,
-    list_row, section_label, theme,
+    list_row, section_label, theme, truncated_text,
 };
 
 pub(crate) fn state_panel(model: &StatePanelModel) -> Element<'_, Message> {
@@ -166,8 +166,8 @@ fn recipe(model: &StatePanelModel) -> Element<'_, Message> {
 /// One recipe row: the sequence and the module title on their own line, the layer's payload
 /// summary as a caption underneath. Two short lines read better here than a trailing caption,
 /// which a long summary ("unavailable: disabled by --disable-module") would otherwise squeeze
-/// into a sliver next to a title that keeps the rest of the row. Both lines stay on one line each
-/// (`Wrapping::None`) and clip rather than grow the row to fit an unbounded summary.
+/// into a sliver next to a title that keeps the rest of the row. Both lines stay on one line each:
+/// the title clips (`Wrapping::None`) and the unbounded summary ends in an ellipsis.
 fn recipe_row(
     index: usize,
     title: String,
@@ -192,13 +192,12 @@ fn recipe_row(
     ]
     .spacing(theme::SPACING)
     .align_y(Alignment::Center);
-    let detail = container(
-        text(summary)
-            .size(theme::SIZE_CAPTION)
-            .color(theme::TEXT_TERTIARY)
-            .wrapping(Wrapping::None),
-    )
-    .clip(true)
+    let detail = container(truncated_text(
+        summary,
+        theme::SIZE_CAPTION,
+        theme::FONT,
+        theme::TEXT_TERTIARY,
+    ))
     .width(Length::Fill)
     .padding(Padding {
         left: 32.0,

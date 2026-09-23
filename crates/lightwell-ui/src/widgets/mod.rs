@@ -30,6 +30,7 @@ mod sub_group_header;
 mod tab_row;
 mod text;
 mod toggle;
+mod truncated_text;
 
 pub use button_row::{
     ButtonSize, ButtonTone, LabelledButtonModel, RowPlacement, button_row, button_row_height,
@@ -77,3 +78,4 @@ pub use text::{
     caption, control_label, error_caption, group_label, label, section_label, title, value_text,
 };
 pub use toggle::{ToggleModel, knob_center, toggle};
+pub use truncated_text::{ELLIPSIS, Fit, TruncatedText, fit_one_line, truncated_text};

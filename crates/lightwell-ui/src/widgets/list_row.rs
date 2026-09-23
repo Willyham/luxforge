@@ -1,8 +1,9 @@
 //! One row in a history, version or recipe list.
 
 use super::text::caption;
+use super::truncated_text::truncated_text;
 use crate::theme;
-use iced::widget::{Space, button, container, mouse_area, row, text};
+use iced::widget::{Space, button, container, mouse_area, row};
 use iced::{Alignment, Border, Color, Element, Length, Theme};
 
 /// A list row's marker, drawn as a small circle.
@@ -46,21 +47,28 @@ pub fn list_row<'a, M: Clone + 'a>(
         theme::TEXT_PRIMARY
     };
 
+    // The label and its tag take what the sequence, the marker and the actor leave, so the actor
+    // keeps its full width and the label ends in an ellipsis first. The label hugs its text, so
+    // the tag follows it.
+    let mut labelled = row![truncated_text(
+        model.label.clone(),
+        theme::SIZE_CONTROL,
+        theme::FONT,
+        label_color,
+    )]
+    .spacing(theme::SPACING)
+    .align_y(Alignment::Center);
+    if let Some(tag) = &model.tag {
+        labelled = labelled.push(caption(tag.clone()));
+    }
+
     let mut content = row![
         container(caption(model.leading.clone())).width(Length::Fixed(24.0)),
         marker_dot(model.marker),
-        text(model.label.clone())
-            .size(theme::SIZE_CONTROL)
-            .color(label_color),
+        container(labelled).width(Length::Fill),
     ]
     .spacing(theme::SPACING)
     .align_y(Alignment::Center);
-
-    if let Some(tag) = &model.tag {
-        content = content.push(caption(tag.clone()));
-    }
-
-    content = content.push(container(Space::new()).width(Length::Fill));
 
     if let Some(trailing) = &model.trailing {
         content = content.push(caption(trailing.clone()));

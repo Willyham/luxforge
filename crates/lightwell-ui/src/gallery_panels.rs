@@ -4,12 +4,12 @@
 
 use crate::{
     ButtonSize, ButtonTone, ChipModel, ColorSwatchModel, Icon, IconButtonModel,
-    LabelledButtonModel, NumberFieldModel, RailDecoration, RowPlacement, SectionHeaderModel,
-    SliderModel, StepperModel, SubGroupHeaderModel, Tab, TabRowModel, ToggleModel, ValueEdit,
-    boxed_input, button_row, channel_row, chip, chip_row, color_swatch, equal_button_row,
-    icon_button_row, labelled_button, module_section, number_field, readout_card, row_icon_button,
-    section_body, section_header, slider, stepper, sub_group_header, sub_group_header_with_actions,
-    tab_row, theme, toggle,
+    LabelledButtonModel, ListRowModel, Marker, NumberFieldModel, RailDecoration, RowPlacement,
+    SectionHeaderModel, SliderModel, StepperModel, SubGroupHeaderModel, Tab, TabRowModel,
+    ToggleModel, ValueEdit, boxed_input, button_row, channel_row, chip, chip_row, color_swatch,
+    equal_button_row, icon_button_row, labelled_button, list_row, module_section, number_field,
+    readout_card, row_icon_button, section_body, section_header, slider, stepper, sub_group_header,
+    sub_group_header_with_actions, tab_row, theme, toggle,
 };
 use iced::widget::{Column, Row, column, container};
 use iced::{Element, Length};
@@ -17,6 +17,9 @@ use iced::{Element, Length};
 /// The width of the module references' panels. This frames the examples only; the desktop's own
 /// tools panel width is the app's layout constant.
 const REFERENCE_PANEL_WIDTH: f32 = 300.0;
+
+/// The state panel's width in the reference screens, for the history rows.
+const STATE_PANEL_REFERENCE_WIDTH: f32 = 240.0;
 
 fn panel<'a>(content: Element<'a, ()>) -> Element<'a, ()> {
     container(content)
@@ -251,11 +254,97 @@ pub(crate) fn gallery_panels() -> Vec<Element<'static, ()>> {
             ))
             .into(),
     );
+
+    // -- One-line truncation: the two modules' real hints end in an ellipsis inside their band,
+    // -- as default.png draws them, and so does an unavailable reason that does not fit.
+    let long_bands: Element<'static, ()> = column![
+        section_header(
+            &band(
+                "Colour mixer",
+                false,
+                Some("Hue, saturation and luminance by range"),
+                None
+            ),
+            (),
+            ()
+        ),
+        section_header(
+            &band(
+                "Vignette",
+                false,
+                Some("Darken or lighten the corners after the crop"),
+                None
+            ),
+            (),
+            ()
+        ),
+        section_header(
+            &band(
+                "Lens profile",
+                false,
+                None,
+                Some("Unavailable \u{b7} disabled by --disable-module lens-profile")
+            ),
+            (),
+            ()
+        ),
+    ]
+    .into();
+
+    // -- Under them, history rows at the state panel's width: a long label ends in an ellipsis
+    // -- before the actor, which keeps its full width; the tag still follows a truncated label.
+    // -- One state, so the last page's two columns stay inside the gallery capture.
+    let history_row = |leading: &str, label: &str, actor: Option<&str>, tag: Option<&str>| {
+        list_row(
+            &ListRowModel {
+                marker: if tag.is_some() {
+                    Marker::Plain
+                } else {
+                    Marker::Current
+                },
+                leading: leading.into(),
+                label: label.into(),
+                trailing: actor.map(Into::into),
+                dimmed: tag.is_some(),
+                tag: tag.map(Into::into),
+                enabled: true,
+            },
+            Some(()),
+            Some(()),
+        )
+    };
+    let history: Element<'static, ()> = container(
+        column![
+            history_row(
+                "12",
+                "Blue saturation \u{2212}40",
+                Some("agent \u{b7} lw-assist"),
+                None
+            ),
+            history_row("11", "Reset White balance", Some("you"), None),
+            history_row("10", "Hue, saturation and luminance", None, Some("branch")),
+        ]
+        .spacing(4.0),
+    )
+    .width(Length::Fixed(
+        STATE_PANEL_REFERENCE_WIDTH - 2.0 * theme::SPACING,
+    ))
+    .into();
+    states.push(
+        column![
+            panel(long_bands),
+            container(history)
+                .padding(theme::SPACING)
+                .style(theme::panel_surface),
+        ]
+        .spacing(theme::SPACING)
+        .into(),
+    );
     states
 }
 
 /// The later module-panel states, in gallery order: the icon-button row, the crop section drafting
-/// (in its band, for the Draft status) and idle, and the field rows. All but the drafting section
+/// (in its band, for the Draft status), the field rows and the crop section idle. All but the drafting section
 /// are section bodies, so the last gallery page keeps every state on screen.
 pub(crate) fn gallery_panel_rows() -> Vec<Element<'static, ()>> {
     let mut states = Vec::new();
@@ -428,24 +517,6 @@ pub(crate) fn gallery_panel_rows() -> Vec<Element<'static, ()>> {
     );
     states.push(panel(drafting));
 
-    // -- Crop and straighten, idle: one regular button with its icon and letter.
-    let idle = section_body(vec![button_row(
-        vec![labelled_button(
-            &LabelledButtonModel {
-                label: "Crop".into(),
-                icon: Some(Icon::Crop),
-                key_hint: Some("R".into()),
-                tone: ButtonTone::Control,
-                size: ButtonSize::Regular,
-                fill: false,
-                enabled: true,
-            },
-            Some(()),
-        )],
-        RowPlacement::default(),
-    )]);
-    states.push(panel(idle));
-
     // -- Field rows, as the pixel proof's request inputs are drawn: a boxed value with a word unit
     // -- outside, a colour's swatch and channel boxes, and a compact picker row with an action.
     let field = |label: &str, display: &str| {
@@ -513,6 +584,24 @@ pub(crate) fn gallery_panel_rows() -> Vec<Element<'static, ()>> {
         ),
     ]);
     states.push(panel(fields));
+    // -- Crop and straighten, idle: one regular button with its icon and letter.
+    let idle = section_body(vec![button_row(
+        vec![labelled_button(
+            &LabelledButtonModel {
+                label: "Crop".into(),
+                icon: Some(Icon::Crop),
+                key_hint: Some("R".into()),
+                tone: ButtonTone::Control,
+                size: ButtonSize::Regular,
+                fill: false,
+                enabled: true,
+            },
+            Some(()),
+        )],
+        RowPlacement::default(),
+    )]);
+    states.push(panel(idle));
+
     states
 }
 

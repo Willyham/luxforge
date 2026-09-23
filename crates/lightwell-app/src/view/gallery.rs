@@ -19,8 +19,8 @@ const PAGES: [(&str, usize, usize); 10] = [
     ("Toggles, choices and swatches", 47, 56),
     ("Colour picker", 56, 59),
     ("Curve points", 59, 61),
-    ("Curve channels and named vector icons", 61, 64),
-    ("Module panels", 64, 72),
+    ("Curve channels, named vector icons and Basic", 61, 65),
+    ("Module panels", 65, 73),
 ];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

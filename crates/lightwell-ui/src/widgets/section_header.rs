@@ -7,10 +7,10 @@
 //! unavailable module's band shows its reason in the clipping red and does not expand.
 
 use super::icon_button::{Icon, IconButtonModel, header_icon_button, icon};
-use super::text::{caption, error_caption};
+use super::truncated_text::truncated_text;
 use crate::theme;
 use iced::alignment::Horizontal;
-use iced::widget::text::Wrapping;
+use iced::widget::text::{LineHeight, Wrapping};
 use iced::widget::{Column, Space, button, column, container, row, text};
 use iced::{Alignment, Border, Color, Element, Length, Padding, Theme};
 
@@ -80,25 +80,28 @@ pub fn section_header<'a, M: Clone + 'a>(
         leading = leading.push(accent_dot());
     }
 
-    // The chevron and the title keep their own width; the hint or the unavailable reason takes
-    // whatever is left, so a long hint can never squeeze the title out.
+    // The chevron, the title and the dot keep their own width; the hint or the unavailable reason
+    // takes whatever is left on one line, ending in an ellipsis when it does not fit, so a long
+    // hint can never squeeze the title out or wrap out of the band.
     let mut header = row![container(leading).width(Length::Shrink)]
         .spacing(theme::MODULE_HEADER_SPACING)
         .align_y(Alignment::Center)
         .height(Length::Fill);
 
+    let one_line = |content: &String, color| {
+        container(
+            truncated_text(content.clone(), theme::SIZE_CAPTION, theme::FONT, color)
+                .line_height(LineHeight::Absolute(theme::CAPTION_LINE_HEIGHT.into())),
+        )
+        .width(Length::Fill)
+        .align_x(Horizontal::Right)
+    };
     let trailing: Element<'a, M> = if let Some(reason) = &model.unavailable {
-        container(error_caption(reason.clone()))
-            .width(Length::Fill)
-            .align_x(Horizontal::Right)
-            .into()
+        one_line(reason, theme::CLIPPING_HIGHLIGHT).into()
     } else if !model.expanded
         && let Some(hint) = &model.hint
     {
-        container(caption(hint.clone()))
-            .width(Length::Fill)
-            .align_x(Horizontal::Right)
-            .into()
+        one_line(hint, theme::TEXT_TERTIARY).into()
     } else {
         Space::new().width(Length::Fill).into()
     };

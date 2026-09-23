@@ -97,6 +97,7 @@ Every widget is a function from a plain-data model and messages to an `Element`,
 | `text_field` (new, second slice) | Label, text, placeholder, invalid message, enabled | Text, submit |
 | `icon` (new) | An `Icon` and a size | Nothing; a drawing |
 | `double_click` (delivered) | Any content and one message | That message on the second click of a run over the content, which it does not forward. The slider already wraps its rail in it, which is what makes a double-click on the rail reset the field: iced's slider captures the press itself, so a `mouse_area` around it never sees one |
+| `truncated_text` (delivered) | A string, size, font and colour | Nothing; one line that ends in "…" at the longest character-boundary prefix that fits the width its row leaves it. A collapsed band's hint or unavailable reason, a history row's label (the actor keeps its full width) and a recipe row's summary use it. The prefix search is a pure function over a width-measuring closure, tested without a renderer, and the measurement is cached against the content, width, size and font |
 
 Fractions everywhere: a widget maps pointer positions to `0..=1` on its own axes and the view model maps fractions to values with the parameter's range, step and precision. The pure mapping functions (`geometry::value_from_fraction` today, the picker's HSV and hex conversions, the curve editor's hit test and the pad's polar mapping) are tested without a renderer. Canvas-drawn widgets (the curve editor, the picker plane, the pad, icons) cache their tessellated geometry the way the histogram plot does, keyed on the model's version, so an unchanged model costs no re-tessellation per frame.
 
@@ -107,7 +108,7 @@ The components board gains a row per new widget and state, `gallery_states()` bu
 ## Developer gallery
 
 The title bar exposes **Developer** in debug builds and in optimized builds started with
-`--developer`. It opens the existing 72 reference states across ten component pages, using the
+`--developer`. It opens the existing 73 reference states across ten component pages, using the
 same widget constructors as the editor. A page menu and Previous/Next buttons browse the board;
 Back to editor or Escape restores the workspace. No photograph is required. The examples display
 reference states and do not edit the photograph; the Controls proof provides live editing tests.
