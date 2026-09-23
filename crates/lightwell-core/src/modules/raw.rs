@@ -21,8 +21,9 @@ const RESET: &str = "reset-raw";
 pub const MAX_RAW_GAIN: f64 = 32.0;
 const MIN_EXPOSURE_EV: f64 = -5.0;
 const MAX_EXPOSURE_EV: f64 = 5.0;
-/// Where a custom temperature or tint starts when the development holds none: the declared
-/// defaults of the two controls, which a first custom adjustment keeps for the other field.
+/// The declared defaults of the two white-balance controls: what they show, and what a custom
+/// change keeps for the field it does not name, when the gains in force have no temperature and
+/// tint in range.
 const CUSTOM_START_KELVIN: f64 = 6504.0;
 const CUSTOM_START_TINT: f64 = 0.0;
 
@@ -159,21 +160,23 @@ impl RawPayload {
         self.exposure_ev == 0.0 && self.wb_mode == WhiteBalanceMode::AsShot
     }
 
-    /// The temperature and tint the development's controls show. A custom temperature and tint
-    /// are themselves. Under As shot they are the temperature and tint whose gains are the
-    /// camera's as-shot gains ([`white_balance::temperature_tint_from_gains`]), so the controls
-    /// say what is in force rather than a value that is not. Custom gains set some other way (the
-    /// neutral picker, an explicit gain) and as-shot gains no temperature and tint in range
-    /// reproduce show the values a first custom adjustment starts from, 6504 K and 0, as before.
+    /// The temperature and tint of the white balance in force: what the development's controls
+    /// show, and where a custom temperature or tint change starts from for the field it does not
+    /// name. A custom temperature and tint are themselves. Any other gains — the camera's under As
+    /// shot, whatever custom values a return to As shot left in the payload, or custom gains a
+    /// neutral pick or an explicit gain set — are the temperature and tint whose gains they are
+    /// ([`white_balance::temperature_tint_from_gains`]), so the controls say what is in force and
+    /// the next drag moves one field from there. Gains no temperature in 2000..12000 K and tint
+    /// within ±100 reproduce are the declared 6504 K and 0.
     pub fn white_balance_controls(&self) -> [f64; 2] {
-        let start = [CUSTOM_START_KELVIN, CUSTOM_START_TINT];
+        let equivalent = |gains| {
+            white_balance::temperature_tint_from_gains(gains, self.cam_xyz)
+                .unwrap_or([CUSTOM_START_KELVIN, CUSTOM_START_TINT])
+        };
         match (self.wb_mode, self.temperature_kelvin, self.tint) {
-            (WhiteBalanceMode::AsShot, _, _) => {
-                white_balance::temperature_tint_from_gains(self.as_shot_gains, self.cam_xyz)
-                    .unwrap_or(start)
-            }
+            (WhiteBalanceMode::AsShot, _, _) => equivalent(self.as_shot_gains),
             (WhiteBalanceMode::Custom, Some(kelvin), Some(tint)) => [kelvin, tint],
-            (WhiteBalanceMode::Custom, _, _) => start,
+            (WhiteBalanceMode::Custom, _, _) => equivalent(self.gains),
         }
     }
 }
@@ -453,6 +456,9 @@ impl ToolModule for RawModule {
                 payload.tint = None;
             }
             SET_TEMPERATURE | SET_TINT => {
+                // The field this action does not name keeps the white balance in force: from As
+                // shot or a neutral pick that is its equivalent, as the controls show it.
+                let [kelvin_in_force, tint_in_force] = payload.white_balance_controls();
                 let temperature = if input.action_id == SET_TEMPERATURE {
                     input
                         .parameters
@@ -460,7 +466,7 @@ impl ToolModule for RawModule {
                         .and_then(Value::as_f64)
                         .ok_or_else(|| validation("missing Kelvin"))?
                 } else {
-                    payload.temperature_kelvin.unwrap_or(CUSTOM_START_KELVIN)
+                    kelvin_in_force
                 };
                 let tint = if input.action_id == SET_TINT {
                     input
@@ -469,7 +475,7 @@ impl ToolModule for RawModule {
                         .and_then(Value::as_f64)
                         .ok_or_else(|| validation("missing tint"))?
                 } else {
-                    payload.tint.unwrap_or(CUSTOM_START_TINT)
+                    tint_in_force
                 };
                 payload.gains =
                     white_balance::gains_from_temperature_tint(temperature, tint, payload.cam_xyz)?;
@@ -709,11 +715,16 @@ mod tests {
             [0.0, 0.0, 0.0],
         ];
         let original = RawPayload::for_as_shot([2.0, 1.0, 1.5], matrix).unwrap();
+        // This synthetic camera's as-shot white has no temperature and tint in range, so a first
+        // custom temperature keeps the declared 0 tint.
+        assert!(
+            white_balance::temperature_tint_from_gains(original.as_shot_gains, matrix).is_err()
+        );
         let layer = original.layer(LayerId::new());
         let temperature = planned(&layer, SET_TEMPERATURE, json!({"kelvin":5500.0})).unwrap();
         assert_eq!(temperature.wb_mode, WhiteBalanceMode::Custom);
         assert_eq!(temperature.temperature_kelvin, Some(5500.0));
-        assert_eq!(temperature.tint, Some(0.0));
+        assert_eq!(temperature.tint, Some(CUSTOM_START_TINT));
         let tint = planned(
             &temperature.layer(layer.id.clone()),
             SET_TINT,
@@ -852,7 +863,8 @@ mod tests {
         let values = values_of(&custom);
         assert_eq!(
             (values["kelvin"].as_f64(), values["tint"].as_f64()),
-            (Some(3500.0), Some(0.0))
+            (Some(3500.0), Some(tint)),
+            "a temperature changed from As shot keeps the as-shot tint"
         );
         // Back to As shot, the custom values the payload keeps are not what is shown.
         let back = planned(
@@ -869,12 +881,23 @@ mod tests {
         assert_eq!(values_of(&back)["kelvin"].as_f64(), Some(kelvin));
         assert_eq!(values_of(&back)["tint"].as_f64(), Some(tint));
 
+        // A neutral pick stores gains alone; they report the temperature and tint whose gains
+        // they are.
         let picked = planned(&layer, PICK_NEUTRAL, serde_json::json!({"x": 1, "y": 2})).unwrap();
         let values = values_of(&picked);
-        assert_eq!(
-            (values["kelvin"].as_f64(), values["tint"].as_f64()),
-            (Some(CUSTOM_START_KELVIN), Some(CUSTOM_START_TINT))
+        let (picked_kelvin, picked_tint) = (
+            values["kelvin"].as_f64().unwrap(),
+            values["tint"].as_f64().unwrap(),
         );
+        let back =
+            white_balance::gains_from_temperature_tint(picked_kelvin, picked_tint, Z6_CAM_XYZ)
+                .unwrap();
+        for (back, picked) in back.iter().zip(picked.gains) {
+            assert!(
+                (back - picked).abs() <= 1.0e-6 * picked,
+                "{back} vs {picked}"
+            );
+        }
         let exposed = planned(&layer, SET_EXPOSURE, serde_json::json!({"ev": 1.25})).unwrap();
         assert_eq!(values_of(&exposed)["ev"], Value::from(1.25));
 
@@ -891,6 +914,102 @@ mod tests {
         assert_eq!(
             (values["kelvin"].as_f64(), values["tint"].as_f64()),
             (Some(CUSTOM_START_KELVIN), Some(CUSTOM_START_TINT))
+        );
+        // And custom gains without an equivalent report the same declared values.
+        let unreachable = RawPayload {
+            wb_mode: WhiteBalanceMode::Custom,
+            gains: [2.0, 1.0, 0.2],
+            ..blue
+        };
+        let values = values_of(&unreachable);
+        assert_eq!(
+            (values["kelvin"].as_f64(), values["tint"].as_f64()),
+            (Some(CUSTOM_START_KELVIN), Some(CUSTOM_START_TINT))
+        );
+    }
+
+    /// A custom temperature or tint change keeps the white balance in force for the field it does
+    /// not name, as Lightroom does: from As shot the camera's own equivalent — also after a return
+    /// to As shot, whatever custom values the payload kept — from a neutral pick that pick's
+    /// equivalent, from a custom temperature and tint the stored one; and the declared 6504 K or 0
+    /// when the gains in force have no equivalent in range.
+    #[test]
+    fn a_custom_change_keeps_the_other_field_of_the_white_balance_in_force() {
+        let original = RawPayload::for_as_shot(Z6_AS_SHOT, Z6_CAM_XYZ).unwrap();
+        let [shot_kelvin, shot_tint] =
+            white_balance::temperature_tint_from_gains(Z6_AS_SHOT, Z6_CAM_XYZ).unwrap();
+        let layer = original.layer(LayerId::new());
+        let kelvin = |payload: &RawPayload| payload.temperature_kelvin.unwrap();
+        let tint = |payload: &RawPayload| payload.tint.unwrap();
+
+        let warmer = planned(&layer, SET_TEMPERATURE, json!({"kelvin": 3500.0})).unwrap();
+        assert_eq!((kelvin(&warmer), tint(&warmer)), (3500.0, shot_tint));
+        assert_eq!(
+            warmer.gains,
+            white_balance::gains_from_temperature_tint(3500.0, shot_tint, Z6_CAM_XYZ).unwrap()
+        );
+        let greener = planned(&layer, SET_TINT, json!({"tint": -60.0})).unwrap();
+        assert_eq!((kelvin(&greener), tint(&greener)), (shot_kelvin, -60.0));
+
+        // From a custom temperature and tint, the stored one is kept.
+        let custom = planned(
+            &warmer.layer(layer.id.clone()),
+            SET_TINT,
+            json!({"tint": 20.0}),
+        )
+        .unwrap();
+        assert_eq!((kelvin(&custom), tint(&custom)), (3500.0, 20.0));
+
+        // Back at As shot the kept 3500 K and 20 are not what is in force.
+        let back = planned(&custom.layer(layer.id.clone()), AS_SHOT, json!({})).unwrap();
+        assert_eq!(
+            (back.temperature_kelvin, back.tint),
+            (Some(3500.0), Some(20.0))
+        );
+        let again = planned(
+            &back.layer(layer.id.clone()),
+            SET_TINT,
+            json!({"tint": 5.0}),
+        )
+        .unwrap();
+        assert_eq!((kelvin(&again), tint(&again)), (shot_kelvin, 5.0));
+
+        // From a neutral pick, its own equivalent.
+        let picked = planned(&layer, PICK_NEUTRAL, json!({"x": 1, "y": 2})).unwrap();
+        let [picked_kelvin, picked_tint] = picked.white_balance_controls();
+        assert_eq!(
+            [picked_kelvin, picked_tint],
+            white_balance::temperature_tint_from_gains(picked.gains, Z6_CAM_XYZ).unwrap()
+        );
+        let after_pick = planned(
+            &picked.layer(layer.id.clone()),
+            SET_TEMPERATURE,
+            json!({"kelvin": 5000.0}),
+        )
+        .unwrap();
+        assert_eq!(
+            (kelvin(&after_pick), tint(&after_pick)),
+            (5000.0, picked_tint)
+        );
+
+        // Gains with no equivalent in range fall back to the declared 6504 K and 0.
+        let identity = [
+            [1.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [0.0, 0.0, 1.0],
+            [0.0, 0.0, 0.0],
+        ];
+        let unreachable = RawPayload::for_as_shot([2.0, 1.0, 0.2], identity).unwrap();
+        let layer = unreachable.layer(LayerId::new());
+        let warmer = planned(&layer, SET_TEMPERATURE, json!({"kelvin": 5000.0})).unwrap();
+        assert_eq!(
+            (kelvin(&warmer), tint(&warmer)),
+            (5000.0, CUSTOM_START_TINT)
+        );
+        let greener = planned(&layer, SET_TINT, json!({"tint": -10.0})).unwrap();
+        assert_eq!(
+            (kelvin(&greener), tint(&greener)),
+            (CUSTOM_START_KELVIN, -10.0)
         );
     }
 

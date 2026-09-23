@@ -3055,7 +3055,13 @@ mod tests {
             }
             SourceKind::Jpeg => panic!("a RAW asset"),
         };
-        let target = crate::gains_from_temperature_tint(3200.0, 0.0, metadata.cam_xyz).unwrap();
+        // A temperature drafted from As shot keeps the camera's as-shot tint.
+        let [_, as_shot_tint] =
+            crate::RawPayload::for_as_shot(metadata.as_shot_gains, metadata.cam_xyz)
+                .unwrap()
+                .white_balance_controls();
+        let target =
+            crate::gains_from_temperature_tint(3200.0, as_shot_tint, metadata.cam_xyz).unwrap();
         let camera = metadata
             .rgb_cam
             .map(|row| [row[0], row[1], row[2]].map(f64::from));
