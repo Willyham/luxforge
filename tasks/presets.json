@@ -105,7 +105,7 @@
     {
       "id": "TASK-003",
       "description": "Store the preset library in catalog format 5 and expose preset.list, read, create, capture, update, delete, export, inspect and import.",
-      "status": "in_progress",
+      "status": "completed",
       "dependencies": [
         "TASK-001",
         "TASK-002"
@@ -151,7 +151,7 @@
     {
       "id": "TASK-004",
       "description": "Render the Presets section in the desktop: grouped library, apply, create form, import, delete, palette entries and event refresh.",
-      "status": "pending",
+      "status": "in_progress",
       "dependencies": [
         "TASK-003"
       ],

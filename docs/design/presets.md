@@ -113,7 +113,7 @@ The imported file's text is kept in `source_text`, bounded by the request limit.
 
 ### Methods
 
-Every method is a host method listed by `schema.list`. Mutating methods take `actor` and emit an event named after the method. None takes a `mutation` envelope: the library has no revision, and uniqueness makes a retried create fail visibly rather than duplicate a preset.
+Every method is a host method listed by `schema.list`. Create, update and import take `actor`, which the record keeps as its last writer; the four mutating methods emit an event named after the method unless they are a no-op. None takes a `mutation` envelope: the library has no revision, and uniqueness makes a retried create fail visibly rather than duplicate a preset. Names are compared ignoring case across all of Unicode, not only ASCII.
 
 | Method | Mutates | Parameters | Returns |
 | --- | --- | --- | --- |
@@ -133,7 +133,7 @@ Every method is a host method listed by `schema.list`. Mutating methods take `ac
 
 ## Import
 
-`preset.inspect` and `preset.import` take the file's text, never a path, so the owner thread does no file I/O. The desktop reads the chosen file on a worker, refuses anything over 1 MiB and sends its text. Parsing a document within the request limit is text work, not frame work, and its measured worst case is recorded in [performance](../specs/performance.md).
+`preset.inspect` and `preset.import` take the file's text, never a path, so the owner thread does no file I/O. The desktop reads the chosen file on a worker, refuses anything over 1 MiB and sends its text in process. A JSON-lines client is bounded first by the transport's 1 MiB request line, which the escaped text must fit inside. `preset.inspect` parses and maps only: the library's name rules and duplicate check apply at import, after the request's overrides. Parsing a document within the request limit is text work, not frame work, and its measured worst case is recorded in [performance](../specs/performance.md).
 
 **Detection.** The content is read after an optional UTF-8 byte-order mark and leading whitespace:
 
