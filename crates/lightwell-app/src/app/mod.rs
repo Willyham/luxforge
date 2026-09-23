@@ -152,7 +152,8 @@ fn registry(disabled: &[String], developer: bool) -> Result<ModuleRegistry, Stri
     let mut registry = ModuleRegistry::new();
     let mut unknown: Vec<&str> = disabled.iter().map(String::as_str).collect();
     let mut modules = vec![
-        Arc::new(lightwell_core::PixelModule::new()) as Arc<dyn ToolModule>,
+        Arc::new(lightwell_core::PresetsModule::new()) as Arc<dyn ToolModule>,
+        Arc::new(lightwell_core::PixelModule::new()),
         Arc::new(lightwell_core::RawModule::new()),
         Arc::new(lightwell_core::BasicModule::new()),
         Arc::new(lightwell_core::PresenceModule::new()),
@@ -4053,9 +4054,17 @@ mod tests {
             .modules
             .iter()
             .flat_map(|module| module.actions.iter())
-            .find(|action| !action.patch && action.parameters.len() > 1)
+            .find(|action| {
+                !action.patch
+                    && action.parameters.len() > 1
+                    && matches!(
+                        action.parameters[0].kind,
+                        lightwell_core::ParameterKind::Integer { .. }
+                            | lightwell_core::ParameterKind::Number { .. }
+                    )
+            })
             .map(|action| (action.id.clone(), action.parameters[0].name.clone()))
-            .expect("a built-in declares a multi-parameter action");
+            .expect("a built-in declares a multi-parameter action led by a slider field");
 
         for value in [3.0, 7.0] {
             let _ = editor.update(Message::SliderMoved {

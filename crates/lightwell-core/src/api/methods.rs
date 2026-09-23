@@ -1316,6 +1316,7 @@ mod tests {
         assert_eq!(
             generated,
             [
+                "edit.apply-preset",
                 "edit.set-pixel",
                 "edit.set-raw-exposure",
                 "edit.set-raw-temperature",
@@ -1470,6 +1471,52 @@ mod tests {
         );
         assert_eq!(crop["canvas"]["title"], json!("Crop"));
         assert_eq!(crop["canvas"]["shortcut"], json!("R"));
+        // A preset is applied through one generated method, whose parameters carry their kinds.
+        let apply = &listed["edit.apply-preset"];
+        assert_eq!(apply["mutates"], json!(true));
+        assert_eq!(apply["patch"], json!(false));
+        assert_eq!(
+            apply["required"],
+            json!(["asset_id", "mutation", "settings", "name"])
+        );
+        assert_eq!(
+            apply["optional"]
+                .as_object()
+                .expect("the optional fields")
+                .keys()
+                .collect::<Vec<_>>(),
+            ["preset-id"]
+        );
+        assert_eq!(
+            apply["parameters"]
+                .as_array()
+                .expect("the declared parameters")
+                .iter()
+                .map(|parameter| json!([
+                    parameter["name"],
+                    parameter["kind"],
+                    parameter.get("max_length").cloned().unwrap_or(Value::Null),
+                    parameter["required"],
+                ]))
+                .collect::<Vec<_>>(),
+            [
+                json!(["settings", "settings", null, true]),
+                json!(["name", "string", 128, true]),
+                json!(["preset-id", "string", 96, false]),
+            ]
+        );
+        // The presets module leads module.list with its one presets control and no effect.
+        let presets = &modules["modules"][0];
+        assert_eq!(presets["id"], json!("lightwell.presets"));
+        assert_eq!(presets["title"], json!("Presets"));
+        assert_eq!(presets["hint"], json!("Saved and imported settings"));
+        assert_eq!(presets["collapsed"], json!(true));
+        assert_eq!(presets["effects"], json!([]));
+        assert_eq!(
+            presets["controls"],
+            json!([{"kind": "presets", "action": "apply-preset"}])
+        );
+        assert_eq!(presets, &module("lightwell.presets"));
         for name in names
             .iter()
             .copied()
@@ -2151,6 +2198,98 @@ mod tests {
             "recipe.describe",
             json!({"asset_id": asset}),
         )
+    }
+
+    /// `edit.apply-preset` takes its settings, name and library identity as top-level fields beside
+    /// the envelope, and any registered field patch is presettable: the test patch module's action
+    /// is applied in the same entry as Basic's. A second identical call is a no-op that emits no
+    /// event, and a refused step is the same structured error the action gives alone.
+    #[test]
+    fn a_preset_applies_through_its_generated_method_as_one_entry() {
+        let (mut service, catalog, asset) = patched("preset");
+        let mut session = ClientSession::default();
+        let spec = find(&service, "edit.apply-preset").expect("a generated method");
+        let settings = json!({"set-patch": {"red": 12.0}, "set-basic": {"exposure": 0.5}});
+        let applied = ok(
+            &mut service,
+            &mut session,
+            "edit.apply-preset",
+            json!({
+                "asset_id": asset,
+                "mutation": mutation(0, "preset"),
+                "settings": settings,
+                "name": "Warm",
+                "preset-id": "preset-7",
+            }),
+        );
+        assert_eq!(applied["outcome"], json!("applied"));
+        assert_eq!(applied["revision"], json!(1));
+        assert!(mutates(&spec, Some(&applied)));
+        let entry = entry_of(&mut service, &mut session, &asset, &applied);
+        assert_eq!(entry["action_id"], json!("apply-preset"));
+        assert_eq!(entry["label"], json!("Preset: Warm"));
+        assert_eq!(
+            entry["parameters"],
+            json!({"settings": settings, "name": "Warm", "preset-id": "preset-7"})
+        );
+        let rows = described(&mut service, &mut session, &asset);
+        assert_eq!(
+            rows["layers"]
+                .as_array()
+                .expect("the layer rows")
+                .iter()
+                .map(|row| (row["module"].clone(), row["values"]["red"].clone()))
+                .collect::<Vec<_>>(),
+            [
+                (json!("lightwell.basic"), Value::Null),
+                (json!(PATCH_MODULE), json!(12.0)),
+            ],
+            "steps run in key order, so the patch layer joins the content region after Basic's, \
+             exactly as sending the two actions in that order does"
+        );
+
+        let again = ok(
+            &mut service,
+            &mut session,
+            "edit.apply-preset",
+            json!({
+                "asset_id": asset,
+                "mutation": mutation(1, "again"),
+                "settings": settings,
+                "name": "Warm",
+            }),
+        );
+        assert_eq!(again["outcome"], json!("no-op"));
+        assert_eq!(again["created_entry_id"], json!(null));
+        assert!(!mutates(&spec, Some(&again)));
+
+        let refused = call(
+            &mut service,
+            &mut session,
+            "edit.apply-preset",
+            json!({
+                "asset_id": asset,
+                "mutation": mutation(1, "refused"),
+                "settings": {"set-patch": {"red": 300}},
+                "name": "Too red",
+            }),
+        );
+        let error = refused.error.expect("a refused step");
+        assert_eq!(error.code, "validation");
+        assert_eq!(
+            error.message,
+            "parameter red must be a number within 0..=255"
+        );
+        assert_eq!(
+            service
+                .state(&serde_json::from_value(asset.clone()).unwrap())
+                .unwrap()
+                .revision,
+            1,
+            "nothing was written"
+        );
+        drop(service);
+        std::fs::remove_file(catalog).unwrap();
     }
 
     #[test]

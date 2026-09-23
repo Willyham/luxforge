@@ -1,6 +1,6 @@
 # UI components for modules
 
-Status: first slice implemented and verified on the M4 Mac. The five accepted decisions remain as recorded in [product decisions](../decisions.md#ui-components). The delivered widgets are listed in the [Develop workspace](develop-workspace.md#architecture); `text`, `pad` and `string` remain the second slice. This is the contract for the closed set of controls a tool module may declare and the widgets the desktop renders them with. It exists so that Tone Curve, Detail, the colour mixer and every later module can be generated from a descriptor without a desktop change, and so that the widget crate stays pure. The task plan is [UI components](../../tasks/implementation-ui-components.json).
+Status: first slice implemented and verified on the M4 Mac. The five accepted decisions remain as recorded in [product decisions](../decisions.md#ui-components). The delivered widgets are listed in the [Develop workspace](develop-workspace.md#architecture); `text` and `pad` remain the second slice. The `string` parameter kind exists for the [presets module](presets.md#the-presets-module), whose strings no text field edits. This is the contract for the closed set of controls a tool module may declare and the widgets the desktop renders them with. It exists so that Tone Curve, Detail, the colour mixer and every later module can be generated from a descriptor without a desktop change, and so that the widget crate stays pure. The task plan is [UI components](../../tasks/implementation-ui-components.json).
 
 ## The three vocabularies
 
@@ -50,7 +50,7 @@ The closed set a module may declare. Names are the JSON `kind` in `controls[]`. 
 
 A module declares at most one `picker`, a `picker` needs a pick canvas (a `crop-frame` takes the whole photograph over and has its own controls, so it is not a pick), and a module that declares a pick canvas declares exactly one `picker`, so no pick mode is reachable only by its letter. Registration refuses each of the three.
 
-`text` and `pad` are specified here so the vocabulary is closed, but they are the second slice: no built-in module needs them before the colour mixer's grading wheels, and the core has no `string` parameter yet. They are not built before then ([decision 2](#decisions)).
+`text` and `pad` are specified here so the vocabulary is closed, but they are the second slice: no built-in module needs them before the colour mixer's grading wheels. The core's `string` kind carries the presets module's name and library identity, which a client sends from the library rather than a text field. They are not built before then ([decision 2](#decisions)).
 
 Kinds deliberately left out, with the reason:
 
@@ -63,7 +63,7 @@ Kinds deliberately left out, with the reason:
 
 ### Parameter kinds and hints
 
-The implemented additions are boolean and curve, plus numeric hints. String remains deferred. The host validates and stores exactly what it is sent, as today; hints change what a client draws and never what the host accepts.
+The implemented additions are boolean, curve and string, plus numeric hints. No widget edits a string yet: that is the `text` control of the second slice. The host validates and stores exactly what it is sent, as today; hints change what a client draws and never what the host accepts.
 
 | Kind | Shape | Validation at registration and on every request |
 | --- | --- | --- |

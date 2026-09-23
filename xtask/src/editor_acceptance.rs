@@ -48,6 +48,7 @@ pub fn run(root: &Path, out: &Path) -> Result {
         ensure(
             modules
                 == [
+                    "lightwell.presets",
                     "lightwell.pixel",
                     "lightwell.raw",
                     "lightwell.basic",
@@ -59,6 +60,7 @@ pub fn run(root: &Path, out: &Path) -> Result {
                 ]
                 && actions
                     == [
+                        "apply-preset",
                         "set-pixel",
                         "set-raw-exposure",
                         "set-raw-temperature",
