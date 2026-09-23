@@ -48,14 +48,6 @@ Outstanding work by area. What is delivered is in [feature status](features.md);
 
 **Tuning delivered tools.** Refine the recorded defaults of Presence, the colour mixer and the vignette (decision pending).
 
-## Workspace
-
-**Module panel redesign** (proposal, [design](design/develop-workspace.md#module-panels)). A denser, clearer tools panel.
-- Tighter density and a three-level hierarchy
-- `layout: tabs` descriptor hint, used by the colour mixer
-- Temperature and tint rails on the white-balance sliders
-- Icon-button row for the transforms
-
 ## Programmability
 
 **MCP adapter.** Expose the whole operation registry to agents through a standards-compliant MCP server over the existing command service.

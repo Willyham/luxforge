@@ -1,7 +1,8 @@
 use crate::{
     basic_smoke as basic, controls_smoke as controls, crop_smoke as crop, gallery_smoke as gallery,
     histogram_smoke as histogram, mixer_smoke as mixer, presence_smoke as presence,
-    presets_smoke as presets, vignette_smoke as vignette, workspace_smoke as workspace, *,
+    presets_smoke as presets, raw_panel_smoke as raw_panel, vignette_smoke as vignette,
+    workspace_smoke as workspace, *,
 };
 use std::{
     process::{Child, Stdio},
@@ -379,6 +380,11 @@ pub fn verify(evidence: &Path, scenario: &str, count: usize) -> Result<Value> {
         presets::verify(evidence, &app, &events)?;
         return Ok(app);
     }
+    if let Some(frames) = raw_panel::frames(scenario) {
+        let (app, _) = preamble(evidence, frames)?;
+        raw_panel::verify(evidence, &app)?;
+        return Ok(app);
+    }
     let (app, events) = preamble(evidence, count.max(1))?;
     let frames = app["frames"].as_array().ok_or("Missing frames")?;
     for (index, frame) in frames.iter().enumerate() {
@@ -473,7 +479,6 @@ pub fn verify(evidence: &Path, scenario: &str, count: usize) -> Result<Value> {
     Ok(app)
 }
 pub fn run(root: &Path, out: &Path, scenario: &str, bin: &Path, timeout: Duration) -> Result {
-    ensure(!out.exists(), "Smoke output must be new")?;
     let fixture = root.join("fixtures/s0/orientation-6.jpg");
     let sources = match scenario {
         "empty" => vec![],
@@ -527,8 +532,25 @@ pub fn run(root: &Path, out: &Path, scenario: &str, bin: &Path, timeout: Duratio
         scenario if presets::source(scenario).is_some() => {
             vec![root.join(presets::source(scenario).expect("the presets fixture"))]
         }
+        raw_panel::SCENARIO => {
+            return Err("The raw-panel scenario needs --source RAW_FILE".into());
+        }
         _ => return Err("Unknown smoke scenario".into()),
     };
+    run_sources(root, out, scenario, bin, timeout, sources)
+}
+
+/// Run one scenario over the given sources: [`run`] names each scenario's own fixtures, and a
+/// scenario whose photograph cannot be checked in (`raw-panel`) is handed its source instead.
+pub fn run_sources(
+    root: &Path,
+    out: &Path,
+    scenario: &str,
+    bin: &Path,
+    timeout: Duration,
+    sources: Vec<PathBuf>,
+) -> Result {
+    ensure(!out.exists(), "Smoke output must be new")?;
     fs::create_dir_all(out)?;
     let evidence = out.join("app");
     let mut args = vec!["--evidence-dir".into(), evidence.clone().into_os_string()];
@@ -567,6 +589,7 @@ pub fn run(root: &Path, out: &Path, scenario: &str, bin: &Path, timeout: Duratio
     } else if let Some(script) = workspace::script(scenario)
         .or_else(|| basic::script(scenario))
         .or_else(|| basic::panel_script(scenario))
+        .or_else(|| raw_panel::script(scenario))
     {
         let file = out.join("script.json");
         write_json(&file, &script)?;

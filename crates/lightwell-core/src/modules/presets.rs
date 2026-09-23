@@ -11,7 +11,7 @@
 //! no access to the catalog.
 use super::{
     ActionDescriptor, ActionInput, ActionPlan, Availability, Control, ModuleDescriptor,
-    ParameterDescriptor, ParameterKind, Processing, Stage, StageContext, ToolModule,
+    ModuleLayout, ParameterDescriptor, ParameterKind, Processing, Stage, StageContext, ToolModule,
     descriptor::{PRESET_ID, PRESET_NAME, PRESET_SETTINGS},
 };
 use crate::{Error, ErrorKind};
@@ -124,6 +124,7 @@ impl PresetsModule {
                 developer: false,
                 // Collapsed, so Basic still leads the tools panel.
                 collapsed: true,
+                layout: ModuleLayout::Stacked,
                 availability: Availability::Available,
             },
         }

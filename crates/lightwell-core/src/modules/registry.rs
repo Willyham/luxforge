@@ -569,6 +569,7 @@ pub(crate) mod tests {
                 canvas: None,
                 developer: false,
                 collapsed: false,
+                layout: crate::ModuleLayout::Stacked,
                 availability,
             })
         }
@@ -663,6 +664,7 @@ pub(crate) mod tests {
                 canvas: None,
                 developer: false,
                 collapsed: false,
+                layout: crate::ModuleLayout::Stacked,
                 availability: Availability::Available,
             }))
         }
@@ -819,6 +821,7 @@ pub(crate) mod tests {
                 canvas: None,
                 developer: false,
                 collapsed: false,
+                layout: crate::ModuleLayout::Stacked,
                 availability: Availability::Available,
             }))
         }

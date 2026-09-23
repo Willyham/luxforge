@@ -28,9 +28,9 @@ pub use crop::geometry::{
 pub use descriptor::{
     ActionDescriptor, ActionStyle, Availability, CanvasInteraction, ChoiceStyle, ColorStyle,
     Control, CurveBackground, CurveChannel, EffectDescriptor, EffectStage, MAX_SETTINGS_ACTIONS,
-    MAX_SETTINGS_FIELDS, ModuleDescriptor, NumberStyle, ParameterDescriptor, ParameterKind,
-    RailDecoration, ResetAction, action_label, check_parameters, check_value, render_summary,
-    valid_identity, valid_name,
+    MAX_SETTINGS_FIELDS, ModuleDescriptor, ModuleLayout, NumberStyle, ParameterDescriptor,
+    ParameterKind, RailDecoration, ResetAction, action_label, check_parameters, check_value,
+    render_summary, valid_identity, valid_name,
 };
 pub use mixer::MixerModule;
 pub use pixel::PixelModule;

@@ -1824,6 +1824,10 @@ mod tests {
             json!([{"kind": "presets", "action": "apply-preset"}])
         );
         assert_eq!(presets, &module("lightwell.presets"));
+        // Every module lists its layout hint, stacked by default; the mixer declares tabs because
+        // its three groups are parallel views of the same eight ranges.
+        assert_eq!(module("lightwell.mixer")["layout"], json!("tabs"));
+        assert_eq!(module("lightwell.basic")["layout"], json!("stacked"));
         for name in names
             .iter()
             .copied()
@@ -2039,6 +2043,7 @@ mod tests {
                 canvas: None,
                 developer: false,
                 collapsed: false,
+                layout: crate::ModuleLayout::Stacked,
                 availability: Availability::Available,
             },
             seen: seen.clone(),
@@ -2125,6 +2130,7 @@ mod tests {
                 canvas: None,
                 developer: false,
                 collapsed: false,
+                layout: crate::ModuleLayout::Stacked,
                 availability,
             }))
         }

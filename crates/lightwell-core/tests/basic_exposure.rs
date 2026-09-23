@@ -1221,8 +1221,8 @@ fn an_independent_client_discovers_basic_and_drives_one_gesture_as_a_draft() {
                 "label": "White balance",
                 "reset": {"action": "set-basic", "preset": {"temperature": 0.0, "tint": 0.0}},
                 "controls": [
-                    {"kind": "number", "action": "set-basic", "parameter": "temperature", "label": "Temperature"},
-                    {"kind": "number", "action": "set-basic", "parameter": "tint", "label": "Tint"},
+                    {"kind": "number", "action": "set-basic", "parameter": "temperature", "label": "Temperature", "rail": "temperature"},
+                    {"kind": "number", "action": "set-basic", "parameter": "tint", "label": "Tint", "rail": "tint"},
                     {"kind": "picker", "label": "Neutral picker"},
                 ],
             },

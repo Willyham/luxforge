@@ -1147,6 +1147,7 @@ fn capture_refuses_a_field_with_no_value_and_no_default() {
         canvas: None,
         developer: false,
         collapsed: false,
+        layout: crate::ModuleLayout::Stacked,
         availability: Availability::Available,
     });
     let mut registry = ModuleRegistry::builtin();

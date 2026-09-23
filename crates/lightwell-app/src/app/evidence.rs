@@ -90,6 +90,8 @@ pub(crate) enum Step {
     Picker(PickerStep),
     Curve(CurveStep),
     Group(GroupStep),
+    /// The tab a tabbed section shows, as its tab row selects it.
+    Tab(TabStep),
     Section(SectionStep),
     Gallery(Option<usize>),
     ToolsScroll(f64),
@@ -233,6 +235,12 @@ pub(crate) struct GroupStep {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct TabStep {
+    pub(crate) module: String,
+    pub(crate) index: usize,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct SectionStep {
     pub(crate) module: String,
     pub(crate) expanded: bool,
@@ -302,6 +310,9 @@ pub(crate) enum DraftStep {
     Reapply,
     Angle(f64),
     Nudge(f64),
+    /// A drag on the angle's rail through these fractions of its range, then its release, exactly
+    /// as the rail publishes them.
+    AngleRail(Vec<f64>),
     /// A declared `aspect` option, by name; an undeclared one fails the step.
     Preset(String),
     /// A rectangle in box pixels, applied as two corner gestures.
@@ -395,6 +406,7 @@ impl Step {
             }
             Self::Group(step) => json!({"group":{"module":step.module,"path":step.path,
                 "expanded":step.expanded}}),
+            Self::Tab(step) => json!({"tab":{"module":step.module,"index":step.index}}),
             Self::Section(step) => json!({"section":{"module":step.module,
                 "expanded":step.expanded}}),
             Self::Gallery(page) => json!({"gallery":{"page":page}}),
@@ -481,6 +493,7 @@ impl DraftStep {
             Self::Reapply => json!({"reapply":true}),
             Self::Angle(value) => json!({"angle":value}),
             Self::Nudge(value) => json!({"nudge":value}),
+            Self::AngleRail(fractions) => json!({"angle_rail":fractions}),
             Self::Preset(option) => json!({"preset":option}),
             Self::Rect(rect) => json!({"rect":rect}),
             Self::Swap => json!({"swap":true}),
@@ -550,6 +563,7 @@ impl Editor {
             Step::Picker(picker) => self.picker_step(picker),
             Step::Curve(curve) => self.curve_step(curve),
             Step::Group(group) => self.group_step(group),
+            Step::Tab(tab) => self.tab_step(tab),
             Step::Section(section) => self.section_step(section),
             Step::Gallery(page) => self.gallery_step(page),
             Step::ToolsScroll(fraction) => self.tools_scroll_step(fraction),
@@ -647,6 +661,18 @@ impl Editor {
                 };
             }
             DraftStep::Rect(rect) => return self.rect_step(*rect),
+            DraftStep::AngleRail(fractions) => {
+                if !drafting {
+                    return self.fail_step("no crop draft is open");
+                }
+                let mut tasks: Vec<Task<Message>> = fractions
+                    .iter()
+                    .map(|fraction| self.crop_update(CropMessage::AngleRail(*fraction)))
+                    .collect();
+                tasks.push(self.crop_update(CropMessage::AngleRailReleased));
+                self.capture_next_frame();
+                return Task::batch(tasks);
+            }
             DraftStep::Option(on) => CropMessage::Option(*on),
             DraftStep::Guide(on) => CropMessage::Guide(*on),
             DraftStep::Angle(value) => CropMessage::AngleText(number_text(*value)),
@@ -1069,6 +1095,21 @@ impl Editor {
                 path: step.path,
             })
         };
+        self.capture_next_frame();
+        task
+    }
+
+    fn tab_step(&mut self, step: TabStep) -> Task<Message> {
+        let tabbed = self.modules.iter().any(|module| {
+            module.id == step.module && module.layout == lightwell_core::ModuleLayout::Tabs
+        });
+        if !tabbed {
+            return self.fail_step("the module declares no tabbed layout");
+        }
+        let task = self.update(Message::SelectTab {
+            module_id: step.module,
+            index: step.index,
+        });
         self.capture_next_frame();
         task
     }
@@ -1702,6 +1743,7 @@ fn parse_step(step: &Value) -> Result<Step, String> {
         "picker" => Ok(Step::Picker(parse_picker(value)?)),
         "curve" => Ok(Step::Curve(parse_curve(value)?)),
         "group" => Ok(Step::Group(parse_group(value)?)),
+        "tab" => Ok(Step::Tab(parse_tab(value)?)),
         "section" => Ok(Step::Section(parse_section(value)?)),
         "gallery" => Ok(Step::Gallery(parse_gallery(value)?)),
         "tools_scroll" => Ok(Step::ToolsScroll(unit_number(value, "tools_scroll")?)),
@@ -1722,7 +1764,7 @@ fn parse_step(step: &Value) -> Result<Step, String> {
         )?)),
         "preset_import" => parse_preset_import(value),
         other => Err(format!(
-            "unknown step kind {other}; expected api, draft, slider, controls, picker, curve, group, section, gallery, tools_scroll, slider_draft, field, reset, pick, view, workspace, preview, palette, hover, preset, preset_create, preset_delete or preset_import"
+            "unknown step kind {other}; expected api, draft, slider, controls, picker, curve, group, tab, section, gallery, tools_scroll, slider_draft, field, reset, pick, view, workspace, preview, palette, hover, preset, preset_create, preset_delete or preset_import"
         )),
     }
 }
@@ -1959,6 +2001,20 @@ fn parse_group(value: &Value) -> Result<GroupStep, String> {
         module: required_text(object, "module", "group")?,
         path,
         expanded,
+    })
+}
+
+fn parse_tab(value: &Value) -> Result<TabStep, String> {
+    let object = value.as_object().ok_or("tab takes an object")?;
+    known_fields(object, &["module", "index"], "tab")?;
+    let index = object
+        .get("index")
+        .and_then(Value::as_u64)
+        .and_then(|index| usize::try_from(index).ok())
+        .ok_or("tab index takes a non-negative whole number")?;
+    Ok(TabStep {
+        module: required_text(object, "module", "tab")?,
+        index,
     })
 }
 
@@ -2388,6 +2444,24 @@ fn parse_draft(value: &Value) -> Result<DraftStep, String> {
         "lock" => requested().map(|()| DraftStep::Lock),
         "angle" => number().map(DraftStep::Angle),
         "nudge" => number().map(DraftStep::Nudge),
+        "angle_rail" => {
+            let fractions: Vec<f64> = value
+                .as_array()
+                .ok_or("draft angle_rail takes rail fractions from 0 to 1")?
+                .iter()
+                .filter_map(|number| {
+                    number
+                        .as_f64()
+                        .filter(|number| (0.0..=1.0).contains(number))
+                })
+                .collect();
+            match value.as_array() {
+                Some(values) if !values.is_empty() && fractions.len() == values.len() => {
+                    Ok(DraftStep::AngleRail(fractions))
+                }
+                _ => Err("draft angle_rail takes one or more rail fractions from 0 to 1".into()),
+            }
+        }
         "option" => flag().map(DraftStep::Option),
         "guide" => flag().map(DraftStep::Guide),
         "preset" => value

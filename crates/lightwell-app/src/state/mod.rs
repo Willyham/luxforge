@@ -169,6 +169,7 @@ mod tests {
     };
     use crate::app::testing::{
         controls_descriptor, crop_descriptor, crop_layer, descriptors, entry, listed,
+        tabs_descriptor,
     };
     use lightwell_core::{
         AssetId, AssetRecord, Availability, CropPayload, LayerDescription, Orientation,
@@ -1370,6 +1371,62 @@ mod tests {
             "old sampled geometry is hidden until the query matches the current points"
         );
         assert_eq!(section(&workspace, "lightwell.crop").version, crop_version);
+    }
+
+    /// Selecting a tab in a `layout: tabs` module is per-client view state exactly like a group's
+    /// expansion: it re-derives only that section, changes no recipe and issues no command (the
+    /// message handler that would send one lives outside this crate's UI-independent state).
+    #[test]
+    fn selecting_a_tab_rederives_only_its_own_section_and_changes_no_recipe() {
+        let tabs = tabs_descriptor();
+        let mut scene = Scene::new(vec![tabs.clone(), crop_descriptor()]).opened(Vec::new());
+        let mut workspace = Workspace::default();
+        workspace.derive(&scene.inputs());
+        let tabs_section = section(&workspace, &tabs.id);
+        assert_eq!(
+            tabs_section.layout,
+            tools::SectionLayout::Tabs { selected: 0 },
+            "the default tab is the first group"
+        );
+        let recipe_before = scene
+            .state
+            .as_ref()
+            .map(|state| state.current_entry.snapshot.recipe.layers.clone());
+        let tabs_version = tabs_section.version;
+        let crop_version = section(&workspace, "lightwell.crop").version;
+
+        scene.control_ui.selected_tab.insert(tabs.id.clone(), 1);
+        workspace.derive(&scene.inputs());
+        let selected = section(&workspace, &tabs.id);
+        assert_eq!(selected.layout, tools::SectionLayout::Tabs { selected: 1 });
+        assert_eq!(
+            selected.version,
+            tabs_version + 1,
+            "the tabbed section is re-derived"
+        );
+        assert_eq!(
+            section(&workspace, "lightwell.crop").version,
+            crop_version,
+            "an unrelated section keeps its version"
+        );
+        assert_eq!(
+            scene
+                .state
+                .as_ref()
+                .map(|state| state.current_entry.snapshot.recipe.layers.clone()),
+            recipe_before,
+            "selecting a tab changes no recipe"
+        );
+
+        // An out-of-range selection, from a descriptor that shrank since it was stored, clamps to
+        // the last group rather than panicking or pointing past the end.
+        scene.control_ui.selected_tab.insert(tabs.id.clone(), 9);
+        workspace.derive(&scene.inputs());
+        assert_eq!(
+            section(&workspace, &tabs.id).layout,
+            tools::SectionLayout::Tabs { selected: 1 },
+            "clamped to the last of the two declared groups"
+        );
     }
 
     #[test]

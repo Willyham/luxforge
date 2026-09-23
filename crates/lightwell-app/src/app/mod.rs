@@ -220,7 +220,7 @@ pub(crate) fn run(config: Config, size: (f32, f32)) -> Result<(), String> {
         config,
         window: size,
     }));
-    iced::application(
+    let application = iced::application(
         move || {
             Editor::new(
                 boot.lock()
@@ -242,9 +242,15 @@ pub(crate) fn run(config: Config, size: (f32, f32)) -> Result<(), String> {
         ..iced::window::Settings::default()
     })
     .theme(lightwell_ui::theme::theme())
-    .subscription(Editor::subscription)
-    .run()
-    .map_err(|error| error.to_string())
+    .subscription(Editor::subscription);
+    // The bundled typeface is registered once, before the first frame, from bytes compiled into
+    // the binary; every text run after that resolves it from the renderer's font database.
+    lightwell_ui::theme::FONT_FILES
+        .into_iter()
+        .fold(application, |application, file| application.font(file))
+        .default_font(lightwell_ui::theme::FONT)
+        .run()
+        .map_err(|error| error.to_string())
 }
 
 /// The display-proxy frame of one generation, retained beside the exact raster.
@@ -759,7 +765,7 @@ impl Editor {
                 entry.as_ref(),
             );
         }
-        json!({"run_id":self.run_id,"mode":if self.evidence.is_some() {"evidence"} else {"editor"},"selection":self.session.preview.selection,"orientation":self.activity.orientation,"phase":self.activity.phase,"requested_generation":self.activity.requested,"displayed_generation":self.activity.displayed,"displayed_draft_revision":self.displayed_draft_revision,"source_dimensions":self.activity.source_dimensions,"preview_dimensions":self.activity.preview_dimensions,"backend":self.activity.backend,"status":self.status,"error_code":self.activity.error_code,"modules":module_summary(&self.modules),"controls":self.fields.summary(),"control_ui":{"group_expanded":self.controls_ui.group_expanded,"curve_channels":curve_channels,"curve_points":curve_points,"picker_open":picker_open,"curves":curves,"pickers":pickers},"gallery":gallery,"tools_scroll":tools_scroll,"crop":self.crop_summary(),"draft":self.draft_summary(),"stack":self.stack_summary(),"workspace":serde_json::to_value(&self.session.workspace).unwrap_or(Value::Null),"developer":self.developer,"expanded":self.workspace.expanded(),"pickers":self.workspace.pickers(),"notices":self.notice_titles(),"compare":self.compare_return.is_some(),"render_error":self.render_error_summary(),"palette":{"open":self.palette_open,"query":self.palette_query},"presets":self.presets_summary(),"histogram":self.histogram_summary(),"readout":self.readout_summary(),"proxy":self.proxy_summary(),"scratch":Self::scratch_summary()})
+        json!({"run_id":self.run_id,"mode":if self.evidence.is_some() {"evidence"} else {"editor"},"selection":self.session.preview.selection,"orientation":self.activity.orientation,"phase":self.activity.phase,"requested_generation":self.activity.requested,"displayed_generation":self.activity.displayed,"displayed_draft_revision":self.displayed_draft_revision,"source_dimensions":self.activity.source_dimensions,"preview_dimensions":self.activity.preview_dimensions,"backend":self.activity.backend,"status":self.status,"error_code":self.activity.error_code,"modules":module_summary(&self.modules),"controls":self.fields.summary(),"control_ui":{"group_expanded":self.controls_ui.group_expanded,"selected_tab":self.controls_ui.selected_tab,"curve_channels":curve_channels,"curve_points":curve_points,"picker_open":picker_open,"curves":curves,"pickers":pickers},"gallery":gallery,"tools_scroll":tools_scroll,"crop":self.crop_summary(),"draft":self.draft_summary(),"stack":self.stack_summary(),"workspace":serde_json::to_value(&self.session.workspace).unwrap_or(Value::Null),"developer":self.developer,"expanded":self.workspace.expanded(),"pickers":self.workspace.pickers(),"notices":self.notice_titles(),"compare":self.compare_return.is_some(),"render_error":self.render_error_summary(),"palette":{"open":self.palette_open,"query":self.palette_query},"presets":self.presets_summary(),"histogram":self.histogram_summary(),"readout":self.readout_summary(),"proxy":self.proxy_summary(),"scratch":Self::scratch_summary()})
     }
 
     /// The Presets section as the frame drew it: its rows, the create form and whether the section
@@ -2517,6 +2523,9 @@ impl Editor {
                     .entry(key)
                     .or_insert(initial);
                 *entry = !*entry;
+            }
+            Message::SelectTab { module_id, index } => {
+                self.controls_ui.selected_tab.insert(module_id, index);
             }
             Message::ControlPicker {
                 action,

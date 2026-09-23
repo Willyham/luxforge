@@ -603,6 +603,7 @@ impl Composer {
             canvas: None,
             developer: false,
             collapsed: false,
+            layout: lightwell_core::ModuleLayout::Stacked,
             availability: Availability::Available,
         }))
     }

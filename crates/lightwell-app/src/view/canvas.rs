@@ -20,13 +20,12 @@ use iced::{
     Alignment, ContentFit, Element, Length, Point, Rectangle, Renderer, Size, Theme,
     alignment::{Horizontal, Vertical},
     mouse::Cursor,
-    widget::{
-        Column, button, canvas, container, image, mouse_area, responsive, scrollable, stack, text,
-    },
+    widget::{Column, canvas, container, image, mouse_area, responsive, scrollable, stack, text},
 };
 use iced_runtime::image as image_memory;
 use lightwell_ui::{
-    ModeEntry, NoticeCardModel, ToggleEntry, Tone, floating_bar, mode_strip, notice_card, theme,
+    ButtonSize, ButtonTone, ModeEntry, NoticeCardModel, ToggleEntry, Tone, floating_bar,
+    mode_strip, notice_card, text_button, theme,
 };
 
 /// The surface the photograph is given around it at Fit, from the design's canvas rule.
@@ -139,28 +138,29 @@ fn draft_bar(model: &DraftBar) -> Element<'_, Message> {
         lightwell_ui::title(model.title.clone()),
         lightwell_ui::caption(model.readout.clone()),
     ];
-    children.push(
-        button(lightwell_ui::label("Cancel"))
-            .padding([4.0, 10.0])
-            .style(theme::button_plain)
-            .on_press(Message::Crop(CropMessage::Cancel))
-            .into(),
+    children.push(text_button(
+        "Cancel",
+        ButtonTone::Quiet,
+        ButtonSize::Compact,
+        Some(Message::Crop(CropMessage::Cancel)),
+    ));
+    let apply = text_button(
+        "Apply",
+        ButtonTone::Primary,
+        ButtonSize::Compact,
+        model.can_apply.then_some(Message::Crop(CropMessage::Apply)),
     );
-    let apply = button(lightwell_ui::label("Apply"))
-        .padding([4.0, 10.0])
-        .style(theme::button_accent)
-        .on_press_maybe(model.can_apply.then_some(Message::Crop(CropMessage::Apply)));
     children.push(match &model.apply_reason {
         // A refused Apply says why on hover instead of going quiet.
         Some(reason) => iced::widget::tooltip(
             apply,
             container(lightwell_ui::caption(reason.clone()))
-                .padding(6.0)
+                .padding(theme::TOOLTIP_PADDING)
                 .style(theme::bar_surface),
             iced::widget::tooltip::Position::Bottom,
         )
         .into(),
-        None => apply.into(),
+        None => apply,
     });
     floating_bar(children)
 }

@@ -34,16 +34,17 @@ Doctor reports missing tools and the graphics environment without installing any
 | Authentic RAW editor journey, reopen and resource sampling; `--samples` defaults to 3 trials per source | `cargo run --release --locked --package xtask -- raw-editor --manifest FILE --output NEW_DIR [--samples N] [--binary PATH]` |
 | Rendered smoke scenario, needs a native graphical session | `cargo xtask smoke --scenario NAME --output NEW_DIR [--binary PATH]` |
 | Rendered crop workflow and overlay | `cargo xtask smoke --scenario crop --output NEW_DIR`, `--scenario crop-draft` |
-| Rendered workspace panels, mode, preview, conflict and palette; unavailable-provider notice | `cargo xtask smoke --scenario workspace --output NEW_DIR`, `--scenario unavailable` |
+| Rendered workspace panels, mode, preview, the Transforms icon row, conflict and palette; unavailable-provider notice | `cargo xtask smoke --scenario workspace --output NEW_DIR`, `--scenario unavailable` |
 | Rendered Basic slider gesture: draft, commit, typed value, undo, reset and conflict | `cargo xtask smoke --scenario basic --output NEW_DIR` |
-| Rendered Basic panel: all three groups, historical values, a group reset and the neutral picker | `cargo xtask smoke --scenario basic-panel --output NEW_DIR` |
+| Rendered Basic panel: all three groups, historical values, a group reset, the neutral picker, and the default screen with Basic expanded and every other section collapsed | `cargo xtask smoke --scenario basic-panel --output NEW_DIR` |
 | Rendered histogram, clipping overlays, pointer readout and a drafted frame | `cargo xtask smoke --scenario histogram --output NEW_DIR` |
 | Rendered Basic composed with crop and straighten | `cargo xtask smoke --scenario basic-crop --output NEW_DIR` |
 | Rendered restart: a Basic edit committed in one launch and reopened in the next | `cargo xtask smoke --scenario basic-restart --output NEW_DIR` |
 | Rendered Presence: section expand, a Clarity drag and cancel, Texture and Clarity each committed at Fit and 100%, Dehaze at both signs, all three fields at once through the raw API and the module reset, over a generated gradient/edge/texture/flat fixture | `cargo xtask smoke --scenario presence --output NEW_DIR` |
-| Rendered Colour mixer: section expand, a Red hue drag and commit at Fit and 100%, a Saturation group reset and a stronger hue shift, over a generated hue wheel | `cargo xtask smoke --scenario mixer --output NEW_DIR` |
+| Rendered Colour mixer: section expand, a Red hue drag and commit at Fit and 100%, a Saturation group reset, a stronger hue shift and the Saturation and Luminance tabs, over a generated hue wheel | `cargo xtask smoke --scenario mixer --output NEW_DIR` |
 | Rendered Vignette: section expand, an Amount drag and commit at Fit and 100%, roundness and feather extremes, a post-crop recentre and the module reset | `cargo xtask smoke --scenario vignette --output NEW_DIR` |
 | Rendered Presets: section expand, an XMP and a Lightwell preset imported, each applied from its row, undo, the create form filled and submitted, a native preset applied to the Original, `preset.list` through the `api` step and a delete through the row menu | `cargo xtask smoke --scenario presets --output NEW_DIR` |
+| Rendered RAW section over a supplied RAW file, with Basic collapsed; not in `rendered`, because no RAW photograph is checked in | `cargo xtask smoke --scenario raw-panel --source RAW --output NEW_DIR` |
 | Inspect a capture | `cargo xtask check-capture --image PNG [--orientation N]` |
 | Process failure checks; macOS measurement, `--samples` defaults to 5 launches per workload | `cargo xtask hardening --binary PATH --output NEW_DIR`, `cargo xtask measure --binary PATH --output NEW_DIR [--samples N]` |
 | Package; dependency inventory | `cargo xtask package --output NEW_DIR`, `cargo xtask inventory --output NEW_DIR` |
@@ -178,7 +179,7 @@ On macOS, `develop --background` builds the selected profile and runs a temporar
 Debug builds expose the title-bar **Developer** button automatically. To inspect the gallery in
 an optimized build, run `cargo xtask develop --developer` (automated launches add `--background`).
 Its page chooser and Previous/Next controls browse ten pages; Back to editor or Escape returns.
-The `gallery` smoke covers all 63 reference states and the return to the unchanged editor via
+The `gallery` smoke covers all 74 reference states and the return to the unchanged editor via
 the same `workspace.set` path as the button.
 
 ## Rendered evidence
@@ -344,7 +345,8 @@ frame, so a refused step is visible in the evidence instead of missing from it.
 The `crop` and `crop-draft` scenarios use this. `crop` commits a 16:9 `edit.crop-fit` and an
 off-centre 7° `edit.crop`, then drafts on that layer, straightens to 12°, cancels, drafts again,
 nudges and applies. `crop-draft` opens a neutral draft and exercises corner gestures, a declared ratio
-preset, 100% and Fit, then applies. The runner checks the committed stack in each frame's state (one
+preset, a drag on the angle's rail to 2.4° (checked in state: the angle, the ratio kept, the
+release's one logged change and no commit), 100% and Fit, then applies the straightened square. The runner checks the committed stack in each frame's state (one
 crop layer keeping its identity, the payload that was sent, the revision each commit produced), that
 the displayed image has the ratio the committed payload declares, and, on draft frames, that the
 rectangle drawn at full opacity matches the captured draft rectangle, that all eight handles are
@@ -353,7 +355,9 @@ also writes `app/crop-checks.json` with the measured values and their tolerances
 
 `basic-panel` opens `fixtures/s0/greyscale.jpg` at 1440 × 900 and drives a Temperature drag, a typed
 Vibrance, a preview of the Temperature entry and its return, the Colour group's reset, the neutral
-picker's mode, a pick on a neutral grey patch and a pick on a clipped one. That fixture is used
+picker's mode, a pick on a neutral grey patch and a pick on a clipped one. Its opened frame is also
+the default screen the Module panels density is accepted on, with Basic expanded and every other
+section collapsed by its own descriptor. That fixture is used
 because the picker needs both a genuinely neutral patch and a clipped one, and it has each: uniform
 grey quadrants and a white cross at code 255. The runner checks, per frame, the revision, the history
 label, the stored Basic payload, the one Basic layer's identity across every edit and what each of
@@ -462,7 +466,7 @@ naming "Preview is stale", the crop module listed unavailable in `state.modules`
 drawn anywhere in the photo surface, and the source fixture's hash unchanged throughout. It writes
 `unavailable-checks.json` beside its own two launch directories rather than one `app/` directory.
 
-`cargo xtask smoke --scenario gallery --output NEW_DIR` captures all 63 named widget states across ten pages in the real background editor at 1440×1000 logical points. Each page has renderer readback, state metadata and a matching script event; the board includes every named vector icon at 12 and 16 points. `cargo xtask smoke --scenario controls --output NEW_DIR` enables the developer proof, scrolls its generated panel, and exercises slider/picker/curve drafts, cancellation, channel selection, point add/remove, discrete controls, group disclosure and reset. Its checks correlate history revisions and values with captures and verify that the identity proof preserves the displayed photograph. The gallery and generated panel have different widths; both require visual review alongside their automated checks.
+`cargo xtask smoke --scenario gallery --output NEW_DIR` captures all 74 named widget states across ten pages in the real background editor at 1440×1000 logical points. Each page has renderer readback, state metadata and a matching script event; the board includes every named vector icon at 12 and 16 points and, on its last page, module sections at the reference panel width: Basic expanded, collapsed and unavailable bands, a collapsed group, the tab row, the labelled buttons, band hints and history labels truncated to one line with an ellipsis, the icon-button row, the crop section drafting and idle, and the field rows. `cargo xtask smoke --scenario controls --output NEW_DIR` enables the developer proof, scrolls its generated panel, and exercises slider/picker/curve drafts, cancellation, channel selection, point add/remove, discrete controls, group disclosure and reset, then shows the Pixel section on its own with X and Y as px fields. Its checks correlate history revisions and values with captures and verify that the identity proof preserves the displayed photograph. The gallery and generated panel have different widths; both require visual review alongside their automated checks.
 
 `editor-latency --control curve` measures the controls proof's middle-point drag with the curve editor visible. The proof's colour stage is identity; this measures the control, query, draft, preview and upload path, not a future Tone Curve image algorithm. Slider remains the default workload. Both use the same provisional 100 ms p95 interaction threshold and retain all samples.
 

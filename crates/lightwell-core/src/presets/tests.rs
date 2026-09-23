@@ -1023,6 +1023,7 @@ fn validate_settings_refuses_an_unavailable_provider() {
         canvas: None,
         developer: false,
         collapsed: false,
+        layout: crate::ModuleLayout::Stacked,
         availability: Availability::Unavailable {
             reason: "not installed".into(),
         },

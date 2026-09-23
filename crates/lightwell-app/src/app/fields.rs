@@ -298,7 +298,7 @@ pub(crate) fn decimals_for(parameter: &ParameterDescriptor) -> usize {
 
 /// The decimals one increment needs: `0.01` → 2, `0.5` → 1, `10` → 0. Capped at the largest
 /// precision a descriptor may declare, so an unrepresentable step cannot ask for endless digits.
-fn decimals_of(step: f64) -> usize {
+pub(crate) fn decimals_of(step: f64) -> usize {
     if !step.is_finite() || step <= 0.0 {
         return 0;
     }

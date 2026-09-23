@@ -1270,6 +1270,25 @@ pub fn verify_panel(evidence: &Path, app: &Value, _events: &[Value]) -> Result {
         json!({"status": status(&frames[8])?, "revision": revision(&frames[8])?}),
     );
 
+    // Frame 0 is also the default screen the Module panels density is accepted on: Basic expanded
+    // and every other section collapsed to its band by its own descriptor, so the histogram, Basic
+    // and every other section's band are on screen at once.
+    let expanded = &frames[0]["state"]["expanded"];
+    let others_collapsed = expanded
+        .as_object()
+        .ok_or("Missing expanded sections")?
+        .iter()
+        .all(|(module, open)| (module == BASIC_MODULE) == (open == &json!(true)));
+    ensure(
+        others_collapsed,
+        format!("Only Basic should be expanded on the opened screen: {expanded}"),
+    )?;
+    record(
+        &frames[0],
+        "Basic expanded and every other section collapsed to its band by default",
+        expanded.clone(),
+    );
+
     write_json(
         &evidence.join("basic-panel-checks.json"),
         &json!({
