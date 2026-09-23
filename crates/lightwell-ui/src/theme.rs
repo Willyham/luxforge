@@ -309,8 +309,10 @@ pub const SWATCH_RADIUS: f32 = 3.0;
 pub const FIELD_INSET: f32 = 6.0;
 /// A value box's inset above and below the editing input's line.
 pub const FIELD_PADDING_Y: f32 = 2.0;
-/// Between a field's box, its unit and a stepper's buttons.
+/// Between a field row's label, its box and a stepper's buttons and rail.
 pub const FIELD_UNIT_SPACING: f32 = 6.0;
+/// Between a value box and the word unit after it (`px`), as developer-pixel.png draws it.
+pub const FIELD_UNIT_GAP: f32 = 8.0;
 /// A toggle's row: its label and the switch.
 pub const TOGGLE_ROW_HEIGHT: f32 = 26.0;
 /// A switch's track.

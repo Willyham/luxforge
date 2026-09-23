@@ -209,18 +209,31 @@ pub(crate) fn field_box<'a, M: Clone + 'a>(
     }
 }
 
-/// A word unit, drawn after the box in the tertiary colour; a symbol unit is inside the box.
+/// A word unit, drawn after the box in the tertiary colour, [`theme::FIELD_UNIT_GAP`] from it; a
+/// symbol unit is inside the box.
 pub(crate) fn outside_unit<'a, M: 'a>(unit: &Option<String>) -> Option<Element<'a, M>> {
     match unit {
         Some(unit) if is_word(unit) => Some(
-            text(unit.clone())
-                .size(theme::SIZE_CAPTION)
-                .wrapping(Wrapping::None)
-                .color(theme::TEXT_TERTIARY)
-                .into(),
+            container(
+                text(unit.clone())
+                    .size(theme::SIZE_CAPTION)
+                    .wrapping(Wrapping::None)
+                    .color(theme::TEXT_TERTIARY),
+            )
+            .padding(Padding {
+                left: unit_lead(),
+                ..Padding::ZERO
+            })
+            .into(),
         ),
         _ => None,
     }
+}
+
+/// What a word unit adds to the row's own spacing, so it sits [`theme::FIELD_UNIT_GAP`] from the
+/// box.
+fn unit_lead() -> f32 {
+    (theme::FIELD_UNIT_GAP - theme::FIELD_UNIT_SPACING).max(0.0)
 }
 
 fn is_word(unit: &str) -> bool {
@@ -308,6 +321,14 @@ mod tests {
         assert_eq!(box_text("2.40", &Some("°".into())), "2.40°");
         assert_eq!(box_text("1204", &Some("px".into())), "1204");
         assert_eq!(box_text("877", &None), "877");
+    }
+
+    /// developer-pixel.png: `px` sits 8 pt after its box, 2 pt more than the row's 6 pt spacing
+    /// between a stepper's buttons and its box.
+    #[test]
+    fn a_word_unit_sits_its_own_gap_from_the_box() {
+        assert_eq!(theme::FIELD_UNIT_GAP, 8.0);
+        assert_eq!(theme::FIELD_UNIT_SPACING + super::unit_lead(), 8.0);
     }
 
     /// developer-pixel.png and crop-and-straighten.png: a 56 × 20 pt box on a 24 pt row.
