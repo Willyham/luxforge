@@ -666,6 +666,29 @@ The settled-histogram column is the exact phase's cost and stays where the full-
 
 Rendered evidence is the `presence`, `mixer` and `vignette` smoke scenarios (15, 8 and 12 correlated frames at Fit and 100% with the module's own controls visible), and the acceptance chapter's ten checks per module through the JSON method table. A reviewer's render of the owner's 14 MP Sapa drone JPEG through the core alone (release, in memory: dehaze 65 ms, clarity 104 ms, texture 127 ms, all three at +50 672 ms) showed Dehaze +60 and +100 lifting the veil and deepening colour plausibly, Clarity +100 adding local contrast without visible halos at fit and at 100%, and Texture +100 sharpening fine detail with the expected crunch; it is a visual check, not a measurement. On a synthetic haze-free flat field Dehaze +100 drives the field toward black, because the dark-channel prior reads a uniform patch darker than the atmosphere as pure veil and the frozen `OMEGA_MAX = 1` removes all of it; the study records this and real photographs, whose windows contain dark pixels, do not show it.
 
+### Point samples through a spatial layer
+
+Native Apple M4 Pro (14 cores, 48 GiB), release `--locked`, 23 September 2026, on a host shared with other sessions. `render.sample` through the live API of a `develop --background` editor with an isolated catalog and no photograph in its window, at random stage points with the estimate store warm, p50 / p95 over 29 samples after the first. "Before" is the previous build, which built the spatial operation's whole float frame for every RAW sample: the one-minute load moved between 4 and 28 while it was measured, so its p50 range over three runs is given too. "After" ran at load 4 to 5.
+
+| Z6 24 MP · X100VI 40 MP, ms | Before: whole frame | After: one tile |
+| --- | --- | --- |
+| `render.sample`, Clarity +60 | 292 / 619 · 842 / 1451 (p50 292–568 · 499–842) | 20.8 / 22.1 · 19.5 / 19.9 |
+| `render.sample`, Clarity +60 Dehaze +30 | 623 / 1194 · 1495 / 3152 (p50 623–1130 · 1353–1966) | 36.0 / 38.9 · 37.9 / 38.7 |
+| Another client's `draft.set` while one samples in a loop, p50 (max); idle 0.3 | 402–578 (762) · 504–647 (1236) | 19.9 (22.3) · 19.2 (22.7) |
+
+A contended owner call now waits at most one sample, as it already did on the byte path, where the same sample on the generated 24 MP JPEG costs 11.5 ms with Clarity +60 and 34.0 ms with Dehaze +30 added (p50 of 15). Answering samples off the owner is the open follow-up.
+
+Exactness on the real files is the ignored core test, run in release with `LIGHTWELL_RAW_FIXTURE` set to each private source (`cargo test --release -p lightwell-core --lib a_raw_point_sample_through_presence -- --ignored --nocapture`): 41 samples per stack, spread over the stage and including the far corner, each equal to the byte `render_linear` writes there. It also times both sides, p50 ms:
+
+| Clarity +60 · with Dehaze +30 | Z6 | X100VI | Air 2S |
+| --- | --- | --- | --- |
+| Point sample | 20.1 · 35.4 | 18.7 · 36.3 | 15.1 · 27.9 |
+| The whole spatial frame the previous sample built | 261 · 550 | 460 · 1131 | 191 · 352 |
+
+The tile's input region is pulled serially. On the shared pool its rows halved an idle sample (Z6 Clarity, 10 against 19 ms) but waited behind a render that held the pool: p50 116 ms against 21 ms serially (15 samples, two alternations each, load 6 to 9), time the catalog owner would spend blocked. The first sample of a stack whose estimates are not yet in the store also reduces the whole stage once, which added 23 to 113 ms across the three files; the store does this even for Clarity alone, which wants no global estimate.
+
+A background evidence run over the Z6 (`--evidence-script` with Clarity +60, then Clarity +60 with Dehaze +30 through `api` steps, and five `hover` steps including the far corner pixel) showed every readout in the status bar with no render error, each hover step settling within 75 ms of the one before it.
+
 ## Preset import parse
 
 Native Apple M4 Pro (14 cores, 48 GiB), macOS 26.5.2, Rust 1.94.0, release `--locked`, in memory, 20 runs each: `cargo test --release --package lightwell-core --lib measure_preset_parse -- --ignored --nocapture`. Each synthetic document is filled to the 1 MiB request limit in the shape that presses one bound, and `inspect_preset` runs detection, parsing, mapping and the report. It reads no file and renders nothing.
@@ -720,6 +743,22 @@ Discovery, registration and catalog reopen start no worker thread and create no 
 | Executable size | 20.4 MB | 24.8 MB | — |
 
 The whole launch difference is in the part before the process runs, which for these background launches includes copying the executable into a temporary bundle: the executable is 4.3 MB larger (rustls, ring and the platform verifier) and now links Security.framework. Process start to first frame is unchanged. The core `editor-performance` rows (transforms, crop, Basic colour stacks, proxy renders, the histogram and the picker) moved by a few percent in either direction depending on which build ran second while the load rose from 5 to 11.6, so they show no difference attributable to the framework; the render path gained only an early return for stacks without artifacts. The full `verify` tier on `5f77f58` passed every provisional target except the empty-shell launch p95 (1012 ms against 1 s), which the baseline also misses under the same bundle copy.
+
+## Performance section, activity board and resource counters
+
+Native Apple M4 Pro (14 cores, 48 GiB), macOS 26.5.2, Rust 1.94.0, release builds, 2026-09-23, on a host shared with other sessions: one-minute load averages are given per run. The baseline is commit 9fb1fbb, the tree before this work, built in its own worktree.
+
+| Measurement | Result | Scope |
+| --- | --- | --- |
+| `resources.read` in the desktop, cache warm (`declare_gpu_presenter` called, this process's GPU clients cached) | p50 4.2 µs, p95 7.1 µs; 5.2 / 7.8 µs with JSON encoding | 1000 reads, `cargo test --release --locked -p lightwell-core --test resources_cost -- --ignored --nocapture`, load 22 to 30 |
+| One full walk of the GPU registry (82 to 84 user clients) | p50 0.31 to 0.35 ms, p95 0.39 to 1.1 ms | 200 walks, `cargo test --release --locked -p lightwell-process --test cost -- --ignored --nocapture`; taken at most every 10 s |
+| First read after `declare_gpu_presenter` | 0.6 ms when the Metal device already exists (the desktop), 37.5 ms in a process that has none | One read each |
+| `activity.list` / `resources.read` / `session.state` round trip through the headless `lightwell-json` owner, stdio and JSON included | p50 14.8 / 19.5 / 18.8 µs, p95 23.0 / 28.1 / 30.9 µs | 2000 requests each after 50 warm-up, load 12 to 18 |
+| Activity `begin` + `finish`, uncontended | p50 83 ns, p95 84 to 125 ns | 100,000 iterations; the timer resolves 42 ns |
+| Exposure drag input to presented frame, 24 MP, baseline then this work, then reversed | p50: baseline 14.7 and 16.0 ms, this work 11.1 and 15.4 ms; p95 38.9 (baseline), 44.9, 19.0 (this work) and 35.0 ms (baseline) in run order | `editor-latency --source fixtures/generated/24mp.jpg --samples 30`, one launch each, load 19 to 23. No regression; the p95s follow the host in both builds and set no baseline. The settled histogram read 60 to 68 ms p50 in this work's runs against 93 to 94 ms in the baseline's, in both orders; nothing in this work touches the exact render or its reduction, so that difference is not claimed |
+| Idle CPU, 24 MP open, Performance section collapsed / expanded | 0.75% and 0.79% collapsed, 1.37% and 1.08% expanded, of one core, in the order collapsed, expanded, expanded, collapsed | One 24 s window per launch, 2 s after the first scripted step; evidence launches (`--evidence-script` with the section's step and three 10 s waits), so both carry the evidence mode's own 250 ms tick; the expanded runs made 31 reads each and the collapsed runs none; load 11 to 15 |
+
+Expanding the section costs 0.3 to 0.6% of one core, which is one sample a second: two owner calls of a few microseconds each, the state panel's re-derivation and the window's redraw. Collapsed it costs nothing. The owner chose that it starts open, so from this change every ordinary launch samples, and the timing tier's idle figure (`measure` holds the 60 MP image in an ordinary launch) includes the open section: expect it 0.3 to 0.6% of one core above the figures recorded before.
 
 ## Method
 

@@ -1,8 +1,8 @@
 use crate::{
     basic_smoke as basic, controls_smoke as controls, crop_smoke as crop, gallery_smoke as gallery,
-    histogram_smoke as histogram, mixer_smoke as mixer, presence_smoke as presence,
-    presets_smoke as presets, raw_panel_smoke as raw_panel, vignette_smoke as vignette,
-    workspace_smoke as workspace, zoom_smoke as zoom, *,
+    histogram_smoke as histogram, mixer_smoke as mixer, performance_smoke as performance,
+    presence_smoke as presence, presets_smoke as presets, raw_panel_smoke as raw_panel,
+    vignette_smoke as vignette, workspace_smoke as workspace, zoom_smoke as zoom, *,
 };
 use std::{
     process::{Child, Stdio},
@@ -10,7 +10,7 @@ use std::{
 };
 /// Every rendered scenario, in the order `verify --tier rendered` runs them. One list: `main.rs`
 /// and `verify` both reach a scenario through [`dispatch`], so a new scenario is named here once.
-pub const SCENARIOS: [&str; 25] = [
+pub const SCENARIOS: [&str; 26] = [
     "empty",
     "load",
     "replacement",
@@ -32,6 +32,7 @@ pub const SCENARIOS: [&str; 25] = [
     "mixer",
     "vignette",
     "presets",
+    "performance",
     "gallery",
     "controls",
     "capabilities",
@@ -507,6 +508,11 @@ pub fn verify(evidence: &Path, scenario: &str, count: usize) -> Result<Value> {
         raw_panel::verify(evidence, &app, &events)?;
         return Ok(app);
     }
+    if let Some(frames) = performance::frames(scenario) {
+        let (app, events) = preamble(evidence, frames)?;
+        performance::verify(evidence, &app, &events)?;
+        return Ok(app);
+    }
     let (app, events) = preamble(evidence, count.max(1))?;
     let frames = app["frames"].as_array().ok_or("Missing frames")?;
     for (index, frame) in frames.iter().enumerate() {
@@ -672,6 +678,11 @@ pub fn run(root: &Path, out: &Path, scenario: &str, bin: &Path, timeout: Duratio
         scenario if presets::source(scenario).is_some() => {
             vec![root.join(presets::source(scenario).expect("the presets fixture"))]
         }
+        // `performance` samples the editor while a heavy edit renders, so it opens the generated
+        // 60 MP JPEG, whose exact render runs long enough to be listed as long work.
+        scenario if performance::source(scenario).is_some() => {
+            vec![root.join(performance::source(scenario).expect("the performance fixture"))]
+        }
         raw_panel::SCENARIO => {
             return Err("The raw-panel scenario needs --source RAW_FILE".into());
         }
@@ -730,6 +741,7 @@ pub fn run_sources(
         .or_else(|| basic::script(scenario))
         .or_else(|| basic::panel_script(scenario))
         .or_else(|| raw_panel::script(scenario))
+        .or_else(|| performance::script(scenario, &sources))
     {
         let file = out.join("script.json");
         write_json(&file, &script)?;
@@ -777,7 +789,15 @@ pub fn run_sources(
         result["binary_sha256"] = json!(hash(bin)?);
         result["lockfile_sha256"] = json!(hash(&root.join("Cargo.lock"))?);
         let mut child = spawn(root, bin, &args, &out.join("subprocess.log"))?;
-        let status = wait(&mut child, timeout)?;
+        // `performance` compares the memory the editor reports with readings the runner takes of
+        // the same process while it runs, so it waits by watching.
+        let status = if performance::frames(scenario).is_some() {
+            let (status, readings) = performance::watch(&mut child, timeout)?;
+            write_json(&out.join(performance::READINGS), &readings)?;
+            status
+        } else {
+            wait(&mut child, timeout)?
+        };
         result["exit_code"] = json!(status.code());
         ensure(status.success(), format!("Application exit {status}"))?;
         let app = verify(&evidence, scenario, sources.len())?;

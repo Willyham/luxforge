@@ -201,7 +201,8 @@ impl<M> canvas::Program<M> for IconDrawing {
             state.key.set(Some((self.icon, self.color)));
         }
         vec![state.cache.draw(renderer, bounds.size(), |frame| {
-            draw_path(frame, self.icon, self.color)
+            let size = frame.width().min(frame.height());
+            draw_icon(frame, self.icon, size, self.color)
         })]
     }
 }
@@ -238,8 +239,15 @@ fn arc_points(cx: f32, cy: f32, radius: f32, start: f32, end: f32) -> Vec<(f32, 
         .collect()
 }
 
-fn draw_path(frame: &mut canvas::Frame, icon: Icon, color: Color) {
-    let s = frame.width().min(frame.height()) / 16.0;
+/// The chevrons' polylines on the 16-unit icon grid, shared with the disclosure heading, which
+/// aligns a chevron's ink rather than its square to the edge of its row.
+pub(crate) const CHEVRON_DOWN: [(f32, f32); 3] = [(3.5, 6.0), (8.0, 10.5), (12.5, 6.0)];
+pub(crate) const CHEVRON_RIGHT: [(f32, f32); 3] = [(6.0, 3.5), (10.5, 8.0), (6.0, 12.5)];
+
+/// Draws `icon` into `frame` as a `size` point square at the frame's origin, so a canvas can place
+/// an icon anywhere within itself by translating first.
+pub(crate) fn draw_icon(frame: &mut canvas::Frame, icon: Icon, size: f32, color: Color) {
+    let s = size / 16.0;
     let p = |x: f32, y: f32| Point::new(x * s, y * s);
     let stroke = canvas::Stroke::default()
         .with_color(color)
@@ -417,8 +425,8 @@ fn draw_path(frame: &mut canvas::Frame, icon: Icon, color: Color) {
             let x = if icon == Icon::StatePanel { 6.0 } else { 10.0 };
             line(frame, (x, 2.0), (x, 14.0));
         }
-        Icon::ChevronDown => poly(frame, &[(3.5, 6.0), (8.0, 10.5), (12.5, 6.0)]),
-        Icon::ChevronRight => poly(frame, &[(6.0, 3.5), (10.5, 8.0), (6.0, 12.5)]),
+        Icon::ChevronDown => poly(frame, &CHEVRON_DOWN),
+        Icon::ChevronRight => poly(frame, &CHEVRON_RIGHT),
     }
 }
 

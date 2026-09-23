@@ -1,6 +1,7 @@
 use crate::{
     Cancel, EntryId, Error, ErrorKind, HistoryEntry, LinearImage, LinearSettings, ModuleRegistry,
     ProxyBounds, ProxyCache, ProxyKey, Raster, Recipe, SourceImage,
+    activity::{ActivityBoard, ActivitySpec, Outcome},
     analysis::{AnalysisIdentity, Report},
     artifacts::PreparedArtifact,
     render, render_cancellable, render_linear, render_linear_cancellable,
@@ -414,6 +415,8 @@ pub struct PreviewQueue {
     /// replaces the old entry rather than accumulating beside it.
     cache: ProxyCache,
     waker: Option<Arc<dyn Fn() + Send + Sync>>,
+    /// Where each job is published as a `preview.render` activity; `None` publishes nothing.
+    activity: Option<Arc<ActivityBoard>>,
     /// Results at or below this generation are stale, whatever they carry.
     floor: u64,
     last_delivered: u64,
@@ -456,6 +459,14 @@ impl PreviewQueue {
     /// message.
     pub fn set_waker(&mut self, waker: Arc<dyn Fn() + Send + Sync>) {
         self.waker = Some(waker);
+    }
+
+    /// Publish every job to `board` as a `preview.render` activity, from the moment its worker
+    /// starts to the end of its exact phase, with its phase as it moves from `proxy` to `exact`. The
+    /// entry ends before the exact result is sent, so by the time [`Self::poll`] releases a job its
+    /// activity has already ended. A queue without a board publishes nothing.
+    pub fn set_activity(&mut self, board: Arc<ActivityBoard>) {
+        self.activity = Some(board);
     }
 
     /// The generation of the job waiting in the pending slot. The next [`Self::request`] replaces
@@ -516,10 +527,11 @@ impl PreviewQueue {
         let exact_cancel = Cancel::new();
         let tokens = (proxy_cancel.clone(), exact_cancel.clone());
         let waker = self.waker.clone();
+        let board = self.activity.clone();
         // Two results per job at most, so the worker never blocks on the desktop draining the
         // proxy frame before it can answer with the exact one.
         let (sender, receiver) = sync_channel(2);
-        std::thread::spawn(move || run(job, generation, step, tokens, sender, waker));
+        std::thread::spawn(move || run(job, generation, step, tokens, sender, waker, board));
         self.active = Some(Active {
             generation,
             receiver,
@@ -595,12 +607,24 @@ fn run(
     (proxy_cancel, exact_cancel): (Cancel, Cancel),
     sender: SyncSender<WorkerMessage>,
     waker: Option<Arc<dyn Fn() + Send + Sync>>,
+    board: Option<Arc<ActivityBoard>>,
 ) {
     let wake = || {
         if let Some(waker) = &waker {
             waker();
         }
     };
+    // One activity spans both phases. A job abandoned mid-way, its queue gone before a result could
+    // be sent, drops the guard, which records it as cancelled.
+    let activity = board.map(|board| {
+        board.begin(ActivitySpec {
+            kind: "preview.render",
+            label: "Rendering preview",
+            detail: None,
+            asset_id: Some(job.entry.asset_id.clone()),
+            job_id: None,
+        })
+    });
     let entry_id = job.entry.id.clone();
     let draft_revision = job.draft_revision;
     let snapshot_id = job.entry.snapshot.id.clone();
@@ -622,6 +646,9 @@ fn run(
         ProxyStep::Skipped => None,
         ProxyStep::Declined(reason) => Some(reason),
         ProxyStep::Planned { key, cached } => {
+            if let Some(activity) = &activity {
+                activity.phase("proxy");
+            }
             // The proxy phase's own clock: the build when this job builds, then the render.
             let started = Instant::now();
             let built = match cached {
@@ -672,6 +699,9 @@ fn run(
         }
     };
 
+    if let Some(activity) = &activity {
+        activity.phase("exact");
+    }
     // The exact phase's own clock starts here, after the proxy phase has sent its frame, so the
     // two phases' times never overlap and neither includes the other.
     let started = Instant::now();
@@ -693,6 +723,10 @@ fn run(
         rendered => (rendered, None),
     };
     let render_ms = milliseconds_since(started);
+    // A superseded or abandoned exact phase answers `Cancelled`, so its activity ends cancelled.
+    if let Some(activity) = activity {
+        activity.finish(Outcome::of(&result));
+    }
     let sent = sender.send(WorkerMessage {
         result: PreviewResult {
             generation,
@@ -1361,6 +1395,157 @@ mod tests {
         // A generous wait proves no extra call follows the last result.
         std::thread::sleep(Duration::from_millis(50));
         assert_eq!(calls.load(Ordering::Relaxed), 3);
+    }
+
+    // ---------------------------------------------------------------------------------------
+    // The activity each job publishes
+    // ---------------------------------------------------------------------------------------
+
+    /// A job whose one colour layer waits on `gate` in every phase that renders it, so a test can
+    /// hold the job in the phase it is about. The layer leaves its pixels as it found them.
+    fn held(gate: &Arc<crate::modules::RenderGate>, proxy: Option<ProxyBounds>) -> PreviewJob {
+        let layer = Layer {
+            id: LayerId::new(),
+            effect_id: crate::modules::HELD_EFFECT.into(),
+            effect_format: EFFECT_FORMAT,
+            payload: json!({}),
+            artifacts: Vec::new(),
+        };
+        let mut job = stacked(64, 48, vec![layer], proxy);
+        let mut registry = ModuleRegistry::builtin();
+        registry
+            .register(crate::modules::HeldModule::shared(gate.clone()))
+            .expect("a valid holding module");
+        job.registry = Arc::new(registry);
+        job
+    }
+
+    /// Read the board until `wanted` holds. The job under test is held at a gate, so what it waits
+    /// for is the worker reaching that gate, never a race with how fast the machine renders.
+    fn board_until(
+        board: &ActivityBoard,
+        wanted: impl Fn(&crate::ActivitySnapshot) -> bool,
+        what: &str,
+    ) -> crate::ActivitySnapshot {
+        let deadline = Instant::now() + DEADLINE;
+        loop {
+            let snapshot = board.snapshot();
+            if wanted(&snapshot) {
+                return snapshot;
+            }
+            assert!(Instant::now() < deadline, "{what}: {snapshot:?}");
+            std::thread::yield_now();
+        }
+    }
+
+    /// A job with a proxy phase is listed in `proxy` while that phase runs and ends in `exact`, and
+    /// its entry has already ended when the queue releases the job. The board keeps every finished
+    /// entry here, because its recent threshold is zero.
+    #[test]
+    fn a_jobs_activity_moves_from_proxy_to_exact_and_ends_when_the_queue_releases_it() {
+        let board = ActivityBoard::with_recent_threshold(Duration::ZERO);
+        let gate = crate::modules::RenderGate::open_gate();
+        let mut queue = PreviewQueue::default();
+        queue.set_activity(board.clone());
+        let job = held(&gate, Some(bounds(16, 16)));
+        let asset = job.entry.asset_id.clone();
+
+        gate.shut();
+        queue.request(job);
+        let running = board_until(
+            &board,
+            |snapshot| {
+                snapshot
+                    .active
+                    .first()
+                    .is_some_and(|active| active.entry.phase == Some("proxy"))
+            },
+            "the proxy phase never reached its gate",
+        );
+        assert_eq!(running.active.len(), 1);
+        let entry = &running.active[0].entry;
+        assert_eq!(
+            (entry.kind, entry.label),
+            ("preview.render", "Rendering preview")
+        );
+        assert_eq!(entry.asset_id.as_ref(), Some(&asset));
+        assert_eq!((&entry.detail, &entry.job_id), (&None, &None));
+        assert!(running.recent.is_empty());
+
+        gate.open();
+        let results = drain_all(&mut queue);
+        assert_eq!(
+            results
+                .iter()
+                .map(|result| result.phase)
+                .collect::<Vec<_>>(),
+            [PreviewPhase::Proxy, PreviewPhase::Exact]
+        );
+        // The queue released the job the moment its exact result arrived, and the entry had
+        // already ended by then: nothing here waits for the worker again.
+        let ended = board.snapshot();
+        assert!(ended.active.is_empty(), "{ended:?}");
+        assert_eq!(ended.recent.len(), 1);
+        let recent = &ended.recent[0];
+        assert_eq!(recent.entry.kind, "preview.render");
+        assert_eq!(
+            recent.entry.phase,
+            Some("exact"),
+            "the job moved on to its exact phase"
+        );
+        assert_eq!(recent.outcome, crate::activity::Outcome::Completed);
+    }
+
+    /// A newer request stops the exact phase of the job it replaces, and that job's activity ends
+    /// cancelled while the newer one completes. The older job is held at its gate inside the first
+    /// 16-row chunk of its colour pass, so the stop reaches the check before its second chunk.
+    #[test]
+    fn a_superseded_jobs_activity_ends_cancelled() {
+        let board = ActivityBoard::with_recent_threshold(Duration::ZERO);
+        let gate = crate::modules::RenderGate::open_gate();
+        let mut queue = PreviewQueue::default();
+        queue.set_activity(board.clone());
+
+        gate.shut();
+        let first = queue.request(held(&gate, None));
+        let running = board_until(
+            &board,
+            |snapshot| {
+                snapshot
+                    .active
+                    .first()
+                    .is_some_and(|active| active.entry.phase == Some("exact"))
+            },
+            "the exact phase never reached its gate",
+        );
+        let older = running.active[0].entry.id;
+        let newer = queue.request(held(&gate, None));
+        gate.open();
+        let delivered = drain_until(&mut queue, newer, PreviewPhase::Exact);
+        assert_eq!(
+            delivered,
+            vec![
+                (first, PreviewPhase::Exact, true),
+                (newer, PreviewPhase::Exact, false)
+            ],
+            "the older exact phase stopped, and its cancelled outcome came first"
+        );
+
+        let ended = board.snapshot();
+        assert!(ended.active.is_empty(), "{ended:?}");
+        let outcomes: Vec<(u64, crate::activity::Outcome)> = ended
+            .recent
+            .iter()
+            .map(|recent| (recent.entry.id, recent.outcome))
+            .collect();
+        assert_eq!(
+            outcomes,
+            [
+                (older + 1, crate::activity::Outcome::Completed),
+                (older, crate::activity::Outcome::Cancelled),
+            ],
+            "newest first: the job that replaced it completed"
+        );
     }
 
     #[test]

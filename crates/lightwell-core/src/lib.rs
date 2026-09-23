@@ -1,4 +1,5 @@
 //! UI-independent JPEG decoding, non-destructive editing state, rendering and the JSON owner API.
+pub mod activity;
 pub mod analysis;
 mod api;
 pub mod artifacts;
@@ -15,7 +16,9 @@ mod preview;
 mod profile;
 mod proxy;
 mod render;
+pub mod resources;
 mod source;
+pub use activity::{Activity, ActivityBoard, ActivitySnapshot, ActivitySpec};
 pub use api::*;
 pub use artifacts::ArtifactId;
 pub use capabilities::{

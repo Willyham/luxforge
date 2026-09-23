@@ -50,6 +50,16 @@ pub(super) const METHODS: &[MethodSpec] = &[
         notes: "this client's bounded source job state; ready includes the committed asset state",
         handler: None,
     },
+    // The activity board belongs to the catalog owner, whose workers publish to it, so the owner
+    // answers from it: one lock and a copy, nothing rendered or read.
+    MethodSpec {
+        name: "activity.list",
+        mutates: false,
+        required: &[],
+        optional: &[],
+        notes: "{sequence, active, recent, untracked}: the host's running work oldest first, and up to 16 recent entries that ran at least 250 ms, newest first; each entry has id, kind, label and elapsed_ms, or outcome (completed, cancelled or failed), duration_ms and ended_ms_ago, plus detail, asset_id, phase, progress {done, total} and job_id when known; job_id names the job that job.status (source work) or analysis.read (histograms) also answers; sequence changes exactly when the contents do; needs no asset, takes no parameters, mutates nothing and emits no event",
+        handler: None,
+    },
     MethodSpec {
         name: "job.adopt",
         mutates: false,
@@ -506,6 +516,14 @@ pub(super) const METHODS: &[MethodSpec] = &[
         optional: &[],
         notes: "this client's selection, view, workspace state and session revision",
         handler: Some(session_state),
+    },
+    MethodSpec {
+        name: "resources.read",
+        mutates: false,
+        required: &[],
+        optional: &[],
+        notes: "what the operating system accounts to this process: {monotonic_ns, cpu: {time_ns, logical_cpus}, memory: {kind, bytes, peak_bytes, resident_bytes}, gpu: {time_ns, allocated_bytes, unified_memory}, budgets: {colour_scratch, spatial} each {target_bytes, in_use_bytes, peak_bytes}}; times are nanoseconds and sizes bytes; memory.kind is footprint (macOS, Activity Monitor's Memory, including GPU allocations on unified memory), resident (Linux) or private (Windows); time counters are cumulative, so a rate comes from two reads: CPU percent of one core is 100 × Δcpu.time_ns / Δmonotonic_ns, up to 100 × logical_cpus, and GPU percent is the same over gpu.time_ns; monotonic_ns means something only as a difference; a counter the platform cannot give is omitted and its object's unavailable maps its key to the reason; takes no parameters, needs no asset, emits no event and changes nothing",
+        handler: Some(resources_read),
     },
     MethodSpec {
         name: "draft.begin",
@@ -1447,6 +1465,33 @@ fn session_state(
     session_value(service, session)
 }
 
+/// The process's resource counters and working-memory budgets. It takes no parameters and says so
+/// when given one, so a client that expects an option here learns there is none.
+fn resources_read(
+    _: &mut EditorService,
+    _: &mut ClientSession,
+    params: &Value,
+) -> Result<Value, Error> {
+    match params {
+        Value::Null => {}
+        Value::Object(object) => {
+            if let Some(name) = object.keys().next() {
+                return Err(Error::new(
+                    ErrorKind::Validation,
+                    format!("unknown parameter {name}; resources.read takes none"),
+                ));
+            }
+        }
+        _ => {
+            return Err(Error::new(
+                ErrorKind::Validation,
+                "params must be a JSON object",
+            ));
+        }
+    }
+    value(crate::resources::read())
+}
+
 fn render_sample(
     service: &mut EditorService,
     session: &mut ClientSession,
@@ -2175,6 +2220,78 @@ mod tests {
                 .expect("the coordinate note")
                 .contains("number parameter"),
             "the schema describes number parameters"
+        );
+        drop(service);
+        std::fs::remove_file(catalog).unwrap();
+    }
+
+    /// `resources.read` is a host method in the table: listed after `session.state` with notes
+    /// that state its units and how a rate is derived, answered by its own handler with the
+    /// documented objects, refusing parameters it does not take, and never the cause of an event.
+    #[test]
+    fn resources_read_is_listed_and_answers_through_the_method_table() {
+        let catalog = std::env::temp_dir().join(format!(
+            "lightwell-methods-resources-{}.sqlite",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_file(&catalog);
+        let mut service = EditorService::open(&catalog).unwrap();
+        let mut session = ClientSession::default();
+        let names: Vec<&str> = METHODS.iter().map(|spec| spec.name).collect();
+        let index = names
+            .iter()
+            .position(|name| *name == "resources.read")
+            .expect("resources.read is a host method");
+        assert_eq!(names[index - 1], "session.state");
+        let schema = ok(&mut service, &mut session, "schema.list", json!({}));
+        let listed = &schema["methods"]["resources.read"];
+        assert_eq!(listed["mutates"], json!(false));
+        assert_eq!(listed["required"], json!([]));
+        assert_eq!(listed["optional"], json!({}));
+        let notes = listed["notes"].as_str().expect("notes");
+        for phrase in [
+            "times are nanoseconds and sizes bytes",
+            "100 × Δcpu.time_ns / Δmonotonic_ns",
+            "unavailable maps its key to the reason",
+            "needs no asset, emits no event and changes nothing",
+        ] {
+            assert!(notes.contains(phrase), "the notes say {phrase:?}");
+        }
+        let method = find(&service, "resources.read").expect("found");
+        assert!(!method.owner_answered(), "its handler answers it");
+        for params in [json!({}), Value::Null] {
+            let read = ok(&mut service, &mut session, "resources.read", params);
+            let mut keys: Vec<&str> = read
+                .as_object()
+                .expect("an object")
+                .keys()
+                .map(String::as_str)
+                .collect();
+            keys.sort_unstable();
+            assert_eq!(keys, ["budgets", "cpu", "gpu", "memory", "monotonic_ns"]);
+            assert!(read["cpu"]["logical_cpus"].is_u64());
+            assert!(read["memory"]["kind"].is_string());
+            assert!(read["budgets"]["colour_scratch"]["target_bytes"].is_u64());
+            assert!(read["budgets"]["spatial"]["target_bytes"].is_u64());
+            assert!(
+                !mutates(&method, Some(&read)),
+                "the owner records no event for a read"
+            );
+        }
+        for (params, message) in [
+            (json!({"interval": 1}), "unknown parameter interval"),
+            (json!([]), "params must be a JSON object"),
+        ] {
+            let error = call(&mut service, &mut session, "resources.read", params)
+                .error
+                .expect("refused");
+            assert_eq!(error.code, "validation");
+            assert!(error.message.contains(message), "{}", error.message);
+        }
+        assert_eq!(
+            session,
+            ClientSession::default(),
+            "the session is untouched"
         );
         drop(service);
         std::fs::remove_file(catalog).unwrap();

@@ -45,6 +45,7 @@ Doctor reports missing tools and the graphics environment without installing any
 | Rendered Vignette: section expand, an Amount drag and commit at Fit and 100%, roundness and feather extremes, a post-crop recentre and the module reset | `cargo xtask smoke --scenario vignette --output NEW_DIR` |
 | Rendered percentage zooms: 50%, 100%, 120%, 800% and 1600%, pans to the centre and the far corner at 1600%, and idle checks at Fit, 100% and 1600%, over the generated 24 MP and 60 MP JPEGs, one launch each | `cargo xtask smoke --scenario zoom --output NEW_DIR` |
 | Rendered Presets: section expand, an XMP and a Lightwell preset imported, each applied from its row, undo, the create form filled and submitted, a native preset applied to the Original, `preset.list` through the `api` step and a delete through the row menu | `cargo xtask smoke --scenario presets --output NEW_DIR` |
+| Rendered Performance section: open and sampling from the launch, a filled window, a straighten and a Presence Clarity commit whose render is listed as long work and then as finished, collapsed and asleep, then reopened on a fresh window, over the generated 60 MP JPEG, with the editor's memory read by the runner from outside the process; `--source RAW` swaps the Clarity commit for a RAW temperature commit, outside `rendered` | `cargo xtask smoke --scenario performance --output NEW_DIR [--source RAW]` |
 | Rendered RAW section over a supplied RAW file, with Basic collapsed; a Custom temperature drag left open and then released, at Fit and at 100%, whose drafted frame differs from the one before, is labelled approximate and adopts no histogram, and whose release's exact frame is the first drawn after the commit, carries its own report and is within a code of the approximate one on average, each drag keeping the tint in force (the first, from As shot, the core's as-shot tint) in the committed payload and in the Custom tint field throughout; then a double-click on each RAW slider and on Basic's Exposure: the first press's committed jump and the reset that follows it, each checked as two entries with the reset sent against the jump's revision and never refused — Exposure back to 0 EV, Custom temperature and tint back to As shot (`use-as-shot-wb`, the entry labelled As shot white balance, both fields showing the core's as-shot equivalent, checked back through the forward map); and the RAW band's dot, absent on the untouched photograph, present after the committed custom temperature and absent again once the resets leave As shot at 0 EV; then a crop drafted on the RAW's whole input stage, 16:9 and straightened by 7°, whose draft is one picture (under 1% of up to 4800 samples of its interior show the canvas), applied at Fit, read at 100% through two pointer readouts and replaced by a −12° 3:2 `edit.crop-fit` at 100%: no step logs a failure, every committed frame shows the current entry at the output its payload declares, placed and centred at Fit within 4 px, and each readout's codes are the canvas's own at that stage pixel within one code; not in `rendered`, because no RAW photograph is checked in | `cargo xtask smoke --scenario raw-panel --source RAW --output NEW_DIR` |
 | Rendered module capabilities: settings, a profile and a masked key, the download consent denied then allowed, install, activation, the photo-data consent, a task with progress, Apply, a refused task and a revoked grant, against a loopback proof endpoint | `cargo xtask smoke --scenario capabilities --output NEW_DIR` |
 | The capability framework's own costs (registration, capability reads, activation, a task, artifact publish, cancellation), release only | `cargo test --release --locked -p lightwell-core --lib capability_timing -- --ignored --nocapture` |
@@ -63,7 +64,7 @@ Every evidence command refuses an existing output directory: use a fresh `artifa
 | Tier | What it runs |
 | --- | --- |
 | `quick` | `check` and `editor-acceptance` |
-| `rendered` | quick plus all 25 smoke scenarios, including `zoom`, `presets`, `gallery`, `controls` and `capabilities`, through a bounded pool |
+| `rendered` | quick plus all 26 smoke scenarios, including `zoom`, `presets`, `gallery`, `controls`, `capabilities` and `performance`, through a bounded pool |
 | `timing` | quick plus `editor-performance`, `editor-latency` and `measure`, in that order, serially, after everything else in the tier and behind the host-wide timing lock |
 | `full` | rendered plus timing plus `raw-reference` and, with `--manifest FILE`, `raw-editor` |
 
@@ -140,7 +141,10 @@ therefore stays in `rendered`; `full` adds only the RAW components (`raw-referen
 `--manifest`, `raw-editor`), which is already the tier's composition. `zoom`, which is not in that
 workload, is two launches with three one-second idle waits each and took 13.5 s inside the default
 pool at a one-minute load average near 20; it stays in `rendered` as the only rendered check of the
-percentage zooms.
+percentage zooms. `performance` is one launch with 8.6 s of waits — the sampler needs real seconds
+to fill its window and to prove itself asleep — and took 12.5 s on its own at a one-minute load
+average near 30; it stays in `rendered` as the only rendered check of the Performance section and of
+its sampler's gating.
 
 | Scenario | Serial elapsed (`--jobs 1`) | Pooled elapsed (default `--jobs 3`) | Tier |
 | --- | --- | --- | --- |
@@ -185,7 +189,7 @@ On macOS, `develop --background` builds the selected profile and runs a temporar
 Debug builds expose the title-bar **Developer** button automatically. To inspect the gallery in
 an optimized build, run `cargo xtask develop --developer` (automated launches add `--background`).
 Its page chooser and Previous/Next controls browse ten pages; Back to editor or Escape returns.
-The `gallery` smoke covers all 74 reference states and the return to the unchanged editor via
+The `gallery` smoke covers all 78 reference states and the return to the unchanged editor via
 the same `workspace.set` path as the button.
 
 ## Rendered evidence
@@ -391,6 +395,12 @@ Each step is an object with exactly one key.
 - `preset_import` imports one file through the section's own import task, bypassing only the native
   dialog: `{"path": "fixtures/presets/develop.xmp"}`, relative to the editor's working directory.
   Captured once the library answers; a refused file is a failed step.
+- `performance` opens or closes the state panel's Performance section through its heading's own
+  message: `{"expanded": true}` or `{"expanded": false}`. Opening it, with the state panel shown, is
+  captured once the section's first `resources.read` and `activity.list` have answered, so the frame
+  shows figures rather than dashes; closing it, opening it under a hidden panel and asking for the
+  state it is already in are captured on the next frame. The section is open at every launch, so
+  every scripted run samples once a second unless its script closes the section.
 
 - `capability` drives one gesture on a module's capability block, task control or consent notice through the messages those controls send: `{"module", <one of>, "wait"?: false}` with `section` (`"status"` or `"settings"`), `set` (`{field, value, profile?}`), `secret` (`{field, value, profile?}`, recorded in `result.json` as `<redacted>`), `file` (`{field, path}`, the message the native dialog's result sends), `profile` (`{create: {adapter, label}}` or `{remove: index}`), `install` or `remove` (`{resource}`), `activate` (`true` or `false`), `task` (`{task}`), `consent` (`"allow"` or `"deny"`), `apply`, `cancel` (the newest live job), `revoke` (an index into the permissions list) or `settle`. A step is captured once its round trips have answered and the jobs it started have finished; `"wait": false` captures as soon as a started job reports progress, and a later `settle` captures once the module's jobs are done. `state.json` carries a `capabilities` summary per module — settings with secrets only as `set` or `not set`, profiles, activation, resources, live jobs, the task result, permissions, requirements and the open consent — and stack layers carry their `artifacts`.
 
@@ -441,6 +451,31 @@ codes, the XMP's own `green-luminance` and `red-hue` fields darken the green pat
 the red one by more than 5 codes, and each undo returns the patches of the stack it returns to within
 1.5 codes. It writes `app/presets-checks.json`. The scope is stored payloads and displayed direction,
 not a colorimetric claim, and not a claim that Lightwell renders what Lightroom renders.
+
+`performance` opens the generated `60mp.jpg` at 1440 × 900 and captures eight frames: the open, with
+the Performance section open and sampling as every launch starts it; a 3600 ms `wait`; a 16:9
+`edit.crop-fit` at 3°; `edit.set-presence` with Clarity 100 over it, whose exact render — about
+0.8 to 1 s on the owner's M4, where Clarity alone is about 0.6 s — is long enough for the section to
+list; a 2500 ms `wait`; the section collapsed; a 2500 ms `wait`; and the section opened again. Each frame's
+`state.performance` records the flag, the reads asked for, the samples held, the last two
+`resources.read` answers as the owner sent them with the wall-clock time of the newer one, the last
+`activity.list`, the process id, the heading caption and the rows and job rows as shown. The runner
+re-derives, without the editor's code, the memory figure from the recorded `memory.bytes`, the CPU
+and GPU figures from the rate between the two recorded reads, each series' length from the sample
+count, and the job rows, `+N more` and caption from the recorded `activity.list` under the section's
+display rules; it requires at least four samples after the first wait, the finished render listed
+after the second, `footprint` memory with GPU time and unified GPU allocations on the M4, GPU time
+never decreasing across frames, one revision per edit and nothing else, the collapsed frames'
+reads and samples unchanged across their wait, and the reopened frame holding one sample from one
+more read, a fresh window read at once. While the editor runs, the runner reads the same
+pid with `ps -o rss=` every 100 ms and `footprint -f bytes --noCategories` on every other poll,
+which needs no privileges for the same user; each expanded frame after the open (whose first reads can precede the runner's first reading) must have its recorded resident memory and footprint
+lie between the runner's last reading at or before the sample's wall-clock time and its first
+reading after it, within 8 MiB. While the editor idles the three agree to the byte. The readings are
+in `process-readings.json` beside `app/`, and `app/performance-checks.json` records every comparison
+and tolerance. With `--source RAW` the Clarity commit becomes a RAW temperature commit, which
+redevelops the mosaic, and the finished job is whichever of the redevelopment and its render ended
+last; that run is not part of `rendered`.
 
 `zoom` is two launches, one over each of the generated `24mp.jpg` (6000 × 4000) and `60mp.jpg`
 (10000 × 6000), each writing its own `24mp/` or `60mp/` directory beside the scenario's `result.json`.
@@ -547,7 +582,7 @@ naming "Preview is stale", the crop module listed unavailable in `state.modules`
 drawn anywhere in the photo surface, and the source fixture's hash unchanged throughout. It writes
 `unavailable-checks.json` beside its own two launch directories rather than one `app/` directory.
 
-`cargo xtask smoke --scenario gallery --output NEW_DIR` captures all 74 named widget states across ten pages in the real background editor at 1440×1000 logical points. Each page has renderer readback, state metadata and a matching script event; the board includes every named vector icon at 12 and 16 points and, on its last page, module sections at the reference panel width: Basic expanded, collapsed and unavailable bands, Basic with its three groups collapsed, the tab row, the labelled buttons, band hints and history labels truncated to one line with an ellipsis, the icon-button row and the field rows each with no group header over its module's only group, and the crop section drafting and idle. `cargo xtask smoke --scenario controls --output NEW_DIR` enables the developer proof, scrolls its generated panel, and exercises slider/picker/curve drafts, cancellation, channel selection, point add/remove, discrete controls, group disclosure (on Basic's Colour group, since the proof's controls are its module's only group and draw no header) and the module reset, then shows the Pixel section on its own with X and Y as px fields. Its checks correlate history revisions and values with captures and verify that the identity proof preserves the displayed photograph. The gallery and generated panel have different widths; both require visual review alongside their automated checks.
+`cargo xtask smoke --scenario gallery --output NEW_DIR` captures all 78 named widget states across ten pages in the real background editor at 1440×1000 logical points. Each page has renderer readback, state metadata and a matching script event; the board includes every named vector icon at 12 and 16 points and, on its last page, module sections at the reference panel width: Basic expanded, collapsed and unavailable bands, Basic with its three groups collapsed, the tab row, the labelled buttons, band hints and history labels truncated to one line with an ellipsis, the icon-button row and the field rows each with no group header over its module's only group, and the crop section drafting and idle. `cargo xtask smoke --scenario controls --output NEW_DIR` enables the developer proof, scrolls its generated panel, and exercises slider/picker/curve drafts, cancellation, channel selection, point add/remove, discrete controls, group disclosure (on Basic's Colour group, since the proof's controls are its module's only group and draw no header) and the module reset, then shows the Pixel section on its own with X and Y as px fields. Its checks correlate history revisions and values with captures and verify that the identity proof preserves the displayed photograph. The gallery and generated panel have different widths; both require visual review alongside their automated checks.
 
 `cargo xtask smoke --scenario capabilities --output NEW_DIR` starts the loopback `ProofEndpoint` in the runner's own process with a sentinel API key and a held palette download and generation, launches the editor with `--developer --proof-endpoint`, opens `fixtures/s0/orientation-1.jpg` at 1440 × 900 and scripts 25 capability steps: expand the section, set strength, create a profile, set its endpoint and key, choose an input file, request the palette (the consent notice, Don't allow, the notice again with its denial, Allow), capture the download in progress and installed, activate, generate (the photo-data consent, Allow, progress, success), Apply, replace the key with a wrong one and generate again (the endpoint's 401), and revoke the photo-data grant. Its checks, written to `app/capabilities-checks.json`, compare each frame's capability summary with its step; require exactly one tint layer listing the task's artifact after Apply; compare the tinted photograph's mean colour over a centred window with the pre-Apply frame, in the direction of the published gains, and with an independent core render of the same stack within 2 codes; confirm the endpoint saw one held download, one authorised generation and one refusal; and scan every text file the run wrote, the catalog and the module files included, for the sentinel key.
 

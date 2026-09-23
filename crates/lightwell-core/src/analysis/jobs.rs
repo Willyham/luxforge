@@ -14,7 +14,9 @@
 use super::{DOMAIN, Report, deserialize_domain, reduce_raster};
 use crate::{
     AssetId, ClientId, DraftStamp, EntryId, Error, ErrorKind, HistoryEntry, JobId, ModuleRegistry,
-    PreviewSource, Recipe, SnapshotId, artifacts::PreparedArtifact,
+    PreviewSource, Recipe, SnapshotId,
+    activity::{ActivityBoard, ActivitySpec, Outcome},
+    artifacts::PreparedArtifact,
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -180,6 +182,7 @@ pub struct AnalysisQueue {
     deliver: Arc<dyn Fn(JobId, Result<Report, Error>) + Send + Sync>,
     active: Option<JobId>,
     pending: Option<AnalysisJob>,
+    activity: Option<Arc<ActivityBoard>>,
 }
 
 impl AnalysisQueue {
@@ -189,7 +192,15 @@ impl AnalysisQueue {
             deliver,
             active: None,
             pending: None,
+            activity: None,
         }
+    }
+
+    /// Publish every job this queue runs to `board` as an `analysis.histogram` activity, from the
+    /// moment its worker starts to the moment it has a result. A queue without a board publishes
+    /// nothing.
+    pub fn set_activity(&mut self, board: Arc<ActivityBoard>) {
+        self.activity = Some(board);
     }
 
     /// Hand a job to the worker, or into the one pending slot. Returns the job id that was
@@ -236,6 +247,7 @@ impl AnalysisQueue {
     fn start(&mut self, job: AnalysisJob) {
         self.active = Some(job.job_id.clone());
         let deliver = self.deliver.clone();
+        let board = self.activity.clone();
         std::thread::spawn(move || {
             let AnalysisJob {
                 job_id,
@@ -245,6 +257,15 @@ impl AnalysisQueue {
                 recipe,
                 artifacts,
             } = job;
+            let activity = board.map(|board| {
+                board.begin(ActivitySpec {
+                    kind: "analysis.histogram",
+                    label: "Measuring histogram",
+                    detail: None,
+                    asset_id: Some(identity.asset_id.clone()),
+                    job_id: Some(job_id.to_string()),
+                })
+            });
             let result = source
                 .render(&registry, identity.snapshot_id.clone(), &recipe)
                 .and_then(|raster| {
@@ -256,6 +277,11 @@ impl AnalysisQueue {
                 });
             // The render has compiled the stack; the artifacts it bound are released with it.
             drop(artifacts);
+            // The activity ends before the result is posted, so a client that reads the job as
+            // finished never still finds it listed as running.
+            if let Some(activity) = activity {
+                activity.finish(Outcome::of(&result));
+            }
             deliver(job_id, result);
         });
     }

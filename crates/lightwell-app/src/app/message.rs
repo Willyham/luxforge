@@ -4,7 +4,9 @@
 use crate::{
     app::capabilities::Answer,
     app::controls::CurveSampleIdentity,
-    app::tasks::{HostAnswer, PresetChange, PreviewPayload, Refresh, SyncResult, Upload},
+    app::tasks::{
+        HostAnswer, PerformanceRead, PresetChange, PreviewPayload, Refresh, SyncResult, Upload,
+    },
     crop_draft::Handle,
     state::{
         capabilities::{CapabilityView, SecretText},
@@ -91,6 +93,8 @@ pub(crate) enum PaletteAction {
     Mode(String),
     /// Show or hide one side panel.
     TogglePanel(Panel),
+    /// Open or close the state panel's Performance section.
+    TogglePerformance,
     ToggleThirds,
     Fit,
     HundredPercent,
@@ -537,6 +541,18 @@ pub(crate) enum Message {
     },
     /// Show or hide one side panel; the owner holds the flag.
     TogglePanel(Panel),
+    /// Open or close the state panel's Performance section. The flag is local to this client and
+    /// this launch, like a tools-panel section's, so no request carries it.
+    TogglePerformance,
+    /// One tick of the Performance section's sampler. It exists only while the section is
+    /// expanded and the state panel is shown, which is also when the timer that produces it exists.
+    PerformanceTick,
+    /// `resources.read` and `activity.list` answered, with the sampling epoch that asked, so a read
+    /// that was in flight when the section stopped or restarted sampling is dropped.
+    PerformanceSampled {
+        epoch: u64,
+        result: Result<Box<PerformanceRead>, String>,
+    },
     /// Enter the pointer mode or a module's canvas mode.
     SetMode(String),
     /// Show or hide the thirds overlay.

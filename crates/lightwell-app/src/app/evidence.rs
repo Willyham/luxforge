@@ -6,6 +6,7 @@ use crate::{
         Editor,
         fields::number_text,
         message::{CropMessage, CropPointer, MenuTarget, Message, PaletteAction, PresetMessage},
+        performance,
         tasks::{HostAnswer, host_task, mutation, workspace_task},
     },
     crop_draft::{Corner, Handle},
@@ -261,6 +262,8 @@ pub(crate) enum Step {
     /// Import one file through the section's own import task, bypassing only the native dialog.
     /// The path is as the script wrote it, relative to the editor's working directory.
     PresetImport(String),
+    /// Open or close the state panel's Performance section, as its heading does.
+    Performance(bool),
     /// Ask nothing of the editor for at least this many milliseconds, then capture. The evidence
     /// tick keeps rebuilding the view meanwhile, as the editor's own event sync does while a
     /// photograph is open, so the frame shows what idling did to the screen.
@@ -721,6 +724,7 @@ impl Step {
                 json!({"preset_create":value})
             }
             Self::PresetImport(path) => json!({"preset_import":{"path":path}}),
+            Self::Performance(expanded) => json!({"performance":{"expanded":expanded}}),
             Self::Wait(ms) => json!({"wait":{"ms":ms}}),
             Self::Pan { x, y } => json!({"pan":{"x":x,"y":y}}),
             Self::Capability(step) => step.record(),
@@ -816,6 +820,9 @@ pub(crate) enum Settle {
     /// Nothing this client started is in flight: no gesture, no request, no waiting reset, and the
     /// newest requested frame is on screen with its exact phase.
     Quiet,
+    /// The Performance section's first read since it started sampling has answered, so the frame
+    /// shows its figures rather than the dashes before them.
+    Performance,
     /// A capability step's round trips have answered and, unless it said otherwise, the jobs it
     /// started have finished.
     Capability,
@@ -867,6 +874,7 @@ impl Editor {
             Step::PresetCreate(step) => self.preset_create_step(step),
             Step::PresetDelete(pick) => self.preset_delete_step(pick),
             Step::PresetImport(path) => self.preset_import_step(path),
+            Step::Performance(expanded) => self.performance_step(expanded),
             Step::Wait(ms) => self.wait_step(ms),
             Step::Pan { x, y } => self.pan_step(x, y),
             Step::Capability(step) => self.capability_step(step),
@@ -1931,7 +1939,35 @@ impl Editor {
             | PaletteAction::ToggleThirds
             | PaletteAction::Fit
             | PaletteAction::HundredPercent => self.await_step(Settle::Session),
+            PaletteAction::TogglePerformance => self.arm_performance_settle(),
         }
+    }
+
+    /// What toggling the Performance section settles on: its first read when the toggle starts it
+    /// sampling, and otherwise the next frame, since closing it or opening it under a hidden state
+    /// panel asks the owner for nothing.
+    fn arm_performance_settle(&mut self) {
+        let starts = performance::sampling(
+            !self.performance.expanded,
+            self.session.workspace.state_panel && self.gallery_page().is_none(),
+        );
+        if starts {
+            self.await_step(Settle::Performance);
+        } else {
+            self.capture_next_frame();
+        }
+    }
+
+    /// Open or close the Performance section through its heading's own message. Opening it waits
+    /// for the first read, so the frame shows figures; closing it is captured on the next frame. A
+    /// section already in the state asked for sends nothing.
+    fn performance_step(&mut self, expanded: bool) -> Task<Message> {
+        if self.performance.expanded == expanded {
+            self.capture_next_frame();
+            return Task::none();
+        }
+        self.arm_performance_settle();
+        self.update(Message::TogglePerformance)
     }
 
     /// Click one row, exactly as the section does: the section's own action with that preset's
@@ -2252,13 +2288,24 @@ fn parse_step(step: &Value) -> Result<Step, String> {
             "preset_delete",
         )?)),
         "preset_import" => parse_preset_import(value),
+        "performance" => parse_performance(value),
         "wait" => parse_wait(value),
         "pan" => parse_pan(value),
         "capability" => Ok(Step::Capability(parse_capability(value)?)),
         other => Err(format!(
-            "unknown step kind {other}; expected api, draft, slider, double_click, controls, picker, curve, group, tab, section, gallery, tools_scroll, slider_draft, field, reset, pick, view, workspace, preview, palette, hover, preset, preset_create, preset_delete, preset_import, wait, pan or capability"
+            "unknown step kind {other}; expected api, draft, slider, double_click, controls, picker, curve, group, tab, section, gallery, tools_scroll, slider_draft, field, reset, pick, view, workspace, preview, palette, hover, preset, preset_create, preset_delete, preset_import, performance, wait, pan or capability"
         )),
     }
+}
+
+fn parse_performance(value: &Value) -> Result<Step, String> {
+    let object = value.as_object().ok_or("performance takes an object")?;
+    known_fields(object, &["expanded"], "performance")?;
+    object
+        .get("expanded")
+        .and_then(Value::as_bool)
+        .map(Step::Performance)
+        .ok_or_else(|| "performance expanded takes true or false".to_owned())
 }
 
 fn finish(object: &Map<String, Value>, step: &str) -> Result<SliderEnd, String> {
@@ -3840,6 +3887,85 @@ mod tests {
             let error = parse_script(script).expect_err(script);
             assert!(error.contains(expected), "{script}: {error}");
         }
+    }
+
+    /// `performance` parses strictly and records itself back in the shape the script wrote.
+    #[test]
+    fn performance_steps_parse_strictly_and_round_trip() {
+        let steps = parse_script(
+            r#"[{"performance":{"expanded":true}},{"performance":{"expanded":false}}]"#,
+        )
+        .expect("a valid script");
+        assert_eq!(
+            steps,
+            vec![Step::Performance(true), Step::Performance(false)]
+        );
+        assert_eq!(steps[0].record(), json!({"performance":{"expanded":true}}));
+        assert_eq!(steps[1].record(), json!({"performance":{"expanded":false}}));
+        for (script, expected) in [
+            (
+                r#"[{"performance":{}}]"#,
+                "performance expanded takes true or false",
+            ),
+            (
+                r#"[{"performance":{"expanded":1}}]"#,
+                "performance expanded takes true or false",
+            ),
+            (
+                r#"[{"performance":{"expanded":true,"module":"x"}}]"#,
+                "unknown performance field module",
+            ),
+            (r#"[{"performance":true}]"#, "performance takes an object"),
+        ] {
+            let error = parse_script(script).expect_err(script);
+            assert!(error.contains(expected), "{script}: {error}");
+        }
+    }
+
+    /// Opening the section waits for its first read, so the frame shows figures; closing it is
+    /// captured on the next frame and asks the owner for nothing.
+    #[test]
+    fn a_scripted_performance_step_waits_for_the_first_read_when_opening() {
+        let (mut editor, catalog, _, _) = scripted(
+            r#"[{"performance":{"expanded":false}},{"performance":{"expanded":true}},{"performance":{"expanded":true}},{"performance":{"expanded":false}}]"#,
+        );
+        // The section starts open: closing it first is captured on the next frame.
+        let _ = editor.next_step();
+        assert!(!editor.performance.expanded);
+        assert!(evidence(&editor).capture_pending);
+        editor.evidence.as_mut().expect("evidence").capture_pending = false;
+        let _ = editor.next_step();
+        assert!(editor.performance.expanded);
+        assert_eq!(editor.performance.requested, 1);
+        assert!(!evidence(&editor).capture_pending, "waits for the read");
+        assert_eq!(evidence(&editor).awaiting, Some(Settle::Performance));
+        let (resources, _) =
+            crate::app::tasks::call(&editor.owner, editor.client, "resources.read", json!({}))
+                .unwrap();
+        let epoch = editor.performance.epoch;
+        let _ = editor.update(Message::PerformanceSampled {
+            epoch,
+            result: Ok(Box::new(crate::app::tasks::PerformanceRead {
+                resources,
+                activity: json!({"sequence":0,"active":[],"recent":[],"untracked":0}),
+                wall_ms: 0,
+            })),
+        });
+        assert!(evidence(&editor).capture_pending, "captured on the answer");
+        assert_eq!(editor.performance.history.len(), 1);
+
+        // Already open: nothing is sent and the next frame is captured.
+        editor.evidence.as_mut().expect("evidence").capture_pending = false;
+        let _ = editor.next_step();
+        assert!(evidence(&editor).capture_pending);
+        assert_eq!(editor.performance.requested, 1);
+
+        editor.evidence.as_mut().expect("evidence").capture_pending = false;
+        let _ = editor.next_step();
+        assert!(!editor.performance.expanded);
+        assert!(evidence(&editor).capture_pending);
+        assert_eq!(editor.performance.requested, 1, "closing asks for nothing");
+        finish(editor, catalog);
     }
 
     /// A `wait` step captures nothing until its interval has passed, and then exactly one frame,

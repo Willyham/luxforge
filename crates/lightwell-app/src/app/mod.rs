@@ -13,6 +13,7 @@ pub(crate) mod fields;
 pub(crate) mod keymap;
 pub(crate) mod message;
 pub(crate) mod overlay;
+pub(crate) mod performance;
 pub(crate) mod presets;
 #[cfg(test)]
 mod presets_tests;
@@ -567,6 +568,9 @@ pub(crate) struct Editor {
     pub(crate) presets: PresetLibrary,
     /// The Presets section's create form.
     pub(crate) preset_form: PresetForm,
+    /// The state panel's Performance section: its flag, what it has read and its one read in
+    /// flight. It samples only while expanded with the state panel shown.
+    pub(crate) performance: performance::Sampler,
     /// The whole screen as plain data, re-derived after every message.
     pub(crate) workspace: Workspace,
 }
@@ -728,6 +732,7 @@ impl Editor {
             capability_started: Vec::new(),
             presets: PresetLibrary::default(),
             preset_form: PresetForm::default(),
+            performance: performance::Sampler::open(),
             workspace: Workspace::default(),
         };
         // Both workers wake the event loop through one channel instead of a poll. The closure is
@@ -735,6 +740,8 @@ impl Editor {
         // its signals comes and goes with the queues' business.
         editor.preview_queue.set_waker(waker::waker());
         editor.overlay_queue.set_waker(waker::waker());
+        // Preview jobs are listed on the owner's activity board beside its own work.
+        editor.preview_queue.set_activity(editor.owner.activity());
         if editor.live_server.is_none() {
             editor.status = "Editor ready; live API unavailable on this host".into();
         }
@@ -862,7 +869,7 @@ impl Editor {
                 entry.as_ref(),
             );
         }
-        json!({"run_id":self.run_id,"mode":if self.evidence.is_some() {"evidence"} else {"editor"},"selection":self.session.preview.selection,"orientation":self.activity.orientation,"phase":self.activity.phase,"requested_generation":self.activity.requested,"displayed_generation":self.activity.displayed,"displayed_draft_revision":self.displayed_draft_revision,"source_dimensions":self.activity.source_dimensions,"preview_dimensions":self.activity.preview_dimensions,"backend":self.activity.backend,"status":self.status,"error_code":self.activity.error_code,"modules":module_summary(&self.modules),"controls":self.fields.summary(),"control_ui":{"group_expanded":self.controls_ui.group_expanded,"selected_tab":self.controls_ui.selected_tab,"curve_channels":curve_channels,"curve_points":curve_points,"picker_open":picker_open,"curves":curves,"pickers":pickers},"gallery":gallery,"tools_scroll":tools_scroll,"crop":self.crop_summary(),"draft":self.draft_summary(),"stack":self.stack_summary(),"workspace":serde_json::to_value(&self.session.workspace).unwrap_or(Value::Null),"developer":self.developer,"expanded":self.workspace.expanded(),"pickers":self.workspace.pickers(),"notices":self.notice_titles(),"compare":self.compare_return.is_some(),"render_error":self.render_error_summary(),"palette":{"open":self.palette_open,"query":self.palette_query},"presets":self.presets_summary(),"histogram":self.histogram_summary(),"readout":self.readout_summary(),"status_bar":self.status_bar_summary(),"proxy":self.proxy_summary(),"approximate_white_balance":self.presented_approximate_white_balance,"surface":self.surface_summary(),"active":self.workspace.active(),"scratch":Self::scratch_summary(),"capabilities":state::capabilities::summary(&self.capabilities,&self.modules,self.state.as_ref())})
+        json!({"run_id":self.run_id,"mode":if self.evidence.is_some() {"evidence"} else {"editor"},"selection":self.session.preview.selection,"orientation":self.activity.orientation,"phase":self.activity.phase,"requested_generation":self.activity.requested,"displayed_generation":self.activity.displayed,"displayed_draft_revision":self.displayed_draft_revision,"source_dimensions":self.activity.source_dimensions,"preview_dimensions":self.activity.preview_dimensions,"backend":self.activity.backend,"status":self.status,"error_code":self.activity.error_code,"modules":module_summary(&self.modules),"controls":self.fields.summary(),"control_ui":{"group_expanded":self.controls_ui.group_expanded,"selected_tab":self.controls_ui.selected_tab,"curve_channels":curve_channels,"curve_points":curve_points,"picker_open":picker_open,"curves":curves,"pickers":pickers},"gallery":gallery,"tools_scroll":tools_scroll,"crop":self.crop_summary(),"draft":self.draft_summary(),"stack":self.stack_summary(),"workspace":serde_json::to_value(&self.session.workspace).unwrap_or(Value::Null),"developer":self.developer,"expanded":self.workspace.expanded(),"pickers":self.workspace.pickers(),"notices":self.notice_titles(),"compare":self.compare_return.is_some(),"render_error":self.render_error_summary(),"palette":{"open":self.palette_open,"query":self.palette_query},"presets":self.presets_summary(),"histogram":self.histogram_summary(),"readout":self.readout_summary(),"status_bar":self.status_bar_summary(),"proxy":self.proxy_summary(),"approximate_white_balance":self.presented_approximate_white_balance,"surface":self.surface_summary(),"active":self.workspace.active(),"scratch":Self::scratch_summary(),"capabilities":state::capabilities::summary(&self.capabilities,&self.modules,self.state.as_ref()),"performance":self.performance_summary()})
     }
 
     /// The Presets section as the frame drew it: its rows, the create form and whether the section
@@ -1257,6 +1264,9 @@ impl Editor {
         let busy = self.preview_queue.is_busy() || self.overlay_queue.is_busy();
         let before_entry = self.displayed_entry();
         let task = self.dispatch(message);
+        // Whatever route opened, closed, hid or showed the Performance section is answered in one
+        // place: starting to sample reads at once, and stopping drops the read in flight.
+        let task = Task::batch([task, self.performance_transition()]);
         // A reset that waited for this client's commit or request runs once nothing is in flight.
         let task = Task::batch([task, self.run_pending_reset()]);
         self.settle_when_quiet();
@@ -2201,6 +2211,8 @@ impl Editor {
             capabilities: &self.capabilities,
             presets: &self.presets,
             preset_form: &self.preset_form,
+            performance_expanded: self.performance.expanded,
+            performance: &self.performance.history,
         };
         workspace.derive(&inputs);
         self.workspace = workspace;
@@ -3114,6 +3126,11 @@ impl Editor {
             Message::SliderDraftReapplied(result) => {
                 return self.slider_reapplied(result.map(|draft| *draft));
             }
+            Message::TogglePerformance => self.performance.expanded = !self.performance.expanded,
+            Message::PerformanceTick => return self.performance_tick(),
+            Message::PerformanceSampled { epoch, result } => {
+                return self.performance_sampled(epoch, result);
+            }
             Message::ToggleSection(module_id) => {
                 let expanded = self
                     .workspace
@@ -3290,6 +3307,9 @@ impl Editor {
                     Some(PaletteAction::Mode(mode)) => self.dispatch(Message::SetMode(mode)),
                     Some(PaletteAction::TogglePanel(panel)) => {
                         self.dispatch(Message::TogglePanel(panel))
+                    }
+                    Some(PaletteAction::TogglePerformance) => {
+                        self.dispatch(Message::TogglePerformance)
                     }
                     Some(PaletteAction::ToggleThirds) => self.dispatch(Message::ToggleThirds),
                     Some(PaletteAction::Fit) => self.dispatch(Message::Fit),
@@ -4167,6 +4187,12 @@ impl Editor {
         if self.state.is_some() && self.evidence.is_none() {
             subscriptions
                 .push(iced::time::every(Duration::from_millis(500)).map(|_| Message::Sync));
+        }
+        // The Performance section's sampler, gated on the section being expanded with the state
+        // panel on screen. Collapsed or hidden, there is no timer at all, in evidence runs too.
+        if self.performance_sampling() {
+            subscriptions
+                .push(iced::time::every(performance::INTERVAL).map(|_| Message::PerformanceTick));
         }
         if let Some(evidence) = &self.evidence {
             subscriptions

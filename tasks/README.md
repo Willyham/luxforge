@@ -9,6 +9,7 @@ Each JSON file is an independent plan. IDs start at `TASK-001` inside every file
 | [Corrections](corrections.json) | Proposed offline Clone/Heal and optional provider-agnostic AI Remove, with a qualified local-model path and explicit owner decisions |
 | [Dependency advisories](dependency-advisories.json) | Remove or re-review the two expiring advisory exceptions the dependency audit enforces |
 | [Product decisions](product-decisions.json) | Open product questions |
+| [Known bugs](known-bugs.json) | Independent defects found in use, each with its measured symptom and acceptance |
 
 The Corrections plan is a planning proposal. Its AI implementation builds on the implemented [module capabilities](../docs/design/module-capabilities.md) and depends on owner acceptance of the scope and consequential product choices in the [Corrections design](../docs/design/corrections.md).
 

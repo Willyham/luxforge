@@ -76,7 +76,7 @@ pub(crate) fn workspace<'a>(model: &'a Workspace, surfaces: Surfaces<'a>) -> Ele
     let mut middle = row![].height(Length::Fill);
     if model.title.state_panel_open {
         middle = middle.push(
-            container(state_panel::state_panel(&model.panel))
+            container(state_panel::state_panel(&model.panel, &model.performance))
                 .width(Length::Fixed(STATE_PANEL_WIDTH))
                 .height(Length::Fill)
                 .style(theme::panel_surface),

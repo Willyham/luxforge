@@ -70,6 +70,17 @@ Outstanding work by area. What is delivered is in [feature status](features.md);
 - Choose the first use case (decision pending)
 - Loader proof with a real process or ABI trust boundary
 
+## Inspection
+
+**Performance panel follow-ups** ([design](design/performance-panel.md)). The Performance section, the activity board and the resource counters are delivered.
+- Publish capability jobs (activation, resource installs and module tasks, with the progress they already report) to the activity board, so a model download or an AI run shows in the section with a progress bar; export publishes the same way when it lands
+- Cancel listed work from the section, through the cancel each job already has
+- GPU time and allocations on Linux (DRM `fdinfo`) and Windows (D3DKMT), and native checks of the CPU and memory counters there
+- Attribute memory to the prepared source, the proxy and the GPU textures in `resources.read`
+- Remember whether the section is collapsed, in the host's user-level settings
+- Lower the cost of the open section's one-second redraw, which now counts in the idle figure
+- A rendered frame of a RAW development while it runs
+
 ## Platform and release
 
 **Full-editor verification.** Native M4 handoff of the complete editor, then Windows and Linux.
