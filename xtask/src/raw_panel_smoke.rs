@@ -432,6 +432,9 @@ fn shows_as_shot_equivalent(frame: &Value, field: &str) -> Result<Value> {
         "tint": controls["set-raw-tint.tint"],
         "as_shot_equivalent": [kelvin, tint],
         "as_shot_gains": payload.as_shot_gains,
+    }))
+}
+
 /// The step's events that would mean a commit's picture never reached the canvas: a refused
 /// request, a failed render, a picture withdrawn for a failure, or a draft that could not open.
 fn expect_no_failure(events: &[Value], step: usize, what: &str) -> Result {
