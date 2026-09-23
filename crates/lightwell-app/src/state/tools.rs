@@ -19,7 +19,7 @@ use lightwell_core::{
     ActionDescriptor, ActionStyle, AssetId, CanvasInteraction, ChoiceStyle, ColorStyle, Control,
     CropPayload, CropStage, CurveBackground, EffectStage, EntryId, Layer, MAX_ANGLE, MIN_ANGLE,
     ModuleDescriptor, NumberStyle, ORIENTATION_EFFECT, Orientation, ParameterDescriptor,
-    ParameterKind, RailDecoration, ResetAction,
+    ParameterKind, RAW_EFFECT, RailDecoration, RawPayload, ResetAction,
 };
 use serde_json::{Map, Value};
 use std::{
@@ -719,14 +719,19 @@ fn active(module: &ModuleDescriptor, inputs: &Inputs<'_>) -> bool {
         })
 }
 
-/// A neutral layer is stored but changes nothing, so it is not an edit. Two stored payloads have a
-/// neutral form: the orientation layer's identity, which is what four quarter turns leave behind,
-/// and a crop-frame module's whole image. A payload with no neutral form is always an edit.
+/// A neutral layer is stored but changes nothing, so it is not an edit. Three stored payloads have a
+/// neutral form: the orientation layer's identity, which is what four quarter turns leave behind, a
+/// crop-frame module's whole image, and the RAW development at As shot and 0 EV, which every RAW
+/// recipe holds from its Original on. The core answers each, beside the payload it describes; a
+/// payload with no neutral form is always an edit.
 fn neutral(module: &ModuleDescriptor, layer: &Layer) -> bool {
     if layer.effect_id == ORIENTATION_EFFECT {
         return serde_json::from_value::<Orientation>(layer.payload.clone())
             .map(|orientation| orientation == Orientation::NEUTRAL)
             .unwrap_or(false);
+    }
+    if layer.effect_id == RAW_EFFECT {
+        return RawPayload::from_layer(layer).is_ok_and(|payload| payload.is_neutral());
     }
     if !matches!(module.canvas, Some(CanvasInteraction::CropFrame { .. })) {
         return false;

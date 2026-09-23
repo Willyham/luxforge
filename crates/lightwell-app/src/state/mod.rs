@@ -1099,6 +1099,68 @@ mod tests {
         }
     }
 
+    /// Every RAW recipe holds its development layer from the Original on, so the RAW band's dot
+    /// asks the core whether that layer does anything: an untouched RAW, and one returned to As
+    /// shot at 0 EV whatever custom values its payload kept, has no dot; exposure, a custom
+    /// temperature and tint, a neutral pick and explicit gains each have one.
+    #[test]
+    fn the_raw_section_is_active_only_when_its_development_is_not_as_shot_at_zero_ev() {
+        use crate::app::testing::{Z6_AS_SHOT, Z6_CAM_XYZ};
+        use lightwell_core::{RawPayload, WhiteBalanceMode};
+        let raw = descriptors()
+            .into_iter()
+            .find(|module| module.id == "lightwell.raw")
+            .expect("the registered RAW module");
+        let active = |payload: &RawPayload| {
+            let mut scene = Scene::new(vec![raw.clone()])
+                .opened(vec![payload.layer(lightwell_core::LayerId::new())]);
+            scene.state.as_mut().expect("an asset").asset.source =
+                lightwell_core::SourceKind::Raw {
+                    metadata: serde_json::json!({}),
+                };
+            section(&scene.derive(), &raw.id).active
+        };
+        let original = RawPayload::for_as_shot(Z6_AS_SHOT, Z6_CAM_XYZ).unwrap();
+        assert!(!active(&original), "an untouched RAW is not an edit");
+
+        let exposed = RawPayload {
+            exposure_ev: 0.35,
+            ..original.clone()
+        };
+        let custom = RawPayload {
+            wb_mode: WhiteBalanceMode::Custom,
+            temperature_kelvin: Some(5000.0),
+            tint: Some(12.0),
+            gains: lightwell_core::gains_from_temperature_tint(5000.0, 12.0, Z6_CAM_XYZ).unwrap(),
+            ..original.clone()
+        };
+        let picked = RawPayload {
+            wb_mode: WhiteBalanceMode::Custom,
+            gains: [1.9, 1.0, 1.4],
+            ..original.clone()
+        };
+        for (edit, payload) in [
+            ("exposure", &exposed),
+            ("custom white balance", &custom),
+            ("neutral pick", &picked),
+        ] {
+            assert!(active(payload), "{edit} is an edit");
+        }
+
+        // Back to As shot: the payload keeps the custom values it held, which As shot ignores.
+        let back = RawPayload {
+            wb_mode: WhiteBalanceMode::AsShot,
+            ..custom.clone()
+        };
+        assert_ne!(back, original);
+        assert!(!active(&back), "As shot at 0 EV is not an edit");
+        let back_exposed = RawPayload {
+            exposure_ev: -0.5,
+            ..back
+        };
+        assert!(active(&back_exposed), "As shot at -0.5 EV is an edit");
+    }
+
     #[test]
     fn recipe_rows_come_from_the_owners_own_layer_descriptions() {
         let crop = crop_descriptor();

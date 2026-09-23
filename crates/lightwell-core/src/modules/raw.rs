@@ -151,6 +151,14 @@ impl RawPayload {
         }
     }
 
+    /// Whether this development is the Original's: As shot at 0 EV. The custom gains, temperature
+    /// and tint a payload keeps after a return to As shot are unused while As shot is selected,
+    /// and the as-shot gains and camera calibration are the capture's own, so such a layer
+    /// develops exactly as [`RawPayload::for_as_shot`] does. Anything else is an edit.
+    pub fn is_neutral(&self) -> bool {
+        self.exposure_ev == 0.0 && self.wb_mode == WhiteBalanceMode::AsShot
+    }
+
     /// The temperature and tint the development's controls show. A custom temperature and tint
     /// are themselves. Under As shot they are the temperature and tint whose gains are the
     /// camera's as-shot gains ([`white_balance::temperature_tint_from_gains`]), so the controls
@@ -884,5 +892,51 @@ mod tests {
             (values["kelvin"].as_f64(), values["tint"].as_f64()),
             (Some(CUSTOM_START_KELVIN), Some(CUSTOM_START_TINT))
         );
+    }
+
+    /// A development is neutral exactly when it is As shot at 0 EV, whatever custom values a
+    /// return to As shot left in the payload; exposure, a custom temperature, a neutral pick and
+    /// explicit gains are edits.
+    #[test]
+    fn a_development_is_neutral_at_as_shot_and_zero_ev() {
+        let original = RawPayload::for_as_shot(Z6_AS_SHOT, Z6_CAM_XYZ).unwrap();
+        assert!(original.is_neutral());
+        let layer = original.layer(LayerId::new());
+        for (action, params) in [
+            (SET_EXPOSURE, serde_json::json!({"ev": 0.35})),
+            (SET_TEMPERATURE, serde_json::json!({"kelvin": 5000.0})),
+            (SET_TINT, serde_json::json!({"tint": 12.0})),
+            (PICK_NEUTRAL, serde_json::json!({"x": 1, "y": 2})),
+            (SET_RED, serde_json::json!({"gain": 2.0})),
+        ] {
+            let edited = planned(&layer, action, params).unwrap();
+            assert!(!edited.is_neutral(), "{action}");
+            if action != SET_EXPOSURE {
+                let back = planned(
+                    &edited.layer(layer.id.clone()),
+                    AS_SHOT,
+                    serde_json::json!({}),
+                )
+                .unwrap();
+                assert_ne!(
+                    back, original,
+                    "{action}: the payload keeps its custom values"
+                );
+                assert!(back.is_neutral(), "{action}: back at As shot and 0 EV");
+            } else {
+                let back = planned(
+                    &edited.layer(layer.id.clone()),
+                    SET_EXPOSURE,
+                    serde_json::json!({"ev": 0.0}),
+                )
+                .unwrap();
+                assert!(back.is_neutral());
+            }
+        }
+        let exposed_as_shot = RawPayload {
+            exposure_ev: -0.5,
+            ..original
+        };
+        assert!(!exposed_as_shot.is_neutral());
     }
 }
