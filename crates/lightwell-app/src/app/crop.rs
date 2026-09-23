@@ -231,6 +231,9 @@ impl Editor {
                     layer,
                     pending.layer_index,
                     pending.base_revision,
+                    &crop_frame(&self.modules)
+                        .map(|frame| frame.presets())
+                        .unwrap_or_default(),
                 )),
                 // An unreadable payload is never silently replaced by a neutral crop: the stored
                 // layer stays exactly as it is and the draft does not open.

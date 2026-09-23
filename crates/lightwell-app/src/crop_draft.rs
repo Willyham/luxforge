@@ -20,7 +20,8 @@ use serde_json::{Value, json};
 pub(crate) const MIN_EXTENT: f64 = 1.0;
 
 /// The special words the crop module's `aspect` enum uses for the ratios that are not `W:H`.
-const FREE: &str = "free";
+/// `free` is also the option a draft shows as chosen when its ratio is not locked.
+pub(crate) const FREE: &str = "free";
 const ORIGINAL: &str = "original";
 const CUSTOM: &str = "custom";
 
@@ -100,6 +101,42 @@ pub(crate) fn aspect_presets(options: &[String]) -> Vec<AspectPreset> {
             })
         })
         .collect()
+}
+
+/// The declared ratio a committed whole-pixel rectangle reads as, with the width over height a
+/// draft locks to for it, or `None` when it reads as Free. The recipe stores the rectangle, not
+/// the preset that produced it, so this is how the crop section and a draft opened on an existing
+/// crop agree on which chip is chosen.
+///
+/// Presets are tried in declared order, so `original` (the input stage's ratio) wins over a `W:H`
+/// option equal to it, and each in either orientation, since a swapped ratio keeps its preset.
+/// Free and Custom name no ratio of their own and never match. The rectangle has a ratio `r` (as
+/// its long side over its short one) when the long side is within `2r` pixels of the short side
+/// times `r`: fitting a ratio snaps each extent inward by less than two pixels, and a ratio-locked
+/// drag keeps it within one pixel plus the ratio, so every rectangle a preset or a locked gesture
+/// produced reads as that preset again.
+pub(crate) fn committed_aspect(
+    presets: &[AspectPreset],
+    stage: (u32, u32),
+    output: (u32, u32),
+) -> Option<(&AspectPreset, f64)> {
+    let (width, height) = (f64::from(output.0.max(1)), f64::from(output.1.max(1)));
+    let landscape = width >= height;
+    let (long, short) = if landscape {
+        (width, height)
+    } else {
+        (height, width)
+    };
+    presets.iter().find_map(|preset| {
+        let ratio = match preset.kind {
+            PresetKind::Original => f64::from(stage.0.max(1)) / f64::from(stage.1.max(1)),
+            PresetKind::Ratio(ratio) => ratio,
+            PresetKind::Free | PresetKind::Custom => return None,
+        };
+        let wide = ratio.max(1.0 / ratio);
+        ((long - wide * short).abs() <= 2.0 * wide)
+            .then_some((preset, if landscape { wide } else { 1.0 / wide }))
+    })
 }
 
 /// Which corner of the rectangle a drag grabbed; the opposite corner stays fixed.
@@ -199,13 +236,16 @@ pub(crate) struct CropDraft {
 
 impl CropDraft {
     /// Edit an existing crop layer: the rectangle starts at the payload's own output rectangle, so
-    /// reopening a draft shows exactly what was committed.
+    /// reopening a draft shows exactly what was committed, and the ratio it reads as among the
+    /// declared presets ([`committed_aspect`]) is chosen and locked without refitting it. A
+    /// neutral payload is no crop at all and starts Free, as a draft on a stack without one does.
     pub(crate) fn from_layer(
         input: CropStage,
         payload: CropPayload,
         layer: LayerId,
         layer_index: usize,
         base_revision: u64,
+        presets: &[AspectPreset],
     ) -> Self {
         let stage = CropStage {
             angle: payload.angle.clamp(MIN_ANGLE, MAX_ANGLE),
@@ -228,7 +268,19 @@ impl CropDraft {
                 height: payload.height * box_height,
             }),
         };
-        Self::seeded(stage, rect, Some(layer), layer_index, base_revision)
+        let mut draft = Self::seeded(stage, rect, Some(layer), layer_index, base_revision);
+        if !payload.is_neutral()
+            && let Ok(output) = draft.output()
+            && let Some((preset, ratio)) = committed_aspect(
+                presets,
+                (input.width, input.height),
+                (output.width, output.height),
+            )
+        {
+            draft.preset = preset.option.clone();
+            draft.aspect = Aspect::Locked(ratio);
+        }
+        draft
     }
 
     /// Start a draft on a stack without a crop layer: no straightening and the whole stage.
@@ -964,12 +1016,118 @@ mod tests {
             };
             let expected = payload.output_rect(&stage).expect("a covered payload");
             let layer = LayerId::new();
-            let draft = CropDraft::from_layer(input, payload, layer.clone(), 1, 12);
+            let draft = CropDraft::from_layer(input, payload, layer.clone(), 1, 12, &presets());
             assert_eq!(draft.layer, Some(layer));
             assert_eq!(draft.layer_index, 1);
             assert_eq!(draft.stage.angle, 7.0);
             check(&draft, "from_layer");
             assert_eq!(draft.output().expect("a valid draft"), expected);
+        }
+    }
+
+    /// Reopen the payload a draft would commit, as a later draft on that crop layer would.
+    fn reopened(draft: &CropDraft) -> CropDraft {
+        let input = CropStage {
+            angle: 0.0,
+            ..draft.stage
+        };
+        CropDraft::from_layer(input, draft.payload(), LayerId::new(), 1, 12, &presets())
+    }
+
+    /// Every ratio a draft can choose, in either orientation and after a ratio-locked drag, reads
+    /// as that same preset when its committed payload is reopened: the chip stays chosen and the
+    /// lock stays closed on the same ratio, and the rectangle is exactly the committed one.
+    #[test]
+    fn a_reopened_crop_seeds_the_ratio_it_was_committed_with() {
+        for (width, height) in STAGES {
+            for angle in ANGLES {
+                for option in ["original", "1:1", "3:2", "4:3", "16:9"] {
+                    for swapped in [false, true] {
+                        for dragged in [false, true] {
+                            let mut draft = draft(width, height, angle);
+                            seed(&mut draft, Corner::TopLeft, (0.2, 0.15));
+                            draft.set_preset(&preset(option), None);
+                            if swapped {
+                                draft.swap();
+                            }
+                            if dragged {
+                                let from = Corner::BottomRight.point(&draft.rect);
+                                gesture(
+                                    &mut draft,
+                                    Handle::Corner(Corner::BottomRight),
+                                    from,
+                                    (from.0 - 37.0, from.1 - 23.0),
+                                    Modifiers::default(),
+                                );
+                            }
+                            let what = format!(
+                                "{option} on {width}x{height} at {angle}°, swapped {swapped}, dragged {dragged}"
+                            );
+                            check(&draft, &what);
+                            let reopened = reopened(&draft);
+                            assert_eq!(reopened.rect, draft.rect, "{what}: the rectangle moved");
+                            // Both stages are 3:2, so a 3:2 crop reads as Original, which the
+                            // descriptor declares first, and locks the same ratio.
+                            let expected = if option == "3:2" { "original" } else { option };
+                            assert_eq!(reopened.preset, expected, "{what}");
+                            let ratio = draft.aspect.ratio().expect("a locked ratio");
+                            let seeded = reopened
+                                .aspect
+                                .ratio()
+                                .unwrap_or_else(|| panic!("{what}: not locked"));
+                            assert!(
+                                (seeded - ratio).abs() <= 1e-9,
+                                "{what}: locked {seeded}, chosen {ratio}"
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// A rectangle that no declared ratio produces reads as Free, and so does the neutral payload,
+    /// whose whole-stage rectangle has the Original ratio but is no crop at all. Original is
+    /// declared before the `W:H` options, so a crop at the stage's own ratio reads as Original
+    /// even when a `W:H` option names the same ratio.
+    #[test]
+    fn a_free_or_neutral_crop_reads_as_free_and_original_wins_over_an_equal_ratio() {
+        let presets = presets();
+        let free = |stage: (u32, u32), output: (u32, u32)| {
+            committed_aspect(&presets, stage, output).map(|(preset, _)| preset.option.clone())
+        };
+        // 258 × 169 is 1.527: four and a half pixels from 3:2, beyond the three a 3:2 fit allows.
+        assert_eq!(free((480, 320), (258, 169)), None);
+        assert_eq!(free((480, 320), (300, 200)), Some("original".to_owned()));
+        assert_eq!(free((480, 320), (200, 300)), Some("original".to_owned()));
+        assert_eq!(free((480, 360), (300, 200)), Some("3:2".to_owned()));
+        assert_eq!(free((480, 360), (161, 90)), Some("16:9".to_owned()));
+        assert_eq!(free((480, 360), (90, 161)), Some("16:9".to_owned()));
+        assert_eq!(
+            committed_aspect(&presets, (480, 360), (90, 160)).map(|(_, ratio)| ratio),
+            Some(9.0 / 16.0),
+            "a portrait crop locks the portrait ratio"
+        );
+        // Free and Custom are never the answer, whatever the rectangle.
+        assert!(
+            (1..40)
+                .flat_map(|w| (1..40).map(move |h| (w * 7, h * 5)))
+                .filter_map(|output| committed_aspect(&presets, (480, 360), output))
+                .all(|(preset, _)| matches!(
+                    preset.kind,
+                    PresetKind::Original | PresetKind::Ratio(_)
+                ))
+        );
+        for (width, height) in STAGES {
+            let input = CropStage {
+                width,
+                height,
+                angle: 0.0,
+            };
+            let neutral =
+                CropDraft::from_layer(input, CropPayload::NEUTRAL, LayerId::new(), 0, 3, &presets);
+            assert_eq!(neutral.preset, "free");
+            assert_eq!(neutral.aspect, Aspect::Free);
         }
     }
 
