@@ -843,6 +843,41 @@ The settled-histogram column is the exact phase's cost and stays where the full-
 
 Rendered evidence is the `presence`, `mixer` and `vignette` smoke scenarios (15, 8 and 12 correlated frames at Fit and 100% with the module's own controls visible), and the acceptance chapter's ten checks per module through the JSON method table. A reviewer's render of the owner's 14 MP Sapa drone JPEG through the core alone (release, in memory: dehaze 65 ms, clarity 104 ms, texture 127 ms, all three at +50 672 ms) showed Dehaze +60 and +100 lifting the veil and deepening colour plausibly, Clarity +100 adding local contrast without visible halos at fit and at 100%, and Texture +100 sharpening fine detail with the expected crunch; it is a visual check, not a measurement. On a synthetic haze-free flat field Dehaze +100 drives the field toward black, because the dark-channel prior reads a uniform patch darker than the atmosphere as pure veil and the frozen `OMEGA_MAX = 1` removes all of it; the study records this and real photographs, whose windows contain dark pixels, do not show it.
 
+## Brush-heavy recipes across history
+
+Native Apple M4 Pro (14 cores, 48 GiB), macOS 26.5.2, Rust 1.94.0, release `--locked`, warm filesystem cache, catalog on the internal APFS SSD. One process per fixture:
+
+```text
+LIGHTWELL_MASK_GROWTH_SOURCE=fixtures/generated/24mp.jpg /usr/bin/time -l \
+  cargo test --release --package lightwell-core --lib measure_mask_growth -- --ignored --nocapture
+```
+
+Scope: `lightwell-core`'s own catalog, one stroke per history entry written through the production write path, each stroke captured at 100 positions and decimating to 67–78 stored ones, packed into the densest mask table the declared limits admit. There is no `mask.*` command that posts a stroke yet, so the session is built at the recipe and entry level rather than through the API; the bytes it writes are the bytes the API path will write, because it is the same `insert_entry`. The [stroke-storage table](../design/masking.md#stroke-storage) measures 200 strokes packed 64 to a mask rather than 81, which is the same curve one arrangement less dense: 1.11 MB there against 1.10 MB here.
+
+**Catalog growth is load-independent and is the primary result.** Stored is every entry's JSON plus the content-addressed stroke store; embedded is the same session with each stroke's positions written into its payload instead of its address. The 24 MP and 60 MP fixtures produce identical stored bytes, to the byte, because a stroke is stored in normalized coordinates: the catalog's growth does not depend on the source's pixel dimensions, and only the catalog *file* differs, by a page or two of SQLite allocation.
+
+| Strokes | Stored | Catalog file | Embedded | Factor |
+| --- | --- | --- | --- | --- |
+| 200 | 1.10 MB | 1.42 MB | 20.3 MB | 18.5× |
+| 500 | 5.64 MB | 6.32 MB | 126.5 MB | 22.4× |
+| 1000 | 20.9 MB | 22.2 MB | 505.3 MB | 24.1× |
+| 1809 (the ceiling) | 66.1 MB | 68.3 MB | 1652.4 MB | 25.0× |
+
+Least squares over the 37 sampled counts gives `S(n) = 19.30·n² + 1623·n + 2511` bytes, identical on both fixtures. Doubling the stroke count multiplies the stored bytes by 3.49 at 250 → 500 and 3.71 at 500 → 1000: **the growth is quadratic and nothing here may be described as linear.** The design predicted about 19 MB at 1000 strokes from the 35-byte reference alone; the measured 20.9 MB is that curve plus each entry's own JSON and the mask and component structure the references hang on, so the design's figure is corrected to the measurement. The design's 105 MB at 2400 strokes is withdrawn: 2400 strokes of this length is not a recipe this build will hold.
+
+**Two ceilings, both measured.** Sixteen masks of 8192 stored positions hold 1809 of these strokes and no more (`a_session_of_long_strokes_ends_at_the_masks_per_recipe_ceiling`). Independently of stroke length, the 256 KiB per-recipe serialized mask bound is reached at 7040 stroke references, which is the most any recipe can hold; past it the write is refused with `resource-limit: recipe masks serialize to 264356 bytes; the limit is 262144 serialized mask bytes per recipe` and the catalog is unchanged, proved by its SHA-256 before and after and by reopening to the same current entry and history length (`a_recipe_over_the_serialized_mask_bound_names_it_and_leaves_the_catalog_as_it_was`). No painting session's snapshot therefore carries more than 256 KiB of mask data.
+
+**The hash-chain variant recorded in the design is not needed and stays unbuilt.** A realistic long retouching session of a few hundred strokes costs one to six megabytes; the largest session of usable strokes that can exist costs 66 MB; and the pathological maximum — 7040 single-position strokes, one entry each, every snapshot at the 256 KiB bound — is at most 1.7 GB, which is a bound and not an open end. Nothing measured here asks for a variant that would cost an O(strokes) walk to rebuild a stroke list on every read.
+
+**Reopen and peak memory are timings on a shared host and are provisional.** The one-minute load average was 20.8 to 25.1 during these runs — far above the 8.0 at which a figure stops being quotable as a baseline — so they are reported as a ratio and an order of magnitude, not as a target. Reopen is `EditorService::open` plus `state` over the 1809-stroke catalog, three consecutive rounds, and the spread within each triple was under 0.2 ms, so the numbers are stable *under that load* even though the load makes their absolute level unreliable.
+
+| Fixture | Reopen (3 rounds) | Load | Peak RSS | Peak footprint |
+| --- | --- | --- | --- | --- |
+| 24 MP | 14.2 / 14.2 / 14.1 ms | 25.1 | 271 MiB | 266 MiB |
+| 60 MP | 21.2 / 21.1 / 21.0 ms | 20.8 | 651 MiB | 647 MiB |
+
+Peak memory is the whole test process, which imports and decodes the fixture. Both processes wrote the identical 66 MB catalog, so the 380 MiB between the two rows is the 36 MP between the two images and nothing else: the history itself is not resident, because entries are written and read one at a time and never held together. Reopen resolves all 1809 stroke references and grows by about 7 ms between the two sizes, which is the source decode and not the store.
+
 ## Preset import parse
 
 Native Apple M4 Pro (14 cores, 48 GiB), macOS 26.5.2, Rust 1.94.0, release `--locked`, in memory, 20 runs each: `cargo test --release --package lightwell-core --lib measure_preset_parse -- --ignored --nocapture`. Each synthetic document is filled to the 1 MiB request limit in the shape that presses one bound, and `inspect_preset` runs detection, parsing, mapping and the report. It reads no file and renders nothing.

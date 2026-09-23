@@ -4551,6 +4551,559 @@ mod tests {
         );
     }
 
+    /// One sample of a painting session's stored cost, taken after the entry that carried its last
+    /// stroke was committed.
+    ///
+    /// Everything here is a byte count taken from the catalog itself, so nothing in it depends on
+    /// what else the host is doing; the one timed figure a session produces, reopen, is measured
+    /// separately and quoted with its load average.
+    #[derive(Clone, Copy)]
+    struct Growth {
+        strokes: usize,
+        /// The bytes of every stored entry's JSON: the snapshots, which is where the growth is.
+        entries: usize,
+        /// The bytes of the content-addressed store: each distinct stroke once.
+        store: usize,
+        /// The catalog file on disk, which also carries the asset, the page overhead and the index.
+        catalog: u64,
+        /// What the same entries would have cost with each stroke's positions written into its
+        /// payload instead of its address: the shape the store exists to avoid.
+        embedded: usize,
+    }
+
+    impl Growth {
+        /// Entries plus store: what a painting session costs a catalog, and the number the curve is
+        /// read from.
+        fn stored(self) -> usize {
+            self.entries + self.store
+        }
+    }
+
+    /// The host's one-minute load average, so every timed figure below can be quoted with the state
+    /// of the machine that produced it. Byte counts do not need it and are not quoted with it.
+    fn load_average() -> f64 {
+        std::process::Command::new("/usr/sbin/sysctl")
+            .args(["-n", "vm.loadavg"])
+            .output()
+            .ok()
+            .and_then(|out| String::from_utf8(out.stdout).ok())
+            .and_then(|text| {
+                text.split_whitespace()
+                    .nth(1)
+                    .and_then(|first| first.parse().ok())
+            })
+            .unwrap_or(f64::NAN)
+    }
+
+    /// Pack a session's strokes into the densest mask table the declared limits admit, or `None`
+    /// for a session too large to be a recipe at all.
+    ///
+    /// A component takes [`crate::mask::STROKES_PER_COMPONENT`] strokes and a mask takes components
+    /// until its strokes' stored positions would pass [`crate::POINTS_PER_MASK`], so the point bound
+    /// closes a mask long before its 32 components do for any stroke of usable length.
+    /// [`crate::MASKS_PER_RECIPE`] masks of those is the ceiling, and a session past it is not a
+    /// recipe this build will hold; that ceiling is the real end of the quadratic curve and is
+    /// measured rather than assumed.
+    fn packed(addresses: &[String], lengths: &[usize]) -> Option<Vec<Mask>> {
+        fn close(mask: &mut Mask, component: &mut Vec<String>) {
+            if component.is_empty() {
+                return;
+            }
+            let name = mask.next_component_name("brush");
+            mask.components.push(Component::new(
+                name,
+                ComponentMode::Add,
+                "brush",
+                json!({ "strokes": std::mem::take(component) }),
+            ));
+        }
+        let mut masks: Vec<Mask> = Vec::new();
+        let mut mask = Mask::new("Mask 1");
+        let mut component: Vec<String> = Vec::new();
+        let mut points = 0_usize;
+        for (address, length) in addresses.iter().zip(lengths) {
+            if points + length > crate::POINTS_PER_MASK
+                || (component.len() == crate::mask::STROKES_PER_COMPONENT
+                    && mask.components.len() == crate::COMPONENTS_PER_MASK)
+            {
+                close(&mut mask, &mut component);
+                let next = Mask::new(format!("Mask {}", masks.len() + 2));
+                masks.push(std::mem::replace(&mut mask, next));
+                points = 0;
+            }
+            if component.len() == crate::mask::STROKES_PER_COMPONENT {
+                close(&mut mask, &mut component);
+            }
+            component.push(address.clone());
+            points += length;
+        }
+        close(&mut mask, &mut component);
+        masks.push(mask);
+        (masks.len() <= crate::MASKS_PER_RECIPE).then_some(masks)
+    }
+
+    /// Paint `count` strokes into `catalog` over `source`, one stroke per history entry written
+    /// through the production write path, sampling the stored cost every `every` strokes.
+    ///
+    /// The strokes are packed by [`packed`], so the session is the densest one the declared limits
+    /// admit and its cost is the worst case rather than an arrangement chosen to be cheap.
+    ///
+    /// The returned asset is the painted one, so a caller can time reopening the catalog it left.
+    fn painting_session(
+        catalog: &Path,
+        source: &Path,
+        count: usize,
+        every: usize,
+    ) -> (Vec<Growth>, AssetId) {
+        let mut service = EditorService::open(catalog).unwrap();
+        let asset = service.import(source).unwrap().asset.id;
+        let state = service.state(&asset).unwrap();
+        let base = state.current_entry.snapshot.recipe.clone();
+        drop(service);
+
+        let registry = ModuleRegistry::builtin();
+        let mut connection = Connection::open(catalog).unwrap();
+        let mut table = crate::path::StrokeTable::new("the measured session");
+        // One address per stroke, kept rather than recomputed, so building the recipe an entry
+        // carries costs a clone of the table and not a rehash of every stroke drawn so far.
+        let mut addresses: Vec<String> = Vec::with_capacity(count);
+        let mut previous = state.current_entry.clone();
+        let mut revision = state.revision;
+        // The counterfactual, accumulated beside the real thing: `drawn` is what this session's
+        // strokes serialize to in full, and every entry embeds all of them, so `embedded` grows by
+        // the whole of `drawn` once per entry. That is the quadratic term with its large constant.
+        // The entries' own bytes are added to it at each checkpoint, exactly as the 200-stroke
+        // measurement does, so the two tables are read against each other directly.
+        let mut drawn = 0_usize;
+        let mut embedded = 0_usize;
+        let mut lengths: Vec<usize> = Vec::with_capacity(count);
+        let mut curve = Vec::new();
+        for index in 0..count {
+            let one = stroke(index);
+            drawn += one.canonical().len() + 1;
+            embedded += drawn;
+            lengths.push(one.point_count());
+            addresses.push(table.insert(one).to_string());
+            let masks = packed(&addresses, &lengths)
+                .expect("this session is past the per-recipe mask ceiling and is not a recipe");
+            let entry = HistoryEntry {
+                id: EntryId::new(),
+                sequence: previous.sequence + 1,
+                label: format!("Brush {}", index + 1),
+                undo_parent: Some(previous.id.clone()),
+                base_revision: revision,
+                result_revision: revision + 1,
+                snapshot: Snapshot {
+                    id: SnapshotId::new(),
+                    asset_id: asset.clone(),
+                    recipe: Recipe {
+                        masks,
+                        strokes: table.clone(),
+                        ..base.clone()
+                    },
+                },
+                ..previous.clone()
+            };
+            revision += 1;
+            let tx = connection.transaction().unwrap();
+            insert_entry(&registry, &tx, &entry).unwrap();
+            tx.execute(
+                "UPDATE asset_state SET current_entry_id=?1, revision=?2 WHERE asset_id=?3",
+                params![entry.id.as_str(), revision as i64, asset.as_str()],
+            )
+            .unwrap();
+            tx.commit().unwrap();
+            previous = entry;
+            if (index + 1).is_multiple_of(every) || index + 1 == count {
+                let entries: i64 = connection
+                    .query_row("SELECT SUM(LENGTH(entry_json)) FROM entries", [], |row| {
+                        row.get(0)
+                    })
+                    .unwrap();
+                let store: i64 = connection
+                    .query_row("SELECT SUM(LENGTH(stroke_json)) FROM strokes", [], |row| {
+                        row.get(0)
+                    })
+                    .unwrap();
+                curve.push(Growth {
+                    strokes: index + 1,
+                    entries: entries as usize,
+                    store: store as usize,
+                    catalog: std::fs::metadata(catalog).map(|m| m.len()).unwrap_or(0),
+                    embedded: entries as usize + embedded,
+                });
+            }
+        }
+        drop(connection);
+        (curve, asset)
+    }
+
+    /// Least squares over `S(n) = a·n² + b·n + c`, returned as `(a, b, c)`.
+    ///
+    /// The point of fitting rather than asserting a ratio is that the quadratic term is then a
+    /// number on the page: a session's cost is not linear in its stroke count and this is what says
+    /// so.
+    fn quadratic_fit(curve: &[Growth]) -> (f64, f64, f64) {
+        // Normal equations for the three-column design matrix [n², n, 1]. Six moments of n and three
+        // of S are all it needs, and the 3×3 solve is written out rather than looped.
+        let (mut s0, mut s1, mut s2, mut s3, mut s4) = (0.0, 0.0, 0.0, 0.0, 0.0);
+        let (mut t0, mut t1, mut t2) = (0.0, 0.0, 0.0);
+        for point in curve {
+            let n = point.strokes as f64;
+            let y = point.stored() as f64;
+            s0 += 1.0;
+            s1 += n;
+            s2 += n * n;
+            s3 += n * n * n;
+            s4 += n * n * n * n;
+            t0 += y;
+            t1 += n * y;
+            t2 += n * n * y;
+        }
+        let m = [[s4, s3, s2], [s3, s2, s1], [s2, s1, s0]];
+        let rhs = [t2, t1, t0];
+        let det = m[0][0] * (m[1][1] * m[2][2] - m[1][2] * m[2][1])
+            - m[0][1] * (m[1][0] * m[2][2] - m[1][2] * m[2][0])
+            + m[0][2] * (m[1][0] * m[2][1] - m[1][1] * m[2][0]);
+        let solve = |column: usize| {
+            let mut c = m;
+            for (row, value) in rhs.iter().enumerate() {
+                c[row][column] = *value;
+            }
+            (c[0][0] * (c[1][1] * c[2][2] - c[1][2] * c[2][1])
+                - c[0][1] * (c[1][0] * c[2][2] - c[1][2] * c[2][0])
+                + c[0][2] * (c[1][0] * c[2][1] - c[1][1] * c[2][0]))
+                / det
+        };
+        (solve(0), solve(1), solve(2))
+    }
+
+    /// The largest session of these strokes a recipe can hold: [`crate::MASKS_PER_RECIPE`] masks,
+    /// each filled to [`crate::POINTS_PER_MASK`] stored positions. It is where the quadratic curve
+    /// stops, which is what makes its far end a bounded number rather than an extrapolation, and it
+    /// is measured by the test below rather than reasoned out — these strokes are captured at 100
+    /// positions and decimate to between 67 and 78, so the arithmetic on 100 would be wrong.
+    const CEILING: usize = 1809;
+
+    /// The independent, larger-scale confirmation of the store's figures: a painting session run to
+    /// the per-recipe ceiling on 24 MP and 60 MP, sampled every fifty strokes, with the curve it
+    /// traces, the counterfactual beside it, and the time to reopen the catalog it left.
+    ///
+    /// Peak process memory belongs to the process, so a run measures one source at a time: set
+    /// `LIGHTWELL_MASK_GROWTH_SOURCE` to a fixture's path and wrap the run in `/usr/bin/time -l`,
+    /// which is where the recorded peak resident set comes from. Without it both sources run in one
+    /// process and only the byte counts are attributable.
+    ///
+    /// Printed rather than asserted, because a timing gate does not belong in the test suite; the
+    /// tests below hold the design's figures, the ceiling and the bound in place.
+    ///
+    /// ```text
+    /// cargo test --release --package lightwell-core --lib measure_mask_growth -- --ignored --nocapture
+    /// ```
+    #[test]
+    #[ignore = "a measurement, not a gate"]
+    fn measure_mask_growth_across_a_painting_session() {
+        let generated = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/generated");
+        let chosen = std::env::var("LIGHTWELL_MASK_GROWTH_SOURCE").ok();
+        let sources: Vec<(String, PathBuf)> = match &chosen {
+            Some(path) => vec![(path.clone(), PathBuf::from(path))],
+            None => ["24mp.jpg", "60mp.jpg"]
+                .iter()
+                .map(|name| ((*name).to_owned(), generated.join(name)))
+                .filter(|(_, path)| path.exists())
+                .collect(),
+        };
+        assert!(
+            !sources.is_empty(),
+            "generate fixtures first: cargo xtask generate-fixtures --output fixtures/generated"
+        );
+        println!(
+            "load average at the start of this run: {:.2}",
+            load_average()
+        );
+        for (name, source) in &sources {
+            let catalog = temp("mask-growth-measured.sqlite");
+            let (curve, asset) = painting_session(&catalog, source, CEILING, 50);
+            println!(
+                "\n{name}: strokes, stored entries + store (MB), catalog file (MB), embedded \
+                 counterfactual (MB), factor"
+            );
+            for point in &curve {
+                println!(
+                    "  {:>4}  {:>8.3}  {:>8.3}  {:>9.3}  {:>5.1}x",
+                    point.strokes,
+                    point.stored() as f64 / 1e6,
+                    point.catalog as f64 / 1e6,
+                    point.embedded as f64 / 1e6,
+                    point.embedded as f64 / point.stored() as f64,
+                );
+            }
+            let (a, b, c) = quadratic_fit(&curve);
+            let at = |n: usize| {
+                curve
+                    .iter()
+                    .find(|point| point.strokes == n)
+                    .copied()
+                    .expect("a sampled stroke count")
+            };
+            println!(
+                "  fit S(n) = {a:.4}·n² + {b:.1}·n + {c:.0} bytes; S(1000)/S(500) = {:.2} and \
+                 S(500)/S(250) = {:.2} (4 is quadratic, 2 would be linear)",
+                at(1000).stored() as f64 / at(500).stored() as f64,
+                at(500).stored() as f64 / at(250).stored() as f64,
+            );
+            println!(
+                "  one stroke serializes to {} bytes; the ceiling's {CEILING} distinct strokes hold \
+                 {} KiB",
+                at(CEILING).store / CEILING,
+                at(CEILING).store / 1024,
+            );
+            for round in 0..3 {
+                let started = Instant::now();
+                let service = EditorService::open(&catalog).unwrap();
+                let state = service.state(&asset).unwrap();
+                let elapsed = started.elapsed();
+                println!(
+                    "  reopen {round}: {:.1} ms at load {:.2} ({} masks, {} strokes resolved)",
+                    elapsed.as_secs_f64() * 1e3,
+                    load_average(),
+                    state.current_entry.snapshot.recipe.masks.len(),
+                    state
+                        .current_entry
+                        .snapshot
+                        .recipe
+                        .strokes
+                        .strokes()
+                        .count(),
+                );
+            }
+            std::fs::remove_file(&catalog).unwrap();
+        }
+    }
+
+    /// The growth is quadratic, and its square term is the one the design records.
+    ///
+    /// Scope: `lightwell-core`'s own catalog on the 24 MP generated fixture when it has been
+    /// generated and on the small JPEG fixture otherwise — the catalog's bytes do not depend on the
+    /// source's pixel dimensions, which the measurement above confirms by measuring both — one
+    /// stroke of 100 positions per history entry, counting the bytes of every stored entry plus the
+    /// bytes of the stroke store. Byte counts, so no load average applies.
+    ///
+    /// It gates the shape at 400 strokes and leaves the thousand-stroke and ceiling figures to the
+    /// measurement above, so the suite does not carry a twenty-second session to learn what four
+    /// hundred strokes already say.
+    #[test]
+    fn a_painting_session_grows_with_the_square_of_its_stroke_count() {
+        let source =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/generated/24mp.jpg");
+        let source = if source.exists() { source } else { fixture() };
+        let catalog = temp("quadratic-growth.sqlite");
+        let (curve, _) = painting_session(&catalog, &source, 400, 100);
+        std::fs::remove_file(&catalog).unwrap();
+        let at = |n: usize| {
+            curve
+                .iter()
+                .find(|point| point.strokes == n)
+                .copied()
+                .expect("a sampled stroke count")
+        };
+        let (quadratic, linear, _) = quadratic_fit(&curve);
+        println!(
+            "400 strokes: {:.3} MB stored, {:.1} MB embedded; S(n) = {quadratic:.2}·n² + {linear:.0}·n",
+            at(400).stored() as f64 / 1e6,
+            at(400).embedded as f64 / 1e6,
+        );
+        // Doubling the stroke count multiplies the stored bytes by about four. That is the whole
+        // claim about the shape, and it is what forbids anyone writing that the store made the
+        // growth linear. The ratio is a little under four because the linear term has not washed
+        // out at these counts; it approaches four as the session grows.
+        let doubling = at(400).stored() as f64 / at(200).stored() as f64;
+        assert!(
+            (3.2..4.3).contains(&doubling),
+            "doubling the strokes multiplied the bytes by {doubling:.2}; quadratic growth doubles \
+             to about four and linear growth to two",
+        );
+        // The fitted square term is the design's recorded curve: about twenty bytes per stroke per
+        // stroke, which is the 35-byte reference paid by half the entries on average, plus the mask
+        // and component structure it hangs on.
+        assert!(
+            (17.0..23.0).contains(&quadratic),
+            "the fitted n² coefficient is {quadratic:.2} bytes, not the recorded 19.6",
+        );
+    }
+
+    /// A recipe of 100-position strokes has a ceiling, and it is the masks-per-recipe limit rather
+    /// than anything about the store.
+    ///
+    /// This is what makes the quadratic curve's far end a bounded number: the design's figure for
+    /// 2400 strokes describes a session no recipe of strokes this length can hold, because the
+    /// per-mask point bound admits about 113 of them and a recipe holds sixteen masks.
+    #[test]
+    fn a_session_of_long_strokes_ends_at_the_masks_per_recipe_ceiling() {
+        let lengths: Vec<usize> = (0..CEILING * 2)
+            .map(|index| stroke(index).point_count())
+            .collect();
+        let addresses: Vec<String> = (0..CEILING * 2).map(|i| format!("{i:032x}")).collect();
+        let ceiling = (1..lengths.len())
+            .take_while(|count| packed(&addresses[..*count], &lengths[..*count]).is_some())
+            .last()
+            .expect("at least one stroke packs");
+        println!(
+            "the measured session's strokes hold {}..={} positions each and {ceiling} of them is \
+             the most a recipe can hold",
+            lengths.iter().min().unwrap(),
+            lengths.iter().max().unwrap(),
+        );
+        // The measurement paints to CEILING, so CEILING has to be a session that packs, and the
+        // stroke past it has to be one that does not: that is what makes the curve's far end the
+        // real end rather than a number chosen to be round.
+        assert_eq!(ceiling, CEILING);
+        let full = packed(&addresses[..ceiling], &lengths[..ceiling]).expect("the ceiling packs");
+        assert_eq!(full.len(), crate::MASKS_PER_RECIPE);
+        for mask in &full {
+            let points: usize = mask
+                .components
+                .iter()
+                .flat_map(|component| {
+                    crate::path::references(&component.payload, "a packed component").unwrap()
+                })
+                .map(|id| {
+                    let at = usize::from_str_radix(id.as_str(), 16).expect("a positional address");
+                    lengths[at]
+                })
+                .sum();
+            assert!(points <= crate::POINTS_PER_MASK);
+            assert!(mask.components.len() <= crate::COMPONENTS_PER_MASK);
+        }
+    }
+
+    /// One single-position stroke, distinct per index, for the sessions that press a count rather
+    /// than a length.
+    fn tiny_stroke(index: usize) -> crate::path::Stroke {
+        let x = 0.1 + (index % 4096) as f64 / 16384.0;
+        let y = 0.1 + (index / 4096) as f64 / 16384.0;
+        crate::path::Stroke::capture(&[[x, y]], 0.04, 50.0, 100.0, false).expect("a legal stroke")
+    }
+
+    /// The per-recipe serialized mask bound is the one that keeps a painting session's snapshots
+    /// bounded, so it is refused by name and the refusal writes nothing.
+    ///
+    /// The bound is reached with single-position strokes because that is the shape that presses it:
+    /// the per-mask point bound stops a session of long strokes long before its references fill
+    /// 256 KiB.
+    #[test]
+    fn a_recipe_over_the_serialized_mask_bound_names_it_and_leaves_the_catalog_as_it_was() {
+        let catalog = temp("serialized-mask-bound.sqlite");
+        let (_, asset) = painting_session(&catalog, &fixture(), 4, 4);
+
+        // The durable state the refusal must not touch: the catalog's own bytes, and what a reopen
+        // reads back out of them.
+        let before = std::fs::read(&catalog).unwrap();
+        let digest = |bytes: &[u8]| format!("{:x}", Sha256::digest(bytes));
+        let service = EditorService::open(&catalog).unwrap();
+        let state = service.state(&asset).unwrap();
+        let entries = service.history(&asset, None, 64).unwrap().entries.len();
+        let base = state.current_entry.snapshot.recipe.clone();
+        let current = state.current_entry.id.clone();
+        drop(service);
+
+        // Fill masks to their declared component and stroke counts until the mask table serializes
+        // past the bound. Nothing else is at its limit: each mask holds 2048 stored positions
+        // against a bound of 8192, and the recipe holds four masks against a bound of sixteen.
+        let mut table = crate::path::StrokeTable::new("the over-bound session");
+        let mut masks: Vec<Mask> = vec![Mask::new("Full 1")];
+        let mut drawn = 0_usize;
+        let mut under = 0_usize;
+        while serde_json::to_vec(&masks).unwrap().len() <= crate::MASK_BYTES_PER_RECIPE {
+            under = drawn;
+            if masks.last().unwrap().components.len() == crate::COMPONENTS_PER_MASK {
+                masks.push(Mask::new(format!("Full {}", masks.len() + 1)));
+                assert!(
+                    masks.len() <= crate::MASKS_PER_RECIPE,
+                    "the mask-count bound was reached before the byte bound, so this test is \
+                     pressing the wrong limit"
+                );
+            }
+            let addresses: Vec<String> = (0..crate::mask::STROKES_PER_COMPONENT)
+                .map(|_| {
+                    drawn += 1;
+                    table.insert(tiny_stroke(drawn)).to_string()
+                })
+                .collect();
+            let mask = masks.last_mut().unwrap();
+            let name = mask.next_component_name("brush");
+            mask.components.push(Component::new(
+                name,
+                ComponentMode::Add,
+                "brush",
+                json!({ "strokes": addresses }),
+            ));
+        }
+        let bytes = serde_json::to_vec(&masks).unwrap().len();
+        // The byte bound is also the absolute ceiling on a recipe's stroke count, because a
+        // reference costs 35 bytes whatever it points at: no recipe of any shape holds more strokes
+        // than this, whatever its strokes are, and no snapshot a painting session writes is larger
+        // than the bound.
+        println!(
+            "{under} single-position strokes over {} masks are the most that fit the {} KiB bound; \
+             {drawn} of them serialize to {bytes} bytes and are refused",
+            masks.len(),
+            crate::MASK_BYTES_PER_RECIPE / 1024,
+        );
+        let over = HistoryEntry {
+            id: EntryId::new(),
+            sequence: state.current_entry.sequence + 1,
+            label: "Brush past the bound".into(),
+            undo_parent: Some(current.clone()),
+            base_revision: state.revision,
+            result_revision: state.revision + 1,
+            snapshot: Snapshot {
+                id: SnapshotId::new(),
+                asset_id: asset.clone(),
+                recipe: Recipe {
+                    masks,
+                    strokes: table,
+                    ..base
+                },
+            },
+            ..state.current_entry.clone()
+        };
+
+        let registry = ModuleRegistry::builtin();
+        let mut connection = Connection::open(&catalog).unwrap();
+        let tx = connection.transaction().unwrap();
+        let error = insert_entry(&registry, &tx, &over).expect_err("past the serialized bound");
+        drop(tx);
+        drop(connection);
+        assert_eq!(error.kind, ErrorKind::ResourceLimit);
+        assert_eq!(
+            error.detail,
+            format!(
+                "recipe masks serialize to {bytes} bytes; the limit is {} serialized mask bytes \
+                 per recipe",
+                crate::MASK_BYTES_PER_RECIPE
+            ),
+        );
+
+        // Byte for byte as it was: the bound is checked before anything is written, so the refused
+        // entry left neither an entry row nor a stroke in the store.
+        let after = std::fs::read(&catalog).unwrap();
+        assert_eq!(
+            digest(&before),
+            digest(&after),
+            "the refused write changed the catalog file"
+        );
+        let service = EditorService::open(&catalog).unwrap();
+        let reopened = service.state(&asset).unwrap();
+        assert_eq!(reopened.current_entry.id, current);
+        assert_eq!(
+            service.history(&asset, None, 64).unwrap().entries.len(),
+            entries
+        );
+        drop(service);
+        std::fs::remove_file(&catalog).unwrap();
+    }
+
     /// The declared points-per-mask limit is enforced where the strokes are in hand, and names
     /// itself.
     #[test]
