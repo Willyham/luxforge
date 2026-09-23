@@ -850,7 +850,7 @@
     {
       "id": "TASK-011",
       "description": "Close phase A with its evidence: exact fixtures, geometry survival through the tail, a mask-linear smoke scenario on the M4 Mac, UI and API parity, measurements and the documentation the phase changes.",
-      "status": "pending",
+      "status": "completed",
       "dependencies": [
         "TASK-006",
         "TASK-010"
@@ -1186,7 +1186,7 @@
     {
       "id": "TASK-015",
       "description": "Build the component-list interface and the multi-component canvas: modes as controls, inversion, ordering, per-component overlay on hover, radial handles and the explicit add-a-component row.",
-      "status": "pending",
+      "status": "completed",
       "dependencies": [
         "TASK-010",
         "TASK-012",
@@ -1285,7 +1285,8 @@
         "The masked spatial cost was first measured on a host under a one-minute load average of 87.9, where the identical unmasked 24 MP work read 353 and 543 ms against a delivered quiesced figure of 191 ms. Those absolute milliseconds are not quotable and the performance plan says so; what held were the ratios and the exact tile counters. A quiesced re-measurement is outstanding and is this task's to make.",
         "Two Masks-panel defects were seen in phase A's captures and left unfixed because their files were contended: the panel's generated Amount slider reads 0 while the mask row beside it reads 100%, and the recipe list's mask heading renders the name twice, as 'MASK 1 - MASK 1'. Both are visible in the mask-linear captures. Fix them here and prove it in a frame.",
         "A masked module edit's history label does not name its mask: the granularity table's 'Mask 1 exposure +0.45' reads 'Exposure +2.00 EV' however many masks the recipe holds, while a mask.* command's label is prefixed from the second mask on. The fix is in apply_action's label path. Settle whether the prefix always applies or follows the same more-than-one-mask rule the command labels use, then make the table and the behaviour agree.",
-        "The masked-drag latency figures taken in phase A are provisional and are not a baseline: the host never dropped below load 37 during those runs, five times the 8.0 the performance spec sets for quoting one, and two identical masked runs measured p50 32.6 and 16.0 ms. What is load-independent and was quotable: draft.set round trip 0.2-0.3 ms unmasked against 0.3-0.5 ms masked, and identical queue counters across all six runs (31 burst values coalesced to 1 draft.set, 0 superseded). Retake the millisecond figures quiesced before attributing any cost to the mask."
+        "The masked-drag latency figures taken in phase A are provisional and are not a baseline: the host never dropped below load 37 during those runs, five times the 8.0 the performance spec sets for quoting one, and two identical masked runs measured p50 32.6 and 16.0 ms. What is load-independent and was quotable: draft.set round trip 0.2-0.3 ms unmasked against 0.3-0.5 ms masked, and identical queue counters across all six runs (31 burst values coalesced to 1 draft.set, 0 superseded). Retake the millisecond figures quiesced before attributing any cost to the mask.",
+        "An evidence run stalls on a refused mask command: a row command the panel sends but the host refuses - an arbitrary reorder index that would leave a non-add component leading, which no button offers - leaves the waiting step with no frame to settle on, so the run waits to its deadline. The refusal arrives after the step returns, so the arming condition cannot see it; the fix is for the mask command's failure path to settle the waiting step. Until it lands, an evidence script can only ask for what the panel offers, which is a weaker guarantee than the parity claim wants."
       ],
       "context_links": [
         {
