@@ -703,6 +703,7 @@ mod tests {
         let layer = match plan {
             ActionPlan::Commit(layer) | ActionPlan::Update(layer) => layer,
             ActionPlan::NoOp => panic!("expected a committed layer, not a no-op"),
+            ActionPlan::Compose(_) => panic!("expected a committed layer, not a composite"),
         };
         assert_eq!(layer.effect_id, CROP_EFFECT);
         assert_eq!(layer.effect_format, EFFECT_FORMAT);

@@ -394,6 +394,7 @@ mod tests {
         match plan {
             ActionPlan::Commit(layer) | ActionPlan::Update(layer) => layer,
             ActionPlan::NoOp => panic!("a transform is never a no-op"),
+            ActionPlan::Compose(_) => panic!("a transform is never a composite"),
         }
     }
 

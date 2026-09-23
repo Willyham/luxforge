@@ -4,7 +4,8 @@ use crate::{
     SnapshotId, Transform,
     analysis::AnalysisIdentity,
     modules::{
-        ActionInput, ActionPlan, EffectStage, Stage, StageContext, action_label, check_parameters,
+        ActionInput, ActionPlan, EffectStage, MAX_COMPOSE_STEPS, Stage, StageContext, action_label,
+        check_parameters,
     },
     open_source_bytes, read_bounded_file, render,
     render::{Evaluation, locate_dimensions},
@@ -1342,7 +1343,7 @@ impl EditorService {
                 ActionPlan::Update(layer) => {
                     state.current_entry.snapshot.with_layer_replaced(layer)?
                 }
-                ActionPlan::Commit(_) => {
+                ActionPlan::Commit(_) | ActionPlan::Compose(_) => {
                     return Err(Error::new(
                         ErrorKind::Validation,
                         "RAW source action may only update its required layer",
@@ -1359,28 +1360,11 @@ impl EditorService {
             );
         }
         let source = self.verified_prepared(&state.asset)?;
-        let snapshot = match self.plan_input(&state, &source, module, &input)? {
-            ActionPlan::NoOp => {
-                return self.persist_noop(asset_id, &mutation, &request, &state);
-            }
-            // The host places the layer by the effect's declared stage and order: a pixel-stage
-            // effect goes before the geometry tail, so a later crop change carries it instead of
-            // moving or invalidating it. An effect no provider declares is placed as a geometry one
-            // would be and rejected by the whole-stack compile below.
-            ActionPlan::Commit(layer) => {
-                let index = registry.insertion_index_for(
-                    &state.current_entry.snapshot.recipe.layers,
-                    &layer.effect_id,
-                );
-                state
-                    .current_entry
-                    .snapshot
-                    .with_layer_inserted(index, layer)?
-            }
-            // An update keeps the layer's identity and position; a missing identity is rejected
-            // before anything is written.
-            ActionPlan::Update(layer) => state.current_entry.snapshot.with_layer_replaced(layer)?,
+        let plan = self.plan_input(&state, &source, module, &input)?;
+        let Some(recipe) = self.resolve_plan(&source, recipe, plan)? else {
+            return self.persist_noop(asset_id, &mutation, &request, &state);
         };
+        let snapshot = state.current_entry.snapshot.with_recipe(recipe)?;
         self.commit_snapshot(
             asset_id,
             mutation,
@@ -1574,26 +1558,98 @@ impl EditorService {
         let state = self.state(asset_id)?;
         validate_source_recipe(&state.asset, &state.current_entry.snapshot.recipe)?;
         let source = self.verified_prepared(&state.asset)?;
-        let recipe = match self.plan_input(&state, &source, module, &input)? {
-            ActionPlan::NoOp => state.current_entry.snapshot.recipe.clone(),
-            ActionPlan::Commit(layer) => {
-                let index = registry.insertion_index_for(
-                    &state.current_entry.snapshot.recipe.layers,
-                    &layer.effect_id,
-                );
-                state
-                    .current_entry
-                    .snapshot
-                    .recipe
-                    .with_layer_inserted(index, layer)?
-            }
-            ActionPlan::Update(layer) => state
-                .current_entry
-                .snapshot
-                .recipe
-                .with_layer_replaced(layer)?,
-        };
+        let current = &state.current_entry.snapshot.recipe;
+        let plan = self.plan_input(&state, &source, module, &input)?;
+        let recipe = self
+            .resolve_plan(&source, current, plan)?
+            .unwrap_or_else(|| current.clone());
         Ok((recipe, state))
+    }
+
+    /// The stack one plan produces from `recipe`, or `None` when it changes nothing. A commit and a
+    /// draft's effective recipe both resolve their plan here, so a drafted preview is exactly what
+    /// committing it would produce, composites included.
+    ///
+    /// `Commit` places the new layer by its effect's declared stage and order: a pixel-stage effect
+    /// goes before the geometry tail, so a later crop change carries it instead of moving or
+    /// invalidating it, and an effect no provider declares is placed as a geometry one would be and
+    /// refused by the whole-stack compile at commit. `Update` keeps the layer's identity and
+    /// position, and a missing identity is refused before anything is written.
+    ///
+    /// `Compose` runs each step exactly as that action would run alone, against the stack the steps
+    /// before it produced: the registry finds the action, which must be a field patch of an
+    /// available module; the generic check and the module's `parse` take its fields; and the module
+    /// plans against the intermediate stack through the same [`StageContext`] construction. A step
+    /// that is itself a composite is refused, and so is any refused step, before anything is
+    /// written. The final stack is `None` when it equals the starting one. Each step plans by
+    /// comparing payloads, so a composite costs `O(steps × layers)` and rasterizes nothing.
+    fn resolve_plan(
+        &self,
+        source: &PreparedSource,
+        recipe: &Recipe,
+        plan: ActionPlan,
+    ) -> Result<Option<Recipe>, Error> {
+        let steps = match plan {
+            ActionPlan::Compose(steps) => steps,
+            plan => return self.apply_plan(recipe, plan),
+        };
+        if steps.len() > MAX_COMPOSE_STEPS {
+            return Err(Error::new(
+                ErrorKind::Validation,
+                format!(
+                    "a composite action holds {} steps, more than {MAX_COMPOSE_STEPS}",
+                    steps.len()
+                ),
+            ));
+        }
+        let registry = self.registry.clone();
+        let mut resolved = recipe.clone();
+        for step in steps {
+            let action_id = step.action_id.as_str();
+            let (module, action) = registry.action(action_id).ok_or_else(|| {
+                Error::new(ErrorKind::Validation, format!("unknown action {action_id}"))
+            })?;
+            if !action.patch {
+                return Err(Error::new(
+                    ErrorKind::Validation,
+                    format!("{action_id} is not a field-patch action"),
+                ));
+            }
+            let descriptor = module.descriptor();
+            if !descriptor.is_available() {
+                return Err(Error::new(
+                    ErrorKind::Incompatible,
+                    format!("unavailable module {}", descriptor.id),
+                ));
+            }
+            let checked = check_parameters(action, &Value::Object(step.parameters))?;
+            let input = module.parse(action_id, &checked)?;
+            let plan =
+                self.with_stage_context(source, &resolved, |context| module.plan(&input, context))?;
+            if let Some(next) = self.apply_plan(&resolved, plan)? {
+                resolved = next;
+            }
+        }
+        Ok((resolved != *recipe).then_some(resolved))
+    }
+
+    /// One step's plan applied to a stack: the placement rules of [`Self::resolve_plan`] for a
+    /// single layer. A composite here is a step of another composite, which the host refuses.
+    fn apply_plan(&self, recipe: &Recipe, plan: ActionPlan) -> Result<Option<Recipe>, Error> {
+        match plan {
+            ActionPlan::NoOp => Ok(None),
+            ActionPlan::Commit(layer) => {
+                let index = self
+                    .registry
+                    .insertion_index_for(&recipe.layers, &layer.effect_id);
+                Ok(Some(recipe.with_layer_inserted(index, layer)?))
+            }
+            ActionPlan::Update(layer) => Ok(Some(recipe.with_layer_replaced(layer)?)),
+            ActionPlan::Compose(_) => Err(Error::new(
+                ErrorKind::Validation,
+                "composite actions do not nest",
+            )),
+        }
     }
 
     pub fn apply_pixel(

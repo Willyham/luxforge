@@ -77,7 +77,17 @@ pub enum ActionPlan {
     /// Replace the layer with the same identity in place, keeping its position and every other
     /// layer. The host rejects an identity that is not in the stack.
     Update(Layer),
+    /// Apply these field-patch actions, in order, as this one action: a preset is one. The host runs
+    /// each step through the registry against the stack the steps before it produced, exactly as it
+    /// would run that action alone, and commits the final stack once as one entry that stores this
+    /// action's identity, label and parameters. At most [`MAX_COMPOSE_STEPS`] steps; a step's own
+    /// plan may not be a composite.
+    Compose(Vec<ActionInput>),
 }
+
+/// The most steps one [`ActionPlan::Compose`] may hold, which is the most actions a settings set
+/// names.
+pub const MAX_COMPOSE_STEPS: usize = MAX_SETTINGS_ACTIONS;
 
 /// What a module may ask about the current stack while planning: the output stage, the ordered
 /// layers, the stage any position receives, where a commit of a given stage would land, and point
