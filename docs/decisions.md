@@ -94,6 +94,10 @@ The owner edits local files and syncs them to an external drive, so moved-origin
 | Bracket and panorama identification | Research detection separately; merging is not selected |
 | Confusing export controls | One clear JPEG export path with explicit metadata behavior |
 
+## Presets
+
+The owner asked on 2026-09-23 for presets, with native presets and Lightroom import through a presets module whose apply is a history entry, and for the work to proceed without blocking on questions. It is delivered on the defaults recorded in the [presets design](design/presets.md#decisions-taken-on-defaults), each a proposal the owner reviews: presets as catalog data (format 5), only field-patch actions presettable, `apply-preset` carrying its settings, Lightroom values transferred for the controls Lightwell has and never clamped with RAW Kelvin and tint refused, the section first in the tools panel, and white balance unchecked when creating a preset.
+
 ## Open product questions
 
 Tracked in [product decisions](../tasks/product-decisions.json).
@@ -103,6 +107,7 @@ Tracked in [product decisions](../tasks/product-decisions.json).
 - What is the first external module the owner would use, and what enablement and recovery behavior does it need?
 - For the proposed [Corrections module](design/corrections.md), should AI Remove enter the accepted scope, should a changed RAW source-development prefix require regeneration of a saved AI patch, and should remote-photo consent be per asset or remembered?
 - Which measured workloads and responsiveness budgets become acceptance requirements?
+- Which of the [presets defaults](design/presets.md#decisions-taken-on-defaults) stand, and should RAW white balance import get a calibrated conversion?
 - Which of the [Presence, colour mixer and vignette proposals](design/presence-mixer-vignette.md#proposals-with-recorded-defaults) (section names, stage order, mixer layout, vignette style, JPEG spatial precision, spatial gesture latency, sample cost) stand? Implementation was authorized on 2026-09-22 on the recorded defaults and is delivered; the owner refines the defaults after review, including whether spatial sliders should draft at a bounded resolution now that the measured misses are recorded.
 
 The Basic and histogram product choices were decided on 2026-09-21 and implementation was authorized the same day; see [Basic adjustments and histogram](#basic-adjustments-and-histogram).

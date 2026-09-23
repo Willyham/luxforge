@@ -2,7 +2,7 @@
 
 The Develop workspace opens JPEG and the camera recording modes listed in the bundled RAW catalog, with exact transforms, crop/straighten, persistent history and the JSON API. RAW adds editable source exposure and white balance. Export, Locate and MCP are planned; see [feature status](features.md).
 
-JPEG Basic exposure, tone, white balance and colour controls are built, with the neutral picker, and so are the histogram and clipping inspector that share their [design](design/basic-and-histogram.md), and the Presence, Colour mixer and Vignette sections of their own [design](design/presence-mixer-vignette.md).
+JPEG Basic exposure, tone, white balance and colour controls are built, with the neutral picker, and so are the histogram and clipping inspector that share their [design](design/basic-and-histogram.md), and the Presence, Colour mixer and Vignette sections of their own [design](design/presence-mixer-vignette.md). [Presets](design/presets.md) save and apply those settings, and import Lightroom Classic presets.
 
 RAW profiles cover selected modes from Nikon, Canon, Sony, Fujifilm, Panasonic, Olympus/OM System, Pentax, Ricoh, Leica and DJI. The [camera selection](../fixtures/modern-camera-selection.json) covers 100 enabled models, including high-resolution bodies; a listed camera does not imply every compression, resolution, burst or drone camera-module mode is supported. The original Z6 lossless NEF, X100VI uncompressed/lossless RAF and Air 2S FC3411 DNG modes remain covered. DNG development applies the supported embedded corrections in their recorded order. Unknown required corrections fail explicitly. Broader recording modes and controlled color/detail qualification remain open. A failed Open keeps the previous photo. The bundled [camera catalog](../crates/lightwell-raw/data/cameras.json) defines admission; a matching filename extension alone does not enable a camera.
 
@@ -54,9 +54,26 @@ These are reference previews. For live control interactions, expand the Controls
 tools panel in developer mode. Gallery navigation is also exposed as
 `workspace.set {"component_gallery": 0}` (pages 0–9); use `null` to return to the editor.
 
+### Presets
+
+Presets is the first section of the tools panel, collapsed until you open it. A preset is a named set of Basic, Presence, Colour mixer and Vignette settings. Click one to apply it: the settings it holds replace the photo's values for those settings, every setting it does not hold keeps its value, and the change is one history entry, "Preset: Soft film", which Undo reverses as a whole. Applying a preset that changes nothing adds no entry. Presets never hold RAW development, transforms or crop, which belong to one photograph.
+
+Choose + to save the displayed entry's settings as a preset. Give it a name and a group (User presets unless you type another), and tick the groups of settings it should hold. Every group starts ticked except White balance, because white balance usually belongs to one photo; tick it to include it. A preset saves every value of the groups you tick, including those at their defaults, so applying it resets them. Names are unique within a group, ignoring case.
+
+Choose Import to add a preset file: a Lightroom Classic develop preset (`.xmp`), a legacy Lightroom template (`.lrtemplate`) or a Lightwell preset (`.lwpreset`), up to 1 MiB. The status bar reports how many of the file's settings were carried over and how many were not; Copy copies the message. Lightroom settings are carried over as values on the Lightwell controls with the same name, range and direction, such as Exposure, Contrast, Clarity, the colour mixer and the post-crop vignette. The numbers transfer, but Lightwell's processing is its own, so an imported preset looks similar, not identical. A preset whose settings could not all be carried over shows **Partial**; its tooltip gives the counts, and right-click › Copy import report gives every setting with the reason. Lightwell does not carry over:
+
+- tools it does not have: tone curves, colour grading, sharpening, noise reduction, grain, lens corrections, profiles, masks and crop;
+- Lightroom's RAW Kelvin and tint, whose scale is not Lightwell's;
+- values outside Lightwell's ranges, which are never clamped;
+- presets from Lightroom's 2003 and 2010 processes.
+
+Settings at their neutral value, such as grain at 0, lose nothing and are listed separately. Lightroom profiles and files with nothing Lightwell can apply are refused. The imported file is kept in the catalog, so nothing in it is lost.
+
+Right-click a preset to delete it or to export it as a `.lwpreset` file that another Lightwell catalog can import. Cmd+K lists "Apply preset: <name>" for every preset. Presets live in the catalog beside history, so a new catalog starts with none.
+
 ### Basic
 
-Basic is the first section of the tools panel, in three groups.
+Basic follows Presets in the tools panel, in three groups.
 
 **White balance** is Temperature and Tint, each −100 to +100 in whole steps. Positive temperature warms the photograph and negative cools it; positive tint is magenta and negative is green. They correct the rendering the JPEG already has — they are not the camera's Kelvin value, which a JPEG does not carry and nothing here recovers. The group header reads **Original** while both are zero and **Custom** once either is not, and every group reads its own state the same way.
 
@@ -174,7 +191,7 @@ Versions are chips naming saved states. Choose + to reveal the name field and Sa
 
 Undo and Redo navigate saved states without appending rows. Cmd+Z / Ctrl+Z and Shift+Cmd+Z / Shift+Ctrl+Z invoke the same service as the buttons. A new edit clears shortcut redo while every older entry remains available for preview or Restore. Layers, history, navigation state and stable IDs survive reopening the catalog.
 
-Missing or changed sources keep their catalog data and report why rendering is unavailable. Only the current catalog format (4, which stores typed source interpretation as well as entry labels) and operation formats are supported during pre-release development. Unsupported formats fail explicitly; Lightwell never silently resets or drops them. If a catalog format is rejected, start with a new path using `--catalog /path/to/new-catalog.sqlite` and import the originals again.
+Missing or changed sources keep their catalog data and report why rendering is unavailable. Only the current catalog format (5, which stores the preset library as well as typed source interpretation and entry labels) and operation formats are supported during pre-release development. Unsupported formats fail explicitly; Lightwell never silently resets or drops them. If a catalog format is rejected, start with a new path using `--catalog /path/to/new-catalog.sqlite` and import the originals again.
 
 ## JSON automation
 
@@ -195,7 +212,7 @@ Import returns a job acknowledgment. Poll `job.status` with the returned `job_id
 
 A source-dependent request after reopen can return `preparation-required` with `error.job_id`. Wait for that job and retry against the current asset revision. `source.prepare` also allows explicit preparation. Loading, hashing, decoding and RAW development run on a bounded worker so other catalog requests can continue.
 
-A request has `id`, `method` and `params`. A success carries the matching `id`, an event `sequence` and `result`; a failure carries a structured `error`. Start with `schema.list` for the authoritative method list and `catalog.list` for the referenced assets. Edit actions are generated from the registered tool modules: `module.list` returns every module with its effects, actions, parameter descriptors (kind, range, unit, default), semantic controls, hint, reset action, canvas title and shortcut, summary templates and developer flag, and each action `<id>` is callable as `edit.<id>` with its parameters as top-level fields beside `asset_id` and `mutation`. `recipe.describe` lists an entry's layers with each module's summary; `workspace.set` and `session.state` carry the per-client panels, canvas mode, thirds overlay and clipping overlays beside the view; every history entry carries its rendered `label`. Today that is `edit.set-pixel` (`x`, `y`, `rgb`), `edit.set-basic` (`temperature`, `tint`, `exposure`, `contrast`, `highlights`, `shadows`, `whites`, `blacks`, `vibrance`, `saturation`), `edit.reset-basic`, `edit.transform` (`transform`), the crop module's three actions and the RAW module's development actions. Pass `asset_id` to `module.list` to request only applicable modules; `source.inspect` reports source interpretation and readiness. A module may also declare read-only **queries**, which are generated the same way as `query.<id>`; they take `asset_id`, an optional `entry_id` defaulting to the session's selection, and their own parameters, and they write nothing. The controls proof adds `query.sample-controls-curve` with the active channel's points when `--developer` is enabled; its curve interpolation belongs to that module. The Basic neutral picker uses `query.neutral-sample` (`x`, `y`). Parameters are checked against the descriptors before the module sees them, so every client gets the same structured validation error. A number parameter may declare a `step` and a display `precision` for the control that drives it; they are hints, and a request is never rounded to them. An action listed with `patch: true` takes whichever of its fields you name: the fields you send are validated, nothing declared is filled in, the module merges them over what it already stores, the entry records the fields as sent, and a patch that changes nothing writes no entry. `version.create`, `version.list`, `version.delete` and `history.lineage` cover named states and the undo-parent chain. `render.sample` reads one rendered pixel and `render.locate` maps a rendered pixel back to the content pixel it shows. Mutations require `asset_id` and a `mutation` object:
+A request has `id`, `method` and `params`. A success carries the matching `id`, an event `sequence` and `result`; a failure carries a structured `error`. Start with `schema.list` for the authoritative method list and `catalog.list` for the referenced assets. Edit actions are generated from the registered tool modules: `module.list` returns every module with its effects, actions, parameter descriptors (kind, range, unit, default), semantic controls, hint, reset action, canvas title and shortcut, summary templates and developer flag, and each action `<id>` is callable as `edit.<id>` with its parameters as top-level fields beside `asset_id` and `mutation`. `recipe.describe` lists an entry's layers with each module's summary; `workspace.set` and `session.state` carry the per-client panels, canvas mode, thirds overlay and clipping overlays beside the view; every history entry carries its rendered `label`. Today that is `edit.set-pixel` (`x`, `y`, `rgb`), `edit.set-basic` (`temperature`, `tint`, `exposure`, `contrast`, `highlights`, `shadows`, `whites`, `blacks`, `vibrance`, `saturation`), `edit.reset-basic`, `edit.transform` (`transform`), the crop module's three actions and the RAW module's development actions. Pass `asset_id` to `module.list` to request only applicable modules; `source.inspect` reports source interpretation and readiness. A module may also declare read-only **queries**, which are generated the same way as `query.<id>`; they take `asset_id`, an optional `entry_id` defaulting to the session's selection, and their own parameters, and they write nothing. The controls proof adds `query.sample-controls-curve` with the active channel's points when `--developer` is enabled; its curve interpolation belongs to that module. The Basic neutral picker uses `query.neutral-sample` (`x`, `y`). Parameters are checked against the descriptors before the module sees them, so every client gets the same structured validation error. A number parameter may declare a `step` and a display `precision` for the control that drives it; they are hints, and a request is never rounded to them. An action listed with `patch: true` takes whichever of its fields you name: the fields you send are validated, nothing declared is filled in, the module merges them over what it already stores, the entry records the fields as sent, and a patch that changes nothing writes no entry. `version.create`, `version.list`, `version.delete` and `history.lineage` cover named states and the undo-parent chain. The `preset.*` methods cover the preset library, and `edit.apply-preset` applies one (below). `render.sample` reads one rendered pixel and `render.locate` maps a rendered pixel back to the content pixel it shows. Mutations require `asset_id` and a `mutation` object:
 
 ```json
 {"id":"rotate","method":"edit.transform","params":{"asset_id":"asset-…","mutation":{"expected_revision":0,"request_id":"rotate-1","actor":"my-client"},"transform":"rotate-right"}}
@@ -237,6 +254,28 @@ Both actions reject a rectangle that would need an empty corner with a structure
 ```
 
 The first non-neutral value adds the stack's one Basic layer before the quarter-turns, reflections and crop, and every later value updates that same layer in place; a value equal to the stored one is a no-op. A field you do not name keeps its stored value. `edit.reset-basic` takes no parameters, returns that layer to neutral and keeps its layer ID, and is a no-op without one or when it is already neutral. `recipe.describe` reports the layer's `values`, so a client can seed its controls from the entry it displays.
+
+### Presets
+
+`preset.list` returns the library, sorted by group, then name, each record with its `id`, `name`, `group`, `settings`, `origin`, the counts of its import `report` (`null` for a preset made in Lightwell) and any `unavailable` actions. `preset.read {preset_id}` adds the full report and the imported file's text. A settings set maps field-patch actions to the fields each one sets, for example `{"set-basic": {"exposure": 0.35, "contrast": 12}, "set-vignette": {"amount": -18}}`. Apply one with `edit.apply-preset`, which takes the set, a `name` for the history label and optionally the library `preset-id` as provenance:
+
+```json
+{"id":"preset","method":"edit.apply-preset","params":{"asset_id":"asset-…","mutation":{"expected_revision":8,"request_id":"preset-1","actor":"my-client"},"name":"Soft film","preset-id":"preset-…","settings":{"set-basic":{"exposure":0.35,"contrast":12},"set-vignette":{"amount":-18}}}}
+```
+
+The host runs each named action exactly as that action would run alone, in alphabetical order of the action names, and commits the result once as one entry, "Preset: Soft film". An unknown, non-patch or unavailable action, or a field its action refuses, refuses the whole preset and writes nothing.
+
+| Method | Parameters | Does |
+| --- | --- | --- |
+| `preset.capture` | `asset_id`, `fields`, optional `entry_id` | Reads a settings set from an entry's stack (default: the displayed one). `fields` maps each action to an array of parameter names or `true` for all of them. Without a layer, a field takes its default |
+| `preset.create` | `name`, `settings`, `actor`, optional `group` | Saves a preset; the group defaults to `User presets` |
+| `preset.update` | `preset_id`, `actor`, optional `name`, `group`, `settings` | Renames, regroups or replaces the settings |
+| `preset.delete` | `preset_id` | Removes it; a no-op when absent |
+| `preset.export` | `preset_id` | Returns `file_name` and `content`, a `.lwpreset` document |
+| `preset.inspect` | `content`, optional `file_name` | Returns the preset and report an import would produce, storing nothing |
+| `preset.import` | `content`, `actor`, optional `file_name`, `name`, `group` | Imports a Lightroom `.xmp` or `.lrtemplate` preset or a `.lwpreset` document from its text; `name` and `group` override the file's |
+
+A (group, name) pair is unique ignoring case, and a duplicate is a `conflict`. The library holds at most 1,000 presets. Create, update, delete and import emit events like every mutation, so another client's desktop refreshes its Presets section.
 
 ### The neutral picker
 
