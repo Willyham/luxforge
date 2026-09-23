@@ -135,13 +135,15 @@ impl Editor {
             if draft.action != action || draft.parameter != parameter {
                 return Task::none();
             }
-            self.slider_commit()
-        } else {
-            self.dispatch(Message::Submit {
-                action,
-                parameter: Some(parameter),
-            })
+            return self.slider_commit();
         }
+        if tools::drafts(&self.modules, &action, &parameter) {
+            return self.release_without_draft(&action, &parameter);
+        }
+        self.dispatch(Message::Submit {
+            action,
+            parameter: Some(parameter),
+        })
     }
     pub(crate) fn control_field_value(&self, action: &str, parameter: &str) -> Option<Value> {
         let declared = tools::declared_action(&self.modules, action)?.parameter(parameter)?;

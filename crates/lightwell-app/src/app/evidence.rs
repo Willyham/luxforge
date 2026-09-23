@@ -66,6 +66,9 @@ pub(crate) struct Evidence {
     /// The gallery page shown instead of the workspace for a scripted capture.
     /// Requested tools-panel scroll fraction, retained beside the capture for correlation.
     pub(crate) tools_scroll: Option<f64>,
+    /// A scripted double-click's second press, waiting for its gap to pass. Its one-shot timer
+    /// exists only while this is set.
+    pub(crate) second_click: Option<SecondClick>,
     /// When a `wait` step's frame may be captured. The evidence tick checks it, so a wait adds no
     /// timer of its own.
     pub(crate) wait_until: Option<Instant>,
@@ -158,6 +161,33 @@ pub(crate) fn marked<'a>(
     .into()
 }
 
+/// The second press of a scripted double-click: what the wrapper publishes, `gap_ms` after the
+/// first press's release.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct SecondClick {
+    pub(crate) action: String,
+    pub(crate) parameter: String,
+    pub(crate) gap_ms: u64,
+}
+
+/// One double-click on a generated slider's rail, as the rail's wrapper and iced's slider turn it
+/// into messages: the first press moves the value to `value`, which opens the control's gesture,
+/// and its release commits it; `gap_ms` after that release, the second press is the wrapper's
+/// reset of the field. The step never waits between the two presses for anything but the gap, so
+/// the reset meets whatever the first press's commit is still doing, exactly as a person's does.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct DoubleClickStep {
+    pub(crate) action: String,
+    pub(crate) parameter: String,
+    pub(crate) value: f64,
+    pub(crate) gap_ms: u64,
+}
+
+/// The longest gap a scripted double-click may leave between its release and its second press.
+/// Iced classifies two presses as a double-click only within 300 ms of each other, and the first
+/// press's own hold comes out of that too.
+pub(crate) const MAX_DOUBLE_CLICK_GAP_MS: u64 = 250;
+
 /// The state of a slider step sent by a timer rather than all at once. Each tick sends the next
 /// value through the same messages [`Editor::slider_step`] sends synchronously, then advances or,
 /// on the last value, ends the gesture the way the step said to.
@@ -187,6 +217,8 @@ pub(crate) enum Step {
     Draft(DraftStep),
     /// One slider gesture on a generated control: the exact messages a drag sends.
     Slider(SliderStep),
+    /// A double-click on a slider's rail: a committed jump, then the reset, `gap_ms` apart.
+    DoubleClick(DoubleClickStep),
     /// A first-slice generated slider (fraction) or discrete control gesture.
     Controls(ControlsStep),
     Picker(PickerStep),
@@ -462,6 +494,12 @@ impl Step {
                 }
                 json!({"slider": object})
             }
+            Self::DoubleClick(step) => json!({"double_click":{
+                "action": step.action,
+                "parameter": step.parameter,
+                "value": step.value,
+                "gap_ms": step.gap_ms,
+            }}),
             Self::Controls(ControlsStep::Slider {
                 action,
                 parameter,
@@ -650,6 +688,9 @@ pub(crate) enum Settle {
     /// The percent-zoom surface reported a new scroll offset and the owner answered the
     /// `view.set` that carried it.
     Pan,
+    /// Nothing this client started is in flight: no gesture, no request, no waiting reset, and the
+    /// newest requested frame is on screen with its exact phase.
+    Quiet,
 }
 
 impl Editor {
@@ -676,6 +717,7 @@ impl Editor {
             Step::Api { method, params } => self.api_step(method, params),
             Step::Draft(draft) => self.draft_step(draft),
             Step::Slider(slider) => self.slider_step(slider),
+            Step::DoubleClick(step) => self.double_click_step(step),
             Step::Controls(control) => self.controls_step(control),
             Step::Picker(picker) => self.picker_step(picker),
             Step::Curve(curve) => self.curve_step(curve),
@@ -907,6 +949,95 @@ impl Editor {
         }
         tasks.push(self.end_slider_gesture(step.action, step.parameter, step.end));
         Task::batch(tasks)
+    }
+
+    /// The first press of a scripted double-click and its release: the rail's jump to `value`
+    /// opens the control's gesture exactly as a press does, and the release commits it. The second
+    /// press is sent by its own one-shot timer `gap_ms` later, whatever the commit is doing then.
+    fn double_click_step(&mut self, step: DoubleClickStep) -> Task<Message> {
+        let Some(revision) = self.state.as_ref().map(|state| state.revision) else {
+            return self.fail_step("no photograph is open");
+        };
+        if !crate::state::tools::drafts(&self.modules, &step.action, &step.parameter) {
+            return self.fail_step(format!(
+                "{}.{} is not a slider whose one field is a whole request",
+                step.action, step.parameter
+            ));
+        }
+        self.note_step(json!({ "revision_before": revision }));
+        let mut tasks = vec![
+            self.update(Message::SliderMoved {
+                action: step.action.clone(),
+                parameter: step.parameter.clone(),
+                value: step.value,
+            }),
+            self.update(Message::SliderDraftTick),
+        ];
+        if self.slider_draft.is_none() {
+            return self.fail_step(format!(
+                "the first press opened no gesture: {}",
+                self.status
+            ));
+        }
+        tasks.push(self.update(Message::ControlReleased {
+            action: step.action.clone(),
+            parameter: step.parameter.clone(),
+        }));
+        self.event(
+            "double_click_first",
+            json!({"action":step.action,"parameter":step.parameter,"value":step.value}),
+        );
+        if let Some(evidence) = &mut self.evidence {
+            evidence.awaiting = None;
+            evidence.second_click = Some(SecondClick {
+                action: step.action,
+                parameter: step.parameter,
+                gap_ms: step.gap_ms,
+            });
+        }
+        Task::batch(tasks)
+    }
+
+    /// The scripted double-click's second press: the reset the rail's wrapper publishes. The frame
+    /// is captured once nothing the two presses started is still running.
+    pub(crate) fn double_click_second(&mut self) -> Task<Message> {
+        let Some(second) = self
+            .evidence
+            .as_mut()
+            .and_then(|evidence| evidence.second_click.take())
+        else {
+            return Task::none();
+        };
+        self.event(
+            "double_click_second",
+            json!({"action":second.action,"parameter":second.parameter,
+                "revision":self.state.as_ref().map(|state| state.revision),
+                "gesture_open":self.slider_draft.is_some()}),
+        );
+        self.await_step(Settle::Quiet);
+        self.update(Message::ResetField {
+            action: second.action,
+            parameter: second.parameter,
+        })
+    }
+
+    /// Settle a step waiting for quiet once this client has nothing in flight: no gesture, no
+    /// request, no waiting reset, and the newest requested frame on screen with its exact phase.
+    pub(crate) fn settle_when_quiet(&mut self) {
+        let waiting = self
+            .evidence
+            .as_ref()
+            .is_some_and(|evidence| evidence.awaiting == Some(Settle::Quiet));
+        if waiting
+            && self.slider_draft.is_none()
+            && !self.busy
+            && self.pending_reset.is_none()
+            && !self.preview_queue.is_busy()
+            && self.held_by_proxy.is_none()
+            && self.presented_generation == self.preview_generation
+        {
+            self.settle_step(Settle::Quiet);
+        }
     }
 
     /// One tick of a paced slider step: send its next value through the same messages a fast
@@ -1909,6 +2040,7 @@ fn parse_step(step: &Value) -> Result<Step, String> {
         "api" => parse_api(value),
         "draft" => Ok(Step::Draft(parse_draft(value)?)),
         "slider" => Ok(Step::Slider(parse_slider(value)?)),
+        "double_click" => Ok(Step::DoubleClick(parse_double_click(value)?)),
         "controls" => Ok(Step::Controls(parse_controls(value)?)),
         "picker" => Ok(Step::Picker(parse_picker(value)?)),
         "curve" => Ok(Step::Curve(parse_curve(value)?)),
@@ -1936,7 +2068,7 @@ fn parse_step(step: &Value) -> Result<Step, String> {
         "wait" => parse_wait(value),
         "pan" => parse_pan(value),
         other => Err(format!(
-            "unknown step kind {other}; expected api, draft, slider, controls, picker, curve, group, tab, section, gallery, tools_scroll, slider_draft, field, reset, pick, view, workspace, preview, palette, hover, preset, preset_create, preset_delete, preset_import, wait or pan"
+            "unknown step kind {other}; expected api, draft, slider, double_click, controls, picker, curve, group, tab, section, gallery, tools_scroll, slider_draft, field, reset, pick, view, workspace, preview, palette, hover, preset, preset_create, preset_delete, preset_import, wait or pan"
         )),
     }
 }
@@ -2342,6 +2474,38 @@ fn parse_slider(value: &Value) -> Result<SliderStep, String> {
             _ => SliderEnd::Open,
         },
         interval_ms,
+    })
+}
+
+/// `{"action": "...", "parameter": "...", "value": 0.35, "gap_ms": 120}`: where the first press
+/// lands, and how long after its release the second press comes, at most
+/// [`MAX_DOUBLE_CLICK_GAP_MS`].
+fn parse_double_click(value: &Value) -> Result<DoubleClickStep, String> {
+    let object = value
+        .as_object()
+        .ok_or("double_click takes an object with an action, a parameter, a value and gap_ms")?;
+    known_fields(
+        object,
+        &["action", "parameter", "value", "gap_ms"],
+        "double_click",
+    )?;
+    let first = object
+        .get("value")
+        .and_then(Value::as_f64)
+        .filter(|value| value.is_finite())
+        .ok_or("double_click value is a finite number")?;
+    let gap_ms = object
+        .get("gap_ms")
+        .and_then(Value::as_u64)
+        .filter(|gap| *gap <= MAX_DOUBLE_CLICK_GAP_MS)
+        .ok_or_else(|| {
+            format!("double_click gap_ms is an integer from 0 to {MAX_DOUBLE_CLICK_GAP_MS}")
+        })?;
+    Ok(DoubleClickStep {
+        action: required_text(object, "action", "double_click")?,
+        parameter: required_text(object, "parameter", "double_click")?,
+        value: first,
+        gap_ms,
     })
 }
 
@@ -3008,6 +3172,34 @@ mod tests {
     /// The gesture, field, reset and conflict-resolution steps parse into exactly the shapes the
     /// runner writes, and record themselves back in the same shape.
     #[test]
+    fn a_double_click_step_parses_strictly_and_records_what_was_written() {
+        let script = r#"[{"double_click":{"action":"set-raw-temperature","parameter":"kelvin","value":5000,"gap_ms":120}}]"#;
+        let steps = parse_script(script).expect("a valid script");
+        assert_eq!(
+            steps,
+            vec![Step::DoubleClick(DoubleClickStep {
+                action: "set-raw-temperature".into(),
+                parameter: "kelvin".into(),
+                value: 5000.0,
+                gap_ms: 120,
+            })]
+        );
+        assert_eq!(
+            steps[0].record(),
+            json!({"double_click":{"action":"set-raw-temperature","parameter":"kelvin","value":5000.0,"gap_ms":120}})
+        );
+        for refused in [
+            // Past the window iced gives two presses.
+            r#"[{"double_click":{"action":"a","parameter":"p","value":1,"gap_ms":251}}]"#,
+            r#"[{"double_click":{"action":"a","parameter":"p","value":1}}]"#,
+            r#"[{"double_click":{"action":"a","parameter":"p","gap_ms":0}}]"#,
+            r#"[{"double_click":{"action":"a","parameter":"p","value":1,"gap_ms":0,"x":1}}]"#,
+        ] {
+            assert!(parse_script(refused).is_err(), "{refused}");
+        }
+    }
+
+    #[test]
     fn the_slider_field_and_reset_steps_round_trip_their_scripts() {
         let steps = parse_script(
             r#"[{"slider":{"action":"set-basic","parameter":"exposure","values":[0.25,0.5,0.75],"release":true}},
@@ -3127,6 +3319,7 @@ mod tests {
             saving: false,
             had_errors: false,
             paced_slider: None,
+            second_click: None,
             tools_scroll: None,
             wait_until: None,
             sync: CaptureSync::default(),

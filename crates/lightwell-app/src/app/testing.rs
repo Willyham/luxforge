@@ -398,6 +398,7 @@ pub(crate) fn scripted(steps: &str) -> (Editor, PathBuf, AssetId, PathBuf) {
         saving: false,
         had_errors: false,
         paced_slider: None,
+        second_click: None,
         tools_scroll: None,
         wait_until: None,
         sync: crate::app::evidence::CaptureSync::default(),

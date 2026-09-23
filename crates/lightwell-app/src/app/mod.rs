@@ -35,7 +35,7 @@ use crate::{
 };
 use crop::PendingDraft;
 use evidence::{EVIDENCE_DEADLINE, Evidence, SCRIPT_EVIDENCE_DEADLINE, Settle};
-use fields::{Fields, action_params, number_text, reset_field_preset, submit_preset};
+use fields::{Fields, action_params, number_text, submit_preset};
 use iced::{Element, Subscription, Task, widget::operation};
 use iced_runtime::image as image_memory;
 use lightwell_core::{
@@ -457,6 +457,8 @@ pub(crate) struct Editor {
     /// The open slider gesture's draft, when a control of a patch action is being moved. At most
     /// one draft exists per client, so this and the crop draft exclude each other.
     pub(crate) slider_draft: Option<SliderDraft>,
+    /// A field reset waiting for the gesture commit or request in flight to answer.
+    pub(crate) pending_reset: Option<slider::PendingReset>,
     /// The draft revision the displayed preview was rendered from, for correlation.
     pub(crate) displayed_draft_revision: Option<u64>,
     /// Sections the person collapsed or expanded; every other follows the default.
@@ -530,6 +532,7 @@ impl Editor {
                 saving: false,
                 had_errors: false,
                 paced_slider: None,
+                second_click: None,
                 tools_scroll: None,
                 wait_until: None,
                 sync: evidence::CaptureSync::default(),
@@ -625,6 +628,7 @@ impl Editor {
             editing: None,
             dragging: None,
             slider_draft: None,
+            pending_reset: None,
             displayed_draft_revision: None,
             expanded: BTreeMap::new(),
             recipe: None,
@@ -1133,6 +1137,9 @@ impl Editor {
         let busy = self.preview_queue.is_busy() || self.overlay_queue.is_busy();
         let before_entry = self.displayed_entry();
         let task = self.dispatch(message);
+        // A reset that waited for this client's commit or request runs once nothing is in flight.
+        let task = Task::batch([task, self.run_pending_reset()]);
+        self.settle_when_quiet();
         if self.displayed_entry() != before_entry {
             self.controls_ui.curve_samples.clear();
             self.curve_sample_requested_source.clear();
@@ -1939,6 +1946,9 @@ impl Editor {
                     }
                     Err(error) => {
                         self.status = error.clone();
+                        // Recorded, so a refused request is visible in the evidence log even when
+                        // a later frame's status line has replaced it.
+                        self.event("command_failed", json!({ "error": error }));
                         // A failed Apply keeps the draft; a stale revision makes it conflicted so
                         // the user chooses Discard or Reapply rather than losing the composition.
                         if self.crop_applying.take().is_some() {
@@ -1982,6 +1992,7 @@ impl Editor {
                 self.wait_elapsed();
             }
             Message::PacedSliderTick => return self.slider_paced_tick(),
+            Message::DoubleClickSecond => return self.double_click_second(),
             Message::Capture => {
                 let Some(evidence) = &mut self.evidence else {
                     return Task::none();
@@ -2671,6 +2682,9 @@ impl Editor {
                 if self.slider_draft.is_some() {
                     return self.slider_commit();
                 }
+                if tools::drafts(&self.modules, &action, &parameter) {
+                    return self.release_without_draft(&action, &parameter);
+                }
                 return self.dispatch(Message::Submit {
                     action,
                     parameter: Some(parameter),
@@ -2697,23 +2711,7 @@ impl Editor {
                 return self.dispatch(Message::RunAction { action, preset });
             }
             Message::ResetField { action, parameter } => {
-                let default = tools::declared_action(&self.modules, &action)
-                    .and_then(|declared| declared.parameter(&parameter))
-                    .map(fields::seed_text);
-                let Some(default) = default else {
-                    self.status = fields::undeclared_label(&action, &parameter);
-                    return Task::none();
-                };
-                self.fields.set(&action, &parameter, default);
-                self.editing = None;
-                // One field is one action when the action merges it or declares nothing else; an
-                // action with a second parameter has no way to send one field alone, so the
-                // double-click only refills the text there.
-                if let Some(preset) = reset_field_preset(&self.modules, &action, &parameter)
-                    .filter(|_| self.editable())
-                {
-                    return self.dispatch(Message::RunAction { action, preset });
-                }
+                return self.reset_field(action, parameter);
             }
             Message::SliderDraftTick => return self.slider_tick(),
             Message::SliderDraftBegun(result) => {
@@ -3792,6 +3790,13 @@ impl Editor {
                         .map(|_| Message::PacedSliderTick),
                 );
             }
+            // A scripted double-click's gap before its second press, which the first tick ends.
+            if let Some(second) = &evidence.second_click {
+                subscriptions.push(
+                    iced::time::every(Duration::from_millis(second.gap_ms.max(1)))
+                        .map(|_| Message::DoubleClickSecond),
+                );
+            }
         }
         Subscription::batch(subscriptions)
     }
@@ -4289,6 +4294,188 @@ mod tests {
         );
         assert!(editor.busy, "and exactly one request is in flight");
         finish(editor, catalog);
+    }
+
+    /// One double-click on a drafting slider, as the rail's wrapper and iced's slider deliver it:
+    /// the first press moves the value (the gesture opens, `draft.begin` and `draft.set` answer),
+    /// its release sends `draft.commit`, and the second press — the reset — arrives before that
+    /// commit has answered. Returns the entry the commit would produce.
+    fn double_click_before_the_commit_answers(
+        editor: &mut Editor,
+        asset: &AssetId,
+        action: &str,
+        parameter: &str,
+        value: f64,
+    ) -> lightwell_core::HistoryEntry {
+        let current = editor
+            .state
+            .as_ref()
+            .expect("an open asset")
+            .current_entry
+            .clone();
+        let _ = editor.update(Message::SliderMoved {
+            action: action.into(),
+            parameter: parameter.into(),
+            value,
+        });
+        begun(editor, asset, action, current.sequence);
+        let _ = editor.update(Message::SliderDraftTick);
+        was_set(editor, asset, &current);
+        let _ = editor.update(Message::ControlReleased {
+            action: action.into(),
+            parameter: parameter.into(),
+        });
+        assert!(
+            editor
+                .slider_draft
+                .as_ref()
+                .is_some_and(|draft| draft.in_flight),
+            "the release's commit is in flight"
+        );
+        let _ = editor.update(Message::ResetField {
+            action: action.into(),
+            parameter: parameter.into(),
+        });
+        entry(asset, current.sequence + 1, Some(&current.id))
+    }
+
+    /// The double-click race that lost every RAW white balance reset. The first press's commit is
+    /// still answering when the second press arrives — for a RAW temperature or tint for as long as
+    /// the mosaic takes to redevelop, a second or more — and a reset sent then names the revision
+    /// that commit is replacing, which the core refuses as stale. The reset now waits for the
+    /// commit's answer and is sent once, against the revision it produced. Basic's patch field and
+    /// every RAW slider take the same path.
+    #[test]
+    fn a_reset_during_a_gesture_commit_waits_and_names_the_revision_the_commit_produced() {
+        let cases = [
+            ("set-raw-exposure", "ev", 0.35),
+            ("set-raw-temperature", "kelvin", 5000.0),
+            ("set-raw-tint", "tint", 12.0),
+            ("set-basic", "exposure", 0.4),
+        ];
+        for (action, parameter, value) in cases {
+            let (mut editor, catalog, log, asset, _, _) = drafting();
+            let revision = editor.state.as_ref().expect("an open asset").revision;
+            let committed = double_click_before_the_commit_answers(
+                &mut editor,
+                &asset,
+                action,
+                parameter,
+                value,
+            );
+            let records = logged(&mut editor, &log);
+            let queued = draft_events(&records, "field_reset_queued");
+            assert_eq!(queued.len(), 1, "{action}: the reset waits: {records:?}");
+            assert_eq!(queued[0]["revision"], json!(revision));
+            assert!(
+                draft_events(&records, "field_reset_sent").is_empty(),
+                "{action}: nothing is sent against the revision the commit is replacing"
+            );
+            assert!(!editor.busy, "{action}: no request was started");
+            assert!(editor.pending_reset.is_some());
+
+            // The commit answers with the next revision; the reset goes out in the same update.
+            let log = attach_log(&mut editor);
+            let refresh = refresh_for(&asset, &committed, Vec::new(), &[&committed], false);
+            let _ = editor.update(Message::SliderDraftCommitted(Ok(Some(Box::new(refresh)))));
+            let records = logged(&mut editor, &log);
+            let sent = draft_events(&records, "field_reset_sent");
+            assert_eq!(sent.len(), 1, "{action}: sent once");
+            assert_eq!(
+                sent[0]["revision"],
+                json!(revision + 1),
+                "{action}: against the commit's revision"
+            );
+            let default = tools::declared_action(&editor.modules, action)
+                .and_then(|declared| declared.parameter(parameter))
+                .and_then(|declared| declared.default.clone())
+                .expect("a declared default");
+            assert_eq!(sent[0]["preset"], json!({ parameter: default }));
+            assert_eq!(editor.status, format!("Running edit.{action}…"));
+            assert!(editor.busy && editor.pending_reset.is_none());
+            finish(editor, catalog);
+        }
+    }
+
+    /// A reset that arrives while another request is in flight waits for its answer too, and is
+    /// dropped, with its reason, if what it was asked for is no longer on screen by then.
+    #[test]
+    fn a_waiting_reset_runs_after_a_request_and_is_dropped_on_a_historical_entry() {
+        let (mut editor, catalog, log, asset, _, _) = drafting();
+        let (action, parameter) = single_parameter_control(&editor);
+        let current = editor
+            .state
+            .as_ref()
+            .expect("an open asset")
+            .current_entry
+            .clone();
+        editor.busy = true;
+        let _ = editor.update(Message::ResetField {
+            action: action.clone(),
+            parameter: parameter.clone(),
+        });
+        assert!(editor.pending_reset.is_some(), "it waits for the request");
+        let next = entry(&asset, current.sequence + 1, Some(&current.id));
+        let refresh = refresh_for(&asset, &next, Vec::new(), &[&next], false);
+        let _ = editor.update(Message::Refreshed(Ok(Box::new(refresh))));
+        let sent = draft_events(&logged(&mut editor, &log), "field_reset_sent")
+            .into_iter()
+            .cloned()
+            .collect::<Vec<_>>();
+        assert_eq!(sent.len(), 1);
+        assert_eq!(sent[0]["revision"], json!(current.sequence + 1));
+
+        // Asked for while a request is in flight, then the session shows a historical entry.
+        let log = attach_log(&mut editor);
+        let _ = editor.update(Message::ResetField {
+            action: action.clone(),
+            parameter: parameter.clone(),
+        });
+        assert!(editor.pending_reset.is_some());
+        editor.session.preview.selection =
+            lightwell_core::HistorySelection::Entry(current.id.clone());
+        editor.busy = false;
+        let _ = editor.update(Message::Sync);
+        let records = logged(&mut editor, &log);
+        let dropped = draft_events(&records, "field_reset_dropped");
+        assert_eq!(dropped.len(), 1, "{records:?}");
+        assert_eq!(dropped[0]["reason"], json!("a historical entry is shown"));
+        assert!(editor.pending_reset.is_none());
+        assert!(draft_events(&records, "field_reset_sent").is_empty());
+        assert!(
+            editor
+                .status
+                .ends_with("was not reset: a historical entry is shown")
+        );
+        finish(editor, catalog);
+    }
+
+    /// A drafting slider opens its draft on its first change, so a release with no draft open
+    /// changed nothing and sends nothing — not the unchanged field, which would hold the section
+    /// busy through the moment a double-click's second press arrives, and which for a RAW custom
+    /// white balance under As shot would switch it to Custom.
+    #[test]
+    fn releasing_a_drafting_slider_that_never_moved_sends_nothing() {
+        for (action, parameter) in [("set-raw-temperature", "kelvin"), ("set-basic", "exposure")] {
+            let (mut editor, catalog, log, _, _, _) = drafting();
+            let _ = editor.update(Message::ControlReleased {
+                action: action.into(),
+                parameter: parameter.into(),
+            });
+            let _ = editor.update(Message::SliderReleased {
+                action: action.into(),
+                parameter: parameter.into(),
+            });
+            assert!(!editor.busy, "{action}: no request is in flight");
+            assert!(editor.editable());
+            assert!(
+                !editor.status.starts_with("Running"),
+                "{action}: {}",
+                editor.status
+            );
+            assert!(draft_events(&logged(&mut editor, &log), "slider_draft_begin").is_empty());
+            finish(editor, catalog);
+        }
     }
 
     /// A module's only group is drawn without a header, so its disclosure message records nothing,

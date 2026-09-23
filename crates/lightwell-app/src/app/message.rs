@@ -495,6 +495,9 @@ pub(crate) enum Message {
     /// One tick of a paced evidence slider step: send its next value. Exists only while a paced
     /// step has values left to send, which is also when the subscription that produces it exists.
     PacedSliderTick,
+    /// A scripted double-click's second press, once its gap has passed. Exists only while a
+    /// double-click step waits for it, which is also when the timer that produces it exists.
+    DoubleClickSecond,
     /// Capture the frame the next redraw presents.
     Capture,
     Captured(iced::window::Screenshot),

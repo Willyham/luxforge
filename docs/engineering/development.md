@@ -45,7 +45,7 @@ Doctor reports missing tools and the graphics environment without installing any
 | Rendered Vignette: section expand, an Amount drag and commit at Fit and 100%, roundness and feather extremes, a post-crop recentre and the module reset | `cargo xtask smoke --scenario vignette --output NEW_DIR` |
 | Rendered percentage zooms: 50%, 100%, 120%, 800% and 1600%, pans to the centre and the far corner at 1600%, and idle checks at Fit, 100% and 1600%, over the generated 24 MP and 60 MP JPEGs, one launch each | `cargo xtask smoke --scenario zoom --output NEW_DIR` |
 | Rendered Presets: section expand, an XMP and a Lightwell preset imported, each applied from its row, undo, the create form filled and submitted, a native preset applied to the Original, `preset.list` through the `api` step and a delete through the row menu | `cargo xtask smoke --scenario presets --output NEW_DIR` |
-| Rendered RAW section over a supplied RAW file, with Basic collapsed; not in `rendered`, because no RAW photograph is checked in | `cargo xtask smoke --scenario raw-panel --source RAW --output NEW_DIR` |
+| Rendered RAW section over a supplied RAW file, with Basic collapsed, then a double-click on each RAW slider and on Basic's Exposure: the first press's committed jump and the reset that follows it, each checked as two entries with the reset sent against the jump's revision and never refused; not in `rendered`, because no RAW photograph is checked in | `cargo xtask smoke --scenario raw-panel --source RAW --output NEW_DIR` |
 | Inspect a capture | `cargo xtask check-capture --image PNG [--orientation N]` |
 | Process failure checks; macOS measurement, `--samples` defaults to 5 launches per workload | `cargo xtask hardening --binary PATH --output NEW_DIR`, `cargo xtask measure --binary PATH --output NEW_DIR [--samples N]` |
 | Package; dependency inventory | `cargo xtask package --output NEW_DIR`, `cargo xtask inventory --output NEW_DIR` |
@@ -328,6 +328,14 @@ Each step is an object with exactly one key.
   recorded as its own `slider_step_value` event (`{"value", "index"}`), even one the core's own
   gesture round trip coalesces away, so the harness can time an input that never reached the owner.
   Without `interval_ms` every value is sent at once, as before.
+- `double_click` double-clicks one drafting slider's rail: `{"action": "set-raw-temperature",
+  "parameter": "kelvin", "value": 5000, "gap_ms": 120}`. The first press is the move to `value`,
+  which opens the gesture, and its release, which commits it; `gap_ms` (0 to 250) after that
+  release, one timer tick sends the reset the rail's wrapper publishes for the second press,
+  whatever the commit is doing by then. The frame is captured once nothing the two presses started
+  is in flight. `double_click_first`, `double_click_second` and the reset's own
+  `field_reset_queued`, `field_reset_sent` or `field_reset_dropped` events record the order, and a
+  refused request logs `command_failed`.
 - `slider_draft` answers an open gesture's Changed elsewhere notice: `"discard"` or `"reapply"`.
 - `field` types into one generated field: `{"action": "set-basic", "parameter": "exposure", "text":
   "1.5"}`, with `"submit": true` for Enter, which commits that one field without a draft.

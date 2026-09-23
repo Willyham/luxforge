@@ -487,8 +487,8 @@ pub fn verify(evidence: &Path, scenario: &str, count: usize) -> Result<Value> {
         return Ok(app);
     }
     if let Some(frames) = raw_panel::frames(scenario) {
-        let (app, _) = preamble(evidence, frames)?;
-        raw_panel::verify(evidence, &app)?;
+        let (app, events) = preamble(evidence, frames)?;
+        raw_panel::verify(evidence, &app, &events)?;
         return Ok(app);
     }
     let (app, events) = preamble(evidence, count.max(1))?;
