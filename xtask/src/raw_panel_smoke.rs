@@ -6,12 +6,14 @@
 //! tint); and a double-click reset on each of the three sliders after the committed
 //! drag the first press makes: exposure back to 0 EV, and the custom temperature and tint back to
 //! As shot, whose fields then show the camera's as-shot equivalent. The RAW band carries no edited
-//! dot on the untouched photograph and again once the resets leave As shot at 0 EV.
+//! dot on the untouched photograph and again once the resets leave As shot at 0 EV; and a crop drafted on
+//! the RAW's whole input stage, straightened by 7°, applied at Fit, read at 100% and replaced through
+//! the API's `crop-fit`, each commit checked to be the picture on screen.
 //!
 //! No RAW photograph is checked in (see `fixtures/README.md`), so this scenario is not in
 //! [`crate::smoke::SCENARIOS`] and takes its source from `--source`: an owner or raw.pixls.us file
-//! the editor supports. It proves what the panel shows and what its double-click does, not RAW
-//! decoding, which `raw-editor` covers.
+//! the editor supports. It proves what the panel shows, what its double-click does and that a RAW
+//! crop is drawn and shown, not RAW decoding, which `raw-editor` covers.
 use crate::{
     smoke::{columns, frame_identity},
     *,
@@ -105,9 +107,36 @@ const DOUBLE_CLICKS: [DoubleClick; 4] = [
     },
 ];
 
+/// The crop steps follow the double-clicks: a draft opened on the RAW's whole input stage, given
+/// a 16:9 ratio and straightened, applied at Fit, inspected at 100% through two pointer readouts,
+/// replaced by a `crop-fit` through the API at 100% and read again, then Fit.
+const FIRST_CROP_STEP: usize = FIRST_CLICK_STEP + DOUBLE_CLICKS.len();
+/// The draft's straightening angle, and the angle the API's `crop-fit` then commits.
+const CROP_ANGLE: f64 = 7.0;
+const FIT_ANGLE: f64 = -12.0;
+/// Where the pointer readouts sample the committed crops at 100%: stage pixels inside the corner of
+/// the crop the canvas shows at a zero pan, clear of the scroll bars and the mode strip, for any
+/// supplied RAW (the smallest crop, the Z6's, is over 2000 px each way).
+const READOUTS: [(u32, u32); 2] = [(300, 200), (1100, 700)];
+
+fn crop_steps() -> Vec<Value> {
+    vec![
+        json!({"draft":{"start":true}}),
+        json!({"draft":{"preset":"16:9"}}),
+        json!({"draft":{"angle":CROP_ANGLE}}),
+        json!({"draft":{"apply":true}}),
+        json!({"view":{"zoom":100.0}}),
+        json!({"hover":{"x":READOUTS[0].0,"y":READOUTS[0].1}}),
+        json!({"hover":{"x":READOUTS[1].0,"y":READOUTS[1].1}}),
+        json!({"api":{"method":"edit.crop-fit","params":{"aspect":"3:2","angle":FIT_ANGLE}}}),
+        json!({"hover":{"x":READOUTS[1].0,"y":READOUTS[1].1}}),
+        json!({"view":{"zoom":"fit"}}),
+    ]
+}
+
 /// One open frame plus one per script step.
 pub fn frames(scenario: &str) -> Option<usize> {
-    (scenario == SCENARIO).then_some(FIRST_CLICK_STEP + DOUBLE_CLICKS.len())
+    (scenario == SCENARIO).then_some(FIRST_CROP_STEP + crop_steps().len())
 }
 
 pub fn script(scenario: &str) -> Option<Value> {
@@ -138,6 +167,8 @@ pub fn script(scenario: &str) -> Option<Value> {
             json!({"double_click":{"action":click.action,"parameter":click.parameter,
                 "value":click.value,"gap_ms":GAP_MS}})
         }));
+        // 12–21: a straightened crop drafted, applied and inspected; see `crop_steps`.
+        steps.extend(crop_steps());
         Value::Array(steps)
     })
 }
@@ -353,6 +384,7 @@ pub fn verify(evidence: &Path, app: &Value, events: &[Value]) -> Result {
             "revision": frame["state"]["stack"]["revision"]}),
         );
     }
+    checks.push(raw_crop(evidence, app, events, frames)?);
     write_json(&evidence.join("raw-panel-checks.json"), &json!(checks))?;
     Ok(())
 }
@@ -400,6 +432,387 @@ fn shows_as_shot_equivalent(frame: &Value, field: &str) -> Result<Value> {
         "tint": controls["set-raw-tint.tint"],
         "as_shot_equivalent": [kelvin, tint],
         "as_shot_gains": payload.as_shot_gains,
+/// The step's events that would mean a commit's picture never reached the canvas: a refused
+/// request, a failed render, a picture withdrawn for a failure, or a draft that could not open.
+fn expect_no_failure(events: &[Value], step: usize, what: &str) -> Result {
+    let failures: Vec<&Value> = step_events(events, step)
+        .into_iter()
+        .filter(|event| {
+            [
+                "command_failed",
+                "render_failed",
+                "preview_withdrawn",
+                "crop_draft_failed",
+            ]
+            .contains(&event["event"].as_str().unwrap_or_default())
+        })
+        .collect();
+    ensure(
+        failures.is_empty(),
+        format!("{what}: a failure was logged: {failures:?}"),
+    )
+}
+
+/// The one crop layer of a frame's current stack: its identity and payload.
+fn crop_layer(frame: &Value) -> Result<(String, lightwell_core::CropPayload)> {
+    let layers: Vec<&Value> = frame["state"]["stack"]["layers"]
+        .as_array()
+        .ok_or("The frame records no stack")?
+        .iter()
+        .filter(|layer| layer["effect"] == lightwell_core::CROP_EFFECT)
+        .collect();
+    ensure(
+        layers.len() == 1,
+        format!("Expected one crop layer, found {}", layers.len()),
+    )?;
+    Ok((
+        layers[0]["id"].as_str().unwrap_or_default().to_owned(),
+        serde_json::from_value(layers[0]["payload"].clone())?,
+    ))
+}
+
+/// A committed crop frame shows that crop: the entry on the surface is the current one, its
+/// dimensions are the output the payload declares on the RAW's upright stage, and no failure
+/// stands in for it. This is the check a picture left over from before the commit fails.
+fn shows_crop(frame: &Value, source: [u32; 2], angle: f64, what: &str) -> Result<[u32; 2]> {
+    let state = &frame["state"];
+    let (_, payload) = crop_layer(frame)?;
+    ensure(
+        payload.angle == angle,
+        format!("{what}: the crop layer's angle is {}", payload.angle),
+    )?;
+    let stage = lightwell_core::CropStage {
+        width: source[0],
+        height: source[1],
+        angle,
+    };
+    let output = payload.output_rect(&stage)?;
+    let output = [output.width, output.height];
+    let displayed = &state["stack"]["displayed"];
+    ensure(
+        displayed["entry"] == state["stack"]["entry"],
+        format!(
+            "{what}: the surface shows entry {} while history's current entry is {}",
+            displayed["entry"], state["stack"]["entry"]
+        ),
+    )?;
+    ensure(
+        displayed["dimensions"] == json!(output),
+        format!(
+            "{what}: the surface shows {} for a {output:?} crop",
+            displayed["dimensions"]
+        ),
+    )?;
+    ensure(
+        state["render_error"].is_null() && state["notices"] == json!([]),
+        format!(
+            "{what}: {} with notices {}",
+            state["render_error"], state["notices"]
+        ),
+    )?;
+    Ok(output)
+}
+
+/// The canvas background, read inside the canvas's own corner, which no photograph reaches.
+fn canvas_background(image: &image::RgbImage, frame: &Value) -> Result<([u8; 3], [u32; 4])> {
+    let rect: [u32; 4] = serde_json::from_value(frame["canvas_rect"].clone())
+        .map_err(|_| "The frame records no canvas rectangle")?;
+    Ok((image.get_pixel(rect[0] + 4, rect[1] + 4).0, rect))
+}
+
+/// A straightened draft draws its whole input stage as one rotated picture: sampled on a grid over
+/// the stage's interior, mapped through the draft's Fit view and rotation, almost no sample shows
+/// the canvas background. Drawn as the toolkit's own fragments of an image wider than one atlas
+/// layer, each turned about its own centre, it showed the background through 12% of these samples
+/// on the X100VI at 7°, and 66% at 44°.
+fn draft_is_whole(path: &Path, frame: &Value, source: [u32; 2]) -> Result<Value> {
+    let draft = &frame["state"]["crop"];
+    let angle = draft["angle"]
+        .as_f64()
+        .ok_or("The draft records no angle")?;
+    let stage = lightwell_core::CropStage {
+        width: source[0],
+        height: source[1],
+        angle,
+    };
+    let (box_width, box_height) = stage.bounding_box();
+    let image = image::open(path)?.to_rgb8();
+    let (background, [left, top, right, bottom]) = canvas_background(&image, frame)?;
+    let scale = frame["scale"]
+        .as_f64()
+        .ok_or("The frame records no scale")?;
+    // The Fit view: the canvas less the photo padding, the rotated box centred in it.
+    let padding = 20.0 * scale;
+    let available = (
+        f64::from(right - left) - 2.0 * padding,
+        f64::from(bottom - top) - 2.0 * padding,
+    );
+    let zoom = (available.0 / box_width).min(available.1 / box_height);
+    let origin = (
+        f64::from(left) + padding + (available.0 - box_width * zoom) / 2.0,
+        f64::from(top) + padding + (available.1 - box_height * zoom) / 2.0,
+    );
+    // The draft bar and the mode strip are drawn over the canvas; rows under them are skipped.
+    let (first_row, last_row) = (
+        f64::from(top) + 70.0 * scale,
+        f64::from(bottom) - 70.0 * scale,
+    );
+    let (mut sampled, mut background_samples) = (0u32, 0u32);
+    for j in 0..60 {
+        for i in 0..80 {
+            let u = f64::from(source[0]) * (0.03 + 0.94 * (f64::from(i) + 0.5) / 80.0);
+            let v = f64::from(source[1]) * (0.03 + 0.94 * (f64::from(j) + 0.5) / 60.0);
+            let (x, y) = stage.to_box(u, v);
+            let (sx, sy) = (origin.0 + x * zoom, origin.1 + y * zoom);
+            if sy < first_row || sy > last_row {
+                continue;
+            }
+            sampled += 1;
+            let pixel = image.get_pixel(sx as u32, sy as u32).0;
+            if pixel
+                .iter()
+                .zip(background)
+                .all(|(a, b)| a.abs_diff(b) <= 1)
+            {
+                background_samples += 1;
+            }
+        }
+    }
+    let share = f64::from(background_samples) / f64::from(sampled.max(1));
+    ensure(
+        sampled >= 2000 && share < 0.01,
+        format!(
+            "The straightened draft shows the canvas through {background_samples} of {sampled} samples of its input stage ({:.1}%): it is not drawn as one picture",
+            share * 100.0
+        ),
+    )?;
+    Ok(json!({
+        "angle": angle,
+        "samples": sampled,
+        "background_samples": background_samples,
+        "background_rgb": background,
+        "threshold_share": 0.01,
+    }))
+}
+
+/// A committed crop at Fit: the photograph measured on the canvas is the crop's output fitted into
+/// the photo area and centred in it, not the picture from before the commit.
+fn fit_placement(path: &Path, frame: &Value, output: [u32; 2]) -> Result<Value> {
+    let image = image::open(path)?.to_rgb8();
+    let (background, [left, top, right, bottom]) = canvas_background(&image, frame)?;
+    let scale = frame["scale"]
+        .as_f64()
+        .ok_or("The frame records no scale")?;
+    let padding = 20.0 * scale;
+    let available = (
+        f64::from(right - left) - 2.0 * padding,
+        f64::from(bottom - top) - 2.0 * padding,
+    );
+    let fit = (available.0 / f64::from(output[0])).min(available.1 / f64::from(output[1]));
+    let expected = (f64::from(output[0]) * fit, f64::from(output[1]) * fit);
+    let photo = |x: u32, y: u32| {
+        image
+            .get_pixel(x, y)
+            .0
+            .iter()
+            .zip(background)
+            .any(|(a, b)| a.abs_diff(b) > 1)
+    };
+    // One row through the middle and one column a quarter of the way in, clear of the mode strip.
+    let row = (top + bottom) / 2;
+    let column = left + (right - left) / 4;
+    let span = |positions: Vec<u32>| {
+        positions
+            .first()
+            .zip(positions.last())
+            .map(|(a, b)| (*a, *b))
+    };
+    let (x0, x1) = span((left..right).filter(|x| photo(*x, row)).collect())
+        .ok_or("No photograph on the canvas's middle row")?;
+    let (y0, y1) = span((top..bottom).filter(|y| photo(column, *y)).collect())
+        .ok_or("No photograph on the canvas's quarter column")?;
+    let measured = (f64::from(x1 - x0 + 1), f64::from(y1 - y0 + 1));
+    let centre = (
+        (f64::from(x0) + f64::from(x1) + 1.0) / 2.0,
+        (f64::from(y0) + f64::from(y1) + 1.0) / 2.0,
+    );
+    let wanted_centre = (f64::from(left + right) / 2.0, f64::from(top + bottom) / 2.0);
+    let tolerance = 4.0;
+    ensure(
+        (measured.0 - expected.0).abs() <= tolerance
+            && (measured.1 - expected.1).abs() <= tolerance
+            && (centre.0 - wanted_centre.0).abs() <= tolerance
+            && (centre.1 - wanted_centre.1).abs() <= tolerance,
+        format!(
+            "The photograph measures {measured:?} at {centre:?}; the {output:?} crop fits as {expected:?} at {wanted_centre:?}"
+        ),
+    )?;
+    Ok(json!({
+        "output": output,
+        "measured": [measured.0, measured.1],
+        "expected": [expected.0, expected.1],
+        "centre": [centre.0, centre.1],
+        "tolerance_px": tolerance,
+    }))
+}
+
+/// A pointer readout over the committed crop at 100%: the codes `render.sample` answered for the
+/// stage pixel under the pointer are the codes the canvas shows at that pixel, one stage pixel per
+/// physical pixel from the canvas's corner less the pan. The readout is the owner's own point
+/// evaluation of the current stack, so this ties the picture on screen to the committed recipe.
+fn readout_on_screen(
+    path: &Path,
+    frame: &Value,
+    point: (u32, u32),
+    output: [u32; 2],
+) -> Result<Value> {
+    let state = &frame["state"];
+    ensure(
+        state["surface"]["raster"] == json!(output) && state["proxy"]["presented"] == json!(false),
+        format!(
+            "The 100% view is not the exact {output:?} crop: raster {}",
+            state["surface"]["raster"]
+        ),
+    )?;
+    let readout = &state["readout"];
+    ensure(
+        readout["x"] == json!(point.0) && readout["y"] == json!(point.1),
+        format!("The readout is {readout}, not at {point:?}"),
+    )?;
+    let codes: [u8; 4] = serde_json::from_value(readout["rgba"].clone())
+        .map_err(|_| format!("The readout carries no codes: {readout}"))?;
+    let image = image::open(path)?.to_rgb8();
+    let (_, [left, top, _, _]) = canvas_background(&image, frame)?;
+    let scale = frame["scale"]
+        .as_f64()
+        .ok_or("The frame records no scale")?;
+    let view = &state["surface"]["view"];
+    let pan = (
+        view["pan_x"].as_f64().unwrap_or_default() * scale,
+        view["pan_y"].as_f64().unwrap_or_default() * scale,
+    );
+    let screen = (
+        (f64::from(left) - pan.0 + f64::from(point.0)).round() as u32,
+        (f64::from(top) - pan.1 + f64::from(point.1)).round() as u32,
+    );
+    let shown = image.get_pixel(screen.0, screen.1).0;
+    ensure(
+        shown
+            .iter()
+            .zip(codes)
+            .all(|(shown, code)| shown.abs_diff(code) <= 1),
+        format!(
+            "Stage pixel {point:?} reads {codes:?} but the canvas shows {shown:?} at {screen:?}"
+        ),
+    )?;
+    Ok(json!({
+        "point": [point.0, point.1],
+        "screen": [screen.0, screen.1],
+        "readout": codes,
+        "shown": shown,
+        "tolerance_codes": 1,
+    }))
+}
+
+/// The straightened crop drafted, applied and inspected on the RAW itself: the draft draws its
+/// whole input stage, Apply commits one entry whose picture is the one on screen at Fit and at
+/// 100%, where the pointer readout's codes are the canvas's own, and a `crop-fit` through the API
+/// at 100% updates the same layer and is shown the same way.
+fn raw_crop(evidence: &Path, app: &Value, events: &[Value], frames: &[Value]) -> Result<Value> {
+    let at = |offset: usize| &frames[FIRST_CROP_STEP + offset];
+    let source: [u32; 2] = serde_json::from_value(frames[0]["state"]["source_dimensions"].clone())
+        .map_err(|_| "The open frame records no source dimensions")?;
+    let tiles = source[0].div_ceil(2048) * source[1].div_ceil(2048);
+
+    let opened = at(0);
+    expect_no_failure(events, FIRST_CROP_STEP, "The draft's start")?;
+    let draft = &opened["state"]["crop"];
+    ensure(
+        draft["drafting"] == json!(true)
+            && draft["input_stage"] == json!(source)
+            && draft["input_stage_tiles"] == json!(tiles)
+            && tiles > 1,
+        format!("The draft did not open on the {source:?} stage in {tiles} tiles: {draft}"),
+    )?;
+    let straightened = at(2);
+    ensure(
+        straightened["state"]["crop"]["angle"] == json!(CROP_ANGLE),
+        "The draft was not straightened",
+    )?;
+    let whole = draft_is_whole(
+        &frame_identity(evidence, app, straightened)?,
+        straightened,
+        source,
+    )?;
+
+    let applied = at(3);
+    expect_no_failure(events, FIRST_CROP_STEP + 3, "Apply")?;
+    ensure(
+        step_events(events, FIRST_CROP_STEP + 3)
+            .iter()
+            .filter(|event| event["event"] == "crop_draft_applied")
+            .count()
+            == 1
+            && revision(applied)? == revision(straightened)? + 1
+            && applied["state"]["crop"]["drafting"] == json!(false),
+        "Apply did not commit exactly one entry and end the draft",
+    )?;
+    let output = shows_crop(applied, source, CROP_ANGLE, "The applied crop at Fit")?;
+    ensure(
+        applied["state"]["proxy"]["presented"] == json!(true),
+        "The applied crop at Fit is not the display proxy",
+    )?;
+    let placement = fit_placement(&frame_identity(evidence, app, applied)?, applied, output)?;
+
+    let exact = at(4);
+    shows_crop(exact, source, CROP_ANGLE, "The applied crop at 100%")?;
+    let mut readouts = Vec::new();
+    for (offset, point) in [(5, READOUTS[0]), (6, READOUTS[1])] {
+        let frame = at(offset);
+        shows_crop(frame, source, CROP_ANGLE, "A readout over the applied crop")?;
+        readouts.push(readout_on_screen(
+            &frame_identity(evidence, app, frame)?,
+            frame,
+            point,
+            output,
+        )?);
+    }
+
+    let fitted = at(7);
+    expect_no_failure(events, FIRST_CROP_STEP + 7, "The API's crop-fit")?;
+    ensure(
+        revision(fitted)? == revision(at(6))? + 1
+            && crop_layer(fitted)?.0 == crop_layer(applied)?.0,
+        "The API's crop-fit did not update the same crop layer in one entry",
+    )?;
+    let refitted = shows_crop(fitted, source, FIT_ANGLE, "The API's crop at 100%")?;
+    ensure(
+        fitted["state"]["surface"]["raster"] == json!(refitted),
+        format!(
+            "The API's crop at 100% is not drawn exactly: raster {}",
+            fitted["state"]["surface"]["raster"]
+        ),
+    )?;
+    let frame = at(8);
+    shows_crop(frame, source, FIT_ANGLE, "A readout over the API's crop")?;
+    readouts.push(readout_on_screen(
+        &frame_identity(evidence, app, frame)?,
+        frame,
+        READOUTS[1],
+        refitted,
+    )?);
+    let back = at(9);
+    shows_crop(back, source, FIT_ANGLE, "The API's crop back at Fit")?;
+    let back_placement = fit_placement(&frame_identity(evidence, app, back)?, back, refitted)?;
+    Ok(json!({
+        "crop": {
+            "source": source,
+            "tiles": tiles,
+            "straightened_draft": whole,
+            "applied": {"output": output, "fit": placement},
+            "readouts": readouts,
+            "api_crop_fit": {"angle": FIT_ANGLE, "output": refitted, "fit": back_placement},
+        }
     }))
 }
 
