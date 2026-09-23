@@ -1,11 +1,12 @@
 //! The `performance` smoke scenario: the state panel's Performance section on the real editor, over
 //! the generated 60 MP JPEG at 1440 × 900.
 //!
-//! Eight frames: the photograph opened with the section collapsed and nothing read; the section
-//! expanded, captured on its first read; a 3.6 s wait, by which the one-second sampler has read at
-//! least four times; a 3° straighten; a Presence Clarity commit over it, whose exact render at
-//! 60 MP runs long enough to be listed as long work; a wait after which that render is listed as
-//! finished; the section collapsed; and a 2.5 s wait in which nothing more is read.
+//! Eight frames: the photograph opened with the section open, as every launch starts it, and
+//! sampling; a 3.6 s wait, by which the one-second sampler has read at least four times; a 3°
+//! straighten; a Presence Clarity commit over it, whose exact render at 60 MP runs long enough to be
+//! listed as long work; a wait after which that render is listed as finished; the section
+//! collapsed; a 2.5 s wait in which nothing more is read; and the section opened again, captured on
+//! its first read of a fresh window.
 //!
 //! Each frame is checked against its own recorded answers, re-derived here without the editor's
 //! code: the memory figure against the recorded `resources.read`, the CPU and GPU figures against a
@@ -15,7 +16,8 @@
 //! memory and `footprint` for the physical footprint Activity Monitor shows — and compares each
 //! frame's recorded figures with its own readings taken at the same wall-clock moment. The collapsed
 //! frames prove the section asleep: the reads asked for and the samples held stay exactly where
-//! they were. Everything compared is written to `app/performance-checks.json`.
+//! they were, and the reopened frame proves that opening clears the window and reads at once.
+//! Everything compared is written to `app/performance-checks.json`.
 //!
 //! With `--source RAW` the heavy step is a RAW temperature commit instead, which redevelops the
 //! mosaic; that run is not part of `rendered`, because no RAW photograph is checked in.
@@ -34,15 +36,15 @@ pub const FIXTURE: &str = "fixtures/generated/60mp.jpg";
 pub const READINGS: &str = "process-readings.json";
 /// The frames, by what each shows.
 const OPENED: usize = 0;
-const EXPANDED: usize = 1;
-const FILLED: usize = 2;
-const STRAIGHTENED: usize = 3;
-const HEAVY: usize = 4;
-const FINISHED: usize = 5;
-const COLLAPSED: usize = 6;
-const ASLEEP: usize = 7;
+const FILLED: usize = 1;
+const STRAIGHTENED: usize = 2;
+const HEAVY: usize = 3;
+const FINISHED: usize = 4;
+const COLLAPSED: usize = 5;
+const ASLEEP: usize = 6;
+const REOPENED: usize = 7;
 const FRAMES: usize = 8;
-/// Long enough for the sampler's first read and three ticks of its one-second timer.
+/// Long enough for three more ticks of the one-second timer after the photograph opens.
 const FILL_WAIT_MS: u64 = 3_600;
 /// Long enough for the heavy render's exact phase to end and a read to see it in `recent`.
 const FINISHED_WAIT_MS: u64 = 2_500;
@@ -110,18 +112,18 @@ fn heavy_step(raw: bool) -> Value {
 pub fn script(scenario: &str, sources: &[PathBuf]) -> Option<Value> {
     (scenario == SCENARIO).then(|| {
         json!([
-            // 1: expanded, captured on the first read.
-            {"performance":{"expanded":true}},
-            // 2: the window fills.
+            // 1: the window fills; the section has sampled since the photograph opened.
             {"wait":{"ms":FILL_WAIT_MS}},
-            // 3-4: the straighten, then the heavy edit over it, each captured on its exact frame.
+            // 2-3: the straighten, then the heavy edit over it, each captured on its exact frame.
             {"api":{"method":"edit.crop-fit","params":{"aspect":"16:9","angle":ANGLE}}},
             heavy_step(is_raw(sources)),
-            // 5: its render listed as finished.
+            // 4: its render listed as finished.
             {"wait":{"ms":FINISHED_WAIT_MS}},
-            // 6-7: collapsed, then asleep.
+            // 5-6: collapsed, then asleep.
             {"performance":{"expanded":false}},
-            {"wait":{"ms":ASLEEP_WAIT_MS}}
+            {"wait":{"ms":ASLEEP_WAIT_MS}},
+            // 7: opened again, captured on the first read of a fresh window.
+            {"performance":{"expanded":true}}
         ])
     })
 }
@@ -655,19 +657,32 @@ pub fn verify(evidence: &Path, app: &Value, events: &[Value]) -> Result {
         )?;
     }
 
-    // Opened: collapsed, nothing read.
+    // Opened: the section open and sampling from the launch, its figures from its own answers. Its
+    // first reads may land before the runner's first reading of the new process, so its memory is
+    // compared from the next frame on.
     let opened = revision(&frames[OPENED])?;
-    expect_collapsed(OPENED, &frames[OPENED])?;
-    ensure(
-        count(&frames[OPENED], "reads_requested")? == 0 && count(&frames[OPENED], "samples")? == 0,
-        "Frame 0: the collapsed section has read something",
-    )?;
-    checks.push(json!({"frame":frames[OPENED]["file"],"shows":"the photograph opened, the Performance section collapsed and nothing read","reads_requested":0}));
+    let compared = expect_expanded(OPENED, &frames[OPENED])?;
+    checks.push(json!({"frame":frames[OPENED]["file"],"shows":"the photograph opened with the Performance section open and sampling","compared":compared}));
 
-    // Expanded through finished: each frame against its own answers and the runner's readings.
+    // Filled through finished, and reopened: each frame against its own answers, and, except the
+    // reopened frame, against the runner's readings. The reopened frame is captured on its first
+    // read, so that read coincides with the capture's own readback of the whole window (about
+    // 20 MB at 2880 × 1800, allocated and freed between two of the runner's polls), which is the
+    // harness's memory, not the section's.
     let mut gpu_times = Vec::new();
-    for (index, frame) in frames.iter().enumerate().take(FINISHED + 1).skip(EXPANDED) {
+    for (index, frame) in frames
+        .iter()
+        .enumerate()
+        .filter(|(index, _)| (FILLED..=FINISHED).contains(index) || *index == REOPENED)
+    {
         let mut compared = expect_expanded(index, frame)?;
+        if index == REOPENED {
+            if let Some(time) = performance(frame)["resources"]["gpu"]["time_ns"].as_u64() {
+                gpu_times.push(time);
+            }
+            checks.push(json!({"frame":frame["file"],"compared":compared}));
+            continue;
+        }
         let section = performance(frame);
         let at = section["wall_ms"]
             .as_u64()
@@ -717,13 +732,13 @@ pub fn verify(evidence: &Path, app: &Value, events: &[Value]) -> Result {
 
     // The revisions: nothing but the two edits commits anything.
     for (index, expected) in [
-        (EXPANDED, opened),
         (FILLED, opened),
         (STRAIGHTENED, opened + 1),
         (HEAVY, opened + 2),
         (FINISHED, opened + 2),
         (COLLAPSED, opened + 2),
         (ASLEEP, opened + 2),
+        (REOPENED, opened + 2),
     ] {
         ensure(
             revision(&frames[index])? == expected,
@@ -786,6 +801,19 @@ pub fn verify(evidence: &Path, app: &Value, events: &[Value]) -> Result {
         format!("Frame {ASLEEP}: a read is still in flight while collapsed"),
     )?;
     checks.push(json!({"frames":[frames[COLLAPSED]["file"],frames[ASLEEP]["file"]],"shows":"collapsed, then asleep","reads_requested":asked,"samples":held,"asleep_ms":ASLEEP_WAIT_MS}));
+
+    // Reopened: a fresh window, read at once. The frame is captured on that first read, so it holds
+    // exactly one sample and one read more than the collapsed section had asked for.
+    ensure(
+        count(&frames[REOPENED], "samples")? == 1
+            && count(&frames[REOPENED], "reads_requested")? == asked + 1,
+        format!(
+            "Frame {REOPENED}: reopening did not start a fresh window with one read: {} samples and {} reads, after {asked}",
+            count(&frames[REOPENED], "samples")?,
+            count(&frames[REOPENED], "reads_requested")?
+        ),
+    )?;
+    checks.push(json!({"frame":frames[REOPENED]["file"],"shows":"opened again: a fresh window, read at once","reads_requested":asked + 1,"samples":1}));
 
     let ps_count = readings
         .iter()

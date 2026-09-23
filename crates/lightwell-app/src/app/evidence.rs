@@ -3927,8 +3927,13 @@ mod tests {
     #[test]
     fn a_scripted_performance_step_waits_for_the_first_read_when_opening() {
         let (mut editor, catalog, _, _) = scripted(
-            r#"[{"performance":{"expanded":true}},{"performance":{"expanded":true}},{"performance":{"expanded":false}}]"#,
+            r#"[{"performance":{"expanded":false}},{"performance":{"expanded":true}},{"performance":{"expanded":true}},{"performance":{"expanded":false}}]"#,
         );
+        // The section starts open: closing it first is captured on the next frame.
+        let _ = editor.next_step();
+        assert!(!editor.performance.expanded);
+        assert!(evidence(&editor).capture_pending);
+        editor.evidence.as_mut().expect("evidence").capture_pending = false;
         let _ = editor.next_step();
         assert!(editor.performance.expanded);
         assert_eq!(editor.performance.requested, 1);

@@ -34,8 +34,9 @@ pub(crate) fn sampling(expanded: bool, state_panel_shown: bool) -> bool {
 /// The section's local state: its expanded flag, what it has read and the one read in flight.
 #[derive(Debug, Default)]
 pub(crate) struct Sampler {
-    /// Local to this client and this launch, collapsed at start: the section's timer is the only
-    /// way it costs anything, so it runs only when someone asked to see it.
+    /// Local to this client and this launch, open at start (the owner's decision of 2026-09-23).
+    /// Collapsing it, or hiding the state panel, stops the timer, which is the only way the
+    /// section costs anything.
     pub(crate) expanded: bool,
     pub(crate) history: PerformanceHistory,
     pub(crate) in_flight: bool,
@@ -59,6 +60,15 @@ pub(crate) struct Sampler {
 }
 
 impl Sampler {
+    /// The section as a launch finds it: open, having read nothing yet. It starts sampling on the
+    /// first message the editor handles, like any other change to the gate.
+    pub(crate) fn open() -> Self {
+        Self {
+            expanded: true,
+            ..Self::default()
+        }
+    }
+
     /// Start a fresh window: nothing read before the section last stopped sampling is kept.
     fn restart(&mut self) {
         self.history.clear();
@@ -224,6 +234,16 @@ mod tests {
         })
     }
 
+    /// An editor whose section was collapsed before its first message, so it has started nothing:
+    /// the state a test that opens the section itself begins from.
+    fn boot_collapsed() -> (Editor, std::path::PathBuf) {
+        let (mut editor, catalog) = boot();
+        let _ = editor.update(Message::TogglePerformance);
+        assert!(!editor.performance.expanded);
+        assert_eq!(editor.performance.requested, 0);
+        (editor, catalog)
+    }
+
     #[test]
     fn the_timer_runs_only_while_expanded_and_the_state_panel_is_shown() {
         assert!(sampling(true, true));
@@ -232,8 +252,10 @@ mod tests {
         assert!(!sampling(false, false));
 
         let (mut editor, catalog) = boot();
-        assert!(!editor.performance.expanded, "collapsed at start");
-        assert!(!editor.performance_sampling());
+        assert!(editor.performance.expanded, "open at start");
+        assert!(editor.performance_sampling());
+        let _ = editor.update(Message::TogglePerformance);
+        assert!(!editor.performance_sampling(), "collapsed");
         let _ = editor.update(Message::TogglePerformance);
         assert!(editor.performance_sampling());
         // Hidden by a session answer — this client's toggle or another client's `workspace.set`.
@@ -258,7 +280,7 @@ mod tests {
     /// Expanding starts a fresh window and reads at once; collapsing asks for nothing more.
     #[test]
     fn expanding_clears_the_history_and_reads_at_once() {
-        let (mut editor, catalog) = boot();
+        let (mut editor, catalog) = boot_collapsed();
         editor
             .performance
             .history
@@ -317,7 +339,7 @@ mod tests {
 
     #[test]
     fn a_tick_while_a_read_is_in_flight_does_nothing() {
-        let (mut editor, catalog) = boot();
+        let (mut editor, catalog) = boot_collapsed();
         let _ = editor.update(Message::TogglePerformance);
         assert_eq!(editor.performance.requested, 1);
         for _ in 0..3 {
@@ -342,7 +364,7 @@ mod tests {
     /// was collapsed and expanded again, whose place a fresh read takes.
     #[test]
     fn a_read_from_before_a_collapse_is_dropped() {
-        let (mut editor, catalog) = boot();
+        let (mut editor, catalog) = boot_collapsed();
         let _ = editor.update(Message::TogglePerformance);
         let first = editor.performance.epoch;
         let _ = editor.update(Message::TogglePerformance);
@@ -393,7 +415,7 @@ mod tests {
     /// A read that cannot be used changes nothing but the error the frame records.
     #[test]
     fn a_failed_read_leaves_its_reason_and_keeps_the_window() {
-        let (mut editor, catalog) = boot();
+        let (mut editor, catalog) = boot_collapsed();
         let _ = editor.update(Message::TogglePerformance);
         let epoch = editor.performance.epoch;
         let _ = editor.update(Message::PerformanceSampled {
@@ -425,7 +447,7 @@ mod tests {
     /// The frame records the raw answers the figures came from and the rows as the view shows them.
     #[test]
     fn the_snapshot_records_the_answers_and_the_rows_as_shown() {
-        let (mut editor, catalog) = boot();
+        let (mut editor, catalog) = boot_collapsed();
         assert_eq!(editor.snapshot()["performance"]["expanded"], json!(false));
         assert_eq!(
             editor.snapshot()["performance"]["reads_requested"],
@@ -467,7 +489,7 @@ mod tests {
     /// The palette offers the section's toggle named for what it would do, and running it does it.
     #[test]
     fn the_palette_toggles_the_section() {
-        let (mut editor, catalog) = boot();
+        let (mut editor, catalog) = boot_collapsed();
         let index = |editor: &Editor, label: &str| {
             editor
                 .workspace

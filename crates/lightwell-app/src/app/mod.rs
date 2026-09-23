@@ -739,7 +739,7 @@ impl Editor {
             capability_started: Vec::new(),
             presets: PresetLibrary::default(),
             preset_form: PresetForm::default(),
-            performance: performance::Sampler::default(),
+            performance: performance::Sampler::open(),
             workspace: Workspace::default(),
         };
         // Both workers wake the event loop through one channel instead of a poll. The closure is
