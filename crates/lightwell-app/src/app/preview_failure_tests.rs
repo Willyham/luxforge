@@ -9,13 +9,14 @@
 use super::{
     Editor, ProxyFrame, Settle,
     crop::PendingDraft,
-    message::Message,
+    message::{CropMessage, Message},
+    tasks::SyncResult,
     testing::{attach_log, crop_layer, entry, finish, logged, opened, refresh_for},
 };
 use crate::state::{canvas::PhotoView, histogram::HistogramStatus};
 use lightwell_core::{
-    AssetId, CropPayload, CropStage, EntryId, Error, ErrorKind, HistoryEntry, POINTER_MODE,
-    PreviewSource, SourceImage, Zoom,
+    AssetId, BASIC_EFFECT, CropPayload, CropStage, EFFECT_FORMAT, EntryId, Error, ErrorKind,
+    HistoryEntry, Layer, LayerId, POINTER_MODE, PreviewJob, PreviewSource, SourceImage, Zoom,
 };
 use serde_json::{Value, json};
 use std::{
@@ -392,5 +393,237 @@ fn a_scripted_step_waiting_for_a_preview_ends_on_its_failure() {
     editor.preview_failed(9, false, &entry, None, &error);
     let evidence = crate::app::testing::evidence(&editor);
     assert!(evidence.awaiting.is_none() && evidence.capture_pending);
+    finish(editor, catalog);
+}
+
+/// A layer the crop's input stage renders, so that stage costs a real colour pass.
+fn basic() -> Layer {
+    Layer {
+        id: LayerId::new(),
+        effect_id: BASIC_EFFECT.into(),
+        effect_format: EFFECT_FORMAT,
+        payload: json!({"exposure": 0.5, "contrast": 20.0}),
+        artifacts: Vec::new(),
+    }
+}
+
+/// A photograph whose input stage is still rendering when the next request arrives: its colour
+/// pass takes over half a second in the unoptimized test build, and the update that supersedes it
+/// arrives within a millisecond.
+fn large() -> SourceImage {
+    SourceImage {
+        width: 4000,
+        height: 3000,
+        rgba: [90, 110, 130, 255].repeat(4000 * 3000).into(),
+        fingerprint: "f".into(),
+        orientation: 1,
+    }
+}
+
+/// The job `crop_preview_task` hands back for the starting draft: the current stack truncated to
+/// the layers before the crop, over `source`.
+fn draft_job(editor: &Editor, source: SourceImage) -> PreviewJob {
+    let state = editor.state.as_ref().expect("an open asset");
+    let current = &state.current_entry;
+    let pending = editor.crop_pending.as_ref().expect("a starting draft");
+    let mut job = refresh_for(&state.asset.id, current, Vec::new(), &[current], false).job;
+    job.source = PreviewSource::Jpeg(source);
+    job.layer_count = Some(pending.layer_index);
+    job
+}
+
+/// Another client commits: the event sync reads the state back and requests the new entry's frame.
+fn committed_elsewhere(
+    editor: &mut Editor,
+    asset: &AssetId,
+    sequence: u64,
+    source: SourceImage,
+) -> HistoryEntry {
+    let current = editor
+        .state
+        .as_ref()
+        .expect("an open asset")
+        .current_entry
+        .clone();
+    let mut next = entry(asset, sequence, Some(&current.id));
+    next.snapshot = current.snapshot.clone();
+    let refresh = committed(asset, &next, &[&current], source);
+    let _ = editor.update(Message::Synced(Ok(SyncResult::changed(refresh))));
+    next
+}
+
+/// [`poll_until`] through `dispatch`, so the mode a draft's end asks the session for is still
+/// there to read afterwards rather than folded into a task this test never runs.
+fn dispatch_polls_until(editor: &mut Editor, what: &str, done: impl Fn(&Editor) -> bool) {
+    let deadline = Instant::now() + Duration::from_secs(60);
+    while !done(editor) {
+        assert!(
+            Instant::now() < deadline,
+            "{what} never happened: {}",
+            editor.status
+        );
+        let _ = editor.dispatch(Message::Poll);
+        std::thread::sleep(Duration::from_millis(1));
+    }
+}
+
+/// A starting draft's input stage is still rendering when another client's commit requests the
+/// new entry's frame, which stops the draft's job: the job's cancelled outcome is recorded under
+/// the draft's own generation, and the draft ends explicitly, back in the pointer mode with the
+/// reason in the status bar, instead of waiting for pixels that will never come. The new entry's
+/// frame is then shown as usual, and its own status replaces the reason.
+#[test]
+fn a_starting_draft_whose_input_stage_a_newer_request_cancels_ends_explicitly() {
+    let (mut editor, catalog, asset, _) = opened(vec![basic()], 4);
+    poll_until(&mut editor, "the opened frame", |editor| {
+        editor.presented_generation > 0 && !editor.preview_queue.is_busy()
+    });
+    let log = attach_log(&mut editor);
+    let _ = editor.update(Message::Crop(CropMessage::Start));
+    let job = draft_job(&editor, large());
+    let _ = editor.update(Message::Crop(CropMessage::PreviewReady(Ok(Box::new(job)))));
+    let draft = editor
+        .draft_generation
+        .expect("the draft's job was requested");
+    assert_eq!(editor.status, "Rendering the crop's input stage…");
+
+    // The new entry is as large, so its frame is still rendering when the draft ends.
+    let next = committed_elsewhere(&mut editor, &asset, 5, large());
+    let newer = editor.preview_generation;
+    assert!(newer > draft);
+    dispatch_polls_until(&mut editor, "the draft's end", |editor| {
+        editor.crop_pending.is_none()
+    });
+    assert_eq!(editor.draft_generation, None);
+    assert!(editor.crop.is_none() && editor.draft_photo.is_none());
+    assert_eq!(
+        editor.mode_sync.as_deref(),
+        Some(POINTER_MODE),
+        "the session was not asked to leave the crop mode"
+    );
+    assert_eq!(
+        editor.status,
+        "The crop's input stage was superseded by a newer preview: start the crop again"
+    );
+
+    dispatch_polls_until(&mut editor, "the new entry's frame", |editor| {
+        editor.presented_generation == newer && !editor.preview_queue.is_busy()
+    });
+    assert!(!editor.uploading, "nothing of the draft was uploaded");
+    assert!(editor.crop_pending.is_none() && editor.draft_photo.is_none());
+    assert_eq!(editor.presented_entry.as_ref(), Some(&next.id));
+    assert_eq!(editor.render_error, None);
+    let records = logged(&mut editor, &log);
+    assert_eq!(
+        events(&records, "preview_exact_cancelled"),
+        vec![&json!({"generation": draft, "draft": true})],
+        "the cancelled phase is recorded as the draft's"
+    );
+    assert_eq!(
+        events(&records, "crop_draft_failed"),
+        vec![&json!({
+            "reapply": false,
+            "error_code": "cancelled",
+            "detail": "superseded by a newer preview",
+            "generation": draft,
+        })]
+    );
+    finish(editor, catalog);
+}
+
+/// A reapply's input stage waits in the pending slot behind the frame of one commit from another
+/// client when a second commit's frame replaces it there, so it never starts: the reapply ends as
+/// it is replaced, and keeps the conflicted draft it was rebasing for another reapply. The status
+/// bar goes straight on to the second commit's frame, which is what the photograph is waiting for;
+/// the draft's own notice still says it changed elsewhere.
+#[test]
+fn a_reapply_whose_input_stage_a_newer_request_replaces_keeps_the_conflicted_draft() {
+    let (mut editor, catalog, asset, _) = opened(vec![basic()], 4);
+    poll_until(&mut editor, "the opened frame", |editor| {
+        editor.presented_generation > 0 && !editor.preview_queue.is_busy()
+    });
+    let _ = editor.update(Message::Crop(CropMessage::Start));
+    editor.open_draft(CropStage {
+        width: 480,
+        height: 320,
+        angle: 0.0,
+    });
+    // The first commit makes the draft conflicted; its frame is still rendering.
+    committed_elsewhere(&mut editor, &asset, 5, large());
+    assert!(editor.crop.as_ref().expect("the draft is kept").conflicted);
+    let _ = editor.update(Message::Crop(CropMessage::Reapply));
+    assert!(
+        editor
+            .crop_pending
+            .as_ref()
+            .expect("a pending rebase")
+            .reapply
+    );
+    let log = attach_log(&mut editor);
+    let job = draft_job(&editor, large());
+    let _ = editor.update(Message::Crop(CropMessage::PreviewReady(Ok(Box::new(job)))));
+    let reapply = editor
+        .draft_generation
+        .expect("the reapply's job was requested");
+    assert_eq!(
+        editor.preview_queue.pending_generation(),
+        Some(reapply),
+        "the reapply's job waits behind the first commit's frame"
+    );
+
+    let next = committed_elsewhere(&mut editor, &asset, 6, small());
+    assert!(
+        editor.crop_pending.is_none() && editor.draft_generation.is_none(),
+        "the replaced reapply is still waiting"
+    );
+    let draft = editor.crop.as_ref().expect("the reapply kept its draft");
+    assert!(draft.conflicted, "the kept draft is still conflicted");
+    assert_eq!(draft.base_revision, 4);
+
+    poll_until(&mut editor, "the second commit's frame", |editor| {
+        editor.presented_entry.as_ref() == Some(&next.id) && !editor.preview_queue.is_busy()
+    });
+    assert!(!editor.uploading, "the replaced job delivered a stage");
+    assert!(editor.crop.as_ref().expect("the draft is kept").conflicted);
+    let records = logged(&mut editor, &log);
+    assert_eq!(
+        events(&records, "crop_draft_failed"),
+        vec![&json!({
+            "reapply": true,
+            "error_code": "cancelled",
+            "detail": "superseded by a newer preview",
+            "generation": reapply,
+        })]
+    );
+    assert!(
+        events(&records, "preview_exact_cancelled")
+            .iter()
+            .all(|detail| detail["generation"] != json!(reapply)),
+        "a job that never started was cancelled: {records:?}"
+    );
+    finish(editor, catalog);
+}
+
+/// The stack changed while the owner planned the draft's job, which it answers as superseded
+/// rather than planning a stale input stage: the draft ends explicitly as a cancelled one does.
+#[test]
+fn a_draft_whose_job_the_owner_finds_superseded_ends_explicitly() {
+    let (mut editor, catalog, _, _) = opened(Vec::new(), 4);
+    let log = attach_log(&mut editor);
+    let _ = editor.update(Message::Crop(CropMessage::Start));
+    let _ = editor.dispatch(Message::Crop(CropMessage::PreviewReady(Err(
+        "superseded preview".into(),
+    ))));
+    assert!(editor.crop_pending.is_none() && editor.crop.is_none());
+    assert_eq!(editor.mode_sync.as_deref(), Some(POINTER_MODE));
+    assert!(
+        editor.status.ends_with("start the crop again"),
+        "{}",
+        editor.status
+    );
+    let records = logged(&mut editor, &log);
+    let failed = events(&records, "crop_draft_failed");
+    assert_eq!(failed.len(), 1, "{failed:?}");
+    assert_eq!(failed[0]["generation"], Value::Null);
     finish(editor, catalog);
 }

@@ -89,11 +89,17 @@ impl Editor {
             CropMessage::Reapply => return self.crop_start(true),
             CropMessage::PreviewReady(result) => match result {
                 Ok(job) => {
+                    // A job an earlier start asked for is no longer the draft's once this one is
+                    // requested, so this request superseding it ends nothing.
+                    self.draft_generation = None;
                     self.draft_generation = Some(self.request_preview(*job));
                     self.status = "Rendering the crop's input stage…".into();
                 }
                 Err(error) => {
+                    // The stack or the selection changed while the owner planned the job, so its
+                    // input stage would be stale and nothing else will arrive for this draft.
                     if error == "superseded preview" {
+                        self.draft_preview_superseded(None);
                         return Task::none();
                     }
                     self.crop_pending = None;

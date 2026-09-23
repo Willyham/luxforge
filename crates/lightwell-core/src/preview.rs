@@ -327,6 +327,17 @@ pub struct PreviewResult {
     pub render_ms: f64,
 }
 
+impl PreviewResult {
+    /// Whether this is an exact phase that a newer request or [`PreviewQueue::cancel`] stopped: it
+    /// carries no frame, only the fact that this generation has ended. A proxy phase is never
+    /// delivered cancelled; a failed proxy is recorded on the exact result instead.
+    pub fn cancelled(&self) -> bool {
+        self.result
+            .as_ref()
+            .is_err_and(|error| error.kind == ErrorKind::Cancelled)
+    }
+}
+
 /// What the worker sends back: one result, and the proxy source it built for it, which the queue
 /// inserts into its cache on the thread that owns it.
 struct WorkerMessage {
@@ -386,11 +397,14 @@ fn rank(phase: PreviewPhase) -> u8 {
 /// - `poll` delivers a result whose generation is above the floor and whose `(generation, phase)`
 ///   is strictly after the last delivered one, so an older frame never follows a newer one on
 ///   screen and a job's exact phase still follows its own proxy phase.
-/// - An exact phase that answered [`ErrorKind::Cancelled`] carries no frame; it is counted in
-///   [`Self::cancelled_exact`] and never delivered.
+/// - An exact phase that answered [`ErrorKind::Cancelled`] carries no frame, and is delivered all
+///   the same, under the same rules, as that outcome ([`PreviewResult::cancelled`]). So every job
+///   that starts delivers exactly one exact-phase outcome above the floor — a frame, a failure or
+///   cancelled — and a caller waiting for one generation learns when it has ended.
 ///
 /// Newest-wins survives where it belongs: a newer request replaces the pending job, so at most one
-/// job waits and the newest value is the one that runs next.
+/// job waits and the newest value is the one that runs next. A replaced job never starts and has
+/// nothing to deliver; [`Self::pending_generation`] names it before the request that replaces it.
 #[derive(Default)]
 pub struct PreviewQueue {
     generation: u64,
@@ -400,7 +414,6 @@ pub struct PreviewQueue {
     /// replaces the old entry rather than accumulating beside it.
     cache: ProxyCache,
     waker: Option<Arc<dyn Fn() + Send + Sync>>,
-    cancelled_exact: u64,
     /// Results at or below this generation are stale, whatever they carry.
     floor: u64,
     last_delivered: u64,
@@ -445,14 +458,15 @@ impl PreviewQueue {
         self.waker = Some(waker);
     }
 
-    /// How many exact phases have answered [`ErrorKind::Cancelled`] because a newer request
-    /// superseded them. Superseded frames are dropped, so this is the only account of them.
-    pub fn cancelled_exact(&self) -> u64 {
-        self.cancelled_exact
+    /// The generation of the job waiting in the pending slot. The next [`Self::request`] replaces
+    /// that job, and a replaced job never starts, so it delivers nothing at all: asking here, just
+    /// before requesting, is the only way to learn that it has ended.
+    pub fn pending_generation(&self) -> Option<u64> {
+        self.pending.as_ref().map(|(generation, _)| *generation)
     }
 
-    /// The generation of the last result [`Self::poll`] delivered, so a caller can correlate what
-    /// is on screen with the request that produced it. `0` before anything is delivered.
+    /// The generation of the last result [`Self::poll`] delivered, so a caller can correlate its
+    /// frames and outcomes with the request that produced them. `0` before anything is delivered.
     pub fn last_delivered(&self) -> u64 {
         self.last_delivered
     }
@@ -544,21 +558,15 @@ impl PreviewQueue {
                 self.cache.insert(key, source);
             }
             let result = message.result;
-            let mut cancelled = false;
             if result.phase == PreviewPhase::Exact {
-                cancelled = result
-                    .result
-                    .as_ref()
-                    .is_err_and(|error| error.kind == ErrorKind::Cancelled);
-                if cancelled {
-                    self.cancelled_exact = self.cancelled_exact.saturating_add(1);
-                }
                 self.finish_active();
             }
             let rank = rank(result.phase);
             let newer = (generation, rank) > (self.last_delivered, self.last_delivered_rank);
-            // A cancelled exact phase carries no frame at all: it is counted, never delivered.
-            if !cancelled && generation > self.floor && newer {
+            // A cancelled exact phase carries no frame, but it is this generation's outcome, so it
+            // is delivered like any other: without it a caller waiting for the generation would
+            // wait forever.
+            if generation > self.floor && newer {
                 self.last_delivered = generation;
                 self.last_delivered_rank = rank;
                 return Some(result);
@@ -787,14 +795,23 @@ mod tests {
     /// The pending slot is still newest-wins: three rapid requests run at most two jobs, the second
     /// is replaced by the third, and the third is what the display ends on. The first job may or
     /// may not have finished before it was superseded; if it did, its frame is delivered, because a
-    /// frame newer than what is on screen is never thrown away — that is what starves a drag.
-    /// Deliveries are strictly increasing either way.
+    /// frame newer than what is on screen is never thrown away — that is what starves a drag — and
+    /// if it did not, its cancelled exact phase is delivered in the frame's place. Either way each
+    /// job that started delivers one exact outcome, in increasing order, and the replaced one,
+    /// which the queue names before replacing it, delivers nothing.
     #[test]
     fn newest_preview_wins_with_one_active_and_one_pending() {
         let mut queue = PreviewQueue::default();
-        queue.request(entry(1));
-        queue.request(entry(2));
+        let first = queue.request(entry(1));
+        assert_eq!(queue.pending_generation(), None, "the first job started");
+        let replaced = queue.request(entry(2));
+        assert_eq!(queue.pending_generation(), Some(replaced));
         let wanted = queue.request(entry(3));
+        assert_eq!(
+            queue.pending_generation(),
+            Some(wanted),
+            "the third request replaced the second"
+        );
         let deadline = Instant::now() + DEADLINE;
         let mut delivered: Vec<u64> = Vec::new();
         loop {
@@ -807,6 +824,11 @@ mod tests {
                     result.generation
                 );
                 assert_eq!(result.generation, queue.last_delivered());
+                assert_eq!(
+                    result.phase,
+                    PreviewPhase::Exact,
+                    "no job had a proxy phase"
+                );
                 delivered.push(result.generation);
                 if result.generation == wanted {
                     assert_eq!(result.result.unwrap().pixel(0, 0), Some([3, 0, 0, 255]));
@@ -816,10 +838,11 @@ mod tests {
             assert!(Instant::now() < deadline, "the newest preview never came");
             std::thread::yield_now();
         }
-        assert_eq!(delivered.last(), Some(&wanted));
-        assert!(
-            !delivered.contains(&2),
-            "the second request was replaced in the pending slot and never ran: {delivered:?}"
+        assert_eq!(
+            delivered,
+            vec![first, wanted],
+            "the first job's one outcome, then the third's; the second was replaced in the pending \
+             slot and never ran"
         );
     }
 
@@ -841,10 +864,13 @@ mod tests {
         let delivered = drain_until(&mut queue, second, PreviewPhase::Exact);
         assert_eq!(
             delivered,
-            vec![(first, PreviewPhase::Exact), (second, PreviewPhase::Exact)],
-            "a superseded but completed frame is delivered before the newer one"
+            vec![
+                (first, PreviewPhase::Exact, false),
+                (second, PreviewPhase::Exact, false)
+            ],
+            "a superseded but completed frame is delivered before the newer one, and nothing was \
+             cancelled"
         );
-        assert_eq!(queue.cancelled_exact(), 0, "nothing was cancelled");
     }
 
     /// `cancel` is the only thing that invalidates an in-flight result: a frame planned before it
@@ -864,6 +890,18 @@ mod tests {
         let deadline = Instant::now() + DEADLINE;
         while queue.is_busy() {
             assert!(queue.poll().is_none(), "a frame from before the cancel");
+            assert!(Instant::now() < deadline, "the cancelled job never drained");
+            std::thread::yield_now();
+        }
+        assert_eq!(queue.last_delivered(), 0, "nothing was ever delivered");
+
+        // An exact phase that `cancel` stopped mid-render answers cancelled, and that outcome is
+        // at the floor too: the caller that raised it already knows the generation has ended.
+        queue.request(stacked(1200, 900, eligible_layers(1200, 900), None));
+        queue.cancel();
+        let deadline = Instant::now() + DEADLINE;
+        while queue.is_busy() {
+            assert!(queue.poll().is_none(), "an outcome from before the cancel");
             assert!(Instant::now() < deadline, "the cancelled job never drained");
             std::thread::yield_now();
         }
@@ -1050,17 +1088,18 @@ mod tests {
         }
     }
 
-    /// Poll until this generation's phase is delivered, collecting what came before it.
+    /// Poll until this generation's phase is delivered, collecting what came before it: each
+    /// delivery's generation, phase and whether it was cancelled.
     fn drain_until(
         queue: &mut PreviewQueue,
         generation: u64,
         phase: PreviewPhase,
-    ) -> Vec<(u64, PreviewPhase)> {
+    ) -> Vec<(u64, PreviewPhase, bool)> {
         let deadline = Instant::now() + DEADLINE;
         let mut delivered = Vec::new();
         loop {
             if let Some(result) = queue.poll() {
-                delivered.push((result.generation, result.phase));
+                delivered.push((result.generation, result.phase, result.cancelled()));
                 if (result.generation, result.phase) == (generation, phase) {
                     return delivered;
                 }
@@ -1163,8 +1202,9 @@ mod tests {
     }
 
     /// A newer request stops the exact phase of the job it replaced within a chunk, and that phase
-    /// answers with no frame at all. The proxy phase of the older job is polled first, so the
-    /// cancel lands inside the exact render rather than before it.
+    /// answers with no frame at all, delivered under its own generation before anything of the
+    /// newer job. The proxy phase of the older job is polled first, so the cancel lands inside the
+    /// exact render rather than before it.
     #[test]
     fn a_newer_request_cancels_the_exact_phase_of_the_job_it_replaced() {
         let display = bounds(200, 200);
@@ -1176,7 +1216,7 @@ mod tests {
             Some(display),
         ));
         let first = drain_until(&mut queue, older, PreviewPhase::Proxy);
-        assert_eq!(first, vec![(older, PreviewPhase::Proxy)]);
+        assert_eq!(first, vec![(older, PreviewPhase::Proxy, false)]);
 
         let newer = queue.request(stacked(
             1200,
@@ -1185,26 +1225,26 @@ mod tests {
             Some(display),
         ));
         let delivered = drain_until(&mut queue, newer, PreviewPhase::Exact);
+        let order: Vec<(u64, PreviewPhase)> = delivered
+            .iter()
+            .map(|(generation, phase, _)| (*generation, *phase))
+            .collect();
         assert_eq!(
-            delivered.last(),
-            Some(&(newer, PreviewPhase::Exact)),
-            "the newer generation is what the display ends on"
-        );
-        assert!(
-            delivered
-                .windows(2)
-                .all(|pair| pair[0].0 <= pair[1].0 && pair[0] != pair[1]),
-            "deliveries never go backwards: {delivered:?}"
+            order,
+            vec![
+                (older, PreviewPhase::Exact),
+                (newer, PreviewPhase::Proxy),
+                (newer, PreviewPhase::Exact)
+            ],
+            "the older job's one exact outcome, then the newer job's two phases"
         );
         // The exact phase of the older job either finished before the cancel reached it — which is
-        // vanishingly unlikely on a frame this size but is not forbidden — or it was cancelled and
-        // counted. A cancelled phase is never delivered: it carries no frame.
-        if !delivered.contains(&(older, PreviewPhase::Exact)) {
-            assert!(
-                queue.cancelled_exact() >= 1,
-                "the superseded exact phase was neither delivered nor counted"
-            );
-        }
+        // vanishingly unlikely on a frame this size but is not forbidden — or it was cancelled. The
+        // newer job's phases are frames either way.
+        assert!(
+            delivered[1..].iter().all(|(_, _, cancelled)| !cancelled),
+            "{delivered:?}"
+        );
     }
 
     /// The three ways a job that offered bounds has no proxy phase, and the one way a job never

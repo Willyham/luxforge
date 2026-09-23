@@ -224,14 +224,14 @@ nothing, however often the view is rebuilt. It therefore carries no `upload_ms`,
 `render_ready`: there is no upload step to time. The clipping overlay and the crop draft's input
 stage keep the toolkit's image widget and still upload, which is what `clipping_overlay` and the
 draft's own settle report. `preview_exact_adopted` records the exact phase of such a job
-being taken up without an upload, with that phase's own `render_ms`, `preview_exact_cancelled` records one a newer value superseded, and
+being taken up without an upload, with that phase's own `render_ms`, `preview_exact_cancelled` records one a newer request superseded, under its own generation and with `draft` when it was a crop draft's input stage, and
 `clipping_overlay` carries `approximate` while the mask is derived from the proxy on screen rather
 than from that exact raster. `preview_failed` records every failed preview of the displayed state,
 with its entry and reason, and a scripted step waiting for the newest preview's pixels ends on it
 and captures the failure. `preview_withdrawn` records a failed preview whose target was not the
 picture on screen: that picture, named with the target, is taken off the surface with everything
 derived from it, so `state.surface.raster` and `state.stack.displayed` are null until a frame of the
-target renders, and `crop_draft_failed` records a draft whose input stage could not be rendered. A
+target renders, and `crop_draft_failed` records a draft whose input stage could not be rendered or was superseded before it rendered (`error_code: cancelled`, with that job's `generation` when it had one). A
 crop draft's `state.crop.input_stage_tiles` counts the atlas-sized tiles its input stage was
 uploaded as. `state.json` carries `proxy: {eligible, declined, approximate, dimensions, bounds,
 presented}`, so a stack that took the exact path — an ineligible layer, a stage already inside the
@@ -604,8 +604,8 @@ over the run, drafted and committed alike, divided by the seconds from the first
 to the last of them), `staleness_ms` (each presented drafted frame's own `slider_draft_set` time to
 its `preview_displayed` time, paired by generation exactly as drag mode pairs them) and
 `frame_gap_ms` plus `max_gap_ms` (the intervals between consecutive presented drafted frames),
-`cancelled_exact` (`preview_exact_cancelled` events: full-resolution phases a newer value
-superseded, which carry no frame and are counted rather than delivered) and `proxy` (the last
+`cancelled_exact` (`preview_exact_cancelled` events: full-resolution phases a newer request
+superseded, which carry no frame) and `proxy` (the last
 presented frame's `proxy`/`proxy_dimensions`).
 
 On macOS, smoke, hardening, measurement, latency, RAW editor and probe subprocesses always use the same background bundle as `develop --background`, and every one of them that launches the editor passes `--hidden-window`, so the run has neither an activated process nor a window on screen. Reports record `launch_mode`; reproduce through the harness to preserve focus protection. A native graphical session is still required. Windows and Linux retain direct launches; background behavior is not claimed there. Measurement launch times include the temporary bundle and executable copy, so they do not measure normal foreground activation, and with an invisible window they do not include the cost of compositing a visible one either.

@@ -453,11 +453,6 @@ pub(crate) struct Editor {
     pub(crate) proxy_frame: Option<ProxyFrame>,
     /// Why the newest job that offered bounds has no proxy phase, as the core reported it.
     pub(crate) proxy_declined: Option<String>,
-    /// The generation of a delivered proxy whose exact phase has not arrived yet, so a cancelled
-    /// exact phase — which carries no frame at all — can be named.
-    pub(crate) awaiting_exact: Option<u64>,
-    /// Cancelled exact phases already reported, so each is announced exactly once.
-    pub(crate) cancelled_exact_seen: u64,
     /// What the presented proxy is holding until its exact phase lands.
     pub(crate) held_by_proxy: Option<HeldByProxy>,
     /// One active and one replaceable pending overlay derivation, off the UI thread.
@@ -671,8 +666,6 @@ impl Editor {
             refit_pending: false,
             proxy_frame: None,
             proxy_declined: None,
-            awaiting_exact: None,
-            cancelled_exact_seen: 0,
             held_by_proxy: None,
             overlay_queue: OverlayQueue::default(),
             overlay_photo: None,
@@ -1342,30 +1335,27 @@ impl Editor {
         self.overlay_queue.request(raster, request);
     }
 
-    /// One preview result, and the account of every exact phase the queue cancelled while producing
-    /// it.
+    /// The next preview result that carries something to show: a frame or a failure.
     ///
-    /// A superseded exact phase carries no frame at all — the queue drops it rather than delivering
-    /// it — so its count is the only record that a full-resolution render was abandoned. Reporting
-    /// it here means every path out of the `Poll` handler has already reported it.
+    /// An exact phase a newer request stopped is delivered too, under its own generation, but it
+    /// carries no frame, so it is taken up here and never reaches the `Poll` handler: it is
+    /// recorded as that generation's, and when it was the crop draft's input stage the draft it was
+    /// for ends, because no frame for it will come.
     fn poll_preview(&mut self) -> Option<lightwell_core::PreviewResult> {
-        let result = self.preview_queue.poll();
-        let counted = self.preview_queue.cancelled_exact();
-        while self.cancelled_exact_seen < counted {
-            self.cancelled_exact_seen = self.cancelled_exact_seen.saturating_add(1);
-            // The queue cancels the **active** job's exact phase, which is the job whose proxy was
-            // the last one delivered; that is the generation the desktop knows it by. A job that
-            // had no proxy delivered nothing, so there is nothing better than the newest request.
-            let generation = self
-                .awaiting_exact
-                .take()
-                .unwrap_or(self.preview_generation);
+        loop {
+            let result = self.preview_queue.poll()?;
+            if !result.cancelled() {
+                return Some(result);
+            }
+            let draft = Some(result.generation) == self.draft_generation;
             self.event(
                 "preview_exact_cancelled",
-                json!({ "generation": generation }),
+                json!({ "generation": result.generation, "draft": draft }),
             );
+            if draft {
+                self.draft_preview_superseded(Some(result.generation));
+            }
         }
-        result
     }
 
     /// The exact phase of a job whose proxy is already on screen.
@@ -1569,10 +1559,54 @@ impl Editor {
     }
 
     /// The crop layer's input stage could not be rendered, so the draft it was for cannot open or
-    /// rebase. A start that was waiting ends explicitly, back in the pointer mode; a reapply keeps
-    /// the draft it was rebasing, still conflicted. The photograph on screen is the current state
-    /// and stays.
-    fn draft_preview_failed(&mut self, error: &lightwell_core::Error) {
+    /// rebase.
+    pub(crate) fn draft_preview_failed(&mut self, error: &lightwell_core::Error) {
+        self.end_pending_draft(
+            format!("The crop's input stage could not be rendered: {error}"),
+            error.kind.code(),
+            &error.detail,
+            None,
+        );
+    }
+
+    /// The crop layer's input stage was superseded before it rendered: a newer preview request
+    /// stopped its job or replaced it in the pending slot, or the stack changed while the owner was
+    /// planning it (`generation` is then `None`). No frame will come, so the draft it was for ends
+    /// as a failed one does.
+    ///
+    /// It is never re-requested and never shielded from the request that superseded it. Every such
+    /// request but a view change comes from a change to the stack or the selection the job was
+    /// planned from — another client's commit, this client's own command, undo or history
+    /// selection — so its input stage and base revision are stale, and a draft opened on them would
+    /// not even be marked conflicted. Shielding it would hold the newer state's frame behind the
+    /// whole input-stage render, and requesting it again would stop that frame in turn.
+    pub(crate) fn draft_preview_superseded(&mut self, generation: Option<u64>) {
+        let Some(pending) = &self.crop_pending else {
+            return;
+        };
+        let again = if pending.reapply { "reapply" } else { "start" };
+        self.end_pending_draft(
+            format!(
+                "The crop's input stage was superseded by a newer preview: {again} the crop again"
+            ),
+            lightwell_core::ErrorKind::Cancelled.code(),
+            "superseded by a newer preview",
+            generation,
+        );
+    }
+
+    /// A starting or reapplied draft whose input stage will not arrive ends here, explicitly,
+    /// rather than waiting for pixels: a start returns to the pointer mode, a reapply keeps the
+    /// draft it was rebasing, still conflicted. The photograph on screen is the current state and
+    /// stays. The reason reaches the status bar and the log, and a scripted step waiting for the
+    /// draft ends on it.
+    fn end_pending_draft(
+        &mut self,
+        status: String,
+        error_code: &str,
+        detail: &str,
+        generation: Option<u64>,
+    ) {
         let reapply = self
             .crop_pending
             .as_ref()
@@ -1582,10 +1616,10 @@ impl Editor {
         if !reapply {
             self.end_draft();
         }
-        self.status = format!("The crop's input stage could not be rendered: {error}");
+        self.status = status;
         self.event(
             "crop_draft_failed",
-            json!({"reapply": reapply, "error_code": error.kind.code(), "detail": error.detail}),
+            json!({"reapply": reapply, "error_code": error_code, "detail": detail, "generation": generation}),
         );
         self.settle_step(Settle::Draft);
     }
@@ -1712,8 +1746,15 @@ impl Editor {
             self.proxy_bounds()
         };
         let bounds = job.proxy;
+        // The job still waiting in the pending slot is replaced by this one and never starts, so
+        // nothing about it will ever be delivered: when it was the crop draft's input stage, the
+        // draft it was for ends here, as a cancelled one does in `poll_preview`.
+        let replaced = self.preview_queue.pending_generation();
         let generation = self.preview_queue.request(job);
         self.pending_bounds.insert(generation, bounds);
+        if replaced.is_some() && replaced == self.draft_generation {
+            self.draft_preview_superseded(replaced);
+        }
         generation
     }
 
@@ -2610,17 +2651,10 @@ impl Editor {
                     let proxy_approximate = result.proxy_approximate;
                     let approximate_white_balance = result.approximate_white_balance;
                     let render_ms = result.render_ms;
-                    if !for_draft {
-                        if proxy {
-                            self.awaiting_exact = Some(generation);
-                        } else {
-                            if self.awaiting_exact == Some(generation) {
-                                self.awaiting_exact = None;
-                            }
-                            // Only an exact result can say why a job that offered bounds has no
-                            // proxy phase, and it says nothing when the job had one.
-                            self.proxy_declined = result.proxy_declined.clone();
-                        }
+                    // Only an exact result can say why a job that offered bounds has no proxy phase,
+                    // and it says nothing when the job had one.
+                    if !for_draft && !proxy {
+                        self.proxy_declined = result.proxy_declined.clone();
                     }
                     match result.result {
                         Ok(raster) => {
