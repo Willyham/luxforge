@@ -282,12 +282,13 @@ fn a_stroke_round_trips_through_its_stored_bytes() {
     assert_eq!(Stroke::from_stored(&id, &stored).unwrap(), stroke);
     assert_eq!(
         String::from_utf8(stored.clone()).unwrap(),
-        r#"{"points":[[1638,3277],[6554,7373],[13107,3277]],"size":819,"feather":37.5,"flow":80.0,"erase":true}"#,
-        "positions are stored as whole grid steps and never as decimals",
+        r#"{"points":[[1638,3277],[6554,7373],[13107,3277]],"size":819,"feather":38,"flow":80,"erase":true}"#,
+        "every stored field is a whole step and never a decimal, because the bytes are the identity",
     );
     assert!(stroke.erase());
     assert_eq!(stroke.point_count(), 3);
-    assert_eq!(stroke.feather(), 37.5);
+    // 37.5 was requested; the declared control moves in whole units, so 38 is what is stored.
+    assert_eq!(stroke.feather(), 38.0);
     assert_eq!(stroke.flow(), 80.0);
 
     // Bytes that are not the bytes the address names are refused rather than parsed.
@@ -303,8 +304,7 @@ fn a_stroke_round_trips_through_its_stored_bytes() {
 
     // And bytes that hash correctly but hold a number outside the stored range are refused too, so
     // a legal address is never a licence to evaluate an illegal stroke.
-    let illegal =
-        br#"{"points":[[1638,3277]],"size":819,"feather":250.0,"flow":80.0,"erase":false}"#;
+    let illegal = br#"{"points":[[1638,3277]],"size":819,"feather":250,"flow":80,"erase":false}"#;
     let illegal_id = StrokeId::of(illegal);
     assert_eq!(
         Stroke::from_stored(&illegal_id, illegal)
@@ -463,4 +463,38 @@ fn an_address_is_thirty_two_lowercase_hexadecimal_characters() {
     // One reference is 35 bytes of an entry's JSON — the quoted address and its comma — which is
     // the whole of what the store buys against embedding a stroke's positions.
     assert_eq!(serde_json::to_string(&id).unwrap().len() + 1, 35);
+}
+
+/// A stroke's identity is the hash of its bytes, so every stored field has to survive a round trip
+/// through JSON exactly. `serde_json` does not promise that for an arbitrary `f64` — the value below
+/// reads back one ulp away — so the settings are stored as whole units, like the positions and the
+/// size. A fractional request is quantized at capture rather than stored and later reparsed into a
+/// different content address than the recipe references.
+#[test]
+fn a_stroke_keeps_its_content_address_through_a_round_trip_of_any_setting() {
+    let path = [[0.10, 0.20], [0.40, 0.55], [0.80, 0.30]];
+    for (feather, flow) in [
+        (0.0, 100.0),
+        (55.0, 45.0),
+        // Values a client may legitimately post that no declared control offers.
+        (55.333_333_333_333_33, 2.624_122_239_649_296),
+        (99.999_999_999, 0.000_000_001),
+    ] {
+        let stroke = Stroke::capture(&path, 0.05, feather, flow, false).expect("capture");
+        let id = stroke.id();
+        let bytes = serde_json::to_vec(&stroke).expect("serialize");
+        let back: Stroke = serde_json::from_slice(&bytes).expect("deserialize");
+        assert_eq!(
+            back.id(),
+            id,
+            "a reparsed stroke must keep the address its recipe references \
+             (feather {feather}, flow {flow})"
+        );
+        assert_eq!(back, stroke, "and must be the same stroke");
+        assert_eq!(
+            (back.feather(), back.flow()),
+            (feather.round(), flow.round()),
+            "the stored setting is the declared control's own step"
+        );
+    }
 }

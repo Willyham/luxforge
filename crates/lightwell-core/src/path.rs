@@ -180,8 +180,13 @@ pub struct Stroke {
     points: Vec<[i32; 2]>,
     /// Serialized as an integer number of grid steps for the same reason the positions are.
     size: i32,
-    feather: f64,
-    flow: f64,
+    /// Whole percentage units, for the same reason the positions and the size are integers: a
+    /// stroke's identity is the hash of its bytes, and `serde_json` does not round-trip every
+    /// `f64` — `0.026241222396492958` reads back one ulp away — so a stroke stored with a
+    /// fractional setting could reparse to a different content address than the recipe references.
+    /// The declared controls move in whole units, so nothing is lost by storing what they offer.
+    feather: i32,
+    flow: i32,
     erase: bool,
     /// The colour this stroke is limited to, when it carries one.
     ///
@@ -277,8 +282,8 @@ impl PartialEq for Stroke {
     fn eq(&self, other: &Self) -> bool {
         self.points == other.points
             && self.size == other.size
-            && self.feather.to_bits() == other.feather.to_bits()
-            && self.flow.to_bits() == other.flow.to_bits()
+            && self.feather == other.feather
+            && self.flow == other.flow
             && self.erase == other.erase
             && self.colour == other.colour
     }
@@ -326,8 +331,8 @@ impl Stroke {
         Ok(Self {
             points: grid,
             size: quantize(size),
-            feather,
-            flow,
+            feather: feather.round() as i32,
+            flow: flow.round() as i32,
             erase,
             colour: None,
         })
@@ -371,11 +376,11 @@ impl Stroke {
     }
 
     pub fn feather(&self) -> f64 {
-        self.feather
+        f64::from(self.feather)
     }
 
     pub fn flow(&self) -> f64 {
-        self.flow
+        f64::from(self.flow)
     }
 
     pub fn erase(&self) -> bool {
@@ -439,10 +444,10 @@ impl Stroke {
         {
             return bad("size");
         }
-        if !self.feather.is_finite() || !(0.0..=100.0).contains(&self.feather) {
+        if !(0..=100).contains(&self.feather) {
             return bad("feather");
         }
-        if !self.flow.is_finite() || !(0.0..=100.0).contains(&self.flow) {
+        if !(0..=100).contains(&self.flow) {
             return bad("flow");
         }
         Ok(())
