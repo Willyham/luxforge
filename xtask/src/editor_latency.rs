@@ -569,6 +569,26 @@ pub struct Options<'a> {
     /// Commit a Basic layer with every field non-neutral before the gesture, so the measured
     /// exposure drag runs every one of the module's colour units on each frame.
     pub basic: bool,
+    /// Draw a linear gradient mask first and bind the panel's sections to it, so the measured
+    /// gesture is a *masked* drag: the same slider, drafting and committing a layer the masked
+    /// colour primitive evaluates per pixel. It is the end-to-end figure for what a mask costs a
+    /// person's hand, with the unmasked run beside it as its baseline.
+    pub mask: bool,
+}
+
+/// The steps that draw a mask and bind the generated sections to it before the gesture.
+///
+/// The mask is created through its own host command, then opened by the name the host gave it —
+/// `mask.create-linear` assigns the identity, so a script has nothing else to name it by. From the
+/// selection on, every generated slider gesture carries that mask, exactly as the panel's own drag
+/// does.
+fn mask_precondition() -> [Value; 3] {
+    [
+        json!({"api":{"method":"mask.create-linear",
+            "params":{"x0":0.5,"y0":0.3,"x1":0.5,"y1":0.7}}}),
+        json!({"workspace":{"mode":"mask"}}),
+        json!({"mask":{"select":{"name":"Mask 1"}}}),
+    ]
 }
 
 /// The step that commits the full Basic layer a `--basic` run drags over.
@@ -625,6 +645,9 @@ pub fn run(root: &Path, out: &Path, bin: &Path, options: Options) -> Result {
         script.push(
             json!({"api":{"method":"edit.crop-fit","params":{"aspect":"16:9","angle":angle}}}),
         );
+    }
+    if options.mask {
+        script.extend(mask_precondition());
     }
     if options.basic {
         script.push(basic_precondition());
@@ -1063,6 +1086,9 @@ fn run_burst(root: &Path, out: &Path, bin: &Path, options: &Options) -> Result {
         script.push(
             json!({"api":{"method":"edit.crop-fit","params":{"aspect":"16:9","angle":angle}}}),
         );
+    }
+    if options.mask {
+        script.extend(mask_precondition());
     }
     if options.basic {
         script.push(basic_precondition());

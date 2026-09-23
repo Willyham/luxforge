@@ -44,7 +44,11 @@ Outstanding work by area. What is delivered is in [feature status](features.md);
 - RAW white balance import through a calibrated conversion from Lightroom's Kelvin and tint
 - Copy and Paste Settings over the same composite action
 
-**Masks.** Local adjustments; not yet scoped.
+**Masks** ([design](design/masking.md), [plan](../tasks/implementation-masking.json)). Local adjustments. The linear gradient, the mask model and its persistence, the `mask.*` command family, the masked colour and spatial primitives, the Mask mode and panel, and the coverage overlay are delivered.
+- The radial gradient's handle editor, subtract and intersect, per-component and per-mask inversion, amount, reorder and duplicate
+- Brushes over the delivered path primitives and the content-addressed stroke store
+- Non-AI luminance and colour range selections
+- Full-editor acceptance with masks in the journey
 
 **Tuning delivered tools.** Refine the recorded defaults of Presence, the colour mixer and the vignette (decision pending).
 

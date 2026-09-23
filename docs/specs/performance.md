@@ -266,12 +266,56 @@ rule in [provisional targets](#provisional-targets-measured) sets for quoting a 
 These figures are recorded as provisional and are a finding for the owner, not a verdict. `draft.set`
 round trip was 0.21 ms p50 in every run, unchanged, which is the hop rule holding.
 
-**Not measured: an end-to-end masked slider drag.** The desktop has no mask control to drive — the
-Mask panel and a mask target on a *module* action's draft are both outstanding
-([masking](../design/masking.md)) — and the evidence script cannot name a mask that an earlier step
-in the same script created, because `mask.create` assigns the identity. So the drag above is the
-delivered global Basic gesture and the mask's own contribution to a presented frame is the core row
-above. The end-to-end figure is outstanding and must be taken once a masked gesture can be driven.
+#### An end-to-end masked slider drag
+
+This is now drivable and was taken. `editor-latency --mask` draws a linear gradient through
+`mask.create-linear`, enters Mask mode and opens the mask **by the name the host gave it** — the
+evidence script resolves a `{"name": …}` reference against the `mask.list` answer the desktop holds,
+which is what removed the blocker recorded here before: `mask.create` assigns the identity, so a
+script that creates a mask has nothing else to name it by. From the selection on, every generated
+slider gesture carries that mask, exactly as the panel's own drag does. With `--basic` beside it the
+measured stack holds a global full-Basic layer *and* a masked Basic layer, so each frame runs the
+module's whole colour pass twice, once of it through the masked colour primitive.
+
+The runs below were taken back to back and reversed, 30 samples each, drag mode, at Fit. **The
+one-minute load average was 39.5 to 57.5 throughout — five to seven times the 8.0 this document sets
+for quoting a baseline — so none of these millisecond figures is a baseline and none of them may be
+substituted for the rows above.** The spread within one condition proves it: the two 24 MP masked
+runs, identical in every respect, measured p50 32.6 ms and 16.0 ms and p95 99.2 ms and 21.7 ms.
+
+| Drained drag at Fit, `--basic` | 24 MP unmasked | 24 MP masked | 60 MP unmasked | 60 MP masked |
+| --- | --- | --- | --- | --- |
+| p50 | 17.0 / 15.6 ms | 32.6 / 16.0 ms | 15.7 ms | 34.5 ms |
+| p95 | 38.7 / 26.0 ms | 99.2 / 21.7 ms | 17.2 ms | 65.5 ms |
+| min | 14.6 / 11.5 ms | 17.3 / 14.3 ms | 13.8 ms | 19.6 ms |
+| load average during the run | 40.9 / 51.3 | 39.5 / 57.5 | 45.2 | 37.6 |
+
+What **is** quotable from these runs is what load does not move:
+
+- `draft.set` round trip p50 is 0.2–0.3 ms unmasked and 0.3–0.5 ms masked, so a mask target adds
+  nothing measurable to the gesture's own hop. The hop rule holds through the masked path.
+- The queue counters are identical in all six runs: 31 scripted values in the burst step coalesced
+  into **1** `draft.set`, 32 `draft.set` requests, 32 preview jobs requested and **0** superseded,
+  two commits. A masked drag coalesces and drains exactly as an unmasked one does; nothing about the
+  mask adds a round trip, a job or a dropped frame.
+- Every run passed its own scripted-step checks, so each measured input is the scripted value with
+  its own `draft.set`, preview job and displayed frame.
+
+Against the provisional target (p95 below 16 ms, acceptable below 32 ms) every run is a miss at the
+p95 and the two quietest runs — 24 MP unmasked at 26.0 ms and 24 MP masked at 21.7 ms — are inside
+the acceptable bound. **That comparison is not usable as a verdict on masking**: it is a finding that
+the figure can now be taken, and the measurement must be repeated on a quiesced host before any cost
+is attributed to the mask. The mask's own contribution to a rendered frame, measured where load can
+be controlled, is the core row above.
+
+`editor-performance --samples 30` was re-run on the same host beside those drags, release, warm
+cache, on `24mp.jpg` (load average 8.6 rising to 17.3) and `60mp.jpg` (load average 17.3 rising to
+20.8). Both **passed every check**, including that the catalog reopen reconstructs the original
+historical state and the source SHA-256 is unchanged, so the phase leaves the core's own
+correctness diagnostics intact. Their timings are not quoted, for the same reason as the drags: the
+harness's own full-Basic core render read 128.2 ms p50 / 224.5 ms p95 at 24 MP and 527.1 / 619.1 ms
+at 60 MP, and a p95 more than 1.7 times its own p50 in a warm 30-sample loop is a measure of the
+host's queue, not of the render.
 
 ### Desktop slider-to-presented-frame and settled histogram
 
