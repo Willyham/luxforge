@@ -58,6 +58,7 @@ impl ProofRequest {
 struct State {
     stopped: bool,
     delay: Duration,
+    palette_delay: Duration,
     fail_next: Option<u16>,
     wrong_palette: bool,
     recorded: VecDeque<ProofRequest>,
@@ -102,6 +103,7 @@ impl ProofEndpoint {
             state: Mutex::new(State {
                 stopped: false,
                 delay: Duration::ZERO,
+                palette_delay: Duration::ZERO,
                 fail_next: None,
                 wrong_palette: false,
                 recorded: VecDeque::new(),
@@ -143,6 +145,14 @@ impl ProofEndpoint {
     /// or setting zero, releases an answer already waiting.
     pub fn set_delay(&self, delay: Duration) {
         self.shared.lock().delay = delay;
+        self.shared.wake.notify_all();
+    }
+
+    /// Hold every answer to `GET /proof-palette.bin` this long after the request arrives, so a
+    /// harness can observe an install while its download is still running. Shortening it, or
+    /// setting zero, releases an answer already waiting.
+    pub fn set_palette_delay(&self, delay: Duration) {
+        self.shared.lock().palette_delay = delay;
         self.shared.wake.notify_all();
     }
 
@@ -374,7 +384,12 @@ fn answer(shared: &Shared, mut stream: TcpStream) {
         ),
     };
     record.status = status;
-    let generating = record.path == PROOF_GENERATE_PATH;
+    // Which configured delay holds this answer: the generation's, the palette's, or none.
+    let delay: Option<fn(&State) -> Duration> = match record.path.as_str() {
+        PROOF_GENERATE_PATH => Some(|state| state.delay),
+        PROOF_PALETTE_PATH => Some(|state| state.palette_delay),
+        _ => None,
+    };
     {
         let mut state = shared.lock();
         if state.recorded.len() == MAX_RECORDED {
@@ -382,22 +397,24 @@ fn answer(shared: &Shared, mut stream: TcpStream) {
         }
         state.recorded.push_back(record);
     }
-    if generating {
-        pause(shared);
+    if let Some(delay) = delay {
+        pause(shared, delay);
     }
     respond(&mut stream, status, content_type, &body);
 }
 
-/// Wait out the configured delay, returning early when it is shortened or the endpoint stops.
-fn pause(shared: &Shared) {
+/// Wait out the delay `configured` reads, returning early when it is shortened or the endpoint
+/// stops.
+fn pause(shared: &Shared, configured: fn(&State) -> Duration) {
     let arrived = Instant::now();
     let mut state = shared.lock();
     loop {
         let waited = arrived.elapsed();
-        if state.stopped || waited >= state.delay {
+        let delay = configured(&state);
+        if state.stopped || waited >= delay {
             return;
         }
-        let remaining = state.delay - waited;
+        let remaining = delay - waited;
         state = shared
             .wake
             .wait_timeout(state, remaining)
@@ -543,5 +560,38 @@ mod tests {
         let stopped = Instant::now();
         drop(endpoint);
         assert!(stopped.elapsed() < Duration::from_secs(5));
+    }
+
+    #[test]
+    fn a_palette_delay_holds_only_the_download_until_it_is_released() {
+        let endpoint = ProofEndpoint::start("key").unwrap();
+        endpoint.set_palette_delay(Duration::from_secs(30));
+        // A generation is not held by the palette's delay.
+        let body = sample_grid_body(&[[10, 20, 30]; SAMPLE_GRID_SAMPLES]).unwrap();
+        let started = Instant::now();
+        assert_eq!(exchange(&endpoint, &post("key", &body)).0, 200);
+        assert!(started.elapsed() < Duration::from_secs(10));
+        let address = endpoint.address;
+        let waiting = thread::spawn(move || {
+            let mut stream = TcpStream::connect(address).unwrap();
+            stream
+                .write_all(b"GET /proof-palette.bin HTTP/1.1\r\nHost: x\r\n\r\n")
+                .unwrap();
+            let mut response = Vec::new();
+            stream.read_to_end(&mut response).unwrap();
+            response
+        });
+        while endpoint.requests().len() < 2 {
+            assert!(started.elapsed() < Duration::from_secs(10));
+            thread::sleep(Duration::from_millis(1));
+        }
+        // The download has arrived and is held: nothing has been answered yet.
+        thread::sleep(Duration::from_millis(50));
+        assert!(!waiting.is_finished(), "the palette answer is held");
+        endpoint.set_palette_delay(Duration::ZERO);
+        let response = waiting.join().unwrap();
+        assert!(response.starts_with(b"HTTP/1.1 200"));
+        assert!(response.ends_with(&PROOF_PALETTE));
+        assert!(started.elapsed() < Duration::from_secs(10));
     }
 }
