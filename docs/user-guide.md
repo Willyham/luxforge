@@ -177,6 +177,8 @@ While drafting, the panel adds under those controls the input stage, the rectang
 
 Apply, or press Enter, commits one action and one new history entry, adjusting the existing crop layer in place and keeping its identity or appending one when there is none. Cancel, or press Escape, discards the draft and changes nothing. Enter and Escape act only when no field has just consumed the key. Reset crop is the module's own control: it commits the neutral crop through history and ends the draft. No pointer movement commits anything, and the rotation shown while drafting is a display filter — the committed render is what counts.
 
+If an edit commits but its picture cannot be rendered, the edit stays in history and the canvas says so: the picture from before the edit is taken off the surface, and "Preview unavailable" with the reason, a notice such as "Rendering limit", and an unavailable histogram take its place until a state renders again. A draft whose input stage cannot be rendered does not open; the status bar gives the reason and the canvas returns to the pointer mode.
+
 Selecting a historical state pauses the draft rather than discarding it: the historical preview is shown and Return to current resumes drafting. If anything else changes the photograph while a draft is open — another client, or your own Undo, Redo or Restore — the draft is kept and marked "Changed elsewhere". Apply is refused until you choose Discard, which drops the draft, or Reapply, which re-reads the current stack, rebases the draft onto it keeping the angle and the composition as far as it fits, and lets you apply normally.
 
 ### Vignette
