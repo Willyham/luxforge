@@ -382,6 +382,16 @@ fn rename_row<'a>(model: &'a MasksModel, mask: &str) -> Element<'a, Message> {
 }
 
 /// New mask names the kinds it can create: registering a kind is what puts one here.
+/// What the list of kinds is **not**, said where a person reads that list looking for it.
+///
+/// Lightroom's Select Subject, Sky, People, Objects, Background and Depth are model-based, and this
+/// build has no model, no model asset and no inference job. The honest answer is the one thing no
+/// absent button can give: a person who does not find Sky here has to be told there is no Sky, rather
+/// than left to conclude it is behind a menu. The kinds that *are* here are named for what they do —
+/// brightness, colour and painted coverage — and the design records why a hand-written sky detector is
+/// not proposed at all (`docs/design/masking.md`, non-AI detection).
+const NO_MODEL: &str = "No Sky, Subject, People, Objects or Background: every selection here is brightness, colour or painted coverage, with no model behind it";
+
 fn new_mask(model: &MasksModel) -> Element<'_, Message> {
     let mut block = column![section_label("New mask")].spacing(theme::LIST_ROW_SPACING);
     if let Some(reason) = &model.create_reason {
@@ -390,6 +400,7 @@ fn new_mask(model: &MasksModel) -> Element<'_, Message> {
     block = block.push(kind_row(&model.kinds, model.enabled, |kind| {
         Message::Mask(MaskMessage::New(kind))
     }));
+    block = block.push(caption(NO_MODEL));
     block.into()
 }
 
@@ -411,6 +422,7 @@ fn add_component(model: &MasksModel) -> Element<'_, Message> {
     block = block.push(kind_row(&model.kinds, model.enabled, |kind| {
         Message::Mask(MaskMessage::Add(kind))
     }));
+    block = block.push(caption(NO_MODEL));
     block.into()
 }
 
@@ -713,6 +725,13 @@ fn component_row<'a>(
         {
             block = block.push(caption(reason.clone()));
         }
+    }
+    // What this kind does not select, in the kind's own terms, on the open row and above the numbers
+    // it applies to. It is the host's own sentence from the kind table: a band's number means little
+    // to a person who does not know it cannot tell a sky from a grey card, and learning that from a
+    // rendered frame means having already made the edit.
+    for limit in &component.limits {
+        block = block.push(caption(limit.clone()));
     }
     for field in &component.fields {
         block = block.push(control_view(HOST, component.available, field, None, plot));

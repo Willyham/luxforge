@@ -318,7 +318,11 @@ impl Entry {
 }
 
 /// The one-minute load average, or nothing where `sysctl` cannot report it.
-fn load_average(root: &Path) -> Option<f64> {
+///
+/// One reader, shared with any scenario that records a timing figure of its own, because the
+/// repository's rule is that a figure travels with the load it was taken at (`AGENTS.md`) and two
+/// readers could disagree about what that load was.
+pub(crate) fn load_average(root: &Path) -> Option<f64> {
     let text = output(root, "sysctl", &["-n", "vm.loadavg"]).ok()?;
     text.trim()
         .trim_matches(['{', '}'])

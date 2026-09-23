@@ -116,6 +116,17 @@ pub(crate) struct ComponentRow {
     pub(crate) pick_label: String,
     /// Why a colour cannot be picked into this component right now.
     pub(crate) pick_reason: Option<String>,
+    /// What this component's kind does **not** select, shown on the open row in the kind's own terms.
+    ///
+    /// Empty for a position-based kind, which has none of these limits: a gradient and a brush select
+    /// where they are drawn and nothing about the picture's values changes that. A value-based kind
+    /// carries two lines — what its one axis cannot tell apart, and what reading the operation's input
+    /// costs — because both are surprising and both are measured
+    /// (`docs/design/range-study.md`), and a person who learns them from a rendered frame instead has
+    /// already made an edit they did not mean. It is read from
+    /// [`lightwell_core::mask::component_kind_limits`], which is the host's own kind table, so a kind
+    /// registered later carries its own line and the shared one without this being edited.
+    pub(crate) limits: Vec<String>,
 }
 
 /// One sampled colour of a component that holds a list of them, as the panel lists it.
@@ -363,6 +374,16 @@ impl MasksModel {
                 })).collect::<Vec<_>>(),
                 "picking": row.picking,
                 "pick_reason": row.pick_reason,
+                // The kind's own number fields as the open row shows them, so a captured frame is
+                // evidence of the geometry a person can read rather than of the payload behind it,
+                // and the statement above them travels with it. Both are empty on a closed row,
+                // exactly as the panel draws them.
+                "fields": row.fields.iter().filter_map(|field| match field {
+                    crate::state::tools::ControlModel::Slider(slider) =>
+                        Some((slider.parameter.clone(), serde_json::json!(slider.value))),
+                    _ => None,
+                }).collect::<serde_json::Map<_, _>>(),
+                "limits": row.limits,
             })).collect::<Vec<_>>(),
             "brush": serde_json::json!({
                 "fields": self.brush.fields.iter()
@@ -687,8 +708,25 @@ fn component_rows(report: &MaskReport, inputs: &Inputs<'_>, enabled: bool) -> Ve
                     .is_some_and(|mode| inputs.session.workspace.mode == mode),
                 pick_label: pick_label(&component.kind),
                 pick_reason: pick_reason(report, component, enabled),
+                limits: if selected {
+                    kind_limits(&component.kind)
+                } else {
+                    Vec::new()
+                },
             }
         })
+        .collect()
+}
+
+/// What one kind does not select, read from the host's own kind table rather than from a list here.
+///
+/// A position-based kind answers nothing: a gradient and a brush select where they were drawn, and no
+/// value in the picture changes that. A kind registered later carries its own statement without this
+/// being touched, which is the whole reason the sentences live in the table.
+fn kind_limits(kind: &str) -> Vec<String> {
+    lightwell_core::mask::component_kind_limits(kind)
+        .into_iter()
+        .map(str::to_owned)
         .collect()
 }
 

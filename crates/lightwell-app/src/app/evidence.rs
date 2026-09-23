@@ -64,6 +64,9 @@ pub(crate) struct Evidence {
     /// A paced slider step's values still to send, one per tick of its own gated timer. `None` when
     /// no paced step is running, which is also when the timer that drives it does not exist.
     pub(crate) paced_slider: Option<PacedSlider>,
+    /// A paced stroke step's positions still to send, one per tick of its own gated timer. `None`
+    /// when no paced stroke is running, which is also when its timer does not exist.
+    pub(crate) paced_stroke: Option<PacedStroke>,
     /// The gallery page shown instead of the workspace for a scripted capture.
     /// Requested tools-panel scroll fraction, retained beside the capture for correlation.
     pub(crate) tools_scroll: Option<f64>,
@@ -83,6 +86,26 @@ pub(crate) struct PacedSlider {
     pub(crate) sent: usize,
     pub(crate) interval_ms: u64,
     pub(crate) end: SliderEnd,
+}
+
+/// The state of a brush stroke sent by a timer rather than all at once.
+///
+/// **Why a stroke needs this at all.** [`Editor::mask_step`]'s unpaced stroke appends every position
+/// in one update, so the gesture coalesces them into a single `draft.set` with the rest waiting: the
+/// path is correct and the *timing* is the driver's, not a hand's. An end-to-end figure for a paint
+/// gesture — the one measurement phase C left unmade — needs each position to be its own input, with
+/// the round trip it raises drained before the next one, which is exactly what the paced slider does
+/// for a value. The first tick presses, each later tick moves, and the last releases if the step said
+/// to, so one paced step is still one stroke and one history entry.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct PacedStroke {
+    /// Positions still to send, in order; the front is sent by the next tick.
+    pub(crate) remaining: VecDeque<[f64; 2]>,
+    /// How many of the step's positions have already been sent. Zero means the next one is the press.
+    pub(crate) sent: usize,
+    pub(crate) interval_ms: u64,
+    /// Whether the last tick releases the stroke, which is what commits it as one history entry.
+    pub(crate) release: bool,
 }
 
 /// One step of an evidence script. Steps run in order after the last `--open` outcome, each followed
@@ -246,6 +269,11 @@ pub(crate) enum MaskStep {
     Stroke {
         points: Vec<[f64; 2]>,
         release: bool,
+        /// Send one position per this many milliseconds, in real time, instead of the whole path in
+        /// one update. Without it the gesture coalesces the path between two ticks, which is what a
+        /// fast drag does and what every correctness scenario wants; with it each position is its own
+        /// input, which is what a **latency** measurement needs.
+        interval_ms: Option<u64>,
     },
     /// A whole shape drawn in one stroke: the press at `from`, the pointer at `to`. The pointer is
     /// still down afterwards, exactly as it is mid-drag, so the release is a step of its own.
@@ -367,8 +395,16 @@ impl MaskStep {
             Self::Add(kind) => json!({ "add": kind }),
             Self::Paint(target) => json!({ "paint": target.record() }),
             Self::Brush(step) => json!({ "brush": step.record() }),
-            Self::Stroke { points, release } => {
-                json!({"stroke":{"points":points,"release":release}})
+            Self::Stroke {
+                points,
+                release,
+                interval_ms,
+            } => {
+                let mut step = json!({"points":points,"release":release});
+                if let Some(interval_ms) = interval_ms {
+                    step["interval_ms"] = json!(interval_ms);
+                }
+                json!({ "stroke": step })
             }
             Self::Sweep { from, to } => json!({"sweep":{"from":from,"to":to}}),
             Self::Release => json!({ "release": true }),
@@ -1276,7 +1312,11 @@ impl Editor {
             // One whole stroke: a press, a move per position and, unless the step leaves it down,
             // the release that commits it as one history entry. The brush stays in hand afterwards,
             // so the next stroke needs no further `paint` and Apply has nothing left to commit.
-            MaskStep::Stroke { points, release } => {
+            MaskStep::Stroke {
+                points,
+                release,
+                interval_ms,
+            } => {
                 if self
                     .mask_draft
                     .as_ref()
@@ -1284,6 +1324,23 @@ impl Editor {
                     .is_none()
                 {
                     return self.fail_step("no painted gesture is open to paint into");
+                }
+                // A paced stroke hands its positions to the timer and sends nothing here, exactly as
+                // a paced slider does: the last tick notes the step and waits for its frame, so this
+                // function captures none of its own.
+                if let Some(interval_ms) = interval_ms {
+                    if points.is_empty() {
+                        return self.fail_step("a stroke needs at least one position");
+                    }
+                    if let Some(evidence) = &mut self.evidence {
+                        evidence.paced_stroke = Some(PacedStroke {
+                            remaining: points.into(),
+                            sent: 0,
+                            interval_ms,
+                            release,
+                        });
+                    }
+                    return Task::none();
                 }
                 let Some((first, rest)) = points.split_first() else {
                     return self.fail_step("a stroke needs at least one position");
@@ -1629,6 +1686,52 @@ impl Editor {
                 ));
             }
             tasks.push(self.end_slider_gesture(action, parameter, end));
+        }
+        Task::batch(tasks)
+    }
+
+    /// One tick of a paced stroke step: the next pointer position, through the same
+    /// [`MaskPointer`](crate::app::message::MaskPointer) messages a hand on the canvas raises.
+    ///
+    /// The first tick presses, every later one moves, and the last releases when the step said to —
+    /// so one paced step is still one stroke and one history entry, and each position is one input
+    /// whose round trip drains before the next tick. A tick with nothing left to send does nothing:
+    /// the subscription that drives it exists only while positions remain.
+    pub(crate) fn stroke_paced_tick(&mut self) -> Task<Message> {
+        use crate::app::message::MaskPointer;
+        let Some(paced) = self
+            .evidence
+            .as_mut()
+            .and_then(|evidence| evidence.paced_stroke.as_mut())
+        else {
+            return Task::none();
+        };
+        let Some([x, y]) = paced.remaining.pop_front() else {
+            return Task::none();
+        };
+        let index = paced.sent;
+        paced.sent += 1;
+        let release = paced.release;
+        let done = paced.remaining.is_empty();
+        if done && let Some(evidence) = &mut self.evidence {
+            evidence.paced_stroke = None;
+        }
+        self.event(
+            "mask_stroke_position",
+            json!({"index": index, "x": x, "y": y}),
+        );
+        let pointer = if index == 0 {
+            MaskPointer::PaintBegin { x, y }
+        } else {
+            MaskPointer::PaintTo { x, y }
+        };
+        let mut tasks = vec![self.mask_message(MaskMessage::Handle(pointer))];
+        if done {
+            if release {
+                tasks.push(self.mask_message(MaskMessage::Handle(MaskPointer::PaintEnd)));
+            }
+            self.await_step(self.mask_settle());
+            self.note_step(json!({"masks": self.workspace.masks.summary()}));
         }
         Task::batch(tasks)
     }
@@ -2883,13 +2986,25 @@ fn parse_brush(value: &Value) -> Result<BrushStep, String> {
 /// `{"stroke": {"points": [[x, y], …], "release": true}}`: one painted stroke, in normalized content
 /// coordinates, released unless the step leaves the pointer down.
 fn parse_stroke(value: &Value) -> Result<MaskStep, String> {
-    const SHAPE: &str = "mask stroke takes {\"points\": [[x, y], …]} and an optional release flag";
+    const SHAPE: &str = "mask stroke takes {\"points\": [[x, y], …]}, an optional release flag and an optional interval_ms";
     let object = value.as_object().ok_or(SHAPE)?;
     let mut release = true;
     let mut points: Option<Vec<[f64; 2]>> = None;
+    let mut interval_ms = None;
     for (key, value) in object {
         match key.as_str() {
             "release" => release = value.as_bool().ok_or("mask stroke release takes a flag")?,
+            "interval_ms" => {
+                interval_ms = match value {
+                    Value::Null => None,
+                    value => Some(
+                        value
+                            .as_u64()
+                            .filter(|value| *value > 0)
+                            .ok_or("mask stroke interval_ms is a positive integer")?,
+                    ),
+                };
+            }
             "points" => {
                 let listed = value.as_array().ok_or(SHAPE)?;
                 points = Some(
@@ -2905,7 +3020,11 @@ fn parse_stroke(value: &Value) -> Result<MaskStep, String> {
     let points = points
         .filter(|path| !path.is_empty())
         .ok_or("mask stroke needs at least one point")?;
-    Ok(MaskStep::Stroke { points, release })
+    Ok(MaskStep::Stroke {
+        points,
+        release,
+        interval_ms,
+    })
 }
 
 /// `{"row": {"component": REF, "mode": "subtract" | "invert": true | "index": N | "delete": true}}`:
@@ -4101,14 +4220,16 @@ mod tests {
             steps[17],
             Step::Mask(MaskStep::Stroke {
                 points: vec![[0.3, 0.3], [0.4, 0.35]],
-                release: true
+                release: true,
+                interval_ms: None
             })
         );
         assert_eq!(
             steps[18],
             Step::Mask(MaskStep::Stroke {
                 points: vec![[0.5, 0.5]],
-                release: false
+                release: false,
+                interval_ms: None
             })
         );
         assert_eq!(
@@ -4342,6 +4463,7 @@ mod tests {
             saving: false,
             had_errors: false,
             paced_slider: None,
+            paced_stroke: None,
             tools_scroll: None,
         });
         editor.activity.requested = 1;

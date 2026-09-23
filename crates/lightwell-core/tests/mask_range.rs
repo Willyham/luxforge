@@ -343,6 +343,97 @@ fn a_geometric_component_ignores_the_pixel_it_is_handed() {
 // P13: what a value-based component answers about the frame
 // ---------------------------------------------------------------------------
 
+/// The kind table's `value_based` column and a compiled component's own `reads_pixels` are the same
+/// fact asked two ways, and the two are checked against each other over **every registered kind**
+/// rather than trusted to stay in step.
+///
+/// A client needs the question answered before anything is drawn — a panel says what a range
+/// selection cannot do while its component is still empty — and only a compiled mask can answer
+/// `reads_pixels`. So the kind carries the answer too, and this is what stops the two from drifting
+/// when a kind is added: a new row whose column disagrees with its own compiled behaviour fails here.
+///
+/// The brush is the one kind where they are deliberately different, and the difference is stated
+/// rather than excepted: the kind is position-based, and a *stroke* held to a colour reads the pixel,
+/// which is a property of that stroke. Both halves are asserted.
+#[test]
+fn a_value_based_kind_is_exactly_one_that_reads_the_pixel() {
+    let size = stage(WIDTH, HEIGHT);
+    let payloads: Vec<(&str, Value)> = vec![
+        ("linear", json!({"x0":0.1,"y0":0.2,"x1":0.8,"y1":0.9})),
+        (
+            "radial",
+            json!({"x":0.5,"y":0.5,"radius_x":0.3,"radius_y":0.2,"angle":12.0,"feather":40.0}),
+        ),
+        (
+            "luminance-range",
+            luminance_payload(&RefLuminanceRange {
+                low: 20.0,
+                low_feather: 5.0,
+                high: 70.0,
+                high_feather: 5.0,
+            }),
+        ),
+        (
+            "colour-range",
+            colour_payload(&RefColourRange {
+                samples: vec![[0.12, 0.2, 0.42]],
+                refine: 50.0,
+            }),
+        ),
+    ];
+    let mut checked = 0usize;
+    for (kind, payload) in &payloads {
+        let mask = one_component(kind, payload.clone());
+        let compiled = CompiledMask::new(&mask, size, &no_strokes()).expect("a legal payload");
+        assert_eq!(
+            lightwell_core::mask::component_kind_is_value_based(kind),
+            compiled.reads_pixels(),
+            "{kind}: the kind table and the compiled component disagree about reading the pixel"
+        );
+        checked += 1;
+    }
+    // Every registered kind is covered, so a kind added without a payload here fails rather than
+    // being silently unchecked. The brush is the one kind with no typed payload and is checked below.
+    let registered: Vec<&str> = lightwell_core::mask::component_kinds().collect();
+    for kind in &registered {
+        assert!(
+            *kind == lightwell_core::mask::BRUSH || payloads.iter().any(|(named, _)| named == kind),
+            "{kind} is registered and this test has no payload for it"
+        );
+    }
+    // The brush: the kind is position-based, and one stroke held to a colour is what reads the pixel.
+    assert!(
+        !lightwell_core::mask::component_kind_is_value_based(lightwell_core::mask::BRUSH),
+        "a brush's geometry is a path, so the kind is position-based"
+    );
+    let mut table = StrokeTable::default();
+    let plain = table.insert(
+        Stroke::capture(&[[0.2, 0.3], [0.6, 0.3]], 0.1, 20.0, 100.0, false)
+            .expect("a legal stroke"),
+    );
+    let held = table.insert(
+        Stroke::capture(&[[0.2, 0.7], [0.6, 0.7]], 0.1, 20.0, 100.0, false)
+            .expect("a legal stroke")
+            .with_colour_limit(
+                lightwell_core::path::ColourLimit::sampled(
+                    [120, 140, 180],
+                    lightwell_core::mask::REFINE_DEFAULT,
+                )
+                .expect("a legal refine"),
+            ),
+    );
+    for (addresses, reads) in [(vec![plain.clone()], false), (vec![plain, held], true)] {
+        let mask = one_component(
+            lightwell_core::mask::BRUSH,
+            json!({ lightwell_core::path::STROKES_FIELD: addresses }),
+        );
+        let compiled = CompiledMask::new(&mask, size, &table).expect("a legal brush");
+        assert_eq!(compiled.reads_pixels(), reads);
+        checked += 1;
+    }
+    println!("{checked} kinds agree with the table about reading the pixel");
+}
+
 /// The conservative rectangle of a value-based component is the **whole stage**, its smallest
 /// feature is infinite, and it says so about itself.
 ///

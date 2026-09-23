@@ -49,6 +49,29 @@ pub(super) const LUMINANCE_KIND: &str = "luminance-range";
 /// The token a stored colour-range component carries.
 pub(super) const COLOUR_KIND: &str = "colour-range";
 
+/// What a luminance band cannot separate, with the study's own measurement.
+///
+/// The figure is the point: a photographed blue sky reads `47.254` on this axis and a mid-grey card
+/// `47.815`, which is `0.56` of a slider unit and `1.43` output codes, so **no** band takes one
+/// without the other. It is phrased as a remedy because the remedy is the component list a person is
+/// already looking at, and it is the study's
+/// `the_luminance_band_cannot_separate_a_blue_sky_from_a_grey_card`.
+pub(super) const LUMINANCE_LIMITS: &[&str] = &[
+    "Brightness only · a photographed blue sky and a grey card are 1.4 output codes apart, so one band takes both: intersect a colour range, or subtract a brush",
+];
+
+/// What a colour range cannot separate, with the study's own measurements.
+///
+/// Two facts, because they have one cause — the metric is the chromaticity plane and `L` does not
+/// appear, which is what holds a surface across a stop of shading. Every neutral is within `0.0015` of
+/// every other, a third of the tightest radius, so a sampled grey selects the whole tonal range; and
+/// dark skin is `0.0108` from light skin, a third of what one face's own shading spans, so any setting
+/// that holds a lit face takes both. `every_neutral_is_one_colour_to_the_frozen_metric` and the
+/// study's skin measurement assert them.
+pub(super) const COLOUR_LIMITS: &[&str] = &[
+    "Colour only, with no lightness · every neutral is one colour, and two people's skin is one colour: intersect a luminance range, or subtract a brush",
+];
+
 // ---------------------------------------------------------------------------
 // The shared axes: the luminance axis and the Oklab chromaticity of one pixel
 // ---------------------------------------------------------------------------

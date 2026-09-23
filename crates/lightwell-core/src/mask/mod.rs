@@ -135,7 +135,41 @@ struct ComponentKind {
     /// `mask.delete-<kind>-sample` over it — one swatch at a time, which is also how a person edits
     /// it. `None` for a kind that samples nothing, which is every geometric kind.
     samples: Option<ColourSamples>,
+    /// Whether this kind's coverage is a function of the **pixel value** the masked operation
+    /// receives rather than of the pixel's position.
+    ///
+    /// A geometric kind is `false`; the two range selections are `true`. It is declared here because
+    /// four behaviours follow from it that a client has to be able to name before it draws a control:
+    /// the conservative rectangle is the whole stage, no proxy frame is marked approximate, the
+    /// coverage overlay has no grid to draw, and what such a component selects moves when a layer
+    /// ahead of it changes the operation's input. A panel reads this rather than matching on kind
+    /// tokens of its own, so a kind registered later carries the same statement without the panel
+    /// being edited.
+    ///
+    /// It is the *kind's* answer and not one component's: a brush is `false` here and still answers
+    /// [`CompiledMask::reads_pixels`] in the affirmative when one of its strokes is held to a colour,
+    /// because that is a property of the stroke and not of the kind.
+    /// `a_value_based_kind_is_exactly_one_that_reads_the_pixel` checks the two against each other.
+    value_based: bool,
+    /// What this kind does **not** select, in its own terms, for a client to show where a person
+    /// would otherwise assume otherwise.
+    ///
+    /// It sits in the table beside the parser for the same reason the declared parameters do: a kind
+    /// knows what its own axis cannot tell apart, and a panel that kept the sentence instead would
+    /// have to match on kind tokens. Empty for a position-based kind — a gradient and a brush select
+    /// where they were drawn, and no value in the picture changes that. Each line is one caption, is
+    /// phrased as a remedy rather than only as a warning, and quotes the
+    /// `docs/design/range-study.md` figure it rests on. [`component_kind_limits`] appends the one line
+    /// every value-based kind shares, so that sentence is written once and a kind registered later
+    /// carries it without this table being edited.
+    limits: &'static [&'static str],
 }
+
+/// The one limit every value-based kind has, whatever its axis: it reads the input of the operation
+/// it modulates, which is what makes it move under a reordering, leaves it with no coverage overlay
+/// ([proposal P16](../../../docs/design/range-study.md#proposals), open) and makes the 100% view the
+/// only place it can be read exactly.
+const VALUE_BASED_LIMIT: &str = "Read on this layer's own input, so a layer above it changes what this selects · no coverage overlay, and at Fit it reads a downscaled pixel: the 100% view is the truth";
 
 /// How many colours one component of a sampling kind holds, and what one of them declares.
 struct ColourSamples {
@@ -153,24 +187,32 @@ const COMPONENT_KINDS: &[ComponentKind] = &[
         parse: parse_linear,
         parameters: Some(linear::parameters),
         samples: None,
+        value_based: false,
+        limits: &[],
     },
     ComponentKind {
         kind: radial::KIND,
         parse: parse_radial,
         parameters: Some(radial::parameters),
         samples: None,
+        value_based: false,
+        limits: &[],
     },
     ComponentKind {
         kind: brush::KIND,
         parse: parse_brush,
         parameters: None,
         samples: None,
+        value_based: false,
+        limits: &[],
     },
     ComponentKind {
         kind: range::LUMINANCE_KIND,
         parse: parse_luminance_range,
         parameters: Some(range::luminance_parameters),
         samples: None,
+        value_based: true,
+        limits: range::LUMINANCE_LIMITS,
     },
     ComponentKind {
         kind: range::COLOUR_KIND,
@@ -180,6 +222,8 @@ const COMPONENT_KINDS: &[ComponentKind] = &[
             max: range::MAX_SAMPLES,
             parameters: range::colour_sample_parameters,
         }),
+        value_based: true,
+        limits: range::COLOUR_LIMITS,
     },
 ];
 
@@ -250,6 +294,39 @@ pub fn component_geometry_is_defaulted(kind: &str) -> bool {
                 .iter()
                 .all(|parameter| parameter.default.is_some())
     })
+}
+
+/// Whether `kind`'s coverage is a function of the pixel value the masked operation receives rather
+/// than of the pixel's position.
+///
+/// A client asks this to say what such a component does *not* do before a person has drawn anything
+/// with it: it has no coverage overlay, its conservative rectangle is the whole stage, and what it
+/// selects moves when a layer ahead of it changes the operation's input. It reads the kind table, so
+/// a kind registered later carries the same statement without a second list to keep in step, and it
+/// is the kind's answer rather than one component's — a brush is position-based here and still reads
+/// the pixel when one of its strokes is held to a colour.
+pub fn component_kind_is_value_based(kind: &str) -> bool {
+    COMPONENT_KINDS
+        .iter()
+        .any(|entry| entry.kind == kind && entry.value_based)
+}
+
+/// What `kind` does **not** select: the kind's own lines from the table, then the one line every
+/// value-based kind shares.
+///
+/// Empty for a position-based kind and for a kind this build does not know — there is nothing honest
+/// to say about a kind whose payload cannot be parsed, and such a component is already named as
+/// unavailable. A client shows these where a person is choosing or editing a component of that kind,
+/// which is where the assumption they correct is made.
+pub fn component_kind_limits(kind: &str) -> Vec<&'static str> {
+    let Some(entry) = COMPONENT_KINDS.iter().find(|entry| entry.kind == kind) else {
+        return Vec::new();
+    };
+    let mut limits = entry.limits.to_vec();
+    if entry.value_based {
+        limits.push(VALUE_BASED_LIMIT);
+    }
+    limits
 }
 
 /// Whether this build draws `kind`'s geometry rather than declaring it as numbers. A drawn kind has

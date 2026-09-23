@@ -1484,6 +1484,54 @@ fn a_typed_kind_is_created_by_its_button_with_no_gesture() {
     assert_eq!(component.payload["samples"], json!([]));
 }
 
+/// **A create opens what it made**, for a typed kind exactly as for a drawn one.
+///
+/// This is not a nicety. The generated sections under the component list are bound to the *open* mask,
+/// so a New mask button that leaves the previous mask open puts the next slider on a mask the person
+/// was not looking at — and with a range selection that is especially easy to miss, because creating
+/// one changes no pixel until it is narrowed. A drafted create already opens its own mask on commit;
+/// a typed kind is created by its button and never reaches that path, so the rule is applied where
+/// every `mask.*` answer arrives instead.
+///
+/// The converse is checked too: a command that adds a *component* gains no mask and must leave the
+/// open one alone.
+#[test]
+fn a_create_opens_the_mask_it_made_and_nothing_else_moves_the_selection() {
+    let mut masking = Masking::opened();
+    masking.enter_mask_mode();
+    masking.draw_mask();
+    let first = masking.listing().masks[0].id.clone();
+    assert_eq!(masking.editor.selected_mask.as_ref(), Some(&first));
+
+    // A typed kind's own button, with another mask already open.
+    masking.run(MaskMessage::New("luminance-range".to_owned()));
+    let listing = masking.listing();
+    assert_eq!(listing.masks.len(), 2, "the button made a second mask");
+    let second = listing.masks[1].id.clone();
+    assert_eq!(
+        masking.editor.selected_mask.as_ref(),
+        Some(&second),
+        "a create opens the mask it made, so the adjustments are bound to it"
+    );
+    assert_eq!(
+        masking.editor.workspace.masks.name, listing.masks[1].name,
+        "the rename field follows the mask that is now open"
+    );
+    assert!(
+        masking.editor.selected_component.is_none(),
+        "a newly opened mask has no row selected"
+    );
+
+    // Adding a component gains no mask, so the open one stays open.
+    masking.run(MaskMessage::Add("colour-range".to_owned()));
+    assert_eq!(
+        masking.editor.selected_mask.as_ref(),
+        Some(&second),
+        "adding a component to the open mask does not move the selection"
+    );
+    assert_eq!(masking.listing().masks.len(), 2);
+}
+
 /// The Add row offers each kind with its mode chosen up front, and the gesture that follows creates
 /// exactly that component — not one whose role was guessed from a modifier key afterwards.
 #[test]

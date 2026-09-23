@@ -83,6 +83,51 @@ impl Editor {
     ///
     /// It returns whether the target changed, because the generated sections are bound to it and
     /// their fields must be re-seeded from the layers of the target they now show.
+    /// The masks the panel is listing right now, by identity, so a command's answer can be compared
+    /// against what was there before it.
+    pub(crate) fn listed_masks(&self) -> Vec<MaskId> {
+        self.masks
+            .as_ref()
+            .map(|listing| {
+                listing
+                    .masks
+                    .iter()
+                    .map(|report| report.id.clone())
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+    /// Open the mask a command just created, if it created one.
+    ///
+    /// The rule is the one a drafted create already follows: **a create opens what it made**, because
+    /// the generated sections under the component list are bound to the open mask and a slider moved
+    /// straight afterwards belongs to the mask the person just asked for. A typed kind — a range
+    /// selection — is created by its button and never goes through a gesture's commit, so without this
+    /// it would leave the previous mask open and the next adjustment would land on that one.
+    ///
+    /// It is written as a comparison rather than read from the answer so that it is exactly the mask
+    /// the listing gained: a command that added a component, renamed a mask or changed an amount
+    /// gains none and this does nothing. More than one new mask cannot come from one command, and if
+    /// one ever did there would be no honest choice between them, so nothing is opened.
+    pub(crate) fn open_created_mask(&mut self, before: &[MaskId]) {
+        let after = self.listed_masks();
+        let mut fresh = after.into_iter().filter(|id| !before.contains(id));
+        let Some(created) = fresh.next() else {
+            return;
+        };
+        if fresh.next().is_some() {
+            return;
+        }
+        self.selected_mask = Some(created);
+        self.selected_component = None;
+        self.hovered_component = None;
+        self.mask_name = self
+            .open_mask()
+            .map(|report| report.name.clone())
+            .unwrap_or_default();
+        self.seed_values();
+    }
+
     pub(crate) fn follow_mask_selection(&mut self) -> bool {
         let before = self.selected_mask.clone();
         let reports = self
@@ -1267,8 +1312,29 @@ impl Editor {
                 if let Some(draft) = &mut self.mask_draft {
                     draft.conflicted = set.conflicted;
                 }
+                let draft_revision = set.draft_revision;
                 self.session.draft = Some(set);
                 self.preview_generation = self.request_preview(job);
+                // The one record that ties a painted input to the frame it will produce, and the
+                // reason a stroke's own end-to-end latency is measurable at all: the `draft.set`
+                // this answers carried the path so far, and the preview job just queued for it is
+                // `generation`, which the `preview_displayed` event of its upload repeats. It is the
+                // mask gesture's counterpart of `slider_draft_preview`, and it exists for the same
+                // reason — without it a measurement can only guess which frame belongs to which
+                // pointer position, and a stroke is a burst of positions rather than one value.
+                // `positions` is the path's length and not the path, because a measurement needs to
+                // know how much geometry the frame carries and a log is not where a stroke is
+                // stored.
+                let positions = self
+                    .mask_draft
+                    .as_ref()
+                    .and_then(MaskDraft::brush)
+                    .map(|stroke| stroke.captured().len());
+                self.event(
+                    "mask_draft_preview",
+                    json!({"generation":self.preview_generation,"draft_revision":draft_revision,
+                           "positions":positions}),
+                );
                 self.after_mask_round_trip()
             }
             Err(error) => {

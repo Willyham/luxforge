@@ -311,6 +311,14 @@ sky at exactly `1.0` from gain `0.5` to gain `2.0`, falling to `0.6226` at gain 
 This is the point of a non-AI selection, so it is stated with numbers rather than with adjectives,
 and the user guide repeats it. Every figure is asserted by a named test.
 
+**The product repeats it too, and reads it from the same table that makes a kind creatable.** Each
+kind carries its own limit lines beside its parser — `LUMINANCE_LIMITS` and `COLOUR_LIMITS` in
+`range.rs` — and `mask::component_kind_limits` returns them followed by the one line every value-based
+kind shares, so a kind registered later carries that sentence with no panel edited. The Masks panel
+draws them on the open component's row, above the numbers they apply to, and draws under the list of
+kinds the thing no absent button can say: there is no Sky, Subject, People, Objects or Background
+here. The [phase-D scenario](../../xtask/src/mask_range_smoke.rs) captures both.
+
 **A luminance band cannot separate a blue sky from a grey card.** A photographed blue sky sits at
 `47.25` on the axis and a mid-grey at `47.81` — `0.56` of a slider unit, `1.4` output codes apart.
 Light skin sits at `62.53` and the next grey up at `62.75`. No band selects one without the other,
@@ -479,9 +487,13 @@ layer it is, because the mask reads the operation's input.
   itself is exact rather than measured.
 - **No photographic corpus.** The repository holds no photographs that can be decoded from a test —
   the JPEG fixtures are synthetic colour blocks — so every claim here is numerical, over measured
-  surface colours and constructed scenes. Rendered inspection of a real sky, a real face and a noisy
-  shadow on the M4 Mac is an acceptance item of the phase-D module task, exactly as the
-  [mixer study](mixer-study.md#limitations) states for its own equations, and is not claimed here.
+  surface colours and constructed scenes. **Phase D's acceptance pass closed as much of that as a
+  synthetic fixture can and no more**: `fixtures/generated/range.jpg` is twelve flat patches of this
+  study's own surfaces — the 24-patch chart's sRGB renderings — so the `mask-range` scenario renders
+  the sky/grey-card failure, the two-skins failure and the every-neutral failure in the editor at the
+  numbers measured here. What it is still not is a photograph: the patches are flat, so nothing there
+  exercises the noise measurement above, and a real sky, a real face and a real noisy shadow remain
+  uninspected. That is the honest remainder, and it needs a corpus rather than another scenario.
 - **No fixture file is frozen.** Coverage is a pure function of a pixel and a handful of numbers, so
   the transcription task tests the production unit against this reference in process. A committed
   JSON oracle would be a third artefact to keep in step for no coverage the direct comparison does
@@ -496,9 +508,11 @@ layer it is, because the mask reads the operation's input.
 ## Proposals
 
 Numbered continuing the [masking design's list](masking.md#proposals-with-recorded-defaults), which
-runs to P11. **P12 to P15 are decided**, on the transcription task and with the reasons below. P16 and
-P17 were raised by that task; **P17 is now decided and built**, on the colour-constrained brush task,
-and **P16 is still the owner's and is untouched**.
+runs to P11 and every row of which is now settled. **P12 to P15 are decided**, on the transcription
+task and with the reasons below. P16 and P17 were raised by that task; **P17 is now decided and
+built**, on the colour-constrained brush task, and **P16 is still the owner's and is untouched** —
+phase D's own acceptance pass neither settled it nor worked around it, and what that pass measured
+about the gap is recorded in its row.
 
 | # | Question | Decision |
 | --- | --- | --- |
@@ -506,7 +520,7 @@ and **P16 is still the owner's and is untouched**.
 | P13 | What does a value-based component answer for `bounds()` and `min_feature_px`, and is a proxy frame carrying one approximate? | **Decided as recommended**: whole stage, and `f32::INFINITY`, so the thin-feature rule never fires for one and no proxy frame is marked approximate for it. Supersampling cannot help, because the full-resolution pixels are not available at proxy scale, so the flag would name a condition nothing can fix; a mixed mask is still supersampled for its *geometric* components, and its range components answer the same value at all four subsample positions, because the supersample moves the position and not the pixel. The overlay and the [user guide](../user-guide.md) state instead that a range selection is evaluated on what the current view can see and that the 100% view is the truth. The cost of the whole-stage rectangle is measured by `the_cost_of_a_whole_stage_rectangle` |
 | P14 | Which way does Refine go, and what is its default? | **Decided as recommended**: increasing refine narrows the selection, default `50`. The research does not establish Lightroom's behaviour, so this is Lightwell's own, and `50` is measured to be the setting that holds an ordinary surface across a stop of shading |
 | P15 | The band's numbers are on the histogram's axis, but the delivered histogram is three channel populations rather than a luminance trace. How is that labelled? | **Decided as recommended**: the four band parameters are declared `0..100` with the unit `%`, and their notes say they are on the histogram's own axis and that one unit is 2.55 output codes; the user guide says the same. Adding a luminance trace to the delivered, verified histogram is a larger change to a shipped inspector and stays its own decision, unmade |
-| P16 | The coverage overlay is a function of position over the finished frame, and a value-based component's coverage is a function of the pixel the masked *operation* receives. Where does the overlay get that pixel? | **Raised, not decided.** The frame the grid describes holds that operation's **output**, not its input, so painting it would draw a selection the render never makes; and the overlay addresses a mask, which several layers at different stages may share, so there is no single operation to ask. Today `analysis::coverage_grid` refuses a mask that reads pixels, naming the reason and that the 100% view is where such a selection can be read, and the preview reports no grid for it — honest, and a real gap in the panel for any mask holding a range component. **TASK-024 widened it and left it alone:** a brush stroke limited to a colour reads pixels too, so a mask a person *painted* can now lose its overlay where before only a typed one could. The refusal was not removed or worked around, and this decision is still the owner's. The options are to give the overlay request the layer whose input to read and pay one prefix evaluation per cell; to let it read the frame and label the grid as the finished picture's selection rather than the operation's; or to leave it refused. This needs the owner |
+| P16 | The coverage overlay is a function of position over the finished frame, and a value-based component's coverage is a function of the pixel the masked *operation* receives. Where does the overlay get that pixel? | **Raised, not decided.** The frame the grid describes holds that operation's **output**, not its input, so painting it would draw a selection the render never makes; and the overlay addresses a mask, which several layers at different stages may share, so there is no single operation to ask. Today `analysis::coverage_grid` refuses a mask that reads pixels, naming the reason and that the 100% view is where such a selection can be read, and the preview reports no grid for it — honest, and a real gap in the panel for any mask holding a range component. **TASK-024 widened it and left it alone:** a brush stroke limited to a colour reads pixels too, so a mask a person *painted* can now lose its overlay where before only a typed one could. The refusal was not removed or worked around, and this decision is still the owner's. The options are to give the overlay request the layer whose input to read and pay one prefix evaluation per cell; to let it read the frame and label the grid as the finished picture's selection rather than the operation's; or to leave it refused. This needs the owner. **What phase D's acceptance pass found, offered as evidence and not as a decision:** `mask-range` asks the overlay four times on one mask — for the composition and for each of its three components — and gets one grid, the gradient's. The refusal is *legible*: the frame carries the host's own sentence, the step ends on it instead of waiting out the run, and the photograph is left exactly as it was rather than going black or drawing an empty texture. The gap is therefore smaller than it sounds for a **mixed** mask, where the geometric components can still be read one row at a time, and larger than it sounds for a mask that is only range components, where nothing can be. Two things make it more tolerable than when it was raised: every claim that scenario makes about coverage is read from the rendered photograph with an adjustment applied through the mask — which is what the design already tells a person to do, and it works — and the panel now says on the component's own row that there is no overlay and that the 100% view is the truth, so a person meets the limit before they look for the overlay. One thing makes it less: TASK-024's widening means a mask a person **painted** can lose its overlay, and a painted mask is the one a person most expects to be able to see |
 | P17 | The colour range's swatches are picked off the photograph, and the delivered pick machinery (`CanvasInteraction::SampleApply`) runs a **module's** query and submits to a **module's** action. A mask command is neither. How does a click become a swatch? | **Decided and built on TASK-024, taking both halves of the second option.** `CanvasInteraction::SampleApply` may name a **host** pair as well as a module's, and the host declares one pick per sampling kind from the kind table, so registering a kind is still what makes it reachable; and the new read-only `mask.sample-input` answers the input pixel of the operation the mask modulates as `r`, `g` and `b`, which are exactly the parameters `mask.add-<kind>-sample` declares, so the delivered field-matching rule needs no exception and the client maps nothing. The rule a shared mask needed: the pixel is read at the stage **the first layer bound to that mask in evaluation order** receives, and a mask no layer is bound to is **refused by name** rather than answered from the source or the finished frame — a seed in the wrong domain would silently select nothing, which this study's own `+0.75 EV` measurement is the evidence for. The client still decodes nothing: the only source of a colour is the host's answer, and the colour-constrained brush goes further and takes no colour in its request at all, seeding itself from the stroke's own first position |
 
 ## Figures
@@ -531,7 +545,9 @@ randomized comparison uses a fixed SplitMix64 seed, so the figures are reproduci
 | [`crates/lightwell-core/tests/range_reference.rs`](../../crates/lightwell-core/tests/range_reference.rs) | The proofs and measurements above, the scenes chosen to fail, and the ignored figures test. |
 | [`crates/lightwell-core/tests/reference/mod.rs`](../../crates/lightwell-core/tests/reference/mod.rs) | Declares `pub mod range;` beside the other studies' references. |
 | [`crates/lightwell-core/src/mask/range.rs`](../../crates/lightwell-core/src/mask/range.rs) | The production transcription: both kinds' payloads, legality rules, declared parameters, compiled terms and per-pixel coverage, and the two answers a value-based component gives about the frame. |
-| [`crates/lightwell-core/tests/mask_range.rs`](../../crates/lightwell-core/tests/mask_range.rs) | The bit-identity sweeps, P12's condition on the geometric components, the byte and RAW linear renders, the sampled byte against the rendered byte, the composition with a gradient and a subtract brush, P13's answers and the whole-stage measurement. |
+| [`crates/lightwell-core/tests/mask_range.rs`](../../crates/lightwell-core/tests/mask_range.rs) | The bit-identity sweeps, P12's condition on the geometric components, the byte and RAW linear renders, the sampled byte against the rendered byte, the composition with a gradient and a subtract brush, P13's answers, the whole-stage measurement, and `a_value_based_kind_is_exactly_one_that_reads_the_pixel`, which holds the kind table's own `value_based` column against every compiled kind's `reads_pixels` so a client can name the limits before a component has been drawn. |
+| [`xtask/src/mask_range_smoke.rs`](../../xtask/src/mask_range_smoke.rs) | The `mask-range` smoke scenario: this study's own failures rendered in the editor on the M4 Mac, read from the photograph with an adjustment applied through the mask, with each range component's overlay refused and the gradient's painted. |
+| `xtask/src/fixtures.rs`, `fixtures/generated/range.jpg` | The twelve flat patches that scenario is measured over, which are this study's own surfaces: the 24-patch chart's sRGB renderings, laid out so the sky and the grey card, the two skins, the five neutrals and a sky/foliage boundary are each one probe apart. |
 
 ## References
 

@@ -691,6 +691,12 @@ pub(crate) enum Message {
     /// One tick of a paced evidence slider step: send its next value. Exists only while a paced
     /// step has values left to send, which is also when the subscription that produces it exists.
     PacedSliderTick,
+    /// One tick of a **paced stroke** step: the next pointer position of a scripted brush stroke,
+    /// sent in real time rather than with the whole path at once. It exists for the same reason
+    /// `PacedSliderTick` does — a gesture delivered all at once measures the driver's coalescing and
+    /// not the editor's own latency — and a stroke is the one gesture whose positions arrive that way
+    /// from a hand.
+    PacedStrokeTick,
     /// Capture the frame the next redraw presents.
     Capture,
     Captured(iced::window::Screenshot),

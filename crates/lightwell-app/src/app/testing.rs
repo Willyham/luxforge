@@ -413,6 +413,7 @@ pub(crate) fn attach_script(editor: &mut Editor, steps: &str) -> PathBuf {
         saving: false,
         had_errors: false,
         paced_slider: None,
+        paced_stroke: None,
         tools_scroll: None,
     });
     editor.activity.requested = 1;

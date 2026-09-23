@@ -569,6 +569,7 @@ impl Editor {
                 saving: false,
                 had_errors: false,
                 paced_slider: None,
+                paced_stroke: None,
                 tools_scroll: None,
             }
         });
@@ -2007,7 +2008,22 @@ impl Editor {
                                 Some((refresh.state.asset.width, refresh.state.asset.height));
                             self.activity.orientation = Some(refresh.job.source.orientation());
                         }
+                        // A `mask.*` command that **created** a mask names none in its envelope, and
+                        // the mask it made has to be the one the panel opens: the adjustments below
+                        // the component list are bound to the open mask, so leaving the previous one
+                        // open would put the next slider on a mask the person was not looking at.
+                        // A drafted create already does this on its own commit; this is the same rule
+                        // for a **typed** kind, which is created by its button rather than by a
+                        // gesture and so never reaches that path.
+                        let created_a_mask = mask_command
+                            && self.last_mask_request.as_ref().is_some_and(|(_, request)| {
+                                request.get(lightwell_core::MASK_FIELD).is_none()
+                            });
+                        let before = self.listed_masks();
                         self.accept(*refresh);
+                        if created_a_mask {
+                            self.open_created_mask(&before);
+                        }
                     }
                     Err(error) => {
                         self.status = error.clone();
@@ -2060,6 +2076,7 @@ impl Editor {
                 }
             }
             Message::PacedSliderTick => return self.slider_paced_tick(),
+            Message::PacedStrokeTick => return self.stroke_paced_tick(),
             Message::Capture => {
                 let Some(evidence) = &mut self.evidence else {
                     return Task::none();
@@ -4063,6 +4080,14 @@ impl Editor {
                 subscriptions.push(
                     iced::time::every(Duration::from_millis(paced.interval_ms))
                         .map(|_| Message::PacedSliderTick),
+                );
+            }
+            // A paced stroke's own timer, gated the same way: a script with no paced stroke in
+            // flight runs none.
+            if let Some(paced) = &evidence.paced_stroke {
+                subscriptions.push(
+                    iced::time::every(Duration::from_millis(paced.interval_ms))
+                        .map(|_| Message::PacedStrokeTick),
                 );
             }
         }

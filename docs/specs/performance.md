@@ -451,6 +451,62 @@ harness's own full-Basic core render read 128.2 ms p50 / 224.5 ms p95 at 24 MP a
 at 60 MP, and a p95 more than 1.7 times its own p50 in a warm 30-sample loop is a measure of the
 host's queue, not of the render.
 
+#### A painted stroke's own latency
+
+**The measurement phase C left unmade, and why it needed new machinery.** `editor-latency` drives
+field-patch sliders: one declared value per step, each its own `draft.set`, preview job and displayed
+frame. A stroke is not that gesture. An evidence script's stroke step appends every position in one
+update, so the gesture coalesces the path into one `draft.set` with the rest waiting — which is what a
+fast drag does, and what every correctness scenario wants — and the two drafted previews a two-position
+stroke raises are superseded by the commit before either reaches the screen. So there was no
+end-to-end figure for a paint gesture at all, and the slider figure above was not allowed to stand in
+for one.
+
+Two things closed it, both small and both in the harness rather than in the editor's own path. The
+desktop now emits `mask_draft_preview` beside its existing `mask_draft_set`, carrying the preview
+generation that set queued — the mask gesture's counterpart of `slider_draft_preview`, and the only
+way to know which frame belongs to which pointer position. And an evidence script's stroke step takes
+an **`interval_ms`**, which hands its positions to a gated timer and sends one per interval in real
+time, exactly as a paced slider step does with its values: the first tick presses, each later one
+moves, the last releases, so one paced step is still one stroke and one history entry.
+
+The figures below are the `mask-range` scenario's own, recorded in its `result.json` beside the recipe
+they were taken on and the load the host was under. Twelve positions at a 24 ms interval — a little
+over the delivered masked-drag median of 16.8–17.9 ms, so each position has a round trip of its own to
+finish — painted down the middle of one flat patch of a 1440 × 960 fixture. Two runs, back to back, on
+a quiet host.
+
+| Painted stroke, `mask_draft_set` → `preview_displayed` | run 1 | run 2 |
+| --- | --- | --- |
+| p50 | 32.6 ms | 32.2 ms |
+| p95 | 50.2 ms | 42.1 ms |
+| drafted frames displayed / inputs | 11 / 17 | 10 / 17 |
+| one-minute load average | 1.58 | 1.80 |
+
+**Against the provisional target (p95 under 16 ms, acceptable under 32 ms) this is a miss at both
+bounds, stated plainly: the p50 alone is already at or past the acceptable p95.** The load average is
+well under the 8.0 a quotable figure needs, so it is not the host.
+
+**What most of it is, and why this is not comparable to the masked slider drag above.** The stroke is
+painted on the heaviest recipe that scenario builds: **four masked colour layers**, three of whose
+masks hold a luminance range or a colour range. A value-based component answers the *whole stage* for
+its conservative rectangle, by [P13](../design/range-study.md#proposals), so those three layers are
+evaluated at every pixel of the frame with no span skipped — which is exactly the cost the range study
+measured at 28–44 ns per pixel over 100% of the stage, against a placed gradient's 14.6–20.0 ns over
+40%. The masked drag figures above are one mask of one geometric component. These two numbers are
+therefore not the same measurement of the same thing, and the difference between them is mostly the
+recipe rather than the gesture.
+
+**What is still unmeasured, named rather than implied.** There is no paint-gesture figure for a
+*bare* recipe — one brush mask on one layer — and none at 24 MP or 60 MP, because this one is taken
+during a correctness run on a 1.4 MP fixture rather than by a measurement harness with its own
+workloads. The machinery to take those now exists: `interval_ms` on a stroke step and
+`mask_draft_preview` are not scenario-specific, so a paced stroke over the large fixtures is a
+workload away. Until it is taken, **no figure here should be read as a paint-gesture baseline**, and
+the drafted-frames-per-second half of the original item — how many frames a hand sees per second
+during a continuous drag — is answered only in the ratio above: 10 to 11 of 17 inputs reached the
+screen, the rest superseded by the next position.
+
 ### Desktop slider-to-presented-frame and settled histogram
 
 `editor-latency`, release, warm cache, background evidence launches on the host above, 30 samples
