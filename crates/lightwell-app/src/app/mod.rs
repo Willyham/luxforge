@@ -10,6 +10,9 @@ pub(crate) mod fields;
 pub(crate) mod keymap;
 pub(crate) mod message;
 pub(crate) mod overlay;
+pub(crate) mod presets;
+#[cfg(test)]
+mod presets_tests;
 #[cfg(test)]
 mod proof_controls_tests;
 pub(crate) mod slider;
@@ -25,6 +28,7 @@ use crate::{
     state::{
         self, Workspace,
         histogram::{Analysis, Readout},
+        presets::{PresetForm, PresetLibrary},
         tools,
     },
     view,
@@ -55,9 +59,9 @@ use std::{
     time::{Duration, Instant},
 };
 use tasks::{
-    ACTOR, Refresh, SyncResult, Upload, import_task, locate_task, merge_current_entry,
-    modules_task, mutation, older_task, pan_task, preview_task, query_task, recipe_task,
-    sample_task, session_task, state_task, sync_task, versions_task, workspace_task,
+    ACTOR, Refresh, Upload, import_task, locate_task, merge_current_entry, modules_task, mutation,
+    older_task, pan_task, presets_task, preview_task, query_task, recipe_task, sample_task,
+    session_task, state_task, sync_task, versions_task, workspace_task,
 };
 
 /// What the editor was last asked to show, correlated with logged events and captured frames.
@@ -404,6 +408,9 @@ pub(crate) struct Editor {
     pub(crate) pending_pan: Option<(f32, f32)>,
     pub(crate) picker_open: bool,
     pub(crate) status: String,
+    /// What Copy in the status bar copies instead of the line itself, while the status still reads
+    /// that line: an import's whole report behind its one-line summary.
+    pub(crate) status_copy: Option<(String, String)>,
     pub(crate) api_sequence: u64,
     pub(crate) scale_factor: f32,
     /// Descriptors fetched once through `module.list`; the only source of tool controls.
@@ -467,6 +474,10 @@ pub(crate) struct Editor {
     /// session already reports it, so the mode strip shows Crop selected during every draft
     /// however it was opened, and pointer again however it ended.
     pub(crate) mode_sync: Option<String>,
+    /// The preset library as `preset.list` last answered it.
+    pub(crate) presets: PresetLibrary,
+    /// The Presets section's create form.
+    pub(crate) preset_form: PresetForm,
     /// The whole screen as plain data, re-derived after every message.
     pub(crate) workspace: Workspace,
 }
@@ -574,6 +585,7 @@ impl Editor {
             pending_pan: None,
             picker_open: false,
             status: "Open a photo to begin".into(),
+            status_copy: None,
             api_sequence: 0,
             scale_factor: 1.0,
             modules: Vec::new(),
@@ -611,6 +623,8 @@ impl Editor {
             crop_option: false,
             crop_space: false,
             mode_sync: None,
+            presets: PresetLibrary::default(),
+            preset_form: PresetForm::default(),
             workspace: Workspace::default(),
         };
         // Both workers wake the event loop through one channel instead of a poll. The closure is
@@ -629,8 +643,10 @@ impl Editor {
             .and_then(iced::window::scale_factor)
             .map(Message::ScaleFactor);
         let backend = iced::system::information().map(Message::Info);
-        // Tool controls are discovered once, through the same API every other client uses.
+        // Tool controls are discovered once, through the same API every other client uses, and the
+        // preset library is listed the same way; the event sync keeps it current afterwards.
         let modules = modules_task(editor.owner.clone(), editor.client);
+        let presets = presets_task(editor.owner.clone(), editor.client);
         let first = match &mut editor.evidence {
             Some(evidence) => match evidence.queue.pop_front() {
                 Some(path) => editor.open(path),
@@ -644,7 +660,10 @@ impl Editor {
                 .unwrap_or_else(Task::none),
         };
         editor.rederive();
-        (editor, Task::batch([scale, backend, modules, first]))
+        (
+            editor,
+            Task::batch([scale, backend, modules, presets, first]),
+        )
     }
 
     pub(crate) fn event(&self, name: &str, detail: Value) {
@@ -740,7 +759,21 @@ impl Editor {
                 entry.as_ref(),
             );
         }
-        json!({"run_id":self.run_id,"mode":if self.evidence.is_some() {"evidence"} else {"editor"},"selection":self.session.preview.selection,"orientation":self.activity.orientation,"phase":self.activity.phase,"requested_generation":self.activity.requested,"displayed_generation":self.activity.displayed,"displayed_draft_revision":self.displayed_draft_revision,"source_dimensions":self.activity.source_dimensions,"preview_dimensions":self.activity.preview_dimensions,"backend":self.activity.backend,"status":self.status,"error_code":self.activity.error_code,"modules":module_summary(&self.modules),"controls":self.fields.summary(),"control_ui":{"group_expanded":self.controls_ui.group_expanded,"curve_channels":curve_channels,"curve_points":curve_points,"picker_open":picker_open,"curves":curves,"pickers":pickers},"gallery":gallery,"tools_scroll":tools_scroll,"crop":self.crop_summary(),"draft":self.draft_summary(),"stack":self.stack_summary(),"workspace":serde_json::to_value(&self.session.workspace).unwrap_or(Value::Null),"developer":self.developer,"expanded":self.workspace.expanded(),"pickers":self.workspace.pickers(),"notices":self.notice_titles(),"compare":self.compare_return.is_some(),"render_error":self.render_error_summary(),"palette":{"open":self.palette_open,"query":self.palette_query},"histogram":self.histogram_summary(),"readout":self.readout_summary(),"proxy":self.proxy_summary(),"scratch":Self::scratch_summary()})
+        json!({"run_id":self.run_id,"mode":if self.evidence.is_some() {"evidence"} else {"editor"},"selection":self.session.preview.selection,"orientation":self.activity.orientation,"phase":self.activity.phase,"requested_generation":self.activity.requested,"displayed_generation":self.activity.displayed,"displayed_draft_revision":self.displayed_draft_revision,"source_dimensions":self.activity.source_dimensions,"preview_dimensions":self.activity.preview_dimensions,"backend":self.activity.backend,"status":self.status,"error_code":self.activity.error_code,"modules":module_summary(&self.modules),"controls":self.fields.summary(),"control_ui":{"group_expanded":self.controls_ui.group_expanded,"curve_channels":curve_channels,"curve_points":curve_points,"picker_open":picker_open,"curves":curves,"pickers":pickers},"gallery":gallery,"tools_scroll":tools_scroll,"crop":self.crop_summary(),"draft":self.draft_summary(),"stack":self.stack_summary(),"workspace":serde_json::to_value(&self.session.workspace).unwrap_or(Value::Null),"developer":self.developer,"expanded":self.workspace.expanded(),"pickers":self.workspace.pickers(),"notices":self.notice_titles(),"compare":self.compare_return.is_some(),"render_error":self.render_error_summary(),"palette":{"open":self.palette_open,"query":self.palette_query},"presets":self.presets_summary(),"histogram":self.histogram_summary(),"readout":self.readout_summary(),"proxy":self.proxy_summary(),"scratch":Self::scratch_summary()})
+    }
+
+    /// The Presets section as the frame drew it: its rows, the create form and whether the section
+    /// is expanded. `null` when no module declares a `presets` control.
+    fn presets_summary(&self) -> Value {
+        self.workspace
+            .tools
+            .all()
+            .find_map(|section| {
+                section
+                    .presets()
+                    .map(|presets| presets.summary(section.expanded))
+            })
+            .unwrap_or(Value::Null)
     }
 
     /// The process-wide colour scratch budget as it stands when the frame is captured, with the
@@ -1709,6 +1742,8 @@ impl Editor {
             palette_open: self.palette_open,
             palette_query: &self.palette_query,
             palette_selected: self.palette_selected,
+            presets: &self.presets,
+            preset_form: &self.preset_form,
         };
         workspace.derive(&inputs);
         self.workspace = workspace;
@@ -1748,7 +1783,14 @@ impl Editor {
                     json!({"component_gallery": page}),
                 );
             }
-            Message::CopyStatus => return iced::clipboard::write(self.status.clone()),
+            Message::CopyStatus => {
+                // While the status still reads an import's summary, Copy copies its whole report.
+                let text = match &self.status_copy {
+                    Some((line, detail)) if *line == self.status => detail.clone(),
+                    _ => self.status.clone(),
+                };
+                return iced::clipboard::write(text);
+            }
             Message::Open => {
                 if self.picker_open || self.busy || self.evidence.is_some() {
                     return Task::none();
@@ -1845,11 +1887,13 @@ impl Editor {
                 let Some(evidence) = &mut self.evidence else {
                     return Task::none();
                 };
-                // Wait for the backend and for tool discovery so a frame always shows real controls.
+                // Wait for the backend, for tool discovery and for the preset library, so a frame
+                // always shows real controls and the library rather than their loading lines.
                 if !evidence.capture_pending
                     || evidence.saving
                     || self.activity.backend.is_none()
                     || !self.modules_ready
+                    || !self.presets.ready()
                     || self.curve_sample_in_flight
                     || self.curve_sample_pending.is_some()
                 {
@@ -2043,8 +2087,17 @@ impl Editor {
             Message::Synced(result) => {
                 self.syncing = false;
                 match result {
-                    Ok(SyncResult::Unchanged { sequence }) => self.api_sequence = sequence,
-                    Ok(SyncResult::Changed(refresh)) => self.accept(*refresh),
+                    Ok(sync) => {
+                        // Another client's preset change reaches the library in the same poll that
+                        // brings its asset changes, and costs no asset refresh of its own.
+                        if let Some((presets, sequence)) = sync.presets {
+                            self.adopt_presets(presets, sequence);
+                        }
+                        if let Some(refresh) = sync.refresh {
+                            self.accept(*refresh);
+                        }
+                        self.api_sequence = self.api_sequence.max(sync.sequence);
+                    }
                     Err(error) => self.status = format!("Live refresh failed: {error}"),
                 }
             }
@@ -2335,6 +2388,8 @@ impl Editor {
             }
             Message::Resized(width, height) => self.window = (width, height),
             Message::Crop(message) => return self.crop_update(message),
+            Message::Preset(message) => return self.preset_update(message),
+            Message::HostAnswered(result) => self.host_answered(result.map(|answer| *answer)),
             Message::ModulesLoaded(result) => {
                 self.modules_ready = true;
                 match result {
@@ -4282,7 +4337,7 @@ mod tests {
         // Somebody else committed, which is also what this desktop's own undo looks like.
         let newer = entry(&asset, 9, None);
         let refresh = refresh_for(&asset, &newer, vec![newer.clone()], &[&newer], false);
-        let _ = editor.update(Message::Synced(Ok(SyncResult::Changed(Box::new(refresh)))));
+        let _ = editor.update(Message::Synced(Ok(tasks::SyncResult::changed(refresh))));
         let draft = editor.slider_draft.as_ref().expect("the draft is kept");
         assert!(draft.conflicted);
         assert_eq!(
@@ -5100,14 +5155,40 @@ mod tests {
         };
         let before = versions(&editor);
         assert!(before.len() > 1, "more than one section is on screen");
+        // The preset library disables its rows while any draft is open, so opening the gesture
+        // re-derives that section once; nothing else outside the drafting module moves.
+        let library = crate::state::presets::presets_control(&editor.modules)
+            .map(|(module, _)| module.id.clone())
+            .expect("the presets control");
+
+        let _ = editor.update(Message::SliderMoved {
+            action: action.clone(),
+            parameter: parameter.clone(),
+            value: 0.5,
+        });
+        let opened = versions(&editor);
+        for (module, version) in &before {
+            if module == &owner || module == &library {
+                assert!(
+                    opened[module] > *version,
+                    "{module} follows the gesture: {version} to {}",
+                    opened[module]
+                );
+            } else {
+                assert_eq!(
+                    opened[module], *version,
+                    "{module} was re-derived by a drag in another module"
+                );
+            }
+        }
 
         let _ = editor.update(Message::SliderMoved {
             action,
             parameter,
-            value: 0.5,
+            value: 0.75,
         });
         let after = versions(&editor);
-        for (module, version) in &before {
+        for (module, version) in &opened {
             if module == &owner {
                 assert!(
                     after[module] > *version,
@@ -5117,7 +5198,7 @@ mod tests {
             } else {
                 assert_eq!(
                     after[module], *version,
-                    "{module} was re-derived by a drag in another module"
+                    "{module} was re-derived by a move in another module"
                 );
             }
         }

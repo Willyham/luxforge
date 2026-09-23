@@ -3,14 +3,14 @@
 //! view and the keymap.
 use crate::{
     app::controls::CurveSampleIdentity,
-    app::tasks::{PreviewPayload, Refresh, SyncResult, Upload},
+    app::tasks::{HostAnswer, PresetChange, PreviewPayload, Refresh, SyncResult, Upload},
     crop_draft::Handle,
     state::histogram::Readout,
 };
 use iced_runtime::image as image_memory;
 use lightwell_core::{
-    ClientSession, ContentPoint, Draft, EntryId, HistoryPage, ModuleDescriptor, PreviewJob,
-    RecipeDescription, Version,
+    ClientSession, ContentPoint, Draft, EntryId, HistoryPage, ModuleDescriptor, PresetSummary,
+    PreviewJob, RecipeDescription, Version,
 };
 use lightwell_ui::{ColorPickerEvent, CurveEditorEvent};
 use serde_json::{Map, Value};
@@ -67,6 +67,9 @@ pub(crate) enum MenuTarget {
     Draft,
     /// A module's picker control: Copy as JSON request for the `workspace.set` a click sends.
     Mode(String),
+    /// A library preset's row, by its identity: Delete, Export and, for an imported preset, Copy
+    /// import report.
+    Preset(String),
 }
 
 /// What running one command palette entry does. Every entry is an existing message, so running an
@@ -89,6 +92,48 @@ pub(crate) enum PaletteAction {
     Redo,
     ReturnCurrent,
     Restore,
+}
+
+/// Every change to the Presets section is one message, so a script drives the library through the
+/// update function exactly as the section's buttons, fields and menus do. Applying a preset is not
+/// one of them: a row's click is [`Message::RunAction`] with the section's own action, the same
+/// path every other declared action takes.
+#[derive(Clone, Debug)]
+pub(crate) enum PresetMessage {
+    /// `preset.list` answered, with the event sequence it was read at.
+    Listed(Result<(Vec<PresetSummary>, u64), String>),
+    /// Show or hide the create form the `+` button reveals.
+    ToggleForm,
+    /// The create form's name text.
+    Name(String),
+    /// The create form's group text.
+    Group(String),
+    /// One create-form checkbox, by its label.
+    Check { label: String, checked: bool },
+    /// Capture the checked groups from the displayed entry and store them as a new preset.
+    Create,
+    /// Close the create form and forget what was typed.
+    Cancel,
+    /// `preset.capture`, `preset.create` and the listing after them answered.
+    Created(Result<Box<PresetChange>, String>),
+    /// Open the native file dialog for a preset file.
+    Import,
+    /// The dialog closed, with a chosen file or nothing.
+    ImportPicked(Option<PathBuf>),
+    /// `preset.import` and the listing after it answered, or the file was refused before either.
+    Imported(Result<Box<PresetChange>, String>),
+    /// Delete one library preset, by its identity.
+    Delete(String),
+    /// `preset.delete` and the listing after it answered.
+    Deleted(Result<Box<PresetChange>, String>),
+    /// Copy one imported preset's whole import report as JSON.
+    CopyReport(String),
+    /// `preset.read` answered with the report's text.
+    ReportRead(Result<String, String>),
+    /// Export one library preset through the native save dialog.
+    Export(String),
+    /// The export was written to the file of this name, or the dialog was cancelled.
+    Exported(Result<Option<String>, String>),
 }
 
 /// One pointer step of a crop gesture, already mapped to box pixels by the canvas.
@@ -202,6 +247,11 @@ pub(crate) enum Message {
     ),
     /// One crop draft change.
     Crop(CropMessage),
+    /// One Presets-section change.
+    Preset(PresetMessage),
+    /// A host method an evidence script called directly answered, with the preset library read
+    /// after it when the method was one of the library's own.
+    HostAnswered(Result<Box<HostAnswer>, String>),
     /// Every tool control is generated from these; the desktop knows no tool by name.
     ModulesLoaded(Result<Vec<ModuleDescriptor>, String>),
     /// A generated field changed: the text the user typed for one declared parameter.

@@ -5,11 +5,14 @@ use crate::{
     app::{
         Editor,
         fields::number_text,
-        message::{CropMessage, CropPointer, Message, PaletteAction},
-        tasks::{mutation, workspace_task},
+        message::{CropMessage, CropPointer, MenuTarget, Message, PaletteAction, PresetMessage},
+        tasks::{HostAnswer, host_task, mutation, workspace_task},
     },
     crop_draft::{Corner, Handle},
-    state::tools::crop_frame,
+    state::{
+        presets::{PresetRow, presettable_groups},
+        tools::crop_frame,
+    },
 };
 use iced::Task;
 use lightwell_ui::{ColorPickerEvent, CurveEditorEvent};
@@ -109,6 +112,43 @@ pub(crate) enum Step {
         x: u32,
         y: u32,
     },
+    /// Click one library preset's row: [`Message::RunAction`] with the section's own action.
+    Preset(PresetPick),
+    /// Open the create form, type its name and group, set every checkbox and press Create.
+    PresetCreate(PresetCreateStep),
+    /// Delete one library preset through its row's context menu.
+    PresetDelete(PresetPick),
+    /// Import one file through the section's own import task, bypassing only the native dialog.
+    /// The path is as the script wrote it, relative to the editor's working directory.
+    PresetImport(String),
+}
+
+/// One library preset, by its exact name, and by its group when two groups hold that name. A step
+/// that matches no row, or more than one, fails rather than guessing.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct PresetPick {
+    pub(crate) name: String,
+    pub(crate) group: Option<String>,
+}
+
+/// The create form as a script fills it: the name, the group when it is not the default, and the
+/// labels of exactly the checkboxes to leave checked. Without `submit` the form is left open and
+/// filled, so its frame shows the form itself.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct PresetCreateStep {
+    pub(crate) name: String,
+    pub(crate) group: Option<String>,
+    pub(crate) groups: Vec<String>,
+    pub(crate) submit: bool,
+}
+
+impl PresetPick {
+    fn record(&self) -> Value {
+        match &self.group {
+            Some(group) => json!({"name":self.name,"group":group}),
+            None => json!({"name":self.name}),
+        }
+    }
 }
 
 /// One slider gesture. Every value becomes one `SliderMoved` with a tick between them, exactly as
@@ -382,6 +422,19 @@ impl Step {
             Self::Palette(PaletteStep::Query(query)) => json!({"palette":{"query":query}}),
             Self::Palette(PaletteStep::Run(query)) => json!({"palette":{"run":query}}),
             Self::Hover { x, y } => json!({"hover":{"x":x,"y":y}}),
+            Self::Preset(pick) => json!({"preset":pick.record()}),
+            Self::PresetDelete(pick) => json!({"preset_delete":pick.record()}),
+            Self::PresetCreate(step) => {
+                let mut value = json!({"name":step.name,"groups":step.groups});
+                if let Some(group) = &step.group {
+                    value["group"] = json!(group);
+                }
+                if !step.submit {
+                    value["submit"] = json!(false);
+                }
+                json!({"preset_create":value})
+            }
+            Self::PresetImport(path) => json!({"preset_import":{"path":path}}),
         }
     }
 }
@@ -463,6 +516,10 @@ pub(crate) enum Settle {
     /// with its reason in the status bar. A pick that does commit re-arms [`Settle::Preview`]
     /// instead, so its frame is the committed render.
     Pick,
+    /// A preset library call and the listing after it answered, or the call was refused.
+    Presets,
+    /// A host method a script called directly answered.
+    Host,
 }
 
 impl Editor {
@@ -505,12 +562,32 @@ impl Editor {
             Step::Preview(preview) => self.preview_step(preview),
             Step::Palette(palette) => self.palette_step(palette),
             Step::Hover { x, y } => self.hover_step(x, y),
+            Step::Preset(pick) => self.preset_step(pick),
+            Step::PresetCreate(step) => self.preset_create_step(step),
+            Step::PresetDelete(pick) => self.preset_delete_step(pick),
+            Step::PresetImport(path) => self.preset_import_step(path),
         }
     }
 
     /// One owner request with the desktop's own envelope: the current revision and a fresh request
     /// id, exactly as a control would send it. The frame is captured when its pixels arrive.
-    fn api_step(&mut self, method: String, params: Map<String, Value>) -> Task<Message> {
+    ///
+    /// A method that takes no mutation envelope, such as `preset.list` or `session.state`, is sent
+    /// as written instead, with the open asset's identity only when it names one, and its frame is
+    /// captured when it answers. Which kind a method is comes from the method table's own schema.
+    fn api_step(&mut self, method: String, mut params: Map<String, Value>) -> Task<Message> {
+        if let Some(takes_asset) = envelope_free(&method) {
+            if takes_asset && let Some(state) = &self.state {
+                params.insert("asset_id".into(), json!(state.asset.id));
+            }
+            self.await_step(Settle::Host);
+            return host_task(
+                self.owner.clone(),
+                self.client,
+                method,
+                Value::Object(params),
+            );
+        }
         let Some((asset, revision)) = self
             .state
             .as_ref()
@@ -1328,6 +1405,158 @@ impl Editor {
         }
     }
 
+    /// Click one row, exactly as the section does: the section's own action with that preset's
+    /// fields, through the action path every declared control takes. Captured on the render.
+    fn preset_step(&mut self, pick: PresetPick) -> Task<Message> {
+        if self.state.is_none() {
+            return self.fail_step("no photograph is open");
+        }
+        let row = match self.preset_row(&pick) {
+            Ok(row) => row,
+            Err(reason) => return self.fail_step(reason),
+        };
+        let presets = self
+            .workspace
+            .tools
+            .all()
+            .find_map(|section| section.presets())
+            .cloned()
+            .unwrap_or_default();
+        let Some(preset) = row.apply.clone().filter(|_| row.enabled) else {
+            let reason = row
+                .unavailable
+                .clone()
+                .or(presets.apply_disabled)
+                .unwrap_or_else(|| "the row is disabled".into());
+            return self.fail_step(format!("{} cannot apply: {reason}", pick.name));
+        };
+        self.note_step(json!({"preset_id":row.id}));
+        self.begin_request();
+        let task = self.update(Message::RunAction {
+            action: presets.action,
+            preset,
+        });
+        if !self.busy {
+            return self.fail_step(format!("the preset was not applied: {}", self.status));
+        }
+        task
+    }
+
+    /// Fill and submit the create form through its own messages, in the order a person would.
+    fn preset_create_step(&mut self, step: PresetCreateStep) -> Task<Message> {
+        if self.state.is_none() {
+            return self.fail_step("no photograph is open");
+        }
+        let labels: Vec<String> = presettable_groups(&self.modules, self.developer)
+            .into_iter()
+            .map(|group| group.label)
+            .collect();
+        if let Some(unknown) = step.groups.iter().find(|label| !labels.contains(label)) {
+            return self.fail_step(format!("no create-form group is labelled {unknown}"));
+        }
+        let mut tasks = Vec::new();
+        if !self.preset_form.open {
+            tasks.push(self.update(Message::Preset(PresetMessage::ToggleForm)));
+        }
+        tasks.push(self.update(Message::Preset(PresetMessage::Name(step.name))));
+        if let Some(group) = step.group {
+            tasks.push(self.update(Message::Preset(PresetMessage::Group(group))));
+        }
+        for label in labels {
+            let checked = step.groups.contains(&label);
+            tasks.push(self.update(Message::Preset(PresetMessage::Check { label, checked })));
+        }
+        if !step.submit {
+            self.capture_next_frame();
+            return Task::batch(tasks);
+        }
+        self.await_step(Settle::Presets);
+        tasks.push(self.update(Message::Preset(PresetMessage::Create)));
+        Task::batch(tasks)
+    }
+
+    /// Delete one preset through its row's menu: open the menu on the row, then choose Delete.
+    fn preset_delete_step(&mut self, pick: PresetPick) -> Task<Message> {
+        let row = match self.preset_row(&pick) {
+            Ok(row) => row,
+            Err(reason) => return self.fail_step(reason),
+        };
+        self.note_step(json!({"preset_id":row.id}));
+        let open = self.update(Message::OpenMenu(MenuTarget::Preset(row.id.clone())));
+        self.await_step(Settle::Presets);
+        let delete = self.update(Message::Preset(PresetMessage::Delete(row.id)));
+        Task::batch([open, delete])
+    }
+
+    /// Import one file through the same task the dialog's answer starts.
+    fn preset_import_step(&mut self, path: String) -> Task<Message> {
+        self.await_step(Settle::Presets);
+        self.preset_import(PathBuf::from(path))
+    }
+
+    /// The one row a step names: the exact name, and the group when the step gives one.
+    fn preset_row(&self, pick: &PresetPick) -> Result<PresetRow, String> {
+        let presets = self
+            .workspace
+            .tools
+            .all()
+            .find_map(|section| section.presets())
+            .ok_or("no module declares a presets control")?;
+        let matches: Vec<&PresetRow> = presets
+            .rows()
+            .filter(|row| row.name == pick.name)
+            .filter(|row| pick.group.as_ref().is_none_or(|group| &row.group == group))
+            .collect();
+        let named = match &pick.group {
+            Some(group) => format!("{} in {group}", pick.name),
+            None => pick.name.clone(),
+        };
+        match matches.as_slice() {
+            [row] => Ok((*row).clone()),
+            [] => Err(format!("no preset is named {named}")),
+            many => Err(format!(
+                "{} presets are named {named}; name its group",
+                many.len()
+            )),
+        }
+    }
+
+    /// A host method the running step called answered: adopt the library it listed, record what it
+    /// said, and capture the frame.
+    pub(crate) fn host_answered(&mut self, result: Result<HostAnswer, String>) {
+        match result {
+            Ok(answer) => {
+                if let Some(presets) = answer.presets {
+                    self.adopt_presets(presets, answer.sequence);
+                }
+                self.status = format!("{} answered", answer.method);
+                self.note_step(json!({"result":answer.result}));
+            }
+            Err(error) => {
+                self.refuse_step(&error);
+                self.status = error;
+            }
+        }
+        self.settle_step(Settle::Host);
+    }
+
+    /// A request the running step sent was refused. The refusal still captures a frame, so it is
+    /// recorded on the step and on the run rather than passing for a success.
+    pub(crate) fn refuse_step(&mut self, reason: &str) {
+        if self
+            .evidence
+            .as_ref()
+            .is_none_or(|evidence| evidence.current.is_none())
+        {
+            return;
+        }
+        self.event("script_step_failed", json!({"reason":reason}));
+        self.note_step(json!({"status":"failed","reason":reason}));
+        if let Some(evidence) = &mut self.evidence {
+            evidence.had_errors = true;
+        }
+    }
+
     /// The running step waits for this before its frame is captured.
     pub(crate) fn await_step(&mut self, settle: Settle) {
         if let Some(evidence) = &mut self.evidence {
@@ -1354,7 +1583,7 @@ impl Editor {
     }
 
     /// Add detail to the running step's record.
-    fn note_step(&mut self, detail: Value) {
+    pub(crate) fn note_step(&mut self, detail: Value) {
         let Some(object) = detail.as_object() else {
             return;
         };
@@ -1485,8 +1714,15 @@ fn parse_step(step: &Value) -> Result<Step, String> {
         "preview" => Ok(Step::Preview(parse_preview(value)?)),
         "palette" => Ok(Step::Palette(parse_palette(value)?)),
         "hover" => parse_hover(value),
+        "preset" => Ok(Step::Preset(parse_preset_pick(value, "preset")?)),
+        "preset_create" => Ok(Step::PresetCreate(parse_preset_create(value)?)),
+        "preset_delete" => Ok(Step::PresetDelete(parse_preset_pick(
+            value,
+            "preset_delete",
+        )?)),
+        "preset_import" => parse_preset_import(value),
         other => Err(format!(
-            "unknown step kind {other}; expected api, draft, slider, controls, picker, curve, group, section, gallery, tools_scroll, slider_draft, field, reset, pick, view, workspace, preview, palette or hover"
+            "unknown step kind {other}; expected api, draft, slider, controls, picker, curve, group, section, gallery, tools_scroll, slider_draft, field, reset, pick, view, workspace, preview, palette, hover, preset, preset_create, preset_delete or preset_import"
         )),
     }
 }
@@ -1993,6 +2229,102 @@ fn selected_curve_channel(
     tools
         .all()
         .find_map(|section| find(&section.controls, action, parameter))
+}
+
+/// `{"name": "...", "group": "..."}`: the exact name, and the group only to tell two apart.
+fn parse_preset_pick(value: &Value, step: &str) -> Result<PresetPick, String> {
+    let object = value
+        .as_object()
+        .ok_or_else(|| format!("{step} takes an object with a name and an optional group"))?;
+    known_fields(object, &["name", "group"], step)?;
+    Ok(PresetPick {
+        name: required_text(object, "name", step)?,
+        group: match object.get("group") {
+            None | Some(Value::Null) => None,
+            Some(_) => Some(required_text(object, "group", step)?),
+        },
+    })
+}
+
+/// `{"name": "...", "group": "...", "groups": ["<Module> · <Group>", ...], "submit": false}`:
+/// `groups` lists exactly the checkboxes left checked, so every other one is unchecked, and
+/// `submit`, true unless given, presses Create.
+fn parse_preset_create(value: &Value) -> Result<PresetCreateStep, String> {
+    let object = value
+        .as_object()
+        .ok_or("preset_create takes an object with a name, an optional group and groups")?;
+    known_fields(
+        object,
+        &["name", "group", "groups", "submit"],
+        "preset_create",
+    )?;
+    let groups = object
+        .get("groups")
+        .and_then(Value::as_array)
+        .ok_or("preset_create needs groups: the labels of the checkboxes to leave checked")?
+        .iter()
+        .map(|label| {
+            label
+                .as_str()
+                .filter(|label| !label.trim().is_empty())
+                .map(str::to_owned)
+                .ok_or_else(|| "preset_create groups are checkbox labels".to_owned())
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(PresetCreateStep {
+        name: required_text(object, "name", "preset_create")?,
+        group: match object.get("group") {
+            None | Some(Value::Null) => None,
+            Some(_) => Some(required_text(object, "group", "preset_create")?),
+        },
+        groups,
+        submit: match object.get("submit") {
+            None | Some(Value::Null) => true,
+            Some(Value::Bool(submit)) => *submit,
+            Some(_) => return Err("preset_create submit takes true or false".into()),
+        },
+    })
+}
+
+/// `{"path": "fixtures/presets/develop.xmp"}`.
+fn parse_preset_import(value: &Value) -> Result<Step, String> {
+    let object = value
+        .as_object()
+        .ok_or("preset_import takes an object with a path")?;
+    known_fields(object, &["path"], "preset_import")?;
+    Ok(Step::PresetImport(required_text(
+        object,
+        "path",
+        "preset_import",
+    )?))
+}
+
+/// When a method takes no mutation envelope, whether it names the open asset; `None` for a method
+/// that takes the envelope, or one the method table does not list, which keep it. Read from the
+/// schema the method table publishes, so no method is named here.
+pub(crate) fn envelope_free(method: &str) -> Option<bool> {
+    let schema = lightwell_core::schemas(&lightwell_core::ModuleRegistry::builtin());
+    let spec = schema["methods"].get(method)?;
+    let names = |list: &Value| -> Vec<String> {
+        match list {
+            Value::Array(names) => names
+                .iter()
+                .filter_map(|name| name.as_str().map(str::to_owned))
+                .collect(),
+            Value::Object(names) => names.keys().cloned().collect(),
+            _ => Vec::new(),
+        }
+    };
+    let required = names(&spec["required"]);
+    if required.iter().any(|name| name == "mutation") {
+        return None;
+    }
+    Some(
+        required
+            .iter()
+            .chain(names(&spec["optional"]).iter())
+            .any(|name| name == "asset_id"),
+    )
 }
 
 fn parse_api(value: &Value) -> Result<Step, String> {
@@ -2806,6 +3138,218 @@ mod tests {
         let _ = editor.next_step();
         let record = evidence(&editor).current.clone().expect("a step record");
         assert_eq!(record["status"], json!("failed"));
+        finish(editor, catalog);
+    }
+
+    #[test]
+    fn preset_steps_parse_strictly_and_record_what_was_written() {
+        let script = json!([
+            {"preset":{"name":"Soft film","group":"Synthetic"}},
+            {"preset":{"name":"Soft Film"}},
+            {"preset_create":{"name":"Tone only","group":"Looks","groups":["Basic \u{00b7} Tone"]}},
+            {"preset_create":{"name":"Tone only","groups":[],"submit":false}},
+            {"preset_delete":{"name":"Tone only"}},
+            {"preset_import":{"path":"fixtures/presets/develop.xmp"}},
+            {"api":{"method":"preset.list"}}
+        ]);
+        let steps = parse_script(&script.to_string()).expect("a valid script");
+        assert_eq!(
+            steps[0],
+            Step::Preset(PresetPick {
+                name: "Soft film".into(),
+                group: Some("Synthetic".into())
+            })
+        );
+        assert_eq!(
+            steps[3],
+            Step::PresetCreate(PresetCreateStep {
+                name: "Tone only".into(),
+                group: None,
+                groups: Vec::new(),
+                submit: false
+            })
+        );
+        assert_eq!(
+            steps[5],
+            Step::PresetImport("fixtures/presets/develop.xmp".into())
+        );
+        for (step, written) in steps.iter().zip(script.as_array().unwrap()).take(6) {
+            assert_eq!(&step.record(), written, "a record is the step as written");
+        }
+        assert_eq!(
+            steps[6],
+            Step::Api {
+                method: "preset.list".into(),
+                params: Map::new()
+            }
+        );
+        for (script, expected) in [
+            (r#"[{"preset":{}}]"#, "preset needs a name"),
+            (
+                r#"[{"preset":{"name":"x","at":1}}]"#,
+                "unknown preset field",
+            ),
+            (
+                r#"[{"preset":{"name":"x","group":""}}]"#,
+                "preset needs a group",
+            ),
+            (
+                r#"[{"preset_delete":{"group":"g"}}]"#,
+                "preset_delete needs a name",
+            ),
+            (r#"[{"preset_create":{"name":"x"}}]"#, "needs groups"),
+            (
+                r#"[{"preset_create":{"name":"x","groups":[1]}}]"#,
+                "checkbox labels",
+            ),
+            (
+                r#"[{"preset_create":{"name":"x","groups":[],"submit":"no"}}]"#,
+                "submit takes true or false",
+            ),
+            (r#"[{"preset_import":{}}]"#, "preset_import needs a path"),
+            (
+                r#"[{"preset_import":"x.xmp"}]"#,
+                "takes an object with a path",
+            ),
+        ] {
+            let error = parse_script(script).expect_err(script);
+            assert!(error.contains(expected), "{script}: {error}");
+        }
+    }
+
+    #[test]
+    fn a_host_method_is_sent_as_written_and_an_edit_keeps_its_envelope() {
+        // The method table's own schema decides: a method that takes the mutation envelope keeps
+        // it, and any other goes as written, with the asset only where it names one.
+        assert_eq!(envelope_free("preset.list"), Some(false));
+        assert_eq!(envelope_free("session.state"), Some(false));
+        assert_eq!(envelope_free("preset.capture"), Some(true));
+        assert_eq!(envelope_free("history.undo"), None);
+        assert_eq!(envelope_free("edit.apply-preset"), None);
+        assert_eq!(envelope_free("no.such-method"), None);
+
+        let (mut editor, catalog, _, _) = scripted(r#"[{"api":{"method":"preset.list"}}]"#);
+        let requested = editor.activity.requested;
+        let _ = editor.next_step();
+        assert_eq!(evidence(&editor).awaiting, Some(Settle::Host));
+        assert!(!editor.busy, "a host call is no edit");
+        assert_eq!(
+            editor.activity.requested, requested,
+            "and waits for no render"
+        );
+        let listing = vec![crate::app::testing::listed("Warm", "User presets", None)];
+        editor.host_answered(Ok(HostAnswer {
+            method: "preset.list".into(),
+            result: json!({"presets":[]}),
+            presets: Some(listing.clone()),
+            sequence: 9,
+        }));
+        assert!(evidence(&editor).capture_pending);
+        let record = evidence(&editor).current.clone().expect("a step record");
+        assert_eq!(record["status"], json!("sent"));
+        assert_eq!(record["result"], json!({"presets":[]}));
+        assert_eq!(editor.presets.presets, Some(listing));
+        finish(editor, catalog);
+    }
+
+    /// A scripted editor with every built-in discovered and this library listed.
+    fn with_library(steps: &str, presets: Vec<lightwell_core::PresetSummary>) -> (Editor, PathBuf) {
+        let (mut editor, catalog, _, _) = scripted(steps);
+        let _ = editor.update(Message::ModulesLoaded(Ok(
+            crate::app::testing::descriptors(),
+        )));
+        let _ = editor.update(Message::Preset(PresetMessage::Listed(Ok((presets, 1)))));
+        (editor, catalog)
+    }
+
+    #[test]
+    fn a_preset_step_names_exactly_one_row_or_fails() {
+        use crate::app::testing::listed;
+        let a = listed("Warm", "A", None);
+        let b = listed("Warm", "B", None);
+        let (mut editor, catalog) = with_library(
+            r#"[{"preset":{"name":"Warm"}},{"preset":{"name":"warm","group":"B"}},
+                {"preset":{"name":"Warm","group":"B"}}]"#,
+            vec![a, b.clone()],
+        );
+        let _ = editor.next_step();
+        let record = evidence(&editor).current.clone().expect("a step record");
+        assert_eq!(record["status"], json!("failed"));
+        assert_eq!(
+            record["reason"],
+            json!("2 presets are named Warm; name its group")
+        );
+        // Names match exactly: case is part of a preset's name.
+        let _ = editor.next_step();
+        let record = evidence(&editor).current.clone().expect("a step record");
+        assert_eq!(record["reason"], json!("no preset is named warm in B"));
+        // The group tells them apart, and the click is the ordinary action path.
+        let requested = editor.activity.requested;
+        let _ = editor.next_step();
+        let record = evidence(&editor).current.clone().expect("a step record");
+        assert_eq!(record["status"], json!("sent"), "{record}");
+        assert_eq!(record["preset_id"], json!(b.id.as_str()));
+        assert!(editor.busy, "{}", editor.status);
+        assert_eq!(editor.activity.requested, requested + 1);
+        finish(editor, catalog);
+    }
+
+    #[test]
+    fn preset_create_delete_and_import_steps_drive_the_sections_own_messages() {
+        use crate::app::testing::listed;
+        let warm = listed("Warm", "User presets", None);
+        let (mut editor, catalog) = with_library(
+            r#"[{"preset_create":{"name":"Tone only","groups":["Basic · Tone"],"submit":false}},
+                {"preset_create":{"name":"Tone only","groups":["Basic · Tone"]}},
+                {"preset_create":{"name":"Other","groups":["Nowhere · Group"]}}]"#,
+            vec![warm.clone()],
+        );
+        // Filled and left open: the frame shows the form.
+        let _ = editor.next_step();
+        assert!(evidence(&editor).capture_pending);
+        assert!(editor.preset_form.open);
+        assert_eq!(editor.preset_form.name, "Tone only");
+        let checked: Vec<_> = editor
+            .preset_form
+            .checked
+            .iter()
+            .filter(|(_, on)| **on)
+            .map(|(label, _)| label.as_str())
+            .collect();
+        assert_eq!(checked, ["Basic \u{00b7} Tone"]);
+        assert!(!editor.presets.pending);
+        // Submitted: Create runs and the step waits for the library's answer.
+        let _ = editor.next_step();
+        assert_eq!(evidence(&editor).awaiting, Some(Settle::Presets));
+        assert!(editor.presets.pending, "{}", editor.status);
+        // A label no group has fails the step before anything is sent.
+        editor.presets.pending = false;
+        let _ = editor.next_step();
+        let record = evidence(&editor).current.clone().expect("a step record");
+        assert_eq!(record["status"], json!("failed"));
+        assert!(!editor.presets.pending);
+        finish(editor, catalog);
+
+        let (mut editor, catalog) = with_library(
+            r#"[{"preset_delete":{"name":"Warm"}},{"preset_import":{"path":"missing.xmp"}}]"#,
+            vec![warm.clone()],
+        );
+        let _ = editor.next_step();
+        assert_eq!(evidence(&editor).awaiting, Some(Settle::Presets));
+        assert!(editor.presets.pending && editor.menu.is_none());
+        let record = evidence(&editor).current.clone().expect("a step record");
+        assert_eq!(record["preset_id"], json!(warm.id.as_str()));
+        editor.presets.pending = false;
+        let _ = editor.next_step();
+        assert_eq!(evidence(&editor).awaiting, Some(Settle::Presets));
+        assert!(editor.presets.pending, "the import task was started");
+        // Its refusal is recorded on the step and captured.
+        let _ = editor.update(Message::Preset(PresetMessage::Imported(Err(
+            "read-error: cannot read missing.xmp".into(),
+        ))));
+        let record = evidence(&editor).current.clone().expect("a step record");
+        assert_eq!(record["status"], json!("failed"));
+        assert!(evidence(&editor).capture_pending && evidence(&editor).had_errors);
         finish(editor, catalog);
     }
 }

@@ -10,7 +10,10 @@ use crate::{
         message::{MenuTarget, PaletteAction},
     },
     crop_draft::{AspectPreset, CropDraft},
-    state::Inputs,
+    state::{
+        Inputs,
+        presets::{PresetsModel, presets_model},
+    },
 };
 use lightwell_core::{
     ActionDescriptor, ActionStyle, AssetId, CanvasInteraction, ChoiceStyle, ColorStyle, Control,
@@ -157,6 +160,18 @@ pub(crate) struct SectionModel {
 }
 
 impl SectionModel {
+    /// The preset library this section renders, when its module declares the `presets` control.
+    pub(crate) fn presets(&self) -> Option<&PresetsModel> {
+        fn walk(controls: &[ControlModel]) -> Option<&PresetsModel> {
+            controls.iter().find_map(|control| match control {
+                ControlModel::Presets(presets) => Some(presets.as_ref()),
+                ControlModel::Group(group) => walk(&group.controls),
+                _ => None,
+            })
+        }
+        walk(&self.controls)
+    }
+
     /// Every picker this section holds, at any depth. A module declares at most one, so this is
     /// nought or one entry; it walks the tree rather than assuming where the module put it.
     pub(crate) fn pickers(&self) -> Vec<&PickerControl> {
@@ -406,6 +421,8 @@ pub(crate) enum ControlModel {
     Unsupported(String),
     /// The host's crop-frame editor, at the top of the declaring module's section.
     CropFrame(Box<CropSectionModel>),
+    /// The host's preset library, where the module declares its `presets` control.
+    Presets(Box<PresetsModel>),
 }
 
 /// One generated ratio preset button.
@@ -717,6 +734,23 @@ fn digest(
             }
         }
     }
+    // The preset library, the create form and whether a draft holds the rows back reach the one
+    // section that renders them, and no other.
+    if contains_presets(&module.controls) {
+        let presets = inputs.presets;
+        (presets.version, presets.pending).hash(&mut hasher);
+        inputs.preset_form.hash(&mut hasher);
+        (
+            inputs.slider_draft.is_some(),
+            inputs.draft.is_some(),
+            inputs.draft_pending,
+            inputs.display_entry,
+            inputs.state.is_some(),
+            inputs.session.preview.can_edit(),
+            inputs.busy,
+        )
+            .hash(&mut hasher);
+    }
     // This module's picker reads selected while its own canvas mode is active, so entering and
     // leaving that mode re-derives this section and nothing else.
     owns_mode(module, inputs).hash(&mut hasher);
@@ -726,6 +760,14 @@ fn digest(
         draft_digest(inputs).hash(&mut hasher);
     }
     hasher.finish()
+}
+
+fn contains_presets(controls: &[Control]) -> bool {
+    controls.iter().any(|control| match control {
+        Control::Presets { .. } => true,
+        Control::Group { controls, .. } => contains_presets(controls),
+        _ => false,
+    })
 }
 
 fn contains_curve(controls: &[Control]) -> bool {
@@ -908,6 +950,21 @@ fn control_model(
             },
             enabled,
         }),
+        // The library is host data beside the recipe; the module declares only where it goes and
+        // which of its actions a row submits.
+        Rendered::Presets { action } => {
+            let unavailable = match &module.availability {
+                lightwell_core::Availability::Available => None,
+                lightwell_core::Availability::Unavailable { reason } => Some(reason.as_str()),
+            };
+            let reason = disabled_reason(unavailable, inputs);
+            ControlModel::Presets(Box::new(presets_model(
+                action,
+                inputs,
+                enabled,
+                reason.as_deref(),
+            )))
+        }
         Rendered::Unsupported(kind) => ControlModel::Unsupported(unsupported_label(&kind)),
     }
 }
@@ -1476,6 +1533,10 @@ pub(crate) enum Rendered<'a> {
     Picker {
         label: &'a str,
     },
+    /// The host's preset library, whose rows submit this action.
+    Presets {
+        action: &'a str,
+    },
     Unsupported(String),
 }
 
@@ -1563,6 +1624,7 @@ pub(crate) fn classify(control: &Control) -> Rendered<'_> {
             icon: icon.as_deref(),
         },
         Control::Picker { label } => Rendered::Picker { label },
+        Control::Presets { action } => Rendered::Presets { action },
         // A kind added to the descriptor later is reported, never dropped.
         #[allow(unreachable_patterns)]
         other => Rendered::Unsupported(control_kind(other)),

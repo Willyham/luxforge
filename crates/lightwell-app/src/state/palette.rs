@@ -1,5 +1,6 @@
 //! The command palette model. Every entry is a declared control action, a module reset, a canvas
-//! mode or a host command, so the palette can reach nothing the panels and the title bar cannot.
+//! mode, a library preset or a host command, so the palette can reach nothing the panels and the
+//! title bar cannot.
 use crate::{
     app::message::{PaletteAction, Panel},
     state::{Inputs, tools::palette_entries},
@@ -34,6 +35,7 @@ pub(crate) fn derive(inputs: &Inputs<'_>) -> PaletteModel {
         .cloned()
         .collect();
     let mut raw = palette_entries(&applicable, inputs.developer);
+    raw.extend(crate::state::presets::palette_entries(inputs));
     raw.extend(host_entries(inputs));
     let entries: Vec<PaletteEntry> = filter(raw, inputs.palette_query)
         .into_iter()

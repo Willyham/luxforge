@@ -5,6 +5,7 @@ pub(crate) mod canvas;
 pub(crate) mod histogram;
 pub(crate) mod palette;
 pub(crate) mod panel;
+pub(crate) mod presets;
 pub(crate) mod status;
 pub(crate) mod title;
 pub(crate) mod tools;
@@ -89,6 +90,10 @@ pub(crate) struct Inputs<'a> {
     pub(crate) palette_open: bool,
     pub(crate) palette_query: &'a str,
     pub(crate) palette_selected: usize,
+    /// The preset library as `preset.list` last answered it.
+    pub(crate) presets: &'a presets::PresetLibrary,
+    /// The Presets section's create form.
+    pub(crate) preset_form: &'a presets::PresetForm,
 }
 
 /// The whole screen as plain data. The tools panel keeps its sections across derivations so an
@@ -163,7 +168,7 @@ mod tests {
         *,
     };
     use crate::app::testing::{
-        controls_descriptor, crop_descriptor, crop_layer, descriptors, entry,
+        controls_descriptor, crop_descriptor, crop_layer, descriptors, entry, listed,
     };
     use lightwell_core::{
         AssetId, AssetRecord, Availability, CropPayload, LayerDescription, Orientation,
@@ -197,6 +202,9 @@ mod tests {
         analysis: Option<histogram::Analysis>,
         analysis_updating: bool,
         readout: Option<histogram::Readout>,
+        presets: presets::PresetLibrary,
+        preset_form: presets::PresetForm,
+        slider_draft: Option<crate::app::slider::SliderDraft>,
     }
 
     impl Scene {
@@ -229,6 +237,9 @@ mod tests {
                 analysis: None,
                 analysis_updating: false,
                 readout: None,
+                presets: presets::PresetLibrary::default(),
+                preset_form: presets::PresetForm::default(),
+                slider_draft: None,
             }
         }
 
@@ -282,7 +293,7 @@ mod tests {
                 editing: self.editing.as_ref(),
                 dragging: self.dragging.as_ref(),
                 expanded: &self.expanded,
-                slider_draft: None,
+                slider_draft: self.slider_draft.as_ref(),
                 draft: self.draft.as_ref(),
                 draft_pending: false,
                 drafting: self.draft.is_some(),
@@ -315,6 +326,8 @@ mod tests {
                 palette_open: false,
                 palette_query: "",
                 palette_selected: 0,
+                presets: &self.presets,
+                preset_form: &self.preset_form,
             }
         }
 
@@ -1403,5 +1416,257 @@ mod tests {
         scene.fields.set("fixture-set", "rgb", "[0,255,0]".into());
         workspace.derive(&scene.inputs());
         assert_eq!(versions(&workspace).2, None, "the field is authoritative");
+    }
+
+    /// The Presets section's model, from the section the registry's presets control generates.
+    fn presets_of(workspace: &Workspace) -> &presets::PresetsModel {
+        section(workspace, "lightwell.presets")
+            .presets()
+            .expect("the presets module renders its library")
+    }
+
+    fn counts(unsupported: usize, refused: usize) -> lightwell_core::ReportCounts {
+        lightwell_core::ReportCounts {
+            mapped: 3,
+            neutral: 1,
+            unsupported,
+            refused,
+        }
+    }
+
+    #[test]
+    fn the_library_is_grouped_as_listed_with_its_partial_badges_and_unavailable_reasons() {
+        let mut scene = Scene::new(descriptors()).opened(Vec::new());
+        let mut legacy = listed("Legacy", "Imported", Some(counts(0, 0)));
+        legacy.unavailable = vec!["set-curve".into()];
+        scene.presets.adopt(
+            vec![
+                listed("Clean", "Imported", Some(counts(0, 0))),
+                legacy,
+                // Groups are unique ignoring case, so this row belongs under the same heading.
+                listed("Lossy", "imported", Some(counts(0, 2))),
+                listed("Warm", "User presets", None),
+            ],
+            5,
+        );
+        let workspace = scene.derive();
+        let presets = presets_of(&workspace);
+        let headings: Vec<(&str, Vec<&str>)> = presets
+            .groups
+            .iter()
+            .map(|group| {
+                (
+                    group.name.as_str(),
+                    group.rows.iter().map(|row| row.name.as_str()).collect(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            headings,
+            [
+                ("Imported", vec!["Clean", "Legacy", "Lossy"]),
+                ("User presets", vec!["Warm"])
+            ]
+        );
+        let rows: Vec<_> = presets.rows().collect();
+        assert_eq!(
+            rows.iter().map(|row| row.partial).collect::<Vec<_>>(),
+            [false, false, true, false],
+            "only unsupported or refused settings make a preset partial"
+        );
+        assert_eq!(
+            rows[2].counts.as_deref(),
+            Some("3 mapped, 1 neutral, 0 unsupported, 2 refused"),
+            "the badge's tooltip gives the report counts"
+        );
+        assert_eq!(rows[3].counts, None, "a native preset has no report");
+        assert_eq!(
+            rows[1].unavailable.as_deref(),
+            Some("Cannot apply: set-curve is unavailable")
+        );
+        assert!(!rows[1].enabled, "an unavailable preset cannot apply");
+        assert!(rows[0].enabled && rows[2].enabled && rows[3].enabled);
+        assert_eq!(
+            rows.iter().map(|row| row.imported).collect::<Vec<_>>(),
+            [true, true, true, false],
+            "only an import has a report to copy"
+        );
+        assert!(!presets.empty && !presets.loading && presets.error.is_none());
+    }
+
+    #[test]
+    fn loading_empty_and_failed_libraries_say_so() {
+        let mut scene = Scene::new(descriptors()).opened(Vec::new());
+        let workspace = scene.derive();
+        assert!(presets_of(&workspace).loading, "nothing has answered yet");
+        assert!(!presets_of(&workspace).empty);
+        scene.presets.adopt(Vec::new(), 1);
+        let workspace = scene.derive();
+        assert!(presets_of(&workspace).empty && !presets_of(&workspace).loading);
+        scene.presets.failed("catalog: busy".into());
+        let workspace = scene.derive();
+        assert_eq!(
+            presets_of(&workspace).error.as_deref(),
+            Some("catalog: busy")
+        );
+        // A listing read at an older sequence never replaces a newer one.
+        assert!(
+            !scene
+                .presets
+                .adopt(vec![listed("Old", "Imported", None)], 0)
+        );
+        assert!(
+            scene
+                .presets
+                .adopt(vec![listed("New", "Imported", None)], 2)
+        );
+        let workspace = scene.derive();
+        assert_eq!(
+            presets_of(&workspace)
+                .rows()
+                .next()
+                .map(|row| row.name.as_str()),
+            Some("New")
+        );
+        assert!(presets_of(&workspace).error.is_none());
+    }
+
+    #[test]
+    fn a_preset_applies_only_where_an_edit_could_and_never_over_a_draft() {
+        let mut scene = Scene::new(descriptors());
+        scene
+            .presets
+            .adopt(vec![listed("Warm", "User presets", None)], 1);
+        let enabled = |scene: &Scene| {
+            let workspace = scene.derive();
+            let presets = presets_of(&workspace);
+            (
+                presets.rows().all(|row| row.enabled),
+                presets.apply_disabled.clone(),
+            )
+        };
+        assert_eq!(
+            enabled(&scene),
+            (false, Some("No photograph is open".into()))
+        );
+        scene = scene.opened(Vec::new());
+        scene
+            .presets
+            .adopt(vec![listed("Warm", "User presets", None)], 1);
+        assert_eq!(enabled(&scene), (true, None));
+        scene.busy = true;
+        assert_eq!(
+            enabled(&scene),
+            (false, Some("Waiting for the last request".into()))
+        );
+        scene.busy = false;
+        scene.session.preview.selection = lightwell_core::HistorySelection::Entry(EntryId::new());
+        assert_eq!(
+            enabled(&scene),
+            (false, Some("Return to current to edit".into()))
+        );
+        scene.session.preview.selection = lightwell_core::HistorySelection::Current;
+        scene.draft = Some(CropDraft::neutral(
+            lightwell_core::CropStage {
+                width: 480,
+                height: 320,
+                angle: 0.0,
+            },
+            3,
+            0,
+        ));
+        assert_eq!(
+            enabled(&scene),
+            (
+                false,
+                Some("Finish the open draft before applying a preset".into())
+            )
+        );
+        scene.draft = None;
+        assert_eq!(enabled(&scene), (true, None));
+    }
+
+    #[test]
+    fn the_palette_offers_each_applicable_preset_with_its_rows_own_message() {
+        let mut scene = Scene::new(descriptors()).opened(Vec::new());
+        let mut legacy = listed("Legacy", "Imported", Some(counts(0, 0)));
+        legacy.unavailable = vec!["set-curve".into()];
+        scene
+            .presets
+            .adopt(vec![legacy, listed("Warm", "User presets", None)], 1);
+        let workspace = scene.derive();
+        let row = presets_of(&workspace)
+            .rows()
+            .find(|row| row.name == "Warm")
+            .expect("the Warm row")
+            .clone();
+        let entries: Vec<_> = workspace
+            .palette
+            .entries
+            .iter()
+            .filter(|entry| entry.label.starts_with("Apply preset: "))
+            .collect();
+        assert_eq!(
+            entries.len(),
+            1,
+            "one entry per preset that can apply in this build"
+        );
+        assert_eq!(entries[0].label, "Apply preset: Warm");
+        assert_eq!(entries[0].detail, "edit.apply-preset \u{00b7} User presets");
+        assert_eq!(
+            entries[0].action,
+            crate::app::message::PaletteAction::Run {
+                action: "apply-preset".into(),
+                preset: row.apply.expect("the row applies"),
+            },
+            "the palette runs exactly what a click on the row runs"
+        );
+    }
+
+    #[test]
+    fn the_create_form_offers_each_presettable_group_and_is_ready_only_when_complete() {
+        let mut scene = Scene::new(descriptors()).opened(Vec::new());
+        scene.presets.adopt(Vec::new(), 1);
+        let form = |scene: &Scene| presets_of(&scene.derive()).form.clone();
+        let opened = form(&scene);
+        assert!(!opened.open);
+        assert_eq!(opened.group, "User presets");
+        assert_eq!(
+            opened
+                .checks
+                .iter()
+                .filter(|check| !check.checked)
+                .map(|check| check.label.as_str())
+                .collect::<Vec<_>>(),
+            ["Basic \u{00b7} White balance"],
+            "white balance is left out by default"
+        );
+        assert!(!opened.can_create, "a preset needs a name");
+        scene.preset_form.open = true;
+        scene.preset_form.name = "Tone only".into();
+        assert!(form(&scene).can_create);
+        for check in &opened.checks {
+            scene.preset_form.checked.insert(check.label.clone(), false);
+        }
+        assert!(
+            !form(&scene).can_create,
+            "a preset needs at least one group"
+        );
+        scene
+            .preset_form
+            .checked
+            .insert("Basic \u{00b7} Tone".into(), true);
+        assert!(form(&scene).can_create);
+        scene.busy = true;
+        assert!(!form(&scene).can_create);
+        scene.busy = false;
+        scene.presets.pending = true;
+        assert!(!form(&scene).can_create, "one library request at a time");
+        scene.presets.pending = false;
+        scene.state = None;
+        assert!(
+            !form(&scene).can_create,
+            "capture reads the displayed photograph"
+        );
     }
 }

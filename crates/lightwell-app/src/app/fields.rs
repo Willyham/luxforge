@@ -153,9 +153,13 @@ fn seed_controls(module: &ModuleDescriptor, controls: &[Control], fields: &mut F
                     }
                 }
             }
-            // Neither carries a field of its own: an action button submits the fields already
-            // seeded, and a picker only enters its module's canvas mode.
-            Rendered::Action { .. } | Rendered::Picker { .. } | Rendered::Unsupported(_) => {}
+            // None carries a field of its own: an action button submits the fields already
+            // seeded, a picker only enters its module's canvas mode and a preset row submits a
+            // library preset's own settings, name and identity.
+            Rendered::Action { .. }
+            | Rendered::Picker { .. }
+            | Rendered::Presets { .. }
+            | Rendered::Unsupported(_) => {}
         }
     }
 }
@@ -1170,26 +1174,22 @@ mod tests {
                 "{kind} is rendered"
             );
         }
-        // The presets library has no widget in this build, so its control is named, not dropped.
+        // The host renders the preset library where a module declares its presets control.
         let presets = Control::Presets {
             action: "apply-preset".into(),
         };
         assert_eq!(control_kind(&presets), "presets");
         assert!(matches!(
             classify(&presets),
-            Rendered::Unsupported(kind) if kind == "presets"
+            Rendered::Presets { action } if action == "apply-preset"
         ));
-        // Every other control the registered modules declare has a real rendering.
+        // Every control the registered modules declare has a real rendering.
         for module in descriptors() {
             let mut queue: Vec<&Control> = module.controls.iter().collect();
             while let Some(control) = queue.pop() {
                 match classify(control) {
                     Rendered::Group { controls, .. } => queue.extend(controls),
-                    Rendered::Unsupported(kind)
-                        if !(module.id == "lightwell.presets" && kind == "presets") =>
-                    {
-                        panic!("{} declares {kind}", module.id)
-                    }
+                    Rendered::Unsupported(kind) => panic!("{} declares {kind}", module.id),
                     _ => {}
                 }
             }

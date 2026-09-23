@@ -468,3 +468,35 @@ pub(crate) fn descriptors() -> Vec<ModuleDescriptor> {
         .cloned()
         .collect()
 }
+
+/// One `preset.list` row: a Lightwell preset when `report` is `None`, an imported one otherwise,
+/// holding one Basic exposure field.
+pub(crate) fn listed(
+    name: &str,
+    group: &str,
+    report: Option<lightwell_core::ReportCounts>,
+) -> lightwell_core::PresetSummary {
+    lightwell_core::PresetSummary {
+        id: lightwell_core::PresetId::new(),
+        name: name.into(),
+        group: group.into(),
+        settings: json!({"set-basic": {"exposure": 0.5}})
+            .as_object()
+            .cloned()
+            .expect("an object"),
+        origin: match report {
+            Some(_) => lightwell_core::PresetOrigin::LightroomXmp {
+                file_name: Some("look.xmp".into()),
+                uuid: None,
+                process_version: None,
+                preset_type: None,
+            },
+            None => lightwell_core::PresetOrigin::Lightwell {},
+        },
+        report,
+        actor: "test".into(),
+        created_ms: 0,
+        updated_ms: 0,
+        unavailable: Vec::new(),
+    }
+}

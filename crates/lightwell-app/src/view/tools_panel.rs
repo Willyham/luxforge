@@ -5,10 +5,11 @@
 use crate::{
     app::{
         fields,
-        message::{ClipEndpoint, CropMessage, MenuTarget, Message},
+        message::{ClipEndpoint, CropMessage, MenuTarget, Message, PresetMessage},
     },
     state::{
         histogram::{HIGHLIGHT_RULE, HistogramModel, SHADOW_RULE},
+        presets::{PresetFormModel, PresetRow, PresetsModel},
         tools::{
             ActionControl, ActionControlStyle, ChoiceControlStyle, ColorControl, ColorControlStyle,
             ControlModel, CropSectionModel, CurveControl, EnumControl, GroupControl,
@@ -19,16 +20,16 @@ use crate::{
 };
 use iced::{
     Alignment, Color, Element, Length,
-    widget::{Row, button, column, mouse_area, row, scrollable},
+    widget::{Row, Space, button, column, mouse_area, row, scrollable, text_input},
 };
 use lightwell_ui::{
-    BINS, ChipModel, ClipTriangleModel, ColorPickerModel, ColorSwatchModel, ControlKey,
+    BINS, BadgeModel, ChipModel, ClipTriangleModel, ColorPickerModel, ColorSwatchModel, ControlKey,
     ControlKeyEvent, CurveEditorModel, CurvePointRow, HistogramChannel, Icon, IconButtonModel,
     MenuChoiceModel, NumberFieldModel, RailDecoration, SectionHeaderModel, SegmentedModel,
-    SliderModel, StepperModel, SubGroupHeaderModel, ToggleModel, caption, chip, clip_triangle,
-    color_picker, color_swatch, curve_editor, error_caption, focus_control, histogram, icon_button,
-    inline_menu, menu_choice, number_field, section_header, section_label, segmented, slider,
-    stepper, sub_group_header, theme, toggle, value_input,
+    SliderModel, StepperModel, SubGroupHeaderModel, ToggleModel, badge, caption, chip,
+    clip_triangle, color_picker, color_swatch, curve_editor, error_caption, focus_control,
+    histogram, icon_button, inline_menu, menu_choice, number_field, section_header, section_label,
+    segmented, slider, stepper, sub_group_header, theme, toggle, value_input,
 };
 use serde_json::{Map, Value};
 
@@ -243,7 +244,181 @@ fn control_view<'a>(
         ControlModel::Picker(picker) => picker_view(picker, menu),
         ControlModel::Unsupported(message) => error_caption(message.clone()),
         ControlModel::CropFrame(frame) => crop_section_view(frame, menu),
+        ControlModel::Presets(presets) => presets_view(presets, menu),
     }
+}
+
+/// The Presets section body: New preset and Import, the create form while it is open, then the
+/// library under its group headings. A row's click is the section's own action with that preset's
+/// fields, exactly as a declared action button runs its action; everything else is a
+/// [`PresetMessage`].
+fn presets_view<'a>(model: &'a PresetsModel, menu: Option<&'a MenuTarget>) -> Element<'a, Message> {
+    let preset = |message: PresetMessage| Message::Preset(message);
+    let header = row![
+        Space::new().width(Length::Fill),
+        icon_button(
+            &IconButtonModel {
+                icon: Icon::Plus,
+                tooltip: "New preset from the displayed settings".into(),
+                enabled: true,
+                selected: model.form.open,
+            },
+            Some(preset(PresetMessage::ToggleForm)),
+        ),
+        button(lightwell_ui::label("Import…"))
+            .padding([4.0, 10.0])
+            .style(theme::button_plain)
+            .on_press_maybe(model.can_import.then_some(preset(PresetMessage::Import))),
+    ]
+    .spacing(theme::SPACING / 2.0)
+    .align_y(Alignment::Center);
+    let mut body = column![header].spacing(theme::SPACING / 2.0);
+    if model.form.open {
+        body = body.push(preset_form_view(&model.form));
+    }
+    if model.loading {
+        body = body.push(caption("Loading presets…"));
+    }
+    if let Some(error) = &model.error {
+        body = body.push(error_caption(error.clone()));
+    }
+    if model.empty {
+        body = body.push(caption(
+            "No presets yet. Import a Lightroom or Lightwell preset, or keep the displayed settings with +.",
+        ));
+    }
+    for group in &model.groups {
+        body = body.push(section_label(group.name.clone()));
+        for row in &group.rows {
+            body = body.push(preset_row_view(&model.action, row, menu));
+        }
+    }
+    body.into()
+}
+
+/// The create form: the name, the group, one checkbox per presettable group, Cancel and Create.
+fn preset_form_view(form: &PresetFormModel) -> Element<'_, Message> {
+    let mut block = column![
+        text_input("Preset name", &form.name)
+            .on_input(|text| Message::Preset(PresetMessage::Name(text)))
+            .on_submit(Message::Preset(PresetMessage::Create))
+            .style(theme::text_input_style(false))
+            .size(theme::SIZE_CONTROL)
+            .width(Length::Fill),
+        text_input("Group", &form.group)
+            .on_input(|text| Message::Preset(PresetMessage::Group(text)))
+            .on_submit(Message::Preset(PresetMessage::Create))
+            .style(theme::text_input_style(false))
+            .size(theme::SIZE_CONTROL)
+            .width(Length::Fill),
+        caption("Keep these settings"),
+    ]
+    .spacing(theme::SPACING / 2.0);
+    for check in &form.checks {
+        let label = check.label.clone();
+        block = block.push(toggle(
+            &ToggleModel {
+                label: check.label.clone(),
+                on: check.checked,
+                enabled: true,
+            },
+            move |checked| {
+                Message::Preset(PresetMessage::Check {
+                    label: label.clone(),
+                    checked,
+                })
+            },
+        ));
+    }
+    if let Some(error) = &form.error {
+        block = block.push(error_caption(error.clone()));
+    }
+    block = block.push(
+        row![
+            Space::new().width(Length::Fill),
+            button(lightwell_ui::label("Cancel"))
+                .padding([4.0, 10.0])
+                .style(theme::button_plain)
+                .on_press(Message::Preset(PresetMessage::Cancel)),
+            button(lightwell_ui::label("Create"))
+                .padding([4.0, 10.0])
+                .style(theme::button_accent)
+                .on_press_maybe(
+                    form.can_create
+                        .then_some(Message::Preset(PresetMessage::Create))
+                ),
+        ]
+        .spacing(theme::SPACING / 2.0),
+    );
+    iced::widget::container(block)
+        .padding(theme::SPACING)
+        .style(theme::control_surface)
+        .into()
+}
+
+/// One library row: the name and, for a partial import, its badge; a click applies it, a
+/// right-click opens its menu, and a preset this build cannot apply says why under its name.
+fn preset_row_view<'a>(
+    action: &str,
+    row: &'a PresetRow,
+    menu: Option<&'a MenuTarget>,
+) -> Element<'a, Message> {
+    let mut content = row![
+        iced::widget::text(row.name.clone())
+            .size(theme::SIZE_CONTROL)
+            .width(Length::Fill)
+    ]
+    .spacing(theme::SPACING / 2.0)
+    .align_y(Alignment::Center);
+    if row.partial {
+        content = content.push(badge(&BadgeModel {
+            label: "Partial".into(),
+            tooltip: row.counts.clone(),
+        }));
+    }
+    let press = row
+        .apply
+        .clone()
+        .filter(|_| row.enabled)
+        .map(|preset| Message::RunAction {
+            action: action.to_owned(),
+            preset,
+        });
+    let target = MenuTarget::Preset(row.id.clone());
+    let control: Element<'a, Message> = mouse_area(
+        button(content)
+            .padding([4.0, theme::SPACING])
+            .width(Length::Fill)
+            .style(theme::button_plain)
+            .on_press_maybe(press),
+    )
+    .on_right_press(Message::OpenMenu(target.clone()))
+    .into();
+    let mut block = column![control].spacing(2.0);
+    if let Some(reason) = &row.unavailable {
+        block = block.push(
+            iced::widget::container(error_caption(reason.clone())).padding([0.0, theme::SPACING]),
+        );
+    }
+    if menu == Some(&target) {
+        let mut items = vec![(
+            "Export…".to_owned(),
+            Message::Preset(PresetMessage::Export(row.id.clone())),
+        )];
+        if row.imported {
+            items.push((
+                "Copy import report".to_owned(),
+                Message::Preset(PresetMessage::CopyReport(row.id.clone())),
+            ));
+        }
+        items.push((
+            "Delete".to_owned(),
+            Message::Preset(PresetMessage::Delete(row.id.clone())),
+        ));
+        items.push(("Cancel".to_owned(), Message::CloseMenu));
+        block = block.push(inline_menu(items));
+    }
+    block.into()
 }
 
 /// Whether this control is the one whose context menu is open. A patch action's controls are one
