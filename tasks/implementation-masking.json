@@ -2188,6 +2188,80 @@
           "What was not delivered is stated in one place."
         ]
       }
+    },
+    {
+      "id": "TASK-027",
+      "description": "Give the coverage overlay the pixel a value-based component reads, by evaluating the recipe prefix up to the mask's first bound layer, and keep the refusal for a mask no layer is bound to.",
+      "status": "pending",
+      "dependencies": [
+        "TASK-023",
+        "TASK-024"
+      ],
+      "extra_context": [
+        "The owner decided proposal P16 on 2026-09-23: option B, scoped to the mask's FIRST BOUND LAYER, falling back to the delivered refusal. Build that; do not revisit the options. The rejected alternatives and why: reading the finished frame and relabelling the grid was refused because the frame holds the masked operation's output, so the overlay would draw a selection the render never makes, and it diverges from the truth exactly when an adjustment is strong, which is when a person looks at it; leaving it refused was the status quo and leaves a mask a person painted unreadable.",
+        "The first bound layer is already the editor's one answer to 'which operation?' - the colour-constrained brush uses exactly that rule to decide which stage's input to sample its seed from, in input_layer_index. Reuse it rather than introducing a second rule, so the overlay and the seed can never disagree about which pixel a mask reads.",
+        "A mask no layer is bound to keeps today's refusal, with the host's own reason on the frame. That path is delivered and legible: analysis::coverage_grid names why and says the 100% view is where such a selection reads, the waiting evidence step ends on the refusal instead of running to its deadline, and the photograph is left untouched rather than going black. Do not weaken any of that.",
+        "Cost is the reason this was the owner's call rather than an obvious fix: the grid is nearly free today and this pays one recipe-prefix evaluation per grid cell. Measure it on 24 and 60 MP before and after, and if the preview budget cannot carry it, report the figures and say so rather than shipping a slow overlay - falling back to the refusal is an acceptable outcome if the measurement says so.",
+        "The overlay is a per-client view concern and must not become a second rasterization path: performance rule 4 says a point query never rasterizes, and rule 11 says a preview is rendered at display size. The grid is display-cell sized, so the prefix evaluation is per cell and not per pixel.",
+        "At proxy scale coverage of the average is not the average of coverages, measured by the range study, so the 100% view stays the truth whatever this task does. The panel already says so on the component's own row; keep that sentence rather than implying the overlay is now exact at Fit."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Range study",
+          "target": "docs/design/range-study.md",
+          "relevance": "Proposal P16 as raised, the evidence phase D added and the owner's decision; also the frozen mathematics of the components that read pixels."
+        },
+        {
+          "kind": "file",
+          "label": "Masking design",
+          "target": "docs/design/masking.md",
+          "relevance": "The overlay's contract as a bounded display-cell coverage grid the exact preview phase returns beside its frame."
+        },
+        {
+          "kind": "file",
+          "label": "Coverage grid",
+          "target": "crates/lightwell-core/src/analysis/mask_overlay.rs",
+          "relevance": "Where the refusal lives today and where the prefix evaluation lands."
+        },
+        {
+          "kind": "file",
+          "label": "Performance rules",
+          "target": "docs/engineering/performance-rules.md",
+          "relevance": "The point-query, preview-at-display-size and hop rules this change must keep satisfying, plus the review checklist to answer."
+        }
+      ],
+      "acceptance_criteria": [
+        "A mask holding a value-based component - a range selection, or a brush with a stroke limited to a colour - has a coverage overlay, evaluated on the input pixel of the mask's first bound layer.",
+        "The overlay a mask reports equals the coverage the render applies at the same cell, proved against the rendered picture rather than by inspection.",
+        "A mask no layer is bound to is still refused a grid, with the host's own reason carried on the frame, and an evidence step waiting for that grid still ends on the refusal rather than running to its deadline.",
+        "The first bound layer is resolved by the same rule the colour-constrained brush's seed uses, with one implementation, so the overlay and the seed cannot disagree about which pixel a mask reads.",
+        "The added preview cost is measured on 24 and 60 MP with host, load average and scope, and is stated against the preview budget; if it cannot be carried, the figures are reported and the refusal is kept rather than a slow overlay shipped.",
+        "The panel keeps saying that a range selection reads the operation's own input and that the 100% view is the truth, because proxy-scale coverage is still not the average of coverages.",
+        "The performance-rules review checklist is answered for every change under crates/."
+      ],
+      "test_strategy": {
+        "approach": "mixed",
+        "steps": [
+          "Compare the overlay grid with the rendered picture's own measured change through the same mask, on a mask of range components and on a mixed mask.",
+          "Drive a mask with no bound layer and assert the refusal, its reason and that a waiting evidence step ends on it.",
+          "Assert the first-bound-layer rule is one implementation shared with the constrained brush's seed.",
+          "Measure the preview cost on 24 and 60 MP before and after, at a one-minute load average below 8.0.",
+          "Run the delivered mask scenarios and check the overlay frames as images."
+        ],
+        "commands": [
+          "cargo test --locked --package lightwell-core",
+          "cargo test --locked --package lightwell-app",
+          "cargo xtask check",
+          "cargo xtask smoke --scenario mask-range",
+          "cargo run --release --locked --package xtask -- verify --tier rendered --output artifacts/verify-p16"
+        ],
+        "expected_results": [
+          "A painted or range mask can be seen, not only described.",
+          "The overlay is the selection the render makes, not one computed from the finished frame.",
+          "The cost is a stated figure rather than an assumption."
+        ]
+      }
     }
   ],
   "execution_waves": [
@@ -2253,7 +2327,8 @@
     {
       "wave": 8,
       "task_ids": [
-        "TASK-025"
+        "TASK-025",
+        "TASK-027"
       ]
     },
     {
