@@ -2,6 +2,7 @@
 //! and the compilation of its persisted payloads into host processing primitives. Modules never
 //! write the catalog, never keep an undo stack and never render.
 mod basic;
+mod capabilities_proof;
 mod controls;
 mod crop;
 mod descriptor;
@@ -16,6 +17,12 @@ mod transform;
 mod vignette;
 
 pub use basic::BasicModule;
+pub use capabilities_proof::{
+    APPLY_PROOF_TINT, CapabilitiesProofModule, PROOF_ADAPTER, PROOF_EFFECT, PROOF_GENERATE_PATH,
+    PROOF_MODULE, PROOF_PALETTE, PROOF_PALETTE_GAINS, PROOF_PALETTE_PATH, PROOF_PALETTE_SHA256,
+    PROOF_RESOURCE, PROOF_RESOURCE_VERSION, PROOF_TASK, PROOF_TINT_KIND, ProofEndpoint,
+    ProofRequest, RESET_PROOF_TINT, input_factor, palette_bytes,
+};
 pub use controls::{
     CONTROLS_EFFECT, ControlsModule, RESET_CONTROLS, SAMPLE_CONTROLS_CURVE, SET_CONTROLS,
 };
@@ -24,13 +31,13 @@ pub use crop::geometry::{
     BoxRect, COVERAGE_TOLERANCE, CropPayload, CropStage, Edge, MAX_ANGLE, MIN_ANGLE, OutputRect,
     guide_angle, largest_with_ratio_inside,
 };
-pub(crate) use descriptor::check_parameter_declarations;
 pub use descriptor::{
     ActionDescriptor, ActionStyle, Availability, CanvasInteraction, ChoiceStyle, ColorStyle,
     Control, CurveBackground, CurveChannel, EffectDescriptor, EffectStage, ModuleDescriptor,
     NumberStyle, ParameterDescriptor, ParameterKind, RailDecoration, ResetAction, action_label,
     check_parameters, check_value, render_summary, valid_identity, valid_name,
 };
+pub(crate) use descriptor::{check_declared_values, check_parameter_declarations};
 pub use mixer::MixerModule;
 pub use pixel::PixelModule;
 pub use presence::PresenceModule;
@@ -231,5 +238,30 @@ pub trait ToolModule: Send + Sync {
     fn validate_resource(&self, resource_id: &str, path: &Path) -> Result<(), Error> {
         let _ = (resource_id, path);
         Ok(())
+    }
+    /// Run one declared worker task on the capability worker's module lane and return its result
+    /// value, which the host reports as the job's `result`.
+    ///
+    /// Before the job was queued the host checked the task's parameters (`parameters` holds them
+    /// with their declared defaults), its asset and profile, its activation requirement and a live
+    /// grant for every capability it `uses`, and prepared the data it may send. `context` is the
+    /// only way to reach any of it: `read_file` for a granted `read-user-file`, `send` for a
+    /// granted `remote-image-request` whose body the host built, `publish_artifact` for a result
+    /// the catalog records when the task succeeds, and the settings, secrets, progress and
+    /// cancellation every job has. Call `context.checkpoint()` between units of work and return its
+    /// error when cancelled; artifacts a task publishes before it fails or is cancelled are never
+    /// recorded. Never called on the owner or UI thread. The default refuses, so a module that
+    /// declares no tasks never implements it.
+    fn run_task(
+        &self,
+        task_id: &str,
+        parameters: &Map<String, Value>,
+        context: &ModuleContext,
+    ) -> Result<Value, Error> {
+        let _ = (task_id, parameters, context);
+        Err(Error::new(
+            crate::ErrorKind::Validation,
+            format!("module {} declares no tasks", self.descriptor().id),
+        ))
     }
 }

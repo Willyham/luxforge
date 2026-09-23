@@ -258,8 +258,8 @@ pub(crate) fn check_quota(
     Ok(())
 }
 
-/// The one transport the host's downloads share, built on the transfer lane the first time a
-/// download needs it rather than when the owner starts.
+/// The one transport the host's downloads and task requests share, built on a lane the first time
+/// one needs it rather than when the owner starts.
 pub(crate) struct SharedTransport {
     config: TransportConfig,
     built: Mutex<Option<Arc<Transport>>>,
@@ -273,7 +273,7 @@ impl SharedTransport {
         }
     }
 
-    fn get(&self) -> Result<Arc<Transport>, Error> {
+    pub(crate) fn get(&self) -> Result<Arc<Transport>, Error> {
         let mut built = self.built.lock().expect("shared transport");
         if let Some(transport) = built.as_ref() {
             return Ok(transport.clone());

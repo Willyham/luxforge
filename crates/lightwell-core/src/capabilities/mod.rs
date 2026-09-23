@@ -5,6 +5,7 @@
 mod atomic;
 pub mod consent;
 pub mod context;
+pub mod data;
 pub mod descriptor;
 pub mod files;
 pub mod grants;
@@ -12,6 +13,8 @@ pub mod host;
 pub mod jobs;
 #[cfg(test)]
 mod lifecycle_tests;
+#[cfg(test)]
+mod proof_tests;
 pub mod redact;
 pub mod resources;
 pub mod secrets;

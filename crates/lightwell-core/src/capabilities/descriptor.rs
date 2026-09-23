@@ -196,9 +196,12 @@ pub enum AdapterAuth {
 /// What a request may carry. The host builds the body from the declared class only.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum DataClass {
-    /// An 8 × 8 grid of rendered sRGB point samples of the asset's current entry. Its body is 192
-    /// bytes, `application/octet-stream`: the 64 samples row by row from the top-left, three
-    /// 8-bit sRGB channels each, in red, green, blue order.
+    /// An 8 × 8 grid of rendered sRGB point samples of the asset's current entry, at the centres of
+    /// the grid's cells over its output stage. Its body is `application/json`,
+    /// `{"data_class":"sample-grid-8","width":8,"height":8,"samples":[[r,g,b],…]}` with the 64
+    /// samples row by row from the top-left, each channel an 8-bit sRGB code written right-aligned
+    /// in three characters, so the body is exactly [`super::data::SAMPLE_GRID_BYTES`] bytes
+    /// whatever the photo holds. See [`super::data::sample_grid_body`].
     #[serde(rename = "sample-grid-8")]
     SampleGrid8,
 }
@@ -220,10 +223,18 @@ impl DataClass {
         }
     }
 
-    /// The exact size of the body the host sends for this class.
+    /// The exact size of the body the host sends for this class, which the consent notice
+    /// discloses.
     pub fn request_bytes(self) -> u64 {
         match self {
-            Self::SampleGrid8 => u64::from(SAMPLE_GRID_SIDE * SAMPLE_GRID_SIDE * 3),
+            Self::SampleGrid8 => super::data::SAMPLE_GRID_BYTES as u64,
+        }
+    }
+
+    /// The media type of the body the host sends for this class.
+    pub fn content_type(self) -> &'static str {
+        match self {
+            Self::SampleGrid8 => "application/json",
         }
     }
 }

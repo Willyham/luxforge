@@ -7,6 +7,7 @@ use super::{
 use crate::{
     ActionDescriptor, ArtifactId, AssetId, Draft, DraftId, EditorService, EntryId, Error,
     ErrorKind, HistorySelection, ModuleRegistry, Mutation, Zoom,
+    capabilities::{descriptor::TaskDescriptor, host::TASK_PREFIX},
 };
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::{Map, Value, json};
@@ -559,12 +560,15 @@ pub(super) const METHODS: &[MethodSpec] = &[
 ];
 
 /// A resolved method: a host method from the static table, or one generated from a registered
-/// module action or query. All three come from the same lookup discovery uses.
+/// module action, query or task. All four come from the same lookup discovery uses.
 pub(super) enum Method {
     Host(&'static MethodSpec),
     Action(String),
     /// A module's read-only query. It writes nothing, so it never emits an event.
     Query(String),
+    /// A module's worker task. The request queues a capability job and changes nothing itself; the
+    /// catalog owner answers it and announces the task when it succeeds.
+    Task,
 }
 
 impl Method {
@@ -572,12 +576,16 @@ impl Method {
         match self {
             Self::Host(spec) => spec.mutates,
             Self::Action(_) => true,
-            Self::Query(_) => false,
+            Self::Query(_) | Self::Task => false,
         }
     }
     /// `true` for the methods the owner loop answers from its own state.
     pub(super) fn owner_answered(&self) -> bool {
-        matches!(self, Self::Host(spec) if spec.handler.is_none())
+        match self {
+            Self::Host(spec) => spec.handler.is_none(),
+            Self::Task => true,
+            Self::Action(_) | Self::Query(_) => false,
+        }
     }
 }
 
@@ -592,6 +600,12 @@ pub(super) fn query_method(query_id: &str) -> String {
     format!("query.{query_id}")
 }
 
+/// Task method names are generated in a third namespace: task `generate-proof-tint` is
+/// `task.generate-proof-tint`.
+pub(super) fn task_method(task_id: &str) -> String {
+    format!("{TASK_PREFIX}{task_id}")
+}
+
 pub(super) fn find(service: &EditorService, name: &str) -> Option<Method> {
     if let Some(spec) = METHODS.iter().find(|spec| spec.name == name) {
         return Some(Method::Host(spec));
@@ -601,6 +615,9 @@ pub(super) fn find(service: &EditorService, name: &str) -> Option<Method> {
             .registry()
             .action(action_id)
             .map(|_| Method::Action(action_id.to_owned()));
+    }
+    if let Some(task_id) = name.strip_prefix(TASK_PREFIX) {
+        return service.registry().task(task_id).map(|_| Method::Task);
     }
     let query_id = name.strip_prefix("query.")?;
     service
@@ -629,7 +646,7 @@ pub(super) fn dispatch(
             handler: Some(handler),
             ..
         })) => handler(service, session, &request.params),
-        Some(Method::Host(_)) => Err(Error::new(
+        Some(Method::Host(_) | Method::Task) => Err(Error::new(
             ErrorKind::Protocol,
             format!("{} is answered by the catalog owner", request.method),
         )),
@@ -698,6 +715,37 @@ fn query_schema(query: &ActionDescriptor) -> Value {
     })
 }
 
+/// One generated task description. `asset_id` and `profile_id` are the envelope when the task
+/// declares them, and the remaining top-level fields are its own declared parameters. The request
+/// itself changes nothing: it queues a task job and answers `{job_id, status}`.
+fn task_schema(task: &TaskDescriptor) -> Value {
+    let mut required = Vec::new();
+    if task.asset {
+        required.push(json!("asset_id"));
+    }
+    if task.profile {
+        required.push(json!("profile_id"));
+    }
+    let mut optional = Map::new();
+    for parameter in &task.parameters {
+        if parameter.required && parameter.default.is_none() {
+            required.push(json!(parameter.name));
+        } else {
+            optional.insert(parameter.name.clone(), json!(parameter.notes));
+        }
+    }
+    json!({
+        "mutates": false,
+        "required": required,
+        "optional": optional,
+        "notes": format!(
+            "{} Checks the task's requirements (not-ready with data.requirements) and a live grant for each capability it uses (consent-required naming the first missing one) before anything is queued, then queues a task job on the module lane; returns {{job_id, status}}; module.job.read reports {{result, artifacts}} when it succeeds",
+            task.notes
+        ),
+        "parameters": task.parameters,
+    })
+}
+
 pub fn schemas(registry: &ModuleRegistry) -> Value {
     let mut methods: Map<String, Value> = METHODS
         .iter()
@@ -725,6 +773,9 @@ pub fn schemas(registry: &ModuleRegistry) -> Value {
         }
         for query in &descriptor.queries {
             methods.insert(query_method(&query.id), query_schema(query));
+        }
+        for task in &descriptor.tasks {
+            methods.insert(task_method(&task.id), task_schema(task));
         }
     }
     json!({
@@ -1767,6 +1818,79 @@ mod tests {
                 .contains("number parameter"),
             "the schema describes number parameters"
         );
+        drop(service);
+        std::fs::remove_file(catalog).unwrap();
+    }
+
+    /// A declared task generates exactly one `task.<id>` method, listed by `schema.list` and
+    /// resolved by the same lookup dispatch uses, and it is the catalog owner's to answer.
+    #[test]
+    fn a_declared_task_generates_one_owner_answered_method_that_discovery_and_dispatch_share() {
+        let catalog = std::env::temp_dir().join(format!(
+            "lightwell-methods-tasks-{}.sqlite",
+            std::process::id()
+        ));
+        let mut registry = ModuleRegistry::builtin();
+        registry
+            .register(Arc::new(crate::CapabilitiesProofModule::new(
+                "http://127.0.0.1:9",
+            )))
+            .unwrap();
+        let mut service = EditorService::open_with(&catalog, Arc::new(registry)).unwrap();
+        let mut session = ClientSession::default();
+        let registry = service.registry().clone();
+        let descriptors = registry.descriptors();
+        let count = |kind: fn(&ModuleDescriptor) -> usize| -> usize {
+            descriptors.iter().map(|descriptor| kind(descriptor)).sum()
+        };
+        let tasks: Vec<String> = descriptors
+            .iter()
+            .flat_map(|descriptor| descriptor.tasks.iter())
+            .map(|task| task_method(&task.id))
+            .collect();
+        assert_eq!(tasks, ["task.generate-proof-tint"]);
+        let schema = schemas(&registry);
+        let listed = schema["methods"].as_object().unwrap();
+        assert_eq!(
+            listed.len(),
+            METHODS.len()
+                + count(|descriptor| descriptor.actions.len())
+                + count(|descriptor| descriptor.queries.len())
+                + tasks.len()
+        );
+        for name in listed.keys() {
+            let method = find(&service, name).expect("every listed method resolves");
+            assert_eq!(
+                name.starts_with(TASK_PREFIX),
+                matches!(method, Method::Task),
+                "{name}"
+            );
+        }
+        let method = find(&service, &tasks[0]).unwrap();
+        assert!(method.owner_answered());
+        assert!(
+            !method.mutates(),
+            "the request queues a job and writes nothing"
+        );
+        let response = dispatch(
+            &mut service,
+            &mut session,
+            &ApiRequest {
+                id: "task".into(),
+                method: tasks[0].clone(),
+                params: json!({}),
+                token: None,
+            },
+            0,
+        );
+        assert_eq!(response.error.unwrap().code, "protocol");
+        assert_eq!(
+            listed[&tasks[0]]["parameters"],
+            json!([]),
+            "its declared parameters"
+        );
+        assert!(find(&service, "task.missing").is_none());
+        assert!(find(&service, "generate-proof-tint").is_none());
         drop(service);
         std::fs::remove_file(catalog).unwrap();
     }

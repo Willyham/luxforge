@@ -205,7 +205,11 @@ mod tests {
             remote.data,
             "an 8 × 8 grid of rendered colour samples of this photo"
         );
-        assert_eq!(remote.bytes, Some(192), "64 samples of three bytes");
+        assert_eq!(
+            remote.bytes,
+            Some(crate::capabilities::data::SAMPLE_GRID_BYTES as u64),
+            "the exact JSON body of 64 samples"
+        );
         assert_eq!(
             remote.retention.as_deref(),
             Some("The echo service keeps nothing.")

@@ -930,7 +930,7 @@ fn owner_loop(
             }
             OwnerMessage::CapabilityFinished { job_id, result } => {
                 let mut announced = Vec::new();
-                host.finished(&service, &job_id, result, &mut announced);
+                host.finished(&mut service, &job_id, result, &mut announced);
                 for origin in &announced {
                     record_event(&mut events, &mut sequence, origin);
                 }
@@ -1237,6 +1237,21 @@ fn owner_loop(
                             for origin in &announced {
                                 record_event(&mut events, &mut sequence, origin);
                             }
+                            // A task samples its asset before it is queued; an unprepared source
+                            // or artifact queues that preparation and answers with the job to wait
+                            // for, as every other evaluating request does.
+                            let result = match result {
+                                Err(error) if error.kind == ErrorKind::PreparationRequired => {
+                                    Err(prepare_current(
+                                        &service,
+                                        &mut jobs,
+                                        call.client,
+                                        &request.params,
+                                        &error,
+                                    ))
+                                }
+                                other => other,
+                            };
                             let response = answer(request, sequence, result);
                             let _ = call.response.send(response);
                             continue;
@@ -1522,6 +1537,37 @@ fn prepare_analysis(
             &requested_artifacts(refused.data.as_deref()),
         )
     });
+    match queued {
+        Ok(id) => Error::new(ErrorKind::PreparationRequired, id),
+        Err(error) => error,
+    }
+}
+
+/// Queue the preparation a refused owner-answered request needs to evaluate its asset's current
+/// entry — a task sampling the data it discloses — and return the error that names its job, or the
+/// reason it could not be queued.
+fn prepare_current(
+    service: &EditorService,
+    jobs: &mut SourceJobs,
+    client: ClientId,
+    params: &Value,
+    refused: &Error,
+) -> Error {
+    let queued = params
+        .get("asset_id")
+        .cloned()
+        .ok_or_else(|| Error::new(ErrorKind::Validation, "missing asset_id"))
+        .and_then(|value| parse_params::<AssetId>(&value))
+        .and_then(|asset_id| {
+            queue_preparation(
+                service,
+                jobs,
+                client,
+                &asset_id,
+                None,
+                &requested_artifacts(refused.data.as_deref()),
+            )
+        });
     match queued {
         Ok(id) => Error::new(ErrorKind::PreparationRequired, id),
         Err(error) => error,

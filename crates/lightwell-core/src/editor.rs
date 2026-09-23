@@ -164,6 +164,31 @@ pub struct AnalysisPlan {
     pub artifacts: Vec<Arc<PreparedArtifact>>,
 }
 
+/// One asset's current entry bound for point sampling on a worker, as the catalog owner found it
+/// at request time: the samples describe that entry whatever is committed meanwhile. Holding it
+/// pins the artifacts its stack binds and shares the source's allocation.
+pub(crate) struct SamplePlan {
+    source: PreviewSource,
+    registry: Arc<ModuleRegistry>,
+    recipe: Recipe,
+    /// Held, never read: compilation finds the verified bytes while the plan is sampled.
+    _artifacts: Vec<Arc<PreparedArtifact>>,
+}
+
+impl SamplePlan {
+    /// The pixels at the centres of a `side` × `side` grid over the entry's output stage, row by
+    /// row from the top-left: `O(side² × layers)` and no frame. `checkpoint` is asked before each
+    /// point.
+    pub(crate) fn grid(
+        &self,
+        side: u32,
+        checkpoint: &dyn Fn() -> Result<(), Error>,
+    ) -> Result<Vec<[u8; 4]>, Error> {
+        self.source
+            .sample_grid(&self.registry, &self.recipe, side, checkpoint)
+    }
+}
+
 /// Which draft, at which revision, a sample, a preview or an analysis was evaluated against.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -1300,6 +1325,26 @@ impl EditorService {
         let source = self.preview_source(&state.asset, &entry.snapshot.recipe)?;
         let sampled = source.sample(&self.registry, &entry.snapshot.recipe, x, y)?;
         pixel_sample(entry, &state.asset.fingerprint, sampled, x, y, None)
+    }
+
+    /// Bind the asset's current entry for sampling off the catalog owner: its verified source, its
+    /// recipe, compiled once here so a stack the host cannot evaluate is refused now, and the
+    /// verified bytes of every artifact it references. It binds the stack like
+    /// [`Self::sample_entry`], so an unprepared source or artifact is `preparation-required`. A
+    /// state read, a cached source verification and an `O(layers)` compile; no pixel is read.
+    pub(crate) fn sample_plan(&self, asset_id: &AssetId) -> Result<SamplePlan, Error> {
+        let state = self.state(asset_id)?;
+        let recipe = state.current_entry.snapshot.recipe;
+        let artifacts = self.require_artifacts(&recipe)?;
+        let source = self.preview_source(&state.asset, &recipe)?;
+        let (width, height) = source.dimensions();
+        self.registry.compile(width, height, &recipe)?;
+        Ok(SamplePlan {
+            source,
+            registry: self.registry.clone(),
+            recipe,
+            _artifacts: artifacts,
+        })
     }
 
     /// One output pixel of an open draft's effective recipe, evaluated the same way: the draft's

@@ -1364,37 +1364,53 @@ pub fn check_parameters(
     action: &ActionDescriptor,
     input: &Value,
 ) -> Result<Map<String, Value>, Error> {
+    check_declared_values(
+        "action",
+        &action.id,
+        &action.parameters,
+        action.patch,
+        input,
+    )
+}
+
+/// The generic check behind [`check_parameters`], for anything that declares parameters the way an
+/// action does: `what` and `id` name it in every refusal, e.g. `task generate-proof-tint`.
+pub(crate) fn check_declared_values(
+    what: &str,
+    id: &str,
+    parameters: &[ParameterDescriptor],
+    patch: bool,
+    input: &Value,
+) -> Result<Map<String, Value>, Error> {
+    let declared = |name: &str| parameters.iter().find(|parameter| parameter.name == name);
     let empty = Map::new();
     let object = match input {
         Value::Object(object) => object,
         Value::Null => &empty,
         _ => {
             return Err(validation(format!(
-                "parameters of action {} must be a JSON object",
-                action.id
+                "parameters of {what} {id} must be a JSON object"
             )));
         }
     };
     for name in object.keys() {
-        if action.parameter(name).is_none() {
+        if declared(name).is_none() {
             return Err(validation(format!(
-                "unknown parameter {name} for action {}",
-                action.id
+                "unknown parameter {name} for {what} {id}"
             )));
         }
     }
     let mut checked = Map::new();
-    if action.patch {
+    if patch {
         for (name, value) in object {
-            let parameter = action
-                .parameter(name)
-                .expect("every key was matched to a declared parameter above");
+            let parameter =
+                declared(name).expect("every key was matched to a declared parameter above");
             check_value(parameter, value)?;
             checked.insert(name.clone(), value.clone());
         }
         return Ok(checked);
     }
-    for parameter in &action.parameters {
+    for parameter in parameters {
         match (object.get(&parameter.name), &parameter.default) {
             (Some(value), _) => {
                 check_value(parameter, value)?;
@@ -1405,8 +1421,8 @@ pub fn check_parameters(
             }
             (None, None) if parameter.required => {
                 return Err(validation(format!(
-                    "missing required parameter {} for action {}",
-                    parameter.name, action.id
+                    "missing required parameter {} for {what} {id}",
+                    parameter.name
                 )));
             }
             (None, None) => {}

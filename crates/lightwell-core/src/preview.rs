@@ -184,6 +184,26 @@ impl PreviewSource {
             }
         }
     }
+
+    /// The output pixels at the centres of a `side` × `side` grid, row by row from the top-left,
+    /// through the same two paths and one evaluation of the stack: `O(side² × layers)`, no frame.
+    /// `checkpoint` is asked before each point.
+    pub(crate) fn sample_grid(
+        &self,
+        registry: &ModuleRegistry,
+        recipe: &Recipe,
+        side: u32,
+        checkpoint: &dyn Fn() -> Result<(), Error>,
+    ) -> Result<Vec<[u8; 4]>, Error> {
+        match self {
+            Self::Jpeg(image) => {
+                crate::render::sample_grid(registry, image, recipe, side, checkpoint)
+            }
+            Self::Raw { image, settings } => crate::render::linear::sample_grid_linear(
+                registry, image, recipe, *settings, side, checkpoint,
+            ),
+        }
+    }
 }
 
 #[derive(Clone, Debug)]

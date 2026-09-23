@@ -25,7 +25,7 @@ use super::{
         CLEAR_SECRET, CREATE_PROFILE, FieldRead, READ, REMOVE_PROFILE, RESET, SET, SET_SECRET,
         SettingsRead, SettingsState, SettingsStore, SettingsWrite, ValueSource, WriteOutcome,
     },
-    transport::{EndpointClass, TransportConfig, parse_endpoint},
+    transport::{Endpoint, EndpointClass, TransportConfig, parse_endpoint},
 };
 use crate::{
     ApiRequest, AssetId, Availability, ClientAuthority, EditorService, Error, ErrorKind, JobId,
@@ -39,6 +39,10 @@ use std::{
     path::{Path, PathBuf},
     sync::Arc,
 };
+
+mod tasks;
+
+pub use tasks::TASK_PREFIX;
 
 /// The lifecycle methods.
 pub const ACTIVATE: &str = "module.activate";
@@ -278,14 +282,15 @@ pub struct ActivationRead {
     pub error: Option<JobError>,
 }
 
-/// One unmet activation requirement.
+/// One unmet requirement of an activation or a task.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Requirement {
-    /// `setting` or `resource`.
+    /// `setting`, `resource`, or for a task also `activation` and `profile`.
     pub kind: String,
+    /// The setting, resource, module or profile identity.
     pub id: String,
     /// `missing`, `invalid`, `incompatible` or `unavailable` for a setting; a resource state for a
-    /// resource.
+    /// resource; the module's activation state for an activation; a profile status for a profile.
     pub state: String,
 }
 
@@ -343,7 +348,7 @@ fn download_scope(resource: &ResourceDescriptor) -> Result<DownloadScope, Error>
 }
 
 /// The owner's capability state: the configuration, the stores over its directories, the lanes
-/// and their jobs, and each module's activation.
+/// and their jobs, each module's activation and what each live task reports back.
 pub(crate) struct CapabilityHost {
     config: HostConfig,
     settings: Option<SettingsStore>,
@@ -352,6 +357,8 @@ pub(crate) struct CapabilityHost {
     transport: Arc<SharedTransport>,
     jobs: Jobs,
     activations: HashMap<String, Activation>,
+    /// Queued and running tasks, at most one lane's worth.
+    tasks: HashMap<JobId, tasks::TaskRun>,
 }
 
 impl CapabilityHost {
@@ -364,6 +371,7 @@ impl CapabilityHost {
             transport: Arc::new(SharedTransport::new(config.transport.clone())),
             jobs: Jobs::new(deliver),
             activations: HashMap::new(),
+            tasks: HashMap::new(),
             config,
         }
     }
@@ -411,6 +419,9 @@ impl CapabilityHost {
         let registry = service.registry();
         let params = &request.params;
         let origin = Origin::new(&request.method, &request.id);
+        if let Some(task_id) = request.method.strip_prefix(TASK_PREFIX) {
+            return Some(self.task(service, task_id, params, &origin));
+        }
         Some(match request.method.as_str() {
             READ => self.read(registry, params),
             SET | SET_SECRET | CLEAR_SECRET | RESET | CREATE_PROFILE | REMOVE_PROFILE => {
@@ -433,15 +444,17 @@ impl CapabilityHost {
     }
 
     /// A lane finished a job: record it, update the module it belongs to, and announce what
-    /// changed under the request that started it. A failed install or removal changes nothing a
-    /// client shows, so it announces nothing.
+    /// changed under the request that started it. A task's artifacts are recorded in the catalog
+    /// first, so a client that reads it succeeded can apply them. A failed install, removal or
+    /// task changes nothing a client shows, so it announces nothing.
     pub(crate) fn finished(
         &mut self,
-        service: &EditorService,
+        service: &mut EditorService,
         job_id: &JobId,
         result: Result<Value, Error>,
         announce: &mut Vec<Origin>,
     ) {
+        let result = self.task_result(service, job_id, result);
         let Some(done) = self.jobs.complete(job_id, result) else {
             return;
         };
@@ -982,6 +995,10 @@ impl CapabilityHost {
     ) -> Option<JobRecord> {
         match self.jobs.cancel(job_id, reason)? {
             Cancelled::Removed(record) => {
+                // A task removed before it ran never reports back.
+                if record.kind == JobKind::Task {
+                    self.forget_task(&record.job_id);
+                }
                 if record.kind == JobKind::Activate
                     && let Some(activation) = self.activations.get_mut(&record.module_id)
                     && activation.job.as_ref() == Some(&record.job_id)
@@ -1104,7 +1121,7 @@ impl CapabilityHost {
         let mut context =
             ModuleContext::new(module_id, self.config.secrets.clone(), control.clone())
                 .with_settings(
-                    effective_values(settings.as_ref()),
+                    effective_values(descriptor, settings.as_ref()),
                     secret_fields(descriptor),
                 );
         for row in &rows {
@@ -1655,11 +1672,29 @@ fn setting_requirement(read: Option<&SettingsRead>, id: &str) -> Option<&'static
     }
 }
 
-/// The valid, non-null, non-secret module-level values of a settings read.
-fn effective_values(read: Option<&SettingsRead>) -> Map<String, Value> {
+/// The valid, non-null, non-secret module-level values of a settings read that a module may read
+/// as values. A file setting's path and an endpoint are left out: a job reaches them only through
+/// the capability that names them, so a module never holds a path or a URL of its own.
+fn effective_values(
+    descriptor: &ModuleDescriptor,
+    read: Option<&SettingsRead>,
+) -> Map<String, Value> {
+    let plain = |id: &str| {
+        descriptor
+            .settings
+            .as_ref()
+            .and_then(|settings| settings.field(id))
+            .is_some_and(|field| {
+                !matches!(
+                    field.kind,
+                    SettingKind::File { .. } | SettingKind::Endpoint { .. }
+                )
+            })
+    };
     read.map(|read| {
         read.fields
             .iter()
+            .filter(|(id, _)| plain(id))
             .filter_map(|(id, field)| match field {
                 FieldRead::Value {
                     value, valid: true, ..
@@ -1682,11 +1717,11 @@ fn secret_fields(descriptor: &ModuleDescriptor) -> Vec<String> {
         .collect()
 }
 
-/// The origin a profile's first endpoint field sends to, when it holds a valid value.
-fn profile_origin(
+/// The endpoint a profile's first endpoint field names, when it holds a valid value.
+fn profile_endpoint(
     descriptor: &ModuleDescriptor,
     fields: &std::collections::BTreeMap<String, FieldRead>,
-) -> Option<String> {
+) -> Option<Endpoint> {
     let profiles = descriptor.settings.as_ref()?.profiles.as_ref()?;
     let (field, classes) = profiles.fields.iter().find_map(|field| match &field.kind {
         SettingKind::Endpoint { classes } => Some((field, classes)),
@@ -1697,11 +1732,17 @@ fn profile_origin(
             value: Value::String(url),
             valid: true,
             ..
-        } => parse_endpoint(url, classes)
-            .ok()
-            .map(|endpoint| endpoint.origin()),
+        } => parse_endpoint(url, classes).ok(),
         _ => None,
     }
+}
+
+/// The origin a profile's first endpoint field sends to, when it holds a valid value.
+fn profile_origin(
+    descriptor: &ModuleDescriptor,
+    fields: &std::collections::BTreeMap<String, FieldRead>,
+) -> Option<String> {
+    profile_endpoint(descriptor, fields).map(|endpoint| endpoint.origin())
 }
 
 fn asset_exists(service: &EditorService, asset_id: &AssetId) -> Result<(), Error> {
@@ -1943,10 +1984,14 @@ mod tests {
             for (method, _) in METHODS {
                 assert!(methods.contains_key(*method), "{method} is discoverable");
             }
-            assert!(
-                !methods.contains_key(&format!("task.{TASK}")),
-                "task methods are not generated yet"
+            let task = &methods[&format!("task.{TASK}")];
+            assert_eq!(
+                task["mutates"],
+                json!(false),
+                "the request itself writes nothing"
             );
+            assert_eq!(task["required"], json!(["asset_id", "profile_id"]));
+            assert_eq!(task["optional"], json!({"gain": "test"}));
             stop(owner, join);
         }
         assert_eq!(
