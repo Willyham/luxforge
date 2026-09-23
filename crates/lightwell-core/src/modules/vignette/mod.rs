@@ -336,6 +336,7 @@ impl VignetteModule {
                     format: EFFECT_FORMAT,
                     stage: EffectStage::Finish,
                     order: 0,
+                    maskable: false,
                 }],
                 actions: vec![
                     ActionDescriptor {

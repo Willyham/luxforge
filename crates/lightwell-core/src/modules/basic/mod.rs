@@ -509,6 +509,7 @@ impl BasicModule {
                     format: EFFECT_FORMAT,
                     stage: EffectStage::Color,
                     order: 0,
+                    maskable: true,
                 }],
                 actions: vec![
                     ActionDescriptor {

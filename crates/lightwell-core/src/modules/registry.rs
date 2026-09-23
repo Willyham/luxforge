@@ -6,7 +6,8 @@ use super::{
     RawModule, SPATIAL_TILE, Stage, ToolModule, TransformModule, VignetteModule,
 };
 use crate::{
-    Error, ErrorKind, Layer, Recipe,
+    Error, ErrorKind, Layer, Mask, MaskId, Recipe,
+    mask::CompiledMask,
     render::{
         Compiled, Entry, Segment,
         spatial::{SpatialPlan, prefix_hash},
@@ -19,6 +20,21 @@ use std::{
 
 fn validation(detail: impl Into<String>) -> Error {
     Error::new(ErrorKind::Validation, detail)
+}
+
+/// One target's position in the order masked layers of an effect take: the global layer is first,
+/// and each mask follows at its own index in the recipe's mask list. A reference to a mask the table
+/// does not hold sorts last rather than being treated as the global layer; such a stack is refused by
+/// [`Recipe::validate`] before anything renders, and this keeps the refusal from depending on a
+/// position guess.
+fn target_rank(mask: Option<&MaskId>, masks: &[Mask]) -> usize {
+    match mask {
+        None => 0,
+        Some(id) => masks
+            .iter()
+            .position(|mask| &mask.id == id)
+            .map_or(usize::MAX, |index| index + 1),
+    }
 }
 
 fn unavailable(effect_id: &str, layers: Vec<&str>) -> Error {
@@ -204,6 +220,119 @@ impl ModuleRegistry {
         self.insertion_index(layers, stage, order)
     }
 
+    /// Where a committed layer of this effect **bound to this target** joins a stack, the global
+    /// layer and each mask being distinct targets (`docs/design/masking.md`, "Order"):
+    ///
+    /// 1. A masked layer of an effect is placed after the global layer of that effect.
+    /// 2. Masked layers of one effect are ordered by their mask's index in `recipe.masks`.
+    ///
+    /// so overlapping masks apply in the order the mask list shows. Nothing else moves: the stage
+    /// region and the within-stage order are [`Self::insertion_index_for`]'s, and this only decides
+    /// where among the layers of the *same* effect the new one goes, which is inside that region by
+    /// construction. A stack that already holds those layers in another order keeps it and renders
+    /// in it, exactly as every other placement rule promises.
+    ///
+    /// Cost is `O(layers)` descriptor lookups plus `O(layers · masks)` target ranks; it reads no
+    /// pixels and allocates nothing.
+    pub fn insertion_index_for_target(
+        &self,
+        layers: &[Layer],
+        effect_id: &str,
+        mask: Option<&MaskId>,
+        masks: &[Mask],
+    ) -> usize {
+        let base = self.insertion_index_for(layers, effect_id);
+        let rank = target_rank(mask, masks);
+        let same_effect = |layer: &Layer| layer.effect_id == effect_id;
+        if rank == 0 {
+            // The global layer of an effect keeps exactly the placement it has always had, except
+            // that it must not land after a masked layer of its own effect: nothing about masking
+            // changes where an unmasked layer goes, which is what keeps the two orientation layers a
+            // crop separates where they are.
+            return match layers
+                .iter()
+                .position(|layer| same_effect(layer) && layer.mask.is_some())
+            {
+                Some(index) if index < base => index,
+                _ => base,
+            };
+        }
+        let mut after = None;
+        let mut before = None;
+        for (index, layer) in layers.iter().enumerate() {
+            if !same_effect(layer) {
+                continue;
+            }
+            if target_rank(layer.mask.as_ref(), masks) <= rank {
+                after = Some(index + 1);
+            } else if before.is_none() {
+                before = Some(index);
+            }
+        }
+        after.or(before).unwrap_or(base)
+    }
+
+    /// Re-sort the masked layers of every effect into the order the mask list now shows, and move
+    /// nothing else. This is the second half of the ordering rule: `mask.reorder` changes the index
+    /// of a mask, so the layers bound to it change position among the layers of *their own effect*,
+    /// as one host transaction.
+    ///
+    /// Only positions already held by layers of one effect are rewritten, so no layer crosses a
+    /// stage boundary, a spatial layer stays after the pointwise ones, and a stack with no masked
+    /// layers is returned untouched. The sort is stable, so two layers of one effect with the same
+    /// target — a stack the compile below refuses as ambiguous — keep their relative order rather
+    /// than being reshuffled. `O(layers · masks)`; reads no pixels.
+    pub fn sort_masked_layers(&self, layers: &mut [Layer], masks: &[Mask]) {
+        let effects: Vec<String> = layers
+            .iter()
+            .filter(|layer| layer.mask.is_some())
+            .map(|layer| layer.effect_id.clone())
+            .collect::<HashSet<_>>()
+            .into_iter()
+            .collect();
+        for effect_id in effects {
+            let positions: Vec<usize> = layers
+                .iter()
+                .enumerate()
+                .filter(|(_, layer)| layer.effect_id == effect_id)
+                .map(|(index, _)| index)
+                .collect();
+            let mut ordered: Vec<Layer> = positions
+                .iter()
+                .map(|index| layers[*index].clone())
+                .collect();
+            ordered.sort_by_key(|layer| target_rank(layer.mask.as_ref(), masks));
+            for (index, layer) in positions.into_iter().zip(ordered) {
+                layers[index] = layer;
+            }
+        }
+    }
+
+    /// Whether a layer of this effect may carry a mask, as the effect's own descriptor declares.
+    pub fn effect_maskable(&self, effect_id: &str) -> bool {
+        self.effect(effect_id)
+            .is_some_and(|(_, effect)| effect.maskable)
+    }
+
+    /// Whether this action carries the host's optional `mask` target field.
+    ///
+    /// The field belongs to the actions of a maskable effect, and an action is declared by a module
+    /// rather than by an effect, so the module that owns the action is what answers: a module that
+    /// declares a maskable effect accepts the field on its actions. Every delivered maskable module
+    /// declares exactly one effect, so there is no case where this is wider than the design's
+    /// sentence; a later module that declared both a maskable and a non-maskable effect would need
+    /// an action-to-effect link that no descriptor carries today.
+    pub fn action_accepts_mask(&self, action_id: &str) -> bool {
+        let Some((module, _)) = self.actions.get(action_id) else {
+            return false;
+        };
+        self.modules[*module]
+            .descriptor()
+            .effects
+            .iter()
+            .any(|effect| effect.maskable)
+    }
+
     /// Where a committed layer of this stage and order joins a stack:
     ///
     /// | Stage | Placement |
@@ -380,6 +509,63 @@ impl ModuleRegistry {
         Ok(())
     }
 
+    /// Refuse a layer whose mask this build cannot evaluate.
+    ///
+    /// A mask reaches a colour operation and nothing else yet: the masked spatial primitive is a
+    /// later step, and a point replacement has no blend to perform. A mask this build cannot evaluate
+    /// must never be silently omitted from a frame or an export, so such a stack is refused by name
+    /// wherever it would be drawn — and because the host compiles a stack before it persists one, the
+    /// refusal is also what keeps such a layer from being committed at all. It reads the stack and
+    /// rewrites nothing; registering the missing primitive restores evaluation without touching
+    /// stored data, exactly as registering an unknown component kind does.
+    fn refuse_unevaluated_mask(&self, layer: &Layer) -> Result<(), Error> {
+        if layer.mask.is_none() {
+            return Ok(());
+        }
+        Err(Error::new(
+            ErrorKind::Incompatible,
+            format!(
+                "layer {} carries a mask on the {} effect {}, and this build evaluates a mask only \
+                 on a colour-stage effect",
+                layer.id,
+                self.effect_stage(&layer.effect_id)
+                    .map_or("unknown", EffectStage::as_str),
+                layer.effect_id
+            ),
+        ))
+    }
+
+    /// The compiled mask one layer is modulated by, against the stage that layer receives, or
+    /// `None` for a global layer.
+    ///
+    /// Compiling is `O(components)` and reads no pixels, so a masked layer costs the same to compile
+    /// as an unmasked one plus a handful of closed-form terms per component. Two layers bound to one
+    /// mask compile it twice rather than sharing one compilation: the cost is bounded by the
+    /// components-per-mask limit and a cache would have to be keyed by stage as well as identity, so
+    /// it is not worth the machinery until a measurement says otherwise.
+    ///
+    /// A reference the mask table does not hold is refused here as well as by [`Recipe::validate`],
+    /// because a prefix compile is reached without the recipe.
+    fn compiled_mask(
+        layer: &Layer,
+        masks: &[Mask],
+        stage: Stage,
+    ) -> Result<Option<Arc<CompiledMask>>, Error> {
+        let Some(id) = &layer.mask else {
+            return Ok(None);
+        };
+        let mask = masks.iter().find(|mask| &mask.id == id).ok_or_else(|| {
+            Error::new(
+                ErrorKind::Incompatible,
+                format!(
+                    "layer {} names mask {id}, which this recipe does not hold",
+                    layer.id
+                ),
+            )
+        })?;
+        Ok(Some(Arc::new(CompiledMask::new(mask, stage)?)))
+    }
+
     /// A component's `kind` is the host's business, not a module's: `crate::mask` owns the table of
     /// kinds this build can evaluate, and a stored kind outside it is incompatible data rather than a
     /// component to skip. Parsing every stored mask's components here — stage-free, so it costs
@@ -430,23 +616,27 @@ impl ModuleRegistry {
         recipe.validate()?;
         self.validate_masked_stages(recipe)?;
         self.validate_mask_kinds(recipe)?;
-        self.compile_layers(source_width, source_height, &recipe.layers)
+        self.compile_layers(source_width, source_height, &recipe.layers, &recipe.masks)
     }
 
-    /// Compile an ordered layer slice whose recipe format is already known good. Asking for the
-    /// stage one layer receives compiles the prefix before it through here, so it copies no part of
-    /// the stack.
+    /// Compile an ordered layer slice whose recipe format is already known good, against the mask
+    /// table its layers reference. Asking for the stage one layer receives compiles the prefix
+    /// before it through here, so it copies no part of the stack; a prefix carries the whole mask
+    /// table, because the masks a prefix layer names are the recipe's and not the prefix's.
     pub(crate) fn compile_layers(
         &self,
         source_width: u32,
         source_height: u32,
         layers: &[Layer],
+        masks: &[Mask],
     ) -> Result<Compiled, Error> {
         let mut layer_ids = HashSet::with_capacity(layers.len());
-        // The effects whose module owns exactly one layer of a stack, seen so far. A module that
-        // declares this cannot say which of two layers holds its state, so the host refuses the
-        // stack here as well as when the module plans against it, and rewrites nothing.
-        let mut single_effects: HashSet<&str> = HashSet::new();
+        // The effects whose module owns exactly one layer of a stack, seen so far, **per target**:
+        // the global layer and each mask are distinct targets, so one effect may hold a layer in
+        // each mask and still hold one global layer. Two layers of one effect with the same target
+        // are what a module cannot resolve, so the host refuses that stack here as well as when the
+        // module plans against it, and rewrites nothing.
+        let mut single_effects: HashSet<(&str, Option<&MaskId>)> = HashSet::new();
         let mut segments = vec![Segment::new(None, source_width, source_height)];
         // The one order the host cannot evaluate: a finish effect is defined in the output
         // coordinates of the geometry tail, so a geometry layer after it has no stage to address.
@@ -475,7 +665,7 @@ impl ModuleRegistry {
                 .provider(&layer.effect_id)
                 .ok_or_else(|| self.unavailable_in(layers, &layer.effect_id))?;
             if module.single_layer(&layer.effect_id)
-                && !single_effects.insert(layer.effect_id.as_str())
+                && !single_effects.insert((layer.effect_id.as_str(), layer.mask.as_ref()))
             {
                 return Err(validation(format!(
                     "ambiguous {} layers",
@@ -503,6 +693,11 @@ impl ModuleRegistry {
                     segment.operations.push(Processing::ExactGeometry(step));
                 }
                 Processing::PointReplace { x, y, rgb } => {
+                    // A point replacement has no blend to perform, so a mask on one would be a mask
+                    // this build cannot evaluate. No delivered pixel-stage effect declares itself
+                    // maskable; refusing by name is what keeps a later one from silently rendering
+                    // its replacement everywhere instead of through the selection.
+                    self.refuse_unevaluated_mask(layer)?;
                     segment.has_pixels = true;
                     segment
                         .operations
@@ -521,8 +716,17 @@ impl ModuleRegistry {
                         ));
                     }
                     // A neutral payload compiles to no units, and no units is no processing: the
-                    // segment keeps the identity byte path and the shared source buffer.
+                    // segment keeps the identity byte path and the shared source buffer, mask or no
+                    // mask. Masking nothing is nothing, so no mask is compiled for it either.
                     if !operation.is_empty() {
+                        // The mask is the host's, attached here — where a compiled layer becomes
+                        // `Processing` — against the stage this layer receives, which for a
+                        // content-stage layer is the content stage its geometry is normalized to. A
+                        // module returned a plain operation and never saw the reference.
+                        let operation = match Self::compiled_mask(layer, masks, stage)? {
+                            Some(mask) => operation.with_mask(mask),
+                            None => operation,
+                        };
                         segment.has_color = true;
                         segment.operations.push(Processing::Color(operation));
                     }
@@ -534,6 +738,9 @@ impl ModuleRegistry {
                     if operation.is_empty() {
                         continue;
                     }
+                    // The masked spatial primitive is not delivered, so a spatial layer that names a
+                    // mask is refused by name rather than rendered as if it applied everywhere.
+                    self.refuse_unevaluated_mask(layer)?;
                     // Everything stage-dependent about the operation — the unit count, their
                     // finiteness, the summed halo and the bytes one tile would need — is decided
                     // here, before a pixel is read. Nothing is rewritten or reduced to fit.
@@ -603,6 +810,7 @@ pub(crate) mod tests {
                     format: EFFECT_FORMAT,
                     stage: EffectStage::Pixel,
                     order: 0,
+                    maskable: false,
                 }],
                 actions: vec![ActionDescriptor {
                     id: action.into(),
@@ -697,6 +905,7 @@ pub(crate) mod tests {
                     format: EFFECT_FORMAT,
                     stage: EffectStage::Pixel,
                     order: 0,
+                    maskable: false,
                 }],
                 actions: vec![ActionDescriptor {
                     id: PATCH_ACTION.into(),
@@ -854,6 +1063,7 @@ pub(crate) mod tests {
                     format: EFFECT_FORMAT,
                     stage,
                     order,
+                    maskable: false,
                 }],
                 actions: vec![ActionDescriptor {
                     id: action.into(),
@@ -1469,6 +1679,360 @@ pub(crate) mod tests {
         }
     }
 
+    /// One `add` linear gradient at full amount, over the whole frame: the mask every test below
+    /// attaches to a layer.
+    fn gradient_mask(name: &str) -> Mask {
+        let mut mask = Mask::new(name);
+        let component = mask.next_component_name("linear");
+        mask.components.push(Component::new(
+            component,
+            ComponentMode::Add,
+            "linear",
+            json!({"x0": 0.0, "y0": 0.0, "x1": 1.0, "y1": 1.0}),
+        ));
+        mask
+    }
+
+    fn basic_layer() -> Layer {
+        Layer {
+            id: LayerId::new(),
+            effect_id: BASIC_EFFECT.into(),
+            effect_format: EFFECT_FORMAT,
+            payload: json!({"exposure": 1.0}),
+            mask: None,
+        }
+    }
+
+    fn bound(layer: Layer, mask: &Mask) -> Layer {
+        Layer {
+            mask: Some(mask.id.clone()),
+            ..layer
+        }
+    }
+
+    /// A mask is stored in content-stage coordinates, so an effect whose input is not that stage
+    /// cannot declare itself maskable: the descriptor is refused at registration, by name, rather
+    /// than carrying a flag nothing could honour.
+    #[test]
+    fn a_maskable_effect_is_refused_at_the_geometry_and_finish_stages() {
+        let descriptor = |stage: EffectStage| ModuleDescriptor {
+            id: "test.maskable".into(),
+            title: "Maskable".into(),
+            hint: None,
+            effects: vec![EffectDescriptor {
+                id: "test.maskable.effect".into(),
+                format: EFFECT_FORMAT,
+                stage,
+                order: 0,
+                maskable: true,
+            }],
+            actions: Vec::new(),
+            queries: Vec::new(),
+            controls: Vec::new(),
+            reset: None,
+            canvas: None,
+            developer: false,
+            collapsed: false,
+            availability: Availability::Available,
+        };
+        for stage in [EffectStage::Geometry, EffectStage::Finish] {
+            let error = ModuleRegistry::new()
+                .register(TestModule::from_descriptor(descriptor(stage)))
+                .expect_err("a maskable effect at the geometry tail");
+            assert_eq!(error.kind, ErrorKind::Validation);
+            assert_eq!(
+                error.detail,
+                format!(
+                    "effect test.maskable.effect declares maskable at the {} stage, which a mask \
+                     stored in content-stage coordinates cannot reach",
+                    stage.as_str()
+                )
+            );
+        }
+        for stage in [
+            EffectStage::Source,
+            EffectStage::Pixel,
+            EffectStage::Color,
+            EffectStage::Spatial,
+        ] {
+            ModuleRegistry::new()
+                .register(TestModule::from_descriptor(descriptor(stage)))
+                .expect("every content-stage effect may declare it");
+        }
+    }
+
+    /// The three effects the design names declare the flag and nothing else does, and the field
+    /// follows the module that declares one: `edit.set-basic` accepts a target, `edit.set-crop` does
+    /// not, and a client reads both from the registry rather than from a hand-maintained list.
+    #[test]
+    fn exactly_the_three_delivered_effects_are_maskable() {
+        let registry = ModuleRegistry::builtin();
+        for effect in [BASIC_EFFECT, crate::MIXER_EFFECT, crate::PRESENCE_EFFECT] {
+            assert!(registry.effect_maskable(effect), "{effect}");
+        }
+        for effect in [
+            PIXEL_EFFECT,
+            RAW_EFFECT,
+            CROP_EFFECT,
+            ORIENTATION_EFFECT,
+            crate::VIGNETTE_EFFECT,
+            "test.absent",
+        ] {
+            assert!(!registry.effect_maskable(effect), "{effect}");
+        }
+        for action in [
+            "set-basic",
+            "reset-basic",
+            "set-mixer",
+            "reset-mixer",
+            "set-presence",
+            "reset-presence",
+        ] {
+            assert!(registry.action_accepts_mask(action), "{action}");
+        }
+        for action in [
+            "set-pixel",
+            "set-crop",
+            "rotate-left",
+            "set-vignette",
+            "set-raw",
+            "no-such-action",
+        ] {
+            assert!(!registry.action_accepts_mask(action), "{action}");
+        }
+    }
+
+    /// `single_layer` is per target: the global layer and each mask are distinct targets, so one
+    /// effect may hold one layer in each and two layers with the *same* target are still the
+    /// ambiguity the host refuses without rewriting anything.
+    #[test]
+    fn one_layer_per_target_is_what_single_layer_means() {
+        let registry = ModuleRegistry::builtin();
+        let first = gradient_mask("Mask 1");
+        let second = gradient_mask("Mask 2");
+        let recipe = |layers: Vec<Layer>| Recipe {
+            format: RECIPE_FORMAT,
+            layers,
+            masks: vec![first.clone(), second.clone()],
+        };
+        // The global layer and one layer per mask: three layers of one single-layer effect, legal.
+        let legal = recipe(vec![
+            basic_layer(),
+            bound(basic_layer(), &first),
+            bound(basic_layer(), &second),
+        ]);
+        registry.compile(64, 48, &legal).expect("one per target");
+        // Two layers of one effect with the same target, global or masked, is the old refusal.
+        for (case, layers) in [
+            ("two global layers", vec![basic_layer(), basic_layer()]),
+            (
+                "two layers in one mask",
+                vec![bound(basic_layer(), &first), bound(basic_layer(), &first)],
+            ),
+        ] {
+            let error = registry
+                .compile(64, 48, &recipe(layers))
+                .err()
+                .expect("ambiguous layers");
+            assert_eq!(error.kind, ErrorKind::Validation, "{case}");
+            assert_eq!(error.detail, "ambiguous Basic layers", "{case}");
+        }
+    }
+
+    /// The order a person can see: a masked layer of an effect follows the global layer of that
+    /// effect and the masked layers of earlier masks, and nothing else moves.
+    #[test]
+    fn a_masked_layer_is_placed_after_the_global_layer_and_by_its_masks_index() {
+        let registry = ModuleRegistry::builtin();
+        let first = gradient_mask("Mask 1");
+        let second = gradient_mask("Mask 2");
+        let third = gradient_mask("Mask 3");
+        let masks = vec![first.clone(), second.clone(), third.clone()];
+        let global = basic_layer();
+        let in_first = bound(basic_layer(), &first);
+        let in_third = bound(basic_layer(), &third);
+        let crop = Layer::crop(CropPayload {
+            angle: 0.0,
+            x: 0.0,
+            y: 0.0,
+            width: 1.0,
+            height: 1.0,
+        });
+        for (case, layers, target, expected) in [
+            ("an empty stack", vec![], Some(&first), 0),
+            ("a global layer only", vec![global.clone()], Some(&first), 1),
+            (
+                "after the global layer and before the tail",
+                vec![global.clone(), crop.clone()],
+                Some(&second),
+                1,
+            ),
+            (
+                "between two masks",
+                vec![global.clone(), in_first.clone(), in_third.clone()],
+                Some(&second),
+                2,
+            ),
+            (
+                "before a later mask",
+                vec![global.clone(), in_third.clone()],
+                Some(&first),
+                1,
+            ),
+            (
+                "after an earlier mask",
+                vec![global.clone(), in_first.clone()],
+                Some(&third),
+                2,
+            ),
+            (
+                // The global layer keeps its own placement, and never lands after a masked layer of
+                // its own effect.
+                "the global layer under existing masked layers",
+                vec![in_first.clone(), in_third.clone()],
+                None,
+                0,
+            ),
+            (
+                "the global layer of an effect with none",
+                vec![crop.clone()],
+                None,
+                0,
+            ),
+        ] {
+            assert_eq!(
+                registry.insertion_index_for_target(
+                    &layers,
+                    BASIC_EFFECT,
+                    target.map(|mask| &mask.id),
+                    &masks,
+                ),
+                expected,
+                "{case}"
+            );
+        }
+        // An unmasked target is placed exactly where the stage rule alone places it, so nothing about
+        // masking moves an ordinary layer.
+        for layers in [
+            vec![],
+            vec![crop.clone()],
+            vec![global.clone(), crop.clone()],
+        ] {
+            assert_eq!(
+                registry.insertion_index_for_target(&layers, BASIC_EFFECT, None, &masks),
+                registry.insertion_index_for(&layers, BASIC_EFFECT),
+                "the global target follows the delivered placement rule"
+            );
+        }
+    }
+
+    /// Reordering the mask list re-sorts exactly the masked layers of each effect, in the positions
+    /// they already occupy, and moves nothing else.
+    #[test]
+    fn sorting_masked_layers_moves_only_them() {
+        let registry = ModuleRegistry::builtin();
+        let first = gradient_mask("Mask 1");
+        let second = gradient_mask("Mask 2");
+        let crop = Layer::crop(CropPayload {
+            angle: 0.0,
+            x: 0.0,
+            y: 0.0,
+            width: 1.0,
+            height: 1.0,
+        });
+        let global = basic_layer();
+        let in_first = bound(basic_layer(), &first);
+        let in_second = bound(basic_layer(), &second);
+        let mut layers = vec![
+            Layer::pixel(0, 0, [1, 2, 3]),
+            global.clone(),
+            in_first.clone(),
+            in_second.clone(),
+            crop.clone(),
+        ];
+        let identities = |layers: &[Layer]| {
+            layers
+                .iter()
+                .map(|layer| layer.id.clone())
+                .collect::<Vec<_>>()
+        };
+        let before = identities(&layers);
+        // The mask list as it stands: the stack is already sorted, so nothing moves.
+        registry.sort_masked_layers(&mut layers, &[first.clone(), second.clone()]);
+        assert_eq!(identities(&layers), before, "an already ordered stack");
+        // The masks swap places, and with them exactly the two masked layers.
+        registry.sort_masked_layers(&mut layers, &[second.clone(), first.clone()]);
+        assert_eq!(
+            identities(&layers),
+            vec![
+                before[0].clone(),
+                global.id.clone(),
+                in_second.id.clone(),
+                in_first.id.clone(),
+                crop.id.clone(),
+            ],
+            "only the masked layers moved"
+        );
+        // A stack with no masked layers is untouched, and so is a stack whose masks are unchanged.
+        let mut unmasked = vec![Layer::pixel(0, 0, [1, 2, 3]), global.clone(), crop.clone()];
+        let before = identities(&unmasked);
+        registry.sort_masked_layers(&mut unmasked, &[first, second]);
+        assert_eq!(identities(&unmasked), before);
+    }
+
+    /// A mask reaches a colour operation and nothing else yet, so a layer that carries one and
+    /// compiles into anything else is refused by name on every path that would have to draw it.
+    /// Refusing is what keeps such a layer from being committed at all — the host compiles a stack
+    /// before it persists one — and is the alternative to the silent omission of rendering it as if it
+    /// applied everywhere. The spatial case is the live one: Presence declares itself maskable and the
+    /// masked spatial primitive is a later step.
+    #[test]
+    fn a_mask_this_build_cannot_evaluate_is_refused_by_name() {
+        let registry = ModuleRegistry::builtin();
+        let mask = gradient_mask("Mask 1");
+        let presence = Layer {
+            id: LayerId::new(),
+            effect_id: crate::PRESENCE_EFFECT.into(),
+            effect_format: EFFECT_FORMAT,
+            payload: json!({"clarity": 40.0}),
+            mask: None,
+        };
+        let recipe = |layer: Layer| Recipe {
+            format: RECIPE_FORMAT,
+            layers: vec![layer],
+            masks: vec![mask.clone()],
+        };
+        for (stage, layer) in [
+            ("spatial", presence),
+            // A point replacement has no blend to perform. No delivered pixel effect declares itself
+            // maskable, and the recipe model lets a stored layer of one carry a mask, so the refusal
+            // is what a stack like that meets.
+            ("pixel", Layer::pixel(1, 1, [9, 9, 9])),
+        ] {
+            // Unmasked, the same layer compiles as it always has.
+            registry
+                .compile(256, 256, &recipe(layer.clone()))
+                .unwrap_or_else(|error| panic!("an unmasked {stage} layer: {error}"));
+            let refused = recipe(bound(layer, &mask));
+            let error = registry
+                .compile(256, 256, &refused)
+                .err()
+                .unwrap_or_else(|| panic!("a masked {stage} layer"));
+            assert_eq!(error.kind, ErrorKind::Incompatible, "{stage}");
+            assert_eq!(
+                error.detail,
+                format!(
+                    "layer {} carries a mask on the {stage} effect {}, and this build evaluates a \
+                     mask only on a colour-stage effect",
+                    refused.layers[0].id, refused.layers[0].effect_id
+                ),
+                "{stage}"
+            );
+            // The refusal reads the stack; it rewrites nothing.
+            assert!(refused.layers[0].mask.is_some(), "{stage}");
+        }
+    }
+
     /// The missing mask is refused wherever a recipe is evaluated, because compiling checks it and
     /// every render, sample and plan compiles.
     #[test]
@@ -1876,7 +2440,7 @@ pub(crate) mod tests {
         });
         let refused = vec![finish.clone(), turn.clone()];
         let error = registry
-            .compile_layers(2, 1, &refused)
+            .compile_layers(2, 1, &refused, &[])
             .err()
             .expect("a finish layer before geometry never compiles");
         assert_eq!(error.kind, ErrorKind::Validation);
@@ -1891,9 +2455,9 @@ pub(crate) mod tests {
         // The order the host does build compiles, and so does a stack with no geometry at all.
         assert!(
             registry
-                .compile_layers(2, 1, &[turn, finish.clone()])
+                .compile_layers(2, 1, &[turn, finish.clone()], &[])
                 .is_ok()
         );
-        assert!(registry.compile_layers(2, 1, &[finish]).is_ok());
+        assert!(registry.compile_layers(2, 1, &[finish], &[]).is_ok());
     }
 }

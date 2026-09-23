@@ -231,6 +231,7 @@ impl RawModule {
                     format: EFFECT_FORMAT,
                     stage: EffectStage::Source,
                     order: 0,
+                    maskable: false,
                 }],
                 actions: vec![
                     action(

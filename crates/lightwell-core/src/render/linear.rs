@@ -744,8 +744,11 @@ impl<'a> LinearEvaluation<'a> {
             let mut linear = [pixel.map(|value| value as f32)];
             // The same coordinates the 8-bit path hands its units, so a position-dependent unit
             // makes `sample_linear` and `render_linear` agree pixel for pixel.
-            for run in super::color_runs(&segment.operations).filter(|run| run.start >= after) {
-                super::apply_units(&run, y, x, &mut linear)?;
+            // One pixel of snapshot scratch on the stack: a masked operation blends against its
+            // own input, and this path pulls single pixels, so nothing is allocated per pixel.
+            let mut scratch = [[0.0f32; 3]; 1];
+            for run in super::color_runs(segment).filter(|run| run.start >= after) {
+                super::apply_units(&run, y, x, &mut linear, &mut scratch)?;
             }
             pixel = linear[0].map(f64::from);
         }

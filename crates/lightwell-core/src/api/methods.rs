@@ -458,9 +458,24 @@ pub(super) fn dispatch(
 
 /// One generated method description: the envelope every action shares plus the action's own
 /// declared parameters, so a client needs no hand-maintained list.
-fn action_schema(action: &ActionDescriptor) -> Value {
+///
+/// `maskable` says whether this action belongs to a module that declares a maskable effect, in which
+/// case the host's one optional `mask` field is listed with the envelope. It is listed here rather
+/// than declared as a parameter because it is the host's and no module parses it: sending it to any
+/// other action is a validation error naming that action.
+fn action_schema(action: &ActionDescriptor, maskable: bool) -> Value {
     let mut required = vec![json!("asset_id"), json!("mutation")];
     let mut optional = Map::new();
+    if maskable {
+        optional.insert(
+            "mask".to_owned(),
+            json!(
+                "the mask this edit applies through; omit it to edit the layer that applies \
+                 everywhere. The global layer and each mask are distinct targets, so this action \
+                 commits or updates one layer per target"
+            ),
+        );
+    }
     for parameter in &action.parameters {
         // A patch carries whichever fields the caller names, so none of them is required however
         // the parameter is declared; its default is what a client seeds or resets the field to.
@@ -528,8 +543,11 @@ pub fn schemas(registry: &ModuleRegistry) -> Value {
         .collect();
     let descriptors = registry.descriptors();
     for descriptor in &descriptors {
+        // One maskable effect makes this module's actions carry the target field; the registry
+        // answers the same question the same way for dispatch.
+        let maskable = descriptor.effects.iter().any(|effect| effect.maskable);
         for action in &descriptor.actions {
-            methods.insert(action_method(&action.id), action_schema(action));
+            methods.insert(action_method(&action.id), action_schema(action, maskable));
         }
         for query in &descriptor.queries {
             methods.insert(query_method(&query.id), query_schema(query));
@@ -1801,6 +1819,7 @@ mod tests {
                     format: EFFECT_FORMAT,
                     stage: EffectStage::Geometry,
                     order: 0,
+                    maskable: false,
                 }],
                 actions: vec![ActionDescriptor {
                     id: "test-angle".into(),
@@ -1903,6 +1922,7 @@ mod tests {
                     format: EFFECT_FORMAT,
                     stage: EffectStage::Geometry,
                     order: 0,
+                    maskable: false,
                 }],
                 actions: vec![ActionDescriptor {
                     id: MARK_ACTION.into(),

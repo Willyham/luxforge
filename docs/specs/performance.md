@@ -121,6 +121,36 @@ holds — fusing Vibrance and Saturation into one Oklab round trip removed a who
 and `ColourAdjust` remains the most expensive single unit — but the numbers above are the ones to
 quote.
 
+### The masked colour primitive, its own run
+
+A masked colour layer costs the units it would have cost unmasked, plus one coverage evaluation and
+one blend per pixel **inside the mask's bounds rectangle**, and nothing at all outside it. Measured on
+the host above, release, single invocation, three measured renders after one warm pass, over a
+programmatically filled 6000 × 4000 frame with one `+1 EV` exposure unit
+(`render::tests::masked_colour_cost_on_a_24_megapixel_frame`, an ignored measurement test):
+
+| 24 MP render, one colour unit | ms per render |
+| --- | --- |
+| Identity recipe (shared source buffer) | under 0.05 |
+| Unmasked | 42.9 |
+| Masked, gradient bounds admitting 5.05% of the frame | 34.1 |
+| Masked, gradient bounds admitting 100% of the frame | 45.6 |
+
+So the bounds rectangle is worth 11.5 ms of the 45.6 here, and a mask over the whole frame costs
+about 2.7 ms — 6% — more than no mask at all. The rectangle does **not** remove the pass's decode and
+quantization of the rows it touches, because the frame must still be written: skipping a whole row
+chunk when every operation in its run is masked and the chunk lies outside every rectangle is possible
+and is not built. The unit-evaluation claim itself is asserted rather than inferred, by a counting
+colour unit in
+`render::tests::a_masked_operation_evaluates_no_unit_outside_its_bounds`, which requires the count to
+equal the rectangle's area exactly.
+
+`editor-performance` on 24 MP, 30 samples, after the change: colour baseline 33.1 / 38.3 ms and one
+`+1 EV` Basic layer 40.3 / 45.5 ms, both inside the recorded ranges above, on a host whose load was
+shared with other sessions. There is no paired before-run from this worktree; the unmasked path's
+arithmetic is unchanged by construction and proved byte-identical by the colour tests, and the mask is
+consulted once per operation per row rather than per pixel.
+
 ### Desktop slider-to-presented-frame and settled histogram
 
 `editor-latency`, release, warm cache, background evidence launches on the host above, 30 samples

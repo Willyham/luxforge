@@ -89,6 +89,22 @@ pub struct EffectDescriptor {
     /// placement rule only: a stored stack always renders in its stored order.
     #[serde(default)]
     pub order: u16,
+    /// Whether a layer of this effect may be bound to a mask, and therefore whether the host adds
+    /// its one optional `mask` request field to the actions of this effect's module
+    /// (`docs/design/masking.md`, "How a mask reaches an effect"). It is the whole of what a module
+    /// says about masking: the field, the target semantics, the compiled mask and the blend are the
+    /// host's, and no module parses, plans or compiles any of it.
+    ///
+    /// A mask's geometry is stored in content-stage coordinates, so a `geometry` or `finish` effect
+    /// cannot declare it: registration refuses that descriptor by name rather than accepting a flag
+    /// that could never be honoured.
+    ///
+    /// Serialized only when it is true, as every other flag a descriptor carries is, so an effect
+    /// that is not maskable describes itself exactly as it did before masking existed. A client
+    /// reads maskability from this flag and reads the field it adds from `schema.list`, which lists
+    /// `mask` among the optional fields of every action that accepts it.
+    #[serde(default, skip_serializing_if = "is_default")]
+    pub maskable: bool,
 }
 
 /// The closed set of parameter types v0 modules may declare. `f64` bounds rule out `Eq` here and
@@ -474,6 +490,19 @@ impl ModuleDescriptor {
             }
             if !effects.insert(effect.id.as_str()) {
                 return Err(validation(format!("duplicate effect {}", effect.id)));
+            }
+            // A mask is stored in content-stage coordinates, so an effect whose input is not that
+            // content stage has nothing to read one in: a geometry effect changes the stage and a
+            // finish effect is defined in the output coordinates the geometry tail produced.
+            if effect.maskable
+                && matches!(effect.stage, EffectStage::Geometry | EffectStage::Finish)
+            {
+                return Err(validation(format!(
+                    "effect {} declares maskable at the {} stage, which a mask stored in \
+                     content-stage coordinates cannot reach",
+                    effect.id,
+                    effect.stage.as_str()
+                )));
             }
         }
         let mut actions = HashSet::with_capacity(self.actions.len());
@@ -1581,6 +1610,7 @@ mod tests {
                 format: 1,
                 stage: EffectStage::Pixel,
                 order: 0,
+                maskable: false,
             }],
             actions: vec![action()],
             queries: Vec::new(),
@@ -1723,6 +1753,7 @@ mod tests {
                         format: 1,
                         stage: EffectStage::Pixel,
                         order: 0,
+                        maskable: false,
                     }],
                     ..descriptor()
                 },
@@ -2474,6 +2505,7 @@ mod tests {
                 format: 1,
                 stage,
                 order,
+                maskable: false,
             };
             assert_eq!(serde_json::to_value(stage).unwrap(), json!(name));
             // `order` is always serialized, so `module.list` reports it for every effect.

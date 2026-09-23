@@ -339,6 +339,11 @@ fn module_list_and_schema_list_describe_the_presence_module() {
             "format": 1,
             "stage": "spatial",
             "order": 0,
+            // Presence is one of the three effects a mask may be attached to, so its descriptor says
+            // so and `edit.set-presence` carries the host's optional `mask` field. The masked
+            // *spatial* primitive is a later step, so a committed masked Presence layer is refused
+            // by name until it lands rather than rendered as if it applied everywhere.
+            "maskable": true,
         }])
     );
     assert_eq!(
