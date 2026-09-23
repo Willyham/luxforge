@@ -45,7 +45,7 @@ Doctor reports missing tools and the graphics environment without installing any
 | Rendered Vignette: section expand, an Amount drag and commit at Fit and 100%, roundness and feather extremes, a post-crop recentre and the module reset | `cargo xtask smoke --scenario vignette --output NEW_DIR` |
 | Rendered percentage zooms: 50%, 100%, 120%, 800% and 1600%, pans to the centre and the far corner at 1600%, and idle checks at Fit, 100% and 1600%, over the generated 24 MP and 60 MP JPEGs, one launch each | `cargo xtask smoke --scenario zoom --output NEW_DIR` |
 | Rendered Presets: section expand, an XMP and a Lightwell preset imported, each applied from its row, undo, the create form filled and submitted, a native preset applied to the Original, `preset.list` through the `api` step and a delete through the row menu | `cargo xtask smoke --scenario presets --output NEW_DIR` |
-| Rendered Performance section: collapsed with nothing read, expanded on its first read, a filled window, a straighten and a Presence Clarity commit whose render is listed as long work and then as finished, collapsed and asleep, over the generated 60 MP JPEG, with the editor's memory read by the runner from outside the process; `--source RAW` swaps the Clarity commit for a RAW temperature commit, outside `rendered` | `cargo xtask smoke --scenario performance --output NEW_DIR [--source RAW]` |
+| Rendered Performance section: open and sampling from the launch, a filled window, a straighten and a Presence Clarity commit whose render is listed as long work and then as finished, collapsed and asleep, then reopened on a fresh window, over the generated 60 MP JPEG, with the editor's memory read by the runner from outside the process; `--source RAW` swaps the Clarity commit for a RAW temperature commit, outside `rendered` | `cargo xtask smoke --scenario performance --output NEW_DIR [--source RAW]` |
 | Rendered RAW section over a supplied RAW file, with Basic collapsed; a Custom temperature drag left open and then released, at Fit and at 100%, whose drafted frame differs from the one before, is labelled approximate and adopts no histogram, and whose release's exact frame is the first drawn after the commit, carries its own report and is within a code of the approximate one on average, each drag keeping the tint in force (the first, from As shot, the core's as-shot tint) in the committed payload and in the Custom tint field throughout; then a double-click on each RAW slider and on Basic's Exposure: the first press's committed jump and the reset that follows it, each checked as two entries with the reset sent against the jump's revision and never refused — Exposure back to 0 EV, Custom temperature and tint back to As shot (`use-as-shot-wb`, the entry labelled As shot white balance, both fields showing the core's as-shot equivalent, checked back through the forward map); and the RAW band's dot, absent on the untouched photograph, present after the committed custom temperature and absent again once the resets leave As shot at 0 EV; then a crop drafted on the RAW's whole input stage, 16:9 and straightened by 7°, whose draft is one picture (under 1% of up to 4800 samples of its interior show the canvas), applied at Fit, read at 100% through two pointer readouts and replaced by a −12° 3:2 `edit.crop-fit` at 100%: no step logs a failure, every committed frame shows the current entry at the output its payload declares, placed and centred at Fit within 4 px, and each readout's codes are the canvas's own at that stage pixel within one code; not in `rendered`, because no RAW photograph is checked in | `cargo xtask smoke --scenario raw-panel --source RAW --output NEW_DIR` |
 | Rendered module capabilities: settings, a profile and a masked key, the download consent denied then allowed, install, activation, the photo-data consent, a task with progress, Apply, a refused task and a revoked grant, against a loopback proof endpoint | `cargo xtask smoke --scenario capabilities --output NEW_DIR` |
 | The capability framework's own costs (registration, capability reads, activation, a task, artifact publish, cancellation), release only | `cargo test --release --locked -p lightwell-core --lib capability_timing -- --ignored --nocapture` |
@@ -399,8 +399,8 @@ Each step is an object with exactly one key.
   message: `{"expanded": true}` or `{"expanded": false}`. Opening it, with the state panel shown, is
   captured once the section's first `resources.read` and `activity.list` have answered, so the frame
   shows figures rather than dashes; closing it, opening it under a hidden panel and asking for the
-  state it is already in are captured on the next frame. The section is collapsed at every launch,
-  so a script that never names it runs no sampler.
+  state it is already in are captured on the next frame. The section is open at every launch, so
+  every scripted run samples once a second unless its script closes the section.
 
 - `capability` drives one gesture on a module's capability block, task control or consent notice through the messages those controls send: `{"module", <one of>, "wait"?: false}` with `section` (`"status"` or `"settings"`), `set` (`{field, value, profile?}`), `secret` (`{field, value, profile?}`, recorded in `result.json` as `<redacted>`), `file` (`{field, path}`, the message the native dialog's result sends), `profile` (`{create: {adapter, label}}` or `{remove: index}`), `install` or `remove` (`{resource}`), `activate` (`true` or `false`), `task` (`{task}`), `consent` (`"allow"` or `"deny"`), `apply`, `cancel` (the newest live job), `revoke` (an index into the permissions list) or `settle`. A step is captured once its round trips have answered and the jobs it started have finished; `"wait": false` captures as soon as a started job reports progress, and a later `settle` captures once the module's jobs are done. `state.json` carries a `capabilities` summary per module — settings with secrets only as `set` or `not set`, profiles, activation, resources, live jobs, the task result, permissions, requirements and the open consent — and stack layers carry their `artifacts`.
 
@@ -453,10 +453,10 @@ the red one by more than 5 codes, and each undo returns the patches of the stack
 not a colorimetric claim, and not a claim that Lightwell renders what Lightroom renders.
 
 `performance` opens the generated `60mp.jpg` at 1440 × 900 and captures eight frames: the open, with
-the Performance section collapsed and nothing read; the section expanded; a 3600 ms `wait`; a 16:9
+the Performance section open and sampling as every launch starts it; a 3600 ms `wait`; a 16:9
 `edit.crop-fit` at 3°; `edit.set-presence` with Clarity 100 over it, whose exact render — about
 0.8 to 1 s on the owner's M4, where Clarity alone is about 0.6 s — is long enough for the section to
-list; a 2500 ms `wait`; the section collapsed; and a 2500 ms `wait`. Each frame's
+list; a 2500 ms `wait`; the section collapsed; a 2500 ms `wait`; and the section opened again. Each frame's
 `state.performance` records the flag, the reads asked for, the samples held, the last two
 `resources.read` answers as the owner sent them with the wall-clock time of the newer one, the last
 `activity.list`, the process id, the heading caption and the rows and job rows as shown. The runner
@@ -465,10 +465,11 @@ and GPU figures from the rate between the two recorded reads, each series' lengt
 count, and the job rows, `+N more` and caption from the recorded `activity.list` under the section's
 display rules; it requires at least four samples after the first wait, the finished render listed
 after the second, `footprint` memory with GPU time and unified GPU allocations on the M4, GPU time
-never decreasing across frames, one revision per edit and nothing else, and the collapsed frames'
-reads and samples unchanged across the last wait. While the editor runs, the runner reads the same
+never decreasing across frames, one revision per edit and nothing else, the collapsed frames'
+reads and samples unchanged across their wait, and the reopened frame holding one sample from one
+more read, a fresh window read at once. While the editor runs, the runner reads the same
 pid with `ps -o rss=` every 100 ms and `footprint -f bytes --noCategories` on every other poll,
-which needs no privileges for the same user; each expanded frame's recorded resident memory and footprint must
+which needs no privileges for the same user; each expanded frame after the open (whose first reads can precede the runner's first reading) must have its recorded resident memory and footprint
 lie between the runner's last reading at or before the sample's wall-clock time and its first
 reading after it, within 8 MiB. While the editor idles the three agree to the byte. The readings are
 in `process-readings.json` beside `app/`, and `app/performance-checks.json` records every comparison

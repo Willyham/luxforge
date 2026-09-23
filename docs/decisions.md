@@ -48,6 +48,7 @@ Decided on 2026-09-21:
 
 Decided on 2026-09-23:
 
+- The state panel's [Performance section](design/performance-panel.md#decisions) starts open on every launch. Memory is shown in binary units with Activity Monitor's MB and GB labels, and CPU as a percentage of one core, so it passes 100% whenever more than one core is busy.
 - A module whose controls are a single group shows them without a sub-group header: a header naming the module's only group, such as RAW's "RAW development" or Transforms' "Exact transforms", repeats the band above it. The band keeps the module's reset. Descriptors and the API are unchanged.
 
 ## Basic adjustments and histogram
@@ -126,7 +127,6 @@ Tracked in [product decisions](../tasks/product-decisions.json).
 - What is the first external module the owner would use, and what enablement and recovery behavior does it need?
 - For the proposed [Corrections module](design/corrections.md), should AI Remove enter the accepted scope, and should a changed RAW source-development prefix require regeneration of a saved AI patch? Remote-photo consent is per asset by the [module capabilities](#module-capabilities) default.
 - Which measured workloads and responsiveness budgets become acceptance requirements?
-- Should the [Performance section](design/performance-panel.md#open-decisions) open collapsed on every launch, as built, or remember its state once host-owned app settings exist, and do Activity Monitor's units (binary sizes labelled MB and GB, CPU as percent of one core) stand?
 - Which of the [presets defaults](design/presets.md#decisions-taken-on-defaults) stand, and should RAW white balance import get a calibrated conversion?
 - Which of the [Presence, colour mixer and vignette proposals](design/presence-mixer-vignette.md#proposals-with-recorded-defaults) (section names, stage order, mixer layout, vignette style, JPEG spatial precision, spatial gesture latency, sample cost) stand? Implementation was authorized on 2026-09-22 on the recorded defaults and is delivered; the owner refines the defaults after review, including whether spatial sliders should draft at a bounded resolution now that the measured misses are recorded.
 
