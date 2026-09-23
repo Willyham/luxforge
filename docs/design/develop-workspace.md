@@ -171,6 +171,7 @@ The delivered generated panel already renders every control above; the proposal 
 | Accent | `#e2b46a` | Current entry, active mode, non-neutral dot, dragging thumb, Apply |
 | Clipping | `#e5534b` / `#4c8be0` | Highlight and shadow indicators and overlays only |
 | Clipping, both | `#e553e0` | A cell at both endpoints. Not a third invented colour: the highlight red's red and green with the shadow blue's blue, which is what "red and blue at once" means |
+| Mask overlay | `#3fd07a` / `#f2f2f5` | The mask overlay's tints, green and white, chosen by the client. Reserved for the mask overlay, and kept a measured distance from every clipping colour so the two indicators are never confused |
 | Histogram channels | `#ff4d4d` / `#4dff7a` / `#4d9aff` at 55% | The three overlapping channel fills; a full overlap reads as the grey the histogram contract describes |
 
 System UI face (SF Pro on macOS, the platform default elsewhere), 12 pt controls, 13 pt semibold titles, 11 pt captions, 10.5 pt capitalised section labels. Tabular numerals are not available through Iced, so values are right-aligned in a fixed-width box instead. 8 pt spacing grid, 6 pt radii, 1 px borders, no gradients or blur; a 30% white guide colour for the thirds overlay. Invalid values and unavailable reasons use the clipping red, as the components board draws them. Dark only; a light theme is not planned. The tokens live in `crates/lightwell-ui/src/theme.rs` with a test per value.

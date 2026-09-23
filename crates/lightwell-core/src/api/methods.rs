@@ -2,7 +2,8 @@
 //! every module action resolves to a generated `edit.<action>` method from the same registry, so
 //! discovery, event emission and dispatch cannot drift apart.
 use super::{
-    ApiRequest, ApiResponse, COMPONENT_GALLERY_PAGE_COUNT, ClientSession, POINTER_MODE, PROTOCOL,
+    ApiRequest, ApiResponse, COMPONENT_GALLERY_PAGE_COUNT, ClientSession, MaskOverlayColour,
+    MaskOverlayMode, POINTER_MODE, PROTOCOL,
 };
 use crate::{
     ActionDescriptor, AssetId, ComponentId, Draft, DraftId, EditorService, EntryId, Error,
@@ -233,6 +234,14 @@ pub(super) const METHODS: &[MethodSpec] = &[
             (
                 "clip_highlights",
                 "bool; show the highlight clipping overlay",
+            ),
+            (
+                "mask_overlay",
+                "off, tint, mask-on-black or image-on-black; what the canvas draws of the selected mask",
+            ),
+            (
+                "mask_overlay_colour",
+                "green or white; the tint the mask overlay is drawn in",
             ),
             (
                 "component_gallery",
@@ -1011,6 +1020,10 @@ fn workspace_set(
         thirds: Option<bool>,
         clip_shadows: Option<bool>,
         clip_highlights: Option<bool>,
+        // Taken as strings so an unknown one is refused with the vocabulary spelled out, as `mode`
+        // is, rather than with serde's report of an unmatched variant.
+        mask_overlay: Option<String>,
+        mask_overlay_colour: Option<String>,
         #[serde(default, deserialize_with = "present_nullable_page")]
         component_gallery: Option<Option<usize>>,
     }
@@ -1025,6 +1038,32 @@ fn workspace_set(
             ));
         }
     }
+    let mask_overlay = match &p.mask_overlay {
+        None => None,
+        Some(value) => Some(MaskOverlayMode::parse(value).ok_or_else(|| {
+            Error::new(
+                ErrorKind::Validation,
+                format!(
+                    "mask_overlay must be one of {}",
+                    MaskOverlayMode::ALL.map(MaskOverlayMode::as_str).join(", ")
+                ),
+            )
+        })?),
+    };
+    let mask_overlay_colour = match &p.mask_overlay_colour {
+        None => None,
+        Some(value) => Some(MaskOverlayColour::parse(value).ok_or_else(|| {
+            Error::new(
+                ErrorKind::Validation,
+                format!(
+                    "mask_overlay_colour must be one of {}",
+                    MaskOverlayColour::ALL
+                        .map(MaskOverlayColour::as_str)
+                        .join(", ")
+                ),
+            )
+        })?),
+    };
     if let Some(Some(page)) = p.component_gallery
         && page >= COMPONENT_GALLERY_PAGE_COUNT
     {
@@ -1054,6 +1093,14 @@ fn workspace_set(
     }
     if let Some(clip_highlights) = p.clip_highlights {
         session.workspace.clip_highlights = clip_highlights;
+    }
+    // The mask overlay is the same kind of view state: it chooses what the canvas draws of the
+    // selected mask and commits nothing.
+    if let Some(mode) = mask_overlay {
+        session.workspace.mask_overlay = mode;
+    }
+    if let Some(colour) = mask_overlay_colour {
+        session.workspace.mask_overlay_colour = colour;
     }
     if let Some(page) = p.component_gallery {
         session.workspace.component_gallery = page;
@@ -1630,6 +1677,8 @@ mod tests {
                 "clip_highlights",
                 "clip_shadows",
                 "component_gallery",
+                "mask_overlay",
+                "mask_overlay_colour",
                 "mode",
                 "state_panel",
                 "thirds",
@@ -2280,6 +2329,8 @@ mod tests {
                 "thirds": false,
                 "clip_shadows": false,
                 "clip_highlights": false,
+                "mask_overlay": "off",
+                "mask_overlay_colour": "green",
                 "component_gallery": null,
             }),
             "a fresh session opens with both panels, the pointer and no overlay"
@@ -2299,6 +2350,8 @@ mod tests {
                 "thirds": true,
                 "clip_shadows": false,
                 "clip_highlights": false,
+                "mask_overlay": "off",
+                "mask_overlay_colour": "green",
                 "component_gallery": null,
             })
         );

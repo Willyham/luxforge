@@ -265,7 +265,9 @@ While it is active the tools panel shows the **Masks panel** in place of the mod
 
 Canvas behaviour: the selected component draws its handles (linear: the three lines with an end handle each and a rotation grip on the midpoint; radial: the ellipse with four radius handles, a centre handle, a rotation grip and a feather ring; brush: the cursor's size and feather circles). `[` and `]` change brush size, `Shift+[` and `Shift+]` feather, holding Option/Alt erases while the stroke lasts. An in-progress stroke is drawn on the canvas by the desktop as the pointer moves, so path feedback never waits on a render, and the drafted picture follows one frame behind it exactly as a slider's does.
 
-The **overlay** is per-client view state through `workspace.set {mask_overlay, mask_overlay_colour}`: off, a tinted overlay of the selected mask (red by default), the mask alone on black, or the image through the mask on black. It is computed by the preview worker beside the frame it already renders, as one byte per display cell on the grid the clipping overlay already defines and bounds, so it costs no second render and allocates no full-resolution plane. `Shift+M` toggles it; `O` keeps meaning thirds everywhere.
+The **overlay** is per-client view state through `workspace.set {mask_overlay, mask_overlay_colour}`: `off`, `tint` — a tinted overlay of the selected mask — `mask-on-black`, the mask alone on black, or `image-on-black`, the image through the mask on black. It is computed by the preview worker beside the frame it already renders, as one byte per display cell on the grid the clipping overlay already defines and bounds, so it costs no second render and allocates no full-resolution plane. One component's own grid is asked for by naming its `ComponentId` beside the mask, which is what lets hovering a row show that row's contribution. `Shift+M` toggles it; `O` keeps meaning thirds everywhere.
+
+The tint is `green` or `white`, defaulting to green, and the two tokens are held a measured distance from every clipping colour. Lightroom's red is deliberately not offered: the delivered clipping indicators already own red, blue and the magenta between them on this canvas, and a tint a person cannot tell apart from a clipping indicator is worse than no tint at all. Whether to keep red out, or to move the clipping palette instead, is [proposal P11](#proposals-with-recorded-defaults).
 
 Leaving Mask mode returns the tools panel. A mask's layers stay in the recipe list on the left, grouped under their mask's name with the mask's own row, so the durable processing order stays visible where it has always been.
 
@@ -389,6 +391,7 @@ Each is the owner's to decide. The default is what the work runs on if implement
 | P8 | Should Mask mode replace the tools panel, or sit beside it? | Replace it while the mode is active, as the crop draft holds its own section open today |
 | P10 | How far outside the frame may a stored position sit? | **Decided 2026-09-23: `[-1, 2]`**, one stage extent of overshoot per side, on the [mask study](mask-study.md)'s recommendation. Nothing in the frozen mathematics depends on it |
 | P9 | Phase order | A, B, C, D as listed; brushes before range selections, because a brush is what makes a gradient usable |
+| P11 | What colour is the mask overlay tint? | Green (default) or white, with red not offered, because the delivered [clipping tokens](develop-workspace.md) already own red, blue and magenta on the canvas and an overlay must be distinguishable from them. This replaces the earlier "red by default", which was taken from Lightroom before those tokens existed. The alternative is to move the clipping palette instead, which is a larger change to a shipped indicator |
 
 ## References
 

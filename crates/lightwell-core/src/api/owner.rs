@@ -2,7 +2,7 @@
 use super::{ApiEvent, ApiRequest, ApiResponse, ClientSession, EventsResult, methods};
 use crate::{
     AnalysisPlan, AnalysisSelection, AssetId, DraftId, EditorService, EditorState, EntryId, Error,
-    ErrorKind, JobId, ModuleRegistry, PreviewJob, ProxyBounds,
+    ErrorKind, JobId, MaskOverlayRequest, ModuleRegistry, PreviewJob, ProxyBounds,
     analysis::{AnalysisIdentity, AnalysisJob, AnalysisQueue, AnalysisRead, AnalysisStore, Report},
     editor::{PreparedFile, RawDevelopment, SourceSignature},
     source::RawPrepared,
@@ -89,6 +89,10 @@ pub struct PreviewRequest {
     /// have a proxy phase. `None` asks for the exact path alone. The owner only copies it into the
     /// job; the preview queue decides whether a proxy is worthwhile and builds it on its worker.
     pub proxy: Option<ProxyBounds>,
+    /// Also fill one mask's coverage grid beside the rendered frame, which the worker returns with
+    /// it. The owner validates it against the stack the job will render, so a mask or component the
+    /// stack does not hold refuses the request rather than producing a frame with no overlay.
+    pub mask_overlay: Option<MaskOverlayRequest>,
 }
 
 impl PreviewRequest {
@@ -102,6 +106,7 @@ impl PreviewRequest {
             draft: None,
             analyse: false,
             proxy: None,
+            mask_overlay: None,
         }
     }
     /// Show this entry instead of the current one.
@@ -128,6 +133,12 @@ impl PreviewRequest {
     /// Offer this job a proxy phase at the display bounds the frame will be shown in.
     pub fn proxy(mut self, bounds: ProxyBounds) -> Self {
         self.proxy = Some(bounds);
+        self
+    }
+    /// Fill one mask's coverage grid beside the frame, so the canvas can draw the mask overlay
+    /// without a second render.
+    pub fn mask_overlay(mut self, request: MaskOverlayRequest) -> Self {
+        self.mask_overlay = Some(request);
         self
     }
 }
@@ -792,6 +803,12 @@ fn owner_loop(
                         .map(|mut job| {
                             job.analyse = request.analyse;
                             job
+                        })
+                        .and_then(|job| match request.mask_overlay.clone() {
+                            // Validated against the stack the job will render, which is why it is
+                            // applied here and not copied in like the flags above.
+                            Some(overlay) => job.with_mask_overlay(overlay),
+                            None => Ok(job),
                         })
                 });
                 // A stack whose source is not prepared queues that preparation and answers with
