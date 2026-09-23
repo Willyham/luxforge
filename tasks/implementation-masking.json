@@ -666,7 +666,7 @@
     {
       "id": "TASK-009",
       "description": "Produce the mask overlay on the preview worker as a bounded display-cell grid, and expose the overlay and its colour as per-client workspace state.",
-      "status": "pending",
+      "status": "completed",
       "dependencies": [
         "TASK-004"
       ],
@@ -1089,7 +1089,7 @@
     {
       "id": "TASK-014",
       "description": "Extend the spatial primitive with the same optional mask so Presence runs through a mask, blending at the output rectangle without changing halos, tiling or what a unit reads.",
-      "status": "pending",
+      "status": "completed",
       "dependencies": [
         "TASK-004",
         "TASK-005"
@@ -1270,7 +1270,8 @@
       "extra_context": [
         "The claim this phase makes is that combining mask types is ordinary. The evidence has to show a radial with a subtract brush-free component and an intersect, each component's own overlay, and a reorder that changes the picture in the stated way.",
         "Masked Presence is the first masked stage boundary and its cost is the phase's main risk; report the figures whether they pass or miss.",
-        "Documentation stays current behaviour only."
+        "Documentation stays current behaviour only.",
+        "The masked spatial cost was first measured on a host under a one-minute load average of 87.9, where the identical unmasked 24 MP work read 353 and 543 ms against a delivered quiesced figure of 191 ms. Those absolute milliseconds are not quotable and the performance plan says so; what held were the ratios and the exact tile counters. A quiesced re-measurement is outstanding and is this task's to make."
       ],
       "context_links": [
         {
