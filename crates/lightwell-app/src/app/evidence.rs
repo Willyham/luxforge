@@ -12,7 +12,6 @@ use crate::{
         tasks::{HostAnswer, host_task, mutation, workspace_task},
     },
     crop_draft::{Corner, Handle},
-    mask_draft::MaskDraft,
     state::{
         presets::{PresetRow, presettable_groups},
         tools::crop_frame,
@@ -127,56 +126,155 @@ pub(crate) enum Step {
     /// Import one file through the section's own import task, bypassing only the native dialog.
     /// The path is as the script wrote it, relative to the editor's working directory.
     PresetImport(String),
-    /// One Masks-panel view or gesture state, by position in the list.
+    /// One Masks-panel view or mask-canvas gesture, through the same [`MaskMessage`] the panel's
+    /// rows, buttons and the canvas raise.
     Mask(MaskStep),
 }
 
-/// What one `mask` step does to the Masks panel.
+/// How a script names a mask or a component.
 ///
-/// Each verb is one of the panel's own gestures, so a script drives the Masks panel through exactly
-/// the messages a pointer sends and the requests that reach the owner are the panel's own. The step
-/// kind spells no method name of its own: a gesture commits through the draft lifecycle and a row
-/// edit through the panel's one row-command builder, which is what the Copy as JSON request beside
-/// it reads too.
+/// `mask.create-<kind>` assigns the identity, so a script that creates a mask in one step has no
+/// identity to write into the next one. The display name the host gave it — `Mask 1`, `Linear 1` —
+/// is what a script written before the run can put there instead, resolved against the `mask.list`
+/// answer the editor is holding when the step runs; a name that matches nothing, or more than one
+/// row, fails the step rather than guessing. A position in the list is the third spelling, for the
+/// steps that drive the panel as a pointer does, where the row and not its name is what the gesture
+/// means.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum Reference {
+    /// The identity itself, written as a plain string.
+    Id(String),
+    /// The name the host gave it, written as `{"name": "…"}`.
+    Name(String),
+    /// A position in the list the panel shows, written as a bare integer.
+    Index(usize),
+}
+
+impl Reference {
+    fn record(&self) -> Value {
+        match self {
+            Self::Id(id) => json!(id),
+            Self::Name(name) => json!({ "name": name }),
+            Self::Index(index) => json!(index),
+        }
+    }
+
+    /// A reference as it may be written anywhere a script names a mask or a component: the identity
+    /// as a plain string, `{"name": "…"}`, or a position in the list.
+    fn parse(value: &Value, field: &str) -> Result<Self, String> {
+        match value {
+            Value::String(id) if !id.trim().is_empty() => Ok(Self::Id(id.clone())),
+            Value::Number(index) => index
+                .as_u64()
+                .map(|index| Self::Index(index as usize))
+                .ok_or_else(|| format!("{field} takes a position in the list, not {index}")),
+            Value::Object(object) => {
+                let (key, value) = sole(object)?;
+                match (key, value.as_str()) {
+                    ("name", Some(name)) if !name.trim().is_empty() => {
+                        Ok(Self::Name(name.to_owned()))
+                    }
+                    ("name", _) => Err(format!("{field} name takes a non-empty string")),
+                    (other, _) => Err(format!(
+                        "unknown {field} reference field {other}; expected name"
+                    )),
+                }
+            }
+            _ => Err(format!(
+                "{field} takes an identity, {{\"name\": \"…\"}} or a position in the list"
+            )),
+        }
+    }
+}
+
+/// A reference where naming nothing is the other choice: `null` clears a selection, or takes the
+/// pointer off the list.
+fn reference_or_null(reference: &Option<Reference>) -> Value {
+    reference.as_ref().map_or(Value::Null, Reference::record)
+}
+
+/// What one `mask` step does to the Masks panel or to the shape on the canvas.
 ///
-/// Positions are used rather than identities because a script is written before the run and every
-/// identity in it is minted during the run.
+/// Each verb is one of the panel's own gestures, so a script drives it through exactly the messages
+/// a pointer sends and the requests that reach the owner are the panel's own. The step kind spells
+/// no method name of its own: a gesture commits through the draft lifecycle and a row edit through
+/// the panel's one row-command builder, which is what the Copy as JSON request beside it reads too.
+///
+/// Geometry travels in normalized content coordinates, which is exactly what the canvas publishes
+/// after mapping the pointer through `render.transform`'s affine.
 ///
 /// One verb per step, and one captured frame per step, so a frame is evidence of one thing.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) enum MaskStep {
-    /// Open the mask at this position in the list.
-    Select(usize),
-    /// Select the component at this position in the open mask, or clear the selection.
-    Component(Option<usize>),
+    /// Open one mask, as clicking its row does.
+    Select(Reference),
+    /// Select one component of the open mask, which shows its handles and its number fields, or
+    /// clear the selection.
+    SelectComponent(Option<Reference>),
     /// Put the pointer on that component's row, or take it off the list. While a row is hovered the
     /// overlay shows that component's own contribution instead of the composed mask.
-    Hover(Option<usize>),
-    /// Reopen that component's geometry as a canvas gesture, so its handles are drawn.
-    Edit(usize),
+    Hover(Option<Reference>),
+    /// Reopen one component's geometry as a canvas gesture, so its handles are drawn.
+    EditShape(Reference),
     /// The mode the next Add gesture will use, chosen before the gesture as the Add row does.
     Mode(String),
-    /// Start a gesture that will create a new mask whose first component is of this kind.
+    /// Begin a gesture that creates a mask whose first component is of this kind.
     New(String),
-    /// Start a gesture that adds a component of this kind to the open mask, in the chosen mode.
+    /// Begin a gesture that adds a component of this kind to the open mask, in the chosen mode.
     Add(String),
-    /// Draw the open gesture's shape in one stroke, from the press to the pointer.
-    Sweep([f64; 4]),
+    /// A whole shape drawn in one stroke: the press at `from`, the pointer at `to`. The pointer is
+    /// still down afterwards, exactly as it is mid-drag, so the release is a step of its own.
+    Sweep { from: [f64; 2], to: [f64; 2] },
+    /// The pointer lifted. The shape it drew stays; committing it is a separate decision.
+    Release,
+    /// A press on one drawn handle, the points it is dragged through, and its release.
+    Drag {
+        handle: String,
+        points: Vec<[f64; 2]>,
+    },
     /// Commit the open gesture: one history entry.
     Apply,
     /// Discard the open gesture.
     Cancel,
-    /// One component row's own list edit, by that row's position.
-    Row { component: usize, edit: RowStep },
+    /// One component row's own list edit, on the row it names rather than on whichever component
+    /// happens to be selected.
+    Row { component: Reference, edit: RowStep },
 }
 
-/// What one component row's control does, before its position is resolved to an identity.
+/// What one component row's control does, before its row is resolved to an identity.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum RowStep {
     Mode(String),
     Invert(bool),
     Move(usize),
     Delete,
+}
+
+impl MaskStep {
+    fn record(&self) -> Value {
+        match self {
+            Self::Select(mask) => json!({ "select": mask.record() }),
+            Self::SelectComponent(component) => {
+                json!({ "select_component": reference_or_null(component) })
+            }
+            Self::Hover(component) => json!({ "hover": reference_or_null(component) }),
+            Self::EditShape(component) => json!({"edit_shape": component.record()}),
+            Self::Mode(mode) => json!({ "mode": mode }),
+            Self::New(kind) => json!({ "new": kind }),
+            Self::Add(kind) => json!({ "add": kind }),
+            Self::Sweep { from, to } => json!({"sweep":{"from":from,"to":to}}),
+            Self::Release => json!({ "release": true }),
+            Self::Drag { handle, points } => json!({"drag":{"handle":handle,"points":points}}),
+            Self::Apply => json!({ "apply": true }),
+            Self::Cancel => json!({ "cancel": true }),
+            Self::Row { component, edit } => json!({"row": match edit {
+                RowStep::Mode(mode) => json!({"component":component.record(),"mode":mode}),
+                RowStep::Invert(invert) => json!({"component":component.record(),"invert":invert}),
+                RowStep::Move(index) => json!({"component":component.record(),"index":index}),
+                RowStep::Delete => json!({"component":component.record(),"delete":true}),
+            }}),
+        }
+    }
 }
 
 /// One library preset, by its exact name, and by its group when two groups hold that name. A step
@@ -506,26 +604,7 @@ impl Step {
                 json!({"preset_create":value})
             }
             Self::PresetImport(path) => json!({"preset_import":{"path":path}}),
-            Self::Mask(step) => json!({
-                "mask": match step {
-                    MaskStep::Select(index) => json!({ "select": index }),
-                    MaskStep::Component(index) => json!({ "component": index }),
-                    MaskStep::Hover(index) => json!({ "hover": index }),
-                    MaskStep::Edit(index) => json!({ "edit": index }),
-                    MaskStep::Mode(mode) => json!({ "mode": mode }),
-                    MaskStep::New(kind) => json!({ "new": kind }),
-                    MaskStep::Add(kind) => json!({ "add": kind }),
-                    MaskStep::Sweep(points) => json!({ "sweep": points }),
-                    MaskStep::Apply => json!("apply"),
-                    MaskStep::Cancel => json!("cancel"),
-                    MaskStep::Row { component, edit } => json!({"row": match edit {
-                        RowStep::Mode(mode) => json!({"component":component,"mode":mode}),
-                        RowStep::Invert(invert) => json!({"component":component,"invert":invert}),
-                        RowStep::Move(index) => json!({"component":component,"index":index}),
-                        RowStep::Delete => json!({"component":component,"delete":true}),
-                    }}),
-                }
-            }),
+            Self::Mask(step) => json!({ "mask": step.record() }),
         }
     }
 }
@@ -684,169 +763,6 @@ impl Editor {
         }
     }
 
-    /// One Masks-panel view or gesture state, by position.
-    ///
-    /// Every one of these changes what the overlay is asked for, so the step waits for the coverage
-    /// grid's own texture when the overlay is on — settling on the frame would capture the
-    /// photograph before the grid it is evidence of reached the GPU — and for the frame itself when
-    /// it is off.
-    fn mask_step(&mut self, step: MaskStep) -> Task<Message> {
-        if self.state.is_none() {
-            return self.fail_step("no photograph is open");
-        }
-        if !self.mask_mode_active() {
-            return self.fail_step("a mask step needs Mask mode");
-        }
-        let masks: Vec<_> = self
-            .masks
-            .as_ref()
-            .map(|listing| listing.masks.clone())
-            .unwrap_or_default();
-        let component = |index: usize| -> Result<String, String> {
-            let open = self.selected_mask.as_ref().ok_or("no mask is open")?;
-            let report = masks
-                .iter()
-                .find(|report| &report.id == open)
-                .ok_or("the open mask is no longer listed")?;
-            report
-                .components
-                .get(index)
-                .map(|component| component.id.as_str().to_owned())
-                .ok_or_else(|| {
-                    format!(
-                        "{} holds {} components",
-                        report.name,
-                        report.components.len()
-                    )
-                })
-        };
-        // A gesture that opens has no frame of its own until the draft's preview arrives, so the
-        // step says so if the panel refused it rather than waiting for one that never comes.
-        let opening = matches!(
-            step,
-            MaskStep::Edit(_) | MaskStep::New(_) | MaskStep::Add(_)
-        );
-        let message = match step {
-            MaskStep::Select(index) => match masks.get(index) {
-                Some(report) => MaskMessage::Select(report.id.as_str().to_owned()),
-                None => return self.fail_step(format!("the stack holds {} masks", masks.len())),
-            },
-            // A selection opens that row's own numbers and renders nothing: the overlay follows the
-            // pointer, not the selection, so the step is captured on the next frame rather than
-            // waiting for pixels nothing asked for.
-            MaskStep::Component(index) => {
-                let task = match index {
-                    Some(index) => match component(index) {
-                        Ok(id) => self.update(Message::Mask(MaskMessage::SelectComponent(id))),
-                        Err(reason) => return self.fail_step(reason),
-                    },
-                    None => {
-                        self.selected_component = None;
-                        self.seed_mask_fields();
-                        Task::none()
-                    }
-                };
-                self.note_step(json!({"masks": self.workspace.masks.summary()}));
-                self.capture_next_frame();
-                return task;
-            }
-            MaskStep::Hover(Some(index)) => match component(index) {
-                Ok(id) => MaskMessage::Hover(Some(id)),
-                Err(reason) => return self.fail_step(reason),
-            },
-            MaskStep::Hover(None) => MaskMessage::Hover(None),
-            MaskStep::Edit(index) => match component(index) {
-                Ok(id) => MaskMessage::EditShape(id),
-                Err(reason) => return self.fail_step(reason),
-            },
-            // Choosing the next component's mode changes no pixel and asks for nothing: it is the
-            // Add row's own state, and its captured frame is the panel showing that choice.
-            MaskStep::Mode(mode) => {
-                let Some(index) = crate::state::masks::MODES
-                    .iter()
-                    .position(|known| known.as_str() == mode)
-                else {
-                    return self.fail_step(format!("no component mode is called {mode}"));
-                };
-                let task = self.update(Message::Mask(MaskMessage::SetAddMode(index)));
-                self.capture_next_frame();
-                return task;
-            }
-            MaskStep::New(kind) => MaskMessage::New(kind),
-            MaskStep::Add(kind) => MaskMessage::Add(kind),
-            MaskStep::Sweep([x0, y0, x1, y1]) => {
-                if self.mask_draft.is_none() {
-                    return self.fail_step("no mask gesture is open to draw into");
-                }
-                self.await_step(self.mask_settle());
-                let sweep = self.update(Message::Mask(MaskMessage::Handle(
-                    crate::app::message::MaskPointer::Sweep {
-                        from: (x0, y0),
-                        to: (x1, y1),
-                    },
-                )));
-                let end = self.update(Message::Mask(MaskMessage::Handle(
-                    crate::app::message::MaskPointer::End,
-                )));
-                self.note_step(json!({"draft": self.mask_draft.as_ref().map(MaskDraft::summary)}));
-                return Task::batch([sweep, end]);
-            }
-            MaskStep::Apply => {
-                if self.mask_draft.is_none() {
-                    return self.fail_step("no mask gesture is open to apply");
-                }
-                MaskMessage::Apply
-            }
-            MaskStep::Cancel => {
-                if self.mask_draft.is_none() {
-                    return self.fail_step("no mask gesture is open to cancel");
-                }
-                MaskMessage::Cancel
-            }
-            MaskStep::Row {
-                component: at,
-                edit,
-            } => {
-                let id = match component(at) {
-                    Ok(id) => id,
-                    Err(reason) => return self.fail_step(reason),
-                };
-                MaskMessage::Row(match edit {
-                    RowStep::Mode(mode) => RowEdit::ComponentMode {
-                        component: id,
-                        mode,
-                    },
-                    RowStep::Invert(invert) => RowEdit::ComponentInvert {
-                        component: id,
-                        invert,
-                    },
-                    RowStep::Move(index) => RowEdit::MoveComponent {
-                        component: id,
-                        index,
-                    },
-                    RowStep::Delete => RowEdit::DeleteComponent(id),
-                })
-            }
-        };
-        // A row edit that the panel refuses sends nothing, so the step would wait for a frame
-        // nothing arms. Whether one went out is read from the request the panel records as it sends
-        // it, which is also what the refusal replaces.
-        let sending = matches!(message, MaskMessage::Row(_));
-        self.last_mask_request = None;
-        self.await_step(self.mask_settle());
-        let task = self.update(Message::Mask(message));
-        let refused =
-            (opening && self.mask_draft.is_none()) || (sending && self.last_mask_request.is_none());
-        if refused {
-            // The refusal's own reason is the evidence, captured on the frame that is on screen.
-            let reason = self.status.clone();
-            self.note_step(json!({"masks": self.workspace.masks.summary()}));
-            return self.fail_step(reason);
-        }
-        self.note_step(json!({"masks": self.workspace.masks.summary()}));
-        task
-    }
-
     /// One owner request with the desktop's own envelope: the current revision and a fresh request
     /// id, exactly as a control would send it. The frame is captured when its pixels arrive.
     ///
@@ -854,6 +770,9 @@ impl Editor {
     /// as written instead, with the open asset's identity only when it names one, and its frame is
     /// captured when it answers. Which kind a method is comes from the method table's own schema.
     fn api_step(&mut self, method: String, mut params: Map<String, Value>) -> Task<Message> {
+        if let Err(reason) = self.resolve_identities(&mut params) {
+            return self.fail_step(reason);
+        }
         if let Some(takes_asset) = envelope_free(&method) {
             if takes_asset && let Some(state) = &self.state {
                 params.insert("asset_id".into(), json!(state.asset.id));
@@ -887,6 +806,320 @@ impl Editor {
             .extend(params);
         self.begin_request();
         self.command(method, request)
+    }
+
+    /// Replace a `{"name": …}` reference in a request's `mask` or `component` envelope field with
+    /// the identity the host assigned to it, and record both beside the step.
+    ///
+    /// This is what lets one script create a mask and then edit through it: `mask.create-<kind>`
+    /// assigns the identity, so the step that follows has nothing to write down but the name.
+    /// Resolution reads the `mask.list` answer the editor is already holding, which the commit of
+    /// every mutation refreshes, so a name resolves against the same listing the panel shows.
+    fn resolve_identities(&mut self, params: &mut Map<String, Value>) -> Result<(), String> {
+        let mut resolved = Map::new();
+        let mut mask: Option<String> = None;
+        if let Some(value) = params.get("mask").cloned() {
+            let id = self.resolve_mask(&Reference::parse(&value, "mask")?)?;
+            resolved.insert("mask".into(), json!(id));
+            params.insert("mask".into(), json!(id));
+            mask = Some(id);
+        }
+        if let Some(value) = params.get("component").cloned() {
+            let reference = Reference::parse(&value, "component")?;
+            let id = self.resolve_component(mask.as_deref(), &reference)?;
+            resolved.insert("component".into(), json!(id));
+            params.insert("component".into(), json!(id));
+        }
+        if !resolved.is_empty() {
+            self.note_step(json!({ "resolved": resolved }));
+        }
+        Ok(())
+    }
+
+    /// One mask's identity, by identity or by the name the host gave it.
+    fn resolve_mask(&self, reference: &Reference) -> Result<String, String> {
+        if let Reference::Id(id) = reference {
+            return Ok(id.clone());
+        }
+        let listing = self
+            .masks
+            .as_ref()
+            .ok_or("no mask listing has been read yet")?;
+        let name = match reference {
+            Reference::Index(index) => {
+                return listing
+                    .masks
+                    .get(*index)
+                    .map(|report| report.id.as_str().to_owned())
+                    .ok_or_else(|| format!("the stack holds {} masks", listing.masks.len()));
+            }
+            Reference::Name(name) => name,
+            Reference::Id(_) => unreachable!("an identity is answered above"),
+        };
+        let mut found = listing.masks.iter().filter(|report| report.name == *name);
+        let first = found
+            .next()
+            .ok_or_else(|| format!("no mask is named {name}"))?;
+        if found.next().is_some() {
+            return Err(format!("more than one mask is named {name}"));
+        }
+        Ok(first.id.as_str().to_owned())
+    }
+
+    /// One component's identity within a mask: the one the request names, else the open one.
+    fn resolve_component(
+        &self,
+        mask: Option<&str>,
+        reference: &Reference,
+    ) -> Result<String, String> {
+        if let Reference::Id(id) = reference {
+            return Ok(id.clone());
+        }
+        let listing = self
+            .masks
+            .as_ref()
+            .ok_or("no mask listing has been read yet")?;
+        let mask = mask
+            .map(str::to_owned)
+            .or_else(|| self.selected_mask.as_ref().map(|id| id.as_str().to_owned()))
+            .ok_or("a component named by name or position needs a mask, named or open")?;
+        let report = listing
+            .masks
+            .iter()
+            .find(|report| report.id.as_str() == mask)
+            .ok_or_else(|| format!("no mask {mask} is listed"))?;
+        let name = match reference {
+            Reference::Index(index) => {
+                return report
+                    .components
+                    .get(*index)
+                    .map(|component| component.id.as_str().to_owned())
+                    .ok_or_else(|| {
+                        format!(
+                            "{} holds {} components",
+                            report.name,
+                            report.components.len()
+                        )
+                    });
+            }
+            Reference::Name(name) => name,
+            Reference::Id(_) => unreachable!("an identity is answered above"),
+        };
+        let mut found = report
+            .components
+            .iter()
+            .filter(|component| component.name == *name);
+        let first = found
+            .next()
+            .ok_or_else(|| format!("{} holds no component named {name}", report.name))?;
+        if found.next().is_some() {
+            return Err(format!(
+                "{} holds more than one component named {name}",
+                report.name
+            ));
+        }
+        Ok(first.id.as_str().to_owned())
+    }
+
+    /// One Masks-panel view or mask-canvas gesture, through the same [`MaskMessage`] the panel's
+    /// rows, buttons and the canvas raise. Geometry arrives in normalized content coordinates,
+    /// which is what the canvas publishes once it has mapped the pointer through
+    /// `render.transform`'s affine.
+    ///
+    /// A gesture that changes the drafted or committed picture settles on that picture's own
+    /// pixels, and on the coverage grid's own texture while the overlay is on — settling on the
+    /// frame would capture the photograph before the grid it is evidence of reached the GPU. One
+    /// that only changes a selection is captured on the next redraw.
+    fn mask_step(&mut self, step: MaskStep) -> Task<Message> {
+        use crate::app::message::MaskPointer;
+        if self.state.is_none() {
+            return self.fail_step("no photograph is open");
+        }
+        if !self.mask_mode_active() {
+            return self.fail_step("a mask step needs Mask mode");
+        }
+        let overlay = self.mask_overlay_request().is_some();
+        // A drag is several messages; every other gesture is exactly one.
+        if let MaskStep::Drag { handle, points } = &step {
+            let Some(handle) = mask_handle(handle) else {
+                return self.fail_step(format!("unknown mask handle {handle}"));
+            };
+            let Some((first, rest)) = points.split_first() else {
+                return self.fail_step("a mask drag needs at least one point");
+            };
+            if self.mask_draft.is_none() {
+                return self.fail_step("no mask gesture is open to drag");
+            }
+            let mut tasks = vec![self.mask_message(MaskMessage::Handle(MaskPointer::Begin {
+                handle,
+                x: first[0],
+                y: first[1],
+            }))];
+            for point in rest {
+                tasks.push(self.mask_message(MaskMessage::Handle(MaskPointer::Drag {
+                    x: point[0],
+                    y: point[1],
+                })));
+            }
+            tasks.push(self.mask_message(MaskMessage::Handle(MaskPointer::End)));
+            self.await_step(self.mask_settle());
+            self.note_step(json!({"masks": self.workspace.masks.summary()}));
+            return Task::batch(tasks);
+        }
+        // What must be true after the message for the frame the step waits for to ever arrive. A
+        // gesture the editor refused raises no round trip, so its refusal is recorded with its own
+        // frame rather than leaving the run waiting for pixels nothing will render.
+        enum Expect {
+            /// Nothing is in flight; the frame is the next redraw.
+            Redraw,
+            /// The overlay is what changes, and nothing can refuse it.
+            Overlay,
+            /// A gesture must now be open.
+            Gesture,
+            /// A round trip must now be in flight.
+            RoundTrip,
+            /// The panel must have sent the row's own command.
+            Request,
+        }
+        let hovering = if overlay {
+            Expect::Overlay
+        } else {
+            Expect::Redraw
+        };
+        let (message, expect) = match step {
+            MaskStep::Select(reference) => match self.resolve_mask(&reference) {
+                Ok(id) => (MaskMessage::Select(id), Expect::Redraw),
+                Err(reason) => return self.fail_step(reason),
+            },
+            // A selection opens that row's own numbers and renders nothing: the overlay follows the
+            // pointer, not the selection, so the step is captured on the next frame rather than
+            // waiting for pixels nothing asked for.
+            MaskStep::SelectComponent(Some(reference)) => {
+                match self.resolve_component(None, &reference) {
+                    Ok(id) => (MaskMessage::SelectComponent(id), Expect::Redraw),
+                    Err(reason) => return self.fail_step(reason),
+                }
+            }
+            MaskStep::SelectComponent(None) => {
+                self.selected_component = None;
+                self.seed_mask_fields();
+                self.note_step(json!({"masks": self.workspace.masks.summary()}));
+                self.capture_next_frame();
+                return Task::none();
+            }
+            MaskStep::Hover(Some(reference)) => match self.resolve_component(None, &reference) {
+                Ok(id) => (MaskMessage::Hover(Some(id)), hovering),
+                Err(reason) => return self.fail_step(reason),
+            },
+            MaskStep::Hover(None) => (MaskMessage::Hover(None), hovering),
+            MaskStep::EditShape(reference) => match self.resolve_component(None, &reference) {
+                Ok(id) => (MaskMessage::EditShape(id), Expect::Gesture),
+                Err(reason) => return self.fail_step(reason),
+            },
+            // Choosing the next component's mode changes no pixel and asks for nothing: it is the
+            // Add row's own state, and its captured frame is the panel showing that choice.
+            MaskStep::Mode(mode) => {
+                let Some(index) = crate::state::masks::MODES
+                    .iter()
+                    .position(|known| known.as_str() == mode)
+                else {
+                    return self.fail_step(format!("no component mode is called {mode}"));
+                };
+                (MaskMessage::SetAddMode(index), Expect::Redraw)
+            }
+            MaskStep::New(kind) => (MaskMessage::New(kind), Expect::Gesture),
+            MaskStep::Add(kind) => (MaskMessage::Add(kind), Expect::Gesture),
+            MaskStep::Sweep { from, to } => {
+                if self.mask_draft.is_none() {
+                    return self.fail_step("no mask gesture is open to sweep");
+                }
+                (
+                    MaskMessage::Handle(MaskPointer::Sweep {
+                        from: (from[0], from[1]),
+                        to: (to[0], to[1]),
+                    }),
+                    Expect::Gesture,
+                )
+            }
+            MaskStep::Release => {
+                if self.mask_draft.is_none() {
+                    return self.fail_step("no mask gesture is open to release");
+                }
+                (MaskMessage::Handle(MaskPointer::End), Expect::Gesture)
+            }
+            MaskStep::Apply => {
+                if self.mask_draft.is_none() {
+                    return self.fail_step("no mask gesture is open to apply");
+                }
+                (MaskMessage::Apply, Expect::RoundTrip)
+            }
+            MaskStep::Cancel => {
+                if self.mask_draft.is_none() {
+                    return self.fail_step("no mask gesture is open to cancel");
+                }
+                (MaskMessage::Cancel, Expect::RoundTrip)
+            }
+            MaskStep::Row {
+                component: at,
+                edit,
+            } => {
+                let id = match self.resolve_component(None, &at) {
+                    Ok(id) => id,
+                    Err(reason) => return self.fail_step(reason),
+                };
+                (
+                    MaskMessage::Row(match edit {
+                        RowStep::Mode(mode) => RowEdit::ComponentMode {
+                            component: id,
+                            mode,
+                        },
+                        RowStep::Invert(invert) => RowEdit::ComponentInvert {
+                            component: id,
+                            invert,
+                        },
+                        RowStep::Move(index) => RowEdit::MoveComponent {
+                            component: id,
+                            index,
+                        },
+                        RowStep::Delete => RowEdit::DeleteComponent(id),
+                    }),
+                    Expect::Request,
+                )
+            }
+            MaskStep::Drag { .. } => unreachable!("a drag is answered above"),
+        };
+        if matches!(expect, Expect::Redraw) {
+            self.capture_next_frame();
+            let task = self.mask_message(message);
+            self.note_step(json!({"masks": self.workspace.masks.summary()}));
+            return task;
+        }
+        // A row edit the panel refuses sends nothing, so the step would wait for a frame nothing
+        // arms. Whether one went out is read from the request the panel records as it sends it,
+        // which is also what the refusal replaces.
+        self.last_mask_request = None;
+        self.await_step(self.mask_settle());
+        let task = self.mask_message(message);
+        let armed = match expect {
+            Expect::Redraw | Expect::Overlay => true,
+            // An open gesture always has a round trip of its own: `draft.begin` while it is
+            // opening, `draft.set` once it has, and a drafted frame at the end of either.
+            Expect::Gesture => self.mask_draft.is_some(),
+            Expect::RoundTrip => {
+                self.mask_draft_in_flight
+                    || self.mask_draft_pending
+                    || self.mask_draft_finish
+                    || self.mask_draft.is_none()
+            }
+            Expect::Request => self.last_mask_request.is_some(),
+        };
+        self.note_step(json!({"masks": self.workspace.masks.summary()}));
+        if armed {
+            return task;
+        }
+        // The refusal's own reason is the evidence, captured on the frame that is on screen.
+        let reason = self.status.clone();
+        Task::batch([task, self.fail_step(reason)])
     }
 
     /// One crop-draft change through its own message, captured on the next rendered frame. Opening a
@@ -1621,15 +1854,32 @@ impl Editor {
                 mask_overlay = true;
             }
         }
+        // A grid only rides the next frame when the overlay will actually draw one: the mode it is
+        // left in is not `off`, Mask mode is the canvas mode and a mask is open. Switching the
+        // overlay off, or switching it on with nothing to draw, still asks for the frame — so the
+        // step settles on those pixels rather than on a texture that will never be uploaded.
+        let leaving_on = step
+            .mask_overlay
+            .as_deref()
+            .unwrap_or(workspace.mask_overlay.as_str())
+            != lightwell_core::MaskOverlayMode::Off.as_str();
+        let entering_mask_mode =
+            step.mode.as_deref().unwrap_or(workspace.mode.as_str()) == lightwell_core::MASK_MODE;
+        let grid_expected = leaving_on && entering_mask_mode && self.selected_mask.is_some();
         if diff.is_empty() {
             self.capture_next_frame();
             return Task::none();
         }
         if mask_overlay {
-            // The session answer is followed by one preview job carrying the coverage grid, and the
-            // grid's own texture a message after that, so the capture waits for the overlay's
-            // pixels rather than for the frame they are drawn over.
-            self.await_step(Settle::MaskOverlay);
+            // The session answer is followed by one preview job, and — when there is a grid to
+            // draw — its own texture a message after that, so the capture waits for the overlay's
+            // pixels rather than for the frame they are drawn over. With nothing to draw, that
+            // texture never arrives and the frame itself is what the step waits for.
+            self.await_step(if grid_expected {
+                Settle::MaskOverlay
+            } else {
+                Settle::Preview
+            });
             let session = workspace_task(self.owner.clone(), self.client, Value::Object(diff));
             let frame = self.refresh_mask_overlay();
             return Task::batch([session, frame]);
@@ -2060,9 +2310,192 @@ fn parse_step(step: &Value) -> Result<Step, String> {
         "preset_import" => parse_preset_import(value),
         "mask" => Ok(Step::Mask(parse_mask(value)?)),
         other => Err(format!(
-            "unknown step kind {other}; expected api, draft, slider, controls, picker, curve, group, tab, section, gallery, tools_scroll, slider_draft, field, reset, pick, view, workspace, preview, palette, hover, mask, preset, preset_create, preset_delete or preset_import"
+            "unknown step kind {other}; expected api, draft, slider, controls, picker, curve, group, tab, section, gallery, tools_scroll, slider_draft, field, reset, pick, view, workspace, preview, palette, hover, preset, preset_create, preset_delete, preset_import or mask"
         )),
     }
+}
+
+/// The handle names a script may write, for the refusal that lists them. The create gesture's own
+/// grab is not among them: it is not drawn, and a sweep is how a script uses it.
+const MASK_HANDLES: &str =
+    "start, middle, end, centre, radius+x, radius-x, radius+y, radius-y, rotation or feather";
+
+/// One drawn handle of a gesture's figure, by the name the design draws it under.
+fn mask_handle(name: &str) -> Option<crate::mask_draft::MaskHandle> {
+    use crate::mask_draft::MaskHandle;
+    match name {
+        "start" => Some(MaskHandle::Start),
+        "middle" => Some(MaskHandle::Middle),
+        "end" => Some(MaskHandle::End),
+        "centre" => Some(MaskHandle::Centre),
+        "radius+x" => Some(MaskHandle::RadiusPlusX),
+        "radius-x" => Some(MaskHandle::RadiusMinusX),
+        "radius+y" => Some(MaskHandle::RadiusPlusY),
+        "radius-y" => Some(MaskHandle::RadiusMinusY),
+        "rotation" => Some(MaskHandle::Rotation),
+        "feather" => Some(MaskHandle::Feather),
+        _ => None,
+    }
+}
+
+/// One `mask` step: `{"mask": {"select": 0}}`, `{"mask": {"hover": null}}`,
+/// `{"mask": {"select_component": {"name": "Linear 1"}}}`,
+/// `{"mask": {"sweep": {"from": [x, y], "to": [x, y]}}}`, `{"mask": {"row": {…}}}` or
+/// `{"mask": {"cancel": true}}`. Exactly one verb per step, so a step's own captured frame is
+/// evidence of one thing.
+fn parse_mask(value: &Value) -> Result<MaskStep, String> {
+    let object = value
+        .as_object()
+        .ok_or("mask takes an object with exactly one key")?;
+    let (key, value) = sole(object)?;
+    let kind = || {
+        value
+            .as_str()
+            .map(str::trim)
+            .filter(|kind| !kind.is_empty())
+            .map(str::to_owned)
+            .ok_or_else(|| format!("mask {key} takes a component kind"))
+    };
+    let word = || {
+        value
+            .as_str()
+            .map(str::trim)
+            .filter(|word| !word.is_empty())
+            .map(str::to_owned)
+            .ok_or_else(|| format!("mask {key} takes a name"))
+    };
+    let requested = || match value.as_bool() {
+        Some(true) => Ok(()),
+        _ => Err(format!("mask {key} takes true")),
+    };
+    // Naming nothing is what clears a selection and what takes the pointer off the list, so those
+    // two verbs take `null` where the others need a row.
+    let optional = || match value {
+        Value::Null => Ok(None),
+        other => Reference::parse(other, "component").map(Some),
+    };
+    match key {
+        "select" => Ok(MaskStep::Select(Reference::parse(value, "mask")?)),
+        "select_component" => Ok(MaskStep::SelectComponent(optional()?)),
+        "hover" => Ok(MaskStep::Hover(optional()?)),
+        "edit_shape" => Ok(MaskStep::EditShape(Reference::parse(value, "component")?)),
+        "mode" => Ok(MaskStep::Mode(word()?)),
+        "new" => Ok(MaskStep::New(kind()?)),
+        "add" => Ok(MaskStep::Add(kind()?)),
+        "sweep" => {
+            let object = value
+                .as_object()
+                .ok_or("mask sweep takes an object with from and to")?;
+            for name in object.keys() {
+                if !matches!(name.as_str(), "from" | "to") {
+                    return Err(format!("unknown mask sweep field {name}"));
+                }
+            }
+            Ok(MaskStep::Sweep {
+                from: content_point(object.get("from"), "mask sweep from")?,
+                to: content_point(object.get("to"), "mask sweep to")?,
+            })
+        }
+        "drag" => {
+            let object = value
+                .as_object()
+                .ok_or("mask drag takes an object with a handle and its points")?;
+            for name in object.keys() {
+                if !matches!(name.as_str(), "handle" | "points") {
+                    return Err(format!("unknown mask drag field {name}"));
+                }
+            }
+            let handle = object
+                .get("handle")
+                .and_then(Value::as_str)
+                .ok_or_else(|| format!("mask drag needs a handle of {MASK_HANDLES}"))?;
+            if mask_handle(handle).is_none() {
+                return Err(format!(
+                    "unknown mask handle {handle}; expected {MASK_HANDLES}"
+                ));
+            }
+            let points = object
+                .get("points")
+                .and_then(Value::as_array)
+                .ok_or("mask drag needs a points array")?
+                .iter()
+                .map(|point| content_point(Some(point), "mask drag point"))
+                .collect::<Result<Vec<_>, _>>()?;
+            if points.is_empty() {
+                return Err("mask drag needs at least one point".into());
+            }
+            Ok(MaskStep::Drag {
+                handle: handle.to_owned(),
+                points,
+            })
+        }
+        "release" => requested().map(|()| MaskStep::Release),
+        "apply" => requested().map(|()| MaskStep::Apply),
+        "cancel" => requested().map(|()| MaskStep::Cancel),
+        "row" => parse_mask_row(value),
+        other => Err(format!(
+            "unknown mask step {other}; expected select, select_component, hover, edit_shape, mode, new, add, sweep, release, drag, apply, cancel or row"
+        )),
+    }
+}
+
+/// `{"row": {"component": REF, "mode": "subtract" | "invert": true | "index": N | "delete": true}}`:
+/// one row control, by the row it belongs to and the one value it changes.
+fn parse_mask_row(value: &Value) -> Result<MaskStep, String> {
+    const SHAPE: &str = "mask row takes a component and one of mode, invert, index or delete";
+    let object = value.as_object().ok_or(SHAPE)?;
+    let component = Reference::parse(
+        object
+            .get("component")
+            .ok_or("mask row needs the component it edits")?,
+        "component",
+    )?;
+    let mut edit = None;
+    for (key, value) in object {
+        let chosen = match key.as_str() {
+            "component" => continue,
+            "mode" => RowStep::Mode(
+                value
+                    .as_str()
+                    .ok_or("mask row mode takes a declared mode")?
+                    .to_owned(),
+            ),
+            "invert" => RowStep::Invert(value.as_bool().ok_or("mask row invert takes a flag")?),
+            "index" => {
+                RowStep::Move(value.as_u64().ok_or("mask row index takes a position")? as usize)
+            }
+            "delete" => {
+                if value.as_bool() != Some(true) {
+                    return Err("mask row delete takes true".to_owned());
+                }
+                RowStep::Delete
+            }
+            other => return Err(format!("unknown mask row field {other}")),
+        };
+        if edit.replace(chosen).is_some() {
+            return Err(SHAPE.to_owned());
+        }
+    }
+    Ok(MaskStep::Row {
+        component,
+        edit: edit.ok_or(SHAPE)?,
+    })
+}
+
+/// One normalized content position, in the stored range the mask study froze.
+fn content_point(value: Option<&Value>, field: &str) -> Result<[f64; 2], String> {
+    let pair = value
+        .and_then(Value::as_array)
+        .filter(|pair| pair.len() == 2)
+        .ok_or_else(|| format!("{field} takes [x, y]"))?;
+    let mut point = [0.0; 2];
+    for (slot, value) in point.iter_mut().zip(pair) {
+        *slot = value
+            .as_f64()
+            .filter(|value| value.is_finite() && (-1.0..=2.0).contains(value))
+            .ok_or_else(|| format!("{field} takes finite normalized positions from -1 to 2"))?;
+    }
+    Ok(point)
 }
 
 fn finish(object: &Map<String, Value>, step: &str) -> Result<SliderEnd, String> {
@@ -2679,109 +3112,6 @@ pub(crate) fn envelope_free(method: &str) -> Option<bool> {
     )
 }
 
-/// `{"mask": {"select": 0}}`, `{"mask": {"component": 1}}`, `{"mask": {"hover": null}}`,
-/// `{"mask": {"edit": 1}}` or `{"mask": "cancel"}`. Exactly one verb per step, so a step's own
-/// captured frame is evidence of one thing.
-fn parse_mask(value: &Value) -> Result<MaskStep, String> {
-    const SHAPE: &str = "mask takes one of {\"select\": N}, {\"component\": N or null}, \
-         {\"hover\": N or null}, {\"edit\": N}, {\"mode\": \"add|subtract|intersect\"}, \
-         {\"new\": KIND}, {\"add\": KIND}, {\"sweep\": [x0, y0, x1, y1]}, \
-         {\"row\": {\"component\": N, …}}, \"apply\" or \"cancel\"";
-    match value.as_str().map(str::trim) {
-        Some("apply") => return Ok(MaskStep::Apply),
-        Some("cancel") => return Ok(MaskStep::Cancel),
-        Some(_) => return Err(SHAPE.to_owned()),
-        None => {}
-    }
-    let object = value.as_object().ok_or(SHAPE)?;
-    let [(key, value)] = object.iter().collect::<Vec<_>>()[..] else {
-        return Err(SHAPE.to_owned());
-    };
-    let index = |value: &Value| -> Result<usize, String> {
-        value
-            .as_u64()
-            .map(|index| index as usize)
-            .ok_or_else(|| format!("mask {key} takes a position in the list"))
-    };
-    let optional = |value: &Value| -> Result<Option<usize>, String> {
-        match value {
-            Value::Null => Ok(None),
-            other => index(other).map(Some),
-        }
-    };
-    let word = |value: &Value| -> Result<String, String> {
-        value
-            .as_str()
-            .map(str::trim)
-            .filter(|word| !word.is_empty())
-            .map(str::to_owned)
-            .ok_or_else(|| format!("mask {key} takes a name"))
-    };
-    match key.as_str() {
-        "select" => index(value).map(MaskStep::Select),
-        "component" => optional(value).map(MaskStep::Component),
-        "hover" => optional(value).map(MaskStep::Hover),
-        "edit" => index(value).map(MaskStep::Edit),
-        "mode" => word(value).map(MaskStep::Mode),
-        "new" => word(value).map(MaskStep::New),
-        "add" => word(value).map(MaskStep::Add),
-        "sweep" => {
-            let points: Vec<f64> = value
-                .as_array()
-                .map(|points| points.iter().filter_map(Value::as_f64).collect())
-                .unwrap_or_default();
-            let [x0, y0, x1, y1] = points[..] else {
-                return Err("mask sweep takes four numbers: x0, y0, x1, y1".to_owned());
-            };
-            Ok(MaskStep::Sweep([x0, y0, x1, y1]))
-        }
-        "row" => parse_mask_row(value),
-        _ => Err(SHAPE.to_owned()),
-    }
-}
-
-/// `{"row": {"component": N, "mode": "subtract" | "invert": true | "index": N | "delete": true}}`:
-/// one row control, by the row's position and the one value it changes.
-fn parse_mask_row(value: &Value) -> Result<MaskStep, String> {
-    const SHAPE: &str =
-        "mask row takes a component position and one of mode, invert, index or delete";
-    let object = value.as_object().ok_or(SHAPE)?;
-    let component = object
-        .get("component")
-        .and_then(Value::as_u64)
-        .ok_or("mask row needs the component's position")? as usize;
-    let mut edit = None;
-    for (key, value) in object {
-        let chosen = match key.as_str() {
-            "component" => continue,
-            "mode" => RowStep::Mode(
-                value
-                    .as_str()
-                    .ok_or("mask row mode takes a declared mode")?
-                    .to_owned(),
-            ),
-            "invert" => RowStep::Invert(value.as_bool().ok_or("mask row invert takes a flag")?),
-            "index" => {
-                RowStep::Move(value.as_u64().ok_or("mask row index takes a position")? as usize)
-            }
-            "delete" => {
-                if value.as_bool() != Some(true) {
-                    return Err("mask row delete takes true".to_owned());
-                }
-                RowStep::Delete
-            }
-            other => return Err(format!("unknown mask row field {other}")),
-        };
-        if edit.replace(chosen).is_some() {
-            return Err(SHAPE.to_owned());
-        }
-    }
-    Ok(MaskStep::Row {
-        component,
-        edit: edit.ok_or(SHAPE)?,
-    })
-}
-
 fn parse_api(value: &Value) -> Result<Step, String> {
     let object = value
         .as_object()
@@ -3206,6 +3536,103 @@ mod tests {
             .expect_err("too many steps")
             .contains("at most")
         );
+    }
+
+    /// Every mask verb parses from the shape a script writes and records itself back in that same
+    /// shape, in all three spellings of a reference: a position, a name and an identity. One
+    /// vocabulary drives both the panel's list edits and the canvas's own gestures, so a script may
+    /// mix them.
+    #[test]
+    fn every_mask_verb_round_trips_its_script() {
+        let script = r#"[{"mask":{"select":0}},
+                {"mask":{"select":{"name":"Mask 1"}}},
+                {"mask":{"select":"01JA00000000000000000000"}},
+                {"mask":{"select_component":1}},
+                {"mask":{"select_component":null}},
+                {"mask":{"hover":{"name":"Linear 1"}}},
+                {"mask":{"hover":null}},
+                {"mask":{"edit_shape":0}},
+                {"mask":{"mode":"subtract"}},
+                {"mask":{"new":"linear"}},
+                {"mask":{"add":"radial"}},
+                {"mask":{"sweep":{"from":[0.5,0.2],"to":[0.5,0.8]}}},
+                {"mask":{"release":true}},
+                {"mask":{"drag":{"handle":"feather","points":[[0.4,0.4],[0.45,0.4]]}}},
+                {"mask":{"apply":true}},
+                {"mask":{"cancel":true}},
+                {"mask":{"row":{"component":1,"mode":"intersect"}}},
+                {"mask":{"row":{"component":{"name":"Radial 1"},"invert":true}}},
+                {"mask":{"row":{"component":0,"index":2}}},
+                {"mask":{"row":{"component":2,"delete":true}}}]"#;
+        let steps = parse_script(script).expect("a valid mask script");
+        let written: Vec<Value> = serde_json::from_str(script).expect("the script is JSON");
+        assert_eq!(steps.len(), written.len());
+        for (step, written) in steps.iter().zip(&written) {
+            assert_eq!(&step.record(), written);
+        }
+        assert_eq!(steps[0], Step::Mask(MaskStep::Select(Reference::Index(0))));
+        assert_eq!(
+            steps[1],
+            Step::Mask(MaskStep::Select(Reference::Name("Mask 1".into())))
+        );
+        assert_eq!(
+            steps[2],
+            Step::Mask(MaskStep::Select(Reference::Id(
+                "01JA00000000000000000000".into()
+            )))
+        );
+        assert_eq!(steps[4], Step::Mask(MaskStep::SelectComponent(None)));
+        assert_eq!(steps[6], Step::Mask(MaskStep::Hover(None)));
+        assert_eq!(
+            steps[11],
+            Step::Mask(MaskStep::Sweep {
+                from: [0.5, 0.2],
+                to: [0.5, 0.8]
+            })
+        );
+        assert_eq!(
+            steps[16],
+            Step::Mask(MaskStep::Row {
+                component: Reference::Index(1),
+                edit: RowStep::Mode("intersect".into())
+            })
+        );
+
+        for (script, expected) in [
+            (r#"[{"mask":{"nowhere":true}}]"#, "unknown mask step"),
+            (r#"[{"mask":{"select":0,"add":"linear"}}]"#, "exactly one"),
+            (r#"[{"mask":{"select":true}}]"#, "position in the list"),
+            (r#"[{"mask":{"select":{"id":"x"}}}]"#, "expected name"),
+            (r#"[{"mask":{"select":{"name":" "}}}]"#, "non-empty string"),
+            (r#"[{"mask":{"edit_shape":null}}]"#, "takes an identity"),
+            (r#"[{"mask":{"apply":false}}]"#, "takes true"),
+            (r#"[{"mask":{"new":""}}]"#, "component kind"),
+            (r#"[{"mask":{"sweep":{"from":[0.5,0.2]}}}]"#, "takes [x, y]"),
+            (
+                r#"[{"mask":{"sweep":{"from":[0,0],"to":[0,9]}}}]"#,
+                "-1 to 2",
+            ),
+            (
+                r#"[{"mask":{"drag":{"handle":"corner","points":[[0.1,0.1]]}}}]"#,
+                "unknown mask handle",
+            ),
+            (
+                r#"[{"mask":{"drag":{"handle":"start","points":[]}}}]"#,
+                "at least one point",
+            ),
+            (
+                r#"[{"mask":{"row":{"mode":"add"}}}]"#,
+                "the component it edits",
+            ),
+            (r#"[{"mask":{"row":{"component":0}}}]"#, "one of mode"),
+            (
+                r#"[{"mask":{"row":{"component":0,"mode":"add","invert":true}}}]"#,
+                "one of mode",
+            ),
+        ] {
+            let error = parse_script(script).expect_err(script);
+            assert!(error.contains(expected), "{script}: {error}");
+        }
     }
 
     /// The gesture, field, reset and conflict-resolution steps parse into exactly the shapes the

@@ -879,10 +879,11 @@ pub(crate) fn mask_draft_commit_task(
                 "draft.commit",
                 json!({"draft_id":draft_id,"mutation":mutation}),
             )?;
-            // A mask command answers with the mutation envelope **and** what it changed — the
-            // history label, the mask, the component, the layers a delete removed — so the answer
-            // is read as that result rather than as the bare envelope, which would refuse the
-            // extra fields by name and turn every committed gesture into a failure.
+            // A mask gesture commits through the `mask.*` family, whose answer carries the
+            // mutation envelope **and** what it changed — the history label, the mask, the
+            // component, the layers a delete removed. Reading it as the bare envelope refuses
+            // those fields by name, turning every committed gesture into a failure and losing the
+            // commit the core had already made.
             let result = parse::<MaskCommandResult>(committed)?;
             if result.mutation.outcome == MutationOutcome::NoOp {
                 return Ok(None);
