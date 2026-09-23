@@ -234,14 +234,14 @@ A qualifying rule applies only when the preset holds the amount it depends on. A
 
 The Presets section is generated from the `presets` control and is the first section of the tools panel, collapsed until opened:
 
-- **Library.** Group headings in the order `preset.list` returns them, each followed by one row per preset. A partial preset shows a `Partial` badge whose tooltip gives the report counts, and a preset with unavailable actions shows why it cannot apply. A row is disabled while the editor is busy, while no photo is open and while a draft is open.
+- **Library.** Group headings in the order `preset.list` returns them, each followed by one row per preset. A partial preset shows a `Partial` badge whose tooltip gives the report's four counts, and a preset with unavailable actions shows why it cannot apply. Rows are disabled while the editor is busy, while a draft is open and during a historical preview. The whole section, Import and the form included, is disabled while no photo is open, like every other section.
 - **Apply.** Clicking a row submits `edit.apply-preset` once with that preset's `settings`, `name` and `preset-id`. The ordinary completion path follows: `asset.state`, one preview job and a history merge.
 - **Create.** A `+` button opens a form with the name, the group (default `User presets`) and one checkbox per group of presettable controls, labelled `Module · Group` and taken from the descriptors, all checked except white balance. Create calls `preset.capture` for the displayed entry with the checked groups' parameters, then `preset.create`.
-- **Import.** An Import button opens the native file dialog, filtered to `.xmp`, `.lrtemplate` and `.lwpreset`. The file is read on a worker and sent to `preset.import`. The status bar reports the result, for example `Imported "Soft film": 18 mapped, 2 unsupported, 1 refused`, and Copy copies the whole report as JSON. A duplicate name, or a file that maps nothing, appears as the error it is.
-- **Delete.** A row's context menu offers Delete, which calls `preset.delete`.
-- **Palette.** The command palette lists `Apply preset: <name>` for each library preset.
+- **Import.** An Import button opens the native file dialog, filtered to `.xmp`, `.lrtemplate` and `.lwpreset`. The file is read in the dialog's task, refused over 1 MiB or when it is not UTF-8, and sent to `preset.import`. The status bar reports the result, for example `Imported "Soft film": 18 mapped, 2 unsupported, 1 refused`; the neutral count is in the badge's tooltip. A duplicate name, or a file that maps nothing, appears as the error it is.
+- **Row menu.** Right-clicking a row offers Export…, which writes the `preset.export` document through a native save dialog; Copy import report, for an imported preset, which copies the full report as JSON from `preset.read`; and Delete, which calls `preset.delete`.
+- **Palette.** The command palette lists `Apply preset: <name>` for each library preset that can apply in this build.
 
-The library refreshes at startup, after the desktop's own preset calls and when the event sync sees a `preset.*` event from another client. An agent's new preset therefore appears without a restart.
+The library is listed at startup, after each of the desktop's own preset calls, after a photo opens and when the event sync sees a `preset.*` event from another client, which reads the library and not the asset. An agent's new preset therefore appears without a restart. Only a click or a palette entry applies a preset, and only that path requests `asset.state` and a preview job.
 
 ## Verification
 

@@ -1823,7 +1823,15 @@ impl Editor {
                 if self.open_generation.load(Ordering::Acquire) != generation {
                     return Task::none();
                 }
-                return self.dispatch(Message::Refreshed(result));
+                // An open starts the event sync at the owner's current sequence, so a library
+                // change another client made before it never arrives as an event: list the
+                // library again beside the opened photo.
+                let opened = result.is_ok();
+                let refreshed = self.dispatch(Message::Refreshed(result));
+                if !opened {
+                    return refreshed;
+                }
+                return Task::batch([refreshed, presets_task(self.owner.clone(), self.client)]);
             }
             Message::Refreshed(result) => {
                 if matches!(&result, Err(error) if error == "superseded preview") {
