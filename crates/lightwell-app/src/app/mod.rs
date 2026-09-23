@@ -35,10 +35,11 @@ use fields::{Fields, action_params, number_text, reset_field_preset, submit_pres
 use iced::{Element, Subscription, Task, widget::operation};
 use iced_runtime::image as image_memory;
 use lightwell_core::{
-    ActionInput, ActionPlan, Availability, ClientId, ClientSession, CropStage, EditorState, Error,
-    ErrorKind, HistoryPage, HistorySelection, LocalServer, ModuleDescriptor, ModuleRegistry,
-    OwnerHandle, POINTER_MODE, PreviewPhase, PreviewQueue, Processing, ProxyBounds,
-    RecipeDescription, StageContext, ToolModule, Version, Zoom,
+    ActionInput, ActionPlan, Availability, ClientAuthority, ClientId, ClientSession, CropStage,
+    EditorState, Error, ErrorKind, HistoryPage, HistorySelection, HostConfig, LocalServer,
+    ModuleDescriptor, ModuleRegistry, OwnerHandle, POINTER_MODE, PreviewPhase, PreviewQueue,
+    Processing, ProxyBounds, RecipeDescription, StageContext, ToolModule, Version, Zoom,
+    capabilities::secrets::{MemorySecretStore, SecretStore, platform_secret_store},
 };
 use message::{ClipEndpoint, CropMessage, MenuTarget, Message, PaletteAction, Panel};
 use overlay::{OverlayQueue, OverlayRequest};
@@ -182,6 +183,29 @@ fn registry(disabled: &[String], developer: bool) -> Result<ModuleRegistry, Stri
     }
 }
 
+/// Where the capability host keeps module settings, grants and resources, and which secret store
+/// it uses. An evidence run keeps all of it inside its evidence directory with an in-memory store,
+/// so it never touches the person's configuration or login keychain. Nothing is created here: the
+/// host creates a directory on its first write.
+fn host_config(config: &Config) -> HostConfig {
+    let (paths, secrets): (_, Arc<dyn SecretStore>) = match &config.evidence {
+        Some(evidence) => (
+            Paths::resolve(Some(&evidence.join("host"))),
+            Arc::new(MemorySecretStore::new()),
+        ),
+        None => (
+            Paths::resolve(config.data_root.as_ref()),
+            platform_secret_store(),
+        ),
+    };
+    HostConfig {
+        config_dir: paths.as_ref().map(Paths::module_config),
+        resource_dir: paths.as_ref().map(Paths::module_resources),
+        secrets,
+        ..HostConfig::unconfigured()
+    }
+}
+
 pub(crate) fn run(config: Config, size: (f32, f32)) -> Result<(), String> {
     // Evidence runs never touch a real catalog: theirs lives inside the new evidence directory.
     let catalog = match (&config.catalog, &config.evidence) {
@@ -193,8 +217,8 @@ pub(crate) fn run(config: Config, size: (f32, f32)) -> Result<(), String> {
             .join("catalog.sqlite"),
     };
     let registry = Arc::new(registry(&config.disabled, config.developer)?);
-    let (owner, join) =
-        OwnerHandle::start_with(&catalog, registry).map_err(|error| match error.kind {
+    let (owner, join) = OwnerHandle::start_with_host(&catalog, registry, host_config(&config))
+        .map_err(|error| match error.kind {
             ErrorKind::Conflict => format!(
                 "another Lightwell instance owns the catalog {}; close it or pass --catalog",
                 catalog.display()
@@ -479,7 +503,9 @@ impl Editor {
             mut config,
             window,
         } = boot;
-        let client = owner.register();
+        // The desktop's own client may grant module permissions: it does so only after the person
+        // presses Allow in its consent notice.
+        let client = owner.register_with(ClientAuthority::Permissions);
         let script = std::mem::take(&mut config.script);
         let evidence = config.evidence.take().map(|dir| {
             let queue = std::mem::take(&mut config.files);
@@ -6720,6 +6746,45 @@ mod tests {
         assert!(!section.enabled && section.reset.is_some());
         let _ = std::hint::black_box(&entry_id);
         finish(editor, catalog);
+    }
+
+    #[test]
+    fn an_evidence_run_keeps_module_state_in_its_directory_and_memory() {
+        let evidence = std::env::temp_dir().join("lightwell-evidence-host-paths");
+        let host = host_config(&Config {
+            evidence: Some(evidence.clone()),
+            data_root: Some(std::env::temp_dir().join("lightwell-ignored-root")),
+            ..Config::default()
+        });
+        assert_eq!(
+            host.config_dir,
+            Some(evidence.join("host").join("config").join("modules"))
+        );
+        assert_eq!(
+            host.resource_dir,
+            Some(
+                evidence
+                    .join("host")
+                    .join("data")
+                    .join("modules")
+                    .join("resources")
+            )
+        );
+        assert_eq!(host.secrets.name(), "in-memory secret store");
+        let root = std::env::temp_dir().join("lightwell-data-root");
+        let host = host_config(&Config {
+            data_root: Some(root.clone()),
+            ..Config::default()
+        });
+        assert_eq!(host.config_dir, Some(root.join("config").join("modules")));
+        assert_eq!(
+            host.resource_dir,
+            Some(root.join("data").join("modules").join("resources"))
+        );
+        assert!(
+            !evidence.exists() && !root.exists(),
+            "choosing directories creates none"
+        );
     }
 
     #[test]

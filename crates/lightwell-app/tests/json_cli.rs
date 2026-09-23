@@ -89,3 +89,67 @@ fn subprocess_client_edits_queries_and_exits_cleanly_on_eof() {
     assert!(child.wait().unwrap().success());
     std::fs::remove_file(catalog).unwrap();
 }
+
+/// Run one `lightwell-json` process over an isolated data root and in-memory secrets, send it
+/// `requests` and return its responses.
+fn session(data_root: &Path, extra: &[&str], requests: &[Value]) -> Vec<Value> {
+    let catalog = temp_catalog();
+    let mut child = Command::new(env!("CARGO_BIN_EXE_lightwell-json"))
+        .args(["--catalog", catalog.to_str().unwrap()])
+        .args(["--data-root", data_root.to_str().unwrap()])
+        .args(["--secret-store", "memory"])
+        .args(extra)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut input = child.stdin.take().unwrap();
+    for request in requests {
+        writeln!(input, "{request}").unwrap();
+    }
+    drop(input);
+    let output = child.wait_with_output().unwrap();
+    assert!(output.status.success(), "{:?}", output);
+    let _ = std::fs::remove_file(catalog);
+    String::from_utf8(output.stdout)
+        .unwrap()
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect()
+}
+
+#[test]
+fn only_a_client_started_with_permission_authority_may_grant() {
+    let data_root = std::env::temp_dir().join(format!(
+        "lightwell-json-cli-authority-{}-{}",
+        std::process::id(),
+        NEXT.fetch_add(1, Ordering::Relaxed)
+    ));
+    let requests = [
+        json!({"id": "state", "method": "session.state", "params": {}}),
+        json!({"id": "grant", "method": "module.permission.grant", "params": {
+            "module_id": "test.missing", "capability": "input",
+            "scope": {"path": "/tmp/input.bin"}, "request_id": "cli-grant",
+        }}),
+    ];
+    let plain = session(&data_root, &[], &requests);
+    assert_eq!(plain[0]["result"]["authority"], json!("edit"));
+    assert_eq!(plain[1]["error"]["code"], json!("forbidden"));
+    assert_eq!(
+        plain[1]["error"]["message"],
+        json!("granting a permission needs permission authority")
+    );
+    // With the flag the same request passes the authority check and reaches the next one.
+    let permitted = session(&data_root, &["--permission-authority"], &requests);
+    assert_eq!(permitted[0]["result"]["authority"], json!("permissions"));
+    assert_eq!(permitted[1]["error"]["code"], json!("validation"));
+    assert_eq!(
+        permitted[1]["error"]["message"],
+        json!("unknown module test.missing")
+    );
+    assert!(
+        !data_root.exists(),
+        "neither process created a directory under the data root"
+    );
+}
