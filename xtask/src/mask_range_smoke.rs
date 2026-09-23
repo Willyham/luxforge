@@ -11,7 +11,8 @@
 //! that catalog and takes the colour range's own limits one at a time — a sampled grey selecting every
 //! neutral, a second swatch adding a colour, a third changing nothing, and one person's skin selecting
 //! another's — and finishes with the colour-constrained brush: one stroke across two surfaces, and a
-//! colour-held erase that takes one of them back out and leaves the other alone.
+//! colour-held erase that takes one of them back out and leaves the other alone — read from the
+//! picture and then from that mask's own overlay, which a colour-held stroke used to have none of.
 //!
 //! **Why the readings are taken from the photograph as well as from the overlay.** Every claim this
 //! scenario makes about what a selection selects is read from the rendered photograph with an
@@ -133,7 +134,7 @@ const STATEMENT_SCROLL: f64 = 0.55;
 
 /// The open frame plus one per script step.
 const LAUNCH1_FRAMES: usize = 28;
-const LAUNCH2_FRAMES: usize = 32;
+const LAUNCH2_FRAMES: usize = 34;
 
 /// Where each patch of the fixture is read, as a fraction of the photograph's own drawn rectangle:
 /// the centre of its cell in the generator's own grid, so the probe and the fixture cannot disagree
@@ -308,9 +309,17 @@ fn launch2_script() -> Value {
         {"mask":{"brush":{"erase":true,"limit_to_colour":true}}},
         {"mask":{"paint":{"component":0}}},
         {"mask":{"stroke":{"points":[at("foliage"),at("sky-bottom")],"release":true}}},
-        // 27: undone. The erase is one entry like any other stroke, so the foliage is selected again.
+        // 27-28: the overlay on and off over that mask. **This is the frame P16 bought for a mask a
+        // person painted**: a colour-held stroke makes a brush component read pixels, so before this
+        // there was no grid for it at all and the only way to see what the erase had taken was to
+        // apply an adjustment and look at the picture. The grid is checked against exactly that —
+        // frame 26's own readings — and then the overlay is switched off and the photograph is
+        // exactly where it was.
+        {"workspace":{"mask_overlay":"mask-on-black"}},
+        {"workspace":{"mask_overlay":"off"}},
+        // 29: undone. The erase is one entry like any other stroke, so the foliage is selected again.
         {"api":{"method":"history.undo","params":{}}},
-        // 28-30: one **paced** stroke, which is the measurement rather than a claim about pixels.
+        // 30-32: one **paced** stroke, which is the measurement rather than a claim about pixels.
         // Every stroke above sends its whole path in one update, which is what a fast drag does and
         // what a correctness reading wants; this one sends a position every `STROKE_INTERVAL_MS` in
         // real time, so each is its own input with its own round trip and its own drafted frame. That
@@ -319,7 +328,7 @@ fn launch2_script() -> Value {
         {"mask":{"brush":{"erase":false,"limit_to_colour":false}}},
         {"mask":{"paint":{"component":0}}},
         {"mask":{"stroke":{"points":paced_path(),"release":true,"interval_ms":STROKE_INTERVAL_MS}}},
-        // 31: Mask mode left, which returns the tools panel and leaves every selection where it is.
+        // 33: Mask mode left, which returns the tools panel and leaves every selection where it is.
         {"workspace":{"mode":"pointer"}}
     ])
 }
@@ -769,7 +778,7 @@ pub fn run(root: &Path, out: &Path, bin: &Path, timeout: Duration) -> Result {
     fs::write(
         out.join("reproduce.md"),
         format!(
-            "# Smoke run\n\nScenario: {SCENARIO}. Status: {}.\n\nLaunch mode: {}. Reproduce with `cargo xtask generate-fixtures --output fixtures/generated` then `cargo xtask smoke --scenario {SCENARIO} --output NEW_DIR --binary PATH`; on macOS each launch runs hidden in a background-only bundle, so no window is ever placed on the desktop.\n\nTwo launches over one catalog: the first types a luminance band, intersects a gradient and a picked colour range with it, shows a grey card taken along with the sky and then given back, shows a layer ahead of the mask stop the selection altogether, and asks the composed mask and each component for its coverage overlay, checking the composition's grid patch by patch against the frame the masked adjustment produced; the second takes the colour range's own limits one at a time and finishes with a colour-held erase across two surfaces.\n\nActual renderer readback. Synthetic fixtures only: the patches are the 24-patch reflective colour chart's own sRGB renderings, which is what `docs/design/range-study.md` measured over.\n",
+            "# Smoke run\n\nScenario: {SCENARIO}. Status: {}.\n\nLaunch mode: {}. Reproduce with `cargo xtask generate-fixtures --output fixtures/generated` then `cargo xtask smoke --scenario {SCENARIO} --output NEW_DIR --binary PATH`; on macOS each launch runs hidden in a background-only bundle, so no window is ever placed on the desktop.\n\nTwo launches over one catalog: the first types a luminance band, intersects a gradient and a picked colour range with it, shows a grey card taken along with the sky and then given back, shows a layer ahead of the mask stop the selection altogether, and asks the composed mask and each component for its coverage overlay, checking the composition's grid patch by patch against the frame the masked adjustment produced; the second takes the colour range's own limits one at a time and finishes with a colour-held erase across two surfaces, read from the picture and then from that painted mask's own overlay.\n\nActual renderer readback. Synthetic fixtures only: the patches are the 24-patch reflective colour chart's own sRGB renderings, which is what `docs/design/range-study.md` measured over.\n",
             result["status"],
             launch::MODE
         ),
@@ -1377,13 +1386,62 @@ fn verify_launch2(evidence: &Path, app: &Value, launch1: &Value) -> Result<Value
                "sky_bottom":reading(&constrained,"sky-bottom")?}),
     );
 
-    // Frame 27: undone. The held erase is one entry like every other stroke.
-    let undone = read(&paths[27], bounds)?;
-    only("the held erase undone", &undone, &constrained, &["foliage"])?;
+    // Frames 27-28: **the overlay of a mask a person painted and held to a colour.** A colour-held
+    // stroke makes a brush component read the pixel its operation receives, so before P16 was built
+    // this mask had no grid at all and the only way to see what the erase had taken was to apply an
+    // adjustment and look at the picture. The grid is checked against exactly that: every patch the
+    // overlay calls selected is a patch frame 26 moved, and every patch it calls unselected is one
+    // frame 26 left where the unmasked picture had it. Then the overlay goes off and the photograph
+    // is exactly where it was, which is the view-setting contract.
+    let held = read(&paths[27], bounds)?;
+    for (name, value) in &held {
+        // Frame 18 is the last one before this mask existed, so the difference between it and frame
+        // 26 is this mask's own layer and nothing else — which is exactly what its grid describes.
+        let lifted = (reading(&constrained, name)? - reading(&skin, name)?).abs();
+        ensure(
+            (lifted >= MOVED) == (*value >= 128.0),
+            format!(
+                "the colour-held brush mask's overlay: {name} read {value:.1} of coverage where the \
+                 photograph moved by {lifted:.2} under the same mask"
+            ),
+        )?;
+    }
+    ensure(
+        reading(&held, "sky-bottom")? >= 200.0 && reading(&held, "foliage")? <= 40.0,
+        format!(
+            "the held erase in the overlay: the sky read {:.1} and the foliage {:.1}",
+            reading(&held, "sky-bottom")?,
+            reading(&held, "foliage")?
+        ),
+    )?;
     record(
         &frames[27],
+        "what a colour-held erase took, drawn rather than inferred: the sky the stroke crossed is \
+         still selected and the foliage it was seeded on is gone, and every patch of the grid agrees \
+         with what the masked adjustment did to that patch in the frame before it",
+        json!({"patches":held.clone(),"moved_against":constrained.clone()}),
+    );
+    let off = read(&paths[28], bounds)?;
+    for (name, value) in &off {
+        untouched(
+            &format!("{name} with the overlay switched off again"),
+            *value,
+            reading(&constrained, name)?,
+        )?;
+    }
+    record(
+        &frames[28],
+        "the overlay off again: a view setting, so the photograph is exactly where it was",
+        json!({"patches":off.clone()}),
+    );
+
+    // Frame 29: undone. The held erase is one entry like every other stroke.
+    let undone = read(&paths[29], bounds)?;
+    only("the held erase undone", &undone, &constrained, &["foliage"])?;
+    record(
+        &frames[29],
         "the held erase undone: one stroke is one entry whether or not it was held to a colour",
-        json!({"patches":undone.clone(),"label":label(&frames[27])?}),
+        json!({"patches":undone.clone(),"label":label(&frames[29])?}),
     );
 
     Ok(json!({
@@ -1391,7 +1449,7 @@ fn verify_launch2(evidence: &Path, app: &Value, launch1: &Value) -> Result<Value
         "neutral": neutral,
         "skin": skin,
         "constrained": constrained,
-        "revision": revision(&frames[28])?,
+        "revision": revision(&frames[30])?,
         "frames": shows,
         "scope": "Mean Rec. 709 luminance of the twelve fixture patches in the displayed photograph, read back from the renderer; every comparison is against the frame before it in the same launch, and none is a colorimetric claim",
     }))
