@@ -348,8 +348,23 @@ fn mask_is_a_canvas_mode_and_leaving_it_with_an_open_gesture_is_refused() {
     assert!(kinds.contains(&"linear"), "{kinds:?}");
     assert_eq!(
         kinds,
-        lightwell_core::mask::component_kinds().collect::<Vec<_>>(),
+        lightwell_core::mask::declared_geometry_kinds().collect::<Vec<_>>(),
         "the kinds are the host's, not a list of the panel's own"
+    );
+    // And they are the kinds that can be created, not every kind the build can evaluate. The brush
+    // is parsed, evaluated and retained but its geometry is drawn, so it declares no parameters and
+    // generates no `mask.create-brush`; offering it here would be a button with no command behind
+    // it. Strokes reach a mask through `mask.add-stroke`, not through this row.
+    for kind in &kinds {
+        assert!(
+            !lightwell_core::mask::component_geometry_is_drawn(kind),
+            "the Add row offers {kind}, whose geometry is drawn and has no create command"
+        );
+    }
+    assert!(
+        lightwell_core::mask::component_kinds()
+            .any(|kind| { lightwell_core::mask::component_geometry_is_drawn(kind) }),
+        "a drawn kind is registered, or this test proves nothing"
     );
 
     // With a gesture open, every route out of the mode is refused and says why.

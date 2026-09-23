@@ -413,10 +413,13 @@ fn unavailable(components: &[ComponentReport]) -> Option<String> {
         .map(|component| format!("unknown mask component {}", component.kind))
 }
 
-/// Every registered kind, as New mask and the Add row offer it. The list is the host's, so
-/// registering a kind is what puts it here.
+/// Every kind the Add row and New mask can actually create, as they offer it. That is the kinds
+/// whose geometry is declared as numbers, not every kind the build can evaluate: a drawn kind like
+/// the brush is parsed, evaluated and retained but generates no `mask.create-<kind>`, so offering it
+/// here would put up a button with no command behind it. The list is still the host's, so
+/// registering a kind with declared geometry is what puts it here.
 fn kinds(enabled: bool) -> Vec<KindOption> {
-    lightwell_core::mask::component_kinds()
+    lightwell_core::mask::declared_geometry_kinds()
         .map(|kind| KindOption {
             kind: kind.to_owned(),
             label: lightwell_core::mask::kind_title(kind),
