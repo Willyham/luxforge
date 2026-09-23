@@ -1422,10 +1422,19 @@ impl Editor {
         // The canvas explains the failure: the kind and the detail are all the view model needs to
         // name the cause and offer the allowed actions.
         self.render_error = Some((error.kind, error.detail.clone()));
+        self.event(
+            "preview_failed",
+            json!({"generation":generation,"entry_id":entry,"draft_revision":draft_revision,"proxy":proxy,"error_code":error.kind.code(),"detail":error.detail}),
+        );
         let shows_target = self.presented_entry.as_ref() == Some(entry)
             && self.displayed_draft_revision == draft_revision;
         if !shows_target && self.photo.is_some() {
             self.withdraw_photo(generation, entry, error);
+        }
+        // A scripted step waiting for the newest preview's pixels ends on its failure instead: the
+        // failure is that step's outcome, and its frame shows it.
+        if generation >= self.preview_generation {
+            self.settle_step(Settle::Preview);
         }
         // A failed exact phase releases whatever its proxy was holding, so a scripted step ends on
         // the failure rather than waiting for a frame that will never arrive.

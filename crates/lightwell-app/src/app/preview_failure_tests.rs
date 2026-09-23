@@ -7,7 +7,7 @@
 //! declared size is over the 512 MiB frame limit, so the worker answers `resource-limit` exactly as
 //! a refused render does.
 use super::{
-    Editor, ProxyFrame,
+    Editor, ProxyFrame, Settle,
     crop::PendingDraft,
     message::Message,
     testing::{attach_log, crop_layer, entry, finish, logged, opened, refresh_for},
@@ -207,6 +207,10 @@ fn a_commit_whose_render_fails_withdraws_the_earlier_picture_instead_of_presenti
     assert_eq!(editor.workspace.canvas.photo, PhotoView::Plain);
 
     let records = logged(&mut editor, &log);
+    let failed = events(&records, "preview_failed");
+    assert_eq!(failed.len(), 1, "{failed:?}");
+    assert_eq!(failed[0]["entry_id"], json!(crop.id));
+    assert_eq!(failed[0]["error_code"], json!("resource-limit"));
     let withdrawn = events(&records, "preview_withdrawn");
     assert_eq!(withdrawn.len(), 1, "{withdrawn:?}");
     assert_eq!(withdrawn[0]["target_entry"], json!(crop.id));
@@ -359,5 +363,32 @@ fn a_draft_whose_input_stage_fails_ends_explicitly_and_keeps_the_photograph() {
         "a failed reapply discarded the draft"
     );
     assert!(editor.crop_pending.is_none() && editor.draft_generation.is_none());
+    finish(editor, catalog);
+}
+
+/// A scripted step waiting for the newest preview's pixels ends on that preview's failure, so the
+/// evidence captures the failure instead of waiting out its deadline; an older job's failure does
+/// not end it.
+#[test]
+fn a_scripted_step_waiting_for_a_preview_ends_on_its_failure() {
+    let steps = json!([{"wait": {"ms": 1}}]).to_string();
+    let (mut editor, catalog, _, _) = crate::app::testing::scripted(&steps);
+    let error = Error::new(ErrorKind::ResourceLimit, "linear output exceeds 512 MiB");
+    let entry = EntryId::new();
+    editor.preview_generation = 9;
+    if let Some(evidence) = editor.evidence.as_mut() {
+        evidence.awaiting = Some(Settle::Preview);
+        evidence.capture_pending = false;
+    }
+    editor.preview_failed(8, false, &entry, None, &error);
+    let evidence = crate::app::testing::evidence(&editor);
+    assert_eq!(
+        evidence.awaiting,
+        Some(Settle::Preview),
+        "an older job's failure ended the step"
+    );
+    editor.preview_failed(9, false, &entry, None, &error);
+    let evidence = crate::app::testing::evidence(&editor);
+    assert!(evidence.awaiting.is_none() && evidence.capture_pending);
     finish(editor, catalog);
 }

@@ -224,7 +224,9 @@ stage keep the toolkit's image widget and still upload, which is what `clipping_
 draft's own settle report. `preview_exact_adopted` records the exact phase of such a job
 being taken up without an upload, with that phase's own `render_ms`, `preview_exact_cancelled` records one a newer value superseded, and
 `clipping_overlay` carries `approximate` while the mask is derived from the proxy on screen rather
-than from that exact raster. `preview_withdrawn` records a failed preview whose target was not the
+than from that exact raster. `preview_failed` records every failed preview of the displayed state,
+with its entry and reason, and a scripted step waiting for the newest preview's pixels ends on it
+and captures the failure. `preview_withdrawn` records a failed preview whose target was not the
 picture on screen: that picture, named with the target, is taken off the surface with everything
 derived from it, so `state.surface.raster` and `state.stack.displayed` are null until a frame of the
 target renders, and `crop_draft_failed` records a draft whose input stage could not be rendered. A
