@@ -35,7 +35,7 @@ pub use descriptor::{
 pub use mixer::MixerModule;
 pub use pixel::PixelModule;
 pub use presence::PresenceModule;
-pub use presets::{APPLY_PRESET, PresetsModule};
+pub use presets::{APPLY_PRESET, MAX_PRESET_NAME, PresetsModule};
 pub use processing::{
     ColorOperation, ExactGeometry, MAX_COLOR_UNITS, PointwiseColor, Processing, Resample, Stage,
 };

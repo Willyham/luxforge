@@ -94,6 +94,7 @@ identifier!(SnapshotId, "snapshot-");
 identifier!(EntryId, "entry-");
 identifier!(DraftId, "draft-");
 identifier!(JobId, "job-");
+identifier!(PresetId, "preset-");
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Layer {

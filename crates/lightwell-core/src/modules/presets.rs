@@ -19,8 +19,9 @@ use serde_json::{Map, Value};
 
 pub const APPLY_PRESET: &str = "apply-preset";
 
-/// The longest preset name, in characters: the history label and the entry's provenance.
-const MAX_NAME_LENGTH: usize = 128;
+/// The longest preset name, in characters: the history label and the entry's provenance. The
+/// library holds its names to the same bound, so every library preset can be applied by name.
+pub const MAX_PRESET_NAME: usize = 128;
 
 /// The longest library identity a request may carry, in characters.
 const MAX_PRESET_ID_LENGTH: usize = 96;
@@ -98,7 +99,7 @@ impl PresetsModule {
                         parameter(
                             PRESET_NAME,
                             ParameterKind::String {
-                                max_length: MAX_NAME_LENGTH,
+                                max_length: MAX_PRESET_NAME,
                             },
                             true,
                             "the preset's name, which labels the history entry; not empty",

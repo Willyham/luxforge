@@ -26,14 +26,16 @@ use std::{
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
-/// Entries store their rendered label, so a catalog written before format 3 is refused by name.
-const CATALOG_FORMAT: i64 = 4;
+/// Format 5 adds the preset library, format 4 made entry records the only stored copy of a stack
+/// and format 3 stored each entry's rendered label. Every other marker, earlier or later, is
+/// refused by name and left as it is; choose a new catalog path.
+const CATALOG_FORMAT: i64 = 5;
 const MAX_HISTORY_PAGE: usize = 100;
 const MAX_VERSION_NAME: usize = 64;
 const ASSET_COLUMNS: &str =
     "id,source_root,locator,fingerprint,file_identity,byte_len,width,height,source_json";
 
-fn catalog_error(error: rusqlite::Error) -> Error {
+pub(crate) fn catalog_error(error: rusqlite::Error) -> Error {
     let kind = match &error {
         rusqlite::Error::SqliteFailure(problem, _)
             if matches!(
@@ -52,15 +54,15 @@ fn json_error(context: &str, error: impl std::fmt::Display) -> Error {
     Error::new(ErrorKind::Incompatible, format!("{context}: {error}"))
 }
 
-fn encode<T: Serialize>(value: &T) -> Result<String, Error> {
+pub(crate) fn encode<T: Serialize>(value: &T) -> Result<String, Error> {
     serde_json::to_string(value).map_err(|e| json_error("cannot encode catalog value", e))
 }
 
-fn decode<T: DeserializeOwned>(context: &str, value: String) -> Result<T, Error> {
+pub(crate) fn decode<T: DeserializeOwned>(context: &str, value: String) -> Result<T, Error> {
     serde_json::from_str(&value).map_err(|e| json_error(context, e))
 }
 
-fn now_ms() -> i64 {
+pub(crate) fn now_ms() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
@@ -270,7 +272,8 @@ struct CachedSource {
 
 #[derive(Debug)]
 pub struct EditorService {
-    connection: Connection,
+    /// The catalog. The preset library in `presets::library` keeps its own table here.
+    pub(crate) connection: Connection,
     source_cache: RefCell<Option<CachedSource>>,
     allow_sync_source: bool,
     registry: Arc<ModuleRegistry>,
@@ -389,6 +392,14 @@ impl EditorService {
                     actor TEXT NOT NULL,
                     created_ms INTEGER NOT NULL,
                     PRIMARY KEY(asset_id, name)
+                 );
+                 CREATE TABLE presets (
+                    id TEXT PRIMARY KEY,
+                    name TEXT NOT NULL COLLATE NOCASE,
+                    group_name TEXT NOT NULL COLLATE NOCASE,
+                    record_json TEXT NOT NULL,
+                    source_text TEXT,
+                    UNIQUE(group_name, name)
                  );
                  CREATE TRIGGER entries_are_immutable BEFORE UPDATE ON entries BEGIN
                     SELECT RAISE(ABORT, 'history entries are immutable');
@@ -3537,7 +3548,7 @@ mod tests {
         assert_eq!(error.kind, ErrorKind::Incompatible);
         assert_eq!(
             error.detail,
-            "catalog format 2 is not supported; expected 4; choose a new catalog path"
+            "catalog format 2 is not supported; expected 5; choose a new catalog path"
         );
         assert_eq!(
             std::fs::read(&catalog).unwrap(),

@@ -1,12 +1,13 @@
-//! Preset import: format detection, Lightwell's own preset document, Lightroom Classic XMP
-//! presets and sidecars, legacy `.lrtemplate` presets, the Lightroom mapping table and the
-//! per-setting report.
+//! Presets: import and the library. Import is format detection, Lightwell's own preset document,
+//! Lightroom Classic XMP presets and sidecars, legacy `.lrtemplate` presets, the Lightroom mapping
+//! table and the per-setting report. The library keeps presets in the catalog.
 //!
-//! Everything here is a pure function over text and the module registry. It reads no file, opens
-//! no catalog and renders nothing, so the catalog owner can run it within the request limit: a
-//! 1 MiB document is text work, not frame work. The library, the API methods and the desktop build
-//! on it; `docs/design/presets.md` is the contract.
+//! The importer is a pure function over text and the module registry. It reads no file, opens no
+//! catalog and renders nothing, so the catalog owner can run it within the request limit: a 1 MiB
+//! document is text work, not frame work. The library, the API methods and the desktop build on
+//! it; `docs/design/presets.md` is the contract.
 mod document;
+mod library;
 mod lrtemplate;
 mod mapping;
 mod report;
@@ -14,8 +15,14 @@ mod value;
 mod xmp;
 
 #[cfg(test)]
+mod library_tests;
+#[cfg(test)]
 mod tests;
 
+pub use library::{
+    IMPORTED_PRESET_GROUP, MAX_PRESET_GROUP, MAX_PRESETS, PresetRecord, PresetSummary,
+    PresetUpdate, USER_PRESET_GROUP,
+};
 pub use lrtemplate::{MAX_TEMPLATE_DEPTH, MAX_TEMPLATE_VALUES};
 pub use report::{ImportReport, MappedSetting, ReportCounts, ReportedSetting};
 pub use xmp::{MAX_XMP_ATTRIBUTE_PAIRS, MAX_XMP_DEPTH, MAX_XMP_NAMESPACES, MAX_XMP_NODES};
