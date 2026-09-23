@@ -1800,20 +1800,25 @@ impl EditorService {
         let state = self.state(asset_id)?;
         validate_source_recipe(&state.asset, &state.current_entry.snapshot.recipe)?;
         let source = self.verified_prepared(&state.asset)?;
-        // A draft carries no mask target, so it is a draft of the global layer: the target view
-        // hides the masked layers of the drafted module's effect, which is what lets a global
-        // slider drag keep working on a stack that also holds masked layers of the same effect.
+        // The draft's target is the one the commit will carry: none for a global gesture, and the
+        // mask a masked slider was opened on. The target view hides the layers of the drafted
+        // module's effect that belong to another target, which is what lets a global slider drag and
+        // a masked one each keep working on a stack that holds both.
         let current = &state.current_entry.snapshot.recipe;
+        let mask = draft
+            .target
+            .as_ref()
+            .and_then(|target| target.mask.as_ref());
         let plan = self.plan_input(
             &state,
             &source,
             module,
             &input,
             registry.action_accepts_mask(&draft.action),
-            None,
+            mask,
         )?;
         let recipe = self
-            .resolve_plan(&source, current, plan, None)?
+            .resolve_plan(&source, current, plan, mask)?
             .unwrap_or_else(|| current.clone());
         Ok((recipe, state))
     }

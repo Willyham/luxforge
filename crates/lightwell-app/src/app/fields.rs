@@ -1,7 +1,7 @@
 //! The text typed into every generated control, and the rules that read it back. Validation always
 //! runs against the declared parameter, never against a parsed copy, so an invalid field keeps what
 //! was typed and commits nothing.
-use crate::state::tools::{Rendered, classify, declared_parameter};
+use crate::state::tools::{ControlOwner, Rendered, classify};
 use lightwell_core::{
     ActionDescriptor, Control, ModuleDescriptor, ParameterDescriptor, ParameterKind, RAW_EFFECT,
     RawPayload, Recipe, WhiteBalanceMode, check_value,
@@ -18,11 +18,20 @@ pub(crate) struct Fields(BTreeMap<(String, String), String>);
 
 impl Fields {
     /// Seed every declared field from its parameter's default, else from the limit it accepts.
+    ///
+    /// The host's own `mask.*` controls are seeded beside the modules', from the same declarations
+    /// through the same walk: they are declared with the same types, so a mask's amount field and a
+    /// gradient endpoint arrive here exactly as a module's slider does.
     pub(crate) fn seeded(modules: &[ModuleDescriptor]) -> Self {
         let mut fields = Self::default();
         for module in modules {
-            seed_controls(module, &module.controls, &mut fields);
+            seed_controls(ControlOwner::Module(module), &module.controls, &mut fields);
         }
+        seed_controls(
+            ControlOwner::Host,
+            lightwell_core::mask::commands::controls(),
+            &mut fields,
+        );
         fields
     }
 
@@ -124,10 +133,10 @@ impl Fields {
     }
 }
 
-fn seed_controls(module: &ModuleDescriptor, controls: &[Control], fields: &mut Fields) {
+fn seed_controls(owner: ControlOwner<'_>, controls: &[Control], fields: &mut Fields) {
     for control in controls {
         match classify(control) {
-            Rendered::Group { controls, .. } => seed_controls(module, controls, fields),
+            Rendered::Group { controls, .. } => seed_controls(owner, controls, fields),
             Rendered::Number {
                 action, parameter, ..
             }
@@ -140,7 +149,7 @@ fn seed_controls(module: &ModuleDescriptor, controls: &[Control], fields: &mut F
             | Rendered::Choice {
                 action, parameter, ..
             } => {
-                if let Some(declared) = declared_parameter(module, action, parameter) {
+                if let Some(declared) = owner.parameter(action, parameter) {
                     fields.set(action, parameter, seed_text(declared));
                 }
             }
@@ -148,7 +157,7 @@ fn seed_controls(module: &ModuleDescriptor, controls: &[Control], fields: &mut F
                 action, channels, ..
             } => {
                 for channel in channels {
-                    if let Some(declared) = declared_parameter(module, action, &channel.parameter) {
+                    if let Some(declared) = owner.parameter(action, &channel.parameter) {
                         fields.set(action, &channel.parameter, seed_text(declared));
                     }
                 }
@@ -722,6 +731,11 @@ mod tests {
             .find(|parameter| matches!(parameter.kind, ParameterKind::Color))
             .expect("the pixel action declares a color");
         assert_eq!(fields.get(action, &color.name), Some("0,0,0"));
+        // The host's own mask controls are seeded from the same declarations through the same
+        // walk, so a gradient endpoint and a mask's amount are fields exactly as a module's are.
+        assert_eq!(fields.get("mask.set-amount", "amount"), Some("0"));
+        assert_eq!(fields.get("mask.set-component-mode", "mode"), Some("add"));
+        assert_eq!(fields.get("mask.set-linear", "x0"), Some("-1.0000"));
         // Only declared fields exist: an action driven by presets alone has none, and every
         // declared number, integer and colour parameter of a built-in has exactly one.
         assert_eq!(
@@ -732,6 +746,20 @@ mod tests {
                 .keys()
                 .collect::<Vec<_>>(),
             [
+                "mask.set-amount.amount",
+                "mask.set-component-invert.invert",
+                "mask.set-component-mode.mode",
+                "mask.set-invert.invert",
+                "mask.set-linear.x0",
+                "mask.set-linear.x1",
+                "mask.set-linear.y0",
+                "mask.set-linear.y1",
+                "mask.set-radial.angle",
+                "mask.set-radial.feather",
+                "mask.set-radial.radius_x",
+                "mask.set-radial.radius_y",
+                "mask.set-radial.x",
+                "mask.set-radial.y",
                 "set-basic.blacks",
                 "set-basic.contrast",
                 "set-basic.exposure",
@@ -871,7 +899,8 @@ mod tests {
                     Rendered::Number {
                         action, parameter, ..
                     } => {
-                        let declared = declared_parameter(module, action, parameter)
+                        let declared = ControlOwner::Module(module)
+                            .parameter(action, parameter)
                             .expect("a generated control names a declared parameter");
                         if !matches!(declared.kind, ParameterKind::Number { .. }) {
                             continue;

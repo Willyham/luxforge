@@ -228,6 +228,20 @@ pub fn find(method: &str) -> Option<&'static MaskCommand> {
     COMMANDS.iter().find(|command| command.method == method)
 }
 
+/// The generated command one operation on one component kind declares, or none when this build does
+/// not know the kind.
+///
+/// A client that has drawn a gradient knows what it did — create, add or patch — and which kind it
+/// drew, and needs the method name for that pair. Spelling it out client-side would be a second copy
+/// of the generation rule in [`geometry_commands`]; this is the same table, read by the same key.
+pub fn geometry(op: GeometryOp, kind: &str) -> Option<&'static MaskCommand> {
+    COMMANDS.iter().find(|command| {
+        command
+            .geometry
+            .is_some_and(|geometry| geometry.op == op && geometry.kind == kind)
+    })
+}
+
 /// The panel widgets of the mask commands, over the parameters those commands declare.
 ///
 /// The same [`Control`] vocabulary a module declares, so a client generates a gradient's endpoint

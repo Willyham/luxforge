@@ -171,11 +171,16 @@ impl Editor {
             finish: None,
         });
         self.status = format!("Drafting {label}…");
+        // The host-owned target this gesture drafts through. For a module action it is the mask the
+        // panel's sections are bound to, which is what makes a masked slider follow the drag the way
+        // a global one does; for a `mask.*` control it is the mask and component the panel has open,
+        // because no declared parameter kind can carry an identity.
+        let target = self.draft_target(&action);
         self.event(
             "slider_draft_begin",
-            json!({"action":action,"revision":base_revision}),
+            json!({"action":action,"revision":base_revision,"target":target}),
         );
-        draft_begin_task(self.owner.clone(), self.client, asset, action)
+        draft_begin_task(self.owner.clone(), self.client, asset, action, target)
     }
 
     /// The gate every outstanding value passes through: at most one `draft.set` and one preview

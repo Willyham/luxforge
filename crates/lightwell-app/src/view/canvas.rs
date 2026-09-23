@@ -8,9 +8,10 @@
 use crate::{
     app::{
         crop::SURFACE_ID,
-        message::{CropMessage, Message},
+        message::{CropMessage, MaskMessage, Message},
     },
     crop_canvas::{CropCanvas, Mode, Part, View},
+    mask_canvas::{MaskCanvas, OutputView as MaskView, Placement},
     state::canvas::{
         CanvasModel, DraftBar, Notice, NoticeAction, NoticeTone, PhotoView, SurfaceMode, ZoomView,
     },
@@ -55,13 +56,13 @@ fn photo_area<'a>(model: &'a CanvasModel, surfaces: Surfaces<'a>) -> Element<'a,
     let content = match (&model.photo, surfaces.draft, surfaces.draft_photo) {
         (PhotoView::Draft, Some(draft), Some(allocation)) => crop_surface(model, draft, allocation),
         (PhotoView::Plain, _, _) => match (surfaces.photo, model.dimensions) {
-            (Some(raster), Some(dimensions)) => plain(model, raster, surfaces.overlay, dimensions),
+            (Some(raster), Some(dimensions)) => plain(model, raster, &surfaces, dimensions),
             _ => empty("Open a photograph"),
         },
         (PhotoView::Empty(message), _, _) => empty(message),
         // A draft without its own pixels is not drawn as a draft.
         (PhotoView::Draft, _, _) => match (surfaces.photo, model.dimensions) {
-            (Some(raster), Some(dimensions)) => plain(model, raster, surfaces.overlay, dimensions),
+            (Some(raster), Some(dimensions)) => plain(model, raster, &surfaces, dimensions),
             _ => empty("Open a photograph"),
         },
     };
@@ -138,17 +139,29 @@ fn draft_bar(model: &DraftBar) -> Element<'_, Message> {
         lightwell_ui::title(model.title.clone()),
         lightwell_ui::caption(model.readout.clone()),
     ];
+    // The bar belongs to whichever gesture is open; only one ever is.
+    let (cancel, apply_message) = if model.mask {
+        (
+            Message::Mask(MaskMessage::Cancel),
+            Message::Mask(MaskMessage::Apply),
+        )
+    } else {
+        (
+            Message::Crop(CropMessage::Cancel),
+            Message::Crop(CropMessage::Apply),
+        )
+    };
     children.push(text_button(
         "Cancel",
         ButtonTone::Quiet,
         ButtonSize::Compact,
-        Some(Message::Crop(CropMessage::Cancel)),
+        Some(cancel),
     ));
     let apply = text_button(
         "Apply",
         ButtonTone::Primary,
         ButtonSize::Compact,
-        model.can_apply.then_some(Message::Crop(CropMessage::Apply)),
+        model.can_apply.then_some(apply_message),
     );
     children.push(match &model.apply_reason {
         // A refused Apply says why on hover instead of going quiet.
@@ -177,6 +190,8 @@ fn notice_view(notice: &Notice) -> Element<'_, Message> {
                     NoticeAction::ReapplyDraft => Message::Crop(CropMessage::Reapply),
                     NoticeAction::DiscardSliderDraft => Message::SliderDraftCancel,
                     NoticeAction::ReapplySliderDraft => Message::SliderDraftReapply,
+                    NoticeAction::DiscardMaskDraft => Message::Mask(MaskMessage::Cancel),
+                    NoticeAction::ReapplyMaskDraft => Message::Mask(MaskMessage::Reapply),
                     NoticeAction::ReturnCurrent => Message::ReturnCurrent,
                 },
             )
@@ -299,12 +314,20 @@ fn empty(message: &str) -> Element<'_, Message> {
 fn plain<'a>(
     model: &'a CanvasModel,
     raster: &'a lightwell_ui::PhotoRaster,
-    overlay: Option<&'a image_memory::Allocation>,
+    surfaces: &Surfaces<'a>,
     (width, height): (u32, u32),
 ) -> Element<'a, Message> {
     let picking = model.picking;
     let pointer = model.pointer;
-    let overlay = overlay.map(|allocation| allocation.handle().clone());
+    // The clipping overlay and the mask overlay are two images over the photograph, in that order,
+    // and neither changes the photograph itself.
+    let overlays: Vec<iced::advanced::image::Handle> = [surfaces.overlay, surfaces.mask_overlay]
+        .into_iter()
+        .flatten()
+        .map(|allocation| allocation.handle().clone())
+        .collect();
+    let mask_draft = surfaces.mask_draft;
+    let mask_map = surfaces.mask_map;
     match model.zoom {
         ZoomView::Fit => {
             // Fit needs the available size to know where the toolkit draws the contained image.
@@ -315,17 +338,44 @@ fn plain<'a>(
                     Length::Fill,
                     Length::Fill,
                 );
-                let layered: Element<'_, Message> = match &overlay {
-                    Some(mask) => stack![
-                        photo,
-                        image(mask.clone())
+                let mut layers: Vec<Element<'_, Message>> = vec![photo];
+                for handle in &overlays {
+                    layers.push(
+                        image(handle.clone())
                             .width(Length::Fill)
                             .height(Length::Fill)
                             .content_fit(ContentFit::Contain)
                             .filter_method(image::FilterMethod::Nearest)
-                    ]
-                    .into(),
-                    None => photo,
+                            .into(),
+                    );
+                }
+                // The open gesture's handles sit above every overlay, mapped through the affine and
+                // the same contained rectangle the photograph is drawn into.
+                if let (Some(draft), Some(map)) = (mask_draft, mask_map)
+                    && let Some(rect) = fit_rect((width, height), available)
+                    && let Some(view) = MaskView::fit(map.output(), rect.size())
+                {
+                    layers.push(
+                        iced::widget::container(
+                            canvas(MaskCanvas::new(draft, Placement { map, view }))
+                                .width(Length::Fill)
+                                .height(Length::Fill),
+                        )
+                        .padding(iced::Padding {
+                            top: rect.y,
+                            left: rect.x,
+                            right: 0.0,
+                            bottom: 0.0,
+                        })
+                        .width(Length::Fill)
+                        .height(Length::Fill)
+                        .into(),
+                    );
+                }
+                let layered: Element<'_, Message> = if layers.len() == 1 {
+                    layers.pop().expect("the photograph")
+                } else {
+                    stack(layers).into()
                 };
                 // The pointer readout needs every move over the photograph, not only the ones a
                 // module's pick would use; a move that maps to the same pixel is dropped in the
@@ -359,17 +409,31 @@ fn plain<'a>(
                 .width(box_width)
                 .height(box_height)
                 .content_fit(ContentFit::Fill);
-            let layered: Element<'a, Message> = match &overlay {
-                Some(mask) => stack![
-                    photo,
-                    image(mask.clone())
+            let mut layers: Vec<Element<'a, Message>> = vec![photo.into()];
+            for handle in &overlays {
+                layers.push(
+                    image(handle.clone())
                         .width(box_width)
                         .height(box_height)
                         .content_fit(ContentFit::Fill)
                         .filter_method(image::FilterMethod::Nearest)
-                ]
-                .into(),
-                None => photo.into(),
+                        .into(),
+                );
+            }
+            if let (Some(draft), Some(map)) = (mask_draft, mask_map)
+                && let Some(view) = MaskView::percent(value, model.scale_factor)
+            {
+                layers.push(
+                    canvas(MaskCanvas::new(draft, Placement { map, view }))
+                        .width(box_width)
+                        .height(box_height)
+                        .into(),
+                );
+            }
+            let layered: Element<'a, Message> = if layers.len() == 1 {
+                layers.pop().expect("the photograph")
+            } else {
+                stack(layers).into()
             };
             // Inside the scrollable the reported point is already content-space: the scrollable
             // translates the cursor by its offset before its content sees it.

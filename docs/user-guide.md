@@ -154,7 +154,7 @@ The neutral rendition uses camera calibration without film simulations, Picture 
 
 ### Keyboard
 
-Letters act only when no text field has focus. `F` fits, `1` is 100%, `O` toggles the thirds overlay, `J` toggles both clipping overlays, `V` returns to the pointer, and each module's declared letter (`R` for crop and straighten, `W` for the Basic neutral picker, `N` for the RAW sensor picker) enters its canvas mode, exactly as the mode strip and the pickers in the tools panel do. Escape leaves a canvas mode that has no draft of its own. `\` holds Compare. Cmd+Option+[ and Cmd+Option+] show and hide the two side panels. Cmd+O / Ctrl+O opens a file, Cmd+Z / Ctrl+Z and Shift+Cmd+Z / Shift+Ctrl+Z undo and redo, and Tab and Shift+Tab move between fields.
+Letters act only when no text field has focus. `F` fits, `1` is 100%, `O` toggles the thirds overlay, `J` toggles both clipping overlays, `V` returns to the pointer, `M` enters Mask mode and `Shift+M` turns its overlay on and off, and each module's declared letter (`R` for crop and straighten, `W` for the Basic neutral picker, `N` for the RAW sensor picker) enters its canvas mode, exactly as the mode strip and the pickers in the tools panel do. Escape leaves a canvas mode that has no draft of its own. `\` holds Compare. Cmd+Option+[ and Cmd+Option+] show and hide the two side panels. Cmd+O / Ctrl+O opens a file, Cmd+Z / Ctrl+Z and Shift+Cmd+Z / Shift+Ctrl+Z undo and redo, and Tab and Shift+Tab move between fields.
 
 ### Crop and straighten
 
@@ -174,6 +174,28 @@ The panel prints the input stage, the rectangle in whole box pixels, the resulti
 Apply, or press Enter, commits one action and one new history entry, adjusting the existing crop layer in place and keeping its identity or appending one when there is none. Cancel, or press Escape, discards the draft and changes nothing. Enter and Escape act only when no field has just consumed the key. Reset crop is the module's own control: it commits the neutral crop through history and ends the draft. No pointer movement commits anything, and the rotation shown while drafting is a display filter — the committed render is what counts.
 
 Selecting a historical state pauses the draft rather than discarding it: the historical preview is shown and Return to current resumes drafting. If anything else changes the photograph while a draft is open — another client, or your own Undo, Redo or Restore — the draft is kept and marked "Changed elsewhere". Apply is refused until you choose Discard, which drops the draft, or Reapply, which re-reads the current stack, rebases the draft onto it keeping the angle and the composition as far as it fits, and lets you apply normally.
+
+### Masks
+
+A mask is a selection plus the adjustments that apply through it. Choose Mask in the mode strip, press `M` or pick Mode · Mask from the command palette; the tools panel then shows the Masks panel in place of the module sections, and the canvas draws what the open mask selects.
+
+**New mask** names the component kinds this build can draw — Linear today — and choosing one starts a gesture. Drag across the photograph from the side you do not want to the side you do, exactly as Lightroom's gradient works: the press sets the end at no coverage and the pointer the end at full coverage. The three lines the design draws are that first end, the midpoint and the far end, each with a handle; drag an end to move it, or the midpoint to move the whole axis without changing its length or direction. The whole drag is one draft, so nothing is written until you Apply, and Apply writes exactly one history entry. Escape or Cancel discards it and changes nothing. Every handle also has a number beside it while the gesture is open, so no part of a gradient is reachable only by pointer, and a committed component's `x0`, `y0`, `x1` and `y1` are ordinary fields under its row.
+
+A mask's geometry is stored in the photograph's own content coordinates, so it travels through every quarter-turn, reflection and crop with the picture: cropping after masking never moves the mask.
+
+Selecting a mask opens it. Its **components** are always listed, in the order they compose, each with its kind, its mode, an Invert toggle, Move up and Move down, Delete and Edit shape. **Add component** offers the same kinds, with the mode — Add, Subtract or Intersect — chosen before the gesture starts rather than guessed from a modifier afterwards. A mask's first component is always an Add, because nothing precedes it to subtract from; the panel says so on that row rather than offering a mode it would refuse, and it refuses a move that would leave a component that is not an Add at the front. A mask never exists empty either, so its only component offers no Delete: the row says to delete the mask instead.
+
+Under the component list are the **adjustments**: the ordinary Basic, Presence and Colour mixer sections, bound to this mask. They are the same controls with the same ranges, the same drafting behaviour and the same Copy as JSON request, which now carries the mask, and they edit that mask's own layer rather than the global one — so a photograph can carry a global exposure and a different exposure through each mask. Leaving Mask mode binds them back to the global layer. A module with nothing a mask can carry, such as Crop, is not offered inside a mask.
+
+The whole mask has an **Amount** (0 to 100, multiplying the composed coverage) and an **Invert**. Each row carries a dot when the mask is doing something, an eye that shows or hides its overlay, and a menu with Duplicate, Invert and Delete; the name field beside the list renames it. Duplicating a mask copies its components **and** the layers bound to it, because a mask without its adjustments is not a useful copy, and deleting one deletes those layers and names them in the history entry.
+
+The **overlay** shows what the mask selects: off, a tint over the photograph, the mask alone on black, or the photograph seen through the mask on black. `Shift+M` turns the tint on and off. The tint is green or white and never red — the clipping indicators already own red, blue and the magenta between them on this canvas, and an overlay you cannot tell apart from a clipping indicator is worse than none. The overlay is a view setting: it changes no recipe, and hiding a mask's overlay with the eye does not stop that mask applying to the picture. `O` still means the thirds overlay everywhere, Mask mode included.
+
+Masked layers stay in the recipe list on the left, in the durable processing order, each naming the mask it applies through and the first of them carrying that mask's heading. They are not moved under it: the list's job is to show the order edits are applied in, and a mask's layers belong to different stages.
+
+Leaving Mask mode with a gesture open is refused with the reason rather than discarding what you drew, as the crop draft is; so is holding Compare. If anything else changes the photograph while a gesture is open the gesture is kept and marked "Changed elsewhere", with Discard and Reapply, exactly as a crop or slider draft is.
+
+Brushes, luminance and colour range selections are not built.
 
 ### Vignette
 

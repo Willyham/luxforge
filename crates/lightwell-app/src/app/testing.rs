@@ -324,6 +324,10 @@ pub(crate) fn refresh_for(
             entry_id: current.id.clone(),
             layers: Vec::new(),
         },
+        masks: lightwell_core::mask::commands::MaskListing {
+            entry_id: current.id.clone(),
+            masks: Vec::new(),
+        },
         original: None,
         job: PreviewJob {
             registry: std::sync::Arc::new(lightwell_core::ModuleRegistry::builtin()),

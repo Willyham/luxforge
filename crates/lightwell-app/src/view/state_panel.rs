@@ -154,11 +154,23 @@ fn recipe(model: &StatePanelModel) -> Element<'_, Message> {
         return block.into();
     }
     for (index, layer) in model.recipe.iter().enumerate() {
+        // A mask's own heading sits above the first of its layers, in the durable processing order
+        // rather than in place of it: the list's whole job is to show the order edits are applied
+        // in, so a masked layer is labelled where it is rather than moved under its mask.
+        if let Some(mask) = &layer.mask
+            && mask.heading
+        {
+            block = block.push(section_label(match mask.index {
+                Some(index) => format!("{} · mask {}", mask.name, index + 1),
+                None => mask.name.clone(),
+            }));
+        }
         block = block.push(recipe_row(
             index,
             layer.title.clone(),
             layer.summary.clone(),
             layer.available,
+            layer.mask.as_ref().map(|mask| mask.name.clone()),
         ));
     }
     block.into()
@@ -174,13 +186,14 @@ fn recipe_row(
     title: String,
     summary: String,
     available: bool,
+    mask: Option<String>,
 ) -> Element<'static, Message> {
     let title_color = if available {
         theme::TEXT_PRIMARY
     } else {
         theme::TEXT_TERTIARY
     };
-    let heading = row![
+    let mut heading = row![
         container(lightwell_ui::caption((index + 1).to_string())).width(Length::Fixed(24.0)),
         container(
             text(title)
@@ -193,6 +206,11 @@ fn recipe_row(
     ]
     .spacing(theme::SPACING)
     .align_y(Alignment::Center);
+    // The mask this layer applies through, on the row itself, so a masked layer is never mistaken
+    // for a global one wherever the processing order puts it.
+    if let Some(mask) = mask {
+        heading = heading.push(lightwell_ui::caption(mask));
+    }
     let detail = container(truncated_text(
         summary,
         theme::SIZE_CAPTION,
@@ -220,6 +238,15 @@ mod tests {
             "Basic".into(),
             "unavailable: disabled by --disable-module".into(),
             false,
+            None,
+        );
+        // A masked row carries its mask's name beside the title and still builds as one row.
+        let _: Element<'static, Message> = recipe_row(
+            1,
+            "Basic".into(),
+            "exposure +0.45".into(),
+            true,
+            Some("Mask 1".into()),
         );
     }
 }

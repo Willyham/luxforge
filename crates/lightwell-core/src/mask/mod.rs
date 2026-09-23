@@ -121,6 +121,14 @@ pub fn knows_component_kind(kind: &str) -> bool {
 
 /// Every component kind this build knows, in table order. The command family generates its geometry
 /// methods from exactly this list, so what a client can create is what this build can evaluate.
+/// One kind's display name, as the host itself writes it into a component's name: `linear` reads
+/// `Linear`, `luminance-range` reads `Luminance Range`. A client offering the kinds names them with
+/// this rather than a table of its own, so what a button says and what the committed component is
+/// called cannot disagree.
+pub fn kind_title(kind: &str) -> String {
+    crate::modules::title_case(kind)
+}
+
 pub fn component_kinds() -> impl Iterator<Item = &'static str> {
     COMPONENT_KINDS.iter().map(|entry| entry.kind)
 }

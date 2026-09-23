@@ -1,13 +1,13 @@
 //! The keyboard table, as one pure function. Key codes never reach the update function: an event
 //! becomes a semantic message here or nothing at all, so the whole mapping is testable without a
 //! window.
-use crate::app::message::{CropMessage, Message, Panel};
+use crate::app::message::{CropMessage, MaskMessage, Message, Panel};
 use iced::{
     Event,
     event::Status,
     keyboard::{Event as Keys, Key, key::Named},
 };
-use lightwell_core::POINTER_MODE;
+use lightwell_core::{MASK_MODE, POINTER_MODE};
 
 /// What the mapping depends on: whether a draft is open, whether the palette has the keyboard, and
 /// the canvas modes the registry offers.
@@ -19,6 +19,9 @@ pub(crate) struct KeyContext {
     /// A slider gesture's draft is open, so Escape discards it and the arrow key that is stepping
     /// it commits it on key-up.
     pub(crate) slider_drafting: bool,
+    /// A mask shape gesture is open, so Enter applies it and Escape cancels it, exactly as the crop
+    /// draft's keys do for its own gesture.
+    pub(crate) mask_drafting: bool,
     /// The command palette is open, so Escape closes it rather than reaching a draft.
     pub(crate) palette_open: bool,
     /// A module's canvas mode is active, so Escape leaves it. A mode that owns a draft answers
@@ -152,10 +155,22 @@ pub(crate) fn keymap(event: &Event, status: Status, context: &KeyContext) -> Opt
             _ => {}
         }
     }
+    // A mask shape gesture answers the same two keys, because it is the same kind of draft.
+    if context.mask_drafting {
+        match key {
+            Key::Named(Named::Enter) => return Some(Message::Mask(MaskMessage::Apply)),
+            Key::Named(Named::Escape) => return Some(Message::Mask(MaskMessage::Cancel)),
+            _ => {}
+        }
+    }
     // A canvas mode without a draft of its own — a pick mode — is left with Escape, which commits
     // nothing. A mode that owns a draft answered Escape above by cancelling that draft, which is
     // what returns it to the pointer.
-    if context.mode_active && !context.drafting && matches!(key, Key::Named(Named::Escape)) {
+    if context.mode_active
+        && !context.drafting
+        && !context.mask_drafting
+        && matches!(key, Key::Named(Named::Escape))
+    {
         return Some(Message::SetMode(POINTER_MODE.into()));
     }
     // Single-key shortcuts act only when no text field took the key, and only on the first press:
@@ -179,6 +194,15 @@ pub(crate) fn keymap(event: &Event, status: Status, context: &KeyContext) -> Opt
     }
     if character(key, "v") {
         return Some(Message::SetMode(POINTER_MODE.into()));
+    }
+    // M enters Mask mode; Shift+M toggles its overlay. Both are host keys, because a mask is a host
+    // object: no module declares this mode, so no module's letter can claim them.
+    if character(key, "m") {
+        return Some(if modifiers.shift() {
+            Message::Mask(MaskMessage::ToggleOverlay)
+        } else {
+            Message::SetMode(MASK_MODE.into())
+        });
     }
     if character(key, "\\") {
         return Some(Message::CompareBegin);
@@ -241,6 +265,7 @@ mod tests {
             gallery_open: false,
             drafting: false,
             slider_drafting: false,
+            mask_drafting: false,
             palette_open: false,
             mode_active: false,
             modes: vec![('R', "lightwell.crop".into())],

@@ -42,9 +42,16 @@ pub(crate) fn scroll_id() -> iced::widget::Id {
     iced::widget::Id::new("tools-panel")
 }
 
+/// The whole tools panel.
+///
+/// While Mask mode is active the Masks panel replaces the module list, and the sections under it are
+/// the maskable modules' own, bound to the open mask — the design's recorded default P8, and the one
+/// thing that makes a masked adjustment the delivered control rather than a second implementation.
 pub(crate) fn tools_panel<'a>(
     model: &'a ToolsModel,
     plot: &'a HistogramModel,
+    masks: &'a crate::state::masks::MasksModel,
+    masking: bool,
 ) -> Element<'a, Message> {
     if let Some(message) = model.status.message() {
         return scrollable(
@@ -64,6 +71,21 @@ pub(crate) fn tools_panel<'a>(
     // The histogram sits above the first module section with no header of its own, as the Develop
     // workspace layout reserves.
     panel = panel.push(iced::widget::container(inspector(plot)).padding(theme::SPACING));
+    if masking {
+        panel = panel.push(crate::view::masks_panel::masks_panel(masks, menu, plot));
+        // The adjustments below the list are the maskable modules' own sections, bound to the open
+        // mask; with no mask open there is nothing for them to apply through, so they stay out.
+        if masks.selected.is_none() {
+            return scrollable(panel)
+                .id(scroll_id())
+                .direction(theme::panel_scrollbar())
+                .height(Length::Fill)
+                .into();
+        }
+        panel = panel.push(
+            iced::widget::container(section_label("Adjustments")).padding(theme::SECTION_PADDING),
+        );
+    }
     for section in &model.sections {
         panel = panel.push(section_view(section, menu, plot));
     }
@@ -478,7 +500,7 @@ fn icon_action_cell<'a>(action: &'a ActionControl, icon: Icon) -> Element<'a, Me
         .into()
 }
 
-fn control_view<'a>(
+pub(crate) fn control_view<'a>(
     module_id: &str,
     enabled: bool,
     control: &'a ControlModel,

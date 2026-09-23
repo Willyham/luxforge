@@ -5,12 +5,13 @@ use crate::{
     app::controls::CurveSampleIdentity,
     app::tasks::{HostAnswer, PresetChange, PreviewPayload, Refresh, SyncResult, Upload},
     crop_draft::Handle,
+    mask_draft::MaskHandle,
     state::histogram::Readout,
 };
 use iced_runtime::image as image_memory;
 use lightwell_core::{
     ClientSession, ContentPoint, Draft, EntryId, HistoryPage, ModuleDescriptor, PresetSummary,
-    PreviewJob, RecipeDescription, Version,
+    PreviewJob, StageTransform, Version,
 };
 use lightwell_ui::{ColorPickerEvent, CurveEditorEvent};
 use serde_json::{Map, Value};
@@ -70,6 +71,9 @@ pub(crate) enum MenuTarget {
     /// A library preset's row, by its identity: Delete, Export and, for an imported preset, Copy
     /// import report.
     Preset(String),
+    /// A mask's row in the Masks panel, by its identity: Duplicate, Invert and Delete. Rename is the
+    /// row's own field rather than a menu item, because it needs one.
+    Mask(String),
 }
 
 /// What running one command palette entry does. Every entry is an existing message, so running an
@@ -134,6 +138,82 @@ pub(crate) enum PresetMessage {
     Export(String),
     /// The export was written to the file of this name, or the dialog was cancelled.
     Exported(Result<Option<String>, String>),
+}
+
+/// One pointer step of a mask shape gesture, already mapped into normalized content coordinates by
+/// the canvas through `render.transform`'s affine and the canvas view.
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum MaskPointer {
+    /// A press on a drawn handle.
+    Begin {
+        handle: MaskHandle,
+        x: f64,
+        y: f64,
+    },
+    /// A press on the photograph away from every handle: the whole gradient is drawn in one stroke,
+    /// from the untouched side towards the affected one.
+    Sweep {
+        from: (f64, f64),
+        to: (f64, f64),
+    },
+    Drag {
+        x: f64,
+        y: f64,
+    },
+    End,
+}
+
+/// Every Masks-panel change is one message, so a script drives the whole panel through the update
+/// function exactly as its rows, buttons and menus do.
+#[derive(Clone, Debug)]
+pub(crate) enum MaskMessage {
+    /// Open one mask, by its identity. Per-client selection; it commits nothing.
+    Select(String),
+    /// Select one component of the open mask, which shows its handles and its number fields.
+    SelectComponent(String),
+    /// The eye: show or hide this mask's overlay. View state; the mask still applies.
+    ToggleVisible(String),
+    /// The mode the next Add gesture will use, chosen before the gesture starts, by its index in
+    /// the panel's declared list. An index rather than a mode, so the view names no vocabulary.
+    SetAddMode(usize),
+    /// What the canvas draws of the selected mask, and in which tint, each by its index in the
+    /// host's own declared list.
+    Overlay(usize),
+    OverlayColour(usize),
+    /// Shift+M: the tint overlay on, or off again.
+    ToggleOverlay,
+    /// Draw a new mask whose first component is of this kind.
+    New(String),
+    /// Draw a further component of this kind on the open mask, in the chosen mode.
+    Add(String),
+    /// Reopen one component's geometry as a gesture.
+    EditShape(String),
+    /// One pointer step of the open gesture.
+    Handle(MaskPointer),
+    /// One declared geometry field of the open gesture, typed rather than dragged.
+    Field {
+        name: String,
+        value: f64,
+    },
+    Apply,
+    Cancel,
+    Reapply,
+    Delete(String),
+    Duplicate(String),
+    /// The rename field's text, as it is typed.
+    Name(String),
+    /// Submit the rename field for that mask.
+    Rename(String),
+    Invert(String),
+    Move {
+        mask: String,
+        index: usize,
+    },
+    DeleteComponent(String),
+    MoveComponent {
+        component: String,
+        index: usize,
+    },
 }
 
 /// One pointer step of a crop gesture, already mapped to box pixels by the canvas.
@@ -215,8 +295,8 @@ pub(crate) enum Message {
     PanSynced(Result<ClientSession, String>),
     /// The named versions after a create or delete.
     VersionsLoaded(Result<(Vec<Version>, u64), String>),
-    /// The displayed entry's layers as the recipe panel reads them.
-    RecipeDescribed(Result<Box<RecipeDescription>, String>),
+    /// The displayed entry's layers and masks as the panels read them.
+    RecipeDescribed(Result<Box<crate::app::tasks::RecipeRead>, String>),
     /// The result of one live-refresh poll.
     Synced(Result<SyncResult, String>),
     /// An older history page.
@@ -251,6 +331,25 @@ pub(crate) enum Message {
     ),
     /// One crop draft change.
     Crop(CropMessage),
+    /// One Masks-panel change.
+    Mask(MaskMessage),
+    /// `render.transform` answered for an open mask gesture: the affine it maps pointers with.
+    MaskTransform(Result<StageTransform, String>),
+    /// `draft.begin` answered for a mask gesture.
+    MaskDraftBegun(Result<Box<Draft>, String>),
+    /// One `draft.set` and the preview job for the geometry it accepted.
+    MaskDraftSet(Result<Box<(Draft, PreviewJob)>, String>),
+    /// `draft.commit` answered. `None` is a no-op: the gesture returned to its start.
+    MaskDraftCommitted(Result<Option<Box<Refresh>>, String>),
+    /// `draft.reapply` answered.
+    MaskDraftReapplied(Result<Box<Draft>, String>),
+    /// One painted mask coverage grid reached the GPU. The generation says which frame it belongs
+    /// to, so a grid for a replaced frame is dropped instead of drawn over the new one.
+    MaskOverlayUploaded(
+        u64,
+        (u32, u32),
+        Result<image_memory::Allocation, image_memory::Error>,
+    ),
     /// One Presets-section change.
     Preset(PresetMessage),
     /// A host method an evidence script called directly answered, with the preset library read

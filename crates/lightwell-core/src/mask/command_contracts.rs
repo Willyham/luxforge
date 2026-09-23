@@ -817,15 +817,41 @@ fn a_gradient_drag_is_one_entry_and_a_drag_that_returns_to_its_start_is_none() {
             .is_null(),
         "the gesture is over either way"
     );
-    // A draft of a module action takes no mask target, and a rename is not a gesture.
+    // A draft of a maskable module action takes the mask — that is what makes a masked slider
+    // preview what it will commit — but never a component, and an action of a module with no
+    // maskable effect takes neither.
+    let mask_id = target.mask.as_ref().unwrap().as_str().to_owned();
+    let opened = client
+        .send(
+            "draft.begin",
+            json!({"asset_id": asset, "action": "set-basic", "mask": mask_id}),
+        )
+        .expect("a maskable module action drafts through a mask");
+    assert_eq!(opened["target"]["mask"], json!(mask_id));
+    assert!(
+        opened["target"].get("component").is_none(),
+        "a module action's draft carries the mask alone: {opened}"
+    );
+    client
+        .send("draft.cancel", json!({"draft_id": opened["draft_id"]}))
+        .expect("the gesture ends");
     assert_eq!(
         client
             .send(
                 "draft.begin",
-                json!({"asset_id": asset, "action": "set-basic", "mask": target.mask.as_ref().unwrap().as_str()}),
+                json!({"asset_id": asset, "action": "set-basic", "mask": mask_id, "component": target.component.as_ref().unwrap().as_str()}),
             )
-            .expect_err("a module action takes no target")["detail"],
-        json!("action set-basic takes no mask target")
+            .expect_err("a module edits through the whole mask")["detail"],
+        json!("action set-basic takes no mask component")
+    );
+    assert_eq!(
+        client
+            .send(
+                "draft.begin",
+                json!({"asset_id": asset, "action": "crop", "mask": mask_id}),
+            )
+            .expect_err("an unmaskable action takes no target")["detail"],
+        json!("action crop does not accept a mask target")
     );
     assert_eq!(
         client

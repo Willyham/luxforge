@@ -2,8 +2,8 @@
 //! every module action resolves to a generated `edit.<action>` method from the same registry, so
 //! discovery, event emission and dispatch cannot drift apart.
 use super::{
-    ApiRequest, ApiResponse, COMPONENT_GALLERY_PAGE_COUNT, ClientSession, MaskOverlayColour,
-    MaskOverlayMode, POINTER_MODE, PROTOCOL,
+    ApiRequest, ApiResponse, COMPONENT_GALLERY_PAGE_COUNT, ClientSession, MASK_MODE,
+    MaskOverlayColour, MaskOverlayMode, POINTER_MODE, PROTOCOL,
 };
 use crate::{
     ActionDescriptor, AssetId, ComponentId, Draft, DraftId, EditorService, EntryId, Error,
@@ -352,7 +352,16 @@ pub(super) const METHODS: &[MethodSpec] = &[
         name: "draft.begin",
         mutates: false,
         required: &["asset_id", "action"],
-        optional: &[],
+        optional: &[
+            (
+                "mask",
+                "the mask a mask.* gesture edits, or the mask an action of a maskable effect drafts through",
+            ),
+            (
+                "component",
+                "the component inside that mask, for a mask.* gesture only",
+            ),
+        ],
         notes: "opens this client's one draft of that action, bound to the asset's current revision; refused while a draft is open or a historical entry is previewed",
         handler: Some(draft_begin),
     },
@@ -1242,7 +1251,9 @@ fn recipe_describe(
 /// The canvas modes this registry offers: the pointer plus every available module that declares a
 /// canvas interaction. `O(modules)`; it touches no image resource.
 fn canvas_modes(registry: &ModuleRegistry) -> Vec<String> {
-    let mut modes = vec![POINTER_MODE.to_owned()];
+    // The two host modes first: the pointer, and the mask mode, which belongs to the host because a
+    // mask is a host object rather than a module. Then one per module that declares a canvas.
+    let mut modes = vec![POINTER_MODE.to_owned(), MASK_MODE.to_owned()];
     modes.extend(
         registry
             .descriptors()
@@ -1487,10 +1498,13 @@ fn draft_begin(
         ));
     }
     let _ = draft_action(service, &p.action)?;
-    // A `mask.*` gesture says which mask and component it is editing, checked by the command itself;
-    // a module action's draft carries no target, so naming one is refused rather than ignored. A
-    // rename is not a gesture: it needs a `name`, which `draft.begin` does not take, so the command's
-    // own envelope check refuses drafting it.
+    // A `mask.*` gesture says which mask and component it is editing, checked by the command itself.
+    // A module action's draft takes the host's one optional `mask` field — the same field the
+    // committed request carries — when its effect is maskable, so a masked slider previews what it
+    // is about to commit instead of committing blind. It never takes a component: a module edits a
+    // layer through the whole mask and knows nothing of the components that composed it. A rename is
+    // not a gesture: it needs a `name`, which `draft.begin` does not take, so the command's own
+    // envelope check refuses drafting it.
     let target = MaskTarget {
         mask: p.mask,
         component: p.component,
@@ -1502,10 +1516,17 @@ fn draft_begin(
             Some(target)
         }
         None if target == MaskTarget::default() => None,
+        None if target.component.is_some() => {
+            return Err(Error::new(
+                ErrorKind::Validation,
+                format!("action {} takes no mask component", p.action),
+            ));
+        }
+        None if service.registry().action_accepts_mask(&p.action) => Some(target),
         None => {
             return Err(Error::new(
                 ErrorKind::Validation,
-                format!("action {} takes no mask target", p.action),
+                format!("action {} does not accept a mask target", p.action),
             ));
         }
     };
@@ -1593,16 +1614,27 @@ fn draft_commit(
     let asset_id = draft.asset_id.clone();
     let action = draft.action.clone();
     let target = draft.target.clone().unwrap_or_default();
-    let fields = Value::Object(draft.fields.clone());
+    let mut fields = draft.fields.clone();
     // A failed commit keeps the draft, so the client can correct it and try again; a no-op ends it
     // exactly like an applied one, because the gesture is over either way. A drafted host command
     // commits through its own family; everything above this line — the conflict check, the revision
     // check and what a failure leaves behind — is the same for both.
     let result = match mask_commands::find(&action) {
-        Some(command) => {
-            value(service.apply_mask_command(&asset_id, p.mutation, command, fields, target)?)?
+        Some(command) => value(service.apply_mask_command(
+            &asset_id,
+            p.mutation,
+            command,
+            Value::Object(fields),
+            target,
+        )?)?,
+        None => {
+            // A module action's target is the host's one request field, so a drafted masked gesture
+            // commits exactly the request an independent client would send for the same edit.
+            if let Some(mask) = &target.mask {
+                fields.insert(crate::MASK_FIELD.to_owned(), json!(mask));
+            }
+            value(service.apply_action(&asset_id, p.mutation, &action, Value::Object(fields))?)?
         }
-        None => value(service.apply_action(&asset_id, p.mutation, &action, fields)?)?,
     };
     session.draft = None;
     session.touch();
@@ -2752,9 +2784,9 @@ mod tests {
             (
                 "an unknown mode",
                 json!({"mode": "lightwell.heal"}),
-                // The accepted modes are derived from the registry's canvas declarations, so the
-                // RAW and Basic neutral pickers join the list without a change here.
-                "mode must be one of pointer, lightwell.pixel, lightwell.raw, lightwell.basic, lightwell.crop",
+                // The two host modes first, then the registry's canvas declarations, so the RAW and
+                // Basic neutral pickers join the list without a change here.
+                "mode must be one of pointer, mask, lightwell.pixel, lightwell.raw, lightwell.basic, lightwell.crop",
             ),
             (
                 "a module that declares no canvas",

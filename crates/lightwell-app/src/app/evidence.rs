@@ -287,6 +287,11 @@ pub(crate) struct WorkspaceStep {
     /// The two clipping overlays, per-client view state like every other field here.
     pub(crate) clip_shadows: Option<bool>,
     pub(crate) clip_highlights: Option<bool>,
+    /// What the canvas draws of the selected mask, and in which tint. Per-client view state as the
+    /// clipping overlays are, and drivable here for the same reason: a captured frame that shows
+    /// the overlay must have been put into that state through the path the desktop itself uses.
+    pub(crate) mask_overlay: Option<String>,
+    pub(crate) mask_overlay_colour: Option<String>,
 }
 
 /// Select a loaded history entry by its sequence number, or return to the current state.
@@ -482,6 +487,12 @@ impl WorkspaceStep {
         if let Some(value) = self.clip_highlights {
             object.insert("clip_highlights".into(), Value::from(value));
         }
+        if let Some(value) = &self.mask_overlay {
+            object.insert("mask_overlay".into(), Value::from(value.clone()));
+        }
+        if let Some(value) = &self.mask_overlay_colour {
+            object.insert("mask_overlay_colour".into(), Value::from(value.clone()));
+        }
         Value::Object(object)
     }
 }
@@ -523,6 +534,10 @@ pub(crate) enum Settle {
     /// A clipping overlay was switched on: its own bounded texture must reach the GPU before the
     /// frame is captured, or the capture would show the photograph without the mask.
     Overlay,
+    /// The mask overlay's coverage grid must reach the GPU, for the same reason. It rides the
+    /// frame the preview worker renders, so the frame lands first and the grid's own texture a
+    /// message later; settling on the frame would capture the photograph without the overlay.
+    MaskOverlay,
     /// The pointer readout must come back from `render.sample`.
     Readout,
     /// A canvas pick has reached an outcome that commits nothing: filled coordinates, or a refusal
@@ -1335,9 +1350,40 @@ impl Editor {
                 overlay |= value;
             }
         }
+        // The mask overlay is the same kind of view state, and its grid arrives beside the next
+        // frame rather than from a derivation of its own, so the step settles on that frame.
+        let mut mask_overlay = false;
+        for (field, wanted, current) in [
+            (
+                "mask_overlay",
+                step.mask_overlay.as_deref(),
+                workspace.mask_overlay.as_str(),
+            ),
+            (
+                "mask_overlay_colour",
+                step.mask_overlay_colour.as_deref(),
+                workspace.mask_overlay_colour.as_str(),
+            ),
+        ] {
+            if let Some(value) = wanted
+                && value != current
+            {
+                diff.insert(field.into(), Value::from(value));
+                mask_overlay = true;
+            }
+        }
         if diff.is_empty() {
             self.capture_next_frame();
             return Task::none();
+        }
+        if mask_overlay {
+            // The session answer is followed by one preview job carrying the coverage grid, and the
+            // grid's own texture a message after that, so the capture waits for the overlay's
+            // pixels rather than for the frame they are drawn over.
+            self.await_step(Settle::MaskOverlay);
+            let session = workspace_task(self.owner.clone(), self.client, Value::Object(diff));
+            let frame = self.refresh_mask_overlay();
+            return Task::batch([session, frame]);
         }
         self.await_step(if overlay {
             Settle::Overlay
@@ -2519,7 +2565,7 @@ fn parse_view(value: &Value) -> Result<ViewStep, String> {
 
 fn parse_workspace(value: &Value) -> Result<WorkspaceStep, String> {
     let object = value.as_object().ok_or(
-        "workspace takes an object with any of state_panel, tools_panel, mode, thirds, clip_shadows or clip_highlights",
+        "workspace takes an object with any of state_panel, tools_panel, mode, thirds, clip_shadows, clip_highlights, mask_overlay or mask_overlay_colour",
     )?;
     let mut step = WorkspaceStep::default();
     let flag = |value: &Value, field: &str| {
@@ -2534,12 +2580,24 @@ fn parse_workspace(value: &Value) -> Result<WorkspaceStep, String> {
             "thirds" => step.thirds = Some(flag(value, "thirds")?),
             "clip_shadows" => step.clip_shadows = Some(flag(value, "clip_shadows")?),
             "clip_highlights" => step.clip_highlights = Some(flag(value, "clip_highlights")?),
+            "mask_overlay" | "mask_overlay_colour" => {
+                let word = value
+                    .as_str()
+                    .filter(|text| !text.trim().is_empty())
+                    .ok_or_else(|| format!("workspace {key} takes one of the declared words"))?
+                    .to_owned();
+                if key == "mask_overlay" {
+                    step.mask_overlay = Some(word);
+                } else {
+                    step.mask_overlay_colour = Some(word);
+                }
+            }
             "mode" => {
                 step.mode = Some(
                     value
                         .as_str()
                         .filter(|text| !text.trim().is_empty())
-                        .ok_or("workspace mode takes a module id or \"pointer\"")?
+                        .ok_or("workspace mode takes a module id, \"pointer\" or \"mask\"")?
                         .to_owned(),
                 );
             }
@@ -2548,7 +2606,7 @@ fn parse_workspace(value: &Value) -> Result<WorkspaceStep, String> {
     }
     if step == WorkspaceStep::default() {
         return Err(
-            "workspace needs at least one of state_panel, tools_panel, mode, thirds, clip_shadows or clip_highlights"
+            "workspace needs at least one of state_panel, tools_panel, mode, thirds, clip_shadows, clip_highlights, mask_overlay or mask_overlay_colour"
                 .into(),
         );
     }
