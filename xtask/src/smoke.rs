@@ -10,7 +10,7 @@ use std::{
 };
 /// Every rendered scenario, in the order `verify --tier rendered` runs them. One list: `main.rs`
 /// and `verify` both reach a scenario through [`dispatch`], so a new scenario is named here once.
-pub const SCENARIOS: [&str; 25] = [
+pub const SCENARIOS: [&str; 26] = [
     "empty",
     "load",
     "replacement",
@@ -35,17 +35,20 @@ pub const SCENARIOS: [&str; 25] = [
     "performance",
     "gallery",
     "controls",
+    "capabilities",
     "unavailable",
 ];
 
-/// Run one scenario, including the three that are not a single launch: a module can only be
-/// disabled at startup, persistence across a restart needs a second process, and `zoom` runs its
-/// script over the 24 MP and the 60 MP photograph in turn.
+/// Run one scenario, including the four that are not a single plain launch: a module can only be
+/// disabled at startup, persistence across a restart needs a second process, `zoom` runs its
+/// script over the 24 MP and the 60 MP photograph in turn, and the capability scenario runs its
+/// proof endpoint in this process.
 pub fn dispatch(root: &Path, out: &Path, scenario: &str, bin: &Path, timeout: Duration) -> Result {
     match scenario {
         "unavailable" => workspace::run_unavailable(root, out, bin, timeout),
         "basic-restart" => basic::run_restart(root, out, bin, timeout),
         zoom::SCENARIO => zoom::run(root, out, bin, timeout),
+        "capabilities" => crate::capabilities_smoke::run(root, out, bin, timeout),
         _ => run(root, out, scenario, bin, timeout),
     }
 }

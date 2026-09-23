@@ -8,6 +8,7 @@
 //! takes whatever remains. Every region is styled from [`lightwell_ui::theme`], never an ad hoc
 //! colour, and the window carries no outer padding: the canvas pads its photo itself.
 pub(crate) mod canvas;
+mod capabilities;
 mod gallery;
 pub(crate) mod palette;
 pub(crate) mod state_panel;
@@ -41,7 +42,8 @@ pub(crate) struct Surfaces<'a> {
     /// owns its texture and writes this into it while it draws, so no round trip stands between a
     /// rendered frame and the screen.
     pub(crate) photo: Option<&'a lightwell_ui::PhotoRaster>,
-    pub(crate) draft_photo: Option<&'a image_memory::Allocation>,
+    /// The crop layer's input stage, in the tiles it was uploaded as.
+    pub(crate) draft_photo: Option<&'a crate::draft_photo::DraftPhoto>,
     /// The clipping overlay's own bounded texture, present only when it belongs to the photograph
     /// on screen. It is a second image laid over the first, never a change to the first.
     pub(crate) overlay: Option<&'a image_memory::Allocation>,

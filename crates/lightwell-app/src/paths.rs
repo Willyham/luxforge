@@ -1,7 +1,11 @@
 use std::path::PathBuf;
+/// Where the application keeps its files. `config` holds the catalog and module settings and
+/// grants; `data` holds what the application downloads or installs, such as module resources;
+/// `cache` and `logs` are disposable. Nothing is created until it has real work.
 #[derive(Clone, Debug)]
 pub struct Paths {
     pub config: PathBuf,
+    pub data: PathBuf,
     pub cache: PathBuf,
     pub logs: PathBuf,
 }
@@ -10,6 +14,7 @@ impl Paths {
         if let Some(root) = root {
             return Some(Self {
                 config: root.join("config"),
+                data: root.join("data"),
                 cache: root.join("cache"),
                 logs: root.join("logs"),
             });
@@ -19,6 +24,7 @@ impl Paths {
         if cfg!(target_os = "macos") {
             Some(Self {
                 config: home.join("Library/Application Support/Lightwell"),
+                data: home.join("Library/Application Support/Lightwell"),
                 cache: home.join("Library/Caches/Lightwell"),
                 logs: home.join("Library/Logs/Lightwell"),
             })
@@ -27,6 +33,7 @@ impl Paths {
             let roaming = PathBuf::from(std::env::var_os("APPDATA")?);
             Some(Self {
                 config: roaming.join("Lightwell"),
+                data: local.join("Lightwell/Data"),
                 cache: local.join("Lightwell/Cache"),
                 logs: local.join("Lightwell/Logs"),
             })
@@ -39,10 +46,21 @@ impl Paths {
             };
             Some(Self {
                 config: base("XDG_CONFIG_HOME", ".config").join("lightwell"),
+                data: base("XDG_DATA_HOME", ".local/share").join("lightwell"),
                 cache: base("XDG_CACHE_HOME", ".cache").join("lightwell"),
                 logs: base("XDG_STATE_HOME", ".local/state").join("lightwell/logs"),
             })
         }
+    }
+
+    /// Where module settings and grants live.
+    pub fn module_config(&self) -> PathBuf {
+        self.config.join("modules")
+    }
+
+    /// Where module resources are installed.
+    pub fn module_resources(&self) -> PathBuf {
+        self.data.join("modules").join("resources")
     }
 }
 #[cfg(test)]
@@ -53,7 +71,34 @@ mod tests {
         let root = std::env::temp_dir().join("Lightwell isolated ü paths");
         let paths = Paths::resolve(Some(&root)).unwrap();
         assert_eq!(paths.config, root.join("config"));
+        assert_eq!(paths.data, root.join("data"));
         assert_eq!(paths.cache, root.join("cache"));
         assert_eq!(paths.logs, root.join("logs"));
+        assert_eq!(paths.module_config(), root.join("config").join("modules"));
+        assert_eq!(
+            paths.module_resources(),
+            root.join("data").join("modules").join("resources")
+        );
+        assert!(!root.exists(), "resolving creates nothing");
+    }
+
+    #[test]
+    fn the_platform_data_directory_is_beside_the_configuration() {
+        let Some(paths) = Paths::resolve(None) else {
+            return;
+        };
+        if cfg!(target_os = "macos") {
+            assert!(
+                paths
+                    .data
+                    .ends_with("Library/Application Support/Lightwell")
+            );
+        } else if cfg!(windows) {
+            assert!(paths.data.ends_with("Lightwell/Data"));
+        } else {
+            assert!(paths.data.ends_with("lightwell"));
+            assert_ne!(paths.data, paths.config);
+        }
+        assert!(paths.data.is_absolute());
     }
 }

@@ -1,6 +1,9 @@
 //! The Iced application: the editor's own state, the update function and the effects it starts.
 //! Every change to authoritative state goes through an owner call; the view models are re-derived
 //! after each message and the view renders those alone.
+pub(crate) mod capabilities;
+#[cfg(test)]
+mod capabilities_tests;
 pub(crate) mod controls;
 #[cfg(test)]
 mod controls_tests;
@@ -15,6 +18,8 @@ pub(crate) mod presets;
 #[cfg(test)]
 mod presets_tests;
 #[cfg(test)]
+mod preview_failure_tests;
+#[cfg(test)]
 mod proof_controls_tests;
 pub(crate) mod slider;
 pub(crate) mod tasks;
@@ -25,9 +30,11 @@ pub(crate) mod waker;
 use crate::{
     Config,
     diagnostics::Diagnostics,
+    draft_photo,
     paths::Paths,
     state::{
         self, Workspace,
+        capabilities::CapabilityStore,
         histogram::{Analysis, Readout},
         presets::{PresetForm, PresetLibrary},
         tools,
@@ -40,10 +47,11 @@ use fields::{Fields, action_params, number_text, submit_preset};
 use iced::{Element, Subscription, Task, widget::operation};
 use iced_runtime::image as image_memory;
 use lightwell_core::{
-    ActionInput, ActionPlan, Availability, ClientId, ClientSession, CropStage, EditorState, Error,
-    ErrorKind, HistoryPage, HistorySelection, LocalServer, ModuleDescriptor, ModuleRegistry,
-    OwnerHandle, POINTER_MODE, PreviewPhase, PreviewQueue, Processing, ProxyBounds,
-    RecipeDescription, StageContext, ToolModule, Version, Zoom,
+    ActionInput, ActionPlan, Availability, ClientAuthority, ClientId, ClientSession, CropStage,
+    EditorState, Error, ErrorKind, HistoryPage, HistorySelection, HostConfig, LocalServer,
+    ModuleDescriptor, ModuleRegistry, OwnerHandle, POINTER_MODE, PreviewPhase, PreviewQueue,
+    Processing, ProxyBounds, RecipeDescription, StageContext, ToolModule, Version, Zoom,
+    capabilities::secrets::{MemorySecretStore, SecretStore, platform_secret_store},
 };
 use message::{ClipEndpoint, CropMessage, MenuTarget, Message, PaletteAction, Panel};
 use overlay::{OverlayQueue, OverlayRequest};
@@ -157,8 +165,14 @@ impl ToolModule for Disabled {
     }
 }
 
-/// The providers this run serves, with any `--disable-module` built-in wrapped as unavailable.
-fn registry(disabled: &[String], developer: bool) -> Result<ModuleRegistry, String> {
+/// The providers this run serves, with any `--disable-module` built-in wrapped as unavailable. In
+/// developer mode the controls proof joins them, and the capability proof too when a proof endpoint
+/// is named.
+fn registry(
+    disabled: &[String],
+    developer: bool,
+    proof_endpoint: Option<&str>,
+) -> Result<ModuleRegistry, String> {
     let mut registry = ModuleRegistry::new();
     let mut unknown: Vec<&str> = disabled.iter().map(String::as_str).collect();
     let mut modules = vec![
@@ -174,6 +188,9 @@ fn registry(disabled: &[String], developer: bool) -> Result<ModuleRegistry, Stri
     ];
     if developer {
         modules.push(Arc::new(lightwell_core::ControlsModule::new()));
+        if let Some(base) = proof_endpoint {
+            modules.push(Arc::new(lightwell_core::CapabilitiesProofModule::new(base)));
+        }
     }
     for module in modules {
         let id = module.descriptor().id.clone();
@@ -193,6 +210,29 @@ fn registry(disabled: &[String], developer: bool) -> Result<ModuleRegistry, Stri
     }
 }
 
+/// Where the capability host keeps module settings, grants and resources, and which secret store
+/// it uses. An evidence run keeps all of it inside its evidence directory with an in-memory store,
+/// so it never touches the person's configuration or login keychain. Nothing is created here: the
+/// host creates a directory on its first write.
+fn host_config(config: &Config) -> HostConfig {
+    let (paths, secrets): (_, Arc<dyn SecretStore>) = match &config.evidence {
+        Some(evidence) => (
+            Paths::resolve(Some(&evidence.join("host"))),
+            Arc::new(MemorySecretStore::new()),
+        ),
+        None => (
+            Paths::resolve(config.data_root.as_ref()),
+            platform_secret_store(),
+        ),
+    };
+    HostConfig {
+        config_dir: paths.as_ref().map(Paths::module_config),
+        resource_dir: paths.as_ref().map(Paths::module_resources),
+        secrets,
+        ..HostConfig::unconfigured()
+    }
+}
+
 pub(crate) fn run(config: Config, size: (f32, f32)) -> Result<(), String> {
     // Evidence runs never touch a real catalog: theirs lives inside the new evidence directory.
     let catalog = match (&config.catalog, &config.evidence) {
@@ -203,9 +243,13 @@ pub(crate) fn run(config: Config, size: (f32, f32)) -> Result<(), String> {
             .config
             .join("catalog.sqlite"),
     };
-    let registry = Arc::new(registry(&config.disabled, config.developer)?);
-    let (owner, join) =
-        OwnerHandle::start_with(&catalog, registry).map_err(|error| match error.kind {
+    let registry = Arc::new(registry(
+        &config.disabled,
+        config.developer,
+        config.proof_endpoint.as_deref(),
+    )?);
+    let (owner, join) = OwnerHandle::start_with_host(&catalog, registry, host_config(&config))
+        .map_err(|error| match error.kind {
             ErrorKind::Conflict => format!(
                 "another Lightwell instance owns the catalog {}; close it or pass --catalog",
                 catalog.display()
@@ -338,6 +382,11 @@ pub(crate) struct Editor {
     /// Oldest lineage sequence when the chain was truncated; entries at or below it are unknown.
     pub(crate) lineage_floor: Option<u64>,
     pub(crate) display_entry: Option<lightwell_core::EntryId>,
+    /// The entry whose pixels the photo surface holds: the entry the presented generation was
+    /// rendered for. [`Self::display_entry`] moves to a newly requested entry as soon as its job is
+    /// asked for; this moves only when that entry's frame is on screen, and is cleared when a
+    /// failure withdraws the frame.
+    pub(crate) presented_entry: Option<lightwell_core::EntryId>,
     requested_render_entry: Option<lightwell_core::HistoryEntry>,
     rendered_entry: Option<lightwell_core::HistoryEntry>,
     /// The Original entry, so Compare needs no search.
@@ -476,6 +525,8 @@ pub(crate) struct Editor {
     pub(crate) expanded: BTreeMap<String, bool>,
     /// The displayed entry's layers as the recipe panel reads them.
     pub(crate) recipe: Option<RecipeDescription>,
+    /// The last `recipe.describe` for a displayed entry failed, so no rows will come for it.
+    pub(crate) recipe_failed: bool,
     pub(crate) menu: Option<MenuTarget>,
     pub(crate) palette_open: bool,
     pub(crate) palette_query: String,
@@ -490,9 +541,11 @@ pub(crate) struct Editor {
     pub(crate) crop: Option<crate::crop_draft::CropDraft>,
     /// What a started or reapplied draft still needs from its truncated preview.
     pub(crate) crop_pending: Option<PendingDraft>,
-    /// The crop layer's input stage on the GPU: one extra texture, bounded like the main preview
-    /// and dropped as soon as the draft ends.
-    pub(crate) draft_photo: Option<image_memory::Allocation>,
+    /// The crop layer's input stage on the GPU: one extra picture, bounded like the main preview,
+    /// held in tiles of at most one atlas layer and dropped as soon as the draft ends.
+    pub(crate) draft_photo: Option<draft_photo::DraftPhoto>,
+    /// The input stage's tiles while they are uploaded; the draft opens once all have arrived.
+    pub(crate) draft_assembly: Option<draft_photo::Assembly>,
     /// The preview generation that belongs to the draft rather than to the displayed state.
     pub(crate) draft_generation: Option<u64>,
     /// This desktop's own Apply is in flight, so the revision it produces is not a conflict.
@@ -508,6 +561,14 @@ pub(crate) struct Editor {
     /// session already reports it, so the mode strip shows Crop selected during every draft
     /// however it was opened, and pointer again however it ended.
     pub(crate) mode_sync: Option<String>,
+    /// What the desktop knows about every capability-declaring module: its last settings and
+    /// status reads, the jobs it follows, task runs and the open consent notice. The owner holds
+    /// the authoritative state; this is what was last read back.
+    pub(crate) capabilities: CapabilityStore,
+    /// Every capability operation the update function started, in order, so a test can run
+    /// exactly those through the owner and hand the answers back.
+    #[cfg(test)]
+    pub(crate) capability_started: Vec<(String, state::capabilities::Operation)>,
     /// The preset library as `preset.list` last answered it.
     pub(crate) presets: PresetLibrary,
     /// The Presets section's create form.
@@ -528,7 +589,9 @@ impl Editor {
             mut config,
             window,
         } = boot;
-        let client = owner.register();
+        // The desktop's own client may grant module permissions: it does so only after the person
+        // presses Allow in its consent notice.
+        let client = owner.register_with(ClientAuthority::Permissions);
         let script = std::mem::take(&mut config.script);
         let evidence = config.evidence.take().map(|dir| {
             let queue = std::mem::take(&mut config.files);
@@ -548,6 +611,7 @@ impl Editor {
                 paced_slider: None,
                 second_click: None,
                 tools_scroll: None,
+                capability_wait: None,
                 wait_until: None,
                 sync: evidence::CaptureSync::default(),
             }
@@ -588,6 +652,7 @@ impl Editor {
             lineage: HashSet::new(),
             lineage_floor: None,
             display_entry: None,
+            presented_entry: None,
             requested_render_entry: None,
             rendered_entry: None,
             original_entry: None,
@@ -648,6 +713,7 @@ impl Editor {
             displayed_draft_revision: None,
             expanded: BTreeMap::new(),
             recipe: None,
+            recipe_failed: false,
             menu: None,
             palette_open: false,
             palette_query: String::new(),
@@ -659,6 +725,7 @@ impl Editor {
             crop: None,
             crop_pending: None,
             draft_photo: None,
+            draft_assembly: None,
             draft_generation: None,
             crop_applying: None,
             crop_angle: "0".into(),
@@ -667,6 +734,9 @@ impl Editor {
             crop_option: false,
             crop_space: false,
             mode_sync: None,
+            capabilities: CapabilityStore::default(),
+            #[cfg(test)]
+            capability_started: Vec::new(),
             presets: PresetLibrary::default(),
             preset_form: PresetForm::default(),
             performance: performance::Sampler::default(),
@@ -806,7 +876,7 @@ impl Editor {
                 entry.as_ref(),
             );
         }
-        json!({"run_id":self.run_id,"mode":if self.evidence.is_some() {"evidence"} else {"editor"},"selection":self.session.preview.selection,"orientation":self.activity.orientation,"phase":self.activity.phase,"requested_generation":self.activity.requested,"displayed_generation":self.activity.displayed,"displayed_draft_revision":self.displayed_draft_revision,"source_dimensions":self.activity.source_dimensions,"preview_dimensions":self.activity.preview_dimensions,"backend":self.activity.backend,"status":self.status,"error_code":self.activity.error_code,"modules":module_summary(&self.modules),"controls":self.fields.summary(),"control_ui":{"group_expanded":self.controls_ui.group_expanded,"selected_tab":self.controls_ui.selected_tab,"curve_channels":curve_channels,"curve_points":curve_points,"picker_open":picker_open,"curves":curves,"pickers":pickers},"gallery":gallery,"tools_scroll":tools_scroll,"crop":self.crop_summary(),"draft":self.draft_summary(),"stack":self.stack_summary(),"workspace":serde_json::to_value(&self.session.workspace).unwrap_or(Value::Null),"developer":self.developer,"expanded":self.workspace.expanded(),"pickers":self.workspace.pickers(),"notices":self.notice_titles(),"compare":self.compare_return.is_some(),"render_error":self.render_error_summary(),"palette":{"open":self.palette_open,"query":self.palette_query},"presets":self.presets_summary(),"histogram":self.histogram_summary(),"readout":self.readout_summary(),"status_bar":self.status_bar_summary(),"proxy":self.proxy_summary(),"approximate_white_balance":self.presented_approximate_white_balance,"surface":self.surface_summary(),"scratch":Self::scratch_summary(),"performance":self.performance_summary()})
+        json!({"run_id":self.run_id,"mode":if self.evidence.is_some() {"evidence"} else {"editor"},"selection":self.session.preview.selection,"orientation":self.activity.orientation,"phase":self.activity.phase,"requested_generation":self.activity.requested,"displayed_generation":self.activity.displayed,"displayed_draft_revision":self.displayed_draft_revision,"source_dimensions":self.activity.source_dimensions,"preview_dimensions":self.activity.preview_dimensions,"backend":self.activity.backend,"status":self.status,"error_code":self.activity.error_code,"modules":module_summary(&self.modules),"controls":self.fields.summary(),"control_ui":{"group_expanded":self.controls_ui.group_expanded,"selected_tab":self.controls_ui.selected_tab,"curve_channels":curve_channels,"curve_points":curve_points,"picker_open":picker_open,"curves":curves,"pickers":pickers},"gallery":gallery,"tools_scroll":tools_scroll,"crop":self.crop_summary(),"draft":self.draft_summary(),"stack":self.stack_summary(),"workspace":serde_json::to_value(&self.session.workspace).unwrap_or(Value::Null),"developer":self.developer,"expanded":self.workspace.expanded(),"pickers":self.workspace.pickers(),"notices":self.notice_titles(),"compare":self.compare_return.is_some(),"render_error":self.render_error_summary(),"palette":{"open":self.palette_open,"query":self.palette_query},"presets":self.presets_summary(),"histogram":self.histogram_summary(),"readout":self.readout_summary(),"status_bar":self.status_bar_summary(),"proxy":self.proxy_summary(),"approximate_white_balance":self.presented_approximate_white_balance,"surface":self.surface_summary(),"active":self.workspace.active(),"scratch":Self::scratch_summary(),"capabilities":state::capabilities::summary(&self.capabilities,&self.modules,self.state.as_ref()),"performance":self.performance_summary()})
     }
 
     /// The Presets section as the frame drew it: its rows, the create form and whether the section
@@ -980,14 +1050,14 @@ impl Editor {
                     .layers
                     .iter()
                     .map(|layer| {
-                        json!({"id":layer.id.as_str(),"effect":layer.effect_id,"payload":layer.payload})
+                        json!({"id":layer.id.as_str(),"effect":layer.effect_id,"payload":layer.payload,"artifacts":layer.artifacts})
                     })
                     .collect();
                 let displayed = self.rendered_entry.as_ref().map(|entry| json!({
                     "entry": entry.id.as_str(),
                     "snapshot": entry.snapshot.id.as_str(),
                     "dimensions": self.dimensions,
-                    "layers": entry.snapshot.recipe.layers.iter().map(|layer| json!({"id":layer.id.as_str(),"effect":layer.effect_id,"payload":layer.payload})).collect::<Vec<_>>(),
+                    "layers": entry.snapshot.recipe.layers.iter().map(|layer| json!({"id":layer.id.as_str(),"effect":layer.effect_id,"payload":layer.payload,"artifacts":layer.artifacts})).collect::<Vec<_>>(),
                 }));
                 json!({"revision":state.revision,"entry":state.current_entry.id.as_str(),"label":state.current_entry.label,"layers":layers,"displayed":displayed})
             }
@@ -1014,11 +1084,51 @@ impl Editor {
                         "input_stage_loaded".into(),
                         Value::from(self.draft_photo.is_some()),
                     );
+                    object.insert("section".into(), self.crop_section_summary());
+                    // How many atlas-sized tiles hold the input stage on the GPU: one up to 2048
+                    // px a side, more for any photograph-sized stage.
+                    object.insert(
+                        "input_stage_tiles".into(),
+                        Value::from(
+                            self.draft_photo
+                                .as_ref()
+                                .map(draft_photo::DraftPhoto::allocated),
+                        ),
+                    );
                 }
                 summary
             }
-            None => json!({"drafting":false,"pending":self.crop_pending.is_some()}),
+            None => {
+                json!({"drafting":false,"pending":self.crop_pending.is_some(),"section":self.crop_section_summary()})
+            }
         }
+    }
+
+    /// What the crop section shows, exactly as its model derived it for the frame on screen: the
+    /// chosen ratio chip, the lock, the angle's box and rail, and whether its controls act. A
+    /// capture of the section is checked against these.
+    fn crop_section_summary(&self) -> Value {
+        self.workspace
+            .tools
+            .all()
+            .flat_map(|section| section.controls.iter())
+            .find_map(|control| match control {
+                state::tools::ControlModel::CropFrame(model) => Some(model),
+                _ => None,
+            })
+            .map_or(Value::Null, |model| {
+                json!({
+                    "drafting": model.drafting,
+                    "pending": model.pending,
+                    "enabled": model.enabled,
+                    "chosen": model.presets.iter().find(|chip| chip.chosen).map(|chip| chip.label.clone()),
+                    "locked": model.locked,
+                    "can_swap": model.can_swap,
+                    "angle": model.angle,
+                    "rail": model.angle_rail.as_ref().map(|rail| rail.value),
+                    "guide": model.guide,
+                })
+            })
     }
 
     /// One request whose outcome a frame is captured for: the next generation is pending until its
@@ -1180,6 +1290,12 @@ impl Editor {
         self.refresh_overlay();
         let rederive_started = Instant::now();
         self.rederive();
+        // A capability section is read for the first time once it is on screen: its first read is
+        // what the section then shows, so the screen is derived again to show it loading.
+        let loads = self.request_capability_loads();
+        if loads.is_some() {
+            self.rederive();
+        }
         let mut timing = self.loop_timing.get();
         timing.last_rederive_ms = rederive_started.elapsed().as_secs_f64() * 1000.0;
         self.loop_timing.set(timing);
@@ -1191,7 +1307,7 @@ impl Editor {
         } else {
             Task::none()
         };
-        Task::batch([task, zoomed, refit, woken])
+        Task::batch([task, zoomed, refit, woken, loads.unwrap_or_else(Task::none)])
     }
 
     /// A newer frame has been requested than the one the histogram describes, so the plotted counts
@@ -1354,6 +1470,136 @@ impl Editor {
         }
     }
 
+    /// A preview of the displayed target failed: say so on the canvas, and never leave another
+    /// entry's picture on screen as though it were this one.
+    ///
+    /// The frame on screen stays only when it is the target that failed — the display proxy of the
+    /// same entry and draft revision, whose full-resolution phase is what failed — because then it
+    /// still shows that state. Any other frame belongs to an earlier entry or draft revision: after
+    /// a commit whose render failed it is the picture from before the edit, while history and the
+    /// recipe already name the edit, so it is withdrawn with everything derived from it and the
+    /// canvas shows the failure in its place. The edit itself is untouched; the next frame that
+    /// renders puts a picture back.
+    fn preview_failed(
+        &mut self,
+        generation: u64,
+        proxy: bool,
+        entry: &lightwell_core::EntryId,
+        draft_revision: Option<u64>,
+        error: &lightwell_core::Error,
+    ) {
+        self.refit_pending = false;
+        self.status = error.to_string();
+        // The canvas explains the failure: the kind and the detail are all the view model needs to
+        // name the cause and offer the allowed actions.
+        self.render_error = Some((error.kind, error.detail.clone()));
+        self.event(
+            "preview_failed",
+            json!({"generation":generation,"entry_id":entry,"draft_revision":draft_revision,"proxy":proxy,"error_code":error.kind.code(),"detail":error.detail}),
+        );
+        let shows_target = self.presented_entry.as_ref() == Some(entry)
+            && self.displayed_draft_revision == draft_revision;
+        if !shows_target && self.photo.is_some() {
+            self.withdraw_photo(generation, entry, error);
+        }
+        // A scripted step waiting for the newest preview's pixels ends on its failure instead: the
+        // failure is that step's outcome, and its frame shows it.
+        if generation >= self.preview_generation {
+            self.settle_step(Settle::Preview);
+        }
+        // A failed exact phase releases whatever its proxy was holding, so a scripted step ends on
+        // the failure rather than waiting for a frame that will never arrive.
+        if !proxy {
+            self.release_held(generation);
+        }
+        if self.activity.pending {
+            self.activity.pending = false;
+            self.activity.phase = "error";
+            self.activity.error_code = Some(error.kind.code().into());
+            self.event("render_failed", json!({"error_code":error.kind.code()}));
+            self.outcome_ready(true);
+        }
+    }
+
+    /// Take the picture of an earlier entry or draft revision off the surface, with everything
+    /// that describes it — the retained rasters, the histogram, the overlay's source, the readout
+    /// and the render time — so nothing on screen claims to show a state it does not.
+    fn withdraw_photo(
+        &mut self,
+        generation: u64,
+        target: &lightwell_core::EntryId,
+        error: &lightwell_core::Error,
+    ) {
+        let shown = self.presented_entry.take();
+        self.event(
+            "preview_withdrawn",
+            json!({
+                "generation": generation,
+                "presented_generation": self.presented_generation,
+                "target_entry": target,
+                "withdrawn_entry": shown,
+                "error_code": error.kind.code(),
+            }),
+        );
+        self.photo = None;
+        self.proxy_frame = None;
+        self.raster = None;
+        self.raster_approximate_white_balance = false;
+        self.exact_render_ms = None;
+        self.incoming = None;
+        self.analysis = None;
+        self.held_by_proxy = None;
+        self.presented_proxy = false;
+        self.presented_approximate_white_balance = false;
+        self.rendered_entry = None;
+        self.displayed_draft_revision = None;
+        self.readout = None;
+        self.pending_sample = None;
+        self.activity.render = None;
+    }
+
+    /// Upload the crop layer's input stage, tile by tile, and hold the queue until every tile is on
+    /// the GPU: the draft opens on the whole stage or not at all.
+    fn upload_draft(
+        &mut self,
+        upload: Upload,
+        tiles: Vec<(draft_photo::TileRect, iced::widget::image::Handle)>,
+    ) -> Task<Message> {
+        self.draft_assembly = Some(draft_photo::Assembly {
+            generation: upload.generation,
+            width: upload.width,
+            height: upload.height,
+            tiles: tiles.iter().map(|(rect, _)| (*rect, None)).collect(),
+        });
+        Task::batch(tiles.into_iter().enumerate().map(|(index, (_, handle))| {
+            let upload = upload.clone();
+            image_memory::allocate(handle)
+                .map(move |result| Message::DraftUploaded(upload.clone(), index, result))
+        }))
+    }
+
+    /// The crop layer's input stage could not be rendered, so the draft it was for cannot open or
+    /// rebase. A start that was waiting ends explicitly, back in the pointer mode; a reapply keeps
+    /// the draft it was rebasing, still conflicted. The photograph on screen is the current state
+    /// and stays.
+    fn draft_preview_failed(&mut self, error: &lightwell_core::Error) {
+        let reapply = self
+            .crop_pending
+            .as_ref()
+            .is_some_and(|pending| pending.reapply);
+        self.crop_pending = None;
+        self.draft_generation = None;
+        if !reapply {
+            self.end_draft();
+        }
+        self.status = format!("The crop's input stage could not be rendered: {error}");
+        self.event(
+            "crop_draft_failed",
+            json!({"reapply": reapply, "error_code": error.kind.code(), "detail": error.detail}),
+        );
+        self.settle_step(Settle::Draft);
+    }
+
     /// The zoom changed. This is the **one** place a view change can ask for a render, and it only
     /// does so when the pixels it needs do not exist yet.
     ///
@@ -1381,6 +1627,11 @@ impl Editor {
         // step from Fit to 50% keeps the proxy it has, and the rule that a view change re-renders
         // nothing survives every zoom but the one crossing between proxy and exact.
         if self.presented_generation == 0 || wants_proxy == self.presented_proxy {
+            return Task::none();
+        }
+        // A failure withdrew the picture: nothing retained may be handed over in its place, and a
+        // view change asks for no render. The next frame of the target puts a picture back.
+        if self.photo.is_none() && self.render_error.is_some() {
             return Task::none();
         }
         if wants_proxy && self.presented_proxy_frame().is_none() {
@@ -1552,7 +1803,11 @@ impl Editor {
     ) -> Task<Message> {
         // The texture is a proxy exactly when there are proxy dimensions to describe it.
         let proxy = proxy_dimensions.is_some();
-        let Some((stage, entry)) = self.dimensions.zip(self.displayed_entry()) else {
+        // Every retained frame belongs to the generation on screen, so it is stamped with the entry
+        // that generation rendered — never with the entry the desktop has asked for since, whose
+        // frame may still be rendering or may have failed. Handing an older picture over under a
+        // newer entry would present it as that entry's result.
+        let Some((stage, entry)) = self.dimensions.zip(self.presented_entry.clone()) else {
             return Task::none();
         };
         let upload = Upload {
@@ -1606,7 +1861,12 @@ impl Editor {
         self.pending_bounds
             .retain(|generation, _| *generation > upload.generation);
         self.refit_pending = false;
-        self.show_entry(upload.entry_id.clone());
+        // A zoom hands over a retained frame of the entry already on screen; the entry the desktop
+        // is waiting for stays the one picks, readouts and the next request are addressed to.
+        if upload.reason.is_none() {
+            self.show_entry(upload.entry_id.clone());
+        }
+        self.presented_entry = Some(upload.entry_id.clone());
         self.displayed_draft_revision = upload.draft_revision;
         self.adopt_analysis(upload.generation);
         if self
@@ -1865,6 +2125,10 @@ impl Editor {
             modules: &self.modules,
             modules_ready: self.modules_ready,
             recipe: self.recipe.as_ref(),
+            displayed_layers: self
+                .requested_render_entry
+                .as_ref()
+                .map(|entry| entry.snapshot.recipe.layers.as_slice()),
             fields: &self.fields,
             control_ui: &self.controls_ui,
             editing: self.editing.as_ref(),
@@ -1903,6 +2167,7 @@ impl Editor {
             palette_open: self.palette_open,
             palette_query: &self.palette_query,
             palette_selected: self.palette_selected,
+            capabilities: &self.capabilities,
             presets: &self.presets,
             preset_form: &self.preset_form,
             performance_expanded: self.performance.expanded,
@@ -2060,6 +2325,7 @@ impl Editor {
             Message::PacedSliderTick => return self.slider_paced_tick(),
             Message::DoubleClickSecond => return self.double_click_second(),
             Message::Capture => {
+                let rows_shown = self.recipe_rows_shown();
                 let Some(evidence) = &mut self.evidence else {
                     return Task::none();
                 };
@@ -2075,6 +2341,7 @@ impl Editor {
                     || !self.presets.ready()
                     || self.curve_sample_in_flight
                     || self.curve_sample_pending.is_some()
+                    || !rows_shown
                 {
                     return Task::none();
                 }
@@ -2179,15 +2446,10 @@ impl Editor {
                         self.adopt(payload.session);
                         // History selection changes the authoritative values shown by generated
                         // controls. A field being edited in the previous entry must not pin its
-                        // text while the selected entry is read-only.
+                        // text while the selected entry is read-only; the entry's own values arrive
+                        // with its recipe rows, below.
                         self.editing = None;
                         self.dragging = None;
-                        self.fields.bind_raw(
-                            &self.modules,
-                            &payload.job.entry.snapshot.recipe,
-                            None,
-                            None,
-                        );
                         let entry = payload.job.entry.id.clone();
                         self.requested_render_entry = Some(payload.job.entry.clone());
                         self.show_entry(entry.clone());
@@ -2236,10 +2498,14 @@ impl Editor {
             }
             Message::RecipeDescribed(result) => match result {
                 Ok(recipe) => {
+                    self.recipe_failed = false;
                     self.recipe = Some(*recipe);
                     self.seed_values();
                 }
-                Err(error) => self.status = format!("Recipe unavailable: {error}"),
+                Err(error) => {
+                    self.recipe_failed = true;
+                    self.status = format!("Recipe unavailable: {error}");
+                }
             },
             Message::PanSynced(result) => {
                 self.pan_in_flight = false;
@@ -2283,7 +2549,8 @@ impl Editor {
                 match result {
                     Ok(sync) => {
                         // Another client's preset change reaches the library in the same poll that
-                        // brings its asset changes, and costs no asset refresh of its own.
+                        // brings its asset changes, and costs no asset refresh of its own; a
+                        // capability event re-reads the modules and renders nothing.
                         if let Some((presets, sequence)) = sync.presets {
                             self.adopt_presets(presets, sequence);
                         }
@@ -2291,6 +2558,9 @@ impl Editor {
                             self.accept(*refresh);
                         }
                         self.api_sequence = self.api_sequence.max(sync.sequence);
+                        if sync.capabilities {
+                            return self.reload_capabilities();
+                        }
                     }
                     Err(error) => self.status = format!("Live refresh failed: {error}"),
                 }
@@ -2473,14 +2743,17 @@ impl Editor {
                                 render_ms: Some(render_ms),
                             };
                             if for_draft {
-                                let handle = iced::widget::image::Handle::from_rgba(
-                                    raster.width,
-                                    raster.height,
-                                    iced_runtime::core::Bytes::from_owner(raster.rgba),
+                                // A stage within one atlas layer is uploaded as it is; a larger
+                                // one is cut into layer-sized tiles off this thread first, because
+                                // the toolkit draws its own fragments of a rotated image wrongly.
+                                if !draft_photo::needs_cutting(raster.width, raster.height) {
+                                    return self
+                                        .upload_draft(upload, vec![draft_photo::whole(raster)]);
+                                }
+                                return Task::perform(
+                                    async move { draft_photo::handles(draft_photo::cut(&raster)) },
+                                    move |tiles| Message::DraftCut(upload.clone(), tiles),
                                 );
-                                return image_memory::allocate(handle).map(move |result| {
-                                    Message::DraftUploaded(upload.clone(), result)
-                                });
                             }
                             // The photograph reaches the screen from here: the raster becomes the
                             // surface's source now and is drawn by the redraw this update requests,
@@ -2495,40 +2768,55 @@ impl Editor {
                             ]);
                         }
                         Err(error) => {
-                            self.refit_pending = false;
-                            self.status = error.to_string();
-                            // The canvas explains the failure: the kind and the detail are all the
-                            // view model needs to name the cause and offer the allowed actions.
-                            self.render_error = Some((error.kind, error.detail.clone()));
-                            // A failed exact phase releases whatever its proxy was holding, so a
-                            // scripted step ends on the failure rather than waiting for a frame
-                            // that will never arrive.
-                            if !proxy && !for_draft {
-                                self.release_held(generation);
-                            }
-                            if self.activity.pending {
-                                self.activity.pending = false;
-                                self.activity.phase = "error";
-                                self.activity.error_code = Some(error.kind.code().into());
-                                self.event(
-                                    "render_failed",
-                                    json!({"error_code":error.kind.code()}),
+                            if for_draft {
+                                self.draft_preview_failed(&error);
+                            } else {
+                                self.preview_failed(
+                                    generation,
+                                    proxy,
+                                    &entry_id,
+                                    result.draft_revision,
+                                    &error,
                                 );
-                                self.outcome_ready(true);
                             }
                             return Task::done(Message::Poll);
                         }
                     }
                 }
             }
-            Message::DraftUploaded(upload, result) => {
-                self.uploading = false;
+            Message::DraftCut(upload, tiles) => {
                 if Some(upload.generation) != self.draft_generation {
-                    return Task::none();
+                    self.uploading = false;
+                    return Task::done(Message::Poll);
+                }
+                return self.upload_draft(upload, tiles);
+            }
+            Message::DraftUploaded(upload, index, result) => {
+                let current = Some(upload.generation) == self.draft_generation
+                    && self
+                        .draft_assembly
+                        .as_ref()
+                        .is_some_and(|assembly| assembly.generation == upload.generation);
+                if !current {
+                    // A tile of a stage the draft no longer waits for: nothing is assembled, and
+                    // the upload gate opens.
+                    self.draft_assembly = None;
+                    self.uploading = false;
+                    return Task::done(Message::Poll);
                 }
                 match result {
                     Ok(allocation) => {
-                        self.draft_photo = Some(allocation);
+                        let Some(photo) = self
+                            .draft_assembly
+                            .as_mut()
+                            .and_then(|assembly| assembly.arrived(index, allocation))
+                        else {
+                            // More tiles are still on their way.
+                            return Task::none();
+                        };
+                        self.draft_assembly = None;
+                        self.uploading = false;
+                        self.draft_photo = Some(photo);
                         self.open_draft(CropStage {
                             width: upload.width,
                             height: upload.height,
@@ -2536,6 +2824,8 @@ impl Editor {
                         });
                     }
                     Err(_) => {
+                        self.draft_assembly = None;
+                        self.uploading = false;
                         self.crop_pending = None;
                         self.draft_generation = None;
                         self.status = "Could not upload the crop's input stage".into();
@@ -2596,6 +2886,7 @@ impl Editor {
             }
             Message::Resized(width, height) => self.window = (width, height),
             Message::Crop(message) => return self.crop_update(message),
+            Message::Capability(message) => return self.capability_update(message),
             Message::Preset(message) => return self.preset_update(message),
             Message::HostAnswered(result) => self.host_answered(result.map(|answer| *answer)),
             Message::ModulesLoaded(result) => {
@@ -2603,18 +2894,11 @@ impl Editor {
                 match result {
                     Ok(modules) => {
                         self.fields = Fields::seeded(&modules);
-                        if let Some(state) = &self.state
-                            && matches!(state.asset.source, lightwell_core::SourceKind::Raw { .. })
-                        {
-                            self.fields.bind_raw(
-                                &modules,
-                                &state.current_entry.snapshot.recipe,
-                                self.editing.as_ref(),
-                                self.dragging.as_ref(),
-                            );
-                        }
                         self.event("modules_loaded", module_summary(&modules));
                         self.modules = modules;
+                        // A photograph that opened before discovery answered already has its
+                        // recipe rows: seed the new fields from them.
+                        self.seed_values();
                     }
                     Err(error) => {
                         self.status = format!("Tool discovery failed: {error}");
@@ -2748,6 +3032,7 @@ impl Editor {
             Message::EditValue { action, parameter } => {
                 let id = fields::field_id(&action, &parameter, None);
                 self.editing = Some((action, parameter));
+                self.seed_idle_angle();
                 return operation::focus(iced::widget::Id::from(id));
             }
             Message::CancelEdit => self.editing = None,
@@ -3019,6 +3304,14 @@ impl Editor {
                     return Task::none();
                 };
                 self.status = format!("Copied the edit.{action} request");
+                // A copied request passes through the same redaction as every recorded one.
+                let request = json!({
+                    "method": request["method"],
+                    "params": lightwell_core::redact_params(
+                        request["method"].as_str().unwrap_or_default(),
+                        &request["params"],
+                    ),
+                });
                 return iced::clipboard::write(
                     serde_json::to_string_pretty(&request).unwrap_or_default(),
                 );
@@ -3558,19 +3851,12 @@ impl Editor {
             self.original_entry = refresh.original;
         }
         self.recipe = Some(refresh.recipe);
-        if matches!(
-            refresh.state.asset.source,
-            lightwell_core::SourceKind::Raw { .. }
-        ) {
-            self.fields.bind_raw(
-                &self.modules,
-                &refresh.job.entry.snapshot.recipe,
-                self.editing.as_ref(),
-                self.dragging.as_ref(),
-            );
-        }
+        self.recipe_failed = false;
         let revision = refresh.state.revision;
         let entry = refresh.state.current_entry.id.clone();
+        if self.state.as_ref().map(|state| &state.asset.id) != Some(&refresh.state.asset.id) {
+            self.capabilities_asset_changed(&refresh.state.asset.id);
+        }
         self.state = Some(refresh.state);
         self.show_entry(refresh.job.entry.id.clone());
         self.requested_render_entry = Some(refresh.job.entry.clone());
@@ -3769,6 +4055,16 @@ impl Editor {
 
     /// The entry whose stack the canvas is showing: the uploaded preview's entry, or the current
     /// one before the first preview has arrived. A pick is answered against exactly this stack.
+    /// The recipe rows in hand describe the entry on screen, or none will come for it. The
+    /// generated fields are seeded from those rows, so an evidence frame waits for this: the
+    /// controls it records are then the displayed entry's own values.
+    pub(crate) fn recipe_rows_shown(&self) -> bool {
+        self.state.is_none()
+            || self.recipe_failed
+            || self.recipe.as_ref().map(|recipe| &recipe.entry_id)
+                == self.displayed_entry().as_ref()
+    }
+
     pub(crate) fn displayed_entry(&self) -> Option<lightwell_core::EntryId> {
         self.display_entry.clone().or_else(|| {
             self.state
@@ -3887,6 +4183,9 @@ impl Editor {
                 );
             }
         }
+        // Capability jobs are read while one the desktop follows is queued or running, and never
+        // otherwise; the interval is justified where it is declared.
+        subscriptions.extend(self.capability_poll_subscription());
         Subscription::batch(subscriptions)
     }
 }
@@ -4031,12 +4330,13 @@ mod tests {
     use super::*;
     use crate::state::histogram::HistogramStatus;
     use lightwell_core::{
-        AssetId, ContentPoint, EntryId, LayerId, POINTER_MODE, PreviewJob, PreviewSource,
-        RawPayload, SourceImage, SourceKind, WhiteBalanceMode, Zoom,
+        AssetId, ContentPoint, EntryId, POINTER_MODE, PreviewJob, PreviewSource, RawPayload,
+        SourceImage, WhiteBalanceMode, Zoom,
     };
     use testing::{
-        attach_log, boot, crop_descriptor, descriptors, entry, finish, logged, opened, pick_events,
-        pick_fields, pick_mode, picking, refresh_for, sample_mode,
+        Z6_AS_SHOT, Z6_CAM_XYZ, attach_log, boot, crop_descriptor, descriptors, entry, finish,
+        logged, opened, pick_events, pick_fields, pick_mode, picking, raw_entry, raw_refresh,
+        refresh_for, sample_mode,
     };
 
     #[test]
@@ -4433,16 +4733,35 @@ mod tests {
     /// the mosaic takes to redevelop, a second or more — and a reset sent then names the revision
     /// that commit is replacing, which the core refuses as stale. The reset now waits for the
     /// commit's answer and is sent once, against the revision it produced. Basic's patch field and
-    /// every RAW slider take the same path.
+    /// every RAW slider take the same path; what is sent is the field's own reset: As shot for the
+    /// RAW temperature and tint, the declared default for RAW and Basic exposure.
     #[test]
     fn a_reset_during_a_gesture_commit_waits_and_names_the_revision_the_commit_produced() {
         let cases = [
-            ("set-raw-exposure", "ev", 0.35),
-            ("set-raw-temperature", "kelvin", 5000.0),
-            ("set-raw-tint", "tint", 12.0),
-            ("set-basic", "exposure", 0.4),
+            (
+                "set-raw-exposure",
+                "ev",
+                0.35,
+                "set-raw-exposure",
+                json!({"ev": 0.0}),
+            ),
+            (
+                "set-raw-temperature",
+                "kelvin",
+                5000.0,
+                "use-as-shot-wb",
+                json!({}),
+            ),
+            ("set-raw-tint", "tint", 12.0, "use-as-shot-wb", json!({})),
+            (
+                "set-basic",
+                "exposure",
+                0.4,
+                "set-basic",
+                json!({"exposure": 0.0}),
+            ),
         ];
-        for (action, parameter, value) in cases {
+        for (action, parameter, value, reset, preset) in cases {
             let (mut editor, catalog, log, asset, _, _) = drafting();
             let revision = editor.state.as_ref().expect("an open asset").revision;
             let committed = double_click_before_the_commit_answers(
@@ -4475,13 +4794,130 @@ mod tests {
                 json!(revision + 1),
                 "{action}: against the commit's revision"
             );
-            let default = tools::declared_action(&editor.modules, action)
-                .and_then(|declared| declared.parameter(parameter))
-                .and_then(|declared| declared.default.clone())
-                .expect("a declared default");
-            assert_eq!(sent[0]["preset"], json!({ parameter: default }));
-            assert_eq!(editor.status, format!("Running edit.{action}…"));
+            assert_eq!(sent[0]["action"], json!(reset), "{action}");
+            assert_eq!(sent[0]["preset"], preset, "{action}");
+            assert_eq!(
+                sent[0]["field"],
+                json!({"action": action, "parameter": parameter})
+            );
+            assert_eq!(editor.status, format!("Running edit.{reset}…"));
             assert!(editor.busy && editor.pending_reset.is_none());
+            finish(editor, catalog);
+        }
+    }
+
+    /// A double-click on the RAW custom temperature or tint label, with nothing in flight, runs As
+    /// shot at once — the very request an independent JSON client builds from the control's reset
+    /// in `module.list` — and the field shows the authoritative value until the answer brings the
+    /// as-shot equivalent, never the 6504 K and 0 nothing set. RAW exposure and Basic's own
+    /// temperature, which declare no reset, still reset to their declared defaults.
+    #[test]
+    fn a_double_click_on_a_raw_white_balance_field_returns_to_as_shot() {
+        let listed = serde_json::to_value(descriptors()).unwrap();
+        for (action, parameter) in [("set-raw-temperature", "kelvin"), ("set-raw-tint", "tint")] {
+            let (mut editor, catalog) = opened_with_modules(descriptors(), 4);
+            let log = attach_log(&mut editor);
+            let asset = editor.state.as_ref().expect("open").asset.id.clone();
+            let original = RawPayload::for_as_shot(Z6_AS_SHOT, Z6_CAM_XYZ).unwrap();
+            let mut custom = original.clone();
+            custom.wb_mode = WhiteBalanceMode::Custom;
+            custom.temperature_kelvin = Some(5000.0);
+            custom.tint = Some(12.0);
+            custom.gains =
+                lightwell_core::gains_from_temperature_tint(5000.0, 12.0, Z6_CAM_XYZ).unwrap();
+            let current = raw_entry(&asset, 5, None, &custom);
+            let _ = editor.update(Message::Refreshed(Ok(Box::new(raw_refresh(
+                &asset, &current,
+            )))));
+            let committed = editor.fields.get(action, parameter).map(str::to_owned);
+            assert_eq!(
+                committed.as_deref(),
+                Some(if parameter == "kelvin" { "5000" } else { "12" })
+            );
+
+            // The JSON request a client builds from the control's declared reset.
+            let control = listed
+                .as_array()
+                .unwrap()
+                .iter()
+                .flat_map(|module| module["controls"][0]["controls"].as_array().cloned())
+                .flatten()
+                .find(|control| control["action"] == action && control["parameter"] == parameter)
+                .expect("the listed control");
+            let reset = &control["reset"];
+            assert_eq!(reset, &json!({"action": "use-as-shot-wb", "preset": {}}));
+            let mut params = json!({"asset_id": asset, "mutation": mutation(5)});
+            params
+                .as_object_mut()
+                .unwrap()
+                .extend(reset["preset"].as_object().unwrap().clone());
+            let independent = json!({"method": format!("edit.{}", reset["action"].as_str().unwrap()), "params": params});
+            let (sent, preset) = fields::field_reset(&editor.modules, action, parameter).unwrap();
+            // Each envelope mints its own request identity; everything else is the same request.
+            let without_request_id = |mut request: Value| {
+                request["params"]["mutation"]
+                    .as_object_mut()
+                    .expect("a mutation")
+                    .remove("request_id");
+                request
+            };
+            assert_eq!(
+                editor
+                    .request_for_preset(&sent, None, Some(&preset))
+                    .map(without_request_id),
+                Some(without_request_id(independent)),
+                "{action}: the desktop's reset request is the JSON client's"
+            );
+
+            // Typed but not committed, then double-clicked.
+            editor.fields.set(action, parameter, "7777".into());
+            editor.editing = Some((action.into(), parameter.into()));
+            let _ = editor.update(Message::ResetField {
+                action: action.into(),
+                parameter: parameter.into(),
+            });
+            let records = logged(&mut editor, &log);
+            let sent = draft_events(&records, "field_reset_sent");
+            assert_eq!(sent.len(), 1, "{action}: {records:?}");
+            assert_eq!(sent[0]["action"], json!("use-as-shot-wb"));
+            assert_eq!(sent[0]["preset"], json!({}));
+            assert_eq!(editor.status, "Running edit.use-as-shot-wb…");
+            assert!(editor.editing.is_none());
+            assert_eq!(
+                editor.fields.get(action, parameter).map(str::to_owned),
+                committed,
+                "{action}: the field shows the committed value until the answer, not a default"
+            );
+
+            // The answer: As shot, whose rows report the camera's equivalent.
+            let answered = raw_entry(&asset, 6, Some(&current.id), &original);
+            let _ = editor.update(Message::Refreshed(Ok(Box::new(raw_refresh(
+                &asset, &answered,
+            )))));
+            assert_eq!(
+                editor.fields.get(action, parameter),
+                Some(if parameter == "kelvin" { "4861" } else { "-50" }),
+                "{action}: the as-shot equivalent"
+            );
+            finish(editor, catalog);
+        }
+
+        // Exposure and Basic's temperature keep their declared defaults.
+        for (action, parameter, preset) in [
+            ("set-raw-exposure", "ev", json!({"ev": 0.0})),
+            ("set-basic", "temperature", json!({"temperature": 0.0})),
+        ] {
+            let (mut editor, catalog) = opened_with_modules(descriptors(), 4);
+            let log = attach_log(&mut editor);
+            let _ = editor.update(Message::ResetField {
+                action: action.into(),
+                parameter: parameter.into(),
+            });
+            let records = logged(&mut editor, &log);
+            let sent = draft_events(&records, "field_reset_sent");
+            assert_eq!(sent.len(), 1, "{action}");
+            assert_eq!(sent[0]["action"], json!(action));
+            assert_eq!(sent[0]["preset"], preset);
             finish(editor, catalog);
         }
     }
@@ -4650,8 +5086,9 @@ mod tests {
             .and_then(|declared| declared.parameter(&parameter))
             .and_then(|declared| declared.default.clone())
             .expect("the parameter declares a default");
-        let preset = fields::reset_field_preset(&editor.modules, &action, &parameter)
+        let (sent, preset) = fields::field_reset(&editor.modules, &action, &parameter)
             .expect("a single-parameter action resets that field as one action");
+        assert_eq!(sent, action, "exposure declares no reset of its own");
         assert_eq!(
             preset,
             [(parameter.clone(), default.clone())]
@@ -4983,6 +5420,7 @@ mod tests {
                     summary: "Test".into(),
                     values: values.as_object().cloned().unwrap_or_default(),
                     available: true,
+                    artifacts: Vec::new(),
                 })
                 .collect();
             let _ = editor.update(Message::Refreshed(Ok(Box::new(refresh))));
@@ -5562,6 +6000,7 @@ mod tests {
                     .cloned()
                     .unwrap_or_default(),
                 available: true,
+                artifacts: Vec::new(),
             }];
             Box::new(refresh)
         };
@@ -6367,7 +6806,7 @@ mod tests {
     /// written once and a pan writes nothing.
     #[test]
     fn a_zoom_hands_the_retained_raster_to_the_surface_and_asks_for_no_preview() {
-        let (mut editor, catalog, _, _) = opened(Vec::new(), 4);
+        let (mut editor, catalog, _, entry_id) = opened(Vec::new(), 4);
         editor.window = (1440.0, 900.0);
         editor.dimensions = Some((4000, 3000));
         editor.session.preview.view.zoom = Zoom::Fit;
@@ -6382,6 +6821,7 @@ mod tests {
             })
         };
         editor.presented_generation = 7;
+        editor.presented_entry = Some(entry_id);
         editor.presented_proxy = true;
         editor.preview_generation = 7;
         editor.proxy_frame = Some(ProxyFrame {
@@ -6697,7 +7137,7 @@ mod tests {
 
     #[test]
     fn desktop_registry_contains_every_core_builtin_including_raw() {
-        let desktop = registry(&[], false).unwrap();
+        let desktop = registry(&[], false, None).unwrap();
         let core = ModuleRegistry::builtin();
         let ids = |registry: &ModuleRegistry| {
             registry
@@ -6708,11 +7148,12 @@ mod tests {
         };
         assert_eq!(ids(&desktop), ids(&core));
         assert!(!ids(&desktop).contains(&"lightwell.controls".to_owned()));
-        let developer = registry(&[], true).unwrap();
+        let developer = registry(&[], true, None).unwrap();
         assert!(ids(&developer).contains(&"lightwell.controls".to_owned()));
-        assert!(registry(&["lightwell.controls".into()], false).is_err());
+        assert!(!ids(&developer).contains(&"lightwell.capabilities".to_owned()));
+        assert!(registry(&["lightwell.controls".into()], false, None).is_err());
         assert!(
-            !registry(&["lightwell.controls".into()], true)
+            !registry(&["lightwell.controls".into()], true, None)
                 .unwrap()
                 .descriptors()
                 .iter()
@@ -6720,7 +7161,7 @@ mod tests {
                 .unwrap()
                 .is_available()
         );
-        let disabled = registry(&["lightwell.raw".into()], false).unwrap();
+        let disabled = registry(&["lightwell.raw".into()], false, None).unwrap();
         assert!(
             !disabled
                 .descriptors()
@@ -6729,6 +7170,24 @@ mod tests {
                 .unwrap()
                 .is_available()
         );
+        // The capability proof joins a developer run that names a proof endpoint, and no other.
+        let proof = registry(&[], true, Some("http://127.0.0.1:9")).unwrap();
+        let proof_module = proof
+            .descriptors()
+            .into_iter()
+            .find(|module| module.id == "lightwell.capabilities")
+            .expect("the capability proof is registered");
+        assert!(proof_module.developer);
+        assert_eq!(
+            proof_module.resources[0].url,
+            "http://127.0.0.1:9/proof-palette.bin"
+        );
+        assert!(
+            !ids(&registry(&[], false, Some("http://127.0.0.1:9")).unwrap())
+                .contains(&"lightwell.capabilities".to_owned())
+        );
+        let refused = registry(&[], true, Some("http://example.com")).unwrap_err();
+        assert!(refused.contains("proof-palette"), "{refused}");
     }
 
     #[test]
@@ -7383,63 +7842,102 @@ mod tests {
         finish(editor, catalog);
     }
 
+    /// The RAW fields follow the displayed entry's own `recipe.describe` row, exactly as every other
+    /// module's do: the desktop reads no RAW payload. Under As shot the temperature and tint show
+    /// the camera's as-shot equivalent the core reports, not the 6504 K and 0 no one set; a custom
+    /// value shows itself; a field being edited is left alone until the selection changes.
     #[test]
-    fn historical_raw_preview_rebinds_controls_and_return_restores_current_values() {
+    fn raw_fields_show_the_displayed_entrys_described_values() {
         let (mut editor, catalog, asset, _) = opened(Vec::new(), 4);
         // The real descriptors, because the RAW parameters' declared precision is what decides how
-        // a bound field reads: 1.2 sensor gain shows as `1.20`, the same as one the person set.
+        // a seeded field reads.
         let _ = editor.update(Message::ModulesLoaded(Ok(descriptors())));
-        let original = RawPayload::for_as_shot([2.0, 1.0, 1.5], [[0.0; 3]; 4]).unwrap();
-        let mut historical = entry(&asset, 0, None);
-        historical.snapshot = historical
-            .snapshot
-            .with_layer_inserted(0, original.layer(LayerId::new()))
-            .unwrap();
-        let mut current = entry(&asset, 4, Some(&historical.id));
+        let original = RawPayload::for_as_shot(Z6_AS_SHOT, Z6_CAM_XYZ).unwrap();
+        let historical = raw_entry(&asset, 0, None, &original);
         let mut adjusted = original.clone();
         adjusted.exposure_ev = 1.0;
         adjusted.wb_mode = WhiteBalanceMode::Custom;
-        adjusted.gains = [1.2, 1.0, 0.9];
-        current.snapshot = current
-            .snapshot
-            .with_layer_inserted(0, adjusted.layer(LayerId::new()))
-            .unwrap();
-        editor.state.as_mut().unwrap().asset.source = SourceKind::Raw {
-            metadata: json!({}),
-        };
-        editor.state.as_mut().unwrap().current_entry = current.clone();
-        editor
-            .fields
-            .bind_raw(&editor.modules, &current.snapshot.recipe, None, None);
-        assert_eq!(editor.fields.get("set-raw-exposure", "ev"), Some("1.00"));
-        assert_eq!(editor.fields.get("set-raw-red-gain", "gain"), Some("1.20"));
+        adjusted.temperature_kelvin = Some(3500.0);
+        adjusted.tint = Some(12.0);
+        adjusted.gains =
+            lightwell_core::gains_from_temperature_tint(3500.0, 12.0, Z6_CAM_XYZ).unwrap();
+        let current = raw_entry(&asset, 4, Some(&historical.id), &adjusted);
 
-        let job = |entry: lightwell_core::HistoryEntry| PreviewJob {
-            source: PreviewSource::Jpeg(SourceImage {
-                width: 1,
-                height: 1,
-                rgba: vec![0, 0, 0, 255].into(),
-                fingerprint: "test".into(),
-                orientation: 1,
-            }),
-            registry: Arc::new(ModuleRegistry::builtin()),
-            recipe: entry.snapshot.recipe.clone(),
-            layer_count: None,
-            draft_revision: None,
-            identity: lightwell_core::analysis::AnalysisIdentity::of(
-                &entry.asset_id,
-                "test",
-                &entry,
-                &entry.snapshot.recipe,
-                None,
-                Some((1, 1)),
-            )
-            .expect("a test analysis identity"),
-            analyse: false,
-            proxy: None,
-            entry,
+        let _ = editor.update(Message::Refreshed(Ok(Box::new(raw_refresh(
+            &asset, &current,
+        )))));
+        let shown = |editor: &Editor| {
+            [
+                "set-raw-exposure.ev",
+                "set-raw-temperature.kelvin",
+                "set-raw-tint.tint",
+            ]
+            .map(|key| editor.fields.summary()[key].as_str().map(str::to_owned))
         };
+        assert_eq!(
+            shown(&editor),
+            [Some("1.00"), Some("3500"), Some("12")].map(|text| text.map(str::to_owned))
+        );
+        // The explicit gains have no control, so no field shows them.
+        assert_eq!(editor.fields.get("set-raw-red-gain", "gain"), None);
+
+        // A historical As shot entry: the fields change when its rows arrive, not before, and the
+        // field being edited is released by the selection.
         editor.editing = Some(("set-raw-exposure".into(), "ev".into()));
+        let mut session = editor.session.clone();
+        session
+            .preview
+            .select(HistorySelection::Entry(historical.id.clone()));
+        session.revision += 1;
+        let job = raw_refresh(&asset, &historical).job;
+        let _ = editor.update(Message::PreviewLoaded(Ok(Box::new(
+            tasks::PreviewPayload {
+                job,
+                session,
+                sequence: 8,
+            },
+        ))));
+        assert_eq!(editor.display_entry, Some(historical.id.clone()));
+        assert!(editor.editing.is_none());
+        assert!(
+            !editor.recipe_rows_shown(),
+            "an evidence frame waits for the displayed entry's own rows"
+        );
+        let _ = editor.update(Message::RecipeDescribed(Ok(Box::new(
+            raw_refresh(&asset, &historical).recipe,
+        ))));
+        assert!(editor.recipe_rows_shown());
+        let [kelvin, tint] =
+            lightwell_core::temperature_tint_from_gains(Z6_AS_SHOT, Z6_CAM_XYZ).unwrap();
+        assert_eq!((kelvin.round(), tint.round()), (4861.0, -50.0));
+        assert_eq!(
+            shown(&editor),
+            [Some("0.00"), Some("4861"), Some("-50")].map(|text| text.map(str::to_owned)),
+            "As shot shows the camera's own white balance as a temperature and tint"
+        );
+
+        // Return to current: the custom values come back.
+        let mut session = editor.session.clone();
+        session.preview.return_current();
+        session.revision += 1;
+        let _ = editor.update(Message::PreviewLoaded(Ok(Box::new(
+            tasks::PreviewPayload {
+                job: raw_refresh(&asset, &current).job,
+                session,
+                sequence: 9,
+            },
+        ))));
+        let _ = editor.update(Message::RecipeDescribed(Ok(Box::new(
+            raw_refresh(&asset, &current).recipe,
+        ))));
+        assert_eq!(editor.display_entry, Some(current.id));
+        assert_eq!(
+            shown(&editor),
+            [Some("1.00"), Some("3500"), Some("12")].map(|text| text.map(str::to_owned))
+        );
+
+        // A describe that fails for the displayed entry does not hold a frame forever: it is
+        // captured with the failure in the status bar.
         let mut session = editor.session.clone();
         session
             .preview
@@ -7447,31 +7945,15 @@ mod tests {
         session.revision += 1;
         let _ = editor.update(Message::PreviewLoaded(Ok(Box::new(
             tasks::PreviewPayload {
-                job: job(historical.clone()),
+                job: raw_refresh(&asset, &historical).job,
                 session,
-                sequence: 8,
+                sequence: 10,
             },
         ))));
-        assert_eq!(editor.display_entry, Some(historical.id));
-        assert!(editor.editing.is_none());
-        assert_eq!(editor.fields.get("set-raw-exposure", "ev"), Some("0.00"));
-        assert_eq!(editor.fields.get("set-raw-red-gain", "gain"), Some("2.00"));
-        assert_eq!(editor.fields.get("set-raw-blue-gain", "gain"), Some("1.50"));
-
-        let mut session = editor.session.clone();
-        session.preview.return_current();
-        session.revision += 1;
-        let _ = editor.update(Message::PreviewLoaded(Ok(Box::new(
-            tasks::PreviewPayload {
-                job: job(current.clone()),
-                session,
-                sequence: 9,
-            },
-        ))));
-        assert_eq!(editor.display_entry, Some(current.id));
-        assert_eq!(editor.fields.get("set-raw-exposure", "ev"), Some("1.00"));
-        assert_eq!(editor.fields.get("set-raw-red-gain", "gain"), Some("1.20"));
-        assert_eq!(editor.fields.get("set-raw-blue-gain", "gain"), Some("0.90"));
+        assert!(!editor.recipe_rows_shown());
+        let _ = editor.update(Message::RecipeDescribed(Err("unavailable".into())));
+        assert!(editor.recipe_rows_shown());
+        assert_eq!(editor.status, "Recipe unavailable: unavailable");
         finish(editor, catalog);
     }
 
@@ -7543,6 +8025,45 @@ mod tests {
         assert!(!section.enabled && section.reset.is_some());
         let _ = std::hint::black_box(&entry_id);
         finish(editor, catalog);
+    }
+
+    #[test]
+    fn an_evidence_run_keeps_module_state_in_its_directory_and_memory() {
+        let evidence = std::env::temp_dir().join("lightwell-evidence-host-paths");
+        let host = host_config(&Config {
+            evidence: Some(evidence.clone()),
+            data_root: Some(std::env::temp_dir().join("lightwell-ignored-root")),
+            ..Config::default()
+        });
+        assert_eq!(
+            host.config_dir,
+            Some(evidence.join("host").join("config").join("modules"))
+        );
+        assert_eq!(
+            host.resource_dir,
+            Some(
+                evidence
+                    .join("host")
+                    .join("data")
+                    .join("modules")
+                    .join("resources")
+            )
+        );
+        assert_eq!(host.secrets.name(), "in-memory secret store");
+        let root = std::env::temp_dir().join("lightwell-data-root");
+        let host = host_config(&Config {
+            data_root: Some(root.clone()),
+            ..Config::default()
+        });
+        assert_eq!(host.config_dir, Some(root.join("config").join("modules")));
+        assert_eq!(
+            host.resource_dir,
+            Some(root.join("data").join("modules").join("resources"))
+        );
+        assert!(
+            !evidence.exists() && !root.exists(),
+            "choosing directories creates none"
+        );
     }
 
     #[test]
@@ -7749,6 +8270,7 @@ mod tests {
             analyse: false,
             proxy: None,
             entry,
+            artifacts: Vec::new(),
         }
     }
 

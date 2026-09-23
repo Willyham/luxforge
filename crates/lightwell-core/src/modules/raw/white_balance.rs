@@ -15,7 +15,9 @@
 //! Provenance: RawTherapee's White Balance technical notes document the blackbody/daylight split
 //! and its temperature ranges; the CIE 1960 `uv` coordinates define the signed locus offset.
 //! LibRaw's API data structure and `cam_xyz_coeff` implementation establish the XYZ-to-camera row
-//! direction used here. This helper does not infer or serialize an AsShot temperature.
+//! direction used here. Nothing here serializes an AsShot temperature: the payload keeps the
+//! camera's gains, and [`temperature_tint_from_gains`] answers which temperature and tint would
+//! reproduce them, for a client to show.
 
 use crate::{Error, ErrorKind};
 
@@ -128,8 +130,18 @@ fn locus_uv(temperature_kelvin: f64) -> Result<[f64; 2], Error> {
     xy_to_uv(base_whitepoint_xy(temperature_kelvin))
 }
 
-fn tinted_whitepoint_xy(temperature_kelvin: f64, tint: f64) -> Result<[f64; 2], Error> {
-    let base_uv = locus_uv(temperature_kelvin)?;
+/// Where a temperature sits on the locus in CIE 1960 `uv`, with the unit tangent toward higher
+/// temperature and the unit normal toward the green (+Duv) side that tint moves along. The forward
+/// map and its inverse both read the locus through this one function, so they cannot disagree
+/// about the frame a tint is measured in.
+struct LocusFrame {
+    base: [f64; 2],
+    tangent: [f64; 2],
+    green_normal: [f64; 2],
+}
+
+fn locus_frame(temperature_kelvin: f64) -> Result<LocusFrame, Error> {
+    let base = locus_uv(temperature_kelvin)?;
     let lower = (temperature_kelvin - 1.0).max(MIN_TEMPERATURE_K);
     let upper = (temperature_kelvin + 1.0).min(MAX_TEMPERATURE_K);
     let lower_uv = locus_uv(lower)?;
@@ -139,16 +151,29 @@ fn tinted_whitepoint_xy(temperature_kelvin: f64, tint: f64) -> Result<[f64; 2], 
     if !tangent_length.is_finite() || tangent_length <= f64::EPSILON {
         return Err(validation("white-balance locus tangent is degenerate"));
     }
+    let tangent = [tangent[0] / tangent_length, tangent[1] / tangent_length];
     // Along this locus temperature increases toward lower u and lower v. This normal points
     // toward the conventional positive-Duv/green side. Positive Lightwell tint moves the
     // assumed illuminant in that direction; its compensating gains then make the output more
     // magenta, matching the familiar control direction.
-    let green_normal = [tangent[1] / tangent_length, -tangent[0] / tangent_length];
+    Ok(LocusFrame {
+        base,
+        tangent,
+        green_normal: [tangent[1], -tangent[0]],
+    })
+}
+
+fn tinted_whitepoint_uv(temperature_kelvin: f64, tint: f64) -> Result<[f64; 2], Error> {
+    let frame = locus_frame(temperature_kelvin)?;
     let duv = tint * TINT_DUV_UNIT;
-    uv_to_xy([
-        base_uv[0] + green_normal[0] * duv,
-        base_uv[1] + green_normal[1] * duv,
+    Ok([
+        frame.base[0] + frame.green_normal[0] * duv,
+        frame.base[1] + frame.green_normal[1] * duv,
     ])
+}
+
+fn tinted_whitepoint_xy(temperature_kelvin: f64, tint: f64) -> Result<[f64; 2], Error> {
+    uv_to_xy(tinted_whitepoint_uv(temperature_kelvin, tint)?)
 }
 
 fn camera_matrix(cam_xyz: [[f32; 3]; 4]) -> Result<[[f64; 3]; 3], Error> {
@@ -193,6 +218,27 @@ pub fn gains_from_temperature_tint(
     tint: f64,
     cam_xyz: [[f32; 3]; 4],
 ) -> Result<[f32; 3], Error> {
+    let gains = gains_f64(temperature_kelvin, tint, &camera_matrix(cam_xyz)?)?;
+    let gains = gains.map(|value| value as f32);
+    if !gains
+        .iter()
+        .all(|value| value.is_finite() && *value > 0.0 && f64::from(*value) <= super::MAX_RAW_GAIN)
+    {
+        return Err(validation(
+            "temperature/tint gains cannot be represented as f32",
+        ));
+    }
+    Ok(gains)
+}
+
+/// The forward map in `f64`: the validated controls, the white point they select and the
+/// green-normalized sensor gains that make that white neutral, before the `f32` conversion the
+/// payload stores. [`temperature_tint_from_gains`] checks its answer through this same function.
+fn gains_f64(
+    temperature_kelvin: f64,
+    tint: f64,
+    matrix: &[[f64; 3]; 3],
+) -> Result<[f64; 3], Error> {
     if !temperature_kelvin.is_finite()
         || !(MIN_TEMPERATURE_K..=MAX_TEMPERATURE_K).contains(&temperature_kelvin)
     {
@@ -205,7 +251,6 @@ pub fn gains_from_temperature_tint(
             "RAW tint must be finite and -100..=100 Lightwell units",
         ));
     }
-    let matrix = camera_matrix(cam_xyz)?;
     let [x, y] = tinted_whitepoint_xy(temperature_kelvin, tint)?;
     let xyz = [x / y, 1.0, (1.0 - x - y) / y];
     if !xyz.iter().all(|value| value.is_finite() && *value > 0.0) {
@@ -229,16 +274,254 @@ pub fn gains_from_temperature_tint(
             "temperature/tint gains exceed the finite 0..32 sensor range",
         ));
     }
-    let gains = gains.map(|value| value as f32);
-    if !gains
-        .iter()
-        .all(|value| value.is_finite() && *value > 0.0 && f64::from(*value) <= super::MAX_RAW_GAIN)
+    Ok(gains)
+}
+
+/// How far, in CIE 1960 `uv`, the white a solved temperature and tint select may sit from the white
+/// the gains describe: half of one Lightwell tint unit. A white the forward map reaches is solved to
+/// rounding; this bound matters only where the published locus polynomials do not quite join (a
+/// gap of `2.7e-5` at 4000 K, `2.8e-6` at 2222 K and `2.7e-7` at 7000 K), so the nearest
+/// temperature there is still an answer, and it stays below anything the controls can show.
+pub const INVERSE_TOLERANCE_UV: f64 = 0.5 * TINT_DUV_UNIT;
+/// A bisection of one interval, or the search for the closest white in one, stops on its own once
+/// its bracket is one `f64` apart, after about 30 halvings of a scan step; this bounds it
+/// regardless.
+const INVERSE_MAX_ITERATIONS: usize = 64;
+/// Where the forward map jumps in temperature: at each seam of the published locus polynomials,
+/// where the base white jumps, and one kelvin either side, where the tangent's ±1 K difference
+/// starts or stops straddling that jump. Between them it is continuous.
+const INVERSE_BREAKPOINTS: [f64; 9] = [
+    2_221.0, 2_222.0, 2_223.0, 3_999.0, 4_000.0, 4_001.0, 6_999.0, 7_000.0, 7_001.0,
+];
+/// The spacing of the scan for sign changes. Outside the Planckian/daylight blend the locus bends
+/// gently (a radius of curvature of at least 0.087 `uv` away from the seams, against the 0.01 `uv`
+/// a tint of ±100 reaches), so the tangent component falls steadily and a coarse scan brackets its
+/// one crossing.
+const INVERSE_SCAN_STEP_K: f64 = 100.0;
+/// Inside the blend the locus bends sharply (a radius down to 0.008 `uv`, less than a ±100 tint
+/// reaches, so the lines tint moves along cross and one white can have several temperatures), and
+/// a fine scan finds each crossing that a coarse bracket would pair off and miss.
+const INVERSE_FOLD_BAND_K: [f64; 2] = [3_700.0, 4_600.0];
+const INVERSE_FOLD_STEP_K: f64 = 10.0;
+
+/// The temperatures the inverse evaluates first, in order: the coarse scan, the fine scan of the
+/// blend and the breakpoints. About 190 of them.
+fn inverse_scan() -> Vec<f64> {
+    let grid = |from: f64, to: f64, step: f64| {
+        let steps = ((to - from) / step).round() as usize;
+        (0..=steps).map(move |index| from + index as f64 * step)
+    };
+    let mut points: Vec<f64> = grid(MIN_TEMPERATURE_K, MAX_TEMPERATURE_K, INVERSE_SCAN_STEP_K)
+        .chain(grid(
+            INVERSE_FOLD_BAND_K[0],
+            INVERSE_FOLD_BAND_K[1],
+            INVERSE_FOLD_STEP_K,
+        ))
+        .chain(INVERSE_BREAKPOINTS)
+        .collect();
+    points.sort_by(f64::total_cmp);
+    points.dedup();
+    points
+}
+
+/// The temperature and Lightwell tint whose gains are `gains`: the inverse of
+/// [`gains_from_temperature_tint`] over the same camera matrix and the same declared ranges.
+///
+/// The forward map sets `gains[i] = response[1] / response[i]` for the camera's response to the
+/// selected white, so that response is proportional to the reciprocal gains; the inverse camera
+/// matrix turns it into the white's XYZ and so its CIE 1960 `uv`. Tint moves a white along the
+/// locus normal at its temperature, so the temperature is where the white's offset from the locus
+/// has no component along the locus tangent, and the tint is the normal component in tint units.
+/// That tangent component is continuous between the [`INVERSE_BREAKPOINTS`], so each interval
+/// whose ends differ in sign is bisected, in at most [`INVERSE_MAX_ITERATIONS`] steps, and the
+/// temperature whose white lands closest wins. Everything is `f64` and nothing is clamped into
+/// range: a white outside 2000..12000 K or ±100 tint, gains that describe no visible white, and a
+/// white no temperature and tint reach within [`INVERSE_TOLERANCE_UV`] are refused with
+/// `out-of-range:` and the reason, and the answer is checked through the forward map before it is
+/// returned. It costs a few hundred locus evaluations and reads no pixel.
+pub fn temperature_tint_from_gains(
+    gains: [f32; 3],
+    cam_xyz: [[f32; 3]; 4],
+) -> Result<[f64; 2], Error> {
+    temperature_tint_from_gains_f64(gains.map(f64::from), &camera_matrix(cam_xyz)?)
+}
+
+fn temperature_tint_from_gains_f64(
+    gains: [f64; 3],
+    matrix: &[[f64; 3]; 3],
+) -> Result<[f64; 2], Error> {
+    if !gains.iter().all(|gain| gain.is_finite() && *gain > 0.0) {
+        return Err(validation("RAW gains must be finite and positive"));
+    }
+    let inverse = mat3_inverse(matrix)?;
+    let response = [gains[1] / gains[0], 1.0, gains[1] / gains[2]];
+    let xyz = inverse.map(|row| row[0] * response[0] + row[1] * response[1] + row[2] * response[2]);
+    let sum = xyz[0] + xyz[1] + xyz[2];
+    let xy = [xyz[0] / sum, xyz[1] / sum];
+    if !sum.is_finite()
+        || sum <= 0.0
+        || !xy.iter().all(|value| value.is_finite() && *value > 0.0)
+        || xy[0] + xy[1] >= 1.0
     {
         return Err(validation(
-            "temperature/tint gains cannot be represented as f32",
+            "out-of-range: the gains describe no visible white",
         ));
     }
-    Ok(gains)
+    let target = xy_to_uv(xy)?;
+    // One temperature read as an answer: the tangent component, whose sign changes where a white
+    // lies on that temperature's tint line, the tint, and how far the white the answer selects,
+    // with its tint held to the range, is from the gains' white.
+    let answer = |temperature: f64| -> Result<Answer, Error> {
+        let frame = locus_frame(temperature)?;
+        let offset = [target[0] - frame.base[0], target[1] - frame.base[1]];
+        let along = offset[0] * frame.tangent[0] + offset[1] * frame.tangent[1];
+        let tint =
+            (offset[0] * frame.green_normal[0] + offset[1] * frame.green_normal[1]) / TINT_DUV_UNIT;
+        let beyond = (tint.abs() - MAX_TINT).max(0.0) * TINT_DUV_UNIT;
+        Ok(Answer {
+            temperature,
+            along,
+            tint,
+            distance: along.hypot(beyond),
+        })
+    };
+    let points = inverse_scan();
+    let scanned = points
+        .iter()
+        .map(|temperature| answer(*temperature))
+        .collect::<Result<Vec<_>, _>>()?;
+    let (at_low, at_high) = (scanned[0].along, scanned[scanned.len() - 1].along);
+    // Every scanned temperature is a candidate, so a white in a seam's gap still finds the nearest.
+    let mut best = scanned
+        .iter()
+        .copied()
+        .reduce(Answer::closer)
+        .expect("the scan is not empty");
+    for pair in scanned.windows(2) {
+        let (mut low, mut high) = (pair[0].temperature, pair[1].temperature);
+        let low_sign = pair[0].along.is_sign_positive();
+        if pair[0].along == 0.0
+            || pair[1].along == 0.0
+            || low_sign == pair[1].along.is_sign_positive()
+        {
+            continue;
+        }
+        for _ in 0..INVERSE_MAX_ITERATIONS {
+            let middle = 0.5 * (low + high);
+            if middle <= low || middle >= high {
+                break;
+            }
+            if answer(middle)?.along.is_sign_positive() == low_sign {
+                low = middle;
+            } else {
+                high = middle;
+            }
+        }
+        best = best.closer(answer(low)?).closer(answer(high)?);
+    }
+    // Where two temperatures meet at a fold of the map, the tangent component touches zero without
+    // changing sign between two scanned temperatures. The closest white on either side of the best
+    // scanned one is then found by a golden-section search, which needs no sign change.
+    if best.distance > INVERSE_TOLERANCE_UV
+        && let Some(index) = points.iter().position(|point| *point == best.temperature)
+    {
+        for (mut low, mut high) in [
+            (points[index.saturating_sub(1)], points[index]),
+            (points[index], points[(index + 1).min(points.len() - 1)]),
+        ] {
+            const RATIO: f64 = 0.618_033_988_749_894_8;
+            for _ in 0..INVERSE_MAX_ITERATIONS {
+                if high - low <= f64::EPSILON * high {
+                    break;
+                }
+                let (left, right) = (high - RATIO * (high - low), low + RATIO * (high - low));
+                if answer(left)?.distance <= answer(right)?.distance {
+                    high = right;
+                } else {
+                    low = left;
+                }
+            }
+            best = best.closer(answer(0.5 * (low + high))?);
+        }
+    }
+    if !best.tint.is_finite() || best.distance > INVERSE_TOLERANCE_UV {
+        return Err(validation(if at_low <= 0.0 {
+            "out-of-range: the gains need a temperature below 2000 K".to_owned()
+        } else if at_high >= 0.0 {
+            "out-of-range: the gains need a temperature above 12000 K".to_owned()
+        } else if best.along.abs() <= INVERSE_TOLERANCE_UV {
+            format!(
+                "out-of-range: the gains need a tint of {:.1}, outside -100..100",
+                best.tint
+            )
+        } else {
+            format!(
+                "out-of-range: no temperature and tint reach the gains' white within {INVERSE_TOLERANCE_UV} uv (nearest {:.2e} at {:.3} K)",
+                best.distance, best.temperature
+            )
+        }));
+    }
+    // The end of the tint range answers a white just beyond it on the same terms as a seam: the
+    // white the answer selects is within the tolerance of the gains' white. That is what keeps a
+    // white stored at ±100 answerable, since its `f32` gains land a rounding beyond.
+    let tint = best.tint.clamp(MIN_TINT, MAX_TINT);
+    gains_f64(best.temperature, tint, matrix)?;
+    Ok([best.temperature, tint])
+}
+
+/// One temperature tried by [`temperature_tint_from_gains`].
+#[derive(Clone, Copy)]
+struct Answer {
+    temperature: f64,
+    /// The gains' white's offset along the locus tangent: zero on this temperature's tint line.
+    along: f64,
+    /// The offset along the locus normal, in tint units, before it is held to the range.
+    tint: f64,
+    /// From the gains' white to the white this temperature and the held tint select, in `uv`.
+    distance: f64,
+}
+
+impl Answer {
+    /// The closer of two answers; the earlier one on a tie, so the result does not depend on
+    /// anything but the order of the scan.
+    fn closer(self, other: Self) -> Self {
+        if other.distance < self.distance {
+            other
+        } else {
+            self
+        }
+    }
+}
+
+/// The exact 3×3 inverse by adjugate and determinant, of a matrix [`camera_matrix`] has already
+/// found non-degenerate.
+fn mat3_inverse(m: &[[f64; 3]; 3]) -> Result<[[f64; 3]; 3], Error> {
+    let cofactor =
+        |r0: usize, r1: usize, c0: usize, c1: usize| m[r0][c0] * m[r1][c1] - m[r0][c1] * m[r1][c0];
+    let adjugate = [
+        [
+            cofactor(1, 2, 1, 2),
+            -cofactor(0, 2, 1, 2),
+            cofactor(0, 1, 1, 2),
+        ],
+        [
+            -cofactor(1, 2, 0, 2),
+            cofactor(0, 2, 0, 2),
+            -cofactor(0, 1, 0, 2),
+        ],
+        [
+            cofactor(1, 2, 0, 1),
+            -cofactor(0, 2, 0, 1),
+            cofactor(0, 1, 0, 1),
+        ],
+    ];
+    let determinant =
+        m[0][0] * adjugate[0][0] + m[0][1] * adjugate[1][0] + m[0][2] * adjugate[2][0];
+    let inverse = adjugate.map(|row| row.map(|value| value / determinant));
+    if !determinant.is_finite() || !inverse.iter().flatten().all(|value| value.is_finite()) {
+        return Err(validation("camera XYZ matrix has no finite inverse"));
+    }
+    Ok(inverse)
 }
 
 #[cfg(test)]
@@ -533,5 +816,302 @@ mod tests {
 
         let too_large = [[0.01, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0], [0.0; 3]];
         assert!(gains_from_temperature_tint(6_504.0, 0.0, too_large).is_err());
+    }
+
+    /// LibRaw `cam_xyz` of the three supplied RAW fixtures: Nikon Z6 and Fujifilm X100VI from their
+    /// metadata, DJI FC3411 the DNG's ColorMatrix2 (D65). The same values the tests above use.
+    const Z6_CAM_XYZ: [[f32; 3]; 4] = [
+        [0.9943, -0.3269, -0.0839],
+        [-0.5323, 1.3269, 0.2259],
+        [-0.1198, 0.2083, 0.7557],
+        [0.0; 3],
+    ];
+    const X100VI_CAM_XYZ: [[f32; 3]; 4] = [
+        [1.1809, -0.5358, -0.1141],
+        [-0.4248, 1.2164, 0.2343],
+        [-0.0514, 0.1097, 0.5848],
+        [0.0; 3],
+    ];
+    const FC3411_CAM_XYZ: [[f32; 3]; 4] = [
+        [0.8531, -0.3148, -0.0888],
+        [-0.4071, 1.2492, 0.1265],
+        [-0.0209, 0.0486, 0.5114],
+        [0.0; 3],
+    ];
+
+    /// The three camera matrices, and synthetic ones that no camera supplies: the identity, a
+    /// diagonal that scales red and blue apart, and a dense mixing matrix.
+    fn inverse_matrices() -> Vec<(&'static str, [[f32; 3]; 4])> {
+        vec![
+            ("Nikon Z6", Z6_CAM_XYZ),
+            ("Fujifilm X100VI", X100VI_CAM_XYZ),
+            ("DJI FC3411", FC3411_CAM_XYZ),
+            ("identity", IDENTITY),
+            (
+                "diagonal",
+                [[2.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 0.5], [0.0; 3]],
+            ),
+            (
+                "mixing",
+                [
+                    [0.7, 0.25, 0.05],
+                    [-0.3, 1.2, 0.1],
+                    [0.02, -0.05, 0.9],
+                    [0.0; 3],
+                ],
+            ),
+        ]
+    }
+
+    /// Within a kelvin and a half of a seam the forward map is not one-to-one: the tangent's ±1 K
+    /// difference straddles the jump, so a temperature there can come back as another whose gains
+    /// are the same.
+    fn near_a_seam(temperature: f64) -> bool {
+        [2_222.0, 4_000.0, 7_000.0]
+            .iter()
+            .any(|seam: &f64| (temperature - seam).abs() <= 1.5)
+    }
+
+    /// Where the Planckian/daylight blend bends the locus more tightly than a strong green tint
+    /// reaches (a radius of about 0.008 `uv` near 4450..4500 K), the tint lines cross and the
+    /// forward map folds: one set of gains has several temperatures and tints. The grid below finds
+    /// every non-unique case inside this band, on the green side, and none outside it.
+    fn in_the_fold(temperature: f64, tint: f64) -> bool {
+        (4_400.0..=4_550.0).contains(&temperature) && tint <= -80.0
+    }
+
+    fn relative(actual: [f64; 3], expected: [f64; 3]) -> f64 {
+        actual
+            .iter()
+            .zip(expected)
+            .map(|(actual, expected)| ((actual - expected) / expected).abs())
+            .fold(0.0, f64::max)
+    }
+
+    /// The inverse against the forward map over the three camera matrices and three synthetic
+    /// ones, on a grid of the whole declared range with both ends, every seam and the fold
+    /// included. Gains always come back: to `1e-11` in `f64`, and from the `f32` gains a payload
+    /// stores to `1e-6`, the rounding those carry at an end of the range, where the answer is held
+    /// to it. Where the map is one-to-one the controls come back too: to `1e-6` in `f64`, and from
+    /// stored gains to 0.01 K and 0.001 tint, far inside the whole kelvin and tint unit a field
+    /// shows.
+    #[test]
+    fn the_inverse_round_trips_the_forward_map_over_the_whole_range() {
+        let mut temperatures: Vec<f64> = (2_000..=12_000).step_by(100).map(f64::from).collect();
+        temperatures.extend([
+            2_000.5, 2_221.5, 2_222.5, 3_799.9, 3_800.1, 3_999.5, 4_000.5, 4_450.0, 4_499.9,
+            4_500.1, 5_003.7, 6_504.0, 6_999.5, 7_000.5, 11_999.5,
+        ]);
+        let tints: Vec<f64> = (-100..=100)
+            .step_by(10)
+            .map(f64::from)
+            .chain([-99.5, -85.0, 0.25, 99.5])
+            .collect();
+        // Gains in f64 and f32; controls in f64 and f32 where the map is one-to-one.
+        let mut worst = [0.0_f64; 6];
+        let (mut checked, mut folded, mut skipped) = (0, 0, 0);
+        for (name, cam_xyz) in inverse_matrices() {
+            let matrix = camera_matrix(cam_xyz).unwrap();
+            for &temperature in &temperatures {
+                for &tint in &tints {
+                    // A synthetic matrix can need a gain over 32 at an end of the range, which the
+                    // forward map refuses; no camera matrix here does.
+                    let gains = match gains_f64(temperature, tint, &matrix) {
+                        Ok(gains) => gains,
+                        Err(error) => {
+                            assert!(
+                                !name.contains(' '),
+                                "{name} {temperature} K {tint}: {error}"
+                            );
+                            skipped += 1;
+                            continue;
+                        }
+                    };
+                    let unique = !near_a_seam(temperature) && !in_the_fold(temperature, tint);
+                    let [kelvin, solved] = temperature_tint_from_gains_f64(gains, &matrix)
+                        .unwrap_or_else(|error| panic!("{name} {temperature} K {tint}: {error}"));
+                    worst[0] =
+                        worst[0].max(relative(gains_f64(kelvin, solved, &matrix).unwrap(), gains));
+                    if unique {
+                        worst[2] = worst[2].max((kelvin - temperature).abs());
+                        worst[3] = worst[3].max((solved - tint).abs());
+                    } else if (kelvin - temperature).abs() > 0.01 {
+                        folded += 1;
+                    }
+
+                    let stored = gains_from_temperature_tint(temperature, tint, cam_xyz).unwrap();
+                    let [kelvin, solved] = temperature_tint_from_gains(stored, cam_xyz)
+                        .unwrap_or_else(|error| panic!("{name} {temperature} K {tint}: {error}"));
+                    let again = gains_f64(kelvin, solved, &matrix).unwrap();
+                    worst[1] = worst[1].max(relative(again, stored.map(f64::from)));
+                    if unique {
+                        worst[4] = worst[4].max((kelvin - temperature).abs());
+                        worst[5] = worst[5].max((solved - tint).abs());
+                    }
+                    assert!((MIN_TEMPERATURE_K..=MAX_TEMPERATURE_K).contains(&kelvin));
+                    assert!((MIN_TINT..=MAX_TINT).contains(&solved));
+                    checked += 1;
+                }
+            }
+        }
+        println!(
+            "{checked} cases ({skipped} beyond the forward map's 32× gain, {folded} answered by \
+             another preimage at a seam or in the fold); gains: f64 {:.2e}, f32 {:.2e} relative; \
+             one-to-one controls: f64 {:.2e} K and {:.2e} tint, f32 {:.2e} K and {:.2e} tint",
+            worst[0], worst[1], worst[2], worst[3], worst[4], worst[5]
+        );
+        assert!(worst[0] <= 1.0e-11, "f64 gains {:.2e}", worst[0]);
+        assert!(worst[1] <= 1.0e-6, "f32 gains {:.2e}", worst[1]);
+        assert!(worst[2] <= 1.0e-6, "f64 temperature {:.2e} K", worst[2]);
+        assert!(worst[3] <= 1.0e-6, "f64 tint {:.2e}", worst[3]);
+        assert!(worst[4] <= 0.01, "f32 temperature {:.2e} K", worst[4]);
+        assert!(worst[5] <= 1.0e-3, "f32 tint {:.2e}", worst[5]);
+    }
+
+    /// Gains outside what the controls can say are refused with the reason, never clamped into
+    /// range: a white warmer than 2000 K, cooler than 12000 K, beyond ±100 tint, a white no
+    /// visible colour has, and inputs no white can come from.
+    #[test]
+    fn the_inverse_refuses_whites_outside_the_declared_ranges() {
+        // Gains for a white the controls cannot select, through the same matrix product the
+        // forward map uses: the locus polynomials themselves reach 1667..25000 K.
+        let gains_of = |uv: [f64; 2], cam_xyz: [[f32; 3]; 4]| {
+            let [x, y] = uv_to_xy(uv).unwrap();
+            let xyz = [x / y, 1.0, (1.0 - x - y) / y];
+            let matrix = camera_matrix(cam_xyz).unwrap();
+            let response = matrix.map(|row| row[0] * xyz[0] + row[1] * xyz[1] + row[2] * xyz[2]);
+            [response[1] / response[0], 1.0, response[1] / response[2]].map(|gain| gain as f32)
+        };
+        let refused = |gains: [f32; 3], cam_xyz: [[f32; 3]; 4]| {
+            let error = temperature_tint_from_gains(gains, cam_xyz).expect_err("refused");
+            assert_eq!(error.kind, ErrorKind::Validation);
+            error.detail
+        };
+        for (name, cam_xyz) in inverse_matrices().into_iter().take(3) {
+            let warm = gains_of(xy_to_uv(planck_xy(1_900.0)).unwrap(), cam_xyz);
+            assert_eq!(
+                refused(warm, cam_xyz),
+                "out-of-range: the gains need a temperature below 2000 K",
+                "{name}"
+            );
+            let cool = gains_of(xy_to_uv(daylight_xy(15_000.0)).unwrap(), cam_xyz);
+            assert_eq!(
+                refused(cool, cam_xyz),
+                "out-of-range: the gains need a temperature above 12000 K",
+                "{name}"
+            );
+            for (tint, shown) in [(130.0, "130.0"), (-130.0, "-130.0")] {
+                let frame = locus_frame(5_000.0).unwrap();
+                let duv = tint * TINT_DUV_UNIT;
+                let white = [
+                    frame.base[0] + frame.green_normal[0] * duv,
+                    frame.base[1] + frame.green_normal[1] * duv,
+                ];
+                let detail = refused(gains_of(white, cam_xyz), cam_xyz);
+                assert!(
+                    detail.starts_with(&format!("out-of-range: the gains need a tint of {shown}")),
+                    "{name} {tint}: {detail}"
+                );
+            }
+            // Just inside the ends, the same construction is answered.
+            let frame = locus_frame(5_000.0).unwrap();
+            let white = [
+                frame.base[0] + frame.green_normal[0] * 99.0 * TINT_DUV_UNIT,
+                frame.base[1] + frame.green_normal[1] * 99.0 * TINT_DUV_UNIT,
+            ];
+            let [kelvin, tint] = temperature_tint_from_gains(gains_of(white, cam_xyz), cam_xyz)
+                .unwrap_or_else(|error| panic!("{name}: {error}"));
+            close(kelvin, 5_000.0, 0.01);
+            close(tint, 99.0, 1.0e-3);
+        }
+        // A camera whose response to any white has a negative XYZ has no visible white.
+        let flipped = [[-1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0], [0.0; 3]];
+        assert_eq!(
+            refused([1.0, 1.0, 1.0], flipped),
+            "out-of-range: the gains describe no visible white"
+        );
+        for gains in [
+            [f32::NAN, 1.0, 1.0],
+            [1.0, 1.0, f32::INFINITY],
+            [0.0, 1.0, 1.0],
+            [2.0, 1.0, -1.5],
+        ] {
+            assert_eq!(
+                refused(gains, Z6_CAM_XYZ),
+                "RAW gains must be finite and positive"
+            );
+        }
+        let singular = [[1.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0], [0.0; 3]];
+        assert!(refused([2.0, 1.0, 1.5], singular).contains("degenerate"));
+    }
+
+    /// What one inversion costs: run with `--release -- --ignored --nocapture`.
+    #[test]
+    #[ignore = "a measurement, not a gate"]
+    fn measure_the_inverse() {
+        let gains = gains_from_temperature_tint(5_000.0, 10.0, Z6_CAM_XYZ).unwrap();
+        let started = std::time::Instant::now();
+        let runs = 2_000;
+        for _ in 0..runs {
+            std::hint::black_box(
+                temperature_tint_from_gains(std::hint::black_box(gains), Z6_CAM_XYZ).unwrap(),
+            );
+        }
+        println!(
+            "{:.1} µs per inversion",
+            started.elapsed().as_secs_f64() * 1e6 / f64::from(runs)
+        );
+    }
+
+    /// The real fixtures: each supplied RAW's own as-shot gains and camera matrix, read from the
+    /// original the private manifest names, inverted and checked back through the forward map, and
+    /// a grid round trip over that camera's own matrix. Run with
+    /// `LIGHTWELL_RAW_MANIFEST=/path/to/raw-manifest.json cargo test --release -p lightwell-core
+    /// --lib raw::white_balance -- --ignored --nocapture`.
+    #[test]
+    #[ignore = "requires the private RAW fixtures and their manifest"]
+    fn the_supplied_raw_fixtures_have_an_as_shot_equivalent() {
+        let manifest = std::env::var("LIGHTWELL_RAW_MANIFEST").expect("LIGHTWELL_RAW_MANIFEST");
+        let manifest: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(manifest).unwrap()).unwrap();
+        let sources = manifest["sources"].as_array().expect("manifest sources");
+        assert!(!sources.is_empty());
+        for source in sources {
+            let path = source["path"].as_str().expect("a source path");
+            let bytes: std::sync::Arc<[u8]> = std::fs::read(path).unwrap().into();
+            let cancel = std::sync::atomic::AtomicBool::new(false);
+            let raw = lightwell_raw::RawSource::decode(bytes, &cancel).unwrap();
+            let metadata = raw.metadata();
+            let (gains, cam_xyz) = (metadata.as_shot_gains, metadata.cam_xyz);
+            let matrix = camera_matrix(cam_xyz).unwrap();
+            let [kelvin, tint] = temperature_tint_from_gains(gains, cam_xyz)
+                .unwrap_or_else(|error| panic!("{path}: {error}"));
+            let again = gains_f64(kelvin, tint, &matrix).unwrap();
+            let error = relative(again, gains.map(f64::from));
+            println!(
+                "{}: as-shot gains {gains:?} = {kelvin:.3} K, tint {tint:+.4}; gains back to {error:.2e} relative; cam_xyz {:?}",
+                source["id"],
+                &cam_xyz[..3]
+            );
+            assert!(error <= 1.0e-6, "{path}: {error:.2e}");
+            let mut worst = [0.0_f64; 3];
+            for temperature in (2_000..=12_000).step_by(250).map(f64::from) {
+                for tint in (-100..=100).step_by(20).map(f64::from) {
+                    let stored = gains_from_temperature_tint(temperature, tint, cam_xyz).unwrap();
+                    let [kelvin, solved] = temperature_tint_from_gains(stored, cam_xyz).unwrap();
+                    let again = gains_f64(kelvin, solved, &matrix).unwrap();
+                    worst[0] = worst[0].max(relative(again, stored.map(f64::from)));
+                    if !near_a_seam(temperature) && !in_the_fold(temperature, tint) {
+                        worst[1] = worst[1].max((kelvin - temperature).abs());
+                        worst[2] = worst[2].max((solved - tint).abs());
+                    }
+                }
+            }
+            println!(
+                "{}: grid gains {:.2e} relative, controls {:.2e} K and {:.2e} tint",
+                source["id"], worst[0], worst[1], worst[2]
+            );
+            assert!(worst[0] <= 1.0e-6 && worst[1] <= 0.01 && worst[2] <= 1.0e-3);
+        }
     }
 }

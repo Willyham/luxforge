@@ -204,6 +204,7 @@ pub(crate) fn crop_descriptor() -> ModuleDescriptor {
             format: 1,
             stage: EffectStage::Geometry,
             order: 0,
+            artifacts: false,
         }],
         actions: vec![
             ActionDescriptor {
@@ -264,6 +265,7 @@ pub(crate) fn crop_descriptor() -> ModuleDescriptor {
         collapsed: false,
         layout: lightwell_core::ModuleLayout::Stacked,
         availability: Availability::Available,
+        ..ModuleDescriptor::default()
     }
 }
 
@@ -274,6 +276,7 @@ pub(crate) fn crop_layer(payload: CropPayload) -> lightwell_core::Layer {
         effect_id: CROP_EFFECT.into(),
         effect_format: 1,
         payload: serde_json::to_value(payload).expect("a serializable payload"),
+        artifacts: Vec::new(),
     }
 }
 
@@ -348,10 +351,68 @@ pub(crate) fn refresh_for(
             .expect("a test analysis identity"),
             analyse: false,
             proxy: None,
+            artifacts: Vec::new(),
         },
         session: ClientSession::default(),
         sequence: 7,
     }
+}
+
+/// The Nikon Z6's camera matrix and as-shot gains, from the supplied NEF's metadata: a real camera
+/// whose as-shot white balance has a temperature and tint equivalent in range.
+pub(crate) const Z6_CAM_XYZ: [[f32; 3]; 4] = [
+    [0.9943, -0.3269, -0.0839],
+    [-0.5323, 1.3269, 0.2259],
+    [-0.1198, 0.2083, 0.7557],
+    [0.0; 3],
+];
+pub(crate) const Z6_AS_SHOT: [f32; 3] = [1.683_593_8, 1.0, 1.345_703_1];
+
+/// An entry whose stack is one RAW development layer holding `payload`.
+pub(crate) fn raw_entry(
+    asset: &AssetId,
+    sequence: u64,
+    parent: Option<&EntryId>,
+    payload: &lightwell_core::RawPayload,
+) -> HistoryEntry {
+    let mut entry = entry(asset, sequence, parent);
+    entry.snapshot = entry
+        .snapshot
+        .with_layer_inserted(0, payload.layer(LayerId::new()))
+        .expect("a RAW development layer");
+    entry
+}
+
+/// The refresh the owner answers for a RAW photograph showing `current`: a RAW source, and recipe
+/// rows the core's own RAW module described, values included.
+pub(crate) fn raw_refresh(asset: &AssetId, current: &HistoryEntry) -> Refresh {
+    use lightwell_core::ToolModule;
+    let mut refresh = refresh_for(asset, current, vec![current.clone()], &[current], false);
+    refresh.state.asset.source = lightwell_core::SourceKind::Raw {
+        metadata: json!({}),
+    };
+    let module = lightwell_core::RawModule::new();
+    refresh.recipe.layers = current
+        .snapshot
+        .recipe
+        .layers
+        .iter()
+        .map(|layer| lightwell_core::LayerDescription {
+            id: layer.id.clone(),
+            effect: layer.effect_id.clone(),
+            module: Some(module.descriptor().id.clone()),
+            title: Some(module.descriptor().title.clone()),
+            summary: module
+                .describe_layer(&layer.effect_id, layer.effect_format, &layer.payload)
+                .expect("a RAW summary"),
+            values: module
+                .values(&layer.effect_id, layer.effect_format, &layer.payload)
+                .expect("RAW values"),
+            available: true,
+            artifacts: layer.artifacts.clone(),
+        })
+        .collect();
+    refresh
 }
 
 /// An editor with the crop module discovered and one asset open at that revision, whose stack is
@@ -374,21 +435,18 @@ pub(crate) fn opened(
     (editor, catalog, asset, entry_id)
 }
 
-/// An editor with an evidence run attached and a script queued, so steps can be driven without a
-/// window. Nothing is captured here: the capture itself needs a real renderer.
-pub(crate) fn scripted(steps: &str) -> (Editor, PathBuf, AssetId, PathBuf) {
-    let script = parse_script(steps).expect("a valid script");
-    let (mut editor, catalog, asset, _) = opened(Vec::new(), 4);
-    let dir = std::env::temp_dir().join(format!(
-        "lightwell-script-{}-{}",
-        std::process::id(),
-        REQUEST_NUMBER.fetch_add(1, Ordering::Relaxed)
-    ));
-    editor.evidence = Some(Evidence {
-        dir: dir.clone(),
+/// An evidence run with a script queued and one open frame already captured, for an editor built
+/// any way a test likes. Nothing is captured here: the capture itself needs a real renderer.
+pub(crate) fn scripted_evidence(steps: &str) -> Evidence {
+    Evidence {
+        dir: std::env::temp_dir().join(format!(
+            "lightwell-script-{}-{}",
+            std::process::id(),
+            REQUEST_NUMBER.fetch_add(1, Ordering::Relaxed)
+        )),
         queue: VecDeque::new(),
         opens: 1,
-        script,
+        script: parse_script(steps).expect("a valid script"),
         step: 0,
         awaiting: None,
         current: None,
@@ -400,9 +458,19 @@ pub(crate) fn scripted(steps: &str) -> (Editor, PathBuf, AssetId, PathBuf) {
         paced_slider: None,
         second_click: None,
         tools_scroll: None,
+        capability_wait: None,
         wait_until: None,
         sync: crate::app::evidence::CaptureSync::default(),
-    });
+    }
+}
+
+/// An editor with an evidence run attached and a script queued, so steps can be driven without a
+/// window. Nothing is captured here: the capture itself needs a real renderer.
+pub(crate) fn scripted(steps: &str) -> (Editor, PathBuf, AssetId, PathBuf) {
+    let evidence = scripted_evidence(steps);
+    let (mut editor, catalog, asset, _) = opened(Vec::new(), 4);
+    let dir = evidence.dir.clone();
+    editor.evidence = Some(evidence);
     editor.activity.requested = 1;
     (editor, catalog, asset, dir)
 }

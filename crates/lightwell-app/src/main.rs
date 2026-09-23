@@ -2,6 +2,7 @@ mod app;
 mod crop_canvas;
 mod crop_draft;
 mod diagnostics;
+mod draft_photo;
 mod paths;
 mod state;
 mod view;
@@ -28,6 +29,9 @@ struct Config {
     /// Built-in module identities to register as unavailable, so an unavailable provider can be
     /// rendered and reported without removing it from the catalog's readable effects.
     disabled: Vec<String>,
+    /// The base URL of a capability proof endpoint a harness started; registers the developer
+    /// capability proof module against it. Developer mode only.
+    proof_endpoint: Option<String>,
 }
 
 impl Config {
@@ -70,6 +74,13 @@ fn arguments() -> Result<Config, String> {
                 config.catalog = Some(args.next().ok_or("--catalog requires a path")?.into());
             }
             Some("--developer") => config.developer = true,
+            Some("--proof-endpoint") => {
+                config.proof_endpoint = Some(
+                    args.next()
+                        .and_then(|url| url.into_string().ok())
+                        .ok_or("--proof-endpoint requires a URL")?,
+                );
+            }
             Some("--hidden-window") => config.hidden = true,
             Some("--disable-module") => {
                 let id = args
@@ -90,13 +101,14 @@ fn arguments() -> Result<Config, String> {
             }
             Some("--help") => {
                 println!(
-                    "Lightwell: [--open IMAGE]... [--catalog CATALOG] [--data-root DIRECTORY] [--developer] [--disable-module MODULE_ID]... [--evidence-dir NEW_DIRECTORY] [--evidence-script FILE] [--window-size WIDTH HEIGHT] [--hidden-window]\n--developer shows the components gallery and proof modules (automatic in debug builds); --disable-module registers a built-in as unavailable, so a stack that uses it reports the unavailable effect instead of rendering without it.\n--hidden-window creates the window invisible: it renders and captures as usual but is never placed on screen, which is what automated launches use.\nEvidence mode imports each --open in order into an isolated catalog, captures a frame after each, runs any evidence script with a frame per step and exits."
+                    "Lightwell: [--open IMAGE]... [--catalog CATALOG] [--data-root DIRECTORY] [--developer] [--proof-endpoint URL] [--disable-module MODULE_ID]... [--evidence-dir NEW_DIRECTORY] [--evidence-script FILE] [--window-size WIDTH HEIGHT] [--hidden-window]\n--developer shows the components gallery and proof modules (automatic in debug builds); --proof-endpoint registers the capability proof module against a proof endpoint a test harness started, and only in developer mode; --disable-module registers a built-in as unavailable, so a stack that uses it reports the unavailable effect instead of rendering without it.\n--hidden-window creates the window invisible: it renders and captures as usual but is never placed on screen, which is what automated launches use.\nEvidence mode imports each --open in order into an isolated catalog, captures a frame after each, runs any evidence script with a frame per step and exits."
                 );
                 std::process::exit(0)
             }
             _ => return Err("Unknown argument; use --help".into()),
         }
     }
+    check_proof_endpoint(&config)?;
     if config.files.len() > 16 {
         return Err("At most 16 evidence requests are supported per run".into());
     }
@@ -158,6 +170,14 @@ fn arguments() -> Result<Config, String> {
     Ok(config)
 }
 
+/// The capability proof is a developer fixture: it never joins a photo-editing workspace.
+fn check_proof_endpoint(config: &Config) -> Result<(), String> {
+    if config.proof_endpoint.is_some() && !config.developer {
+        return Err("--proof-endpoint requires developer mode (--developer)".into());
+    }
+    Ok(())
+}
+
 fn main() {
     let config = arguments().unwrap_or_else(|error| {
         eprintln!("{error}");
@@ -169,5 +189,30 @@ fn main() {
     if let Err(error) = app::run(config, size) {
         eprintln!("Could not start Lightwell editor: {error}");
         std::process::exit(1);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_proof_endpoint_is_refused_outside_developer_mode() {
+        let proof = Config {
+            proof_endpoint: Some("http://127.0.0.1:9".into()),
+            ..Config::default()
+        };
+        assert_eq!(
+            check_proof_endpoint(&proof).unwrap_err(),
+            "--proof-endpoint requires developer mode (--developer)"
+        );
+        assert!(
+            check_proof_endpoint(&Config {
+                developer: true,
+                ..proof
+            })
+            .is_ok()
+        );
+        assert!(check_proof_endpoint(&Config::default()).is_ok());
     }
 }

@@ -316,6 +316,7 @@ fn range_controls(fields: &[&str], rail: fn(usize) -> RailDecoration) -> Vec<Con
             label: range_label(range),
             style: crate::NumberStyle::Slider,
             rail: Some(rail(range)),
+            reset: None,
         })
         .collect()
 }
@@ -343,6 +344,7 @@ impl MixerModule {
                     format: EFFECT_FORMAT,
                     stage: EffectStage::Color,
                     order: 10,
+                    artifacts: false,
                 }],
                 actions: vec![
                     ActionDescriptor {
@@ -395,6 +397,7 @@ impl MixerModule {
                 // draws them as one segmented row instead of stacked sections.
                 layout: crate::ModuleLayout::Tabs,
                 availability: Availability::Available,
+                ..ModuleDescriptor::default()
             },
         }
     }
@@ -469,6 +472,7 @@ impl ToolModule for MixerModule {
                 effect_id: MIXER_EFFECT.into(),
                 effect_format: EFFECT_FORMAT,
                 payload: payload_of(&merged),
+                artifacts: Vec::new(),
             })),
             // The host inserts a colour-stage layer after Basic by declared order; a neutral first
             // set has nothing to store, so it adds no layer at all.
@@ -478,6 +482,7 @@ impl ToolModule for MixerModule {
                 effect_id: MIXER_EFFECT.into(),
                 effect_format: EFFECT_FORMAT,
                 payload: payload_of(&merged),
+                artifacts: Vec::new(),
             })),
         }
     }
@@ -582,6 +587,7 @@ mod tests {
             effect_id: MIXER_EFFECT.into(),
             effect_format: EFFECT_FORMAT,
             payload,
+            artifacts: Vec::new(),
         }
     }
 

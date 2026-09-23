@@ -11,6 +11,7 @@ use crate::{
     },
     crop_draft::{Corner, Handle},
     state::{
+        capabilities::{CapabilityView, SecretText},
         presets::{PresetRow, presettable_groups},
         tools::crop_frame,
     },
@@ -67,6 +68,9 @@ pub(crate) struct Evidence {
     /// The gallery page shown instead of the workspace for a scripted capture.
     /// Requested tools-panel scroll fraction, retained beside the capture for correlation.
     pub(crate) tools_scroll: Option<f64>,
+    /// The module a running capability step waits on, and whether it waits for that module's jobs
+    /// to finish as well as for its round trips.
+    pub(crate) capability_wait: Option<(String, bool)>,
     /// A scripted double-click's second press, waiting for its gap to pass. Its one-shot timer
     /// exists only while this is set.
     pub(crate) second_click: Option<SecondClick>,
@@ -270,6 +274,8 @@ pub(crate) enum Step {
         x: f32,
         y: f32,
     },
+    /// One gesture on a module's capability section, task control or consent notice.
+    Capability(CapabilityStep),
 }
 
 /// One library preset, by its exact name, and by its group when two groups hold that name. A step
@@ -298,6 +304,120 @@ impl PresetPick {
             None => json!({"name":self.name}),
         }
     }
+}
+
+/// One capability gesture: which module, what, and whether its frame waits for the jobs it starts.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct CapabilityStep {
+    pub(crate) module: String,
+    pub(crate) action: CapabilityAction,
+    /// `false` captures while a job the step started is still running.
+    pub(crate) wait: bool,
+}
+
+/// What a capability step does, each through the messages its control sends. Profiles and grants
+/// are named by their position in the lists the section shows.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) enum CapabilityAction {
+    /// Open the status or the settings sub-view.
+    Section(CapabilityView),
+    Set {
+        field: String,
+        value: Value,
+        profile: Option<usize>,
+    },
+    /// Replace a secret through its masked input. The value is recorded as `<redacted>`.
+    Secret {
+        field: String,
+        value: SecretText,
+        profile: Option<usize>,
+    },
+    /// What the native file dialog would return for a file field.
+    File {
+        field: String,
+        path: PathBuf,
+    },
+    CreateProfile {
+        adapter: String,
+        label: String,
+    },
+    RemoveProfile(usize),
+    Install(String),
+    Remove(String),
+    Activate(bool),
+    Task(String),
+    /// Allow (`true`) or Don't allow on the open consent notice.
+    Consent(bool),
+    /// Apply the newest task result that declares an apply action.
+    Apply,
+    /// Cancel the module's newest live job.
+    Cancel,
+    Revoke(usize),
+    /// Capture once every job the desktop tracks for the module has finished.
+    Settle,
+}
+
+/// The keys of a capability step's one gesture.
+const CAPABILITY_ACTIONS: [&str; 14] = [
+    "section", "set", "secret", "file", "profile", "install", "remove", "activate", "task",
+    "consent", "apply", "cancel", "revoke", "settle",
+];
+
+impl CapabilityStep {
+    /// The step as the script wrote it, with a secret's value replaced by `<redacted>`.
+    fn record(&self) -> Value {
+        let (key, value) = match &self.action {
+            CapabilityAction::Section(view) => ("section", json!(view.name())),
+            CapabilityAction::Set {
+                field,
+                value,
+                profile,
+            } => (
+                "set",
+                with_profile(json!({"field": field, "value": value}), *profile),
+            ),
+            CapabilityAction::Secret { field, profile, .. } => (
+                "secret",
+                with_profile(
+                    json!({"field": field, "value": lightwell_core::capabilities::redact::REDACTED}),
+                    *profile,
+                ),
+            ),
+            CapabilityAction::File { field, path } => {
+                ("file", json!({"field": field, "path": path}))
+            }
+            CapabilityAction::CreateProfile { adapter, label } => (
+                "profile",
+                json!({"create": {"adapter": adapter, "label": label}}),
+            ),
+            CapabilityAction::RemoveProfile(index) => ("profile", json!({"remove": index})),
+            CapabilityAction::Install(resource) => ("install", json!({"resource": resource})),
+            CapabilityAction::Remove(resource) => ("remove", json!({"resource": resource})),
+            CapabilityAction::Activate(on) => ("activate", json!(on)),
+            CapabilityAction::Task(task) => ("task", json!({"task": task})),
+            CapabilityAction::Consent(allow) => {
+                ("consent", json!(if *allow { "allow" } else { "deny" }))
+            }
+            CapabilityAction::Apply => ("apply", json!(true)),
+            CapabilityAction::Cancel => ("cancel", json!(true)),
+            CapabilityAction::Revoke(index) => ("revoke", json!(index)),
+            CapabilityAction::Settle => ("settle", json!(true)),
+        };
+        let mut object = Map::new();
+        object.insert("module".into(), json!(self.module));
+        object.insert(key.into(), value);
+        if !self.wait {
+            object.insert("wait".into(), json!(false));
+        }
+        json!({"capability": object})
+    }
+}
+
+fn with_profile(mut value: Value, profile: Option<usize>) -> Value {
+    if let Some(profile) = profile {
+        value["profile"] = json!(profile);
+    }
+    value
 }
 
 /// One slider gesture. Every value becomes one `SliderMoved` with a tick between them, exactly as
@@ -482,7 +602,11 @@ impl Step {
     /// The step as the script wrote it, recorded beside the frame it produced.
     pub(crate) fn record(&self) -> Value {
         match self {
-            Self::Api { method, params } => json!({"api":{"method":method,"params":params}}),
+            // Recorded requests are redacted like every other one the desktop keeps.
+            Self::Api { method, params } => json!({"api":{
+                "method": method,
+                "params": lightwell_core::redact_params(method, &Value::Object(params.clone())),
+            }}),
             Self::Draft(draft) => json!({"draft":draft.record()}),
             Self::Slider(slider) => {
                 let mut object = json!({
@@ -603,6 +727,7 @@ impl Step {
             Self::Performance(expanded) => json!({"performance":{"expanded":expanded}}),
             Self::Wait(ms) => json!({"wait":{"ms":ms}}),
             Self::Pan { x, y } => json!({"pan":{"x":x,"y":y}}),
+            Self::Capability(step) => step.record(),
         }
     }
 }
@@ -698,6 +823,9 @@ pub(crate) enum Settle {
     /// The Performance section's first read since it started sampling has answered, so the frame
     /// shows its figures rather than the dashes before them.
     Performance,
+    /// A capability step's round trips have answered and, unless it said otherwise, the jobs it
+    /// started have finished.
+    Capability,
 }
 
 impl Editor {
@@ -749,6 +877,7 @@ impl Editor {
             Step::Performance(expanded) => self.performance_step(expanded),
             Step::Wait(ms) => self.wait_step(ms),
             Step::Pan { x, y } => self.pan_step(x, y),
+            Step::Capability(step) => self.capability_step(step),
         }
     }
 
@@ -832,7 +961,13 @@ impl Editor {
             DraftStep::Rect(rect) => return self.rect_step(*rect),
             DraftStep::AngleRail(fractions) => {
                 if !drafting {
-                    return self.fail_step("no crop draft is open");
+                    return self.idle_step(
+                        fractions
+                            .iter()
+                            .map(|fraction| CropMessage::AngleRail(*fraction))
+                            .chain(std::iter::once(CropMessage::AngleRailReleased))
+                            .collect(),
+                    );
                 }
                 let mut tasks: Vec<Task<Message>> = fractions
                     .iter()
@@ -860,17 +995,60 @@ impl Editor {
                 CropMessage::Preset(index)
             }
         };
+        // A change the idle section can make opens the draft first, exactly as the section's own
+        // control does, and is captured once that draft is on screen with the change applied.
+        if !drafting
+            && matches!(
+                step,
+                DraftStep::Preset(_)
+                    | DraftStep::Lock
+                    | DraftStep::Swap
+                    | DraftStep::Nudge(_)
+                    | DraftStep::Angle(_)
+                    | DraftStep::Guide(true)
+            )
+        {
+            let mut messages = vec![message];
+            if matches!(step, DraftStep::Angle(_)) {
+                messages.push(CropMessage::SubmitAngle);
+            }
+            return self.idle_step(messages);
+        }
         let modifier = matches!(step, DraftStep::Option(_) | DraftStep::Guide(_));
         if !drafting && !modifier {
             return self.fail_step("no crop draft is open");
         }
+        // Ending the draft returns the session to the pointer through one `workspace.set`, which
+        // answers on a later turn. The frame waits for that answer when the mode is about to
+        // change, so the recorded mode is the one the captured frame shows.
+        let leaves_mode = matches!(step, DraftStep::Cancel)
+            && self.session.workspace.mode != lightwell_core::POINTER_MODE;
         // Setting the angle text does not change the draft; submitting it does, exactly as Enter in
         // the field does.
         let mut tasks = vec![self.crop_update(message)];
         if matches!(step, DraftStep::Angle(_)) {
             tasks.push(self.crop_update(CropMessage::SubmitAngle));
         }
-        self.capture_next_frame();
+        if leaves_mode {
+            self.await_step(Settle::Session);
+        } else {
+            self.capture_next_frame();
+        }
+        Task::batch(tasks)
+    }
+
+    /// One change from the idle crop section: the same messages its control sends, which open the
+    /// draft seeded from the committed crop and apply the change once the draft's input stage has
+    /// arrived. The frame is the opened draft, so the step waits for it as a start does.
+    fn idle_step(&mut self, messages: Vec<CropMessage>) -> Task<Message> {
+        self.await_step(Settle::Draft);
+        let tasks: Vec<Task<Message>> = messages
+            .into_iter()
+            .map(|message| self.crop_update(message))
+            .collect();
+        if self.crop_pending.is_none() {
+            return self.fail_step("the idle change could not open a draft");
+        }
         Task::batch(tasks)
     }
 
@@ -1962,7 +2140,7 @@ impl Editor {
     }
 
     /// Capture the frame the next redraw presents. Used by the steps that only change draft state.
-    fn capture_next_frame(&mut self) {
+    pub(crate) fn capture_next_frame(&mut self) {
         if let Some(evidence) = &mut self.evidence {
             evidence.awaiting = None;
             evidence.capture_pending = true;
@@ -1986,7 +2164,7 @@ impl Editor {
 
     /// The running step could not be sent. It is recorded and its frame is still captured, so a
     /// refused step is visible in the evidence rather than missing from it.
-    fn fail_step(&mut self, reason: impl Into<String>) -> Task<Message> {
+    pub(crate) fn fail_step(&mut self, reason: impl Into<String>) -> Task<Message> {
         let reason = reason.into();
         self.status = reason.clone();
         self.event("script_step_failed", json!({"reason":reason}));
@@ -2113,8 +2291,9 @@ fn parse_step(step: &Value) -> Result<Step, String> {
         "performance" => parse_performance(value),
         "wait" => parse_wait(value),
         "pan" => parse_pan(value),
+        "capability" => Ok(Step::Capability(parse_capability(value)?)),
         other => Err(format!(
-            "unknown step kind {other}; expected api, draft, slider, double_click, controls, picker, curve, group, tab, section, gallery, tools_scroll, slider_draft, field, reset, pick, view, workspace, preview, palette, hover, preset, preset_create, preset_delete, preset_import, performance, wait or pan"
+            "unknown step kind {other}; expected api, draft, slider, double_click, controls, picker, curve, group, tab, section, gallery, tools_scroll, slider_draft, field, reset, pick, view, workspace, preview, palette, hover, preset, preset_create, preset_delete, preset_import, performance, wait, pan or capability"
         )),
     }
 }
@@ -3041,6 +3220,156 @@ fn parse_palette(value: &Value) -> Result<PaletteStep, String> {
     }
 }
 
+/// `{"capability": {"module": M, <one gesture>, "wait"?: false}}`. No refusal here echoes a value,
+/// because a secret step's value must reach nothing but the one request that stores it.
+fn parse_capability(value: &Value) -> Result<CapabilityStep, String> {
+    let object = value
+        .as_object()
+        .ok_or("capability takes an object with a module and one gesture")?;
+    for key in object.keys() {
+        if key != "module" && key != "wait" && !CAPABILITY_ACTIONS.contains(&key.as_str()) {
+            return Err(format!("unknown capability field {key}"));
+        }
+    }
+    let module = required_text(object, "module", "capability")?;
+    let wait = match object.get("wait") {
+        None => true,
+        Some(Value::Bool(wait)) => *wait,
+        Some(_) => return Err("capability wait takes true or false".into()),
+    };
+    let mut gestures = object
+        .iter()
+        .filter(|(key, _)| CAPABILITY_ACTIONS.contains(&key.as_str()));
+    let (Some((key, value)), None) = (gestures.next(), gestures.next()) else {
+        return Err(format!(
+            "capability takes exactly one of {}",
+            CAPABILITY_ACTIONS.join(", ")
+        ));
+    };
+    let fields = |step: &str, allowed: &[&str]| -> Result<&Map<String, Value>, String> {
+        let object = value
+            .as_object()
+            .ok_or_else(|| format!("capability {step} takes an object"))?;
+        known_fields(object, allowed, &format!("capability {step}"))?;
+        Ok(object)
+    };
+    let profile = |object: &Map<String, Value>, step: &str| -> Result<Option<usize>, String> {
+        match object.get("profile") {
+            None => Ok(None),
+            Some(index) => index
+                .as_u64()
+                .and_then(|index| usize::try_from(index).ok())
+                .map(Some)
+                .ok_or_else(|| format!("capability {step} profile is a non-negative index")),
+        }
+    };
+    let flag = || match value {
+        Value::Bool(true) => Ok(()),
+        _ => Err(format!("capability {key} takes true")),
+    };
+    let index = || {
+        value
+            .as_u64()
+            .and_then(|index| usize::try_from(index).ok())
+            .ok_or_else(|| format!("capability {key} takes a non-negative index"))
+    };
+    let action = match key.as_str() {
+        "section" => match value.as_str() {
+            Some("status") => CapabilityAction::Section(CapabilityView::Status),
+            Some("settings") => CapabilityAction::Section(CapabilityView::Settings),
+            _ => return Err("capability section is \"status\" or \"settings\"".into()),
+        },
+        "set" => {
+            let object = fields("set", &["field", "value", "profile"])?;
+            CapabilityAction::Set {
+                field: required_text(object, "field", "capability set")?,
+                value: object
+                    .get("value")
+                    .cloned()
+                    .ok_or("capability set needs a value")?,
+                profile: profile(object, "set")?,
+            }
+        }
+        "secret" => {
+            let object = fields("secret", &["field", "value", "profile"])?;
+            CapabilityAction::Secret {
+                field: required_text(object, "field", "capability secret")?,
+                value: SecretText::new(
+                    object
+                        .get("value")
+                        .and_then(Value::as_str)
+                        .filter(|text| !text.is_empty())
+                        .ok_or("capability secret needs a text value")?
+                        .to_owned(),
+                ),
+                profile: profile(object, "secret")?,
+            }
+        }
+        "file" => {
+            let object = fields("file", &["field", "path"])?;
+            CapabilityAction::File {
+                field: required_text(object, "field", "capability file")?,
+                path: PathBuf::from(required_text(object, "path", "capability file")?),
+            }
+        }
+        "profile" => {
+            let object = fields("profile", &["create", "remove"])?;
+            match (object.get("create"), object.get("remove")) {
+                (Some(create), None) => {
+                    let create = create
+                        .as_object()
+                        .ok_or("capability profile create takes an object")?;
+                    known_fields(create, &["adapter", "label"], "capability profile create")?;
+                    CapabilityAction::CreateProfile {
+                        adapter: required_text(create, "adapter", "capability profile create")?,
+                        label: required_text(create, "label", "capability profile create")?,
+                    }
+                }
+                (None, Some(remove)) => CapabilityAction::RemoveProfile(
+                    remove
+                        .as_u64()
+                        .and_then(|index| usize::try_from(index).ok())
+                        .ok_or("capability profile remove takes a non-negative index")?,
+                ),
+                _ => return Err("capability profile takes create or remove".into()),
+            }
+        }
+        "install" | "remove" => {
+            let object = fields(key, &["resource"])?;
+            let resource = required_text(object, "resource", &format!("capability {key}"))?;
+            if key == "install" {
+                CapabilityAction::Install(resource)
+            } else {
+                CapabilityAction::Remove(resource)
+            }
+        }
+        "activate" => CapabilityAction::Activate(
+            value
+                .as_bool()
+                .ok_or("capability activate takes true or false")?,
+        ),
+        "task" => {
+            let object = fields("task", &["task"])?;
+            CapabilityAction::Task(required_text(object, "task", "capability task")?)
+        }
+        "consent" => match value.as_str() {
+            Some("allow") => CapabilityAction::Consent(true),
+            Some("deny") => CapabilityAction::Consent(false),
+            _ => return Err("capability consent is \"allow\" or \"deny\"".into()),
+        },
+        "apply" => flag().map(|()| CapabilityAction::Apply)?,
+        "cancel" => flag().map(|()| CapabilityAction::Cancel)?,
+        "settle" => flag().map(|()| CapabilityAction::Settle)?,
+        "revoke" => CapabilityAction::Revoke(index()?),
+        other => return Err(format!("unknown capability gesture {other}")),
+    };
+    Ok(CapabilityStep {
+        module,
+        action,
+        wait,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3377,6 +3706,7 @@ mod tests {
             paced_slider: None,
             second_click: None,
             tools_scroll: None,
+            capability_wait: None,
             wait_until: None,
             sync: CaptureSync::default(),
         });
@@ -3688,7 +4018,7 @@ mod tests {
     #[test]
     fn a_scripted_step_that_cannot_be_sent_is_recorded_and_still_captured() {
         let (mut editor, catalog, _, _) =
-            scripted(r#"[{"draft":{"angle":4.0}},{"draft":{"preset":"7:5"}}]"#);
+            scripted(r#"[{"draft":{"cancel":true}},{"draft":{"preset":"7:5"}}]"#);
         for reason in ["no crop draft is open", "declares the aspect option 7:5"] {
             let _ = editor.next_step();
             let record = evidence(&editor).current.clone().expect("a step record");
@@ -3703,6 +4033,35 @@ mod tests {
             assert!(evidence(&editor).capture_pending);
             editor.evidence.as_mut().expect("evidence").capture_pending = false;
         }
+        finish(editor, catalog);
+    }
+
+    /// A draft step with no draft open is a change from the idle section: it sends the section's own
+    /// message, which opens the draft, and its frame waits for that draft with the change applied.
+    #[test]
+    fn a_scripted_idle_change_opens_the_draft_and_is_captured_once_it_is_applied() {
+        let (mut editor, catalog, _, _) = scripted(r#"[{"draft":{"preset":"16:9"}}]"#);
+        let _ = editor.next_step();
+        let record = evidence(&editor).current.clone().expect("a step record");
+        assert_eq!(record["status"], json!("sent"), "{record}");
+        assert_eq!(evidence(&editor).awaiting, Some(Settle::Draft));
+        assert!(!evidence(&editor).capture_pending, "nothing is drafted yet");
+        let pending = editor.crop_pending.as_ref().expect("a starting draft");
+        assert!(
+            matches!(pending.queued.as_slice(), [CropMessage::Preset(_)]),
+            "{:?}",
+            pending.queued
+        );
+        editor.open_draft(lightwell_core::CropStage {
+            width: 480,
+            height: 320,
+            angle: 0.0,
+        });
+        assert_eq!(editor.crop.as_ref().expect("a draft").preset, "16:9");
+        assert!(
+            evidence(&editor).capture_pending,
+            "the opened draft settles the step"
+        );
         finish(editor, catalog);
     }
 

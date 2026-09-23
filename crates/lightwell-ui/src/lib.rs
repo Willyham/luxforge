@@ -113,12 +113,12 @@ pub fn gallery_named_states() -> Vec<(&'static str, iced::Element<'static, ()>)>
         "Basic · expanded module section",
         "Module bands · collapsed, unavailable, collapsed groups",
         "Colour mixer · tab row per selected tab",
-        "Neutral picker · labelled buttons",
         "Truncation · band hints and history labels on one line",
+        "Neutral picker · labelled buttons",
         "Transforms · icon-button row",
         "Crop and straighten · drafting",
-        "Pixel · field rows",
         "Crop and straighten · idle",
+        "Pixel · field rows",
     ];
     let states = gallery_states();
     assert_eq!(

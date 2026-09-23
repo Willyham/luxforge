@@ -861,6 +861,7 @@ pub(crate) mod tests {
                     format: EFFECT_FORMAT,
                     stage: EffectStage::Spatial,
                     order: 0,
+                    artifacts: false,
                 }],
                 actions: Vec::new(),
                 queries: Vec::new(),
@@ -871,6 +872,7 @@ pub(crate) mod tests {
                 collapsed: false,
                 layout: crate::ModuleLayout::Stacked,
                 availability: Availability::Available,
+                ..ModuleDescriptor::default()
             }))
         }
     }
@@ -920,6 +922,7 @@ pub(crate) mod tests {
             effect_id: TEST_SPATIAL_EFFECT.into(),
             effect_format: EFFECT_FORMAT,
             payload: json!({ "units": units }),
+            artifacts: Vec::new(),
         }
     }
 

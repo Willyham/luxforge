@@ -28,7 +28,7 @@ Restoring a version is the existing `history.restore` on the version's entry. Th
 
 ## Storage
 
-Entry JSON is the authoritative stored recipe snapshot; each entry also has an `undo_parent_id` for bounded lineage queries. The `versions` table holds named references to entries. The current catalog format is 5, which added the [preset library](presets.md#library). History inserts name their columns explicitly.
+Entry JSON is the authoritative stored recipe snapshot; each entry also has an `undo_parent_id` for bounded lineage queries. The `versions` table holds named references to entries. The current catalog format is 6: format 5 added the [preset library](presets.md#library), and format 6 the catalog's identity and the [derived-artifact](module-capabilities.md#derived-artifacts) tables, whose per-entry references keep every artifact a version or branch reaches alive. History inserts name their columns explicitly.
 
 An empty, unmarked database is initialized with the current schema. Existing catalogs must use the current format marker. Unsupported or nonempty unmarked catalogs are refused without rewriting their data, with an error directing the user to a new catalog path. Only current shapes are supported during pre-release development.
 

@@ -7,7 +7,7 @@ mod transport;
 pub use methods::schemas;
 pub use owner::{ClientId, OwnerHandle, PreviewRequest};
 
-pub use transport::{LocalServer, LocalSessionInfo, serve_json_lines};
+pub use transport::{LocalServer, LocalSessionInfo, serve_json_lines, serve_json_lines_with};
 
 use crate::{Draft, Error, ErrorKind, PreviewSession};
 use serde::{Deserialize, Serialize};
@@ -35,6 +35,9 @@ pub struct ApiFailure {
     pub message: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub job_id: Option<String>,
+    /// Structured context for the failure, e.g. `{consent: …}` or `{requirements: […]}`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub data: Option<Value>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -74,6 +77,7 @@ impl ApiResponse {
                 job_id: (error.kind == ErrorKind::PreparationRequired)
                     .then(|| error.detail.clone()),
                 message: error.detail,
+                data: error.data.map(|data| *data),
             }),
         }
     }
@@ -134,6 +138,29 @@ impl Default for WorkspaceState {
     }
 }
 
+/// What a client may do beyond editing, fixed when it registers and forgotten when it disconnects.
+/// Only a client with permission authority may grant a module permission: the desktop's own client,
+/// which grants only after the person presses Allow, and `lightwell-json --permission-authority`,
+/// an explicit local setup step. Loopback live-session clients and plain `lightwell-json` edit only;
+/// anyone may deny or revoke, since both reduce privilege.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ClientAuthority {
+    #[default]
+    Edit,
+    Permissions,
+}
+
+impl ClientAuthority {
+    /// The label a grant or denial records as its actor.
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Edit => "edit",
+            Self::Permissions => "permissions",
+        }
+    }
+}
+
 /// Per-client session state held by the owner. `revision` increases on every session change so a
 /// client applying responses out of order can keep the newest one.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -148,6 +175,10 @@ pub struct ClientSession {
     pub draft: Option<Draft>,
     #[serde(default)]
     pub revision: u64,
+    /// The authority this client registered with. The owner sets it before the client's first call
+    /// and no method changes it.
+    #[serde(default)]
+    pub authority: ClientAuthority,
 }
 
 impl ClientSession {

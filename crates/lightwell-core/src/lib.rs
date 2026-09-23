@@ -2,6 +2,8 @@
 pub mod activity;
 pub mod analysis;
 mod api;
+pub mod artifacts;
+pub mod capabilities;
 #[cfg(test)]
 mod command_contracts;
 mod draft;
@@ -18,6 +20,11 @@ pub mod resources;
 mod source;
 pub use activity::{Activity, ActivityBoard, ActivitySnapshot, ActivitySpec};
 pub use api::*;
+pub use artifacts::ArtifactId;
+pub use capabilities::{
+    host::HostConfig,
+    redact::{redact_params, redact_request},
+};
 pub use draft::Draft;
 pub use editor::*;
 pub use error::{Error, ErrorKind};

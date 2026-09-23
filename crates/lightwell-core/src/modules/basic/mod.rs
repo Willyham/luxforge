@@ -509,6 +509,7 @@ impl BasicModule {
                     format: EFFECT_FORMAT,
                     stage: EffectStage::Color,
                     order: 0,
+                    artifacts: false,
                 }],
                 actions: vec![
                     ActionDescriptor {
@@ -564,6 +565,7 @@ impl BasicModule {
                                 label: TEMPERATURE_LABEL.into(),
                                 style: crate::NumberStyle::Slider,
                                 rail: Some(crate::RailDecoration::Temperature),
+                                reset: None,
                             },
                             Control::Number {
                                 action: SET_BASIC.into(),
@@ -571,6 +573,7 @@ impl BasicModule {
                                 label: TINT_LABEL.into(),
                                 style: crate::NumberStyle::Slider,
                                 rail: Some(crate::RailDecoration::Tint),
+                                reset: None,
                             },
                             // The neutral picker, beside the two fields a pick sets.
                             Control::Picker {
@@ -595,6 +598,7 @@ impl BasicModule {
                                 label: EXPOSURE_LABEL.into(),
                                 style: crate::NumberStyle::Slider,
                                 rail: None,
+                                reset: None,
                             },
                             Control::Number {
                                 action: SET_BASIC.into(),
@@ -602,6 +606,7 @@ impl BasicModule {
                                 label: CONTRAST_LABEL.into(),
                                 style: crate::NumberStyle::Slider,
                                 rail: None,
+                                reset: None,
                             },
                             Control::Number {
                                 action: SET_BASIC.into(),
@@ -609,6 +614,7 @@ impl BasicModule {
                                 label: HIGHLIGHTS_LABEL.into(),
                                 style: crate::NumberStyle::Slider,
                                 rail: None,
+                                reset: None,
                             },
                             Control::Number {
                                 action: SET_BASIC.into(),
@@ -616,6 +622,7 @@ impl BasicModule {
                                 label: SHADOWS_LABEL.into(),
                                 style: crate::NumberStyle::Slider,
                                 rail: None,
+                                reset: None,
                             },
                             Control::Number {
                                 action: SET_BASIC.into(),
@@ -623,6 +630,7 @@ impl BasicModule {
                                 label: WHITES_LABEL.into(),
                                 style: crate::NumberStyle::Slider,
                                 rail: None,
+                                reset: None,
                             },
                             Control::Number {
                                 action: SET_BASIC.into(),
@@ -630,6 +638,7 @@ impl BasicModule {
                                 label: BLACKS_LABEL.into(),
                                 style: crate::NumberStyle::Slider,
                                 rail: None,
+                                reset: None,
                             },
                         ],
                         collapsed: false,
@@ -650,6 +659,7 @@ impl BasicModule {
                                 label: VIBRANCE_LABEL.into(),
                                 style: crate::NumberStyle::Slider,
                                 rail: None,
+                                reset: None,
                             },
                             Control::Number {
                                 action: SET_BASIC.into(),
@@ -657,6 +667,7 @@ impl BasicModule {
                                 label: SATURATION_LABEL.into(),
                                 style: crate::NumberStyle::Slider,
                                 rail: None,
+                                reset: None,
                             },
                         ],
                         collapsed: false,
@@ -680,6 +691,7 @@ impl BasicModule {
                 collapsed: false,
                 layout: crate::ModuleLayout::Stacked,
                 availability: Availability::Available,
+                ..ModuleDescriptor::default()
             },
         }
     }
@@ -759,6 +771,7 @@ impl ToolModule for BasicModule {
                 effect_id: BASIC_EFFECT.into(),
                 effect_format: EFFECT_FORMAT,
                 payload: payload_of(&merged),
+                artifacts: Vec::new(),
             })),
             // The host inserts a colour-stage layer before the geometry tail; a neutral first set
             // has nothing to store, so it adds no layer at all.
@@ -768,6 +781,7 @@ impl ToolModule for BasicModule {
                 effect_id: BASIC_EFFECT.into(),
                 effect_format: EFFECT_FORMAT,
                 payload: payload_of(&merged),
+                artifacts: Vec::new(),
             })),
         }
     }
@@ -979,6 +993,7 @@ mod tests {
             effect_id: BASIC_EFFECT.into(),
             effect_format: EFFECT_FORMAT,
             payload,
+            artifacts: Vec::new(),
         }
     }
 
@@ -1131,6 +1146,7 @@ mod tests {
                             label: "Temperature".into(),
                             style: crate::NumberStyle::Slider,
                             rail: Some(crate::RailDecoration::Temperature),
+                            reset: None,
                         },
                         Control::Number {
                             action: SET_BASIC.into(),
@@ -1138,6 +1154,7 @@ mod tests {
                             label: "Tint".into(),
                             style: crate::NumberStyle::Slider,
                             rail: Some(crate::RailDecoration::Tint),
+                            reset: None,
                         },
                         Control::Picker {
                             label: "Neutral picker".into(),
@@ -1167,6 +1184,7 @@ mod tests {
                             label: "Exposure".into(),
                             style: crate::NumberStyle::Slider,
                             rail: None,
+                            reset: None,
                         },
                         Control::Number {
                             action: SET_BASIC.into(),
@@ -1174,6 +1192,7 @@ mod tests {
                             label: "Contrast".into(),
                             style: crate::NumberStyle::Slider,
                             rail: None,
+                            reset: None,
                         },
                         Control::Number {
                             action: SET_BASIC.into(),
@@ -1181,6 +1200,7 @@ mod tests {
                             label: "Highlights".into(),
                             style: crate::NumberStyle::Slider,
                             rail: None,
+                            reset: None,
                         },
                         Control::Number {
                             action: SET_BASIC.into(),
@@ -1188,6 +1208,7 @@ mod tests {
                             label: "Shadows".into(),
                             style: crate::NumberStyle::Slider,
                             rail: None,
+                            reset: None,
                         },
                         Control::Number {
                             action: SET_BASIC.into(),
@@ -1195,6 +1216,7 @@ mod tests {
                             label: "Whites".into(),
                             style: crate::NumberStyle::Slider,
                             rail: None,
+                            reset: None,
                         },
                         Control::Number {
                             action: SET_BASIC.into(),
@@ -1202,6 +1224,7 @@ mod tests {
                             label: "Blacks".into(),
                             style: crate::NumberStyle::Slider,
                             rail: None,
+                            reset: None,
                         },
                     ],
                     collapsed: false,
@@ -1224,6 +1247,7 @@ mod tests {
                             label: "Vibrance".into(),
                             style: crate::NumberStyle::Slider,
                             rail: None,
+                            reset: None,
                         },
                         Control::Number {
                             action: SET_BASIC.into(),
@@ -1231,6 +1255,7 @@ mod tests {
                             label: "Saturation".into(),
                             style: crate::NumberStyle::Slider,
                             rail: None,
+                            reset: None,
                         },
                     ],
                     collapsed: false,
@@ -1268,6 +1293,7 @@ mod tests {
                         label: "Temperature".into(),
                         style: crate::NumberStyle::Slider,
                         rail: Some(crate::RailDecoration::Temperature),
+                        reset: None,
                     },
                     Control::Number {
                         action: SET_BASIC.into(),
@@ -1275,6 +1301,7 @@ mod tests {
                         label: "Tint".into(),
                         style: crate::NumberStyle::Slider,
                         rail: Some(crate::RailDecoration::Tint),
+                        reset: None,
                     },
                     Control::Picker {
                         label: "Neutral picker".into(),

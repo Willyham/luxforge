@@ -1045,6 +1045,43 @@ pub fn sample_linear(
     })
 }
 
+/// [`super::sample_grid`] on the linear path: the terminal bytes at the centres of a `side` ×
+/// `side` grid, row by row from the top-left, through one evaluation of the stack, so each equals
+/// the rendered byte there. A spatial operation materializes its output once for all of them, as
+/// it does for one [`sample_linear`].
+pub(crate) fn sample_grid_linear(
+    registry: &ModuleRegistry,
+    source: &LinearImage,
+    recipe: &Recipe,
+    settings: LinearSettings,
+    side: u32,
+    checkpoint: &dyn Fn() -> Result<(), Error>,
+) -> Result<Vec<[u8; 4]>, Error> {
+    let evaluation = LinearEvaluation::new(
+        registry,
+        source,
+        recipe,
+        settings,
+        &Cancel::new(),
+        PRODUCTION_TILE,
+    )?;
+    let (width, height) = evaluation.stage();
+    let _ = output_len(width, height)?;
+    super::grid_centres(side, width, height)
+        .into_iter()
+        .map(|(x, y)| {
+            checkpoint()?;
+            evaluation
+                .pixel(x, y)?
+                .map(terminal_pixel)
+                .transpose()?
+                .ok_or_else(|| {
+                    Error::new(ErrorKind::Internal, "a grid centre lies outside the stage")
+                })
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1096,6 +1133,7 @@ mod tests {
                 effect_id: crate::BASIC_EFFECT.into(),
                 effect_format: crate::EFFECT_FORMAT,
                 payload: serde_json::json!({"exposure": 1.0}),
+                artifacts: Vec::new(),
             }],
         };
         let raster = render_linear(
@@ -1682,6 +1720,7 @@ mod tests {
                 effect_id: crate::BASIC_EFFECT.into(),
                 effect_format: crate::EFFECT_FORMAT,
                 payload: serde_json::json!({"exposure": 0.5, "contrast": 20.0, "vibrance": 30.0}),
+                artifacts: Vec::new(),
             }],
         }
     }

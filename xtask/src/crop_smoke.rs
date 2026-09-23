@@ -59,9 +59,54 @@ const RAIL_ANGLE: f64 = 2.4;
 pub fn frames(scenario: &str) -> Option<usize> {
     match scenario {
         "crop" => Some(9),
-        "crop-draft" => Some(11),
+        "crop-draft" => Some(13),
         _ => None,
     }
+}
+
+/// The ratio chips a committed crop reads as, in the order the crop module declares them, each with
+/// its width over height (`None` for Original, which is the input stage's own).
+const READ_RATIOS: [(&str, Option<f64>); 5] = [
+    ("Original", None),
+    ("1:1", Some(1.0)),
+    ("3:2", Some(1.5)),
+    ("4:3", Some(4.0 / 3.0)),
+    ("16:9", Some(16.0 / 9.0)),
+];
+
+/// The chip the idle section should show chosen for a committed whole-pixel output on `stage`,
+/// computed here independently of the editor: the first declared ratio, in either orientation,
+/// whose long side is within `2r` pixels of the short side times `r`, since fitting a ratio snaps
+/// each extent inward by less than two pixels; otherwise Free.
+fn reads_as(stage: (u32, u32), output: [u32; 2]) -> &'static str {
+    let (width, height) = (f64::from(output[0]), f64::from(output[1]));
+    let (long, short) = (width.max(height), width.min(height));
+    READ_RATIOS
+        .iter()
+        .find(|(_, ratio)| {
+            let ratio = ratio.unwrap_or(f64::from(stage.0) / f64::from(stage.1));
+            let wide = ratio.max(1.0 / ratio);
+            (long - wide * short).abs() <= 2.0 * wide
+        })
+        .map_or("Free", |(label, _)| label)
+}
+
+/// The idle crop section a frame recorded: not drafting, reading `chosen` at `angle`, its lock
+/// closed exactly when a ratio is chosen, and its controls acting.
+fn idle_section(frame: &Value, chosen: &str, angle: &str) -> Result<Value> {
+    let section = &frame["state"]["crop"]["section"];
+    let locked = chosen != "Free";
+    ensure(
+        frame["state"]["crop"]["drafting"] == json!(false)
+            && section["drafting"] == json!(false)
+            && section["enabled"] == json!(true)
+            && section["chosen"] == json!(chosen)
+            && section["locked"] == json!(locked)
+            && section["can_swap"] == json!(locked)
+            && section["angle"] == json!(angle),
+        format!("The idle crop section is {section}, expected {chosen} at {angle}°"),
+    )?;
+    Ok(section.clone())
 }
 
 /// The evidence script for a crop scenario: the steps that run after the fixture is open.
@@ -82,7 +127,9 @@ pub fn script(scenario: &str) -> Result<Option<Value>> {
         // The draft's own gestures and controls, at Fit and at 100%. Basic is collapsed and the
         // section expanded first, so the idle section is on screen, and the panel is scrolled to
         // its end once the draft is open, so the drafting section is too. The angle is then
-        // dragged on its rail to 2.4°, so the section shows a straightened draft.
+        // dragged on its rail to 2.4°, so the section shows a straightened draft. After Apply the
+        // idle section reads the committed square, and pressing 16:9 there opens a draft on it
+        // with that ratio; Cancel returns to the idle section with nothing committed.
         "crop-draft" => Some(json!([
             {"section":{"module":BASIC_MODULE,"expanded":false}},
             {"section":{"module":CROP_MODULE,"expanded":true}},
@@ -94,6 +141,8 @@ pub fn script(scenario: &str) -> Result<Option<Value>> {
             {"view":{"zoom":"100"}},
             {"view":{"zoom":"fit"}},
             {"draft":{"apply":true}},
+            {"draft":{"preset":"16:9"}},
+            {"draft":{"cancel":true}},
         ])),
         _ => None,
     })
@@ -489,10 +538,26 @@ pub fn verify(evidence: &Path, scenario: &str, app: &Value, events: &[Value]) ->
                 "a 16:9 crop-fit at angle 0",
                 shows_committed(&paths[1], &frames[1], true)?,
             );
+            // The crop section, collapsed here, reads the fitted crop as 16:9 with its lock closed.
+            ensure(
+                reads_as(STAGE, output) == "16:9",
+                format!("The fitted crop {output:?} does not read as 16:9"),
+            )?;
+            record(
+                &frames[1],
+                "the crop section reading the fit as 16:9",
+                idle_section(&frames[1], "16:9", "0")?,
+            );
 
             // (b) An off-centre straightened rectangle updates that same layer in place.
             let wanted = off_centre()?;
-            let (same, committed_payload, _) = committed(&frames[2])?;
+            let (same, committed_payload, straightened) = committed(&frames[2])?;
+            let straightened_reads = reads_as(STAGE, straightened);
+            record(
+                &frames[2],
+                "the crop section reading the straightened crop at 7 degrees",
+                idle_section(&frames[2], straightened_reads, "7")?,
+            );
             ensure(
                 same == layer,
                 "The straightened crop did not update the crop layer in place",
@@ -522,6 +587,16 @@ pub fn verify(evidence: &Path, scenario: &str, app: &Value, events: &[Value]) ->
             ensure(
                 draft["layer"] == json!(layer) && draft["angle"] == json!(ANGLE),
                 "The draft did not open on the committed crop layer",
+            )?;
+            // The draft seeds the ratio the idle section showed, so opening it moves no chip.
+            ensure(
+                draft["section"]["chosen"] == frames[2]["state"]["crop"]["section"]["chosen"]
+                    && draft["section"]["locked"]
+                        == frames[2]["state"]["crop"]["section"]["locked"],
+                format!(
+                    "Opening the draft changed the chosen ratio: {} idle, {} drafting",
+                    frames[2]["state"]["crop"]["section"], draft["section"]
+                ),
             )?;
             let output = committed_payload.output_rect(&stage(ANGLE))?;
             ensure(
@@ -570,7 +645,7 @@ pub fn verify(evidence: &Path, scenario: &str, app: &Value, events: &[Value]) ->
             record(
                 &frames[5],
                 "the committed crop again after Cancel",
-                shows_committed(&paths[5], &frames[5], false)?,
+                json!({"pixels":shows_committed(&paths[5], &frames[5], false)?,"section":idle_section(&frames[5], straightened_reads, "7")?}),
             );
 
             // (d) A second draft, one nudge and Apply.
@@ -615,20 +690,27 @@ pub fn verify(evidence: &Path, scenario: &str, app: &Value, events: &[Value]) ->
                     && applied_event["detail"]["entry_id"] == frames[8]["state"]["stack"]["entry"],
                 "The applied event does not name the committed entry and revision",
             )?;
+            let (_, _, nudged) = committed(&frames[8])?;
             record(
                 &frames[8],
                 "the applied crop",
-                shows_committed(&paths[8], &frames[8], false)?,
+                json!({"pixels":shows_committed(&paths[8], &frames[8], false)?,"section":idle_section(&frames[8], reads_as(STAGE, nudged), "7.5")?}),
             );
         }
         "crop-draft" => {
-            // The idle section, expanded, with no draft yet.
+            // The idle section, expanded, with no draft yet: the Ratio and Angle controls reading
+            // an uncropped stack, Free at 0° with the lock open.
             ensure(
                 frames[2]["state"]["expanded"][CROP_MODULE] == json!(true)
                     && frames[2]["state"]["expanded"][BASIC_MODULE] == json!(false)
                     && frames[2]["state"]["crop"]["drafting"] != json!(true),
                 "The idle crop section is not expanded under a collapsed Basic",
             )?;
+            record(
+                &frames[2],
+                "the idle section on an uncropped stack: Free at 0 degrees",
+                idle_section(&frames[2], "Free", "0")?,
+            );
             // A neutral draft on a stack without a crop layer: the whole stage.
             let draft = &frames[3]["state"]["crop"];
             ensure(
@@ -724,6 +806,68 @@ pub fn verify(evidence: &Path, scenario: &str, app: &Value, events: &[Value]) ->
                 "the applied straightened square crop",
                 shows_committed(&paths[10], &frames[10], false)?,
             );
+            // The idle section now reads that committed crop: 1:1 chosen with the lock closed, at
+            // the rail's 2.4°, the chip computed here from the committed output.
+            let (layer, square, output) = committed(&frames[10])?;
+            let expected = reads_as(STAGE, output);
+            ensure(
+                expected == "1:1",
+                format!("The committed square {output:?} reads as {expected}"),
+            )?;
+            record(
+                &frames[10],
+                "the idle section reading the committed square at 2.4 degrees",
+                idle_section(&frames[10], expected, "2.4")?,
+            );
+
+            // 16:9 pressed in the idle section opens a draft on the committed layer, seeded as Start
+            // seeds it (1:1 at 2.4°, as the started event records), then applies 16:9 to it: the
+            // canvas is in crop mode with a 16:9 frame at the same angle, and nothing commits.
+            let draft = &frames[11]["state"]["crop"];
+            let rect: [f64; 4] = serde_json::from_value(draft["rect"].clone())?;
+            ensure(
+                draft["drafting"] == json!(true)
+                    && draft["layer"] == json!(layer)
+                    && draft["preset"] == json!("16:9")
+                    && draft["angle"] == json!(RAIL_ANGLE)
+                    && (rect[2] - rect[3] * 16.0 / 9.0).abs() <= 2.0 * 16.0 / 9.0
+                    && draft["section"]["chosen"] == json!("16:9")
+                    && frames[11]["state"]["workspace"]["mode"] == json!(CROP_MODULE)
+                    && revision(&frames[11])? == revision(&frames[10])?,
+                format!("16:9 from the idle section produced {draft}"),
+            )?;
+            let seeded = events
+                .iter()
+                .rfind(|event| event["event"] == "crop_draft_started")
+                .ok_or("The idle change logged no draft start")?;
+            ensure(
+                seeded["detail"]["layer"] == json!(layer)
+                    && seeded["detail"]["preset"] == json!("1:1")
+                    && seeded["detail"]["angle"] == json!(RAIL_ANGLE),
+                format!(
+                    "The draft the idle change opened was not seeded from the committed crop: {}",
+                    seeded["detail"]
+                ),
+            )?;
+            record(
+                &frames[11],
+                "16:9 pressed in the idle section: a draft on the committed square, refitted to 16:9",
+                json!({"overlay":shows_draft(&paths[11], &frames[11])?,"seeded":seeded["detail"],"changed":correlated(events, "crop_draft_changed", &frames[11])?["detail"]}),
+            );
+
+            // Cancel ends that draft: the idle section reads the unchanged committed square again.
+            let (same, unchanged, _) = committed(&frames[12])?;
+            ensure(
+                same == layer
+                    && unchanged == square
+                    && revision(&frames[12])? == revision(&frames[10])?,
+                "Cancelling the idle change's draft changed the committed crop",
+            )?;
+            record(
+                &frames[12],
+                "the idle section again after Cancel, the committed square untouched",
+                json!({"section":idle_section(&frames[12], expected, "2.4")?,"pixels":shows_committed(&paths[12], &frames[12], false)?}),
+            );
         }
         other => return Err(format!("Unknown crop scenario {other}").into()),
     }
@@ -749,6 +893,18 @@ mod tests {
         );
         assert!((centre.0 - box_width / 2.0).abs() > 4.0, "{centre:?}");
         assert!((centre.1 - box_height / 2.0).abs() > 4.0, "{centre:?}");
+    }
+
+    /// The runner's own reading of a committed output: Original first, either orientation, and
+    /// Free for a rectangle no declared ratio fits.
+    #[test]
+    fn a_committed_output_reads_as_the_first_ratio_that_fits_it() {
+        assert_eq!(reads_as(STAGE, [480, 270]), "16:9");
+        assert_eq!(reads_as(STAGE, [270, 480]), "16:9");
+        assert_eq!(reads_as(STAGE, [300, 200]), "Original");
+        assert_eq!(reads_as((480, 360), [300, 200]), "3:2");
+        assert_eq!(reads_as(STAGE, [201, 200]), "1:1");
+        assert_eq!(reads_as(STAGE, [258, 169]), "Free");
     }
 
     #[test]

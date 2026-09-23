@@ -24,6 +24,10 @@ pub(crate) const ANGLE_STEP: f64 = 0.5;
 pub(crate) const ANGLE_RAIL_STEP: f64 = ANGLE_STEP / 10.0;
 /// The scrollable around the photo, so a Space drag can scroll it while drafting a crop.
 pub(crate) const SURFACE_ID: &str = "lightwell.surface";
+/// How many changes from the idle section a starting draft holds for when it opens. A drag on the
+/// angle's rail replaces its own queued position rather than adding to it, so only discrete changes
+/// count, and a person cannot make this many in the one truncated preview a start waits for.
+pub(crate) const QUEUED_CHANGES: usize = 32;
 
 /// What a crop draft is waiting for its truncated preview to tell it: the layer it edits and the
 /// payload it starts from are known from the stack, but the input stage is whatever that preview
@@ -36,12 +40,47 @@ pub(crate) struct PendingDraft {
     pub(crate) base_revision: u64,
     /// A reapply rebases the existing draft instead of opening a new one.
     pub(crate) reapply: bool,
+    /// Changes made from the idle section while this draft is starting, applied in order once it
+    /// opens, so none is lost to the truncated preview's round trip. At most [`QUEUED_CHANGES`].
+    pub(crate) queued: Vec<CropMessage>,
+}
+
+/// A change a control of the crop section makes to an open draft. From the idle section the same
+/// change first opens the draft, seeded from the committed crop exactly as Start seeds it. Turning
+/// the Straighten guide off changes nothing without a draft, so only turning it on opens one.
+fn changes_draft(message: &CropMessage) -> bool {
+    matches!(
+        message,
+        CropMessage::Preset(_)
+            | CropMessage::Lock
+            | CropMessage::Swap
+            | CropMessage::NudgeAngle(_)
+            | CropMessage::AngleRail(_)
+            | CropMessage::AngleRailReleased
+            | CropMessage::SubmitAngle
+            | CropMessage::Guide(true)
+    )
+}
+
+/// The angle a drag on the rail reaches at this fraction: on the rail's own step, within range.
+fn rail_angle(fraction: f64) -> f64 {
+    let angle = value_from_fraction(MIN_ANGLE, MAX_ANGLE, ANGLE_RAIL_STEP, fraction);
+    quantize(
+        angle,
+        MIN_ANGLE,
+        MAX_ANGLE,
+        ANGLE_RAIL_STEP,
+        decimals_of(ANGLE_RAIL_STEP),
+    )
 }
 
 impl Editor {
     /// Every crop draft change goes through here, so the API-equivalent path and the pointer path
     /// are the same code.
     pub(crate) fn crop_update(&mut self, message: CropMessage) -> Task<Message> {
+        if self.crop.is_none() && changes_draft(&message) {
+            return self.idle_change(message);
+        }
         match message {
             CropMessage::Option(option) => self.crop_option = option,
             CropMessage::Space(space) => self.crop_space = space,
@@ -87,14 +126,7 @@ impl Editor {
                 let Some(draft) = &mut self.crop else {
                     return Task::none();
                 };
-                let angle = value_from_fraction(MIN_ANGLE, MAX_ANGLE, ANGLE_RAIL_STEP, fraction);
-                draft.set_angle(quantize(
-                    angle,
-                    MIN_ANGLE,
-                    MAX_ANGLE,
-                    ANGLE_RAIL_STEP,
-                    decimals_of(ANGLE_RAIL_STEP),
-                ));
+                draft.set_angle(rail_angle(fraction));
                 self.crop_angle = number_text(draft.stage.angle);
             }
             CropMessage::AngleRailReleased => self.crop_changed("crop_draft_changed"),
@@ -193,9 +225,14 @@ impl Editor {
                 .and_then(|index| serde_json::from_value(layers[index].payload.clone()).ok()),
             base_revision: state.revision,
             reapply,
+            queued: Vec::new(),
         };
         let asset = state.asset.id.clone();
         let layer_count = pending.layer_index;
+        // The section keeps showing the angle the draft will open at while it starts.
+        if !reapply {
+            self.crop_angle = number_text(pending.payload.map_or(0.0, |payload| payload.angle));
+        }
         self.crop_pending = Some(pending);
         self.status = "Preparing the crop's input stage…".into();
         // Starting a draft by any route — the section's own button, `R`, the mode strip or a
@@ -210,9 +247,10 @@ impl Editor {
     /// The truncated preview arrived, so the crop layer's input stage is known: open or rebase the
     /// draft against it.
     pub(crate) fn open_draft(&mut self, input: CropStage) {
-        let Some(pending) = self.crop_pending.take() else {
+        let Some(mut pending) = self.crop_pending.take() else {
             return;
         };
+        let queued = std::mem::take(&mut pending.queued);
         if pending.reapply {
             match &mut self.crop {
                 Some(draft) => draft.rebase(
@@ -231,6 +269,9 @@ impl Editor {
                     layer,
                     pending.layer_index,
                     pending.base_revision,
+                    &crop_frame(&self.modules)
+                        .map(|frame| frame.presets())
+                        .unwrap_or_default(),
                 )),
                 // An unreadable payload is never silently replaced by a neutral crop: the stored
                 // layer stays exactly as it is and the draft does not open.
@@ -254,11 +295,137 @@ impl Editor {
         } else {
             "crop_draft_started"
         });
+        self.replay(queued);
         self.status = format!(
             "Crop draft on the layer's {} × {} input stage",
             input.width, input.height
         );
         self.settle_step(Settle::Draft);
+    }
+
+    /// A control of the idle section changed: open the draft seeded from the committed crop, as
+    /// Start does, and hold the change for when the draft is ready, so the canvas enters crop mode
+    /// with the frame already showing it. A draft that is still starting takes the change onto its
+    /// queue instead. Nothing commits until Apply.
+    fn idle_change(&mut self, message: CropMessage) -> Task<Message> {
+        let mut changes = vec![message];
+        if matches!(changes[0], CropMessage::SubmitAngle) {
+            // Text that is not a number stays open for correcting, as it does while drafting; the
+            // committed angle itself is no change, so the box just closes.
+            let Ok(value) = self.crop_angle.trim().parse::<f64>() else {
+                self.status =
+                    format!("Angle must be a number from {MIN_ANGLE} to {MAX_ANGLE} degrees");
+                return Task::none();
+            };
+            if self.editing_angle() {
+                self.editing = None;
+            }
+            if self.crop_pending.is_none() && value == self.committed_crop_angle() {
+                return Task::none();
+            }
+            changes.insert(0, CropMessage::AngleText(self.crop_angle.clone()));
+        }
+        let mut task = Task::none();
+        if self.crop_pending.is_none() {
+            // A release with no drag ahead of it has nothing to finish.
+            if matches!(changes[0], CropMessage::AngleRailReleased) {
+                return task;
+            }
+            // One draft per client: a slider gesture is finished deliberately, never displaced.
+            if self.slider_draft.is_some() {
+                self.status = "Finish or discard the slider draft before cropping".into();
+                return task;
+            }
+            task = self.crop_start(false);
+            if self.crop_pending.is_none() {
+                return task;
+            }
+        }
+        for change in changes {
+            self.queue(change);
+        }
+        task
+    }
+
+    /// Hold one change for the starting draft. The section's angle box and rail show the angle the
+    /// queued changes lead to, which the angle's text carries until the draft opens.
+    fn queue(&mut self, change: CropMessage) {
+        let angle = self.crop_angle.trim().parse::<f64>().unwrap_or(0.0);
+        let prospective = match &change {
+            CropMessage::AngleRail(fraction) => Some(rail_angle(*fraction)),
+            CropMessage::NudgeAngle(step) => Some(angle + step),
+            CropMessage::AngleText(text) => text.trim().parse::<f64>().ok(),
+            _ => None,
+        }
+        .filter(|angle| angle.is_finite())
+        .map(|angle| angle.clamp(MIN_ANGLE, MAX_ANGLE));
+        let Some(pending) = &mut self.crop_pending else {
+            return;
+        };
+        // A rail drag is one change however far it moves: only its latest position matters.
+        if matches!(
+            (pending.queued.last(), &change),
+            (Some(CropMessage::AngleRail(_)), CropMessage::AngleRail(_))
+        ) {
+            pending.queued.pop();
+        } else if pending.queued.len() >= QUEUED_CHANGES {
+            self.status = "The crop draft is still starting; that change was not applied".into();
+            return;
+        }
+        pending.queued.push(change);
+        if let Some(angle) = prospective {
+            self.crop_angle = number_text(angle);
+        }
+    }
+
+    /// Apply the changes the idle section queued, in order, to the draft that just opened: each
+    /// through the drafting path, so each is one logged draft change. Choosing the ratio the draft
+    /// already shows chosen changes nothing, because refitting the committed rectangle to it could
+    /// only trim a pixel from it.
+    fn replay(&mut self, queued: Vec<CropMessage>) {
+        for change in queued {
+            let Some(draft) = &self.crop else {
+                return;
+            };
+            if let CropMessage::Preset(index) = change
+                && crop_frame(&self.modules)
+                    .and_then(|frame| frame.presets().get(index).cloned())
+                    .is_some_and(|preset| preset.option == draft.preset)
+            {
+                continue;
+            }
+            // Every change the idle section queues is handled by a drafting arm that starts no
+            // task, so nothing is dropped here.
+            let _ = self.crop_update(change);
+        }
+    }
+
+    /// The committed straightening angle of the current stack's crop layer, which the idle section
+    /// shows and a draft opened on it starts at; 0 without one.
+    fn committed_crop_angle(&self) -> f64 {
+        let (Some(frame), Some(state)) = (crop_frame(&self.modules), &self.state) else {
+            return 0.0;
+        };
+        let Some(effect) = frame.effect() else {
+            return 0.0;
+        };
+        state
+            .current_entry
+            .snapshot
+            .recipe
+            .layers
+            .iter()
+            .find(|layer| layer.effect_id == effect)
+            .and_then(|layer| serde_json::from_value::<CropPayload>(layer.payload.clone()).ok())
+            .map_or(0.0, |payload| payload.angle)
+    }
+
+    /// The idle section's angle box opened for typing: it starts from the committed angle, since
+    /// the angle's text otherwise holds whatever the last draft left in it.
+    pub(crate) fn seed_idle_angle(&mut self) {
+        if self.crop.is_none() && self.crop_pending.is_none() && self.editing_angle() {
+            self.crop_angle = number_text(self.committed_crop_angle());
+        }
     }
 
     /// One draft change reached its end: the angle field follows the draft and the new state is
@@ -594,9 +761,15 @@ mod tests {
         assert!(editor.crop.is_none());
         assert!(editor.draft_photo.is_none());
         assert!(!editor.crop_guide, "cancelling leaves no guide mode on");
+        let summary = editor.snapshot()["crop"].clone();
         assert_eq!(
-            editor.snapshot()["crop"],
-            json!({"drafting":false,"pending":false})
+            (&summary["drafting"], &summary["pending"]),
+            (&json!(false), &json!(false))
+        );
+        // The idle section is back, reading the stack the draft never committed to.
+        assert_eq!(
+            summary["section"],
+            json!({"drafting":false,"pending":false,"enabled":true,"chosen":"Free","locked":false,"can_swap":false,"angle":"0","rail":0.0,"guide":false})
         );
         finish(editor, catalog);
     }
@@ -765,6 +938,214 @@ mod tests {
         assert!(editor.crop_applying.is_none());
         assert_eq!(editor.crop.as_ref().expect("a draft").rect, composed);
         let _ = std::hint::black_box(&asset);
+        finish(editor, catalog);
+    }
+
+    /// The committed 16:9 crop the idle tests start from, fitted on [`stage`] by the core's own
+    /// geometry exactly as `crop-fit` or the 16:9 chip would fit it.
+    fn committed_wide() -> CropPayload {
+        let stage = stage();
+        let whole = lightwell_core::BoxRect {
+            x: 0.0,
+            y: 0.0,
+            width: 480.0,
+            height: 320.0,
+        };
+        stage
+            .fit_about_center(lightwell_core::largest_with_ratio_inside(whole, 16.0 / 9.0))
+            .normalized(&stage)
+    }
+
+    fn option(option: &str) -> usize {
+        CROP_ASPECTS
+            .iter()
+            .position(|candidate| *candidate == option)
+            .expect("a declared option")
+    }
+
+    fn events(records: &[Value], name: &str) -> Vec<Value> {
+        records
+            .iter()
+            .filter(|record| record["event"] == name)
+            .map(|record| record["detail"].clone())
+            .collect()
+    }
+
+    /// A chip pressed in the idle section opens the draft seeded from the committed crop, as Start
+    /// does, and applies itself once the draft's input stage arrives: the canvas enters crop mode
+    /// with the frame at the new ratio, the log shows the seeded draft and then the one change, and
+    /// nothing commits.
+    #[test]
+    fn an_idle_change_opens_the_draft_seeded_from_the_committed_crop_and_applies_it() {
+        let crop = crop_layer(committed_wide());
+        let (mut editor, catalog, _, _) = opened(vec![crop.clone()], 5);
+        let log = crate::app::testing::attach_log(&mut editor);
+        let _ = editor.dispatch(Message::Crop(CropMessage::Preset(option("1:1"))));
+        let pending = editor
+            .crop_pending
+            .clone()
+            .expect("the change opened a draft");
+        assert_eq!(pending.layer, Some(crop.id.clone()));
+        assert_eq!(pending.payload, Some(committed_wide()));
+        assert!(
+            matches!(pending.queued.as_slice(), [CropMessage::Preset(index)] if *index == option("1:1")),
+            "{:?}",
+            pending.queued
+        );
+        assert!(
+            editor.crop.is_none(),
+            "the change waits for the input stage"
+        );
+        assert_eq!(
+            editor.mode_sync.as_deref(),
+            Some("lightwell.crop"),
+            "the canvas enters crop mode"
+        );
+
+        editor.open_draft(stage());
+        let draft = editor.crop.as_ref().expect("an opened draft");
+        assert_eq!(draft.layer, Some(crop.id));
+        assert_eq!(draft.preset, "1:1");
+        assert_eq!(draft.aspect.ratio(), Some(1.0));
+        assert_eq!(draft.rect.width, draft.rect.height);
+        assert!(editor.crop_pending.is_none());
+        assert_eq!(
+            editor.state.as_ref().expect("a state").revision,
+            5,
+            "nothing commits until Apply"
+        );
+        let records = crate::app::testing::logged(&mut editor, &log);
+        let started = events(&records, "crop_draft_started");
+        assert_eq!(started.len(), 1);
+        assert_eq!(
+            started[0]["preset"],
+            json!("16:9"),
+            "the draft seeds the ratio the committed crop reads as"
+        );
+        let changed = events(&records, "crop_draft_changed");
+        assert_eq!(changed.len(), 1, "the one idle change: {changed:?}");
+        assert_eq!(changed[0]["preset"], json!("1:1"));
+        finish(editor, catalog);
+    }
+
+    /// Changes made while the draft is still starting — here after the mode strip's plain Start —
+    /// are queued in order and applied once it opens, none lost: a ratio, a nudge and a rail drag
+    /// that is one change however far it moves. Meanwhile the section's angle shows where the
+    /// queued changes lead.
+    #[test]
+    fn a_change_made_while_the_draft_is_starting_is_applied_once_it_opens() {
+        let (mut editor, catalog, _, _) = opened(vec![crop_layer(committed_wide())], 5);
+        let _ = editor.update(Message::Crop(CropMessage::Start));
+        assert_eq!(editor.crop_angle, "0", "the committed angle while starting");
+        let _ = editor.update(Message::Crop(CropMessage::Preset(option("4:3"))));
+        let _ = editor.update(Message::Crop(CropMessage::NudgeAngle(ANGLE_STEP)));
+        assert_eq!(editor.crop_angle, "0.5");
+        for fraction in [0.52, 0.55, 0.5 + 2.4 / 90.0 + 1e-4] {
+            let _ = editor.update(Message::Crop(CropMessage::AngleRail(fraction)));
+        }
+        let _ = editor.update(Message::Crop(CropMessage::AngleRailReleased));
+        assert_eq!(editor.crop_angle, "2.4");
+        let queued = &editor.crop_pending.as_ref().expect("still starting").queued;
+        assert!(
+            matches!(
+                queued.as_slice(),
+                [
+                    CropMessage::Preset(_),
+                    CropMessage::NudgeAngle(_),
+                    CropMessage::AngleRail(_),
+                    CropMessage::AngleRailReleased
+                ]
+            ),
+            "the rail's moves are one queued change: {queued:?}"
+        );
+        assert!(editor.crop.is_none());
+
+        editor.open_draft(stage());
+        let draft = editor.crop.as_ref().expect("an opened draft");
+        assert_eq!(draft.preset, "4:3");
+        assert_eq!(draft.stage.angle, 2.4, "the rail's last position wins");
+        assert_eq!(editor.crop_angle, "2.4");
+        assert_eq!(editor.state.as_ref().expect("a state").revision, 5);
+        finish(editor, catalog);
+    }
+
+    /// What an idle control does that is not a change: the committed angle submitted again only
+    /// closes the box, text that is not a number stays open with its reason, a rail release with no
+    /// drag does nothing, and pressing the chip already chosen opens the draft without refitting
+    /// the committed rectangle to it. An open slider gesture refuses the draft, and a start whose
+    /// input stage fails takes its queued changes with it.
+    #[test]
+    fn an_idle_control_that_changes_nothing_opens_no_draft_or_leaves_the_crop_as_it_is() {
+        let (mut editor, catalog, _, _) = opened(vec![crop_layer(committed_wide())], 5);
+        let frame = crop_frame(&editor.modules).expect("a crop frame");
+        let key = (frame.action.to_owned(), frame.angle.to_owned());
+        editor.crop_angle = "31".into();
+        let _ = editor.update(Message::EditValue {
+            action: key.0.clone(),
+            parameter: key.1.clone(),
+        });
+        assert_eq!(
+            editor.crop_angle, "0",
+            "the idle box opens at the committed angle"
+        );
+        let _ = editor.update(Message::Crop(CropMessage::SubmitAngle));
+        assert!(editor.crop_pending.is_none() && !editor.editing_angle());
+        let _ = editor.update(Message::EditValue {
+            action: key.0,
+            parameter: key.1,
+        });
+        let _ = editor.update(Message::Crop(CropMessage::AngleText("level".into())));
+        let _ = editor.update(Message::Crop(CropMessage::SubmitAngle));
+        assert!(editor.crop_pending.is_none() && editor.editing_angle());
+        assert!(editor.status.contains("Angle must be"), "{}", editor.status);
+        let _ = editor.update(Message::CancelEdit);
+        let _ = editor.update(Message::Crop(CropMessage::AngleRailReleased));
+        let _ = editor.update(Message::Crop(CropMessage::Guide(false)));
+        assert!(editor.crop_pending.is_none());
+
+        // A slider gesture is finished deliberately, never displaced by the crop draft.
+        editor.slider_draft = Some(crate::app::slider::SliderDraft {
+            action: "set-basic".into(),
+            parameter: "exposure".into(),
+            label: "Exposure".into(),
+            asset: editor.state.as_ref().expect("a state").asset.id.clone(),
+            draft_id: None,
+            base_revision: 5,
+            draft_revision: 0,
+            conflicted: true,
+            in_flight: false,
+            pending: None,
+            sent: None,
+            finish: None,
+            unpreviewed: false,
+        });
+        let _ = editor.update(Message::Crop(CropMessage::Lock));
+        assert!(editor.crop_pending.is_none());
+        assert!(editor.status.contains("slider draft"), "{}", editor.status);
+        editor.slider_draft = None;
+
+        // A start whose input stage cannot be prepared drops what it queued.
+        let _ = editor.update(Message::Crop(CropMessage::Swap));
+        assert_eq!(
+            editor
+                .crop_pending
+                .as_ref()
+                .map(|pending| pending.queued.len()),
+            Some(1)
+        );
+        let _ = editor.update(Message::Crop(CropMessage::PreviewReady(Err(
+            "the source is gone".into(),
+        ))));
+        assert!(editor.crop_pending.is_none());
+        editor.open_draft(stage());
+        assert!(editor.crop.is_none(), "nothing opens after the failure");
+
+        // The chip already chosen opens the draft and leaves the committed rectangle exactly.
+        let _ = editor.update(Message::Crop(CropMessage::Preset(option("16:9"))));
+        editor.open_draft(stage());
+        let draft = editor.crop.as_ref().expect("an opened draft");
+        assert_eq!(draft.preset, "16:9");
+        assert_eq!(draft.payload(), committed_wide());
         finish(editor, catalog);
     }
 }

@@ -10,6 +10,7 @@
 use crate::{
     app::message::{CropMessage, CropPointer, Message},
     crop_draft::{Corner, CropDraft, Handle, edge_midpoint},
+    draft_photo::{self, DraftPhoto},
 };
 use iced::{
     Color, Point, Radians, Rectangle, Renderer, Size, Theme, Vector,
@@ -134,8 +135,9 @@ pub(crate) struct Interaction {
 /// The crop frame over one truncated preview. Borrowed from the app for the duration of `view`.
 pub(crate) struct CropCanvas<'a> {
     draft: &'a CropDraft,
-    /// The crop layer's input stage as the preview worker rendered it.
-    image: image::Handle,
+    /// The crop layer's input stage as the preview worker rendered it, in the tiles it was uploaded
+    /// as.
+    photo: DraftPhoto,
     view: View,
     mode: Mode,
     /// Option (Alt) is held, so a handle scales uniformly about the centre.
@@ -146,7 +148,7 @@ pub(crate) struct CropCanvas<'a> {
 impl<'a> CropCanvas<'a> {
     pub(crate) fn new(
         draft: &'a CropDraft,
-        image: image::Handle,
+        photo: DraftPhoto,
         view: View,
         mode: Mode,
         option: bool,
@@ -154,7 +156,7 @@ impl<'a> CropCanvas<'a> {
     ) -> Self {
         Self {
             draft,
-            image,
+            photo,
             view,
             mode,
             option,
@@ -164,7 +166,9 @@ impl<'a> CropCanvas<'a> {
 
     /// The unrotated image rectangle: the input stage at the display scale, centred on the box
     /// centre. Iced rotates an image about its bounds centre with the same matrix the geometry
-    /// contract uses, so a positive angle turns the image clockwise on screen with no sign flip.
+    /// contract uses, so a positive angle turns the image clockwise on screen with no sign flip;
+    /// each tile is placed so that turning it about its own centre turns the stage about this
+    /// rectangle's ([`draft_photo::placed`]).
     fn image_bounds(&self) -> Rectangle {
         let (box_width, box_height) = self.draft.stage.bounding_box();
         let centre = self.view.canvas_point(box_width / 2.0, box_height / 2.0);
@@ -178,14 +182,23 @@ impl<'a> CropCanvas<'a> {
         )
     }
 
-    fn photo(&self, opacity: f32) -> Image {
-        Image {
-            handle: self.image.clone(),
-            filter_method: image::FilterMethod::Linear,
-            rotation: Radians(self.draft.stage.angle.to_radians() as f32),
-            border_radius: 0.0.into(),
-            opacity,
-            snap: false,
+    /// Every tile of the stage, rotated with it, at this opacity.
+    fn draw_photo(&self, frame: &mut Frame, opacity: f32) {
+        let bounds = self.image_bounds();
+        let angle = self.draft.stage.angle.to_radians() as f32;
+        let stage = (self.photo.width, self.photo.height);
+        for (rect, handle) in self.photo.tiles.iter() {
+            frame.draw_image(
+                draft_photo::placed(bounds, stage, *rect, angle),
+                Image {
+                    handle: handle.clone(),
+                    filter_method: image::FilterMethod::Linear,
+                    rotation: Radians(angle),
+                    border_radius: 0.0.into(),
+                    opacity,
+                    snap: false,
+                },
+            );
         }
     }
 
@@ -284,11 +297,8 @@ impl canvas::Program<Message> for CropCanvas<'_> {
         let rect = self.view.canvas_rect(&self.draft.rect);
         if self.part == Part::Photo {
             // The whole stage, dimmed, then the crop rectangle at full opacity over it.
-            let image_bounds = self.image_bounds();
-            frame.draw_image(image_bounds, self.photo(DIM_OPACITY));
-            frame.with_clip(rect, |clipped| {
-                clipped.draw_image(image_bounds, self.photo(1.0));
-            });
+            self.draw_photo(&mut frame, DIM_OPACITY);
+            frame.with_clip(rect, |clipped| self.draw_photo(clipped, 1.0));
             return vec![frame.into_geometry()];
         }
 
@@ -473,7 +483,7 @@ mod tests {
             let view = View::percent(100.0, 1.0).expect("a percent view");
             let canvas = CropCanvas::new(
                 &draft,
-                image::Handle::from_rgba(1, 1, vec![0u8, 0, 0, 255]),
+                DraftPhoto::unallocated(480, 320),
                 view,
                 Mode::Frame,
                 false,
@@ -529,7 +539,7 @@ mod tests {
         for (part, answers) in [(Part::Photo, false), (Part::Overlay, true)] {
             let canvas = CropCanvas::new(
                 &draft,
-                image::Handle::from_rgba(1, 1, vec![0u8, 0, 0, 255]),
+                DraftPhoto::unallocated(480, 320),
                 view,
                 Mode::Frame,
                 false,

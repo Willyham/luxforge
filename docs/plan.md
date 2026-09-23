@@ -19,7 +19,7 @@ Outstanding work by area. What is delivered is in [feature status](features.md);
 - Multi-image import and virtualized browsing
 - Filtering, tagging and collections
 - Multi-selection and stacking
-- Catalog portability and backup (decision pending)
+- Catalog portability and backup, carrying each catalog's derived-artifact directory with it (decision pending)
 
 ## RAW
 
@@ -56,13 +56,14 @@ Outstanding work by area. What is delivered is in [feature status](features.md);
 
 ## Extensibility
 
-**Shared module capabilities** (proposal, [design](design/module-capabilities.md), [plan](../tasks/module-capabilities.json)). Host services modules can rely on.
-- Capability and consent contract (owner decision)
-- Typed settings and secret storage
-- Scoped permissions and protected transports
-- Activation, resource jobs and verified model downloads
-- Immutable derived-artifact storage
-- Proof module and M4 measurements
+**Shared module capabilities follow-ups** ([design](design/module-capabilities.md)). Settings and secrets, consent, the transport, activation and resources, tasks and derived artifacts are delivered on macOS.
+- Owner review of the recorded defaults: per-asset photo consent, who may grant, loopback-only plain HTTP ([decisions](decisions.md#module-capabilities))
+- Windows Credential Manager and Linux Secret Service for module secrets, verified natively; both refuse with `not-ready` today
+- Native Windows and Linux checks of the transport's certificate verification and of resource removal, which on Windows must release a module's files before deleting them
+- The first reviewed provider adapters and their crop and mask data classes, with Corrections
+- Resumable, hash-checked downloads for large model files; an interrupted download restarts today
+- Setting and clearing secrets off the catalog owner, so an OS keychain prompt never holds other clients
+- `managed-storage` and `local-runtime` capabilities, when a module first needs them
 
 **External modules.** Load separately authored modules.
 - Measure optional-module activation cost
