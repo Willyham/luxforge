@@ -135,7 +135,10 @@ host, one-minute load averages of 12.96 (`--jobs 1`) and 13.24 (the default pool
 Every scenario costs one to two seconds either way, and none exceeds 2.3 s; against a rendered tier
 whose own total stays under two minutes, no single scenario is a material share of it. Every scenario
 therefore stays in `rendered`; `full` adds only the RAW components (`raw-reference` and, with
-`--manifest`, `raw-editor`), which is already the tier's composition.
+`--manifest`, `raw-editor`), which is already the tier's composition. `zoom`, which is not in that
+workload, is two launches with three one-second idle waits each and took 13.5 s inside the default
+pool at a one-minute load average near 20; it stays in `rendered` as the only rendered check of the
+percentage zooms.
 
 | Scenario | Serial elapsed (`--jobs 1`) | Pooled elapsed (default `--jobs 3`) | Tier |
 | --- | --- | --- | --- |
