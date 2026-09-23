@@ -37,9 +37,10 @@
 //! better. Generating from [`super::COMPONENT_KINDS`] also means a kind becomes creatable, addable
 //! and patchable by being *registered*, rather than by someone remembering a second table: this
 //! module declares no geometry of its own and knows no kind by name.
+use super::SAMPLES_FIELD;
 use super::{
-    BRUSH, DISTANCE_MIN, component_geometry_is_drawn, component_parameters,
-    declared_geometry_kinds, knows_component_kind,
+    BRUSH, DISTANCE_MIN, component_geometry_is_drawn, component_parameters, component_sample_limit,
+    component_sample_parameters, declared_geometry_kinds, knows_component_kind, sampling_kinds,
 };
 use crate::{
     ActionDescriptor, ChoiceStyle, Component, ComponentId, ComponentMode, Control, Error,
@@ -89,6 +90,43 @@ impl GeometryOp {
     fn all() -> [Self; 3] {
         [Self::Create, Self::Add, Self::Set]
     }
+}
+
+/// What a generated sample method does to one component's list of sampled colours. The kind it does
+/// it to is the other half of [`SampleMethod`].
+///
+/// A sampled colour cannot be a declared parameter of the geometry methods: the closed parameter
+/// vocabulary has numbers, integers, enums, colours, booleans and curves and no *list* of any of
+/// them. So a kind that holds swatches says how many and what one declares in the host's kind table,
+/// and these two methods edit that list one swatch at a time — which is also how a person edits it,
+/// a pick at a time and a removal at a time.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SampleOp {
+    /// `mask.add-<kind>-sample`: one more sampled colour, up to the kind's declared limit.
+    Add,
+    /// `mask.delete-<kind>-sample`: the sample at one index, removed on its own.
+    Delete,
+}
+
+impl SampleOp {
+    fn method(self, kind: &str) -> String {
+        match self {
+            Self::Add => format!("mask.add-{kind}-sample"),
+            Self::Delete => format!("mask.delete-{kind}-sample"),
+        }
+    }
+
+    fn all() -> [Self; 2] {
+        [Self::Add, Self::Delete]
+    }
+}
+
+/// The identity of one generated sample method: what it does, and the one component kind it does it
+/// to.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SampleMethod {
+    pub op: SampleOp,
+    pub kind: &'static str,
 }
 
 /// The identity of one generated geometry method: what it does, and the one component kind it does
@@ -189,6 +227,8 @@ pub struct MaskCommand {
     /// Set on the generated geometry methods and on no other command: it is what says which kind's
     /// parameters this method declares and which kind's components it may touch.
     pub geometry: Option<GeometryMethod>,
+    /// Set on the generated sample methods and on no other command.
+    pub samples: Option<SampleMethod>,
     pub action: ActionDescriptor,
 }
 
@@ -291,6 +331,16 @@ pub fn all() -> &'static [MaskCommand] {
 /// the registry's collision check all use, so the four cannot drift.
 pub fn find(method: &str) -> Option<&'static MaskCommand> {
     COMMANDS.iter().find(|command| command.method == method)
+}
+
+/// The generated sample command one operation on one sampling kind declares, or none when this
+/// build does not sample that kind.
+pub fn sample(op: SampleOp, kind: &str) -> Option<&'static MaskCommand> {
+    COMMANDS.iter().find(|command| {
+        command
+            .samples
+            .is_some_and(|samples| samples.op == op && samples.kind == kind)
+    })
 }
 
 /// The generated command one operation on one component kind declares, or none when this build does
@@ -662,9 +712,13 @@ pub(crate) fn plan(
     // A generated geometry method is dispatched by what it does and the kind it does it to, never by
     // its spelling: `mask.create-radial` reaches the same three arms `mask.create-linear` does, and a
     // kind registered later reaches them without this function learning its name.
-    let (base, names_mask, mask_id, component_id, removed) = match command.geometry {
-        Some(geometry) => plan_geometry(geometry, &mut next, target, parameters)?,
-        None => match command.method {
+    let (base, names_mask, mask_id, component_id, removed) = match (
+        command.geometry,
+        command.samples,
+    ) {
+        (Some(geometry), _) => plan_geometry(geometry, &mut next, target, parameters)?,
+        (_, Some(samples)) => plan_sample(samples, &mut next, target, parameters)?,
+        _ => match command.method {
             "mask.delete" => {
                 let index = mask_index(&next, required_mask(target)?)?;
                 let mask = next.masks.remove(index);
@@ -1275,6 +1329,93 @@ fn optional_mode(parameters: &Map<String, Value>) -> Result<Option<ComponentMode
     mode(parameters).map(Some)
 }
 
+/// The two generated sample methods, over whichever sampling kind the method was generated for.
+///
+/// Nothing here names a component kind either: `samples.kind` came from the host's kind table when
+/// the method was generated, the parameters were validated against that kind's own sample
+/// declarations by the generic check, and the list is read and written through the reserved
+/// `samples` field every sampling kind's payload carries.
+fn plan_sample(
+    samples: SampleMethod,
+    next: &mut Recipe,
+    target: &MaskTarget,
+    parameters: &Map<String, Value>,
+) -> Result<Planned, Error> {
+    let kind = samples.kind;
+    let limit = component_sample_limit(kind).ok_or_else(|| unknown_kind(kind))?;
+    let (mask_index, index) = component_at(next, target)?;
+    let mask = &mut next.masks[mask_index];
+    let component = &mut mask.components[index];
+    if !knows_component_kind(&component.kind) {
+        return Err(unknown_kind(&component.kind));
+    }
+    if component.kind != kind {
+        return Err(validation(format!(
+            "component {} is a {} component and holds no sampled colours of a {kind}",
+            component.name, component.kind
+        )));
+    }
+    let mut payload = component
+        .payload
+        .as_object()
+        .cloned()
+        .ok_or_else(|| unknown_kind(&component.kind))?;
+    let mut stored: Vec<Value> = payload
+        .get(SAMPLES_FIELD)
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let base = match samples.op {
+        SampleOp::Add => {
+            let picked = Value::Array(
+                component_sample_parameters(kind)
+                    .ok_or_else(|| unknown_kind(kind))?
+                    .iter()
+                    .map(|declared| {
+                        parameters
+                            .get(&declared.name)
+                            .map(canonical)
+                            .ok_or_else(|| {
+                                validation(format!(
+                                    "missing required parameter {} for a {kind} sample",
+                                    declared.name
+                                ))
+                            })
+                    })
+                    .collect::<Result<Vec<Value>, Error>>()?,
+            );
+            // Sampling a colour the component already holds is a no-op, because the selection folds
+            // its samples by nearest and a duplicate changes no pixel's coverage. Storing it anyway
+            // would spend one of the component's few swatches on nothing.
+            if !stored.contains(&picked) {
+                if stored.len() >= limit {
+                    return Err(Error::new(
+                        ErrorKind::ResourceLimit,
+                        format!(
+                            "component {} already holds {limit} sampled colours; the limit is \
+                             {limit} per {kind} component",
+                            component.name
+                        ),
+                    ));
+                }
+                stored.push(picked);
+            }
+            format!("Sample {}", component.name)
+        }
+        SampleOp::Delete => {
+            let at = position(parameters, "index", stored.len(), "sampled colours")?;
+            stored.remove(at);
+            format!("Remove a sample from {}", component.name)
+        }
+    };
+    payload.insert(SAMPLES_FIELD.to_owned(), Value::Array(stored));
+    component.payload = Value::Object(payload);
+    let component_id = component.id.clone();
+    mask.validate()?;
+    let id = mask.id.clone();
+    Ok((base, false, Some(id), Some(component_id), Vec::new()))
+}
+
 /// The one label rule: the command's own text, prefixed with the mask's name whenever the resulting
 /// stack carries more than one mask, because a history list shared with every other module cannot
 /// afford `Update Linear 1` alone.
@@ -1401,6 +1542,12 @@ fn geometry_payload(kind: &str, parameters: &Map<String, Value>) -> Result<Value
         })?;
         payload.insert(field.clone(), canonical(value));
     }
+    // A sampling kind's list starts empty and present, rather than absent until the first pick: a
+    // payload whose shape depends on its history is a payload every reader has to special-case, and
+    // an unsampled component is a real state — it selects nothing — not a missing one.
+    if component_sample_limit(kind).is_some() {
+        payload.insert(SAMPLES_FIELD.to_owned(), Value::Array(Vec::new()));
+    }
     Ok(Value::Object(payload))
 }
 
@@ -1508,6 +1655,7 @@ fn command(
         needs_name: Need::of(needs.2),
         needs_stroke: Need::None,
         geometry: None,
+        samples: None,
         action: ActionDescriptor {
             id: method.to_owned(),
             title: title.to_owned(),
@@ -1586,12 +1734,80 @@ fn geometry_commands(kind: &'static str) -> Vec<MaskCommand> {
                 needs_name: Need::of(needs.2),
                 needs_stroke: Need::None,
                 geometry: Some(GeometryMethod { op, kind }),
+                samples: None,
                 action: ActionDescriptor {
                     id: method.to_owned(),
                     title,
                     notes,
                     summary: None,
                     patch,
+                    parameters,
+                },
+            }
+        })
+        .collect()
+}
+
+/// The two sample methods one sampling kind generates: one adds a colour the canvas picked, one
+/// removes the swatch at an index.
+///
+/// The method names are leaked for the lifetime of the process, exactly as the geometry methods'
+/// are, so a generated command holds the `&'static str` identity every other command holds and a
+/// history entry stores it as a durable action id.
+fn sample_commands(kind: &'static str) -> Vec<MaskCommand> {
+    let limit = component_sample_limit(kind).expect("a sampling kind from the host's own table");
+    SampleOp::all()
+        .into_iter()
+        .map(|op| {
+            let method: &'static str = String::leak(op.method(kind));
+            let (title, notes, parameters) = match op {
+                SampleOp::Add => (
+                    format!("Sample {}", spoken(kind)),
+                    format!(
+                        "add one sampled colour to a {0} component, in linear sRGB in the domain of \
+                         the operation this mask modulates — the value a pick on the canvas reads \
+                         from the stage that operation receives. At most {limit} of them; sampling \
+                         a colour the component already holds changes nothing, because the \
+                         selection folds its samples by nearest and a duplicate is a no-op",
+                        spoken(kind)
+                    ),
+                    component_sample_parameters(kind)
+                        .expect("a sampling kind from the host's own table"),
+                ),
+                SampleOp::Delete => (
+                    format!("Remove {} sample", spoken(kind)),
+                    format!(
+                        "remove one sampled colour of a {} component by its position in the list, \
+                         so a swatch picked by accident is undone on its own rather than by \
+                         clearing them all",
+                        spoken(kind)
+                    ),
+                    vec![parameter(
+                        "index",
+                        ParameterKind::Integer {
+                            min: 0,
+                            max: limit as i64 - 1,
+                        },
+                        true,
+                        "the sample's position in the component's list of sampled colours",
+                    )],
+                ),
+            };
+            MaskCommand {
+                method,
+                mutates: true,
+                needs_mask: Need::Required,
+                needs_component: Need::Required,
+                needs_name: Need::None,
+                needs_stroke: Need::None,
+                geometry: None,
+                samples: Some(SampleMethod { op, kind }),
+                action: ActionDescriptor {
+                    id: method.to_owned(),
+                    title,
+                    notes,
+                    summary: None,
+                    patch: false,
                     parameters,
                 },
             }
@@ -1758,6 +1974,7 @@ static COMMANDS: LazyLock<Vec<MaskCommand>> = LazyLock::new(|| {
         needs_name: Need::None,
         needs_stroke: Need::None,
         geometry: None,
+        samples: None,
         action: ActionDescriptor {
             id: ADD_STROKE.to_owned(),
             title: "Paint".to_owned(),
@@ -1845,6 +2062,7 @@ static COMMANDS: LazyLock<Vec<MaskCommand>> = LazyLock::new(|| {
         needs_name: Need::None,
         needs_stroke: Need::Required,
         geometry: None,
+        samples: None,
         action: ActionDescriptor {
             id: DELETE_STROKE.to_owned(),
             title: "Delete stroke".to_owned(),
@@ -1864,6 +2082,12 @@ static COMMANDS: LazyLock<Vec<MaskCommand>> = LazyLock::new(|| {
     // parameter list would advertise a component a gesture has to fill in afterwards.
     for kind in declared_geometry_kinds() {
         commands.extend(geometry_commands(kind));
+    }
+    // The sample methods, generated the same way from the same table: a kind that holds a list of
+    // sampled colours becomes samplable by being registered with a sample limit, and nothing above
+    // is edited for that to happen.
+    for kind in sampling_kinds() {
+        commands.extend(sample_commands(kind));
     }
     debug_assert!(
         {
@@ -2044,6 +2268,17 @@ mod tests {
                 "mask.create-radial",
                 "mask.add-radial",
                 "mask.set-radial",
+                // Then the two range selections, which the same generation covers because their
+                // geometry is declared as numbers.
+                "mask.create-luminance-range",
+                "mask.add-luminance-range",
+                "mask.set-luminance-range",
+                "mask.create-colour-range",
+                "mask.add-colour-range",
+                "mask.set-colour-range",
+                // And the sample methods of the one kind that holds a list of picked colours.
+                "mask.add-colour-range-sample",
+                "mask.delete-colour-range-sample",
             ]
         );
         assert!(
@@ -2075,6 +2310,96 @@ mod tests {
     /// normalized-position descriptor and listed only `linear`, so the radial gradient was evaluable
     /// and not creatable. It is asserted over the table rather than over a list of names, so a kind
     /// added later is covered by this test on the day it is registered.
+    /// Registering a kind with a sample limit is enough to make its swatches editable: the two
+    /// sample methods are generated, listed by `schema.list`, resolvable through the table by the
+    /// operation and the kind, and each declares exactly what one swatch or one removal takes.
+    ///
+    /// The list itself is deliberately not a declared parameter — the closed vocabulary has numbers,
+    /// integers, enums, colours, booleans and curves and no list of any of them — so this is the
+    /// whole of how a client edits it, and nothing here names a kind.
+    #[test]
+    fn registering_a_sampling_kind_is_enough_to_make_its_swatches_editable() {
+        let schemas = crate::schemas(&registry());
+        let listed = schemas["methods"].as_object().expect("a method listing");
+        let mut kinds = 0usize;
+        for kind in crate::mask::sampling_kinds() {
+            kinds += 1;
+            let limit = crate::mask::component_sample_limit(kind).expect("a sampling kind");
+            // The add method declares one parameter per channel of a sampled colour, each a finite
+            // number, and nothing else: the swatch is the whole of its input.
+            let add = sample(SampleOp::Add, kind).expect("its add method is generated");
+            assert_eq!(add.method, format!("mask.add-{kind}-sample"));
+            assert!(add.mutates);
+            // A swatch is edited on one component of one mask, always both and never a name or a
+            // stroke: the envelope is fixed, as it is for every command but `mask.add-stroke`.
+            assert_eq!(add.needs_mask, Need::Required);
+            assert_eq!(add.needs_component, Need::Required);
+            assert_eq!(add.needs_name, Need::None);
+            assert_eq!(add.needs_stroke, Need::None);
+            assert!(!add.action.patch, "a swatch is appended, not patched");
+            let declared: Vec<&str> = add
+                .action
+                .parameters
+                .iter()
+                .map(|parameter| parameter.name.as_str())
+                .collect();
+            assert_eq!(
+                declared,
+                crate::mask::component_sample_parameters(kind)
+                    .expect("a sampling kind")
+                    .iter()
+                    .map(|parameter| parameter.name.as_str())
+                    .collect::<Vec<_>>()
+            );
+            for parameter in &add.action.parameters {
+                let ParameterKind::Number { min, max } = parameter.kind else {
+                    panic!("{} is not a number", parameter.name);
+                };
+                assert!(min.is_finite() && max.is_finite() && min < max);
+                assert!(parameter.unit.is_some() && parameter.step.is_some());
+            }
+            // The delete method takes the swatch's position, bounded by the kind's own limit, so a
+            // request past the list is refused by the declaration rather than by the plan.
+            let delete = sample(SampleOp::Delete, kind).expect("its delete method is generated");
+            assert_eq!(delete.method, format!("mask.delete-{kind}-sample"));
+            let index = delete
+                .action
+                .parameter("index")
+                .expect("a position to remove");
+            assert_eq!(
+                index.kind,
+                ParameterKind::Integer {
+                    min: 0,
+                    max: limit as i64 - 1
+                }
+            );
+            for method in [add.method, delete.method] {
+                assert!(listed.get(method).is_some(), "schema.list omits {method}");
+                assert_eq!(
+                    find(method).map(|command| command.method),
+                    Some(method),
+                    "dispatch cannot resolve {method}"
+                );
+            }
+        }
+        assert_eq!(
+            kinds, 1,
+            "the colour range is this build's one kind that holds sampled colours"
+        );
+        // And the other side: a kind that samples nothing generates neither method and says so.
+        for kind in crate::mask::component_kinds() {
+            if crate::mask::component_sample_limit(kind).is_some() {
+                continue;
+            }
+            assert!(sample(SampleOp::Add, kind).is_none(), "{kind}");
+            assert!(sample(SampleOp::Delete, kind).is_none(), "{kind}");
+            assert!(
+                crate::mask::component_sample_parameters(kind).is_none(),
+                "{kind}"
+            );
+        }
+    }
+
     #[test]
     fn registering_a_kind_is_enough_to_make_it_creatable_addable_and_patchable() {
         let schemas = crate::schemas(&registry());
@@ -2145,8 +2470,9 @@ mod tests {
             }
         }
         assert_eq!(
-            kinds, 2,
-            "linear and radial are the kinds whose geometry is declared as numbers"
+            kinds, 4,
+            "linear, radial and the two range selections are the kinds whose geometry is declared \
+             as numbers"
         );
         // And the other side of the same contract: a kind whose geometry is drawn is evaluable
         // without being generated over, so it registers, parses and renders while declaring no

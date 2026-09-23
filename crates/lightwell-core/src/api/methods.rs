@@ -1909,7 +1909,17 @@ mod tests {
                 "mask.set-linear",
                 "mask.create-radial",
                 "mask.add-radial",
-                "mask.set-radial"
+                "mask.set-radial",
+                "mask.create-luminance-range",
+                "mask.add-luminance-range",
+                "mask.set-luminance-range",
+                "mask.create-colour-range",
+                "mask.add-colour-range",
+                "mask.set-colour-range",
+                // And, for the one kind that holds a list of picked colours, the two sample methods
+                // the same table generates.
+                "mask.add-colour-range-sample",
+                "mask.delete-colour-range-sample"
             ]
         );
         let schema = schemas(service.registry());

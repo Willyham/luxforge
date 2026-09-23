@@ -201,9 +201,59 @@ The **overlay** shows what the mask selects: off, a tint over the photograph, th
 
 Masked layers stay in the recipe list on the left, in the durable processing order, each naming the mask it applies through and the first of them carrying that mask's heading. They are not moved under it: the list's job is to show the order edits are applied in, and a mask's layers belong to different stages.
 
+**Luminance range** and **Colour range** select by what a pixel *is* rather than by where it is, and
+they combine with gradients and brushes in the same component list. A luminance range has a **Low**
+and a **High** edge with a shoulder below and above each, all on the histogram's own horizontal axis
+from 0 to 100, so one unit is 2.55 output codes and the number on the slider is the number you read
+off the histogram. A shoulder of 0 is a hard edge; anything else is at least 1, because a narrower
+shoulder is a hard edge asked for indirectly. A colour range holds up to five sampled colours, each
+added and removed on its own, and one **Refine** slider from 0 to 100: a higher refine is always a
+tighter selection, from a whole family of related colours at 0 to a single flat patch at 100, and the
+default of 50 is the setting measured to hold an ordinary surface together across a stop of shading.
+An unsampled colour range selects nothing, which is what a new one is.
+
+Neither kind is drawn on the photograph, because neither has a shape: choosing it from New mask or
+Add component creates it straight away as a starting selection — the whole tonal range with soft
+shoulders for a band, no swatches for a colour range — and you narrow it through the numbers under
+its row. **Picking a colour off the photograph is not wired to the canvas yet**: a swatch is added
+and removed through `mask.add-colour-range-sample` and `mask.delete-colour-range-sample`, which take
+a linear sRGB triple and an index, so a colour range is reachable from the API and not yet from a
+click.
+
+Four things about a range selection are worth knowing before you rely on one, because they are how it
+works rather than faults to be fixed:
+
+- **It reads the input of the adjustment it modulates, not the finished picture.** A layer ahead of
+  it changes what it selects: a `+0.75 EV` lift before a band drawn for a sky takes that sky from
+  fully selected to not selected at all. Reordering layers therefore moves a range selection, which
+  the gradients and brushes never do.
+- **It is evaluated on what the current view can see.** At Fit the picture has been scaled down, and
+  the coverage of an averaged pixel is not the average of the coverages — at a sky/roof edge a band
+  that takes the sky at 0.475 and the roof at 0 takes their average pixel at 0. The 100% view is the
+  truth for a range selection; the fitted view is an honest preview of a downscaled picture. The
+  overlay draws no grid at all for a mask holding a range component, and says why: a grid describes
+  the finished frame, whose pixels are the adjustment's *output*, so drawing one would mean guessing
+  an input the render never used. Read such a selection in the picture at 100%.
+- **A narrow band speckles on noise.** A range selection is a per-pixel test, so it inherits the
+  picture's grain: on a shadow around output code 40 with two codes of noise, a hard edge flips 47%
+  of neighbouring pixels by more than half, a shoulder of 1 flips 31%, and a shoulder of 5 — about 13
+  output codes, comfortably wider than the noise — flips none. Feather generously in the shadows.
+- **These are deterministic selections, not subject recognition.** A luminance band cannot separate a
+  photographed blue sky from a mid-grey card: they sit 1.4 output codes apart, and no band takes one
+  without the other. A colour range cannot separate one person's skin from another's — dark skin is
+  0.0108 from light skin in the metric, a third of what one face's own shading spans — and it cannot
+  separate a face from an oak floor, which at the default refine stays about 30% selected. Every
+  neutral is one colour to it: white, mid grey and black are within 0.0015 of each other, so a
+  sampled grey selects the whole tonal range at any refine, which is what the luminance range is for.
+  The remedy in each case is the component list: intersect a band with a colour range, or subtract a
+  brush over what you do not want.
+
 Leaving Mask mode with a gesture open is refused with the reason rather than discarding what you drew, as the crop draft is; so is holding Compare. If anything else changes the photograph while a gesture is open the gesture is kept and marked "Changed elsewhere", with Discard and Reapply, exactly as a crop or slider draft is.
 
-Luminance and colour range selections are not built.
+The linear gradient, the radial gradient, the brush and the two range selections are every kind this
+build offers. The colour-constrained brush — the honest part of Lightroom's Auto Mask — is not built,
+and no selection here is made by a model: there is no Select Subject, Sky, People, Objects or
+Background, and none of them is drawn as a control that does nothing.
 
 ### Vignette
 

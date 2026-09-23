@@ -30,6 +30,11 @@ use rayon::prelude::*;
 
 /// A cell no part of the mask reaches.
 pub const MASK_COVERAGE_NONE: u8 = 0;
+
+/// The pixel value handed to a field that does not read one. `coverage_grid` refuses a mask whose
+/// coverage depends on a pixel before any cell is filled, so this is never consulted by any
+/// component; it exists because the field's signature takes a pixel and this grid has none.
+const NO_PIXEL: [f64; 3] = [0.0, 0.0, 0.0];
 /// A cell the mask covers completely.
 pub const MASK_COVERAGE_FULL: u8 = 255;
 
@@ -106,7 +111,10 @@ impl Cells {
                 content_pixel(x, self.content.width),
                 content_pixel(y, self.content.height),
             ) {
-                (Some(x), Some(y)) => quantize_coverage(mask.coverage(x, y)),
+                // Every mask that reaches this grid is position-only, which `coverage_grid` has
+                // already established, so the pixel value the field takes is never read and the
+                // neutral triple below stands for "no pixel was consulted" rather than for a colour.
+                (Some(x), Some(y)) => quantize_coverage(mask.coverage(x, y, NO_PIXEL)),
                 _ => MASK_COVERAGE_NONE,
             };
         }
@@ -176,6 +184,20 @@ pub fn coverage_grid(
     if mask.bounds().is_empty() {
         return Ok(None);
     }
+    // A value-based component's coverage is a function of the pixel the masked *operation* receives,
+    // and this grid is a function of position over the finished frame: the frame's own pixel is that
+    // operation's output and not its input, so painting it here would draw a selection the render
+    // never makes. The honest answer is that there is no grid, with the reason named, until the
+    // overlay is given the masked operation's input — which is its own decision (proposal P16 of
+    // `docs/design/range-study.md`) and not something to guess at per cell.
+    if mask.reads_pixels() {
+        return Err(Error::new(
+            ErrorKind::Validation,
+            "this mask has a component whose coverage depends on the pixel it reads, and a \
+             coverage grid is a function of position over the finished frame; the 100% \
+             view is where such a selection can be read",
+        ));
+    }
     let count = (cells_w as usize) * (cells_h as usize);
     let cells = Cells {
         content,
@@ -208,6 +230,11 @@ mod tests {
     use super::*;
     use crate::{Component, ComponentMode, Mask, StageSize};
     use serde_json::json;
+
+    /// The pixel value a geometric component is handed and ignores (proposal P12 of
+    /// `docs/design/range-study.md`): the masks here hold gradients and their coverage is a
+    /// function of position alone, so the value is arbitrary and the same at every call.
+    const ANY_PIXEL: [f64; 3] = [0.25, 0.5, 0.75];
 
     /// The identity tail: a frame that is its content stage, which is what a recipe with no
     /// geometry layer produces.
@@ -274,7 +301,7 @@ mod tests {
                     as u32;
                 assert_eq!(
                     grid[(cy * cells_w + cx) as usize],
-                    quantize_coverage(compiled.coverage(px, py)),
+                    quantize_coverage(compiled.coverage(px, py, ANY_PIXEL)),
                     "cell ({cx}, {cy}) over pixel ({px}, {py})"
                 );
             }
@@ -485,5 +512,44 @@ mod tests {
                 }
             }
         }
+    }
+    /// A mask with a value-based component has no coverage grid, and the refusal says why.
+    ///
+    /// The grid is a function of position over the *finished* frame; a range selection's coverage is
+    /// a function of the pixel the masked **operation** receives, which is that frame's input and
+    /// not its output. Painting the frame's own pixel here would draw a selection the render never
+    /// makes, so the honest answer is a refusal naming the reason, and where such a selection can be
+    /// read — the 100% view. Giving the overlay the masked operation's input is proposal P16 of
+    /// `docs/design/range-study.md` and a decision of its own.
+    #[test]
+    fn a_mask_that_reads_pixels_has_no_coverage_grid() {
+        let (width, height) = (64, 48);
+        let mut mask = vertical_gradient();
+        let name = mask.next_component_name("luminance-range");
+        mask.components.push(Component::new(
+            name,
+            ComponentMode::Intersect,
+            "luminance-range",
+            json!({"low": 20.0, "low_feather": 10.0, "high": 80.0, "high_feather": 10.0}),
+        ));
+        let mixed = compiled(&mask, width, height);
+        assert!(mixed.reads_pixels());
+        let error = coverage_grid(&mixed, &identity(width, height), 8, 8, &Cancel::never())
+            .expect_err("a value-based mask has no grid");
+        assert_eq!(error.kind, ErrorKind::Validation);
+        assert!(
+            error.detail.contains("100% view"),
+            "the refusal says where the selection can be read: {}",
+            error.detail
+        );
+        // The geometric half of the same mask still has one, so a client can show the component
+        // whose contribution a grid *can* describe.
+        let geometry = compiled(&vertical_gradient(), width, height);
+        assert!(!geometry.reads_pixels());
+        assert!(
+            coverage_grid(&geometry, &identity(width, height), 8, 8, &Cancel::never())
+                .unwrap()
+                .is_some()
+        );
     }
 }

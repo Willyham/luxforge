@@ -1,7 +1,7 @@
 //! Tool modules: each one owns its descriptor, input parsing, state validation, no-op detection
 //! and the compilation of its persisted payloads into host processing primitives. Modules never
 //! write the catalog, never keep an undo stack and never render.
-mod basic;
+pub(crate) mod basic;
 mod controls;
 mod crop;
 mod descriptor;

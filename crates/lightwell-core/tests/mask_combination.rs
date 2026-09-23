@@ -37,6 +37,12 @@ use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
+/// The pixel value a geometric component is handed and ignores (proposal P12 of
+/// `docs/design/range-study.md`). These masks hold gradients and brushes, whose coverage is a
+/// function of position alone, so the value here is arbitrary and the same at every call;
+/// `mask_range.rs` proves that ignoring it is exact rather than approximate.
+const ANY_PIXEL: [f64; 3] = [0.25, 0.5, 0.75];
+
 // ---------------------------------------------------------------------------------------------
 // Randomized mixed-kind composition, rendered
 // ---------------------------------------------------------------------------------------------
@@ -394,8 +400,8 @@ fn invert_applies_before_amount_and_the_reference_agrees() {
         &lightwell_core::path::StrokeTable::default(),
     )
     .unwrap();
-    assert_eq!(compiled.coverage(WIDTH / 2, 0), 0.4);
-    assert_eq!(compiled.coverage(WIDTH / 2, HEIGHT - 1), 0.0);
+    assert_eq!(compiled.coverage(WIDTH / 2, 0, ANY_PIXEL), 0.4);
+    assert_eq!(compiled.coverage(WIDTH / 2, HEIGHT - 1, ANY_PIXEL), 0.0);
 }
 
 // ---------------------------------------------------------------------------------------------

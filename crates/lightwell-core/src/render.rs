@@ -371,11 +371,14 @@ impl<'a> MaskPlacement<'a> {
     }
 
     /// The coverage at one frame pixel: the mask's own field at the pixel of its own stage that this
-    /// frame pixel came from. The rasterizing pass and `render.sample` reach this through the same
-    /// call, so a sampled byte equals the rendered byte for a masked layer by construction.
-    fn coverage(&self, x: u32, y: u32) -> f32 {
+    /// frame pixel came from, for `input` — **the value this operation receives at that pixel**, in
+    /// linear float, which is the snapshot the blend is taken against and not the value the units
+    /// have produced from it. The rasterizing pass and `render.sample` reach this through the same
+    /// call with the same arguments, so a sampled byte equals the rendered byte for a masked
+    /// layer by construction, for a value-based component exactly as for a geometric one.
+    fn coverage(&self, x: u32, y: u32, input: [f32; 3]) -> f32 {
         let (mask_x, mask_y) = self.suffix.unmap(x, y);
-        self.mask.evaluate(mask_x, mask_y)
+        self.mask.evaluate(mask_x, mask_y, input)
     }
 
     /// The part of one contiguous row span this mask can reach, as offsets into that span, or `None`
@@ -512,7 +515,7 @@ fn apply_masked_operation(
         snapshot.copy_from_slice(span);
         apply_operation(operation, y, x0 + at as u32, span)?;
         for (offset, (output, input)) in span.iter_mut().zip(snapshot.iter()).enumerate() {
-            let coverage = placement.coverage(x0 + (at + offset) as u32, y);
+            let coverage = placement.coverage(x0 + (at + offset) as u32, y, *input);
             for channel in 0..3 {
                 output[channel] = (1.0 - coverage) * input[channel] + coverage * output[channel];
             }
@@ -1950,6 +1953,12 @@ mod tests {
         },
     };
     use serde_json::{Map, Value, json};
+
+    /// The pixel value a geometric component is handed and ignores (proposal P12 of
+    /// `docs/design/range-study.md`): the masks here hold gradients and their coverage is a
+    /// function of position alone, so the value is arbitrary and the same at every call.
+    const ANY_PIXEL: [f64; 3] = [0.25, 0.5, 0.75];
+    const ANY_PIXEL_F32: [f32; 3] = [0.25, 0.5, 0.75];
 
     fn registry() -> ModuleRegistry {
         ModuleRegistry::builtin()
@@ -4621,7 +4630,7 @@ mod tests {
             .unwrap();
             let mut partial = 0;
             for y in 0..raster.height {
-                let coverage = f64::from(compiled.evaluate(0, y));
+                let coverage = f64::from(compiled.evaluate(0, y, ANY_PIXEL_F32));
                 if coverage > 0.0 && coverage < 1.0 {
                     partial += 1;
                 }
@@ -4631,7 +4640,7 @@ mod tests {
                     // one blended against its own input, the last one everywhere, one quantization.
                     let input = decode_reference(f64::from(byte) / 255.0) * 2.0_f64.powf(0.5);
                     let effect = input * 2.0_f64.powf(2.0);
-                    let coverage = f64::from(compiled.evaluate(x, y));
+                    let coverage = f64::from(compiled.evaluate(x, y, ANY_PIXEL_F32));
                     let blended = (1.0 - coverage) * input + coverage * effect;
                     let clamped = (blended * 2.0_f64.powf(-0.25)).clamp(0.0, 1.0);
                     let expected = (255.0 * encode_reference(clamped) + 0.5).floor() as u8;
@@ -4655,7 +4664,11 @@ mod tests {
                 "{case}: every row of this fixture must be partially covered"
             );
             if case == "every byte at M = 0.5" {
-                assert_eq!(compiled.coverage(0, 0), 0.5, "the strip's own coverage");
+                assert_eq!(
+                    compiled.coverage(0, 0, ANY_PIXEL),
+                    0.5,
+                    "the strip's own coverage"
+                );
             }
         }
     }
@@ -4706,7 +4719,11 @@ mod tests {
             let input = source.rgba[((y * source.width) * 4 + 1) as usize];
             if !touched {
                 assert_eq!(green, input, "row {y} was outside the rectangle");
-                assert_eq!(compiled.evaluate(0, y), 0.0, "row {y} has coverage");
+                assert_eq!(
+                    compiled.evaluate(0, y, ANY_PIXEL_F32),
+                    0.0,
+                    "row {y} has coverage"
+                );
             }
         }
         // And a point sample agrees with the frame inside the feather band and at both bounds edges.

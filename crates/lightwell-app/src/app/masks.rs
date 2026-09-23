@@ -732,6 +732,17 @@ impl Editor {
             );
             return Task::none();
         }
+        // A **typed** kind has nothing to drag: every field its geometry declares carries a
+        // default, so the button creates the selection those defaults describe in one history entry
+        // and the row's own number fields narrow it afterwards. That is the whole of what a range
+        // selection's creation is, and routing it through a gesture would open a draft with no
+        // handles and no shape to preview. A brush is neither drawn nor typed: it declares no
+        // geometry at all, so it is not defaulted either and falls through to its own gesture.
+        if !crate::mask_draft::drawable(&kind)
+            && lightwell_core::mask::component_geometry_is_defaulted(&kind)
+        {
+            return self.create_typed(op, kind, mask);
+        }
         let brush = self.painting_brush();
         let draft = match (op, mask) {
             (MaskDraftOp::Create, _) => MaskDraft::creating(kind, brush, revision),
@@ -741,6 +752,47 @@ impl Editor {
             _ => return Task::none(),
         };
         self.open_shape(draft)
+    }
+
+    /// Create or add one component of a **typed** kind, straight through the generated method.
+    ///
+    /// Every geometry field is left out of the request, so the host fills each from the declaration
+    /// the panel read to decide this kind was typed — one declaration, read once, rather than a copy
+    /// of the defaults here that could drift from it. The mode of an `Add` is the mode the Add row
+    /// already chose, exactly as it is for a drawn kind.
+    fn create_typed(
+        &mut self,
+        op: MaskDraftOp,
+        kind: String,
+        mask: Option<MaskId>,
+    ) -> Task<Message> {
+        let (geometry_op, target, fields) = match (op, mask) {
+            (MaskDraftOp::Create, _) => (
+                lightwell_core::mask::commands::GeometryOp::Create,
+                MaskTarget::default(),
+                Map::new(),
+            ),
+            (MaskDraftOp::Add(mode), Some(mask)) => {
+                let mut fields = Map::new();
+                fields.insert("mode".into(), json!(mode.as_str()));
+                (
+                    lightwell_core::mask::commands::GeometryOp::Add,
+                    MaskTarget {
+                        mask: Some(mask),
+                        component: None,
+                        name: None,
+                        stroke: None,
+                    },
+                    fields,
+                )
+            }
+            _ => return Task::none(),
+        };
+        let Some(command) = lightwell_core::mask::commands::geometry(geometry_op, &kind) else {
+            self.status = format!("This build cannot create a {kind} component");
+            return Task::none();
+        };
+        self.mask_command(command.method, target, fields)
     }
 
     /// Open a gesture that patches one existing component's geometry.

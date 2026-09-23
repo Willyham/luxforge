@@ -4,9 +4,18 @@
 //! A mask is a host object in the recipe rather than a module's state
 //! (`docs/design/masking.md`), so compiling one lives here beside the module registry and not inside
 //! any module. A [`CompiledMask`] is built from a stored [`Mask`] and the [`Stage`] its layer
-//! receives, and it is pure and position-only: coverage at a pixel is a function of that pixel's
-//! position and the stored payloads, nothing else. That is what lets a rasterizing pass and
-//! `render.sample` agree by construction rather than by care.
+//! receives, and it is **pure**: coverage at a pixel is a function of that pixel's position, that
+//! pixel's own value and the stored payloads, and of nothing else. That is what lets a rasterizing
+//! pass and `render.sample` agree by construction rather than by care — both reach it through the
+//! same call with the same arguments.
+//!
+//! **The pixel is the second argument, and it is the input of the operation the mask modulates**
+//! (proposal P12 of `docs/design/range-study.md`, decided there). A geometric component ignores it
+//! and is bit-identical across the change; a range selection is answerable from nothing else, and a
+//! second entry point for it would double the contract for one argument. What the value-based kinds
+//! then cost — a whole-stage rectangle, no thin-feature supersample, and a selection that moves when
+//! a layer ahead of it is reordered — is stated in [`range`] and in the user guide rather than
+//! hidden.
 //!
 //! Transcription. This file is the production transcription of the frozen mathematics in
 //! `docs/design/mask-study.md` and of the independent `f64` reference at
@@ -44,10 +53,23 @@ pub mod commands;
 mod linear;
 mod parameters;
 mod radial;
+mod range;
 
 pub use brush::{BrushStrokes, SEGMENTS_PER_PIXEL, STROKES_PER_COMPONENT};
 pub use linear::{LinearGradient, POSITION_MAX, POSITION_MIN};
 pub use radial::{ANGLE_MAX, ANGLE_MIN, FEATHER_MAX, FEATHER_MIN, RadialGradient};
+pub use range::{
+    ColourRange, FEATHER_DEFAULT, LEVEL_MAX, LEVEL_MIN, LuminanceRange, MAX_SAMPLES, PLATEAU,
+    RADIUS_MAX, RADIUS_MIN, RANGE_FEATHER_MAX, RANGE_FEATHER_MIN, REFINE_DEFAULT, REFINE_MAX,
+    REFINE_MIN, SAMPLE_MAX, SAMPLE_MIN, SPAN, refine_radius,
+};
+
+/// The payload field a sampling kind keeps its sampled colours in, the way
+/// [`crate::path::STROKES_FIELD`] is the field a drawn kind keeps its stroke addresses in.
+///
+/// One spelling, read by the generated sample methods and written by every sampling kind's own
+/// payload, so the command family can edit the list without knowing what else that payload holds.
+pub const SAMPLES_FIELD: &str = "samples";
 
 /// The component kind a stroke reaches: the one kind whose geometry is a drawn path rather than
 /// declared numbers.
@@ -106,6 +128,21 @@ struct ComponentKind {
     /// registers its parser and its evaluation here and brings its own commands instead. Every kind
     /// is evaluable; only the ones with declared geometry are generated over.
     parameters: Option<fn(bool) -> Vec<ParameterDescriptor>>,
+    /// The colours this kind samples from the photograph, for a kind that holds a list of them.
+    ///
+    /// A list is the one shape the closed parameter vocabulary cannot declare, so a kind that holds
+    /// one says so here and the command family generates `mask.add-<kind>-sample` and
+    /// `mask.delete-<kind>-sample` over it — one swatch at a time, which is also how a person edits
+    /// it. `None` for a kind that samples nothing, which is every geometric kind.
+    samples: Option<ColourSamples>,
+}
+
+/// How many colours one component of a sampling kind holds, and what one of them declares.
+struct ColourSamples {
+    /// The most colours one component of this kind holds. A product bound, refused by name.
+    max: usize,
+    /// What one sampled colour declares: the parameters `mask.add-<kind>-sample` takes.
+    parameters: fn() -> Vec<ParameterDescriptor>,
 }
 
 /// Every component kind this build knows. A later kind — a brush, a range selection — is one more
@@ -115,18 +152,44 @@ const COMPONENT_KINDS: &[ComponentKind] = &[
         kind: linear::KIND,
         parse: parse_linear,
         parameters: Some(linear::parameters),
+        samples: None,
     },
     ComponentKind {
         kind: radial::KIND,
         parse: parse_radial,
         parameters: Some(radial::parameters),
+        samples: None,
     },
     ComponentKind {
         kind: brush::KIND,
         parse: parse_brush,
         parameters: None,
+        samples: None,
+    },
+    ComponentKind {
+        kind: range::LUMINANCE_KIND,
+        parse: parse_luminance_range,
+        parameters: Some(range::luminance_parameters),
+        samples: None,
+    },
+    ComponentKind {
+        kind: range::COLOUR_KIND,
+        parse: parse_colour_range,
+        parameters: Some(range::colour_parameters),
+        samples: Some(ColourSamples {
+            max: range::MAX_SAMPLES,
+            parameters: range::colour_sample_parameters,
+        }),
     },
 ];
+
+fn parse_luminance_range(component: &Component) -> Result<Geometry, Error> {
+    range::parse_luminance(component).map(Geometry::LuminanceRange)
+}
+
+fn parse_colour_range(component: &Component) -> Result<Geometry, Error> {
+    range::parse_colour(component).map(Geometry::ColourRange)
+}
 
 fn parse_linear(component: &Component) -> Result<Geometry, Error> {
     linear::parse(component).map(Geometry::Linear)
@@ -147,9 +210,10 @@ pub fn knows_component_kind(kind: &str) -> bool {
 }
 
 /// One kind's display name, as the host itself writes it into a component's name: `linear` reads
-/// `Linear`, `luminance-range` reads `Luminance Range`. A client offering the kinds names them with
-/// this rather than a table of its own, so what a button says and what the committed component is
-/// called cannot disagree.
+/// `Linear`, `luminance-range` reads `Luminance range`. It is the delivered sentence-case rule the
+/// rest of the editor's titles take, so a two-word kind reads as a phrase and not as a proper noun.
+/// A client offering the kinds names them with this rather than a table of its own, so what a button
+/// says and what the committed component is called cannot disagree.
 pub fn kind_title(kind: &str) -> String {
     crate::modules::title_case(kind)
 }
@@ -170,6 +234,22 @@ pub fn declared_geometry_kinds() -> impl Iterator<Item = &'static str> {
         .iter()
         .filter(|entry| entry.parameters.is_some())
         .map(|entry| entry.kind)
+}
+
+/// Whether one command of `kind` can be created with no arguments at all, because every field its
+/// geometry declares carries a default.
+///
+/// It is what lets a client offer a kind that has no canvas gesture: a gradient is *drawn* and a
+/// range selection is *typed*, and a typed kind is created by a button and then edited through the
+/// number fields its own declarations generate. A kind with a field and no default is neither, and
+/// says so rather than putting up a button with nothing behind it.
+pub fn component_geometry_is_defaulted(kind: &str) -> bool {
+    component_parameters(kind, true).is_some_and(|parameters| {
+        !parameters.is_empty()
+            && parameters
+                .iter()
+                .all(|parameter| parameter.default.is_some())
+    })
 }
 
 /// Whether this build draws `kind`'s geometry rather than declaring it as numbers. A drawn kind has
@@ -193,6 +273,34 @@ pub fn component_parameters(kind: &str, required: bool) -> Option<Vec<ParameterD
         .map(|parameters| parameters(required))
 }
 
+/// The kinds that sample colours from the photograph, in table order. The command family generates
+/// `mask.add-<kind>-sample` and `mask.delete-<kind>-sample` from exactly this list, so a kind that
+/// holds swatches becomes samplable by being registered.
+pub fn sampling_kinds() -> impl Iterator<Item = &'static str> {
+    COMPONENT_KINDS
+        .iter()
+        .filter(|entry| entry.samples.is_some())
+        .map(|entry| entry.kind)
+}
+
+/// The most colours one component of `kind` holds, or none when the kind samples nothing.
+pub fn component_sample_limit(kind: &str) -> Option<usize> {
+    COMPONENT_KINDS
+        .iter()
+        .find(|entry| entry.kind == kind)
+        .and_then(|entry| entry.samples.as_ref())
+        .map(|samples| samples.max)
+}
+
+/// What one sampled colour of `kind` declares, or none when the kind samples nothing.
+pub fn component_sample_parameters(kind: &str) -> Option<Vec<ParameterDescriptor>> {
+    COMPONENT_KINDS
+        .iter()
+        .find(|entry| entry.kind == kind)
+        .and_then(|entry| entry.samples.as_ref())
+        .map(|samples| (samples.parameters)())
+}
+
 /// One component's stored geometry, validated but not yet bound to a stage. Everything checkable
 /// without a stage is checked here: the kind is known, the payload has the shape its kind declares,
 /// and every stored position is finite and inside the legal range. What needs a stage — an axis
@@ -203,6 +311,8 @@ enum Geometry {
     Linear(LinearGradient),
     Radial(RadialGradient),
     Brush(BrushStrokes),
+    LuminanceRange(LuminanceRange),
+    ColourRange(ColourRange),
 }
 
 impl Geometry {
@@ -229,6 +339,15 @@ impl Geometry {
             Self::Brush(held) => {
                 brush::Compiled::new(&held, stage, strokes, mask, name).map(CompiledGeometry::Brush)
             }
+            // Nothing about a range selection's legality depends on the stage: its numbers live on
+            // an axis the picture defines and not on the frame, so the parser has already checked
+            // everything there is to check and compiling one cannot fail.
+            Self::LuminanceRange(band) => Ok(CompiledGeometry::LuminanceRange(
+                range::CompiledLuminance::new(band),
+            )),
+            Self::ColourRange(colours) => Ok(CompiledGeometry::ColourRange(
+                range::CompiledColour::new(&colours),
+            )),
         }
     }
 }
@@ -240,18 +359,33 @@ enum CompiledGeometry {
     Linear(linear::Compiled),
     Radial(radial::Compiled),
     Brush(brush::Compiled),
+    LuminanceRange(range::CompiledLuminance),
+    ColourRange(range::CompiledColour),
 }
 
 impl CompiledGeometry {
     /// The component's own falloff at a mask-space point, before its inversion and before the
     /// composition. This is the per-pixel path: it is the reference's spelling, in the reference's
     /// order.
-    fn coverage(&self, u: f64, v: f64) -> f64 {
+    fn coverage(&self, u: f64, v: f64, rgb: [f64; 3]) -> f64 {
         match self {
+            // A geometric component ignores `rgb`. That is the whole of what proposal P12 costs
+            // them: the same expressions on the same `(u, v)`, so their coverage is bit-identical
+            // across the change and the frozen references still hold bit for bit.
             Self::Linear(linear) => linear.coverage(u, v),
             Self::Radial(radial) => radial.coverage(u, v),
             Self::Brush(brush) => brush.coverage(u, v),
+            // A value-based component ignores the position instead.
+            Self::LuminanceRange(band) => band.coverage(rgb),
+            Self::ColourRange(colours) => colours.coverage(rgb),
         }
+    }
+
+    /// Whether this component's coverage depends on the pixel's value rather than on its position.
+    /// It is what makes a mask's bounds the whole stage and what a client is told so it can say the
+    /// 100% view is the truth for such a selection.
+    fn reads_pixels(&self) -> bool {
+        matches!(self, Self::LuminanceRange(_) | Self::ColourRange(_))
     }
 
     /// A conservative pixel rectangle of this component's own support: outside it the component's
@@ -261,6 +395,9 @@ impl CompiledGeometry {
             Self::Linear(linear) => linear.support(stage, inverted),
             Self::Radial(radial) => radial.support(stage, inverted),
             Self::Brush(brush) => brush.support(stage, inverted),
+            // Stated, not guessed: a value-based component's coverage can be non-zero at any pixel
+            // of the frame, drawn or inverted, so no rectangle smaller than the stage is correct.
+            Self::LuminanceRange(_) | Self::ColourRange(_) => range::value_support(stage),
         }
     }
 
@@ -270,6 +407,7 @@ impl CompiledGeometry {
             Self::Linear(linear) => linear.feature_px(stage),
             Self::Radial(radial) => radial.feature_px(stage),
             Self::Brush(brush) => brush.feature_px(stage),
+            Self::LuminanceRange(_) | Self::ColourRange(_) => range::value_feature_px(stage),
         }
     }
 }
@@ -286,17 +424,18 @@ impl CompiledComponent {
     /// This component's coverage with its inversion applied. The inversion is the one `1 - c` the
     /// composition performs, never a sign flip or a swapped clamp inside the falloff: those are
     /// within tolerance of the reference and not bit-identical to it.
-    fn coverage(&self, u: f64, v: f64) -> f64 {
-        let c = self.geometry.coverage(u, v);
+    fn coverage(&self, u: f64, v: f64, rgb: [f64; 3]) -> f64 {
+        let c = self.geometry.coverage(u, v, rgb);
         if self.invert { 1.0 - c } else { c }
     }
 }
 
 /// A mask compiled against the stage its layer receives.
 ///
-/// Pure and position-only: [`CompiledMask::coverage`] reads nothing but its own compiled terms and
-/// the pixel it is asked about, so the rasterizing pass and `render.sample` cannot disagree. Bounded
-/// by the component count and never by the stage: no mask plane is allocated at any size.
+/// Pure: [`CompiledMask::coverage`] reads nothing but its own compiled terms, the position it is
+/// asked about and that pixel's own value, so the rasterizing pass and `render.sample` cannot
+/// disagree. Bounded by the component count and never by the stage: no mask plane is allocated at
+/// any size.
 #[derive(Clone, Debug)]
 pub struct CompiledMask {
     /// The stage this mask was compiled against, part of the identity of the compiled thing because
@@ -387,12 +526,12 @@ impl CompiledMask {
     /// This is the `f64` field [`Self::evaluate`] narrows, and it is what the study's reference is
     /// compared against bit for bit. A pixel outside the compiled stage is not a special case: the
     /// field is total, and callers address their own stage.
-    pub fn coverage(&self, x: u32, y: u32) -> f64 {
+    pub fn coverage(&self, x: u32, y: u32, rgb: [f64; 3]) -> f64 {
         let u = (f64::from(x) + 0.5) / self.height;
         let v = (f64::from(y) + 0.5) / self.height;
         let mut m: f64 = 0.0;
         for component in &self.components {
-            let c = component.coverage(u, v);
+            let c = component.coverage(u, v, rgb);
             m = match component.mode {
                 ComponentMode::Add => m.max(c),
                 ComponentMode::Subtract => m.min(1.0 - c),
@@ -406,8 +545,24 @@ impl CompiledMask {
     /// The composed coverage at stage pixel `(x, y)`, narrowed to the `f32` a blend multiplies by.
     /// The narrowing is the last step, after the whole `f64` fold, so the value a masked run uses is
     /// the nearest `f32` to the frozen field rather than the product of an `f32` composition.
-    pub fn evaluate(&self, x: u32, y: u32) -> f32 {
-        self.coverage(x, y) as f32
+    pub fn evaluate(&self, x: u32, y: u32, rgb: [f32; 3]) -> f32 {
+        self.coverage(
+            x,
+            y,
+            [f64::from(rgb[0]), f64::from(rgb[1]), f64::from(rgb[2])],
+        ) as f32
+    }
+
+    /// Whether any component of this mask reads the pixel's value rather than its position.
+    ///
+    /// A caller that has no pixel to offer — the coverage overlay is the one in the build — has to
+    /// be able to ask, because the honest answer for such a mask is not a grid of zeros. It is also
+    /// what a panel reads to say that a range selection is evaluated on what the current view can
+    /// see and that the 100% view is the truth. `O(components)` and reads nothing.
+    pub fn reads_pixels(&self) -> bool {
+        self.components
+            .iter()
+            .any(|component| component.geometry.reads_pixels())
     }
 
     /// A conservative rectangle of the compiled stage outside which coverage is **exactly** zero.
@@ -653,6 +808,11 @@ mod tests {
     use crate::ComponentId;
     use serde_json::json;
 
+    /// The pixel value a geometric component is handed and ignores (proposal P12 of
+    /// `docs/design/range-study.md`): the masks here hold gradients and their coverage is a
+    /// function of position alone, so the value is arbitrary and the same at every call.
+    const ANY_PIXEL: [f64; 3] = [0.25, 0.5, 0.75];
+
     fn stage(width: u32, height: u32) -> Stage {
         Stage { width, height }
     }
@@ -690,18 +850,21 @@ mod tests {
             CompiledMask::new(&mask, stage(400, 400), &crate::path::StrokeTable::default())
                 .unwrap();
         // p0 sits at v = 0.25, which is pixel row 99.5; row 99 is behind it and row 300 beyond p1.
-        assert_eq!(compiled.coverage(200, 0), 0.0);
-        assert_eq!(compiled.coverage(200, 99), 0.0);
-        assert_eq!(compiled.coverage(200, 300), 1.0);
-        assert_eq!(compiled.coverage(200, 399), 1.0);
+        assert_eq!(compiled.coverage(200, 0, ANY_PIXEL), 0.0);
+        assert_eq!(compiled.coverage(200, 99, ANY_PIXEL), 0.0);
+        assert_eq!(compiled.coverage(200, 300, ANY_PIXEL), 1.0);
+        assert_eq!(compiled.coverage(200, 399, ANY_PIXEL), 1.0);
         // The midpoint of the axis is v = 0.5, pixel row 199.5: smooth(0.5) is exactly 0.5.
         assert_eq!(
-            compiled.coverage(200, 199) + compiled.coverage(200, 200),
+            compiled.coverage(200, 199, ANY_PIXEL) + compiled.coverage(200, 200, ANY_PIXEL),
             1.0
         );
         // A gradient has no width: the field is constant across the axis.
         for x in [0u32, 137, 399] {
-            assert_eq!(compiled.coverage(x, 150), compiled.coverage(200, 150));
+            assert_eq!(
+                compiled.coverage(x, 150, ANY_PIXEL),
+                compiled.coverage(200, 150, ANY_PIXEL)
+            );
         }
     }
 
@@ -719,19 +882,19 @@ mod tests {
         let compiled =
             CompiledMask::new(&mask, stage(400, 400), &crate::path::StrokeTable::default())
                 .unwrap();
-        assert_eq!(compiled.coverage(200, 300), 0.5);
+        assert_eq!(compiled.coverage(200, 300, ANY_PIXEL), 0.5);
         mask.invert = true;
         let inverted =
             CompiledMask::new(&mask, stage(400, 400), &crate::path::StrokeTable::default())
                 .unwrap();
-        assert_eq!(inverted.coverage(200, 300), 0.0);
-        assert_eq!(inverted.coverage(200, 0), 0.5);
+        assert_eq!(inverted.coverage(200, 300, ANY_PIXEL), 0.0);
+        assert_eq!(inverted.coverage(200, 0, ANY_PIXEL), 0.5);
         // An amount of exactly zero is exactly zero coverage, inverted or not, and nothing to draw.
         mask.amount = 0.0;
         let silent =
             CompiledMask::new(&mask, stage(400, 400), &crate::path::StrokeTable::default())
                 .unwrap();
-        assert_eq!(silent.coverage(200, 0), 0.0);
+        assert_eq!(silent.coverage(200, 0, ANY_PIXEL), 0.0);
         assert!(silent.bounds().is_empty());
     }
 
@@ -744,7 +907,7 @@ mod tests {
             CompiledMask::new(&mask, stage(64, 48), &crate::path::StrokeTable::default()).unwrap();
         for y in 0..48 {
             for x in 0..64 {
-                assert_eq!(compiled.coverage(x, y), 0.0);
+                assert_eq!(compiled.coverage(x, y, ANY_PIXEL), 0.0);
             }
         }
         assert!(compiled.bounds().is_empty());
@@ -774,7 +937,7 @@ mod tests {
             CompiledMask::new(&mask, stage(400, 400), &crate::path::StrokeTable::default())
                 .unwrap();
         for (x, y) in [(20u32, 380u32), (200, 300), (380, 380), (100, 100)] {
-            let first = compiled.coverage(x, y);
+            let first = compiled.coverage(x, y, ANY_PIXEL);
             // Duplicating the whole list changes nothing, bit for bit: the algebra is idempotent
             // and add is order independent.
             let mut doubled = mask.clone();
@@ -794,7 +957,7 @@ mod tests {
                 &crate::path::StrokeTable::default(),
             )
             .unwrap();
-            assert_eq!(twice.coverage(x, y), first, "at {x},{y}");
+            assert_eq!(twice.coverage(x, y, ANY_PIXEL), first, "at {x},{y}");
         }
     }
 
@@ -805,10 +968,11 @@ mod tests {
         assert!(knows_component_kind("linear"));
         assert!(knows_component_kind("radial"));
         assert!(knows_component_kind("brush"));
-        // The range selections are named in the masking design and are not delivered, so they are
-        // the kinds this build does not claim.
-        assert!(!knows_component_kind("luminance-range"));
-        assert!(!knows_component_kind("colour-range"));
+        assert!(knows_component_kind("luminance-range"));
+        assert!(knows_component_kind("colour-range"));
+        // Every kind the masking design names is delivered, so the kind this build does not claim
+        // is one no design names — which is exactly the case retention exists for.
+        assert!(!knows_component_kind("future-kind"));
         let mask = mask_of(vec![component(
             "Future 1",
             ComponentMode::Add,
@@ -940,7 +1104,7 @@ mod tests {
         assert_eq!(compiled.min_feature_px(stage), 200.0);
         let partial = (0..stage.height)
             .filter(|y| {
-                let c = compiled.coverage(300, *y);
+                let c = compiled.coverage(300, *y, ANY_PIXEL);
                 c > 0.0 && c < 1.0
             })
             .count();
@@ -1053,9 +1217,9 @@ mod tests {
         // one pixel past the crossing row.
         assert_eq!(compiled.bounds().y0, 0);
         assert_eq!(compiled.bounds().y1(), 81);
-        assert_eq!(compiled.coverage(100, 80), 0.0);
-        assert_eq!(compiled.coverage(100, 199), 0.0);
-        assert_eq!(compiled.coverage(100, 0), 1.0);
+        assert_eq!(compiled.coverage(100, 80, ANY_PIXEL), 0.0);
+        assert_eq!(compiled.coverage(100, 199, ANY_PIXEL), 0.0);
+        assert_eq!(compiled.coverage(100, 0, ANY_PIXEL), 1.0);
     }
 
     /// The cost of compiling a mask against component count and against stage size. Ignored by
@@ -1119,7 +1283,7 @@ mod tests {
             let mut total = 0.0;
             for y in 0..stage.height {
                 for x in 0..stage.width {
-                    total += compiled.coverage(x, y);
+                    total += compiled.coverage(x, y, ANY_PIXEL);
                 }
             }
             std::hint::black_box(total);

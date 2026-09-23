@@ -118,17 +118,27 @@ impl MaskField {
         })
     }
 
-    /// The coverage this render applies at stage pixel `(x, y)`.
+    /// The coverage this render applies at stage pixel `(x, y)`, for the pixel value `rgb` the
+    /// masked operation receives there.
     ///
     /// Point sampled, this *is* [`CompiledMask::evaluate`] — the same call the rasterizing pass and
     /// `render.sample` have always shared, so a sampled byte still equals the rendered byte.
     /// Supersampled, it is the mean of the frozen field at the pixel's four quarter positions,
     /// averaged in `f64` and narrowed once at the end, exactly as one evaluation is.
+    ///
+    /// **The supersample moves the position and not the value.** The four quarter positions are four
+    /// places in the mask's own space, and the pixel whose value a range component reads is still
+    /// this one pixel — there is no finer pixel at proxy scale to read, which is exactly why the
+    /// thin-feature rule never fires for a value-based component and why such a component reports an
+    /// infinite feature. A mixed mask can still be supersampled for its *geometric* components, and
+    /// when it is, its range components answer the same value at all four positions, which is what
+    /// they would answer at the pixel's centre.
     #[inline]
-    pub(crate) fn evaluate(&self, x: u32, y: u32) -> f32 {
+    pub(crate) fn evaluate(&self, x: u32, y: u32, rgb: [f32; 3]) -> f32 {
         let Some(fine) = &self.fine else {
-            return self.mask.evaluate(x, y);
+            return self.mask.evaluate(x, y, rgb);
         };
+        let wide = [f64::from(rgb[0]), f64::from(rgb[1]), f64::from(rgb[2])];
         // `2x` and `2x + 1` are in range because the fine mask was compiled against a stage twice
         // this one's size; the field is total anyway, so an overflowing coordinate is saturated
         // rather than wrapped into a different pixel.
@@ -136,10 +146,10 @@ impl MaskField {
         let y0 = y.saturating_mul(2);
         let x1 = x0.saturating_add(1);
         let y1 = y0.saturating_add(1);
-        let sum = fine.coverage(x0, y0)
-            + fine.coverage(x1, y0)
-            + fine.coverage(x0, y1)
-            + fine.coverage(x1, y1);
+        let sum = fine.coverage(x0, y0, wide)
+            + fine.coverage(x1, y0, wide)
+            + fine.coverage(x0, y1, wide)
+            + fine.coverage(x1, y1, wide);
         (sum * 0.25) as f32
     }
 
@@ -218,6 +228,12 @@ mod tests {
     use crate::{Component, ComponentMode};
     use serde_json::json;
 
+    /// The pixel value a geometric component is handed and ignores (proposal P12 of
+    /// `docs/design/range-study.md`): the masks here hold gradients and their coverage is a
+    /// function of position alone, so the value is arbitrary and the same at every call.
+    const ANY_PIXEL: [f64; 3] = [0.25, 0.5, 0.75];
+    const ANY_PIXEL_F32: [f32; 3] = [0.25, 0.5, 0.75];
+
     fn stage(width: u32, height: u32) -> Stage {
         Stage { width, height }
     }
@@ -251,7 +267,10 @@ mod tests {
         let compiled = CompiledMask::new(&mask, stage, &no_strokes()).unwrap();
         for y in 0..stage.height {
             for x in 0..stage.width {
-                assert_eq!(field.evaluate(x, y), compiled.evaluate(x, y));
+                assert_eq!(
+                    field.evaluate(x, y, ANY_PIXEL_F32),
+                    compiled.evaluate(x, y, ANY_PIXEL_F32)
+                );
             }
         }
         assert_eq!(field.bounds(), compiled.bounds());
@@ -273,12 +292,12 @@ mod tests {
         let fine = CompiledMask::new(&mask, stage(80, 60), &no_strokes()).unwrap();
         for y in 0..coarse.height {
             for x in 0..coarse.width {
-                let expected = (fine.coverage(2 * x, 2 * y)
-                    + fine.coverage(2 * x + 1, 2 * y)
-                    + fine.coverage(2 * x, 2 * y + 1)
-                    + fine.coverage(2 * x + 1, 2 * y + 1))
+                let expected = (fine.coverage(2 * x, 2 * y, ANY_PIXEL)
+                    + fine.coverage(2 * x + 1, 2 * y, ANY_PIXEL)
+                    + fine.coverage(2 * x, 2 * y + 1, ANY_PIXEL)
+                    + fine.coverage(2 * x + 1, 2 * y + 1, ANY_PIXEL))
                     * 0.25;
-                assert_eq!(field.evaluate(x, y), expected as f32);
+                assert_eq!(field.evaluate(x, y, ANY_PIXEL_F32), expected as f32);
             }
         }
         // The same mask on an exact render is the frozen point sample, untouched.
@@ -322,12 +341,83 @@ mod tests {
         let bounds = field.bounds();
         for y in 0..stage.height {
             for x in 0..stage.width {
-                if field.evaluate(x, y) != 0.0 {
+                if field.evaluate(x, y, ANY_PIXEL_F32) != 0.0 {
                     assert!(
                         x >= bounds.x0 && x < bounds.x1() && y >= bounds.y0 && y < bounds.y1(),
                         "({x}, {y}) has coverage and is outside {bounds:?}"
                     );
                 }
+            }
+        }
+    }
+
+    /// A value-based component draws no feature a pixel grid can miss, so the thin-feature rule
+    /// never fires for one — at any stage, including a proxy's.
+    ///
+    /// This is the other half of proposal P13: supersampling the mask could not help a range
+    /// selection even if the rule did fire, because the full-resolution pixels it would have to read
+    /// are not there to read at proxy scale. A frame carrying one is therefore the exact recipe over
+    /// the exact downscale and is **not** reported approximate; what changes is that the recipe is
+    /// evaluated on downscaled pixels, which the overlay and the user guide say rather than a flag.
+    #[test]
+    fn a_range_component_is_never_supersampled() {
+        for (kind, payload) in [
+            (
+                "luminance-range",
+                json!({"low": 20.0, "low_feather": 1.0, "high": 21.0, "high_feather": 1.0}),
+            ),
+            (
+                "colour-range",
+                json!({"samples": [[0.2, 0.3, 0.4]], "refine": 100.0}),
+            ),
+        ] {
+            let mask = mask_of(kind, payload);
+            for size in [stage(37, 29), stage(640, 480)] {
+                let compiled = CompiledMask::new(&mask, size, &no_strokes()).expect("a payload");
+                assert_eq!(compiled.min_feature_px(size), f32::INFINITY, "{kind}");
+                let field =
+                    MaskField::compile(&mask, size, &no_strokes(), MaskSampling::ThinFeature)
+                        .expect("a field");
+                assert!(
+                    !field.supersampled(),
+                    "{kind} was supersampled, which cannot help it"
+                );
+                assert_eq!(field.bounds(), compiled.bounds());
+            }
+        }
+    }
+
+    /// A mask that mixes a hard-edged radial with a range selection is still supersampled for the
+    /// radial, and the range component answers the same value at all four subsample positions —
+    /// because the supersample moves the position and not the pixel.
+    #[test]
+    fn a_mixed_mask_supersamples_its_geometry_and_not_its_value() {
+        let mut mask = mask_of(
+            "radial",
+            json!({"x": 0.5, "y": 0.5, "radius_x": 0.2, "radius_y": 0.2, "angle": 0.0, "feather": 0.0}),
+        );
+        let name = mask.next_component_name("luminance-range");
+        mask.components.push(crate::Component::new(
+            name,
+            crate::ComponentMode::Intersect,
+            "luminance-range",
+            json!({"low": 20.0, "low_feather": 30.0, "high": 80.0, "high_feather": 30.0}),
+        ));
+        let coarse = stage(40, 30);
+        let field = MaskField::compile(&mask, coarse, &no_strokes(), MaskSampling::ThinFeature)
+            .expect("a field");
+        assert!(field.supersampled(), "the hard radial still needs it");
+        let fine = CompiledMask::new(&mask, stage(80, 60), &no_strokes()).unwrap();
+        let rgb = [0.3f32, 0.45, 0.6];
+        let wide = [f64::from(rgb[0]), f64::from(rgb[1]), f64::from(rgb[2])];
+        for y in 0..coarse.height {
+            for x in 0..coarse.width {
+                let expected = (fine.coverage(2 * x, 2 * y, wide)
+                    + fine.coverage(2 * x + 1, 2 * y, wide)
+                    + fine.coverage(2 * x, 2 * y + 1, wide)
+                    + fine.coverage(2 * x + 1, 2 * y + 1, wide))
+                    * 0.25;
+                assert_eq!(field.evaluate(x, y, rgb), expected as f32);
             }
         }
     }

@@ -473,12 +473,19 @@ fn blend(mask: &MaskField, region: Region, tile: Region, input: &[f32], output: 
         let to = (y - region.y0) as usize * region.width as usize + (tile.x0 - region.x0) as usize;
         for (column, x) in (tile.x0..tile.x1()).enumerate() {
             // One coverage evaluation per pixel, not per channel: the mask is a scalar field and
-            // the three channels of a pixel share it.
-            let coverage = mask.evaluate(x, y);
+            // the three channels of a pixel share it. The pixel it is evaluated for is this
+            // operation's own input, which is exactly what `input` holds — the snapshot taken
+            // before the chain ran — so a value-based component reads the same value here that a
+            // point sample of the same pixel reads.
+            let pixel = [
+                input[from + column],
+                input[target + from + column],
+                input[2 * target + from + column],
+            ];
+            let coverage = mask.evaluate(x, y, pixel);
             for channel in 0..3 {
                 let value = &mut output[channel * source + to + column];
-                *value =
-                    (1.0 - coverage) * input[channel * target + from + column] + coverage * *value;
+                *value = (1.0 - coverage) * pixel[channel] + coverage * *value;
             }
         }
     }

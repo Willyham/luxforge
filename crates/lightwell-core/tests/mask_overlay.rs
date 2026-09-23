@@ -23,6 +23,12 @@ use std::{
     time::{Duration, Instant},
 };
 
+/// The pixel value a geometric component is handed and ignores (proposal P12 of
+/// `docs/design/range-study.md`). These masks hold gradients and brushes, whose coverage is a
+/// function of position alone, so the value here is arbitrary and the same at every call;
+/// `mask_range.rs` proves that ignoring it is exact rather than approximate.
+const ANY_PIXEL: [f64; 3] = [0.25, 0.5, 0.75];
+
 static NEXT: AtomicU64 = AtomicU64::new(1);
 
 fn temp(name: &str) -> PathBuf {
@@ -228,7 +234,11 @@ fn expected_grid(
             let inside =
                 x >= 0.0 && y >= 0.0 && x < f64::from(stage.width) && y < f64::from(stage.height);
             grid.push(if inside {
-                analysis::quantize_coverage(compiled.coverage(x.floor() as u32, y.floor() as u32))
+                analysis::quantize_coverage(compiled.coverage(
+                    x.floor() as u32,
+                    y.floor() as u32,
+                    ANY_PIXEL,
+                ))
             } else {
                 MASK_COVERAGE_NONE
             });

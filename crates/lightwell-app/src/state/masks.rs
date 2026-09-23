@@ -144,6 +144,11 @@ pub(crate) struct KindOption {
     /// because its components are still editable through their number fields, and saying so is
     /// honest where hiding it would not be.
     pub(crate) drawable: bool,
+    /// This kind is created by a button rather than by a gesture, because every field its geometry
+    /// declares carries a default. A range selection is *typed*: there is nothing to drag, so it is
+    /// created as the starting selection its defaults describe and narrowed afterwards through the
+    /// number fields the same declarations generate.
+    pub(crate) typed: bool,
     pub(crate) enabled: bool,
 }
 
@@ -505,12 +510,19 @@ fn unavailable(components: &[ComponentReport]) -> Option<String> {
 /// the brush is parsed, evaluated and retained but generates no `mask.create-<kind>`, so offering it
 /// here would put up a button with no command behind it. The list is still the host's, so
 /// registering a kind with declared geometry is what puts it here.
+///
+/// Such a kind reaches the panel one of two ways, and the host's own declarations decide which. A
+/// kind this build draws handles for starts a **gesture**; a kind whose geometry is entirely
+/// defaulted is **typed** and is created straight away, as the selection its defaults describe, then
+/// narrowed through the number fields its own declarations generate. A kind that is neither says so
+/// on its button rather than offering an action that would do nothing.
 fn kinds(enabled: bool) -> Vec<KindOption> {
     lightwell_core::mask::declared_geometry_kinds()
         .map(|kind| KindOption {
             kind: kind.to_owned(),
             label: lightwell_core::mask::kind_title(kind),
             drawable: crate::mask_draft::drawable(kind),
+            typed: lightwell_core::mask::component_geometry_is_defaulted(kind),
             enabled,
         })
         .collect()

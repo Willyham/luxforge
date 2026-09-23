@@ -747,6 +747,7 @@ mod tests {
                 .collect::<Vec<_>>(),
             [
                 "mask.set-amount.amount",
+                "mask.set-colour-range.refine",
                 "mask.set-component-invert.invert",
                 "mask.set-component-mode.mode",
                 "mask.set-invert.invert",
@@ -754,6 +755,10 @@ mod tests {
                 "mask.set-linear.x1",
                 "mask.set-linear.y0",
                 "mask.set-linear.y1",
+                "mask.set-luminance-range.high",
+                "mask.set-luminance-range.high_feather",
+                "mask.set-luminance-range.low",
+                "mask.set-luminance-range.low_feather",
                 "mask.set-radial.angle",
                 "mask.set-radial.feather",
                 "mask.set-radial.radius_x",
