@@ -65,6 +65,7 @@ Where each tool lives, what kind of thing it is and whether it exists. Kinds: **
 | Recipe (layer stack) | State panel | core | Implemented as rows | `recipe.describe` |
 | Export | Title bar | core | Editor follow-up | The export design |
 | Locate | Notice on a missing original | core | Editor follow-up | [Source recovery](../specs/source-recovery.md) |
+| Module settings, resources, activation, tasks and consent | Tools panel, a capability block at the top of the module's section; consent notices over the canvas | core | Implemented for any module that declares them (today only the developer capability proof): Status and Settings views, Download, Activate, a task button with progress and Apply, Allow / Don't allow | `module.settings.*`, `module.profile.*`, `module.permission.*`, `module.activate`/`deactivate`/`status`, `module.resource.*`, `module.job.*`, `task.<id>` ([module capabilities](module-capabilities.md)) |
 | Command palette (`Cmd+K`) | Overlay | core | Implemented | Every listed module's `module.list` controls, resets and canvas modes, plus the host view, history and panel commands |
 | Copy as JSON request | Control context menu, the crop draft's Apply | core | Implemented | The control's generated action, or `edit.crop` for the open draft |
 | Show in schema | Control context menu | core | Later | Its own design |

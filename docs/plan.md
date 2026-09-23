@@ -60,13 +60,9 @@ Outstanding work by area. What is delivered is in [feature status](features.md);
 
 ## Extensibility
 
-**Shared module capabilities** (proposal, [design](design/module-capabilities.md), [plan](../tasks/module-capabilities.json)). Host services modules can rely on.
-- Capability and consent contract (owner decision)
-- Typed settings and secret storage
-- Scoped permissions and protected transports
-- Activation, resource jobs and verified model downloads
-- Immutable derived-artifact storage
-- Proof module and M4 measurements
+**Shared module capabilities** (implemented, [design](design/module-capabilities.md)). Host services modules can rely on: settings and secrets, consent, transports, activation and resources, tasks and derived artifacts.
+- Windows Credential Manager and Linux Secret Service, verified natively
+- The first reviewed provider adapters and data classes, with Corrections
 
 **External modules.** Load separately authored modules.
 - Measure optional-module activation cost

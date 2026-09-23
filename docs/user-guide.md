@@ -164,6 +164,12 @@ Vignette is the last section of the tools panel, collapsed until you open it, an
 
 Amount 0 is the identity whatever the other three hold, so a layer with the amount at zero changes nothing. Each slider drafts and commits as Basic's do, labelled "Vignette amount −35" or "Vignette feather 80"; the reset returns all four to their defaults as one entry, "Reset Vignette". Only this one style is built: the highlight-priority, colour-priority and paint-overlay variants are not.
 
+### Module settings and consent
+
+A module that needs settings, a download, a loaded model or a network service shows a small block at the top of its section. Status shows whether it is active and each resource it can download, with its size; Settings shows its fields and provider profiles. A secret such as an API key is only ever shown as Set or Not set: Replace takes a new one in a masked field and Clear removes it, and it is kept in the macOS Keychain, never in the catalog or a settings file. Choosing a file with Choose… lets the module read that file and nothing else.
+
+Nothing downloads, loads or leaves your machine until you ask. When a module first needs to download a resource, read a file or send part of a photo somewhere, a notice over the photo says exactly what, where to, how much, where it is stored and whether it may cost money, with Allow and Don't allow. Allowing a send covers this photo only. The permissions line in Status lists what you allowed, and Revoke withdraws it at once, cancelling any work that depended on it without touching your edits. Today the only module with this block is the developer capability proof, shown with `--developer --proof-endpoint URL`.
+
 ## History
 
 History lists Original and every committed action newest first, with its sequence, a label and the actor. The label comes from the action's declared summary ("Crop 16:9", "Rotate right") or its title, and is stored with the entry. The filled accent marker is current and an accent outline is the previewed entry; selecting the current row keeps you on the live state, and selecting another row previews that immutable snapshot without changing current state or revision, the status bar says which entry is shown, and Return to current and Restore appear under the list. Restore appends a new action containing the selected recipe. Editing is disabled during a historical preview.
