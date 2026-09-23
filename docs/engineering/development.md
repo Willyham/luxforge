@@ -43,6 +43,7 @@ Doctor reports missing tools and the graphics environment without installing any
 | Rendered Presence: section expand, a Clarity drag and cancel, Texture and Clarity each committed at Fit and 100%, Dehaze at both signs, all three fields at once through the raw API and the module reset, over a generated gradient/edge/texture/flat fixture | `cargo xtask smoke --scenario presence --output NEW_DIR` |
 | Rendered Colour mixer: section expand, a Red hue drag and commit at Fit and 100%, a Saturation group reset and a stronger hue shift, over a generated hue wheel | `cargo xtask smoke --scenario mixer --output NEW_DIR` |
 | Rendered Vignette: section expand, an Amount drag and commit at Fit and 100%, roundness and feather extremes, a post-crop recentre and the module reset | `cargo xtask smoke --scenario vignette --output NEW_DIR` |
+| Rendered Presets: section expand, an XMP and a Lightwell preset imported, each applied from its row, undo, the create form filled and submitted, a native preset applied to the Original, `preset.list` through the `api` step and a delete through the row menu | `cargo xtask smoke --scenario presets --output NEW_DIR` |
 | Inspect a capture | `cargo xtask check-capture --image PNG [--orientation N]` |
 | Process failure checks; macOS measurement, `--samples` defaults to 5 launches per workload | `cargo xtask hardening --binary PATH --output NEW_DIR`, `cargo xtask measure --binary PATH --output NEW_DIR [--samples N]` |
 | Package; dependency inventory | `cargo xtask package --output NEW_DIR`, `cargo xtask inventory --output NEW_DIR` |
@@ -58,7 +59,7 @@ Every evidence command refuses an existing output directory: use a fresh `artifa
 | Tier | What it runs |
 | --- | --- |
 | `quick` | `check` and `editor-acceptance` |
-| `rendered` | quick plus all 22 smoke scenarios, including `gallery` and `controls`, through a bounded pool |
+| `rendered` | quick plus all 23 smoke scenarios, including `gallery` and `controls`, through a bounded pool |
 | `timing` | quick plus `editor-performance`, `editor-latency` and `measure`, in that order, serially, after everything else in the tier and behind the host-wide timing lock |
 | `full` | rendered plus timing plus `raw-reference` and, with `--manifest FILE`, `raw-editor` |
 
@@ -272,7 +273,11 @@ parallel implementation. Parsing happens before the window opens; at most 64 ste
 
 Each step is an object with exactly one key.
 
-- `api` sends one owner request. The desktop fills `asset_id` and the `mutation` envelope itself —
+- `api` sends one owner request. For a method the method table lists without a `mutation` envelope,
+  such as `preset.list` or `session.state`, the request is sent as written, with the open asset's
+  `asset_id` only when the method names one, and its frame is captured when it answers; the
+  answer is recorded as the step's `result`, and after a `preset.*` method the library is listed
+  again before the frame is captured. For every other method the desktop fills `asset_id` and the `mutation` envelope itself —
   the current state's revision and a fresh request id — and rejects a script that sets either, so any
   asset mutation works, `history.undo` included. Its frame is captured when the resulting preview
   reaches the GPU: the same `render_ready` correlation an `--open` uses.
@@ -318,6 +323,20 @@ Each step is an object with exactly one key.
 - `hover` (`{"x": N, "y": N}`) puts the pointer on one pixel of the displayed raster, exactly as the
   canvas publishes a move, and is captured once `render.sample` has answered with the three output
   codes under it.
+- `preset` clicks one row of the Presets section: `{"name": "Soft film", "group": "Synthetic"}`.
+  The name matches exactly, case included, and `group` is needed only when two groups hold that
+  name; no match, or more than one, fails the step. The click is the section action's own
+  `RunAction`, so the frame is captured on its pixels like an `api` step's.
+- `preset_create` fills the create form through its own messages and presses Create:
+  `{"name": "Tone only", "group": "User presets", "groups": ["Basic · Tone"]}`, where `groups`
+  lists exactly the checkbox labels to leave checked and `group` defaults to the form's. With
+  `"submit": false` the form is left open and filled, and the next frame shows it. A submitted
+  form is captured once the library answers.
+- `preset_delete` opens a row's menu and chooses Delete: `{"name": "Tone only"}`, matched as
+  `preset` matches. Captured once the library answers.
+- `preset_import` imports one file through the section's own import task, bypassing only the native
+  dialog: `{"path": "fixtures/presets/develop.xmp"}`, relative to the editor's working directory.
+  Captured once the library answers; a refused file is a failed step.
 
 A step that cannot be sent is recorded with `"status": "failed"` and its reason and still captures a
 frame, so a refused step is visible in the evidence instead of missing from it.
@@ -346,6 +365,23 @@ it reads the photograph's mean red-minus-blue balance over a centred window — 
 balance moves on a neutral fixture, where luminance barely changes — and its placement and 3:2 aspect
 from the bright pixels of the photo surface, since a greyscale fixture has no quadrant colours to
 match. Each run also writes `app/basic-panel-checks.json` with the measured values and tolerances.
+
+`presets` opens `fixtures/s0/orientation-1.jpg` at 1440 × 900 and drives the Presets section over
+thirteen steps: Basic collapsed and Presets expanded, `fixtures/presets/develop.xmp` and
+`fixtures/presets/soft-film.lwpreset` imported (their names differ only in case), each applied from
+its row, `history.undo`, the create form filled with the Basic Tone group alone and then submitted,
+`history.undo` to the Original, the native preset applied there, `preset.list` through the `api` step
+and the native preset deleted through its row menu. The runner checks every frame's `state.presets`
+rows (name, group, Partial) against the expected library, the XMP's import status line, the create
+form's fields and checkboxes, and each frame's revision, current entry, history label and stored
+layer payloads. The expected payloads are computed stepwise: each fixture's settings as
+`lightwell_core::inspect_preset` reads them, merged over the stack the frame before held, with every
+field at its declared default omitted as the modules store it. It also reads one patch per quadrant
+of the photograph: each +0.35 EV preset brightens the four patches' mean luminance by more than 5
+codes, the XMP's own `green-luminance` and `red-hue` fields darken the green patch and add green to
+the red one by more than 5 codes, and each undo returns the patches of the stack it returns to within
+1.5 codes. It writes `app/presets-checks.json`. The scope is stored payloads and displayed direction,
+not a colorimetric claim, and not a claim that Lightwell renders what Lightroom renders.
 
 `workspace` opens `fixtures/s0/orientation-1.jpg` at 1440 × 900 and drives a rotate, three panel and
 thirds changes, a historical preview and its return, a crop draft, a commit during that draft (the
