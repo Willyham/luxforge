@@ -6,7 +6,7 @@ use super::{
 };
 use crate::{
     ActionDescriptor, AssetId, Draft, DraftId, EditorService, EntryId, Error, ErrorKind,
-    HistorySelection, ModuleRegistry, Mutation, Zoom,
+    HistorySelection, ModuleRegistry, Mutation, MutationOutcome, PresetId, Zoom,
 };
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::{Map, Value, json};
@@ -187,6 +187,94 @@ pub(super) const METHODS: &[MethodSpec] = &[
         optional: &[],
         notes: "saved versions in creation order with their entry sequence",
         handler: Some(version_list),
+    },
+    // The preset library is catalog data beside history. None of these methods renders, opens a
+    // source or hashes pixels; applying a preset is edit.apply-preset.
+    MethodSpec {
+        name: "preset.list",
+        mutates: false,
+        required: &[],
+        optional: &[],
+        notes: "{presets: [{id, name, group, settings, origin, report, actor, created_ms, updated_ms, unavailable}]} sorted by group, then name, ignoring case; report is the import report's counts {mapped, neutral, unsupported, refused}, or null for a preset created in Lightwell; unavailable names the settings actions this registry cannot apply; no source_text",
+        handler: Some(preset_list),
+    },
+    MethodSpec {
+        name: "preset.read",
+        mutates: false,
+        required: &["preset_id"],
+        optional: &[],
+        notes: "{preset}: one record with its full import report and source_text, the imported file's text kept verbatim, or null for a preset created in Lightwell",
+        handler: Some(preset_read),
+    },
+    MethodSpec {
+        name: "preset.create",
+        mutates: true,
+        required: &["name", "settings", "actor"],
+        optional: &[("group", "1..64 printable characters; default User presets")],
+        notes: "{preset}: stores a settings set as a Lightwell preset with origin {kind: lightwell} and report null; name is 1..128 and group 1..64 printable characters after trimming, the (group, name) pair is unique ignoring case (a duplicate is a conflict) and the library holds at most 1000 presets (resource-limit); every action and field is checked against the registry",
+        handler: Some(preset_create),
+    },
+    MethodSpec {
+        name: "preset.capture",
+        mutates: false,
+        required: &["asset_id", "fields"],
+        optional: &[("entry_id", "entry to read; default the session's selection")],
+        notes: "{settings} read from one entry's stack: fields maps field-patch actions to an array of their parameter names or true for all of them; each field takes the value of its module's one layer, or its declared default when the stack has none; two or more layers are validation: ambiguous; reads stored payloads only, so it opens no source and renders nothing; send the result to preset.create",
+        handler: Some(preset_capture),
+    },
+    MethodSpec {
+        name: "preset.update",
+        mutates: true,
+        required: &["preset_id", "actor"],
+        optional: &[
+            ("name", "1..128 printable characters"),
+            ("group", "1..64 printable characters"),
+            ("settings", "a settings set checked against the registry"),
+        ],
+        notes: "{outcome, preset}: applied when the name, group or settings change, recording the actor and updated_ms; no-op, with nothing written, when they do not; a rename onto another preset's (group, name) pair is a conflict; origin and report are kept",
+        handler: Some(preset_update),
+    },
+    MethodSpec {
+        name: "preset.delete",
+        mutates: true,
+        required: &["preset_id"],
+        optional: &[],
+        notes: "{outcome, deleted}: applied and true when the preset existed, no-op and false when it is absent; history entries that applied it are unchanged",
+        handler: Some(preset_delete),
+    },
+    MethodSpec {
+        name: "preset.export",
+        mutates: false,
+        required: &["preset_id"],
+        optional: &[],
+        notes: "{file_name, content}: the preset as a Lightwell preset document named <name>.lwpreset, which preset.import reads back to the same name, group and settings",
+        handler: Some(preset_export),
+    },
+    MethodSpec {
+        name: "preset.inspect",
+        mutates: false,
+        required: &["content"],
+        optional: &[(
+            "file_name",
+            "the file's name, for the fallback preset name and the origin",
+        )],
+        notes: "dry run of preset.import that stores nothing: {preset, report}, where preset has the record's shape with id, actor, created_ms and updated_ms null, the file's name and the file's group or Imported, and report is the full per-setting import report; a file that maps nothing still returns its report with empty settings",
+        handler: Some(preset_inspect),
+    },
+    MethodSpec {
+        name: "preset.import",
+        mutates: true,
+        required: &["content", "actor"],
+        optional: &[
+            (
+                "file_name",
+                "the file's name, for the fallback preset name and the origin",
+            ),
+            ("name", "overrides the file's name"),
+            ("group", "overrides the file's group; default Imported"),
+        ],
+        notes: "{preset, report}: reads the text of a Lightwell preset document, a Lightroom XMP preset or a .lrtemplate, at most 1 MiB, and stores its mapped settings with the text kept verbatim; the library's name, uniqueness and size rules apply as for preset.create; a file that maps nothing is unsupported-input with the report counts, and a refused import stores nothing",
+        handler: Some(preset_import),
     },
     MethodSpec {
         name: "preview.select",
@@ -793,6 +881,152 @@ fn version_list(
     Ok(json!({"versions": service.versions(&p.asset_id)?}))
 }
 
+fn preset_list(
+    service: &mut EditorService,
+    _: &mut ClientSession,
+    _: &Value,
+) -> Result<Value, Error> {
+    Ok(json!({"presets": service.presets()?}))
+}
+
+fn preset_read(
+    service: &mut EditorService,
+    _: &mut ClientSession,
+    params: &Value,
+) -> Result<Value, Error> {
+    let p = parse::<PresetParams>(params)?;
+    let (record, source_text) = service.preset(&p.preset_id)?;
+    let mut preset = value(record)?;
+    preset["source_text"] = json!(source_text);
+    Ok(json!({"preset": preset}))
+}
+
+fn preset_create(
+    service: &mut EditorService,
+    _: &mut ClientSession,
+    params: &Value,
+) -> Result<Value, Error> {
+    #[derive(Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct P {
+        name: String,
+        settings: Map<String, Value>,
+        actor: String,
+        group: Option<String>,
+    }
+    let p = parse::<P>(params)?;
+    let preset = service.create_preset(&p.name, p.group.as_deref(), &p.settings, &p.actor)?;
+    Ok(json!({"preset": preset}))
+}
+
+/// Capture reads the entry the caller names, or the session's selection exactly as `render.sample`
+/// resolves it, so the desktop captures the entry it displays.
+fn preset_capture(
+    service: &mut EditorService,
+    session: &mut ClientSession,
+    params: &Value,
+) -> Result<Value, Error> {
+    #[derive(Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct P {
+        asset_id: AssetId,
+        fields: Map<String, Value>,
+        entry_id: Option<EntryId>,
+    }
+    let p = parse::<P>(params)?;
+    let entry_id = match p.entry_id {
+        Some(entry_id) => entry_id,
+        None => match &session.preview.selection {
+            HistorySelection::Current => service.state(&p.asset_id)?.current_entry.id,
+            HistorySelection::Entry(id) => id.clone(),
+        },
+    };
+    Ok(json!({"settings": service.capture_preset(&p.asset_id, &entry_id, &p.fields)?}))
+}
+
+fn preset_update(
+    service: &mut EditorService,
+    _: &mut ClientSession,
+    params: &Value,
+) -> Result<Value, Error> {
+    #[derive(Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct P {
+        preset_id: PresetId,
+        actor: String,
+        name: Option<String>,
+        group: Option<String>,
+        settings: Option<Map<String, Value>>,
+    }
+    let p = parse::<P>(params)?;
+    value(service.update_preset(
+        &p.preset_id,
+        &p.actor,
+        p.name.as_deref(),
+        p.group.as_deref(),
+        p.settings.as_ref(),
+    )?)
+}
+
+fn preset_delete(
+    service: &mut EditorService,
+    _: &mut ClientSession,
+    params: &Value,
+) -> Result<Value, Error> {
+    let p = parse::<PresetParams>(params)?;
+    let outcome = service.delete_preset(&p.preset_id)?;
+    Ok(json!({"outcome": outcome, "deleted": outcome == MutationOutcome::Applied}))
+}
+
+fn preset_export(
+    service: &mut EditorService,
+    _: &mut ClientSession,
+    params: &Value,
+) -> Result<Value, Error> {
+    let p = parse::<PresetParams>(params)?;
+    value(service.export_preset(&p.preset_id)?)
+}
+
+fn preset_inspect(
+    service: &mut EditorService,
+    _: &mut ClientSession,
+    params: &Value,
+) -> Result<Value, Error> {
+    #[derive(Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct P {
+        content: String,
+        file_name: Option<String>,
+    }
+    let p = parse::<P>(params)?;
+    service.inspect_import(&p.content, p.file_name.as_deref())
+}
+
+fn preset_import(
+    service: &mut EditorService,
+    _: &mut ClientSession,
+    params: &Value,
+) -> Result<Value, Error> {
+    #[derive(Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct P {
+        content: String,
+        actor: String,
+        file_name: Option<String>,
+        name: Option<String>,
+        group: Option<String>,
+    }
+    let p = parse::<P>(params)?;
+    let preset = service.import_preset(
+        &p.content,
+        p.file_name.as_deref(),
+        p.name.as_deref(),
+        p.group.as_deref(),
+        &p.actor,
+    )?;
+    Ok(json!({"report": preset.report, "preset": preset}))
+}
+
 fn preview_select(
     service: &mut EditorService,
     session: &mut ClientSession,
@@ -1237,6 +1471,11 @@ struct MutationParams {
 struct DraftParams {
     draft_id: DraftId,
 }
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PresetParams {
+    preset_id: PresetId,
+}
 
 fn parse<T: DeserializeOwned>(value: &Value) -> Result<T, Error> {
     params(value)
@@ -1398,6 +1637,74 @@ mod tests {
                 "notes": listed["recipe.describe"]["notes"],
             })
         );
+        // The preset library's host methods, in table order, with their parameters.
+        assert_eq!(
+            METHODS
+                .iter()
+                .map(|spec| spec.name)
+                .filter(|name| name.starts_with("preset."))
+                .collect::<Vec<_>>(),
+            [
+                "preset.list",
+                "preset.read",
+                "preset.create",
+                "preset.capture",
+                "preset.update",
+                "preset.delete",
+                "preset.export",
+                "preset.inspect",
+                "preset.import",
+            ]
+        );
+        for (name, mutates, required, optional) in [
+            ("preset.list", false, json!([]), vec![]),
+            ("preset.read", false, json!(["preset_id"]), vec![]),
+            (
+                "preset.create",
+                true,
+                json!(["name", "settings", "actor"]),
+                vec!["group"],
+            ),
+            (
+                "preset.capture",
+                false,
+                json!(["asset_id", "fields"]),
+                vec!["entry_id"],
+            ),
+            (
+                "preset.update",
+                true,
+                json!(["preset_id", "actor"]),
+                vec!["group", "name", "settings"],
+            ),
+            ("preset.delete", true, json!(["preset_id"]), vec![]),
+            ("preset.export", false, json!(["preset_id"]), vec![]),
+            (
+                "preset.inspect",
+                false,
+                json!(["content"]),
+                vec!["file_name"],
+            ),
+            (
+                "preset.import",
+                true,
+                json!(["content", "actor"]),
+                vec!["file_name", "group", "name"],
+            ),
+        ] {
+            assert_eq!(listed[name]["mutates"], json!(mutates), "{name}");
+            assert_eq!(listed[name]["required"], required, "{name}");
+            assert_eq!(
+                listed[name]["optional"]
+                    .as_object()
+                    .expect("the optional fields")
+                    .keys()
+                    .map(String::as_str)
+                    .collect::<Vec<_>>(),
+                optional,
+                "{name}"
+            );
+        }
         assert_eq!(listed["workspace.set"]["required"], json!([]));
         assert_eq!(
             listed["workspace.set"]["optional"]
