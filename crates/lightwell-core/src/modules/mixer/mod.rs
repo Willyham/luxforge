@@ -343,6 +343,7 @@ impl MixerModule {
                     format: EFFECT_FORMAT,
                     stage: EffectStage::Color,
                     order: 10,
+                    maskable: true,
                 }],
                 actions: vec![
                     ActionDescriptor {

@@ -149,6 +149,7 @@ impl CropModule {
                     format: EFFECT_FORMAT,
                     stage: EffectStage::Geometry,
                     order: 0,
+                    maskable: false,
                 }],
                 actions: vec![
                     ActionDescriptor {

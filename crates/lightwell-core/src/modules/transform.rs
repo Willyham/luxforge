@@ -150,6 +150,7 @@ impl TransformModule {
                     format: EFFECT_FORMAT,
                     stage: EffectStage::Geometry,
                     order: 0,
+                    maskable: false,
                 }],
                 actions: vec![ActionDescriptor {
                     id: TRANSFORM_ACTION.into(),
@@ -427,6 +428,7 @@ mod tests {
                 format: EFFECT_FORMAT,
                 stage: EffectStage::Geometry,
                 order: 0,
+                maskable: false,
             }]
         );
         let action = descriptor

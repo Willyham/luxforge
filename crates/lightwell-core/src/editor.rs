@@ -1,7 +1,7 @@
 use crate::{
     AssetId, ContentPoint, Draft, DraftId, EntryId, Error, ErrorKind, HistoryEntry, Layer, LayerId,
-    ModuleRegistry, Mutation, PreviewJob, PreviewSource, ProxyBounds, Raster, Recipe, Snapshot,
-    SnapshotId, StageTransform, Transform,
+    MaskId, ModuleRegistry, Mutation, PreviewJob, PreviewSource, ProxyBounds, Raster, Recipe,
+    Snapshot, SnapshotId, StageTransform, Transform,
     analysis::AnalysisIdentity,
     mask::commands::{
         MaskChange, MaskCommand, MaskCommandResult, MaskListing, MaskOutcome, MaskTarget,
@@ -1290,6 +1290,10 @@ impl EditorService {
         let (module, action) = registry.action(action_id).ok_or_else(|| {
             Error::new(ErrorKind::Validation, format!("unknown action {action_id}"))
         })?;
+        // The host's one optional target field, taken before the action's own parameters are checked
+        // so the module receives exactly its declared fields and never learns a mask was involved.
+        let mut parameters = parameters;
+        let mask = take_mask_target(&registry, action_id, &mut parameters)?;
         let checked = check_parameters(action, &parameters)?;
         let input = module.parse(action_id, &checked)?;
         // The module labels a request its template cannot describe, such as a field patch; the
@@ -1298,7 +1302,7 @@ impl EditorService {
         let label = module
             .label(&input)
             .unwrap_or_else(|| action_label(action, &input.parameters));
-        let request = request_input(&input, &mutation)?;
+        let request = request_input(&input, &mutation, mask.as_ref())?;
         if let Some(result) = self.request_result(asset_id, &mutation.request_id, &request)? {
             return Ok(result);
         }
@@ -1306,6 +1310,8 @@ impl EditorService {
         ensure_revision(&state, mutation.expected_revision)?;
         let recipe = &state.current_entry.snapshot.recipe;
         validate_source_recipe(&state.asset, recipe)?;
+        // A target the stack does not hold is refused here, before a module plans anything.
+        resolve_mask_target(recipe, mask.as_ref())?;
         if module.descriptor().id == "lightwell.raw" {
             let (width, height) = (state.asset.width, state.asset.height);
             let stage = registry.compile(width, height, recipe)?.stage();
@@ -1317,7 +1323,7 @@ impl EditorService {
             };
             let stage_before = |index: usize| -> Result<Stage, Error> {
                 Ok(registry
-                    .compile_layers(width, height, prefix(&recipe.layers, index)?)?
+                    .compile_layers(width, height, prefix(&recipe.layers, index)?, &recipe.masks)?
                     .stage())
             };
             let sample_before = |_: usize, _: u32, _: u32| -> Result<Option<[u8; 4]>, Error> {
@@ -1383,19 +1389,37 @@ impl EditorService {
             );
         }
         let source = self.verified_prepared(&state.asset)?;
-        let snapshot = match self.plan_input(&state, &source, module, &input)? {
+        let snapshot = match self.plan_input(
+            &state,
+            &source,
+            module,
+            &input,
+            registry.action_accepts_mask(action_id),
+            mask.as_ref(),
+        )? {
             ActionPlan::NoOp => {
                 return self.persist_noop(asset_id, &mutation, &request, &state);
             }
             // The host places the layer by the effect's declared stage and order: a pixel-stage
             // effect goes before the geometry tail, so a later crop change carries it instead of
             // moving or invalidating it. An effect no provider declares is placed as a geometry one
-            // would be and rejected by the whole-stack compile below.
+            // would be and rejected by the whole-stack compile below. Within that region a masked
+            // layer follows the global layer of its effect and the masked layers of earlier masks,
+            // so overlapping masks apply in the order the mask list shows.
             ActionPlan::Commit(layer) => {
-                let index = registry.insertion_index_for(
-                    &state.current_entry.snapshot.recipe.layers,
+                let recipe = &state.current_entry.snapshot.recipe;
+                let index = registry.insertion_index_for_target(
+                    &recipe.layers,
                     &layer.effect_id,
+                    mask.as_ref(),
+                    &recipe.masks,
                 );
+                // The target is the host's to write: a module returns a layer without one, because it
+                // never saw the field.
+                let layer = Layer {
+                    mask: mask.clone(),
+                    ..layer
+                };
                 state
                     .current_entry
                     .snapshot
@@ -1540,10 +1564,19 @@ impl EditorService {
         source: &PreparedSource,
         module: &dyn crate::ToolModule,
         input: &ActionInput,
+        accepts_mask: bool,
+        mask: Option<&MaskId>,
     ) -> Result<ActionPlan, Error> {
-        self.with_stage_context(source, &state.current_entry.snapshot.recipe, |context| {
-            module.plan(input, context)
-        })
+        // The module plans against the stack of one target: the global layer and each mask are
+        // distinct targets, so a module that owns one layer still owns one per target and finds it by
+        // the same scan it has always made.
+        let recipe = recipe_for_target(
+            &self.registry,
+            &state.current_entry.snapshot.recipe,
+            accepts_mask,
+            mask,
+        );
+        self.with_stage_context(source, &recipe, |context| module.plan(input, context))
     }
 
     /// Build the questions a module may ask about one stack and hand them to `answer`.
@@ -1602,7 +1635,7 @@ impl EditorService {
         // and rasterizes nothing. The whole recipe compiled above, so its format is known good.
         let stage_before = |index: usize| -> Result<Stage, Error> {
             Ok(registry
-                .compile_layers(width, height, prefix(&recipe.layers, index)?)?
+                .compile_layers(width, height, prefix(&recipe.layers, index)?, &recipe.masks)?
                 .stage())
         };
         // One pixel of the stage a prefix produces, for a module planning against the position its
@@ -1612,7 +1645,7 @@ impl EditorService {
             let layers = prefix(&recipe.layers, index)?;
             match source {
                 PreparedSource::Jpeg(image) => {
-                    Evaluation::over_layers(registry, image, layers)?.pixel(x, y)
+                    Evaluation::over_layers(registry, image, layers, &recipe.masks)?.pixel(x, y)
                 }
                 PreparedSource::Raw(_) => {
                     let prefix_recipe = Recipe {
@@ -1685,7 +1718,22 @@ impl EditorService {
         let entry = self.entry(asset_id, entry_id)?;
         validate_source_recipe(&state.asset, &entry.snapshot.recipe)?;
         let source = self.verified_prepared(&state.asset)?;
-        self.with_stage_context(&source, &entry.snapshot.recipe, |context| {
+        // A query carries no mask target, so it asks about the global layer, and the target view hides
+        // the masked layers of the module's own effect. Without it a module that owns one layer would
+        // refuse its own query as ambiguous as soon as a mask held a layer of that effect, and the
+        // pixels it reads are unchanged: what it samples is the stage *before* its own layer, and a
+        // masked layer of the same effect is always after the global one.
+        let recipe = recipe_for_target(
+            &self.registry,
+            &entry.snapshot.recipe,
+            module
+                .descriptor()
+                .effects
+                .iter()
+                .any(|effect| effect.maskable),
+            None,
+        );
+        self.with_stage_context(&source, &recipe, |context| {
             module.query(query_id, &checked, context)
         })
     }
@@ -1733,12 +1781,25 @@ impl EditorService {
         let state = self.state(asset_id)?;
         validate_source_recipe(&state.asset, &state.current_entry.snapshot.recipe)?;
         let source = self.verified_prepared(&state.asset)?;
-        let recipe = match self.plan_input(&state, &source, module, &input)? {
+        // A draft carries no mask target, so it is a draft of the global layer: the target view hides
+        // the masked layers of the drafted module's effect, which is what lets a global slider drag
+        // keep working on a stack that also holds masked layers of the same effect.
+        let recipe = match self.plan_input(
+            &state,
+            &source,
+            module,
+            &input,
+            registry.action_accepts_mask(&draft.action),
+            None,
+        )? {
             ActionPlan::NoOp => state.current_entry.snapshot.recipe.clone(),
             ActionPlan::Commit(layer) => {
-                let index = registry.insertion_index_for(
-                    &state.current_entry.snapshot.recipe.layers,
+                let recipe = &state.current_entry.snapshot.recipe;
+                let index = registry.insertion_index_for_target(
+                    &recipe.layers,
                     &layer.effect_id,
+                    None,
+                    &recipe.masks,
                 );
                 state
                     .current_entry
@@ -2352,19 +2413,129 @@ fn ensure_revision(state: &EditorState, expected: u64) -> Result<(), Error> {
     }
 }
 
-/// The deduplicated request identity: the durable action, the mutation envelope and the parsed
-/// parameters as top-level fields.
-fn request_input(input: &ActionInput, mutation: &Mutation) -> Result<Value, Error> {
+/// The deduplicated request identity: the durable action, the mutation envelope, the mask target and
+/// the parsed parameters as top-level fields.
+///
+/// The target belongs here because it is part of what the request *is*: the same fields sent to the
+/// global layer and to a mask are two different edits, and a client that reused one request id for
+/// both must not receive the first one's result for the second.
+fn request_input(
+    input: &ActionInput,
+    mutation: &Mutation,
+    mask: Option<&MaskId>,
+) -> Result<Value, Error> {
     let mut request = serde_json::Map::new();
     request.insert("action".into(), Value::from(input.action_id.as_str()));
     request.insert(
         "mutation".into(),
         serde_json::to_value(mutation).map_err(|e| json_error("cannot encode request", e))?,
     );
+    if let Some(mask) = mask {
+        request.insert(MASK_FIELD.into(), Value::from(mask.as_str()));
+    }
     for (name, value) in &input.parameters {
         request.insert(name.clone(), value.clone());
     }
     Ok(Value::Object(request))
+}
+
+/// The host's one optional top-level request field on every action of a maskable effect.
+pub const MASK_FIELD: &str = "mask";
+
+/// Take the `mask` target out of a request before the action's own parameters are checked, so no
+/// module's `parse`, `plan` or `compile` ever sees it (`docs/design/masking.md`, "How a mask reaches
+/// an effect").
+///
+/// Sending it to an action that does not accept one is a `validation` error naming the action, not a
+/// silently ignored field: an agent that believes it edited through a mask must be told it did not.
+fn take_mask_target(
+    registry: &ModuleRegistry,
+    action_id: &str,
+    parameters: &mut Value,
+) -> Result<Option<MaskId>, Error> {
+    let Some(object) = parameters.as_object_mut() else {
+        return Ok(None);
+    };
+    let Some(field) = object.remove(MASK_FIELD) else {
+        return Ok(None);
+    };
+    if !registry.action_accepts_mask(action_id) {
+        return Err(Error::new(
+            ErrorKind::Validation,
+            format!("action {action_id} does not accept a mask target"),
+        ));
+    }
+    let id: MaskId = serde_json::from_value(field.clone()).map_err(|_| {
+        Error::new(
+            ErrorKind::Validation,
+            format!("mask target {field} is not a mask identity"),
+        )
+    })?;
+    Ok(Some(id))
+}
+
+/// The mask a request named, resolved against the stack it will edit. A target the recipe does not
+/// hold is refused before anything is planned, so an edit never creates a layer bound to a mask that
+/// does not exist.
+fn resolve_mask_target<'a>(
+    recipe: &'a Recipe,
+    mask: Option<&MaskId>,
+) -> Result<Option<&'a crate::Mask>, Error> {
+    let Some(id) = mask else {
+        return Ok(None);
+    };
+    recipe
+        .masks
+        .iter()
+        .find(|mask| &mask.id == id)
+        .map(Some)
+        .ok_or_else(|| {
+            Error::new(
+                ErrorKind::Validation,
+                format!("unknown mask {id} for this asset"),
+            )
+        })
+}
+
+/// The stack as one target sees it: the layers of every maskable effect that belong to some *other*
+/// target are hidden, and everything else is exactly where it was.
+///
+/// This is what makes a target a target without a single line of module code. A module finds its own
+/// layer by scanning the layers it is given — and refuses a stack that holds two of its own, which is
+/// the same refusal the host makes — so handing it the one target's layers is what lets
+/// `edit.set-basic {mask, exposure}` commit and update the masked layer while `edit.set-basic
+/// {exposure}` keeps editing the global one.
+///
+/// Every stage answer the context gives is unchanged by the hiding, because only a colour-, pixel-
+/// or spatial-stage effect may be maskable and none of those changes the stage's dimensions: the
+/// geometry tail is never hidden, so `stage`, `stage_before` and `insertion_index` answer exactly
+/// what they answer for the whole stack. What a sampler reads does change — it no longer includes the
+/// other targets' colour — and that is why the filtered view is used only for planning an action of a
+/// maskable module and for that module's own queries, where the layers before the module's own layer
+/// are what is sampled and a masked layer of the same effect is never among them.
+///
+/// A recipe with no masks is handed back as it is, so the ordinary path allocates nothing.
+fn recipe_for_target<'a>(
+    registry: &ModuleRegistry,
+    recipe: &'a Recipe,
+    accepts_mask: bool,
+    mask: Option<&MaskId>,
+) -> std::borrow::Cow<'a, Recipe> {
+    if !accepts_mask || recipe.masks.is_empty() {
+        return std::borrow::Cow::Borrowed(recipe);
+    }
+    std::borrow::Cow::Owned(Recipe {
+        format: recipe.format,
+        layers: recipe
+            .layers
+            .iter()
+            .filter(|layer| {
+                layer.mask.as_ref() == mask || !registry.effect_maskable(&layer.effect_id)
+            })
+            .cloned()
+            .collect(),
+        masks: recipe.masks.clone(),
+    })
 }
 
 fn input_hash(input: &Value) -> Result<String, Error> {
@@ -3827,6 +3998,224 @@ mod tests {
         std::fs::remove_file(catalog).unwrap();
     }
 
+    /// The same entry with a mask table and no layer bound to anything: the state a client is in
+    /// after `mask.create`, which arrives with its own task, so the table is planted here instead.
+    fn planted_masks(state: &EditorState, masks: Vec<Mask>) -> HistoryEntry {
+        HistoryEntry {
+            id: EntryId::new(),
+            sequence: state.current_entry.sequence + 1,
+            label: "Add linear".into(),
+            undo_parent: Some(state.current_entry.id.clone()),
+            base_revision: state.revision,
+            result_revision: state.revision + 1,
+            snapshot: Snapshot {
+                id: SnapshotId::new(),
+                asset_id: state.asset.id.clone(),
+                recipe: Recipe {
+                    masks,
+                    ..state.current_entry.snapshot.recipe.clone()
+                },
+            },
+            ..state.current_entry.clone()
+        }
+    }
+
+    /// The whole of what the `mask` request field does, through the one action path a GUI gesture and
+    /// a JSON client share: it commits the masked layer on the first non-neutral field, updates that
+    /// same layer in place afterwards, leaves the global layer alone, places each masked layer after
+    /// the global one and in its mask's order, and refuses an action that has no target to give.
+    #[test]
+    fn the_mask_target_commits_updates_and_orders_one_layer_per_target() {
+        let catalog = temp("mask-target.sqlite");
+        let mut service = EditorService::open(&catalog).unwrap();
+        let asset = service.import(&fixture()).unwrap().asset.id;
+        // One global Basic layer first, so the ordering rule has something to place a mask after.
+        service
+            .apply_action(
+                &asset,
+                mutation(0, "global"),
+                "set-basic",
+                json!({"exposure": 0.5}),
+            )
+            .unwrap();
+        let state = service.state(&asset).unwrap();
+        let first = stored_mask();
+        let mut second = stored_mask();
+        second.name = "Mask 2".into();
+        let planted = planted_masks(&state, vec![first.clone(), second.clone()]);
+        drop(service);
+        plant(&catalog, &planted);
+        let mut service = EditorService::open(&catalog).unwrap();
+
+        fn revision(service: &EditorService, asset: &AssetId) -> u64 {
+            service.state(asset).unwrap().revision
+        }
+        fn layers(service: &EditorService, asset: &AssetId) -> Vec<Layer> {
+            service
+                .state(asset)
+                .unwrap()
+                .current_entry
+                .snapshot
+                .recipe
+                .layers
+                .clone()
+        }
+        let global_layer = layers(&service, &asset)[0].id.clone();
+        assert_eq!(
+            layers(&service, &asset).len(),
+            1,
+            "one global Basic layer to begin with"
+        );
+
+        // A neutral first field through a mask commits nothing at all: masking nothing is nothing.
+        let quiet = service
+            .apply_action(
+                &asset,
+                mutation(revision(&service, &asset), "neutral-masked"),
+                "set-basic",
+                json!({"mask": first.id, "exposure": 0.0}),
+            )
+            .unwrap();
+        assert_eq!(quiet.outcome, MutationOutcome::NoOp);
+        assert_eq!(layers(&service, &asset).len(), 1);
+
+        // The first non-neutral field commits the masked layer, after the global one.
+        service
+            .apply_action(
+                &asset,
+                mutation(revision(&service, &asset), "mask-one"),
+                "set-basic",
+                json!({"mask": first.id, "exposure": 0.8}),
+            )
+            .unwrap();
+        let committed = layers(&service, &asset);
+        assert_eq!(committed.len(), 2);
+        assert_eq!(committed[0].id, global_layer, "the global layer is first");
+        assert_eq!(committed[0].mask, None);
+        assert_eq!(committed[1].mask.as_ref(), Some(&first.id));
+        let masked_layer = committed[1].id.clone();
+        assert_eq!(committed[1].payload["exposure"], json!(0.8));
+
+        // A later field updates that same layer in place, keeping its identity and position.
+        service
+            .apply_action(
+                &asset,
+                mutation(revision(&service, &asset), "mask-one-again"),
+                "set-basic",
+                json!({"mask": first.id, "exposure": 0.9}),
+            )
+            .unwrap();
+        let updated = layers(&service, &asset);
+        assert_eq!(updated.len(), 2, "no second layer for the same target");
+        assert_eq!(updated[1].id, masked_layer, "the masked layer's identity");
+        assert_eq!(updated[1].payload["exposure"], json!(0.9));
+        // And sending the same value again is the no-op it looks like.
+        assert_eq!(
+            service
+                .apply_action(
+                    &asset,
+                    mutation(revision(&service, &asset), "mask-one-noop"),
+                    "set-basic",
+                    json!({"mask": first.id, "exposure": 0.9}),
+                )
+                .unwrap()
+                .outcome,
+            MutationOutcome::NoOp
+        );
+
+        // The global layer is still edited by the same action without the field, and the masked
+        // layer is untouched by it.
+        service
+            .apply_action(
+                &asset,
+                mutation(revision(&service, &asset), "global-again"),
+                "set-basic",
+                json!({"exposure": 0.25}),
+            )
+            .unwrap();
+        let both = layers(&service, &asset);
+        assert_eq!(both.len(), 2);
+        assert_eq!(both[0].id, global_layer);
+        assert_eq!(both[0].payload["exposure"], json!(0.25));
+        assert_eq!(both[1].id, masked_layer);
+        assert_eq!(both[1].payload["exposure"], json!(0.9));
+
+        // A layer in the second mask is legal for the same single-layer effect and lands after the
+        // first mask's, because that is the order the mask list shows.
+        service
+            .apply_action(
+                &asset,
+                mutation(revision(&service, &asset), "mask-two"),
+                "set-basic",
+                json!({"mask": second.id, "exposure": -1.0}),
+            )
+            .unwrap();
+        let three = layers(&service, &asset);
+        assert_eq!(three.len(), 3);
+        assert_eq!(
+            three
+                .iter()
+                .map(|layer| layer.mask.clone())
+                .collect::<Vec<_>>(),
+            vec![None, Some(first.id.clone()), Some(second.id.clone())],
+            "the global layer, then the masks in their own order"
+        );
+        // The stack renders and samples: a masked layer is evaluable the moment it is creatable.
+        service.render_current(&asset).unwrap();
+
+        // A target the stack does not hold is refused, and nothing is written.
+        let absent = Mask::new("Mask 9");
+        let error = service
+            .apply_action(
+                &asset,
+                mutation(revision(&service, &asset), "absent-mask"),
+                "set-basic",
+                json!({"mask": absent.id, "exposure": 0.1}),
+            )
+            .unwrap_err();
+        assert_eq!(error.kind, ErrorKind::Validation);
+        assert_eq!(
+            error.detail,
+            format!("unknown mask {} for this asset", absent.id)
+        );
+
+        // The field belongs to the actions of a maskable effect and nowhere else, and the refusal
+        // names the action that was asked.
+        for (action, parameters) in [
+            (
+                "set-pixel",
+                json!({"mask": first.id, "x": 0, "y": 0, "rgb": [1, 2, 3]}),
+            ),
+            (
+                "transform",
+                json!({"mask": first.id, "transform": "rotate-left"}),
+            ),
+            ("set-vignette", json!({"mask": first.id, "amount": -40.0})),
+        ] {
+            let error = service
+                .apply_action(
+                    &asset,
+                    mutation(revision(&service, &asset), action),
+                    action,
+                    parameters,
+                )
+                .unwrap_err();
+            assert_eq!(error.kind, ErrorKind::Validation, "{action}");
+            assert_eq!(
+                error.detail,
+                format!("action {action} does not accept a mask target"),
+                "{action}"
+            );
+        }
+        assert_eq!(
+            layers(&service, &asset).len(),
+            3,
+            "no refusal changed the stack"
+        );
+        drop(service);
+        std::fs::remove_file(catalog).unwrap();
+    }
+
     /// A stored layer naming a mask its own snapshot does not carry is incompatible data: every
     /// evaluation path refuses it by name, the stack stays readable and its stored bytes do not
     /// change. The host cannot write such a stack in the first place, which is asserted here too.
@@ -4296,6 +4685,7 @@ mod tests {
                 format: EFFECT_FORMAT,
                 stage: EffectStage::Geometry,
                 order: 0,
+                maskable: false,
             };
             Self(ModuleDescriptor {
                 id: "test.shrink".into(),

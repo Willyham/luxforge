@@ -179,6 +179,7 @@ pub(crate) fn crop_descriptor() -> ModuleDescriptor {
             format: 1,
             stage: EffectStage::Geometry,
             order: 0,
+            maskable: false,
         }],
         actions: vec![
             ActionDescriptor {
