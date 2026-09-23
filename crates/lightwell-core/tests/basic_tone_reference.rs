@@ -1232,22 +1232,12 @@ fn visual_review_writes_tone_sweeps_to_a_temp_dir() {
         }
     }
 
-    let sweeps: [(&str, ToneParams); 11] = [
+    let sweeps: [(&str, ToneParams); 13] = [
         ("neutral", ToneParams::NEUTRAL),
-        (
-            "contrast+100",
-            ToneParams {
-                contrast: 100.0,
-                ..ToneParams::NEUTRAL
-            },
-        ),
-        (
-            "contrast-100",
-            ToneParams {
-                contrast: -100.0,
-                ..ToneParams::NEUTRAL
-            },
-        ),
+        ("contrast+100", contrast_only(100.0)),
+        ("contrast-100", contrast_only(-100.0)),
+        ("contrast+50", contrast_only(50.0)),
+        ("contrast-50", contrast_only(-50.0)),
         (
             "highlights+100",
             ToneParams {
@@ -1306,11 +1296,61 @@ fn visual_review_writes_tone_sweeps_to_a_temp_dir() {
         ),
     ];
 
+    // 8-bit luma of an output pixel (Rec. 709 weights on the encoded codes),
+    // the brightness measure the design doc's visual-evidence table reports.
+    fn luma(pixel: &image::Rgb<u8>) -> f64 {
+        0.2126 * f64::from(pixel[0]) + 0.7152 * f64::from(pixel[1]) + 0.0722 * f64::from(pixel[2])
+    }
+
     for (name, params) in sweeps {
-        apply_to_linear_buffer(&wedge, wedge_w, wedge_h, params)
+        let wedge_image = apply_to_linear_buffer(&wedge, wedge_w, wedge_h, params);
+        let row: Vec<u8> = (0..wedge_w)
+            .map(|x| wedge_image.get_pixel(x, 0)[0])
+            .collect();
+        let row_codes: Vec<f64> = row.iter().map(|&c| f64::from(c)).collect();
+        let mut distinct = row.clone();
+        distinct.dedup();
+        let decreasing_steps = row.windows(2).filter(|pair| pair[1] < pair[0]).count();
+        let mut longest_run = 0usize;
+        let mut run = 0usize;
+        for pair in row.windows(2) {
+            run = if pair[1] == pair[0] { run + 1 } else { 0 };
+            longest_run = longest_run.max(run + 1);
+        }
+        wedge_image
             .save(out_dir.join(format!("wedge-{name}.png")))
             .expect("save wedge png");
-        apply_to_linear_buffer(&backlit, photo_w, photo_h, params)
+
+        let backlit_image = apply_to_linear_buffer(&backlit, photo_w, photo_h, params);
+        let (mut subject, mut background) = (Vec::new(), Vec::new());
+        for (x, y, pixel) in backlit_image.enumerate_pixels() {
+            let (dx, dy) = (f64::from(x) - cx, f64::from(y) - cy);
+            let distance = (dx * dx + dy * dy).sqrt();
+            if distance < radius - 2.0 {
+                subject.push(luma(pixel));
+            } else if distance > radius + 2.0 {
+                background.push(luma(pixel));
+            }
+        }
+        let mean = |values: &[f64]| values.iter().sum::<f64>() / values.len() as f64;
+        let mut subject_codes: Vec<u8> = subject.iter().map(|v| v.round() as u8).collect();
+        subject_codes.sort_unstable();
+        let subject_range = (subject_codes[0], subject_codes[subject_codes.len() - 1]);
+        subject_codes.dedup();
+        println!(
+            "{name}: wedge code std {:.2}, {} distinct codes, {decreasing_steps} decreasing \
+             steps, longest run {longest_run}; backlit subject mean {:.1} (codes {}-{}, {} \
+             distinct), background mean {:.1}, separation {:.1}",
+            standard_deviation(&row_codes),
+            distinct.len(),
+            mean(&subject),
+            subject_range.0,
+            subject_range.1,
+            subject_codes.len(),
+            mean(&background),
+            mean(&background) - mean(&subject),
+        );
+        backlit_image
             .save(out_dir.join(format!("backlit-{name}.png")))
             .expect("save backlit png");
     }
@@ -1342,13 +1382,8 @@ fn visual_review_writes_tone_sweeps_to_a_temp_dir() {
                 ..ToneParams::NEUTRAL
             },
         ),
-        (
-            "contrast+60",
-            ToneParams {
-                contrast: 60.0,
-                ..ToneParams::NEUTRAL
-            },
-        ),
+        ("contrast+60", contrast_only(60.0)),
+        ("contrast-60", contrast_only(-60.0)),
     ] {
         apply_to_srgb_image(&source, params)
             .save(out_dir.join(format!("orientation-1-{name}.png")))
