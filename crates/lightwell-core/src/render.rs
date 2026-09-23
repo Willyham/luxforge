@@ -18,7 +18,8 @@ use std::{
 pub mod linear;
 pub mod spatial;
 pub use linear::{
-    LinearImage, LinearSettings, render_linear, render_linear_cancellable, sample_linear,
+    LinearImage, LinearSettings, WhiteBalanceApproximation, render_linear,
+    render_linear_cancellable, sample_linear,
 };
 use spatial::{
     PRODUCTION_TILE, SpatialPlan, build_reduction, fill_planes, resolve_globals, run_batches,

@@ -414,11 +414,139 @@ impl ViewReader<'_> {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct LinearSettings {
     pub exposure_ev: f64,
+    /// An approximate white-balance change, applied to each source pixel before the exposure
+    /// multiply: `exposure · (W · p)`. Only the preview of an open draft carries one, when the
+    /// drafted temperature or tint asks for sensor gains the developed planes were not developed
+    /// at. Every committed render, export, point sample and analysis is `None`, which is bit for
+    /// bit the evaluation without this field. See [`WhiteBalanceApproximation`].
+    pub white_balance: Option<WhiteBalanceApproximation>,
 }
 
 impl Default for LinearSettings {
     fn default() -> Self {
-        Self { exposure_ev: 0.0 }
+        Self {
+            exposure_ev: 0.0,
+            white_balance: None,
+        }
+    }
+}
+
+/// A RAW white-balance change approximated on planes developed at another white balance.
+///
+/// The retained planes are `R · D(g)` per pixel, where `D(g)` is the native demosaic of the mosaic
+/// after the sensor gains `g` (camera RGB) and `R` is the camera-to-linear-sRGB matrix. The demosaic
+/// is nonlinear, which is why a committed white balance redevelops the mosaic, but to first order
+/// `D(g') ≈ diag(g'/g) · D(g)`. So planes developed at `g` approximate the planes at `g'` by
+///
+/// `W = R · diag(g'_c / g_c) · R⁻¹`
+///
+/// applied to every pixel. The approximation is used only for a drafted preview during a gesture:
+/// nothing committed, exported, sampled or analysed is ever evaluated through it, and a frame
+/// rendered with it says so. The matrix is private and only the constructors build it, so every
+/// instance is finite by construction.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct WhiteBalanceApproximation {
+    matrix: [[f64; 3]; 3],
+}
+
+impl WhiteBalanceApproximation {
+    /// `W = R · diag(target / developed) · R⁻¹` for the camera-to-linear-sRGB matrix `R`, with
+    /// `R⁻¹` computed in f64. A non-finite or non-positive gain, a non-finite `R`, an `R` that is
+    /// singular (or so close to it that its inverse is meaningless) and a non-finite `W` are each
+    /// refused: there is no approximation, never a wrong one.
+    pub fn between(
+        camera_to_srgb: [[f64; 3]; 3],
+        developed: [f32; 3],
+        target: [f32; 3],
+    ) -> Result<Self, Error> {
+        let mut ratio = [0.0; 3];
+        for (channel, value) in ratio.iter_mut().enumerate() {
+            let (from, to) = (f64::from(developed[channel]), f64::from(target[channel]));
+            if !(from.is_finite() && to.is_finite() && from > 0.0 && to > 0.0) {
+                return Err(Error::new(
+                    ErrorKind::Validation,
+                    "white-balance gains must be finite and positive",
+                ));
+            }
+            *value = to / from;
+        }
+        let inverse = invert(camera_to_srgb)?;
+        let matrix = std::array::from_fn(|row| {
+            std::array::from_fn(|column| {
+                (0..3)
+                    .map(|k| camera_to_srgb[row][k] * ratio[k] * inverse[k][column])
+                    .sum::<f64>()
+            })
+        });
+        Self::from_matrix(matrix)
+    }
+
+    /// An explicit linear-sRGB matrix, refused unless every entry is finite.
+    pub fn from_matrix(matrix: [[f64; 3]; 3]) -> Result<Self, Error> {
+        if matrix.iter().flatten().all(|value| value.is_finite()) {
+            Ok(Self { matrix })
+        } else {
+            Err(Error::new(
+                ErrorKind::Validation,
+                "a white-balance approximation must be finite",
+            ))
+        }
+    }
+
+    /// The matrix applied to each linear-sRGB pixel, row by row.
+    pub fn matrix(&self) -> [[f64; 3]; 3] {
+        self.matrix
+    }
+
+    #[inline]
+    fn apply(&self, pixel: [f64; 3]) -> [f64; 3] {
+        self.matrix
+            .map(|row| row[0] * pixel[0] + row[1] * pixel[1] + row[2] * pixel[2])
+    }
+
+    /// A key that tells this approximation's evaluation apart from an exact one of the same
+    /// recipe, for a cache keyed by recipe: the matrix's own bits.
+    fn key(&self) -> String {
+        self.matrix
+            .iter()
+            .flatten()
+            .map(|value| format!("{:016x}", value.to_bits()))
+            .collect()
+    }
+}
+
+/// The inverse of a 3×3 matrix in f64, by the adjugate. Refused when the matrix is not finite or
+/// its determinant is negligible against the product of its row norms (Hadamard's bound on it),
+/// which is where an inverse stops meaning anything.
+fn invert(matrix: [[f64; 3]; 3]) -> Result<[[f64; 3]; 3], Error> {
+    let singular = || {
+        Error::new(
+            ErrorKind::UnsupportedColor,
+            "the camera matrix is singular, so no white-balance approximation exists",
+        )
+    };
+    if !matrix.iter().flatten().all(|value| value.is_finite()) {
+        return Err(singular());
+    }
+    let [[a, b, c], [d, e, f], [g, h, i]] = matrix;
+    let cofactors = [
+        [e * i - f * h, c * h - b * i, b * f - c * e],
+        [f * g - d * i, a * i - c * g, c * d - a * f],
+        [d * h - e * g, b * g - a * h, a * e - b * d],
+    ];
+    let determinant = a * cofactors[0][0] + b * cofactors[1][0] + c * cofactors[2][0];
+    let bound: f64 = matrix
+        .iter()
+        .map(|row| row.iter().map(|value| value * value).sum::<f64>().sqrt())
+        .product();
+    if !determinant.is_finite() || bound == 0.0 || determinant.abs() <= 1.0e-12 * bound {
+        return Err(singular());
+    }
+    let inverse = cofactors.map(|row| row.map(|value| value / determinant));
+    if inverse.iter().flatten().all(|value| value.is_finite()) {
+        Ok(inverse)
+    } else {
+        Err(singular())
     }
 }
 
@@ -536,6 +664,8 @@ struct LinearEvaluation<'a> {
     source: &'a LinearImage,
     compiled: Compiled,
     exposure_multiplier: f64,
+    /// Applied to each source pixel before the exposure multiply, when the settings carry one.
+    white_balance: Option<WhiteBalanceApproximation>,
     /// The frame a spatial entry produces, at the index of the segment it enters. The linear path
     /// pulls single pixels through the compiled prefix, and a neighbourhood cannot be pulled one
     /// pixel at a time, so each spatial operation's output is materialized once, in stage order,
@@ -574,6 +704,7 @@ impl<'a> LinearEvaluation<'a> {
             source,
             compiled,
             exposure_multiplier,
+            white_balance: settings.white_balance,
             spatial_frames,
             tile,
         };
@@ -626,11 +757,21 @@ impl<'a> LinearEvaluation<'a> {
             Ok(pixel.map(|value| value as f32))
         };
         let plan = SpatialPlan::new(operation, stage, self.tile)?;
+        // The estimate store is keyed by the recipe prefix, which an approximate white balance
+        // does not change: the drafted recipe names the target gains whichever planes it is
+        // evaluated over. So an approximate evaluation keys its estimates apart, and a committed
+        // render of the same recipe never takes one estimated from approximate pixels.
+        let approximate_prefix = self.white_balance.map(|balance| {
+            format!(
+                "{prefix_hash}+white-balance-approximation:{}",
+                balance.key()
+            )
+        });
         let globals: Vec<Option<Global>> = resolve_globals(
             operation,
             stage,
             self.source.fingerprint(),
-            prefix_hash,
+            approximate_prefix.as_deref().unwrap_or(prefix_hash),
             || build_reduction(stage, read),
         )?;
         let mut frame = vec![0.0_f32; values];
@@ -669,9 +810,17 @@ impl<'a> LinearEvaluation<'a> {
         (segment.width, segment.height)
     }
 
+    /// The one point where the settings touch a source pixel: `exposure · p`, or
+    /// `exposure · (W · p)` under an approximate white balance.
     fn source_pixel(&self, x: u32, y: u32) -> Result<[f64; 3], Error> {
         let pixel = self.source.pixel_f64(x, y)?;
-        let output = pixel.map(|value| value * self.exposure_multiplier);
+        let output = match &self.white_balance {
+            // The arithmetic an exact evaluation has always done, untouched.
+            None => pixel.map(|value| value * self.exposure_multiplier),
+            Some(balance) => balance
+                .apply(pixel)
+                .map(|value| value * self.exposure_multiplier),
+        };
         if output.iter().all(|value| value.is_finite()) {
             Ok(output)
         } else {
@@ -1017,17 +1166,28 @@ mod tests {
             &source,
             SnapshotId::new(),
             &Recipe::default(),
-            LinearSettings { exposure_ev: 1.0 },
+            LinearSettings {
+                exposure_ev: 1.0,
+                white_balance: None,
+            },
         )
         .unwrap();
         assert_eq!(
             raster.pixel(0, 0),
             Some([reference_srgb(0.36), 0, reference_srgb(1.0), 255])
         );
-        assert!(LinearSettings { exposure_ev: 5.01 }.multiplier().is_err());
         assert!(
             LinearSettings {
-                exposure_ev: f64::NAN
+                exposure_ev: 5.01,
+                white_balance: None,
+            }
+            .multiplier()
+            .is_err()
+        );
+        assert!(
+            LinearSettings {
+                exposure_ev: f64::NAN,
+                white_balance: None,
             }
             .multiplier()
             .is_err()
@@ -1293,6 +1453,194 @@ mod tests {
         }
     }
 
+    // -----------------------------------------------------------------------------------------
+    // The white-balance approximation.
+    // -----------------------------------------------------------------------------------------
+
+    /// A varied source with negative and above-one values in every channel.
+    fn varied(width: u32, height: u32) -> LinearImage {
+        let pixels: Vec<[f32; 3]> = (0..width * height)
+            .map(|index| {
+                let value = index as f32;
+                [
+                    (value * 0.037) % 1.3 - 0.1,
+                    (value * 0.051) % 1.1,
+                    (value * 0.023) % 1.6 - 0.2,
+                ]
+            })
+            .collect();
+        image(width, height, &pixels)
+    }
+
+    /// A plausible camera-to-sRGB matrix: rows sum to one, strong off-diagonal terms, invertible.
+    const CAMERA: [[f64; 3]; 3] = [
+        [1.72, -0.61, -0.11],
+        [-0.18, 1.49, -0.31],
+        [0.04, -0.52, 1.48],
+    ];
+
+    fn apply(matrix: [[f64; 3]; 3], vector: [f64; 3]) -> [f64; 3] {
+        matrix.map(|row| row[0] * vector[0] + row[1] * vector[1] + row[2] * vector[2])
+    }
+
+    /// With no approximation the evaluation is the one every committed render has always done:
+    /// each byte is the independent `sRGB(2^EV · p)` of its source pixel. An identity matrix, whose
+    /// products are exact, renders the same bytes, so the approximation adds nothing but its matrix.
+    #[test]
+    fn no_approximation_is_bit_for_bit_the_exposure_evaluation() {
+        let registry = ModuleRegistry::builtin();
+        let source = varied(9, 7);
+        let exposure_ev = 0.7;
+        let plain = LinearSettings {
+            exposure_ev,
+            white_balance: None,
+        };
+        let raster = render_linear(
+            &registry,
+            &source,
+            SnapshotId::new(),
+            &Recipe::default(),
+            plain,
+        )
+        .unwrap();
+        let multiplier = exposure_ev.exp2();
+        for y in 0..7 {
+            for x in 0..9 {
+                let pixel = source.pixel(x, y).unwrap().map(f64::from);
+                let expected = pixel.map(|value| reference_srgb(value * multiplier));
+                assert_eq!(
+                    raster.pixel(x, y),
+                    Some([expected[0], expected[1], expected[2], 255]),
+                    "({x}, {y})"
+                );
+            }
+        }
+        let identity = LinearSettings {
+            exposure_ev,
+            white_balance: Some(
+                WhiteBalanceApproximation::from_matrix([
+                    [1.0, 0.0, 0.0],
+                    [0.0, 1.0, 0.0],
+                    [0.0, 0.0, 1.0],
+                ])
+                .unwrap(),
+            ),
+        };
+        let through_identity = render_linear(
+            &registry,
+            &source,
+            SnapshotId::new(),
+            &Recipe::default(),
+            identity,
+        )
+        .unwrap();
+        assert_eq!(through_identity.rgba, raster.rgba);
+    }
+
+    /// The approximation multiplies each source pixel by `W` before the exposure: the byte is the
+    /// independent `sRGB(2^EV · (W · p))`, so a colour layer after it sees the approximated scene
+    /// value exactly as it sees an exact one.
+    #[test]
+    fn the_approximation_applies_its_matrix_before_the_exposure() {
+        let matrix = [[1.3, 0.1, -0.05], [0.02, 0.97, 0.01], [-0.1, 0.05, 0.62]];
+        let settings = LinearSettings {
+            exposure_ev: 1.0,
+            white_balance: Some(WhiteBalanceApproximation::from_matrix(matrix).unwrap()),
+        };
+        let source = varied(6, 5);
+        let registry = ModuleRegistry::builtin();
+        let raster = render_linear(
+            &registry,
+            &source,
+            SnapshotId::new(),
+            &Recipe::default(),
+            settings,
+        )
+        .unwrap();
+        for y in 0..5 {
+            for x in 0..6 {
+                let pixel = source.pixel(x, y).unwrap().map(f64::from);
+                let expected = apply(matrix, pixel).map(|value| reference_srgb(2.0 * value));
+                assert_eq!(
+                    raster.pixel(x, y),
+                    Some([expected[0], expected[1], expected[2], 255]),
+                    "({x}, {y})"
+                );
+                // The point sampler takes the same path, so the readout of an approximate stack
+                // would agree with its frame — though the host never asks it to.
+                assert_eq!(
+                    sample_linear(&registry, &source, &Recipe::default(), settings, x, y)
+                        .unwrap()
+                        .rgba,
+                    raster.pixel(x, y)
+                );
+            }
+        }
+    }
+
+    /// `W = R · diag(g'/g) · R⁻¹`: a camera-RGB pixel `c` developed at `g` is `R · c`, and the one
+    /// developed at `g'` is, to first order, `R · diag(g'/g) · c`, which `W` must reach from the
+    /// first. Equal gains are the identity to rounding.
+    #[test]
+    fn the_matrix_maps_one_development_onto_the_other_in_camera_space() {
+        let developed = [2.1_f32, 1.0, 1.45];
+        let target = [1.52_f32, 1.0, 2.37];
+        let balance = WhiteBalanceApproximation::between(CAMERA, developed, target).unwrap();
+        let ratio: [f64; 3] =
+            std::array::from_fn(|c| f64::from(target[c]) / f64::from(developed[c]));
+        for camera in [
+            [0.2, 0.4, 0.1],
+            [1.3, 0.05, 0.9],
+            [0.0, 0.0, 1.0],
+            [-0.02, 0.7, 0.33],
+        ] {
+            let at_developed = apply(CAMERA, camera);
+            let at_target = apply(CAMERA, std::array::from_fn(|c| camera[c] * ratio[c]));
+            let approximated = balance.apply(at_developed);
+            for channel in 0..3 {
+                assert!(
+                    (approximated[channel] - at_target[channel]).abs() < 1.0e-12,
+                    "{camera:?} channel {channel}: {approximated:?} against {at_target:?}"
+                );
+            }
+        }
+        let same = WhiteBalanceApproximation::between(CAMERA, developed, developed).unwrap();
+        for (row, values) in same.matrix().iter().enumerate() {
+            for (column, value) in values.iter().enumerate() {
+                let identity = if row == column { 1.0 } else { 0.0 };
+                assert!(
+                    (value - identity).abs() < 1.0e-12,
+                    "{row},{column}: {value}"
+                );
+            }
+        }
+    }
+
+    /// No approximation exists for a singular or non-finite camera matrix, for a gain that is not
+    /// finite and positive, or for a non-finite matrix given directly; each is refused rather than
+    /// rendering a frame the matrix cannot describe.
+    #[test]
+    fn a_singular_matrix_or_unusable_gain_has_no_approximation() {
+        let gains = [2.0_f32, 1.0, 1.5];
+        let rank_two = [[1.0, 2.0, 3.0], [2.0, 4.0, 6.0], [0.5, -1.0, 0.25]];
+        let error = WhiteBalanceApproximation::between(rank_two, gains, [1.0, 1.0, 1.0])
+            .expect_err("a rank-two camera matrix has no inverse");
+        assert_eq!(error.kind, ErrorKind::UnsupportedColor);
+        // Nearly singular: a determinant of 1e-15 against unit rows.
+        let nearly = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [1.0, 1.0, 1.0e-15]];
+        assert!(WhiteBalanceApproximation::between(nearly, gains, [1.0, 1.0, 1.0]).is_err());
+        let mut infinite = CAMERA;
+        infinite[1][2] = f64::INFINITY;
+        assert!(WhiteBalanceApproximation::between(infinite, gains, [1.0, 1.0, 1.0]).is_err());
+        for bad in [0.0_f32, -1.0, f32::NAN, f32::INFINITY] {
+            assert!(WhiteBalanceApproximation::between(CAMERA, [bad, 1.0, 1.0], gains).is_err());
+            assert!(WhiteBalanceApproximation::between(CAMERA, gains, [1.0, 1.0, bad]).is_err());
+        }
+        let mut matrix = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
+        matrix[2][0] = f64::NAN;
+        assert!(WhiteBalanceApproximation::from_matrix(matrix).is_err());
+    }
+
     #[test]
     fn malformed_sources_views_and_multiple_resamples_fail_closed() {
         assert!(LinearImage::new(2, 2, vec![0.0; 11]).is_err());
@@ -1304,7 +1652,14 @@ mod tests {
         assert!(source.with_view([1, 1, 2, 2], 1).is_err());
         assert!(source.with_view([u32::MAX, 0, 2, 1], 1).is_err());
         assert!(source.with_view([0, 0, 2, 2], 9).is_err());
-        assert!(LinearSettings { exposure_ev: 5.1 }.multiplier().is_err());
+        assert!(
+            LinearSettings {
+                exposure_ev: 5.1,
+                white_balance: None,
+            }
+            .multiplier()
+            .is_err()
+        );
         assert!(linear_bilinear(1.0, 1.0, 2, 2, |_x, _y| Ok([f64::INFINITY; 3])).is_err());
     }
 

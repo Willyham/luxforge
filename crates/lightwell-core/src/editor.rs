@@ -1027,8 +1027,17 @@ impl EditorService {
             ));
         }
         // A draft's effective recipe decides the RAW development settings too, so a drafted
-        // exposure previews the value the gesture holds rather than the committed one.
-        let source = self.preview_source(&state.asset, &recipe)?;
+        // exposure previews the value the gesture holds rather than the committed one. A drafted
+        // temperature or tint the developed planes do not hold is approximated on them, and only
+        // here: this is the one evaluation that may, because its frame is a gesture's preview and
+        // is labelled so, never analysed and replaced by the exact frame once the release
+        // redevelops. A preview without a draft is strict, as every other evaluation is.
+        let mode = if draft.is_some() {
+            RawSettingsMode::DraftPreview
+        } else {
+            RawSettingsMode::Strict
+        };
+        let source = self.preview_source(&state.asset, &recipe, mode)?;
         // The identity is computed exactly as an analysis job's is, so a report the preview worker
         // produces from this frame is a cache hit for a later `analysis.request`.
         let draft_stamp = draft.map(|draft| DraftStamp {
@@ -1094,15 +1103,22 @@ impl EditorService {
     /// The immutable buffer a preview or an analysis worker renders, chosen by the asset's source
     /// interpretation: the decoded JPEG, or the developed RAW mosaic with the linear settings the
     /// given recipe asks for. A RAW stack whose white balance the prepared image does not hold
-    /// reports `preparation-required` rather than rendering a stale development.
-    fn preview_source(&self, asset: &AssetRecord, recipe: &Recipe) -> Result<PreviewSource, Error> {
+    /// reports `preparation-required` rather than rendering a stale development, except under
+    /// [`RawSettingsMode::DraftPreview`], where the settings approximate it and the source says so
+    /// ([`PreviewSource::approximate_white_balance`]).
+    fn preview_source(
+        &self,
+        asset: &AssetRecord,
+        recipe: &Recipe,
+        mode: RawSettingsMode,
+    ) -> Result<PreviewSource, Error> {
         match self.verified_prepared(asset)? {
             PreparedSource::Jpeg(image) => {
                 validate_source_recipe(asset, recipe)?;
                 Ok(PreviewSource::Jpeg(image))
             }
             PreparedSource::Raw(raw) => {
-                let settings = raw_settings(&raw, recipe)?;
+                let settings = raw_settings(&raw, recipe, mode)?;
                 Ok(PreviewSource::Raw {
                     image: raw.linear.ok_or_else(|| {
                         Error::new(ErrorKind::PreparationRequired, "RAW development required")
@@ -1158,9 +1174,10 @@ impl EditorService {
             &recipe,
             draft,
         )?;
+        // An analysis is a number, so it is never taken from an approximate white balance.
         let source = match failure {
             Some(_) => None,
-            None => Some(self.preview_source(&state.asset, &recipe)?),
+            None => Some(self.preview_source(&state.asset, &recipe, RawSettingsMode::Strict)?),
         };
         Ok(AnalysisPlan {
             identity,
@@ -1185,7 +1202,7 @@ impl EditorService {
                 )
             }
             PreparedSource::Raw(raw) => {
-                let settings = raw_settings(&raw, &entry.snapshot.recipe)?;
+                let settings = raw_settings(&raw, &entry.snapshot.recipe, RawSettingsMode::Strict)?;
                 render_linear(
                     &self.registry,
                     raw.linear.as_ref().ok_or_else(|| {
@@ -1209,7 +1226,11 @@ impl EditorService {
     ) -> Result<PixelSample, Error> {
         let state = self.state(asset_id)?;
         let entry = self.entry(asset_id, entry_id)?;
-        let source = self.preview_source(&state.asset, &entry.snapshot.recipe)?;
+        let source = self.preview_source(
+            &state.asset,
+            &entry.snapshot.recipe,
+            RawSettingsMode::Strict,
+        )?;
         let sampled = source.sample(&self.registry, &entry.snapshot.recipe, x, y)?;
         pixel_sample(entry, &state.asset.fingerprint, sampled, x, y, None)
     }
@@ -1225,7 +1246,9 @@ impl EditorService {
         y: u32,
     ) -> Result<PixelSample, Error> {
         let (recipe, state) = self.draft_recipe(asset_id, draft)?;
-        let source = self.preview_source(&state.asset, &recipe)?;
+        // A sampled code is a number, so a drafted white balance the planes do not hold is
+        // `preparation-required` here even while the draft's preview approximates it.
+        let source = self.preview_source(&state.asset, &recipe, RawSettingsMode::Strict)?;
         let sampled = source.sample(&self.registry, &recipe, x, y)?;
         let fingerprint = state.asset.fingerprint.clone();
         pixel_sample(
@@ -1434,7 +1457,7 @@ impl EditorService {
         };
         let raw_settings = match source {
             PreparedSource::Jpeg(_) => None,
-            PreparedSource::Raw(raw) => Some(raw_settings(raw, recipe)?),
+            PreparedSource::Raw(raw) => Some(raw_settings(raw, recipe, RawSettingsMode::Strict)?),
         };
         let raw_linear = || -> Result<&crate::LinearImage, Error> {
             match source {
@@ -2418,20 +2441,92 @@ fn source_kinds_equal(left: &SourceKind, right: &SourceKind) -> Result<bool, Err
     }
 }
 
-fn raw_settings(raw: &RawPrepared, recipe: &crate::Recipe) -> Result<crate::LinearSettings, Error> {
+/// Whether an evaluation may approximate a RAW white balance the developed planes do not hold.
+///
+/// [`Self::DraftPreview`] is taken in exactly one place, [`EditorService::preview_job`] for an
+/// open draft. Every other evaluation — a committed or historical preview, `render_entry` and so
+/// every export, `sample_entry` and `sample_draft` and so the readout and `render.sample`,
+/// `analysis_plan`, and the stage context every plan and query is answered from — is
+/// [`Self::Strict`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum RawSettingsMode {
+    /// The developed planes must hold the recipe's white balance; anything else is
+    /// `preparation-required`, and the mosaic is redeveloped for it.
+    Strict,
+    /// A white balance the planes do not hold is approximated on them by
+    /// [`crate::WhiteBalanceApproximation`], and the frame is labelled approximate. Used only for
+    /// the preview of an open draft, so the drag shows something before its release redevelops.
+    DraftPreview,
+}
+
+fn raw_settings(
+    raw: &RawPrepared,
+    recipe: &crate::Recipe,
+    mode: RawSettingsMode,
+) -> Result<crate::LinearSettings, Error> {
     let payload = raw_payload(recipe)?;
+    let metadata = raw.sensor.metadata();
+    resolve_raw_settings(
+        &payload,
+        metadata.as_shot_gains,
+        metadata.rgb_cam,
+        raw.gains,
+        raw.linear.is_some(),
+        mode,
+    )
+}
+
+/// The linear settings one RAW recipe asks for over planes developed at `developed` gains, which
+/// exist when `developed_present`. `rgb_cam` is the camera-to-linear-sRGB matrix the development
+/// applied; its fourth column is validated zero at decode and is not read.
+///
+/// Planes that hold the recipe's gains need no approximation: the settings are exactly the ones a
+/// committed render uses. Planes at other gains are `preparation-required` under
+/// [`RawSettingsMode::Strict`]; under [`RawSettingsMode::DraftPreview`] they carry the matrix that
+/// approximates the recipe's gains on them, and a camera matrix with no usable inverse stays
+/// `preparation-required` rather than rendering a frame the matrix cannot describe. Missing planes
+/// are `preparation-required` in both modes. `O(1)`: it reads no pixel.
+fn resolve_raw_settings(
+    payload: &crate::RawPayload,
+    as_shot_gains: [f32; 3],
+    rgb_cam: [[f32; 4]; 3],
+    developed: [f32; 3],
+    developed_present: bool,
+    mode: RawSettingsMode,
+) -> Result<crate::LinearSettings, Error> {
     let gains = match payload.wb_mode {
-        crate::WhiteBalanceMode::AsShot => raw.sensor.metadata().as_shot_gains,
+        crate::WhiteBalanceMode::AsShot => as_shot_gains,
         crate::WhiteBalanceMode::Custom => payload.gains,
     };
-    if gains != raw.gains || raw.linear.is_none() {
-        return Err(Error::new(
-            ErrorKind::PreparationRequired,
-            "RAW white balance development required",
-        ));
+    let required = |detail: String| Error::new(ErrorKind::PreparationRequired, detail);
+    if !developed_present {
+        return Err(required("RAW white balance development required".into()));
     }
+    let white_balance = if gains == developed {
+        None
+    } else {
+        match mode {
+            RawSettingsMode::Strict => {
+                return Err(required("RAW white balance development required".into()));
+            }
+            RawSettingsMode::DraftPreview => {
+                let camera_to_srgb =
+                    rgb_cam.map(|row| [f64::from(row[0]), f64::from(row[1]), f64::from(row[2])]);
+                let approximation =
+                    crate::WhiteBalanceApproximation::between(camera_to_srgb, developed, gains)
+                        .map_err(|error| {
+                            required(format!(
+                                "RAW white balance development required: {}",
+                                error.detail
+                            ))
+                        })?;
+                Some(approximation)
+            }
+        }
+    };
     Ok(crate::LinearSettings {
         exposure_ev: payload.exposure_ev,
+        white_balance,
     })
 }
 
@@ -2810,6 +2905,248 @@ mod tests {
                 "{calibration}"
             );
         }
+    }
+
+    /// A camera matrix with rows summing to one and strong cross terms, as a real `rgb_cam` has.
+    const RGB_CAM: [[f32; 4]; 3] = [
+        [1.72, -0.61, -0.11, 0.0],
+        [-0.18, 1.49, -0.31, 0.0],
+        [0.04, -0.52, 1.48, 0.0],
+    ];
+
+    fn custom(gains: [f32; 3], exposure_ev: f64) -> crate::RawPayload {
+        crate::RawPayload {
+            exposure_ev,
+            wb_mode: crate::WhiteBalanceMode::Custom,
+            gains,
+            as_shot_gains: [2.0, 1.0, 1.5],
+            ..crate::RawPayload::default()
+        }
+    }
+
+    /// Planes that hold the recipe's white balance are evaluated exactly in both modes. Planes at
+    /// another white balance are `preparation-required` when strict, and approximated by
+    /// `R · diag(g'/g) · R⁻¹` only for a drafted preview. Missing planes, or a camera matrix with no
+    /// inverse, are `preparation-required` in both modes: never a silent wrong frame.
+    #[test]
+    fn only_a_drafted_preview_approximates_a_white_balance_the_planes_do_not_hold() {
+        use RawSettingsMode::{DraftPreview, Strict};
+        let developed = [2.0_f32, 1.0, 1.5];
+        let target = [1.6_f32, 1.0, 2.2];
+        let camera = RGB_CAM.map(|row| [row[0], row[1], row[2]].map(f64::from));
+        for mode in [Strict, DraftPreview] {
+            let held = resolve_raw_settings(
+                &custom(developed, 0.4),
+                developed,
+                RGB_CAM,
+                developed,
+                true,
+                mode,
+            )
+            .unwrap();
+            assert_eq!(
+                held,
+                crate::LinearSettings {
+                    exposure_ev: 0.4,
+                    white_balance: None,
+                },
+                "{mode:?}: planes that hold the white balance need no approximation"
+            );
+            // As shot resolves to the camera's gains, which these planes hold.
+            let as_shot = crate::RawPayload {
+                wb_mode: crate::WhiteBalanceMode::AsShot,
+                ..custom(target, 0.0)
+            };
+            assert_eq!(
+                resolve_raw_settings(&as_shot, developed, RGB_CAM, developed, true, mode)
+                    .unwrap()
+                    .white_balance,
+                None
+            );
+            let missing = resolve_raw_settings(
+                &custom(developed, 0.0),
+                developed,
+                RGB_CAM,
+                developed,
+                false,
+                mode,
+            )
+            .unwrap_err();
+            assert_eq!(missing.kind, ErrorKind::PreparationRequired, "{mode:?}");
+        }
+
+        let strict = resolve_raw_settings(
+            &custom(target, 0.4),
+            developed,
+            RGB_CAM,
+            developed,
+            true,
+            Strict,
+        )
+        .unwrap_err();
+        assert_eq!(strict.kind, ErrorKind::PreparationRequired);
+
+        let drafted = resolve_raw_settings(
+            &custom(target, 0.4),
+            developed,
+            RGB_CAM,
+            developed,
+            true,
+            DraftPreview,
+        )
+        .unwrap();
+        assert_eq!(drafted.exposure_ev, 0.4);
+        assert_eq!(
+            drafted.white_balance,
+            Some(crate::WhiteBalanceApproximation::between(camera, developed, target).unwrap()),
+            "the drafted gains over the developed ones, through the camera matrix"
+        );
+
+        let mut singular = RGB_CAM;
+        singular[2] = [
+            2.0 * singular[0][0],
+            2.0 * singular[0][1],
+            2.0 * singular[0][2],
+            0.0,
+        ];
+        let error = resolve_raw_settings(
+            &custom(target, 0.0),
+            developed,
+            singular,
+            developed,
+            true,
+            DraftPreview,
+        )
+        .unwrap_err();
+        assert_eq!(error.kind, ErrorKind::PreparationRequired);
+        assert!(error.detail.contains("singular"), "{}", error.detail);
+    }
+
+    /// On a real RAW file: a drafted temperature previews through the approximation, and every
+    /// other evaluation of the same drafted or committed white balance — the draft's point sample,
+    /// its analysis, and once committed the preview, render (the export path), sample, analysis and
+    /// the stage context an action is planned in — stays `preparation-required` until the mosaic is
+    /// redeveloped. Run with LIGHTWELL_RAW_FIXTURE pointing to a private qualified NEF, RAF or DNG.
+    #[test]
+    #[ignore = "requires a photo-sized RAW fixture; run explicitly on the owner's Mac"]
+    fn a_raw_draft_preview_approximates_and_every_strict_path_refuses() {
+        let path = PathBuf::from(std::env::var("LIGHTWELL_RAW_FIXTURE").expect("fixture path"));
+        let catalog = temp("raw-approximate.sqlite");
+        let mut service = EditorService::open(&catalog).unwrap();
+        let state = service.import(&path).unwrap();
+        let asset = state.asset.id.clone();
+        let is_required = |error: Error| error.kind == ErrorKind::PreparationRequired;
+
+        let committed = service.preview_job(&asset, None, None, None, None).unwrap();
+        assert!(!committed.source.approximate_white_balance());
+
+        let mut draft = Draft::new("set-raw-temperature", asset.clone(), state.revision);
+        draft.merge(Map::from_iter([("kelvin".to_owned(), json!(3200.0))]));
+        let drafted = service
+            .preview_job(&asset, None, None, Some(&draft), None)
+            .expect("a drafted white balance previews");
+        assert!(drafted.source.approximate_white_balance());
+        let PreviewSource::Raw { settings, .. } = &drafted.source else {
+            panic!("a RAW source");
+        };
+        let metadata = match &state.asset.source {
+            SourceKind::Raw { metadata } => {
+                parse_raw_interpretation(metadata, "RAW interpretation").unwrap()
+            }
+            SourceKind::Jpeg => panic!("a RAW asset"),
+        };
+        let target = crate::gains_from_temperature_tint(3200.0, 0.0, metadata.cam_xyz).unwrap();
+        let camera = metadata
+            .rgb_cam
+            .map(|row| [row[0], row[1], row[2]].map(f64::from));
+        assert_eq!(
+            settings.white_balance,
+            Some(
+                crate::WhiteBalanceApproximation::between(camera, metadata.as_shot_gains, target)
+                    .unwrap()
+            )
+        );
+        let rendered = drafted
+            .source
+            .render(
+                &service.registry,
+                drafted.entry.snapshot.id.clone(),
+                &drafted.recipe,
+            )
+            .expect("the approximate frame renders");
+        let exact = committed
+            .source
+            .render(
+                &service.registry,
+                committed.entry.snapshot.id.clone(),
+                &committed.recipe,
+            )
+            .unwrap();
+        assert_ne!(
+            rendered.rgba, exact.rgba,
+            "3200 K is not the as-shot picture"
+        );
+
+        // The drafted value's numbers are strict.
+        assert!(is_required(
+            service.sample_draft(&asset, &draft, 10, 10).unwrap_err()
+        ));
+        assert!(is_required(
+            service
+                .analysis_plan(&asset, AnalysisSelection::Draft(&draft))
+                .unwrap_err()
+        ));
+        // A drafted exposure over planes that hold the white balance is exact.
+        let mut exposure = Draft::new("set-raw-exposure", asset.clone(), state.revision);
+        exposure.merge(Map::from_iter([("ev".to_owned(), json!(0.5))]));
+        assert!(
+            !service
+                .preview_job(&asset, None, None, Some(&exposure), None)
+                .unwrap()
+                .source
+                .approximate_white_balance()
+        );
+
+        // Committed, the same white balance is strict everywhere until it is redeveloped.
+        let result = service
+            .apply_action(
+                &asset,
+                mutation(state.revision, "temperature"),
+                "set-raw-temperature",
+                json!({"kelvin": 3200.0}),
+            )
+            .unwrap();
+        let current = service.state(&asset).unwrap().current_entry.id;
+        assert!(is_required(
+            service
+                .preview_job(&asset, None, None, None, None)
+                .unwrap_err()
+        ));
+        assert!(is_required(
+            service.render_entry(&asset, &current).unwrap_err()
+        ));
+        assert!(is_required(
+            service.sample_entry(&asset, &current, 10, 10).unwrap_err()
+        ));
+        assert!(is_required(
+            service
+                .analysis_plan(&asset, AnalysisSelection::Current)
+                .unwrap_err()
+        ));
+        // Planning a pixel-stage module's action answers from the stage context, which is strict
+        // too. (A RAW source action plans without pixels, so it would not reach it.)
+        assert!(is_required(
+            service
+                .apply_action(
+                    &asset,
+                    mutation(result.revision, "basic"),
+                    "set-basic",
+                    json!({"exposure": 0.5}),
+                )
+                .unwrap_err()
+        ));
+        drop(service);
+        std::fs::remove_file(catalog).unwrap();
     }
 
     /// Run with LIGHTWELL_RAW_FIXTURE pointing to a private qualified NEF or RAF.

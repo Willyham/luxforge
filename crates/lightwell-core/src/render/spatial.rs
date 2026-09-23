@@ -1339,6 +1339,57 @@ pub(crate) mod tests {
         }
     }
 
+    /// A drafted white balance approximated on the developed planes names the same recipe prefix a
+    /// committed render of that white balance does, so the estimate store must key it apart: in
+    /// either order, the exact evaluation takes nothing estimated from approximate pixels, and the
+    /// approximate one takes nothing estimated from exact ones.
+    #[test]
+    fn an_approximate_white_balance_never_shares_a_global_estimate_with_the_exact_evaluation() {
+        let _guard = spatial_guard();
+        let registry = spatial_registry();
+        let stack = recipe(vec![spatial_layer(&["shift"])]);
+        let source = linear_source(40, 30);
+        let approximate = LinearSettings {
+            exposure_ev: 0.0,
+            white_balance: Some(
+                crate::WhiteBalanceApproximation::from_matrix([
+                    [1.4, 0.0, 0.0],
+                    [0.0, 1.0, 0.0],
+                    [0.0, 0.0, 0.6],
+                ])
+                .unwrap(),
+            ),
+        };
+        let render = |settings: LinearSettings| {
+            crate::render_linear(&registry, &source, SnapshotId::new(), &stack, settings)
+                .unwrap()
+                .rgba
+        };
+        clear_estimates();
+        let exact_alone = render(LinearSettings::default());
+        clear_estimates();
+        let approximate_alone = render(approximate);
+        assert_ne!(
+            exact_alone, approximate_alone,
+            "the mean shift moves with the approximated scene"
+        );
+
+        clear_estimates();
+        let _ = render(approximate);
+        assert_eq!(
+            render(LinearSettings::default()),
+            exact_alone,
+            "an exact render after an approximate one estimated from exact pixels"
+        );
+        clear_estimates();
+        let _ = render(LinearSettings::default());
+        assert_eq!(
+            render(approximate),
+            approximate_alone,
+            "an approximate render after an exact one estimated from its own pixels"
+        );
+    }
+
     #[test]
     fn a_sample_equals_every_rendered_byte_on_both_paths() {
         let _guard = spatial_guard();
