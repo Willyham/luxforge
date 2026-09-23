@@ -10,10 +10,13 @@ const EFFECT: &str = "lightwell.controls.identity";
 const FIXTURE: &str = "fixtures/s0/orientation-1.jpg";
 pub const WINDOW: [&str; 2] = ["1440", "900"];
 
-/// One import frame and one frame for each of the 22 real editor interactions.
+/// One import frame and one frame for each of the 25 real editor interactions.
 pub fn frames(scenario: &str) -> Option<usize> {
-    (scenario == "controls").then_some(23)
+    (scenario == "controls").then_some(26)
 }
+
+/// The developer pixel proof, whose section the script shows last: X and Y as px fields.
+const PIXEL_MODULE: &str = "lightwell.pixel";
 
 pub fn source(scenario: &str) -> Option<&'static str> {
     (scenario == "controls").then_some(FIXTURE)
@@ -47,7 +50,12 @@ pub fn script(scenario: &str) -> Option<Value> {
         {"controls":{"action":ACTION,"parameter":"mode","gesture":"discrete","value":"two"}},
         {"group":{"module":MODULE,"path":[0],"expanded":false}},
         {"group":{"module":MODULE,"path":[0],"expanded":true}},
-        {"reset":{"module":MODULE}}
+        {"reset":{"module":MODULE}},
+        // The pixel proof's section on its own: X and Y as labelled px fields, RGB, the picker
+        // and Apply pixel.
+        {"section":{"module":MODULE,"expanded":false}},
+        {"section":{"module":PIXEL_MODULE,"expanded":true}},
+        {"tools_scroll":1.0}
     ]))
 }
 
@@ -229,7 +237,7 @@ pub fn verify(evidence: &Path, app: &Value, events: &[Value]) -> Result {
 
     // Opening, scrolling and drafting do not create history. One release or discrete event does.
     let revisions = [
-        0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 2, 3, 3, 4, 4, 5, 6, 7, 8, 8, 8, 9,
+        0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 2, 3, 3, 4, 4, 5, 6, 7, 8, 8, 8, 9, 9, 9, 9,
     ];
     for (index, expected) in revisions.into_iter().enumerate() {
         ensure(
@@ -323,6 +331,19 @@ pub fn verify(evidence: &Path, app: &Value, events: &[Value]) -> Result {
     ensure(
         payload(&frames[22]).is_some_and(|p| p.as_object().is_some_and(|o| o.is_empty())),
         "Module reset did not clear all proof values",
+    )?;
+    ensure(
+        frames[23]["state"]["expanded"][MODULE] == false
+            && frames[24]["state"]["expanded"][PIXEL_MODULE] == true
+            && frames[25]["state"]["expanded"][PIXEL_MODULE] == true
+            && frames[25]["state"]["expanded"][MODULE] == false
+            && frames[25]["state"]["tools_scroll"] == json!(1.0),
+        "The pixel proof's section was not shown on its own at the panel's end",
+    )?;
+    ensure(
+        frames[25]["state"]["controls"]["set-pixel.x"].is_string()
+            && frames[25]["state"]["controls"]["set-pixel.y"].is_string(),
+        "The pixel proof's X and Y fields are not in the captured state",
     )?;
     ensure(
         events

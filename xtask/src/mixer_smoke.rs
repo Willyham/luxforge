@@ -44,7 +44,7 @@ const UNCHANGED: f64 = 10.0;
 
 /// One open frame plus one per script step.
 pub fn frames(scenario: &str) -> Option<usize> {
-    (scenario == "mixer").then_some(10)
+    (scenario == "mixer").then_some(11)
 }
 
 pub fn source(scenario: &str) -> Option<&'static str> {
@@ -76,7 +76,9 @@ pub fn script(scenario: &str) -> Option<Value> {
             // 8: a stronger hue shift, still at 100%, where continuity across the wheel shows.
             {"slider":{"action":SET_MIXER,"parameter":RED_HUE,"values":[100.0],"release":true}},
             // 9: the Saturation tab: the mixer's groups are tabs, and choosing one is view state.
-            {"tab":{"module":MIXER_MODULE,"index":1}}
+            {"tab":{"module":MIXER_MODULE,"index":1}},
+            // 10: the Luminance tab, the last of the three.
+            {"tab":{"module":MIXER_MODULE,"index":2}}
         ])
     })
 }
@@ -551,6 +553,18 @@ pub fn verify(evidence: &Path, app: &Value, _events: &[Value]) -> Result {
     record(
         &frames[9],
         "the Saturation tab selected: its eight rails shown under the tab row, nothing committed",
+        json!({"selected_tab": selected}),
+    );
+
+    // Frame 10: the Luminance tab, again view state alone.
+    let selected = &frames[10]["state"]["control_ui"]["selected_tab"][MIXER_MODULE];
+    ensure(
+        selected == &json!(2) && revision(&frames[10])? == revision(&frames[9])?,
+        format!("The Luminance tab was not selected as view state alone: {selected}"),
+    )?;
+    record(
+        &frames[10],
+        "the Luminance tab selected: its eight dark-to-light rails under the tab row, nothing committed",
         json!({"selected_tab": selected}),
     );
 
