@@ -8,6 +8,7 @@ mod editor;
 mod error;
 /// The host's compiled mask and the component kinds this build can evaluate.
 pub mod mask;
+mod mask_field;
 mod model;
 mod modules;
 mod preview;
@@ -23,7 +24,7 @@ use image::{ImageDecoder, ImageReader, Limits};
 pub use model::*;
 pub use modules::*;
 pub use preview::*;
-pub use proxy::{ProxyBounds, ProxyCache, ProxyIdentity, ProxyKey, ProxyPlan};
+pub use proxy::{ProxyApproximation, ProxyBounds, ProxyCache, ProxyIdentity, ProxyKey, ProxyPlan};
 pub use render::{
     Cancel, ContentPoint, LinearImage, LinearSettings, Raster, Sample, ScratchBudget,
     SpatialBudget, StageSize, StageTransform, cached_estimates, clear_estimates, extents, locate,

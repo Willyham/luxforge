@@ -258,8 +258,9 @@ pub(crate) struct ProxyFrame {
     pub(crate) dimensions: (u32, u32),
     /// The proxy source was built for this frame rather than taken from the queue's cache.
     pub(crate) built: bool,
-    /// The frame approximates the exact render at display size: the stack holds a spatial layer.
-    pub(crate) approximate: bool,
+    /// Whether the frame approximates the exact render at display size, and why: a spatial layer
+    /// whose neighbourhoods scale with the stage, a thin mask, or both.
+    pub(crate) approximation: lightwell_core::ProxyApproximation,
 }
 
 /// What a presented proxy frame holds back until its generation's exact phase lands.
@@ -813,7 +814,12 @@ impl Editor {
                 (None, false) => None,
             },
             "declined": self.proxy_declined,
-            "approximate": self.presented_proxy_frame().map(|frame| frame.approximate),
+            "approximate": self
+                .presented_proxy_frame()
+                .map(|frame| frame.approximation.is_approximate()),
+            "approximate_reason": self
+                .presented_proxy_frame()
+                .and_then(|frame| frame.approximation.reason()),
             "dimensions": self
                 .presented_proxy_frame()
                 .map(|frame| json!([frame.dimensions.0, frame.dimensions.1])),
@@ -1272,20 +1278,26 @@ impl Editor {
             let Some(frame) = self.presented_proxy_frame() else {
                 return Task::none();
             };
-            let (generation, raster, dimensions, built, approximate) = (
+            let (generation, raster, dimensions, built, approximation) = (
                 frame.generation,
                 frame.raster.clone(),
                 frame.dimensions,
                 frame.built,
-                frame.approximate,
+                frame.approximation,
             );
-            return self.hand_retained(generation, raster, Some(dimensions), built, approximate);
+            return self.hand_retained(generation, raster, Some(dimensions), built, approximation);
         }
         let Some(raster) = self.presented_exact_raster().cloned() else {
             return Task::none();
         };
         let generation = self.presented_generation;
-        self.hand_retained(generation, raster, None, false, false)
+        self.hand_retained(
+            generation,
+            raster,
+            None,
+            false,
+            lightwell_core::ProxyApproximation::default(),
+        )
     }
 
     /// One preview job for the entry on screen, at the bounds the view now asks for. The zoom rule
@@ -1368,7 +1380,7 @@ impl Editor {
         raster: Arc<lightwell_core::Raster>,
         proxy_dimensions: Option<(u32, u32)>,
         proxy_built: bool,
-        proxy_approximate: bool,
+        proxy_approximation: lightwell_core::ProxyApproximation,
     ) -> Task<Message> {
         // The texture is a proxy exactly when there are proxy dimensions to describe it.
         let proxy = proxy_dimensions.is_some();
@@ -1386,7 +1398,7 @@ impl Editor {
             proxy,
             proxy_dimensions,
             proxy_built,
-            proxy_approximate,
+            proxy_approximation,
             reason: Some("zoom"),
         };
         self.present(upload, &raster);
@@ -1449,7 +1461,8 @@ impl Editor {
                 "proxy":upload.proxy,
                 "proxy_dimensions":upload.proxy_dimensions.map(|(width,height)| json!([width,height])),
                 "proxy_built":upload.proxy_built,
-                "proxy_approximate":upload.proxy_approximate,
+                "proxy_approximate":upload.proxy_approximation.is_approximate(),
+                "proxy_approximate_reason":upload.proxy_approximation.reason(),
                 "reason":upload.reason,
             }),
         );
@@ -2101,7 +2114,7 @@ impl Editor {
                     let entry_id = result.entry_id.clone();
                     let proxy_dimensions = result.proxy_dimensions;
                     let proxy_built = result.proxy_built;
-                    let proxy_approximate = result.proxy_approximate;
+                    let proxy_approximation = result.proxy_approximation;
                     if !for_draft {
                         if proxy {
                             self.awaiting_exact = Some(generation);
@@ -2172,7 +2185,7 @@ impl Editor {
                                         raster: retained,
                                         dimensions: proxy_dimensions.unwrap_or(stage),
                                         built: proxy_built,
-                                        approximate: proxy_approximate,
+                                        approximation: proxy_approximation,
                                     });
                                 } else {
                                     match report {
@@ -2207,7 +2220,7 @@ impl Editor {
                                 proxy,
                                 proxy_dimensions,
                                 proxy_built,
-                                proxy_approximate,
+                                proxy_approximation,
                                 reason: None,
                             };
                             if for_draft {
@@ -5803,7 +5816,7 @@ mod tests {
             raster: pixels(1),
             dimensions: (1200, 900),
             built: true,
-            approximate: false,
+            approximation: lightwell_core::ProxyApproximation::default(),
         });
         editor.raster = Some((7, pixels(2)));
 
@@ -6672,7 +6685,7 @@ mod tests {
             proxy: false,
             proxy_dimensions: None,
             proxy_built: false,
-            proxy_approximate: false,
+            proxy_approximation: lightwell_core::ProxyApproximation::default(),
             reason: None,
         };
         assert!(

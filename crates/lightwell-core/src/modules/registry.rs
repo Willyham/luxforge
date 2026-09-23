@@ -7,8 +7,8 @@ use super::{
     VignetteModule,
 };
 use crate::{
-    Error, ErrorKind, Layer, Mask, MaskId, Recipe,
-    mask::CompiledMask,
+    Error, ErrorKind, Layer, Mask, MaskId, ProxyApproximation, Recipe,
+    mask_field::{MaskField, MaskSampling},
     render::{
         Compiled, Entry, Segment,
         spatial::{SpatialPlan, prefix_hash},
@@ -469,6 +469,35 @@ impl ModuleRegistry {
             .any(|layer| self.effect_stage(&layer.effect_id) == Some(EffectStage::Spatial))
     }
 
+    /// Why a proxy render of this stack at this source size is an approximation, which is the
+    /// answer a frame is reported with.
+    ///
+    /// Two reasons, and the second is the only one that needs a size: a mask's geometry is
+    /// normalized, so whether it draws a feature the proxy's pixel grid can resolve is a fact about
+    /// that grid. The answer is read from a compilation at exactly the dimensions the proxy phase
+    /// renders — the same compilation, so what is reported and what is drawn cannot disagree —
+    /// which costs `O(layers + components)` and reads no pixels. A stack that does not compile at
+    /// that size has no proxy frame at all, and the caller has already declined it with its own
+    /// reason, so there is nothing here to add.
+    pub fn proxy_approximation(
+        &self,
+        recipe: &Recipe,
+        source_width: u32,
+        source_height: u32,
+    ) -> ProxyApproximation {
+        ProxyApproximation {
+            spatial: self.proxy_approximate(recipe),
+            mask: self
+                .compile_sampled(
+                    source_width,
+                    source_height,
+                    recipe,
+                    MaskSampling::ThinFeature,
+                )
+                .is_ok_and(|compiled| compiled.supersampled_masks()),
+        }
+    }
+
     /// The provider that can evaluate this effect, or `None` when none is registered or the
     /// registered one reports itself unavailable.
     fn provider(&self, effect_id: &str) -> Option<&dyn ToolModule> {
@@ -565,7 +594,8 @@ impl ModuleRegistry {
         layer: &Layer,
         masks: &[Mask],
         stage: Stage,
-    ) -> Result<Option<Arc<CompiledMask>>, Error> {
+        sampling: MaskSampling,
+    ) -> Result<Option<MaskField>, Error> {
         let Some(id) = &layer.mask else {
             return Ok(None);
         };
@@ -578,7 +608,7 @@ impl ModuleRegistry {
                 ),
             )
         })?;
-        Ok(Some(Arc::new(CompiledMask::new(mask, stage)?)))
+        Ok(Some(MaskField::compile(mask, stage, sampling)?))
     }
 
     /// A component's `kind` is the host's business, not a module's: `crate::mask` owns the table of
@@ -622,6 +652,23 @@ impl ModuleRegistry {
         source_height: u32,
         recipe: &Recipe,
     ) -> Result<Compiled, Error> {
+        self.compile_sampled(source_width, source_height, recipe, MaskSampling::Point)
+    }
+
+    /// [`Self::compile`] with the way this render samples its masks as a parameter.
+    ///
+    /// Every exact render point samples, which is the frozen field; only the proxy phase passes
+    /// [`MaskSampling::ThinFeature`], and only a mask that draws a feature narrower than two pixels
+    /// *at the stage compiled here* is affected by it. Nothing else about compiling changes, which
+    /// is what keeps a proxy frame byte for byte the exact recipe over the exact downscale wherever
+    /// the rule does not fire.
+    pub(crate) fn compile_sampled(
+        &self,
+        source_width: u32,
+        source_height: u32,
+        recipe: &Recipe,
+        sampling: MaskSampling,
+    ) -> Result<Compiled, Error> {
         // The whole-recipe checks every evaluation path shares: the format marker, and the mask
         // table with the references into it and the kinds inside it. They cost
         // `O(layers + components)` and read no pixels, so compiling here is what makes a stack that
@@ -631,7 +678,13 @@ impl ModuleRegistry {
         recipe.validate()?;
         self.validate_masked_stages(recipe)?;
         self.validate_mask_kinds(recipe)?;
-        self.compile_layers(source_width, source_height, &recipe.layers, &recipe.masks)
+        self.compile_layers_sampled(
+            source_width,
+            source_height,
+            &recipe.layers,
+            &recipe.masks,
+            sampling,
+        )
     }
 
     /// Compile an ordered layer slice whose recipe format is already known good, against the mask
@@ -644,6 +697,24 @@ impl ModuleRegistry {
         source_height: u32,
         layers: &[Layer],
         masks: &[Mask],
+    ) -> Result<Compiled, Error> {
+        self.compile_layers_sampled(
+            source_width,
+            source_height,
+            layers,
+            masks,
+            MaskSampling::Point,
+        )
+    }
+
+    /// [`Self::compile_layers`] with the mask sampling of the render being compiled.
+    fn compile_layers_sampled(
+        &self,
+        source_width: u32,
+        source_height: u32,
+        layers: &[Layer],
+        masks: &[Mask],
+        sampling: MaskSampling,
     ) -> Result<Compiled, Error> {
         let mut layer_ids = HashSet::with_capacity(layers.len());
         // The effects whose module owns exactly one layer of a stack, seen so far, **per target**:
@@ -741,7 +812,7 @@ impl ModuleRegistry {
                         // `Processing` — against the stage this layer receives, which for a
                         // content-stage layer is the content stage its geometry is normalized to. A
                         // module returned a plain operation and never saw the reference.
-                        let operation = match Self::compiled_mask(layer, masks, stage)? {
+                        let operation = match Self::compiled_mask(layer, masks, stage, sampling)? {
                             Some(mask) => operation.with_mask(mask),
                             None => operation,
                         };
@@ -763,7 +834,7 @@ impl ModuleRegistry {
                     // writes, which is what lets the tile loop read the mask at a tile's own
                     // coordinates. The module returned a plain operation and never saw the
                     // reference.
-                    let operation = match Self::compiled_mask(layer, masks, stage)? {
+                    let operation = match Self::compiled_mask(layer, masks, stage, sampling)? {
                         Some(mask) => {
                             masked_spatial += 1;
                             if masked_spatial > MAX_MASKED_SPATIAL_LAYERS {

@@ -1,6 +1,6 @@
 use crate::{
     Error, ErrorKind, Layer, Recipe, SnapshotId, SourceImage,
-    mask::CompiledMask,
+    mask_field::{MaskField, MaskSampling},
     modules::{
         ColorOperation, ExactGeometry, ModuleRegistry, Processing, Region, Resample,
         SpatialOperation, Stage,
@@ -18,6 +18,7 @@ use std::{
 
 pub mod linear;
 pub mod spatial;
+pub(crate) use linear::render_linear_proxy_cancellable;
 pub use linear::{
     LinearImage, LinearSettings, render_linear, render_linear_cancellable, sample_linear,
 };
@@ -346,16 +347,16 @@ fn color_runs(segment: &Segment) -> ColorRuns<'_> {
 /// signed permutation, so `unmap` is the mapping's exact inverse and a mask lands on the same content
 /// pixels through a quarter turn, a reflection and an axis-aligned crop.
 struct MaskPlacement<'a> {
-    mask: &'a CompiledMask,
+    mask: &'a MaskField,
     /// From the stage the mask was compiled against to the frame this run colours.
     suffix: ExactGeometry,
-    /// [`CompiledMask::bounds`] mapped into that frame: outside it coverage is exactly zero, so the
+    /// [`MaskField::bounds`] mapped into that frame: outside it coverage is exactly zero, so the
     /// blend is the identity there and no unit is evaluated at all.
     bounds: Region,
 }
 
 impl<'a> MaskPlacement<'a> {
-    fn new(run: &ColorRun<'a>, index: usize, mask: &'a CompiledMask) -> Self {
+    fn new(run: &ColorRun<'a>, index: usize, mask: &'a MaskField) -> Self {
         let mut suffix = ExactGeometry::identity(run.stage.width, run.stage.height);
         for operation in run.operations[index + 1..].iter().rev() {
             if let Processing::ExactGeometry(step) = operation {
@@ -1116,6 +1117,26 @@ impl Compiled {
             height: self.last().height,
         }
     }
+
+    /// Whether any mask in this compilation had the thin-feature rule applied to it: it draws a
+    /// feature narrower than two pixels of the stage it was compiled against, so it is evaluated
+    /// with a 2 x 2 supersample per pixel and the frame it produces is approximate.
+    ///
+    /// Read from the compilation the render itself uses rather than recomputed from the recipe, so
+    /// what is reported and what is drawn cannot disagree. Cost is `O(layers)` and reads no pixels.
+    pub(crate) fn supersampled_masks(&self) -> bool {
+        self.segments.iter().any(|segment| {
+            segment.operations.iter().any(|operation| match operation {
+                Processing::Color(colour) => colour
+                    .mask()
+                    .is_some_and(super::mask_field::MaskField::supersampled),
+                Processing::Spatial(spatial) => spatial
+                    .mask()
+                    .is_some_and(super::mask_field::MaskField::supersampled),
+                _ => false,
+            })
+        })
+    }
 }
 
 /// Where one segment-output pixel comes from: the input-frame pixel it reads and the replacement
@@ -1767,6 +1788,33 @@ pub fn render_cancellable(
     )
 }
 
+/// [`render_cancellable`] against a **proxy** source: the same code and the same colour arithmetic,
+/// with the proxy phase's thin-feature rule applied to the masks in the stack.
+///
+/// The recipe is resolution independent and a mask's geometry is normalized, so this is the exact
+/// recipe at proxy size and its frame is byte for byte [`render_cancellable`] over the same
+/// downscaled source — *unless* a mask draws a feature narrower than two pixels of that smaller
+/// stage, where [`MaskSampling::ThinFeature`] supersamples the mask field 2 x 2 and the caller
+/// reports the frame approximate. Nothing about the effect is supersampled, and no exact render
+/// ever takes this path.
+pub(crate) fn render_proxy_cancellable(
+    registry: &ModuleRegistry,
+    source: &SourceImage,
+    snapshot_id: SnapshotId,
+    recipe: &Recipe,
+    cancel: &Cancel,
+) -> Result<Raster, Error> {
+    render_sampled(
+        registry,
+        source,
+        snapshot_id,
+        recipe,
+        cancel,
+        PRODUCTION_TILE,
+        MaskSampling::ThinFeature,
+    )
+}
+
 /// [`render_cancellable`] with the spatial tile size as a parameter. Production always passes
 /// [`PRODUCTION_TILE`]; the tests pass other sizes to prove a rendered frame does not depend on it.
 pub(crate) fn render_tiled(
@@ -1777,10 +1825,33 @@ pub(crate) fn render_tiled(
     cancel: &Cancel,
     tile: u32,
 ) -> Result<Raster, Error> {
+    render_sampled(
+        registry,
+        source,
+        snapshot_id,
+        recipe,
+        cancel,
+        tile,
+        MaskSampling::Point,
+    )
+}
+
+/// [`render_tiled`] with the mask sampling as a parameter as well. The only caller that passes
+/// anything but [`MaskSampling::Point`] is the proxy phase.
+#[allow(clippy::too_many_arguments)]
+fn render_sampled(
+    registry: &ModuleRegistry,
+    source: &SourceImage,
+    snapshot_id: SnapshotId,
+    recipe: &Recipe,
+    cancel: &Cancel,
+    tile: u32,
+    sampling: MaskSampling,
+) -> Result<Raster, Error> {
     // A token already cancelled when the call arrives costs no frame at all.
     cancel.check()?;
     check_source(source)?;
-    let compiled = registry.compile(source.width, source.height, recipe)?;
+    let compiled = registry.compile_sampled(source.width, source.height, recipe, sampling)?;
     let first = &compiled.segments[0];
     let mut width = first.width;
     let mut height = first.height;
@@ -4833,7 +4904,7 @@ mod tests {
         measure("identity", &identity);
         measure("unmasked exposure", &unmasked);
         for (name, mask) in [("small bounds", small), ("whole frame", whole)] {
-            let compiled = CompiledMask::new(&mask, stage).unwrap();
+            let compiled = crate::mask::CompiledMask::new(&mask, stage).unwrap();
             let bounds = compiled.bounds();
             println!(
                 "{name}: the rectangle admits {:.2}% of the frame",

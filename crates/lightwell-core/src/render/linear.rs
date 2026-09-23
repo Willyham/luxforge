@@ -14,6 +14,7 @@ use super::{
 };
 use crate::{
     Error, ErrorKind, Recipe, SnapshotId,
+    mask_field::MaskSampling,
     modules::{Global, ModuleRegistry, SpatialOperation, Stage},
 };
 use rayon::prelude::*;
@@ -556,8 +557,30 @@ impl<'a> LinearEvaluation<'a> {
         cancel: &Cancel,
         tile: u32,
     ) -> Result<Self, Error> {
+        Self::sampled(
+            registry,
+            source,
+            recipe,
+            settings,
+            cancel,
+            tile,
+            MaskSampling::Point,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn sampled(
+        registry: &ModuleRegistry,
+        source: &'a LinearImage,
+        recipe: &Recipe,
+        settings: LinearSettings,
+        cancel: &Cancel,
+        tile: u32,
+        sampling: MaskSampling,
+    ) -> Result<Self, Error> {
         let exposure_multiplier = settings.multiplier()?;
-        let compiled = registry.compile(source.width(), source.height(), recipe)?;
+        let compiled =
+            registry.compile_sampled(source.width(), source.height(), recipe, sampling)?;
         let resamples = compiled
             .segments
             .iter()
@@ -824,9 +847,57 @@ pub(super) fn render_linear_tiled(
     cancel: &Cancel,
     tile: u32,
 ) -> Result<Raster, Error> {
+    render_linear_sampled(
+        registry,
+        source,
+        snapshot_id,
+        recipe,
+        settings,
+        cancel,
+        tile,
+        MaskSampling::Point,
+    )
+}
+
+/// [`render_linear_cancellable`] against a **proxy** source, with the proxy phase's thin-feature
+/// rule applied to the masks in the stack. The linear half of
+/// [`render_proxy_cancellable`](super::render_proxy_cancellable); no exact render takes this path.
+pub(crate) fn render_linear_proxy_cancellable(
+    registry: &ModuleRegistry,
+    source: &LinearImage,
+    snapshot_id: SnapshotId,
+    recipe: &Recipe,
+    settings: LinearSettings,
+    cancel: &Cancel,
+) -> Result<Raster, Error> {
+    render_linear_sampled(
+        registry,
+        source,
+        snapshot_id,
+        recipe,
+        settings,
+        cancel,
+        PRODUCTION_TILE,
+        MaskSampling::ThinFeature,
+    )
+}
+
+/// [`render_linear_tiled`] with the mask sampling as a parameter as well.
+#[allow(clippy::too_many_arguments)]
+fn render_linear_sampled(
+    registry: &ModuleRegistry,
+    source: &LinearImage,
+    snapshot_id: SnapshotId,
+    recipe: &Recipe,
+    settings: LinearSettings,
+    cancel: &Cancel,
+    tile: u32,
+    sampling: MaskSampling,
+) -> Result<Raster, Error> {
     // A token already cancelled when the call arrives costs no frame at all.
     cancel.check()?;
-    let evaluation = LinearEvaluation::new(registry, source, recipe, settings, cancel, tile)?;
+    let evaluation =
+        LinearEvaluation::sampled(registry, source, recipe, settings, cancel, tile, sampling)?;
     let (width, height) = evaluation.stage();
     let output_len = output_len(width, height)?;
     let row_bytes = usize::try_from(u64::from(width) * 4).map_err(|_| {
