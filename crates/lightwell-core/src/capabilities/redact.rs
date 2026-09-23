@@ -51,7 +51,10 @@ mod tests {
             redacted.params,
             json!({"module_id": "test.module", "setting": "api-key", "value": "<redacted>"})
         );
-        assert_eq!(redacted.token, None, "the live-session token is never copied");
+        assert_eq!(
+            redacted.token, None,
+            "the live-session token is never copied"
+        );
         assert_eq!(redacted.id, "one");
         assert_eq!(redacted.method, SET_SECRET);
         assert_eq!(
