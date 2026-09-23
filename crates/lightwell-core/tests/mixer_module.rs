@@ -498,7 +498,8 @@ fn a_neutral_mixer_layer_shares_the_source_buffer() {
 }
 
 /// Every grey code on a rendered ramp is byte-invariant under every one of the 24 sliders at
-/// `±100`, through the real render path and quantizer.
+/// `±100`, through the real render path and quantizer: the same code in, the same code out, in
+/// all three channels.
 #[test]
 fn greys_stay_byte_invariant_under_every_slider_on_a_rendered_ramp() {
     let registry = ModuleRegistry::builtin();
@@ -515,17 +516,146 @@ fn greys_stay_byte_invariant_under_every_slider_on_a_rendered_ramp() {
             .unwrap_or_else(|error| panic!("{field} at {value}: {error}"));
             for x in 0..256u32 {
                 let pixel = rendered.pixel(x, 0).expect("a rendered pixel");
-                assert!(
-                    pixel[0] == pixel[1] && pixel[1] == pixel[2],
-                    "{field} at {value}: grey {x} drifted to {pixel:?}"
+                let code = x as u8;
+                assert_eq!(
+                    pixel,
+                    [code, code, code, 255],
+                    "{field} at {value}: grey {x} drifted"
                 );
-                assert_eq!(pixel[3], 255, "alpha is never touched");
             }
         }
     }
 }
 
-/// Production versus every one of the 414 frozen fixture cases, through the real render path
+/// A colourful test image: a fully saturated HSV hue wheel on a near-grey backdrop (the smoke
+/// scenario's fixture shape, generated here rather than read from a JPEG), the same wheel with a
+/// deterministic ±3-code noise on every channel, noisy near-greys around every grey level, every
+/// dark code up to 23 in each channel and a colour cube in steps of 5.
+fn colourful_image() -> (u32, u32, Vec<[u8; 3]>) {
+    const SIZE: u32 = 240;
+    fn hsv(hue_deg: f32, saturation: f32) -> [u8; 3] {
+        let x = saturation * (1.0 - ((hue_deg / 60.0).rem_euclid(2.0) - 1.0).abs());
+        let (r, g, b) = match (hue_deg / 60.0) as u32 % 6 {
+            0 => (saturation, x, 0.0),
+            1 => (x, saturation, 0.0),
+            2 => (0.0, saturation, x),
+            3 => (0.0, x, saturation),
+            4 => (x, 0.0, saturation),
+            _ => (saturation, 0.0, x),
+        };
+        [r, g, b].map(|channel| ((channel + 1.0 - saturation) * 255.0).round() as u8)
+    }
+    let mut state = 0x853c_49e6_748f_ea9bu64;
+    let mut noise = move || {
+        state = state
+            .wrapping_mul(6_364_136_223_846_793_005)
+            .wrapping_add(1_442_695_040_888_963_407);
+        ((state >> 33) % 7) as i32 - 3
+    };
+    let mut wheel = Vec::new();
+    let radius = SIZE as f32 / 2.0;
+    for y in 0..SIZE {
+        for x in 0..SIZE {
+            let (dx, dy) = (x as f32 + 0.5 - radius, y as f32 + 0.5 - radius);
+            let r = (dx * dx + dy * dy).sqrt();
+            wheel.push(if r > radius {
+                [40, 40, 42]
+            } else {
+                hsv(dy.atan2(dx).to_degrees().rem_euclid(360.0), r / radius)
+            });
+        }
+    }
+    let mut pixels = wheel.clone();
+    pixels.extend(
+        wheel
+            .iter()
+            .map(|pixel| pixel.map(|c| (i32::from(c) + noise()).clamp(0, 255) as u8)),
+    );
+    for grey in 0..=255i32 {
+        for _ in 0..30 {
+            pixels.push([(); 3].map(|_| (grey + noise()).clamp(0, 255) as u8));
+        }
+    }
+    for r in 0..24u8 {
+        for g in 0..24u8 {
+            for b in 0..24u8 {
+                pixels.push([r, g, b]);
+            }
+        }
+    }
+    for r in (0..=255u8).step_by(5) {
+        for g in (0..=255u8).step_by(5) {
+            for b in (0..=255u8).step_by(5) {
+                pixels.push([r, g, b]);
+            }
+        }
+    }
+    while pixels.len() % SIZE as usize != 0 {
+        pixels.push([0, 0, 0]);
+    }
+    let height = (pixels.len() / SIZE as usize) as u32;
+    (SIZE, height, pixels)
+}
+
+/// Every saturation slider at `-100` renders an arbitrary colourful image as exact greys, `R == G
+/// == B` on every output pixel, through the 8-bit path and through the RAW linear path — near-grey
+/// noise and the darkest pixels included, which the chroma ramp would otherwise have left
+/// partly coloured — and with every luminance slider set as well.
+#[test]
+fn every_saturation_slider_at_minus_100_renders_exact_greys() {
+    let registry = ModuleRegistry::builtin();
+    let (width, height, pixels) = colourful_image();
+    let source = source_of(width, height, &pixels);
+    let linear = {
+        let decode = |code: u8| reference::srgb_to_linear(code) as f32;
+        let mut planes = Vec::with_capacity(pixels.len() * 3);
+        for channel in 0..3 {
+            planes.extend(pixels.iter().map(|pixel| decode(pixel[channel])));
+        }
+        LinearImage::with_fingerprint(width, height, planes, "sha256:mixer-module-colourful")
+            .unwrap()
+    };
+    let mut desaturated = Map::new();
+    for range in RANGE_NAMES {
+        desaturated.insert(format!("{range}-saturation"), json!(-100.0));
+    }
+    let mut lit = desaturated.clone();
+    for range in RANGE_NAMES {
+        lit.insert(format!("{range}-luminance"), json!(40.0));
+    }
+    for payload in [Value::Object(desaturated), Value::Object(lit)] {
+        let stack = recipe(vec![mixer_layer(payload.clone())]);
+        let jpeg_path = render(&registry, &source, SnapshotId::new(), &stack).unwrap();
+        let raw_path = render_linear(
+            &registry,
+            &linear,
+            SnapshotId::new(),
+            &stack,
+            LinearSettings::default(),
+        )
+        .unwrap();
+        for (path, rendered) in [("8-bit", &jpeg_path), ("linear", &raw_path)] {
+            let mut worst = [0u8; 2];
+            for y in 0..height {
+                for x in 0..width {
+                    let pixel = rendered.pixel(x, y).unwrap();
+                    worst[0] = worst[0].max(pixel[0].abs_diff(pixel[1]));
+                    worst[1] = worst[1].max(pixel[1].abs_diff(pixel[2]));
+                }
+            }
+            // Printed with --nocapture so the handoff can quote the measured figure.
+            println!(
+                "{path} path, {} pixels, {payload}: max |R-G| {}, max |G-B| {}",
+                width * height,
+                worst[0],
+                worst[1]
+            );
+            assert_eq!(worst, [0, 0], "{path} path under {payload}");
+        }
+    }
+}
+
+/// Production versus every one of the 576 frozen fixture cases, through the real render path
 /// (the 8-bit JPEG path for `srgb8` inputs, the RAW linear path for `linear` ones), grouped by
 /// parameter set so each set costs one render rather than one per case. This complements
 /// `modules::mixer::unit::tests::production_matches_every_frozen_fixture_case_within_the_frozen_tolerance`,
@@ -544,7 +674,7 @@ fn production_matches_every_frozen_fixture_case_through_the_real_render_path() {
         .collect();
     let parameter_sets = file["parameter_sets"].as_array().unwrap();
     let cases = file["cases"].as_array().unwrap();
-    assert_eq!(cases.len(), 414, "every frozen case is checked");
+    assert_eq!(cases.len(), 576, "every frozen case is checked");
 
     let registry = ModuleRegistry::builtin();
     let mut worst = 0.0f64;

@@ -26,8 +26,8 @@ mod reference;
 
 use reference::colour::{self, Oklab};
 use reference::mixer::{
-    self, CENTRE_HUES_DEG, CHROMA_RAMP_EDGE, MixerParams, RANGE_COUNT, RANGE_NAMES,
-    RANGE_REFERENCE_CODES,
+    self, CENTRE_HUES_DEG, CHROMA_RAMP_EDGE, HUE_REACH, HueWarp, MixerParams, RANGE_COUNT,
+    RANGE_NAMES, RANGE_REFERENCE_CODES,
 };
 use serde::{Deserialize, Serialize};
 use std::f64::consts::PI;
@@ -196,8 +196,10 @@ fn weights_are_continuous_around_the_wheel() {
 // ---------------------------------------------------------------------------
 
 /// The neutral payload is the exact identity **in Oklab**: `mix` with every
-/// slider at zero reproduces the plain Oklab round trip bit for bit, so the
-/// only difference from the input is the conversion's own round-trip residual.
+/// slider at zero reproduces the unit's Oklab round trip bit for bit —
+/// `to_oklab`, then [`mixer::reconstruct`], which is the plain `from_oklab`
+/// for every colour but an exactly achromatic one — so the only difference
+/// from the input is the conversion's own round-trip residual.
 #[test]
 fn neutral_parameters_are_bit_exactly_the_oklab_round_trip() {
     let neutral = MixerParams::neutral();
@@ -208,7 +210,7 @@ fn neutral_parameters_are_bit_exactly_the_oklab_round_trip() {
             for bi in 0..steps {
                 let rgb = [sample(ri), sample(gi), sample(bi)];
                 let mixed = mixer::mix(rgb, &neutral);
-                let round_trip = colour::from_oklab(colour::to_oklab(rgb));
+                let round_trip = mixer::reconstruct(colour::to_oklab(rgb));
                 assert_eq!(
                     mixed, round_trip,
                     "the neutral payload is not bit-exactly the round trip for {rgb:?}"
@@ -321,15 +323,17 @@ fn chroma_ramp_pins_the_achromatic_axis() {
     );
 }
 
-/// A colour whose weight for a range is zero is bit-identical under every
-/// setting of that range's three sliders.
+/// A colour outside a slider's support is bit-identical under every setting of
+/// it. A range's weight is exactly zero two centres away, so its saturation
+/// and luminance sliders are checked there; its hue slider warps one segment
+/// further each side (see
+/// `a_single_hue_slider_warps_only_the_four_segments_around_its_centre`), so it
+/// is checked three centres away.
 #[test]
 fn zero_weight_colours_are_bit_identical_under_that_range() {
     let neutral_output = |rgb: [f64; 3]| mixer::mix(rgb, &MixerParams::neutral());
     for range in 0..RANGE_COUNT {
-        // Two centres away in each direction: certainly outside the two
-        // segments that can give this range a non-zero weight.
-        for offset in [2usize, RANGE_COUNT - 2] {
+        for (offset, far_offset) in [(2usize, 3usize), (RANGE_COUNT - 2, RANGE_COUNT - 3)] {
             let other = (range + offset) % RANGE_COUNT;
             let rgb = srgb8_linear(RANGE_REFERENCE_CODES[other]);
             let weights = mixer::range_weights(colour::hue_degrees(colour::to_oklab(rgb)));
@@ -338,19 +342,31 @@ fn zero_weight_colours_are_bit_identical_under_that_range() {
                 "{} has a non-zero weight at the {} centre",
                 RANGE_NAMES[range], RANGE_NAMES[other]
             );
-            let expected = neutral_output(rgb);
+            let far = (range + far_offset) % RANGE_COUNT;
+            let far_rgb = srgb8_linear(RANGE_REFERENCE_CODES[far]);
             for value in [-100.0, -37.5, 100.0] {
-                for params in [
-                    MixerParams::with_hue(range, value),
-                    MixerParams::with_saturation(range, value),
-                    MixerParams::with_luminance(range, value),
+                for (params, colour_rgb, name) in [
+                    (
+                        MixerParams::with_hue(range, value),
+                        far_rgb,
+                        RANGE_NAMES[far],
+                    ),
+                    (
+                        MixerParams::with_saturation(range, value),
+                        rgb,
+                        RANGE_NAMES[other],
+                    ),
+                    (
+                        MixerParams::with_luminance(range, value),
+                        rgb,
+                        RANGE_NAMES[other],
+                    ),
                 ] {
                     assert_eq!(
-                        mixer::mix(rgb, &params),
-                        expected,
-                        "{} at {value} moved the {} centre",
+                        mixer::mix(colour_rgb, &params),
+                        neutral_output(colour_rgb),
+                        "{} at {value} moved the {name} centre",
                         RANGE_NAMES[range],
-                        RANGE_NAMES[other]
                     );
                 }
             }
@@ -359,13 +375,46 @@ fn zero_weight_colours_are_bit_identical_under_that_range() {
 }
 
 // ---------------------------------------------------------------------------
-// 4. Hue rotation
+// 4. Hue: the monotone warp
 // ---------------------------------------------------------------------------
 
-/// `+100` on a range moves that range's own centre exactly half way to the
-/// neighbouring centre, and `-100` half way to the other neighbour.
+/// Every combination of the eight hue sliders at `-100`, `-50`, `0`, `+50`
+/// and `+100`: the 5^8 = 390 625 settings the exhaustive proofs below sweep.
+fn five_level_combinations() -> impl Iterator<Item = MixerParams> {
+    const LEVELS: [f64; 5] = [-100.0, -50.0, 0.0, 50.0, 100.0];
+    (0..5usize.pow(RANGE_COUNT as u32)).map(|combination| {
+        let mut code = combination;
+        let mut params = MixerParams::neutral();
+        for range in 0..RANGE_COUNT {
+            params.hue[range] = LEVELS[code % 5];
+            code /= 5;
+        }
+        params
+    })
+}
+
+/// The hue sliders at full strength, all the same way.
+fn all_hue(value: f64) -> MixerParams {
+    MixerParams {
+        hue: [value; RANGE_COUNT],
+        ..MixerParams::neutral()
+    }
+}
+
+/// Range `range` at `+100` and its next neighbour at `-100`: the two centres
+/// driven at each other.
+fn opposing_pair(range: usize) -> MixerParams {
+    let mut params = MixerParams::neutral();
+    params.hue[range] = 100.0;
+    params.hue[(range + 1) % RANGE_COUNT] = -100.0;
+    params
+}
+
+/// `+100` on a range moves that range's own centre colour `HUE_REACH` of the
+/// way to the neighbouring centre, and `-100` the same fraction of the way to
+/// the other neighbour, measured on the reference colour through `mix`.
 #[test]
-fn full_hue_slider_moves_a_centre_half_way_to_its_neighbour() {
+fn full_hue_slider_moves_a_centre_the_reach_of_the_way_to_its_neighbour() {
     for range in 0..RANGE_COUNT {
         let rgb = srgb8_linear(RANGE_REFERENCE_CODES[range]);
         let start = mixer::normalize_hue_deg(colour::hue_degrees(colour::to_oklab(rgb)));
@@ -378,7 +427,7 @@ fn full_hue_slider_moves_a_centre_half_way_to_its_neighbour() {
             } else {
                 mixer::normalize_hue_deg(start - end)
             };
-            let expected = mixer::max_rotation_deg(range, positive);
+            let expected = HUE_REACH * mixer::travel_gap_deg(range, positive);
             assert!(
                 (travelled - expected).abs() < 1e-4,
                 "{} at {value}: travelled {travelled} deg, expected {expected}",
@@ -388,82 +437,198 @@ fn full_hue_slider_moves_a_centre_half_way_to_its_neighbour() {
     }
 }
 
-/// The hue map is strictly increasing (no fold, so no two input hues collapse
-/// onto one output hue) for every single slider and for every combination that
-/// drives all eight ranges the same way. The analytic floor is `1 - pi/4`.
+/// The warp passes through its knots, every secant keeps at least
+/// `1 - HUE_REACH` after the limiting rule, and every knot slope is positive
+/// and at most three times the smaller neighbouring secant — the
+/// Fritsch-Carlson condition that makes each cubic segment strictly
+/// increasing — for all 5^8 five-level combinations.
 #[test]
-fn hue_map_is_strictly_monotone_for_single_and_same_direction_sliders() {
-    let floor = 1.0 - PI / 4.0;
-    let mut worst = f64::INFINITY;
-
-    let mut check = |params: &MixerParams| {
-        worst = worst.min(minimum_hue_slope(params, 36_000));
-    };
-    for range in 0..RANGE_COUNT {
-        for value in [-100.0, -50.0, 100.0] {
-            check(&MixerParams::with_hue(range, value));
+fn hue_warp_satisfies_the_fritsch_carlson_conditions_for_every_combination() {
+    let floor = 1.0 - HUE_REACH;
+    for params in five_level_combinations() {
+        let warp = HueWarp::new(&params);
+        for range in 0..RANGE_COUNT {
+            let next = (range + 1) % RANGE_COUNT;
+            let secant = mixer::segment_secant(&warp.displacement, range);
+            assert!(
+                secant >= floor - 1e-12,
+                "{params:?}: segment {range} secant {secant} is below {floor}"
+            );
+            for slope in [warp.slope[range], warp.slope[next]] {
+                assert!(
+                    slope > 0.0 && slope <= 3.0 * secant * (1.0 + 1e-12),
+                    "{params:?}: segment {range} knot slope {slope} against secant {secant}"
+                );
+            }
+        }
+        for (range, centre) in CENTRE_HUES_DEG.iter().enumerate() {
+            let displaced = warp.displacement_deg(*centre);
+            assert!(
+                (displaced - warp.displacement[range]).abs() < 1e-9,
+                "{params:?}: D at centre {range} is {displaced}, knot {}",
+                warp.displacement[range]
+            );
         }
     }
-    for sign in [1.0, -1.0] {
-        check(&MixerParams {
-            hue: [100.0 * sign; RANGE_COUNT],
-            ..MixerParams::neutral()
-        });
-        check(&MixerParams {
-            hue: [
-                100.0 * sign,
-                0.0,
-                75.0 * sign,
-                25.0 * sign,
-                100.0 * sign,
-                50.0 * sign,
-                0.0,
-                100.0 * sign,
-            ],
-            ..MixerParams::neutral()
-        });
-    }
-    assert!(
-        worst > floor - 1e-6,
-        "minimum hue-map slope {worst} fell below the analytic floor {floor}"
-    );
-    assert!(worst > 0.0, "the hue map folded: minimum slope {worst}");
 }
 
-/// Two adjacent ranges driven at each other is the one documented fold: the
-/// slope reaches exactly the analytic worst case `1 - pi/2`, so a band of
-/// hues between the two centres collapses. This is the accepted limitation
-/// recorded in the study note, asserted here so it cannot change silently.
+/// The hue map is strictly increasing — no two input hues collapse onto one
+/// output hue — for every one of the 5^8 five-level combinations, by the
+/// exact per-segment minimum of `dH/dh`, and for 50 000 pseudo-random
+/// whole-number combinations, which also meet the Fritsch-Carlson conditions
+/// strictly. The floor over the five-level sweep is frozen so a later change
+/// cannot make it silently worse.
 #[test]
-fn opposing_adjacent_sliders_fold_at_the_analytic_worst_case() {
-    let expected = 1.0 - PI / 2.0;
-    for range in 0..RANGE_COUNT {
+fn hue_map_is_strictly_monotone_for_every_slider_combination() {
+    let mut worst = f64::INFINITY;
+    let mut worst_params = MixerParams::neutral();
+    for params in five_level_combinations() {
+        let floor = HueWarp::new(&params).minimum_slope();
+        if floor < worst {
+            worst = floor;
+            worst_params = params;
+        }
+    }
+    assert!(
+        worst > 0.0,
+        "the hue map folds for {worst_params:?}: slope {worst}"
+    );
+    assert!(
+        (worst - FROZEN_LATTICE_SLOPE_FLOOR).abs() < 1e-9,
+        "the five-level slope floor moved to {worst} for {worst_params:?}"
+    );
+
+    for params in random_hue_combinations(50_000) {
+        let warp = HueWarp::new(&params);
+        for range in 0..RANGE_COUNT {
+            let next = (range + 1) % RANGE_COUNT;
+            let secant = mixer::segment_secant(&warp.displacement, range);
+            assert!(
+                secant >= 1.0 - HUE_REACH - 1e-12,
+                "{params:?}: secant {secant}"
+            );
+            for slope in [warp.slope[range], warp.slope[next]] {
+                assert!(
+                    slope > 0.0 && slope < 3.0 * secant,
+                    "{params:?}: knot slope {slope} against secant {secant}"
+                );
+            }
+        }
+        let floor = warp.minimum_slope();
+        assert!(floor > 0.0, "{params:?} folds: slope floor {floor}");
+    }
+}
+
+/// Pseudo-random whole-number settings of the eight hue sliders, each in
+/// `[-100, 100]`, from a fixed xorshift seed.
+fn random_hue_combinations(count: usize) -> impl Iterator<Item = MixerParams> {
+    let mut state = 0x2545_f491_4f6c_dd1du64;
+    (0..count).map(move |_| {
         let mut params = MixerParams::neutral();
-        params.hue[range] = 100.0;
-        params.hue[(range + 1) % RANGE_COUNT] = -100.0;
-        let slope = minimum_hue_slope(&params, 36_000);
+        for slot in &mut params.hue {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            *slot = ((state >> 11) % 201) as f64 - 100.0;
+        }
+        params
+    })
+}
+
+/// The slope floor over all 5^8 five-level combinations, measured by
+/// `mixer_study_figures` and quoted in the study note.
+const FROZEN_LATTICE_SLOPE_FLOOR: f64 = 0.063_955_987_6;
+
+/// The exact per-segment minimum agrees with a dense sweep of the warp for
+/// single sliders, all-same-direction settings and opposing neighbours, and
+/// every one is positive.
+#[test]
+fn analytic_slope_floor_matches_a_dense_sweep() {
+    let mut cases: Vec<MixerParams> = Vec::new();
+    for range in 0..RANGE_COUNT {
+        for value in [-100.0, -50.0, 100.0] {
+            cases.push(MixerParams::with_hue(range, value));
+        }
+        cases.push(opposing_pair(range));
+    }
+    cases.push(all_hue(100.0));
+    cases.push(all_hue(-100.0));
+    for params in cases {
+        let analytic = HueWarp::new(&params).minimum_slope();
+        let swept = minimum_hue_slope(&params, 72_000);
+        assert!(analytic > 0.0, "{params:?}: slope floor {analytic}");
         assert!(
-            (slope - expected).abs() < 1e-3,
-            "{} against {}: minimum slope {slope}, expected the analytic {expected}",
-            RANGE_NAMES[range],
-            RANGE_NAMES[(range + 1) % RANGE_COUNT]
+            (analytic - swept).abs() < 2e-3,
+            "{params:?}: analytic floor {analytic}, swept {swept}"
         );
+    }
+}
+
+/// Two neighbours driven at each other share one slider's travel: at
+/// `+100`/`-100` each centre moves half of `HUE_REACH` of their gap, the gap
+/// keeps exactly `1 - HUE_REACH` of its width, and the map stays strictly
+/// increasing. Before the limiting rule the two centres would cross.
+#[test]
+fn opposing_neighbours_share_one_sliders_travel_and_never_cross() {
+    for (range, name) in RANGE_NAMES.iter().enumerate() {
+        let next = (range + 1) % RANGE_COUNT;
+        let gap = mixer::hue_gap_deg(range);
+        let warp = HueWarp::new(&opposing_pair(range));
+        assert!(
+            (warp.displacement[range] - 0.5 * HUE_REACH * gap).abs() < 1e-12
+                && (warp.displacement[next] + 0.5 * HUE_REACH * gap).abs() < 1e-12,
+            "{name} against {}: displacements {:?}",
+            RANGE_NAMES[next],
+            warp.displacement
+        );
+        let separation = gap + warp.displacement[next] - warp.displacement[range];
+        assert!(
+            (separation - (1.0 - HUE_REACH) * gap).abs() < 1e-12,
+            "{name} against {}: separation {separation}",
+            RANGE_NAMES[next]
+        );
+        assert!(warp.minimum_slope() > 0.0);
+    }
+}
+
+/// A single hue slider moves its own centre and changes the knot slopes there
+/// and at its two neighbours, so its warp is confined to the arc between the
+/// centres two ranges either side: every hue outside it is displaced by
+/// exactly zero, and just inside it the displacement is not zero.
+#[test]
+fn a_single_hue_slider_warps_only_the_four_segments_around_its_centre() {
+    for (range, name) in RANGE_NAMES.iter().enumerate() {
+        for value in [-100.0, 40.0, 100.0] {
+            let warp = HueWarp::new(&MixerParams::with_hue(range, value));
+            for (segment, centre) in CENTRE_HUES_DEG.iter().enumerate() {
+                let offset = (segment + RANGE_COUNT - range) % RANGE_COUNT;
+                let inside = matches!(offset, 0 | 1 | 6 | 7);
+                for step in 1..100 {
+                    let hue = centre + mixer::hue_gap_deg(segment) * f64::from(step) / 100.0;
+                    let displaced = warp.displacement_deg(hue);
+                    if !inside {
+                        assert_eq!(
+                            displaced, 0.0,
+                            "{name} at {value} displaced {hue} deg in segment {segment}"
+                        );
+                    } else if step == 50 {
+                        assert!(
+                            displaced != 0.0,
+                            "{name} at {value} left the middle of segment {segment} unmoved"
+                        );
+                    }
+                }
+            }
+        }
     }
 }
 
 /// The smallest `d(output hue) / d(input hue)` over a dense sweep of the wheel
 /// at full chroma weight. Values above zero mean the hue map is injective.
 fn minimum_hue_slope(params: &MixerParams, samples: u32) -> f64 {
+    let warp = HueWarp::new(params);
     let step = 360.0 / f64::from(samples);
-    let shifted = |hue: f64| {
-        let weights = mixer::range_weights(hue);
-        let mut rotation = 0.0;
-        for (range, weight) in weights.iter().enumerate() {
-            let amount = params.hue[range] / 100.0;
-            rotation += weight * amount * mixer::max_rotation_deg(range, amount >= 0.0);
-        }
-        hue + rotation
-    };
+    let shifted = |hue: f64| hue + warp.displacement_deg(hue);
     let mut worst = f64::INFINITY;
     let mut previous = shifted(0.0);
     for step_index in 1..=samples {
@@ -581,6 +746,75 @@ fn chroma_factor_is_never_negative() {
     }
 }
 
+/// With every saturation slider at `-100` the chroma factor is exactly zero
+/// for every colour, near-greys and the darkest included — a decrease is not
+/// ramped — and the result reconstructs to three bit-identical channels.
+#[test]
+fn every_saturation_slider_at_minus_100_greys_every_colour_exactly() {
+    let params = MixerParams {
+        saturation: [-100.0; RANGE_COUNT],
+        ..MixerParams::neutral()
+    };
+    for l in [0.0, 0.001, 0.05, 0.4, 0.8, 1.0, 1.2] {
+        for chroma in [1e-9, 1e-4, 0.005, 0.0199, 0.1, 0.3] {
+            for hue_step in 0..720 {
+                let hue = f64::from(hue_step) / 2.0;
+                let lab = Oklab {
+                    l,
+                    a: chroma * hue.to_radians().cos(),
+                    b: chroma * hue.to_radians().sin(),
+                };
+                assert_eq!(
+                    mixer::amounts(lab, &params).chroma_factor,
+                    0.0,
+                    "L {l}, C {chroma}, h {hue}"
+                );
+                let [r, g, b] = mixer::mix(colour::from_oklab(lab), &params);
+                assert!(
+                    r == g && g == b,
+                    "L {l}, C {chroma}, h {hue}: {:?}",
+                    [r, g, b]
+                );
+            }
+        }
+    }
+}
+
+/// A decrease is applied in full at any chroma, and only an increase is scaled
+/// by the ramp: at a range's own hue, `-50` gives `0.5` below the ramp edge as
+/// above it, while `+50` gives `1 + 0.5 * w_c`.
+#[test]
+fn a_saturation_decrease_is_not_ramped_and_an_increase_is() {
+    for range in 0..RANGE_COUNT {
+        let hue = CENTRE_HUES_DEG[range].to_radians();
+        for chroma in [0.001, 0.005, 0.01, 0.019, 0.02, 0.2] {
+            let lab = Oklab {
+                l: 0.5,
+                a: chroma * hue.cos(),
+                b: chroma * hue.sin(),
+            };
+            let ramp = mixer::chroma_ramp(chroma);
+            let down = mixer::amounts(lab, &MixerParams::with_saturation(range, -50.0));
+            let up = mixer::amounts(lab, &MixerParams::with_saturation(range, 50.0));
+            assert!(
+                (down.chroma_factor - 0.5).abs() < 1e-12,
+                "{} at C {chroma}: -50 gave {}",
+                RANGE_NAMES[range],
+                down.chroma_factor
+            );
+            assert!(
+                (up.chroma_factor - (1.0 + 0.5 * ramp)).abs() < 1e-12,
+                "{} at C {chroma}: +50 gave {}",
+                RANGE_NAMES[range],
+                up.chroma_factor
+            );
+        }
+    }
+    // Continuous at zero: the two branches meet at a factor of exactly one.
+    assert_eq!(mixer::chroma_factor(0.0, 0.3), 1.0);
+    assert_eq!(mixer::chroma_factor(-0.0, 0.3), 1.0);
+}
+
 // ---------------------------------------------------------------------------
 // 6. Luminance
 // ---------------------------------------------------------------------------
@@ -679,18 +913,35 @@ fn out_of_gamut_inputs_and_extreme_parameters_stay_finite() {
 #[test]
 #[ignore = "run explicitly to reproduce the figures quoted in docs/design/mixer-study.md"]
 fn mixer_study_figures() {
-    println!("centre hues and gaps");
+    println!("centre hues, gaps and full-slider travel");
     for range in 0..RANGE_COUNT {
         let lab = colour::to_oklab(srgb8_linear(RANGE_REFERENCE_CODES[range]));
         println!(
-            "  {:<8} h = {:>12.6}  C = {:.6}  L = {:.6}  gap to next = {:>10.6}  theta+ = {:>9.6}  theta- = {:>9.6}",
+            "  {:<8} h = {:>12.6}  C = {:.6}  L = {:.6}  gap to next = {:>10.6}  +100 = {:>9.6}  -100 = {:>9.6}",
             RANGE_NAMES[range],
             mixer::normalize_hue_deg(colour::hue_degrees(lab)),
             colour::chroma(lab),
             lab.l,
             mixer::hue_gap_deg(range),
-            mixer::max_rotation_deg(range, true),
-            mixer::max_rotation_deg(range, false),
+            mixer::full_travel_deg(range, true),
+            -mixer::full_travel_deg(range, false),
+        );
+    }
+
+    println!("measured travel of each reference colour through mix at +/-100");
+    for range in 0..RANGE_COUNT {
+        let rgb = srgb8_linear(RANGE_REFERENCE_CODES[range]);
+        let start = mixer::normalize_hue_deg(colour::hue_degrees(colour::to_oklab(rgb)));
+        let travel = |value: f64| {
+            let moved = mixer::mix(rgb, &MixerParams::with_hue(range, value));
+            let end = mixer::normalize_hue_deg(colour::hue_degrees(colour::to_oklab(moved)));
+            mixer::normalize_hue_deg(end - start + 180.0) - 180.0
+        };
+        println!(
+            "  {:<8} +100: {:>+10.6}  -100: {:>+10.6}",
+            RANGE_NAMES[range],
+            travel(100.0),
+            travel(-100.0)
         );
     }
 
@@ -715,6 +966,110 @@ fn mixer_study_figures() {
         PI / (2.0 * narrowest),
         worst_weight_jump / step_deg
     );
+
+    println!("hue-map slope floors (exact per-segment minimum of dH/dh)");
+    let mut single = (f64::INFINITY, String::new());
+    for (range, name) in RANGE_NAMES.iter().enumerate() {
+        let plus = HueWarp::new(&MixerParams::with_hue(range, 100.0)).minimum_slope();
+        let minus = HueWarp::new(&MixerParams::with_hue(range, -100.0)).minimum_slope();
+        println!("  {name:<8} alone at +100: {plus:.6}   at -100: {minus:.6}");
+        for (value, floor) in [(100.0, plus), (-100.0, minus)] {
+            if floor < single.0 {
+                single = (floor, format!("{name} at {value:+}"));
+            }
+        }
+    }
+    println!("  single slider floor: {:.6} ({})", single.0, single.1);
+    println!(
+        "  every hue slider +100: {:.6}   every hue slider -100: {:.6}",
+        HueWarp::new(&all_hue(100.0)).minimum_slope(),
+        HueWarp::new(&all_hue(-100.0)).minimum_slope()
+    );
+    let mut opposing = (f64::INFINITY, String::new());
+    for range in 0..RANGE_COUNT {
+        let floor = HueWarp::new(&opposing_pair(range)).minimum_slope();
+        println!(
+            "  {} +100 against {} -100: {floor:.6}",
+            RANGE_NAMES[range],
+            RANGE_NAMES[(range + 1) % RANGE_COUNT]
+        );
+        if floor < opposing.0 {
+            opposing = (floor, RANGE_NAMES[range].to_string());
+        }
+    }
+    println!(
+        "  opposing neighbours floor: {:.6} ({} pair)",
+        opposing.0, opposing.1
+    );
+    let mut global = (f64::INFINITY, MixerParams::neutral());
+    for params in five_level_combinations() {
+        let floor = HueWarp::new(&params).minimum_slope();
+        if floor < global.0 {
+            global = (floor, params);
+        }
+    }
+    println!(
+        "  every 5-level combination (5^8): floor {:.10} at hue {:?}",
+        global.0, global.1.hue
+    );
+    let mut random = (f64::INFINITY, MixerParams::neutral());
+    for params in random_hue_combinations(1_000_000) {
+        let floor = HueWarp::new(&params).minimum_slope();
+        if floor < random.0 {
+            random = (floor, params);
+        }
+    }
+    println!(
+        "  1 000 000 random whole-number combinations: floor {:.10} at hue {:?}",
+        random.0, random.1.hue
+    );
+
+    println!("single-slider spill beyond the neighbouring centres (largest |D|, degrees)");
+    for range in 0..RANGE_COUNT {
+        let mut line = format!("  {:<8}", RANGE_NAMES[range]);
+        for value in [100.0, -100.0] {
+            let warp = HueWarp::new(&MixerParams::with_hue(range, value));
+            let before = (range + RANGE_COUNT - 2) % RANGE_COUNT;
+            let after = (range + 1) % RANGE_COUNT;
+            let spill = |segment: usize| {
+                (1..1000)
+                    .map(|step| {
+                        warp.displacement_deg(
+                            CENTRE_HUES_DEG[segment]
+                                + mixer::hue_gap_deg(segment) * f64::from(step) / 1000.0,
+                        )
+                    })
+                    .fold(
+                        0.0_f64,
+                        |worst, d| if d.abs() > worst.abs() { d } else { worst },
+                    )
+            };
+            line += &format!(
+                "  {value:+}: {:<8} side {:>+8.3}, {:<8} side {:>+8.3}",
+                RANGE_NAMES[before],
+                spill(before),
+                RANGE_NAMES[(range + 2) % RANGE_COUNT],
+                spill(after)
+            );
+        }
+        println!("{line}");
+    }
+
+    let mut largest_rotation = 0.0_f64;
+    for combination in 0..3usize.pow(RANGE_COUNT as u32) {
+        let mut code = combination;
+        let mut params = MixerParams::neutral();
+        for range in 0..RANGE_COUNT {
+            params.hue[range] = [-100.0, 0.0, 100.0][code % 3];
+            code /= 3;
+        }
+        let warp = HueWarp::new(&params);
+        for step in 0..3600 {
+            largest_rotation =
+                largest_rotation.max(warp.displacement_deg(f64::from(step) / 10.0).abs());
+        }
+    }
+    println!("largest |rotation| over every 3-level combination: {largest_rotation:.4} deg");
 
     let mut grey_noise = 0.0_f64;
     for code in 0u8..=255 {
@@ -756,32 +1111,6 @@ fn mixer_study_figures() {
     }
     println!("worst achromatic deviation over all 48 single-slider extremes: {grey:e}");
 
-    let mut single = f64::INFINITY;
-    for range in 0..RANGE_COUNT {
-        for value in [-100.0, 100.0] {
-            single = single.min(minimum_hue_slope(
-                &MixerParams::with_hue(range, value),
-                36_000,
-            ));
-        }
-    }
-    println!(
-        "minimum hue-map slope, single slider at +/-100: {single:.6} (analytic 1 - pi/4 = {:.6})",
-        1.0 - PI / 4.0
-    );
-
-    let mut opposing = f64::INFINITY;
-    for range in 0..RANGE_COUNT {
-        let mut params = MixerParams::neutral();
-        params.hue[range] = 100.0;
-        params.hue[(range + 1) % RANGE_COUNT] = -100.0;
-        opposing = opposing.min(minimum_hue_slope(&params, 36_000));
-    }
-    println!(
-        "minimum hue-map slope, opposing adjacent sliders: {opposing:.6} (analytic 1 - pi/2 = {:.6})",
-        1.0 - PI / 2.0
-    );
-
     let hostile = MixerParams {
         hue: [100.0, -100.0, 100.0, -100.0, 100.0, -100.0, 100.0, -100.0],
         saturation: [50.0; RANGE_COUNT],
@@ -815,21 +1144,95 @@ fn mixer_study_figures() {
         );
     }
 
-    println!("near-black and low-chroma samples");
+    println!(
+        "near-black and low-chroma samples (residual chroma under every saturation slider at \
+         -100: now, and had the ramp also scaled the decrease)"
+    );
+    let desaturated = MixerParams {
+        saturation: [-100.0; RANGE_COUNT],
+        ..MixerParams::neutral()
+    };
     for (name, codes) in [
         ("near_black_blue", [2u8, 2, 6]),
         ("near_black_warm", [6, 4, 2]),
         ("near_black_green", [3, 5, 3]),
+        ("near_grey_warm", [130, 128, 126]),
+        ("near_grey_cool", [100, 101, 104]),
         ("skin_light", [255, 219, 172]),
         ("skin_mid", [224, 172, 140]),
         ("skin_dark", [141, 85, 36]),
     ] {
         let lab = colour::to_oklab(srgb8_linear(codes));
         let chroma = colour::chroma(lab);
+        let ramp = mixer::chroma_ramp(chroma);
+        let now = colour::chroma(colour::to_oklab(mixer::mix(
+            srgb8_linear(codes),
+            &desaturated,
+        )));
         println!(
-            "  {name:<16} C = {chroma:.6}  w_c = {:.6}  h = {:.3}",
-            mixer::chroma_ramp(chroma),
-            mixer::normalize_hue_deg(colour::hue_degrees(lab))
+            "  {name:<16} C = {chroma:.6}  w_c = {ramp:.6}  h = {:.3}  residual C now {now:.2e}, \
+             ramped {:.6}",
+            mixer::normalize_hue_deg(colour::hue_degrees(lab)),
+            chroma * (1.0 - ramp)
+        );
+    }
+
+    println!("frozen examples (unclamped linear, then output codes)");
+    for (name, codes, params) in [
+        (
+            "red at red_hue_plus_100",
+            [255u8, 0, 0],
+            MixerParams::with_hue(0, 100.0),
+        ),
+        (
+            "aqua at aqua_hue_minus_100",
+            [0, 255, 255],
+            MixerParams::with_hue(4, -100.0),
+        ),
+        (
+            "red at red_plus_orange_minus_100",
+            [255, 0, 0],
+            opposing_pair(0),
+        ),
+        (
+            "orange at red_plus_orange_minus_100",
+            [255, 128, 0],
+            opposing_pair(0),
+        ),
+        ("yellow at all_hue_plus_100", [255, 255, 0], all_hue(100.0)),
+        ("blue at all_hue_plus_100", [0, 0, 255], all_hue(100.0)),
+        (
+            "(2, 2, 6) at all_saturation_minus_100",
+            [2, 2, 6],
+            desaturated,
+        ),
+        (
+            "(128, 128, 128) at all_ranges",
+            [128, 128, 128],
+            MixerParams {
+                hue: [25.0; RANGE_COUNT],
+                saturation: [-40.0; RANGE_COUNT],
+                luminance: [30.0; RANGE_COUNT],
+            },
+        ),
+        (
+            "(2, 2, 6) at all_ranges",
+            [2, 2, 6],
+            MixerParams {
+                hue: [25.0; RANGE_COUNT],
+                saturation: [-40.0; RANGE_COUNT],
+                luminance: [30.0; RANGE_COUNT],
+            },
+        ),
+    ] {
+        let out = mixer::mix(srgb8_linear(codes), &params);
+        let hue = mixer::normalize_hue_deg(colour::hue_degrees(colour::to_oklab(out)));
+        println!(
+            "  {name}: [{:.6}, {:.6}, {:.6}] -> codes {:?}, Oklab hue {hue:.3}",
+            out[0],
+            out[1],
+            out[2],
+            out.map(reference::linear_to_srgb_code)
         );
     }
 }
@@ -918,6 +1321,8 @@ fn fixture_inputs() -> Vec<(String, Input)> {
         ("near_black_blue", [2u8, 2, 6]),
         ("near_black_warm", [6, 4, 2]),
         ("near_black_green", [3, 5, 3]),
+        ("near_grey_warm", [130, 128, 126]),
+        ("near_grey_cool", [100, 101, 104]),
     ] {
         inputs.push((name.to_string(), Input::Srgb8 { rgb: codes }));
     }
@@ -998,6 +1403,15 @@ fn fixture_parameter_sets() -> Vec<ParameterSet> {
             luminance: [30.0; RANGE_COUNT],
         },
     );
+    push("all_hue_plus_100", all_hue(100.0));
+    push("red_plus_orange_minus_100", opposing_pair(0));
+    push(
+        "all_saturation_minus_100",
+        MixerParams {
+            saturation: [-100.0; RANGE_COUNT],
+            ..MixerParams::neutral()
+        },
+    );
 
     sets
 }
@@ -1033,7 +1447,7 @@ fn generate_mixer_fixtures() {
         generated_by: "crates/lightwell-core/tests/mixer_reference.rs generate_mixer_fixtures"
             .to_string(),
         note: "Independent f64 reference (tests/reference/mixer.rs). expected_linear is linear \
-               sRGB after the frozen mixer unit (hue, then chroma, then luminance), full f64 \
+               sRGB after the frozen mixer unit (hue warp, then chroma, then luminance), full f64 \
                precision, unclamped. Production is compared against this file within the \
                tolerance frozen in docs/design/mixer-study.md."
             .to_string(),
