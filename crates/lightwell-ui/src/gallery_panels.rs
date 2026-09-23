@@ -5,11 +5,12 @@
 use crate::{
     ButtonSize, ButtonTone, ChipModel, ColorSwatchModel, Icon, IconButtonModel,
     LabelledButtonModel, ListRowModel, Marker, NumberFieldModel, RailDecoration, RowPlacement,
-    SectionHeaderModel, SliderModel, StepperModel, SubGroupHeaderModel, Tab, TabRowModel,
-    ToggleModel, ValueEdit, boxed_input, button_row, channel_row, chip, chip_row, color_swatch,
-    equal_button_row, icon_button_row, labelled_button, list_row, module_section, number_field,
-    readout_card, row_icon_button, section_body, section_header, slider, stepper, sub_group_header,
-    sub_group_header_with_actions, tab_row, theme, toggle,
+    SectionHeaderModel, SliderModel, StepperModel, StepperRail, StepperRailMessages,
+    SubGroupHeaderModel, Tab, TabRowModel, ToggleModel, ValueEdit, boxed_input, button_row,
+    channel_row, chip, chip_row, color_swatch, equal_button_row, icon_button_row, labelled_button,
+    list_row, module_section, number_field, readout_card, row_icon_button, section_body,
+    section_header, slider, stepper, sub_group_header, sub_group_header_with_actions, tab_row,
+    theme, toggle,
 };
 use iced::widget::{Column, Row, column, container};
 use iced::{Element, Length};
@@ -475,6 +476,14 @@ pub(crate) fn gallery_panel_rows() -> Vec<Element<'static, ()>> {
                     increment_enabled: true,
                     decrement_tooltip: "\u{2212}0.5\u{b0}".into(),
                     increment_tooltip: "+0.5\u{b0}".into(),
+                    rail: Some(StepperRail {
+                        soft_min: -45.0,
+                        soft_max: 45.0,
+                        value: 2.4,
+                        step: 0.05,
+                        zero: Some(0.0),
+                        dragging: true,
+                    }),
                 },
                 (),
                 (),
@@ -482,6 +491,10 @@ pub(crate) fn gallery_panel_rows() -> Vec<Element<'static, ()>> {
                 |_| (),
                 (),
                 (),
+                Some(StepperRailMessages {
+                    on_change: Box::new(|_| ()),
+                    on_release: (),
+                }),
             ),
             toggle(
                 &ToggleModel {

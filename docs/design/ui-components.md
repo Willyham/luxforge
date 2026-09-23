@@ -87,7 +87,7 @@ Every widget is a function from a plain-data model and messages to an `Element`,
 | --- | --- | --- |
 | `slider` (changed) | Adds `soft_min`, `soft_max`, `over_range: Option<Side>`, `rail: RailDecoration` (plain or colour stops), `fine_step` | Unchanged |
 | `number_field` (new) | Label, `ValueEdit`, unit, enabled, invalid message. Factored out of the slider's value field so the slider and the stepper share it | Edit start, text, submit, reset |
-| `stepper` (new) | A `number_field` plus minus and plus enablement and their tooltips | Decrement, increment, and the field's messages |
+| `stepper` (new) | A `number_field` plus minus and plus enablement and their tooltips, and an optional rail (soft range, value, step, zero, dragging) drawn between minus and plus by the slider's own rail line, so its geometry, fill, handle and halo are the slider's | Decrement, increment, the field's messages, and the rail's fractions and release |
 | `toggle` (new) | Label, `on`, enabled | Toggled |
 | `menu_choice` (new) | Options, selected index, enabled; wraps Iced's pick list in the theme | Selected index |
 | `color_swatch` (new) | An `[u8; 3]`, enabled, `open` | Press |
@@ -108,7 +108,7 @@ The components board gains a row per new widget and state, `gallery_states()` bu
 ## Developer gallery
 
 The title bar exposes **Developer** in debug builds and in optimized builds started with
-`--developer`. It opens the existing 73 reference states across ten component pages, using the
+`--developer`. It opens the existing 74 reference states across ten component pages, using the
 same widget constructors as the editor. A page menu and Previous/Next buttons browse the board;
 Back to editor or Escape restores the workspace. No photograph is required. The examples display
 reference states and do not edit the photograph; the Controls proof provides live editing tests.
@@ -133,7 +133,7 @@ The generated tools panel maps a declared control to a view model with the rules
 - **Disabled means explained.** A control is disabled only when the core disables the section, and the section names the reason. No control is hidden because of state.
 - **Keyboard.** Tab order follows control order. A focused slider, stepper or field steps with arrows, Shift ×10 and Option ÷10; a curve editor moves its selected point; a toggle flips on Space; a choice moves on arrows. Iced's slider takes arrows only while the pointer is over its rail, as recorded in the workspace design, and that limitation is stated, not hidden.
 
-The crop section keeps its own draft and panel. Its ratio chips, custom ratio fields, angle stepper and straighten toggle are rebuilt on the generic `chip`, `number_field`, `stepper` and `toggle` widgets so the desktop has one implementation of each, but its messages stay crop's own because its draft is desktop-local.
+The crop section keeps its own draft and panel. Its ratio chips, custom ratio fields, angle stepper and straighten toggle are rebuilt on the generic `chip`, `number_field`, `stepper` and `toggle` widgets so the desktop has one implementation of each, but its messages stay crop's own because its draft is desktop-local. The angle's rail is a stepper drag: each move sets the draft's angle on the rail's 0.05° step (the Option nudge, a tenth of the 0.5° button step, since the crop descriptor declares no step for its angle) and refits the rectangle, and only the release is a draft change. The rail's handle is accent for as long as the draft is open, as the crop reference draws it. The value box shows the angle with its `°` and opens for typing when pressed; the descriptor declares the unit as `deg` and no precision, so the angle reads `2.4°`, not the reference's `2.40°`.
 
 ## Controls proof module
 

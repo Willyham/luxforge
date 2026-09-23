@@ -69,7 +69,7 @@ pub use section_header::{
 };
 pub use segmented::{SegmentedModel, segmented};
 pub use slider::{RailDecoration, SliderModel, slider};
-pub use stepper::{StepperModel, stepper};
+pub use stepper::{StepperModel, StepperRail, StepperRailMessages, stepper, stepper_rail_width};
 pub use sub_group_header::{
     SubGroupHeaderModel, sub_group_header, sub_group_header_height, sub_group_header_with_actions,
 };

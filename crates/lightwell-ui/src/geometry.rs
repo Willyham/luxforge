@@ -114,6 +114,15 @@ pub fn rail_geometry(width: f32, radius: f32, value: f64, zero: Option<f64>) -> 
     RailGeometry { handle, fill, tick }
 }
 
+/// The clip `(x, y, width, height)` a rail line `width` × `height` points draws into, relative to
+/// its own origin: the line itself, grown above and below to hold a halo of `halo_radius` centred
+/// on it when the halo is taller than the line. Only the drawing reaches past the line; its layout
+/// does not.
+pub fn rail_clip(width: f32, height: f32, halo_radius: f32) -> (f32, f32, f32, f32) {
+    let reach = (halo_radius - height / 2.0).max(0.0);
+    (0.0, -reach, width, height + 2.0 * reach)
+}
+
 /// Maps a pointer fraction along the rail (`0.0` at `min`, `1.0` at `max`) to a value, snapped to
 /// `step` and clamped to `min..=max`. A non-positive `step` disables snapping.
 ///
@@ -192,6 +201,14 @@ mod tests {
         assert_eq!(handle_center(276.0, 7.0, 1.0), 269.0);
         assert_eq!(handle_center(276.0, 7.0, 0.5), 138.0);
         assert_eq!(handle_center(276.0, 7.0, 2.0), 269.0, "clamped to the rail");
+    }
+
+    /// The 18 pt halo reaches 3 pt above and below the 12 pt rail line; a line taller than the
+    /// halo keeps its own bounds.
+    #[test]
+    fn the_rail_clip_holds_the_halo_centred_on_the_line() {
+        assert_eq!(rail_clip(160.0, 12.0, 9.0), (0.0, -3.0, 160.0, 18.0));
+        assert_eq!(rail_clip(160.0, 24.0, 9.0), (0.0, 0.0, 160.0, 24.0));
     }
 
     #[test]

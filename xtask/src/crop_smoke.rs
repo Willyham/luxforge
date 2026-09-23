@@ -49,11 +49,17 @@ fn off_centre() -> Result<CropPayload> {
     Ok(payload)
 }
 
+/// Where `crop-draft` releases its drag on the angle's rail: 2.4° on the −45..+45° rail, a hair
+/// past it so the rail's 0.05° step, not float arithmetic, lands the angle.
+const RAIL_ANGLE_FRACTION: f64 = 0.5 + RAIL_ANGLE / 90.0 + 1e-4;
+/// The angle `crop-draft` drags the rail to, as crop-and-straighten.png draws it.
+const RAIL_ANGLE: f64 = 2.4;
+
 /// How many frames a crop scenario captures, or `None` when the scenario is not a crop scenario.
 pub fn frames(scenario: &str) -> Option<usize> {
     match scenario {
         "crop" => Some(9),
-        "crop-draft" => Some(10),
+        "crop-draft" => Some(11),
         _ => None,
     }
 }
@@ -75,7 +81,8 @@ pub fn script(scenario: &str) -> Result<Option<Value>> {
         ])),
         // The draft's own gestures and controls, at Fit and at 100%. Basic is collapsed and the
         // section expanded first, so the idle section is on screen, and the panel is scrolled to
-        // its end once the draft is open, so the drafting section is too.
+        // its end once the draft is open, so the drafting section is too. The angle is then
+        // dragged on its rail to 2.4°, so the section shows a straightened draft.
         "crop-draft" => Some(json!([
             {"section":{"module":BASIC_MODULE,"expanded":false}},
             {"section":{"module":CROP_MODULE,"expanded":true}},
@@ -83,6 +90,7 @@ pub fn script(scenario: &str) -> Result<Option<Value>> {
             {"draft":{"rect":[40.0,24.0,300.0,200.0]}},
             {"draft":{"preset":"1:1"}},
             {"tools_scroll":1.0},
+            {"draft":{"angle_rail":[0.6,RAIL_ANGLE_FRACTION]}},
             {"view":{"zoom":"100"}},
             {"view":{"zoom":"fit"}},
             {"draft":{"apply":true}},
@@ -671,34 +679,50 @@ pub fn verify(evidence: &Path, scenario: &str, app: &Value, events: &[Value]) ->
                 "the drafting section scrolled into view",
                 shows_draft(&paths[6], &frames[6])?,
             );
-            // The overlay follows the view: 100% draws the box at one input pixel per physical pixel.
+            // A drag on the angle's rail, released: the draft's angle follows the rail on its step,
+            // the 1:1 ratio holds, the release is the one logged change, and nothing commits.
+            let straightened = &frames[7]["state"]["crop"];
+            let rect = straightened["rect"].as_array();
+            ensure(
+                straightened["angle"] == json!(RAIL_ANGLE)
+                    && straightened["preset"] == json!("1:1")
+                    && rect.is_some_and(|rect| rect.len() == 4 && rect[2] == rect[3])
+                    && revision(&frames[7])? == revision(&frames[6])?,
+                format!("The angle rail produced {straightened}"),
+            )?;
             record(
                 &frames[7],
-                "the same draft at 100%",
-                shows_draft(&paths[7], &frames[7])?,
+                "the angle dragged on its rail to 2.4°, the square refitted, nothing committed",
+                json!({"overlay":shows_draft(&paths[7], &frames[7])?,"event":correlated(events, "crop_draft_changed", &frames[7])?["elapsed_ms"]}),
             );
+            // The overlay follows the view: 100% draws the box at one input pixel per physical pixel.
             record(
                 &frames[8],
-                "the same draft back at Fit",
+                "the same draft at 100%",
                 shows_draft(&paths[8], &frames[8])?,
             );
-            let (_, applied, output) = committed(&frames[9])?;
+            record(
+                &frames[9],
+                "the same draft back at Fit",
+                shows_draft(&paths[9], &frames[9])?,
+            );
+            let (_, applied, output) = committed(&frames[10])?;
             ensure(
-                applied.angle == 0.0 && output == [200, 200],
+                applied.angle == RAIL_ANGLE && output[0] == output[1],
                 format!("Apply committed {output:?} at angle {}", applied.angle),
             )?;
             ensure(
-                frames[9]["state"]["crop"]["drafting"] == json!(false)
-                    && revision(&frames[9])? == revision(&frames[0])? + 1,
+                frames[10]["state"]["crop"]["drafting"] == json!(false)
+                    && revision(&frames[10])? == revision(&frames[0])? + 1,
                 "Apply did not commit exactly one new revision and end the draft",
             )?;
-            correlated(events, "crop_draft_applied", &frames[8])?;
+            correlated(events, "crop_draft_applied", &frames[9])?;
             // The square crop's own quarter points straddle the fixture's centre line, so this frame
             // proves the four quadrants are present rather than sampling their corners.
             record(
-                &frames[9],
-                "the applied square crop",
-                shows_committed(&paths[9], &frames[9], false)?,
+                &frames[10],
+                "the applied straightened square crop",
+                shows_committed(&paths[10], &frames[10], false)?,
             );
         }
         other => return Err(format!("Unknown crop scenario {other}").into()),

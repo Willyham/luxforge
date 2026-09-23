@@ -235,6 +235,10 @@ pub const RAIL_PIECE_LENGTH: f32 = 8.0;
 pub const THUMB_RADIUS: f32 = 7.0;
 /// The ring around the handle.
 pub const THUMB_OUTLINE_WIDTH: f32 = 1.0;
+/// The accent halo around a dragged handle: an 18 pt disc, 3 pt beyond the 12 pt handle.
+pub const THUMB_HALO_RADIUS: f32 = 9.0;
+/// How strongly the halo's accent sits over the panel and the rail under it.
+pub const THUMB_HALO_OPACITY: f32 = 0.25;
 /// The zero tick's height across the rail.
 pub const ZERO_TICK_HEIGHT: f32 = 6.0;
 /// The zero tick's width.
@@ -660,7 +664,8 @@ pub fn band_border_surface(_theme: &Theme) -> container::Style {
 
 /// The slider's handle. The rail, its fill and its zero tick are drawn under it by the slider row
 /// itself (see [`crate::geometry::rail_geometry`]), so Iced's own rail is transparent. The handle
-/// turns [`ACCENT`] only while dragging.
+/// turns [`ACCENT`] only while dragging, and then drops its dark ring, so the halo the rail line
+/// draws under it (see [`THUMB_HALO_RADIUS`]) meets the accent directly, as the references draw it.
 pub fn slider_style(dragging: bool) -> impl Fn(&Theme, slider::Status) -> slider::Style {
     move |_theme, status| {
         let active = dragging || matches!(status, slider::Status::Dragged);
@@ -679,7 +684,11 @@ pub fn slider_style(dragging: bool) -> impl Fn(&Theme, slider::Status) -> slider
                     radius: THUMB_RADIUS,
                 },
                 background: Background::Color(if active { ACCENT } else { THUMB }),
-                border_color: THUMB_OUTLINE,
+                border_color: if active {
+                    Color::TRANSPARENT
+                } else {
+                    THUMB_OUTLINE
+                },
                 border_width: THUMB_OUTLINE_WIDTH,
             },
         }
@@ -801,6 +810,11 @@ mod tests {
     fn dragging_handle_turns_accent() {
         let style = slider_style(true)(&theme(), slider::Status::Active);
         assert_eq!(style.handle.background, Background::Color(ACCENT));
+        assert_eq!(
+            style.handle.border_color,
+            Color::TRANSPARENT,
+            "the halo, not the dark ring, surrounds a dragged handle"
+        );
     }
 
     #[test]

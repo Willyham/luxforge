@@ -112,6 +112,10 @@ pub(crate) enum CropMessage {
     Pointer(CropPointer),
     AngleText(String),
     SubmitAngle,
+    /// The angle's rail was dragged to this fraction of its range.
+    AngleRail(f64),
+    /// The drag on the angle's rail ended.
+    AngleRailReleased,
     NudgeAngle(f64),
     /// The index of one generated ratio preset.
     Preset(usize),

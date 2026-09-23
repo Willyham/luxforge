@@ -25,13 +25,13 @@ use lightwell_ui::{
     BINS, ButtonSize, ButtonTone, ChipModel, ClipTriangleModel, ColorPickerModel, ColorSwatchModel,
     ControlKey, ControlKeyEvent, CurveEditorModel, CurvePointRow, HistogramChannel, Icon,
     IconButtonModel, LabelledButtonModel, MenuChoiceModel, NumberFieldModel, RailDecoration,
-    RowPlacement, SectionHeaderModel, SegmentedModel, SliderModel, StepperModel,
-    SubGroupHeaderModel, Tab, TabRowModel, ToggleModel, boxed_input, button_row, caption,
-    channel_row, chip, chip_row, chip_wrap, clip_triangle, color_picker, color_swatch,
-    curve_editor, equal_button_row, error_caption, focus_control, histogram, icon_button,
-    icon_button_row, inline_menu, label_line, labelled_button, menu_choice, module_section,
-    number_field, readout_card, row_icon_button, section_label, segmented, slider, stepper,
-    sub_group_header, sub_group_header_with_actions, tab_row, text_button, theme, toggle,
+    RowPlacement, SectionHeaderModel, SegmentedModel, SliderModel, StepperModel, StepperRail,
+    StepperRailMessages, SubGroupHeaderModel, Tab, TabRowModel, ToggleModel, boxed_input,
+    button_row, caption, channel_row, chip, chip_row, chip_wrap, clip_triangle, color_picker,
+    color_swatch, curve_editor, equal_button_row, error_caption, focus_control, histogram,
+    icon_button, icon_button_row, inline_menu, label_line, labelled_button, menu_choice,
+    module_section, number_field, readout_card, row_icon_button, section_label, segmented, slider,
+    stepper, sub_group_header, sub_group_header_with_actions, tab_row, text_button, theme, toggle,
 };
 use serde_json::{Map, Value};
 
@@ -702,6 +702,7 @@ fn number_view<'a>(
                 increment_enabled: field.value < field.max,
                 decrement_tooltip: "Decrease".into(),
                 increment_tooltip: "Increase".into(),
+                rail: None,
             },
             Message::ControlStep {
                 action: action.clone(),
@@ -717,6 +718,7 @@ fn number_view<'a>(
             on_text,
             submit,
             reset,
+            None,
         ),
     };
     let control = match field.style {
@@ -1504,17 +1506,31 @@ fn custom_field<'a>(
     .into()
 }
 
-/// The straightening angle: its value box with the ± nudges, and the arrow keys while focused.
+/// The straightening angle: the ± nudges either side of its rail, its value box, which opens for
+/// typing when pressed, and the arrow keys while focused.
 fn angle_stepper(model: &CropSectionModel) -> Element<'_, Message> {
+    let edit = if model.angle_editing {
+        lightwell_ui::ValueEdit::Editing {
+            text: model.angle.clone(),
+            invalid: None,
+        }
+    } else {
+        lightwell_ui::ValueEdit::Display
+    };
+    let rail = model.angle_rail.as_ref().map(|rail| StepperRail {
+        soft_min: rail.min,
+        soft_max: rail.max,
+        value: rail.value,
+        step: rail.step,
+        zero: Some(0.0),
+        dragging: rail.live,
+    });
     let control = stepper(
         &StepperModel {
             field: NumberFieldModel {
                 label: String::new(),
                 display: model.angle.clone(),
-                edit: lightwell_ui::ValueEdit::Editing {
-                    text: model.angle.clone(),
-                    invalid: None,
-                },
+                edit,
                 unit: Some("°".into()),
                 enabled: model.enabled,
                 id: Some(model.angle_id.clone()),
@@ -1523,13 +1539,21 @@ fn angle_stepper(model: &CropSectionModel) -> Element<'_, Message> {
             increment_enabled: model.enabled,
             decrement_tooltip: format!("−{}°", model.nudge),
             increment_tooltip: format!("+{}°", model.nudge),
+            rail,
         },
         Message::Crop(CropMessage::NudgeAngle(-model.nudge)),
         Message::Crop(CropMessage::NudgeAngle(model.nudge)),
-        Message::Crop(CropMessage::AngleText(model.angle.clone())),
+        Message::EditValue {
+            action: model.angle_action.clone(),
+            parameter: model.angle_parameter.clone(),
+        },
         |text| Message::Crop(CropMessage::AngleText(text)),
         Message::Crop(CropMessage::SubmitAngle),
         Message::Crop(CropMessage::AngleText("0".into())),
+        Some(StepperRailMessages {
+            on_change: Box::new(|fraction| Message::Crop(CropMessage::AngleRail(fraction))),
+            on_release: Message::Crop(CropMessage::AngleRailReleased),
+        }),
     );
     let step = model.nudge;
     focus_control(control, model.enabled, move |event| match event {

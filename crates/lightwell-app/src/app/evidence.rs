@@ -270,6 +270,9 @@ pub(crate) enum DraftStep {
     Reapply,
     Angle(f64),
     Nudge(f64),
+    /// A drag on the angle's rail through these fractions of its range, then its release, exactly
+    /// as the rail publishes them.
+    AngleRail(Vec<f64>),
     /// A declared `aspect` option, by name; an undeclared one fails the step.
     Preset(String),
     /// A rectangle in box pixels, applied as two corner gestures.
@@ -437,6 +440,7 @@ impl DraftStep {
             Self::Reapply => json!({"reapply":true}),
             Self::Angle(value) => json!({"angle":value}),
             Self::Nudge(value) => json!({"nudge":value}),
+            Self::AngleRail(fractions) => json!({"angle_rail":fractions}),
             Self::Preset(option) => json!({"preset":option}),
             Self::Rect(rect) => json!({"rect":rect}),
             Self::Swap => json!({"swap":true}),
@@ -580,6 +584,18 @@ impl Editor {
                 };
             }
             DraftStep::Rect(rect) => return self.rect_step(*rect),
+            DraftStep::AngleRail(fractions) => {
+                if !drafting {
+                    return self.fail_step("no crop draft is open");
+                }
+                let mut tasks: Vec<Task<Message>> = fractions
+                    .iter()
+                    .map(|fraction| self.crop_update(CropMessage::AngleRail(*fraction)))
+                    .collect();
+                tasks.push(self.crop_update(CropMessage::AngleRailReleased));
+                self.capture_next_frame();
+                return Task::batch(tasks);
+            }
             DraftStep::Option(on) => CropMessage::Option(*on),
             DraftStep::Guide(on) => CropMessage::Guide(*on),
             DraftStep::Angle(value) => CropMessage::AngleText(number_text(*value)),
@@ -2096,6 +2112,24 @@ fn parse_draft(value: &Value) -> Result<DraftStep, String> {
         "lock" => requested().map(|()| DraftStep::Lock),
         "angle" => number().map(DraftStep::Angle),
         "nudge" => number().map(DraftStep::Nudge),
+        "angle_rail" => {
+            let fractions: Vec<f64> = value
+                .as_array()
+                .ok_or("draft angle_rail takes rail fractions from 0 to 1")?
+                .iter()
+                .filter_map(|number| {
+                    number
+                        .as_f64()
+                        .filter(|number| (0.0..=1.0).contains(number))
+                })
+                .collect();
+            match value.as_array() {
+                Some(values) if !values.is_empty() && fractions.len() == values.len() => {
+                    Ok(DraftStep::AngleRail(fractions))
+                }
+                _ => Err("draft angle_rail takes one or more rail fractions from 0 to 1".into()),
+            }
+        }
         "option" => flag().map(DraftStep::Option),
         "guide" => flag().map(DraftStep::Guide),
         "preset" => value

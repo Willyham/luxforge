@@ -178,7 +178,7 @@ On macOS, `develop --background` builds the selected profile and runs a temporar
 Debug builds expose the title-bar **Developer** button automatically. To inspect the gallery in
 an optimized build, run `cargo xtask develop --developer` (automated launches add `--background`).
 Its page chooser and Previous/Next controls browse ten pages; Back to editor or Escape returns.
-The `gallery` smoke covers all 73 reference states and the return to the unchanged editor via
+The `gallery` smoke covers all 74 reference states and the return to the unchanged editor via
 the same `workspace.set` path as the button.
 
 ## Rendered evidence
@@ -326,7 +326,8 @@ frame, so a refused step is visible in the evidence instead of missing from it.
 The `crop` and `crop-draft` scenarios use this. `crop` commits a 16:9 `edit.crop-fit` and an
 off-centre 7° `edit.crop`, then drafts on that layer, straightens to 12°, cancels, drafts again,
 nudges and applies. `crop-draft` opens a neutral draft and exercises corner gestures, a declared ratio
-preset, 100% and Fit, then applies. The runner checks the committed stack in each frame's state (one
+preset, a drag on the angle's rail to 2.4° (checked in state: the angle, the ratio kept, the
+release's one logged change and no commit), 100% and Fit, then applies the straightened square. The runner checks the committed stack in each frame's state (one
 crop layer keeping its identity, the payload that was sent, the revision each commit produced), that
 the displayed image has the ratio the committed payload declares, and, on draft frames, that the
 rectangle drawn at full opacity matches the captured draft rectangle, that all eight handles are
@@ -429,7 +430,7 @@ naming "Preview is stale", the crop module listed unavailable in `state.modules`
 drawn anywhere in the photo surface, and the source fixture's hash unchanged throughout. It writes
 `unavailable-checks.json` beside its own two launch directories rather than one `app/` directory.
 
-`cargo xtask smoke --scenario gallery --output NEW_DIR` captures all 73 named widget states across ten pages in the real background editor at 1440×1000 logical points. Each page has renderer readback, state metadata and a matching script event; the board includes every named vector icon at 12 and 16 points and, on its last page, module sections at the reference panel width: Basic expanded, collapsed and unavailable bands, a collapsed group, the tab row, the labelled buttons, band hints and history labels truncated to one line with an ellipsis, the icon-button row, the crop section drafting and idle, and the field rows. `cargo xtask smoke --scenario controls --output NEW_DIR` enables the developer proof, scrolls its generated panel, and exercises slider/picker/curve drafts, cancellation, channel selection, point add/remove, discrete controls, group disclosure and reset. Its checks correlate history revisions and values with captures and verify that the identity proof preserves the displayed photograph. The gallery and generated panel have different widths; both require visual review alongside their automated checks.
+`cargo xtask smoke --scenario gallery --output NEW_DIR` captures all 74 named widget states across ten pages in the real background editor at 1440×1000 logical points. Each page has renderer readback, state metadata and a matching script event; the board includes every named vector icon at 12 and 16 points and, on its last page, module sections at the reference panel width: Basic expanded, collapsed and unavailable bands, a collapsed group, the tab row, the labelled buttons, band hints and history labels truncated to one line with an ellipsis, the icon-button row, the crop section drafting and idle, and the field rows. `cargo xtask smoke --scenario controls --output NEW_DIR` enables the developer proof, scrolls its generated panel, and exercises slider/picker/curve drafts, cancellation, channel selection, point add/remove, discrete controls, group disclosure and reset. Its checks correlate history revisions and values with captures and verify that the identity proof preserves the displayed photograph. The gallery and generated panel have different widths; both require visual review alongside their automated checks.
 
 `editor-latency --control curve` measures the controls proof's middle-point drag with the curve editor visible. The proof's colour stage is identity; this measures the control, query, draft, preview and upload path, not a future Tone Curve image algorithm. Slider remains the default workload. Both use the same provisional 100 ms p95 interaction threshold and retain all samples.
 

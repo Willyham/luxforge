@@ -14,9 +14,9 @@ use crate::{
 };
 use lightwell_core::{
     ActionDescriptor, ActionStyle, AssetId, CanvasInteraction, ChoiceStyle, ColorStyle, Control,
-    CropPayload, CurveBackground, EffectStage, EntryId, Layer, ModuleDescriptor, NumberStyle,
-    ORIENTATION_EFFECT, Orientation, ParameterDescriptor, ParameterKind, RailDecoration,
-    ResetAction,
+    CropPayload, CurveBackground, EffectStage, EntryId, Layer, MAX_ANGLE, MIN_ANGLE,
+    ModuleDescriptor, NumberStyle, ORIENTATION_EFFECT, Orientation, ParameterDescriptor,
+    ParameterKind, RailDecoration, ResetAction,
 };
 use serde_json::{Map, Value};
 use std::{
@@ -438,6 +438,18 @@ pub(crate) struct PresetChip {
     pub(crate) chosen: bool,
 }
 
+/// The angle's rail while a crop draft is open: the angle's range, the draft's angle on it and
+/// the step a drag moves in. The rail's gesture is live for the whole draft, so its handle reads
+/// accent while the draft is open, as the crop reference draws it.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct AngleRailModel {
+    pub(crate) min: f64,
+    pub(crate) max: f64,
+    pub(crate) value: f64,
+    pub(crate) step: f64,
+    pub(crate) live: bool,
+}
+
 /// The crop draft's own controls, rendered by the host for a declared crop-frame interaction.
 #[allow(dead_code)]
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -459,6 +471,13 @@ pub(crate) struct CropSectionModel {
     pub(crate) can_swap: bool,
     pub(crate) angle: String,
     pub(crate) angle_id: String,
+    /// The crop action and its angle parameter, which name the angle field for editing.
+    pub(crate) angle_action: String,
+    pub(crate) angle_parameter: String,
+    /// The angle's box is open for typing; otherwise it shows the angle with its unit.
+    pub(crate) angle_editing: bool,
+    /// The angle's rail, while a draft is open.
+    pub(crate) angle_rail: Option<AngleRailModel>,
     pub(crate) guide: bool,
     /// How far one nudge button moves the angle, in degrees.
     pub(crate) nudge: f64,
@@ -800,10 +819,11 @@ fn contains_curve(controls: &[Control]) -> bool {
 fn draft_digest(inputs: &Inputs<'_>) -> String {
     match inputs.draft {
         Some(draft) => format!(
-            "{}|{}|{}|{}|{}|{}|{}",
+            "{}|{}|{}|{:?}|{}|{}|{}|{}",
             draft.summary(),
             draft.preset,
             inputs.crop_angle,
+            inputs.editing,
             inputs.crop_custom.0,
             inputs.crop_custom.1,
             inputs.crop_guide,
@@ -1412,6 +1432,11 @@ fn crop_section(frame: &CropFrame<'_>, inputs: &Inputs<'_>, enabled: bool) -> Cr
         ),
         angle: inputs.crop_angle.to_owned(),
         angle_id: field_id(frame.action, frame.angle, None),
+        angle_action: frame.action.to_owned(),
+        angle_parameter: frame.angle.to_owned(),
+        angle_editing: inputs
+            .editing
+            .is_some_and(|(action, parameter)| action == frame.action && parameter == frame.angle),
         guide: inputs.crop_guide,
         nudge: crate::app::crop::ANGLE_STEP,
         shortcut: frame
@@ -1451,6 +1476,13 @@ fn crop_section(frame: &CropFrame<'_>, inputs: &Inputs<'_>, enabled: bool) -> Cr
         can_apply: enabled && !draft.conflicted,
         can_reapply: !inputs.busy,
         readout: readout(draft, frame.action),
+        angle_rail: Some(AngleRailModel {
+            min: MIN_ANGLE,
+            max: MAX_ANGLE,
+            value: draft.stage.angle,
+            step: crate::app::crop::ANGLE_RAIL_STEP,
+            live: true,
+        }),
         ..base
     }
 }
