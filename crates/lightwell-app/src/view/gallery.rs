@@ -12,15 +12,15 @@ use lightwell_ui::{MenuChoiceModel, caption, gallery_named_states, menu_choice, 
 /// large canvases get their own pages, while related compact states stay together.
 const PAGES: [(&str, usize, usize); 10] = [
     ("Sliders and sections", 0, 9),
-    ("Actions and history", 9, 19),
-    ("Notices and menus", 19, 25),
-    ("Histogram and typography", 25, 38),
-    ("Rails and number fields", 38, 48),
-    ("Toggles, choices and swatches", 48, 57),
-    ("Colour picker", 57, 60),
-    ("Curve points", 60, 62),
-    ("Curve channels, named vector icons and Basic", 62, 66),
-    ("Module panels", 66, 74),
+    ("Actions, history and performance", 9, 23),
+    ("Notices and menus", 23, 29),
+    ("Histogram and typography", 29, 42),
+    ("Rails and number fields", 42, 52),
+    ("Toggles, choices and swatches", 52, 61),
+    ("Colour picker", 61, 64),
+    ("Curve points", 64, 66),
+    ("Curve channels, named vector icons and Basic", 66, 70),
+    ("Module panels", 70, 78),
 ];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
