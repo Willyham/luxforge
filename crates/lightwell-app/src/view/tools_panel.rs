@@ -1451,36 +1451,17 @@ fn picker_view<'a>(
     }
 }
 
-/// The crop draft's own panel, driven by [`CropMessage`]: the API-equivalent path and this panel
-/// share the same state machine. Idle, it is one Crop button; drafting, it is the Ratio group
-/// (chips, custom ratio, lock and swap), the Angle group (stepper and straighten guide), the
-/// draft's exact readout and Cancel and Apply, every row a widget of the library.
+/// The crop section, driven by [`CropMessage`]: the API-equivalent path and this panel share the
+/// same state machine. Idle and drafting it lays out the same Ratio group (chips, custom ratio,
+/// lock and swap) and Angle group (stepper, rail and straighten guide), so opening a draft moves
+/// none of them; idle they read the committed crop, and a change to one opens the draft with it.
+/// Drafting adds the draft's exact readout and Cancel and Apply below them, every row a widget of
+/// the library.
 fn crop_section_view<'a>(
     model: &'a CropSectionModel,
     menu: Option<&'a MenuTarget>,
 ) -> Element<'a, Message> {
     let mut rows: Vec<Element<'a, Message>> = Vec::new();
-    if !model.drafting {
-        rows.push(button_row(
-            vec![labelled_button(
-                &LabelledButtonModel {
-                    label: "Crop".into(),
-                    icon: Some(Icon::Crop),
-                    key_hint: model.shortcut.clone(),
-                    tone: ButtonTone::Control,
-                    size: ButtonSize::Regular,
-                    fill: false,
-                    enabled: model.can_start,
-                },
-                model.can_start.then_some(Message::Crop(CropMessage::Start)),
-            )],
-            RowPlacement::default(),
-        ));
-        if model.pending {
-            rows.push(caption("Preparing the crop's input stage…"));
-        }
-        return column(rows).spacing(theme::ROW_SPACING).into();
-    }
     if model.conflicted {
         rows.push(error_caption("Changed elsewhere · Discard or Reapply"));
         rows.push(button_row(
@@ -1506,7 +1487,7 @@ fn crop_section_view<'a>(
             },
         ));
     }
-    if model.paused {
+    if model.drafting && model.paused {
         rows.push(caption(
             "Draft paused during history preview · Return to current",
         ));
@@ -1594,6 +1575,12 @@ fn crop_section_view<'a>(
     ));
     rows.push(angle_stepper(model));
     rows.push(straighten_toggle(model));
+    if !model.drafting {
+        if model.pending {
+            rows.push(caption("Preparing the crop's input stage…"));
+        }
+        return column(rows).spacing(theme::ROW_SPACING).into();
+    }
     rows.push(readout_card(
         &model.readout,
         RowPlacement {

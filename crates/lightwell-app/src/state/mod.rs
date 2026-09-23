@@ -34,6 +34,9 @@ pub(crate) struct Inputs<'a> {
     pub(crate) modules_ready: bool,
     /// The displayed entry's layers as the owner described them.
     pub(crate) recipe: Option<&'a RecipeDescription>,
+    /// The displayed entry's stored layers, payloads included, as the preview job that shows it
+    /// carries them. The idle crop section reads the committed crop from these.
+    pub(crate) displayed_layers: Option<&'a [lightwell_core::Layer]>,
     pub(crate) fields: &'a Fields,
     /// Local presentation state for generated controls; it never enters the recipe.
     pub(crate) control_ui: &'a tools::ControlsUi,
@@ -290,6 +293,7 @@ mod tests {
                 modules: &self.modules,
                 modules_ready: true,
                 recipe: self.recipe.as_ref(),
+                displayed_layers: self.displayed_layers(),
                 fields: &self.fields,
                 control_ui: &self.control_ui,
                 editing: self.editing.as_ref(),
@@ -341,6 +345,24 @@ mod tests {
             let mut workspace = Workspace::default();
             workspace.derive(&self.inputs());
             workspace
+        }
+
+        /// The stored layers of the displayed entry: whichever history entry the scene displays.
+        fn displayed_layers(&self) -> Option<&[lightwell_core::Layer]> {
+            let displayed = self.display_entry.as_ref()?;
+            self.history
+                .entries
+                .iter()
+                .find(|entry| &entry.id == displayed)
+                .map(|entry| entry.snapshot.recipe.layers.as_slice())
+        }
+
+        /// The open asset's source dimensions, which the crop layer's input stage starts from.
+        fn sized(mut self, width: u32, height: u32) -> Self {
+            let asset = &mut self.state.as_mut().expect("an open asset").asset;
+            asset.width = width;
+            asset.height = height;
+            self
         }
     }
 
@@ -439,6 +461,172 @@ mod tests {
             Some("disabled by --disable-module")
         );
         assert!(!disabled.enabled);
+    }
+
+    fn crop_model(workspace: &Workspace, id: &str) -> tools::CropSectionModel {
+        match section(workspace, id).controls.first() {
+            Some(ControlModel::CropFrame(frame)) => (**frame).clone(),
+            other => panic!("the crop section starts with its frame controls, not {other:?}"),
+        }
+    }
+
+    fn chosen(model: &tools::CropSectionModel) -> Vec<&str> {
+        model
+            .presets
+            .iter()
+            .filter(|chip| chip.chosen)
+            .map(|chip| chip.label.as_str())
+            .collect()
+    }
+
+    /// The largest rectangle of that ratio inside the whole stage, fitted by the core's own geometry
+    /// exactly as `crop-fit` or a ratio chip fits it, as the payload that commits it.
+    fn fitted(stage: lightwell_core::CropStage, ratio: f64) -> CropPayload {
+        let (width, height) = stage.bounding_box();
+        let whole = lightwell_core::BoxRect {
+            x: 0.0,
+            y: 0.0,
+            width,
+            height,
+        };
+        stage
+            .fit_about_center(lightwell_core::largest_with_ratio_inside(whole, ratio))
+            .normalized(&stage)
+    }
+
+    /// Idle, the crop section shows the drafting section's Ratio and Angle controls reading the
+    /// displayed entry's committed crop exactly as a draft opened on it seeds them: the ratio it
+    /// reads as chosen and locked, or Free, and its angle on the rail at rest.
+    #[test]
+    fn the_idle_crop_section_reads_the_committed_crop_as_a_draft_would_seed_it() {
+        let crop = crop_descriptor();
+        let stage = lightwell_core::CropStage {
+            width: 480,
+            height: 320,
+            angle: 0.0,
+        };
+        let idle = |layers: Vec<lightwell_core::Layer>| {
+            let scene = Scene::new(vec![crop.clone()])
+                .opened(layers)
+                .sized(480, 320);
+            crop_model(&scene.derive(), &crop.id)
+        };
+
+        // No crop, or a neutral one: Free with the lock open, no swap, 0° on the rail at rest, and
+        // neither readout nor Apply, which belong to a draft.
+        for layers in [Vec::new(), vec![crop_layer(CropPayload::NEUTRAL)]] {
+            let model = idle(layers);
+            assert!(!model.drafting && model.enabled);
+            assert_eq!(chosen(&model), ["Free"]);
+            assert!(!model.locked && !model.can_swap);
+            assert_eq!(model.lock_label, "Lock ratio");
+            assert_eq!(model.angle, "0");
+            assert_eq!(
+                model.angle_rail,
+                Some(tools::AngleRailModel {
+                    min: -45.0,
+                    max: 45.0,
+                    value: 0.0,
+                    step: crate::app::crop::ANGLE_RAIL_STEP,
+                    live: false,
+                })
+            );
+            assert!(model.readout.is_empty() && !model.can_apply);
+            assert_eq!(model.presets.len(), 7, "every declared ratio is a chip");
+        }
+
+        // A committed 16:9 crop reads as 16:9 with the lock closed, and a draft opened on it seeds
+        // exactly that.
+        let wide = fitted(stage, 16.0 / 9.0);
+        let model = idle(vec![crop_layer(wide)]);
+        assert_eq!(chosen(&model), ["16:9"]);
+        assert!(model.locked && model.can_swap);
+        assert_eq!(model.lock_label, "Unlock ratio");
+        let presets =
+            crate::crop_draft::aspect_presets(&crate::app::testing::CROP_ASPECTS.map(String::from));
+        let draft =
+            CropDraft::from_layer(stage, wide, lightwell_core::LayerId::new(), 0, 3, &presets);
+        assert_eq!(draft.preset, "16:9");
+
+        // Straightened to 2.4° at the stage's own ratio reads as Original, at 2.4° on the rail.
+        let straightened = fitted(
+            lightwell_core::CropStage {
+                angle: 2.4,
+                ..stage
+            },
+            1.5,
+        );
+        let model = idle(vec![crop_layer(straightened)]);
+        assert_eq!(chosen(&model), ["Original"]);
+        assert_eq!(model.angle, "2.4");
+        assert_eq!(model.angle_rail.map(|rail| rail.value), Some(2.4));
+
+        // An off-centre rectangle no ratio produces reads as Free, at its own angle.
+        let free = CropPayload {
+            angle: 7.0,
+            x: 0.2,
+            y: 0.25,
+            width: 0.4,
+            height: 0.3,
+        };
+        let model = idle(vec![crop_layer(free)]);
+        assert_eq!(chosen(&model), ["Free"]);
+        assert!(!model.locked);
+        assert_eq!(model.angle, "7");
+
+        // Behind a quarter turn the crop's input stage is portrait. A 16:9 fitted there reads as
+        // 16:9 only because the turn is read: on the unturned stage the same payload is 480 × 120.
+        let tall = fitted(
+            lightwell_core::CropStage {
+                width: 320,
+                height: 480,
+                angle: 0.0,
+            },
+            16.0 / 9.0,
+        );
+        let turned = lightwell_core::Layer::orientation(Orientation {
+            mirror: false,
+            turns: 1,
+        });
+        assert_eq!(chosen(&idle(vec![turned, crop_layer(tall)])), ["16:9"]);
+        assert_eq!(chosen(&idle(vec![crop_layer(tall)])), ["Free"]);
+    }
+
+    /// The idle controls read the displayed entry, not the current one, and a historical preview or
+    /// a request in flight disables them exactly as it disables every other section's controls.
+    #[test]
+    fn the_idle_crop_section_follows_the_displayed_entry_and_the_disabled_states() {
+        let crop = crop_descriptor();
+        let wide = fitted(
+            lightwell_core::CropStage {
+                width: 480,
+                height: 320,
+                angle: 0.0,
+            },
+            16.0 / 9.0,
+        );
+        let mut scene = Scene::new(vec![crop.clone()])
+            .opened(vec![crop_layer(wide)])
+            .sized(480, 320);
+        scene.busy = true;
+        let model = crop_model(&scene.derive(), &crop.id);
+        assert!(!model.enabled && !model.can_swap);
+        assert_eq!(
+            chosen(&model),
+            ["16:9"],
+            "a disabled section still reads the crop"
+        );
+        scene.busy = false;
+
+        let asset = scene.state.as_ref().expect("an asset").asset.id.clone();
+        let older = entry(&asset, 1, None);
+        scene.history.entries.push(older.clone());
+        scene.display_entry = Some(older.id.clone());
+        scene.session.preview.selection = lightwell_core::HistorySelection::Entry(older.id);
+        let model = crop_model(&scene.derive(), &crop.id);
+        assert!(!model.enabled && !model.can_swap);
+        assert_eq!(chosen(&model), ["Free"], "the displayed entry has no crop");
+        assert_eq!(model.angle, "0");
     }
 
     #[test]
@@ -1285,7 +1473,7 @@ mod tests {
                     }
                     ControlModel::Group(group) => all_refused(&group.controls),
                     ControlModel::CropFrame(frame) => {
-                        assert!(!frame.enabled && !frame.can_start && !frame.can_apply)
+                        assert!(!frame.enabled && !frame.can_swap && !frame.can_apply)
                     }
                     _ => {}
                 }

@@ -1007,11 +1007,41 @@ impl Editor {
                         "input_stage_loaded".into(),
                         Value::from(self.draft_photo.is_some()),
                     );
+                    object.insert("section".into(), self.crop_section_summary());
                 }
                 summary
             }
-            None => json!({"drafting":false,"pending":self.crop_pending.is_some()}),
+            None => {
+                json!({"drafting":false,"pending":self.crop_pending.is_some(),"section":self.crop_section_summary()})
+            }
         }
+    }
+
+    /// What the crop section shows, exactly as its model derived it for the frame on screen: the
+    /// chosen ratio chip, the lock, the angle's box and rail, and whether its controls act. A
+    /// capture of the section is checked against these.
+    fn crop_section_summary(&self) -> Value {
+        self.workspace
+            .tools
+            .all()
+            .flat_map(|section| section.controls.iter())
+            .find_map(|control| match control {
+                state::tools::ControlModel::CropFrame(model) => Some(model),
+                _ => None,
+            })
+            .map_or(Value::Null, |model| {
+                json!({
+                    "drafting": model.drafting,
+                    "pending": model.pending,
+                    "enabled": model.enabled,
+                    "chosen": model.presets.iter().find(|chip| chip.chosen).map(|chip| chip.label.clone()),
+                    "locked": model.locked,
+                    "can_swap": model.can_swap,
+                    "angle": model.angle,
+                    "rail": model.angle_rail.as_ref().map(|rail| rail.value),
+                    "guide": model.guide,
+                })
+            })
     }
 
     /// One request whose outcome a frame is captured for: the next generation is pending until its
@@ -1855,6 +1885,10 @@ impl Editor {
             modules: &self.modules,
             modules_ready: self.modules_ready,
             recipe: self.recipe.as_ref(),
+            displayed_layers: self
+                .requested_render_entry
+                .as_ref()
+                .map(|entry| entry.snapshot.recipe.layers.as_slice()),
             fields: &self.fields,
             control_ui: &self.controls_ui,
             editing: self.editing.as_ref(),
@@ -2736,6 +2770,7 @@ impl Editor {
             Message::EditValue { action, parameter } => {
                 let id = fields::field_id(&action, &parameter, None);
                 self.editing = Some((action, parameter));
+                self.seed_idle_angle();
                 return operation::focus(iced::widget::Id::from(id));
             }
             Message::CancelEdit => self.editing = None,

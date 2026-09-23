@@ -824,7 +824,13 @@ impl Editor {
             DraftStep::Rect(rect) => return self.rect_step(*rect),
             DraftStep::AngleRail(fractions) => {
                 if !drafting {
-                    return self.fail_step("no crop draft is open");
+                    return self.idle_step(
+                        fractions
+                            .iter()
+                            .map(|fraction| CropMessage::AngleRail(*fraction))
+                            .chain(std::iter::once(CropMessage::AngleRailReleased))
+                            .collect(),
+                    );
                 }
                 let mut tasks: Vec<Task<Message>> = fractions
                     .iter()
@@ -852,6 +858,25 @@ impl Editor {
                 CropMessage::Preset(index)
             }
         };
+        // A change the idle section can make opens the draft first, exactly as the section's own
+        // control does, and is captured once that draft is on screen with the change applied.
+        if !drafting
+            && matches!(
+                step,
+                DraftStep::Preset(_)
+                    | DraftStep::Lock
+                    | DraftStep::Swap
+                    | DraftStep::Nudge(_)
+                    | DraftStep::Angle(_)
+                    | DraftStep::Guide(true)
+            )
+        {
+            let mut messages = vec![message];
+            if matches!(step, DraftStep::Angle(_)) {
+                messages.push(CropMessage::SubmitAngle);
+            }
+            return self.idle_step(messages);
+        }
         let modifier = matches!(step, DraftStep::Option(_) | DraftStep::Guide(_));
         if !drafting && !modifier {
             return self.fail_step("no crop draft is open");
@@ -863,6 +888,21 @@ impl Editor {
             tasks.push(self.crop_update(CropMessage::SubmitAngle));
         }
         self.capture_next_frame();
+        Task::batch(tasks)
+    }
+
+    /// One change from the idle crop section: the same messages its control sends, which open the
+    /// draft seeded from the committed crop and apply the change once the draft's input stage has
+    /// arrived. The frame is the opened draft, so the step waits for it as a start does.
+    fn idle_step(&mut self, messages: Vec<CropMessage>) -> Task<Message> {
+        self.await_step(Settle::Draft);
+        let tasks: Vec<Task<Message>> = messages
+            .into_iter()
+            .map(|message| self.crop_update(message))
+            .collect();
+        if self.crop_pending.is_none() {
+            return self.fail_step("the idle change could not open a draft");
+        }
         Task::batch(tasks)
     }
 
@@ -3567,7 +3607,7 @@ mod tests {
     #[test]
     fn a_scripted_step_that_cannot_be_sent_is_recorded_and_still_captured() {
         let (mut editor, catalog, _, _) =
-            scripted(r#"[{"draft":{"angle":4.0}},{"draft":{"preset":"7:5"}}]"#);
+            scripted(r#"[{"draft":{"cancel":true}},{"draft":{"preset":"7:5"}}]"#);
         for reason in ["no crop draft is open", "declares the aspect option 7:5"] {
             let _ = editor.next_step();
             let record = evidence(&editor).current.clone().expect("a step record");
@@ -3582,6 +3622,35 @@ mod tests {
             assert!(evidence(&editor).capture_pending);
             editor.evidence.as_mut().expect("evidence").capture_pending = false;
         }
+        finish(editor, catalog);
+    }
+
+    /// A draft step with no draft open is a change from the idle section: it sends the section's own
+    /// message, which opens the draft, and its frame waits for that draft with the change applied.
+    #[test]
+    fn a_scripted_idle_change_opens_the_draft_and_is_captured_once_it_is_applied() {
+        let (mut editor, catalog, _, _) = scripted(r#"[{"draft":{"preset":"16:9"}}]"#);
+        let _ = editor.next_step();
+        let record = evidence(&editor).current.clone().expect("a step record");
+        assert_eq!(record["status"], json!("sent"), "{record}");
+        assert_eq!(evidence(&editor).awaiting, Some(Settle::Draft));
+        assert!(!evidence(&editor).capture_pending, "nothing is drafted yet");
+        let pending = editor.crop_pending.as_ref().expect("a starting draft");
+        assert!(
+            matches!(pending.queued.as_slice(), [CropMessage::Preset(_)]),
+            "{:?}",
+            pending.queued
+        );
+        editor.open_draft(lightwell_core::CropStage {
+            width: 480,
+            height: 320,
+            angle: 0.0,
+        });
+        assert_eq!(editor.crop.as_ref().expect("a draft").preset, "16:9");
+        assert!(
+            evidence(&editor).capture_pending,
+            "the opened draft settles the step"
+        );
         finish(editor, catalog);
     }
 
