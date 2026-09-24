@@ -899,7 +899,7 @@
     {
       "id": "TASK-017",
       "description": "Cache the catalog owner's immutable history entries with their strokes resolved, share a recipe's stroke table instead of deep-copying it, give drafts a revision read that decodes nothing, and store the RAW interpretation typed instead of re-parsing JSON on every read.",
-      "status": "in_progress",
+      "status": "completed",
       "dependencies": [
         "TASK-009"
       ],

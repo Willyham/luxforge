@@ -1639,7 +1639,7 @@ fn render_sample(
 /// commit and session report recomputes it from the asset's current revision.
 fn refresh_conflict(service: &EditorService, session: &mut ClientSession) -> Result<(), Error> {
     if let Some(draft) = &mut session.draft {
-        draft.conflicted = draft.base_revision != service.state(&draft.asset_id)?.revision;
+        draft.conflicted = draft.base_revision != service.revision(&draft.asset_id)?;
     }
     Ok(())
 }
@@ -1726,7 +1726,7 @@ fn draft_begin(
             ));
         }
     };
-    let revision = service.state(&p.asset_id)?.revision;
+    let revision = service.revision(&p.asset_id)?;
     let mut draft = crate::Draft::new(&p.action, p.asset_id, revision);
     draft.target = target;
     session.draft = Some(draft);
@@ -1831,7 +1831,7 @@ fn draft_reapply(
     // whatever another client changed meanwhile stays in the layer the commit merges over.
     let action = draft_action(service, &draft.action)?;
     draft.checked_fields(&action.parameters, &draft.fields)?;
-    let revision = service.state(&draft.asset_id)?.revision;
+    let revision = service.revision(&draft.asset_id)?;
     let draft = session.draft.as_mut().expect("the draft was just found");
     draft.base_revision = revision;
     draft.conflicted = false;
