@@ -118,14 +118,6 @@ fn basic_payload(frame: &Frame) -> Option<&Value> {
     frame.payload(BASIC_EFFECT)
 }
 
-fn brighter(what: &str, more: f64, less: f64) -> Result {
-    compare(what, more, less, Tolerance::Above(BRIGHTER))
-}
-
-fn same(what: &str, a: f64, b: f64) -> Result {
-    compare(what, a, b, Tolerance::Within(SAME))
-}
-
 /// Whether the module registry lists `module` and offers it.
 fn available(frame: &Frame, module: &str) -> Result {
     let listed = frame["state"]["modules"]
@@ -181,10 +173,11 @@ pub fn verify(_: &mut Run, launches: &[Checked]) -> Result {
             drag["state"]["displayed_draft_revision"], drafted["draft_revision"]
         ),
     )?;
-    brighter(
+    compare(
         "+1.00 EV drafted against the neutral open",
         lum("drag")?,
         lum("opened")?,
+        Tolerance::Above(BRIGHTER),
     )?;
     record(
         drag,
@@ -193,10 +186,11 @@ pub fn verify(_: &mut Run, launches: &[Checked]) -> Result {
     );
 
     let release = launch.at("release")?;
-    same(
+    compare(
         "the committed render against the drafted one",
         lum("release")?,
         lum("drag")?,
+        Tolerance::Within(SAME),
     )?;
     record(
         release,
@@ -205,10 +199,11 @@ pub fn verify(_: &mut Run, launches: &[Checked]) -> Result {
     );
 
     let returned = launch.at("return")?;
-    same(
+    compare(
         "the return-to-start render",
         lum("return")?,
         lum("release")?,
+        Tolerance::Within(SAME),
     )?;
     record(
         returned,
@@ -218,10 +213,11 @@ pub fn verify(_: &mut Run, launches: &[Checked]) -> Result {
 
     // -0.50 EV typed: the photograph is darker than it was at neutral.
     let typed = launch.at("typed")?;
-    brighter(
+    compare(
         "the neutral open against -0.50 EV",
         lum("opened")?,
         lum("typed")?,
+        Tolerance::Above(BRIGHTER),
     )?;
     record(
         typed,
@@ -235,15 +231,17 @@ pub fn verify(_: &mut Run, launches: &[Checked]) -> Result {
         undo.entry()? == release.entry()?,
         "Undo did not return to the +1.00 EV entry",
     )?;
-    brighter(
+    compare(
         "the undone +1.00 EV against -0.50 EV",
         lum("undo")?,
         lum("typed")?,
+        Tolerance::Above(BRIGHTER),
     )?;
-    same(
+    compare(
         "undo against the committed +1.00 EV render",
         lum("undo")?,
         lum("release")?,
+        Tolerance::Within(SAME),
     )?;
     record(
         undo,
@@ -253,10 +251,11 @@ pub fn verify(_: &mut Run, launches: &[Checked]) -> Result {
 
     // The Tone group's reset: the photograph back to the opened one.
     let reset = launch.at("reset")?;
-    same(
+    compare(
         "the reset render against the opened one",
         lum("reset")?,
         lum("opened")?,
+        Tolerance::Within(SAME),
     )?;
     record(
         reset,
@@ -265,10 +264,11 @@ pub fn verify(_: &mut Run, launches: &[Checked]) -> Result {
     );
 
     let drag_open = launch.at("drag-open")?;
-    brighter(
+    compare(
         "+2.00 EV drafted against neutral",
         lum("drag-open")?,
         lum("reset")?,
+        Tolerance::Above(BRIGHTER),
     )?;
     record(
         drag_open,
@@ -308,10 +308,11 @@ pub fn verify(_: &mut Run, launches: &[Checked]) -> Result {
         reapply.notices().is_empty(),
         format!("Reapply still shows a notice: {:?}", reapply.notices()),
     )?;
-    brighter(
+    compare(
         "the reapplied +2.00 EV against the committed stack",
         lum("reapply")?,
         lum("conflict")?,
+        Tolerance::Above(BRIGHTER),
     )?;
     record(
         reapply,
@@ -321,10 +322,11 @@ pub fn verify(_: &mut Run, launches: &[Checked]) -> Result {
 
     // Discard: the canvas is the committed stack again.
     let discard = launch.at("discard")?;
-    same(
+    compare(
         "the discarded gesture against the committed stack",
         lum("discard")?,
         lum("conflict")?,
+        Tolerance::Within(SAME),
     )?;
     record(
         discard,
@@ -417,10 +419,11 @@ pub fn verify_restart(run: &mut Run, launches: &[Checked]) -> Result {
         .to_owned();
     let neutral_luminance = pixels::window_luminance(opened)?;
     let edited_luminance = pixels::window_luminance(committed)?;
-    brighter(
+    compare(
         "launch 1's committed edit against its own neutral open",
         edited_luminance,
         neutral_luminance,
+        Tolerance::Above(BRIGHTER),
     )?;
     ensure(
         reopened.revision()? == committed.revision()? && reopened.entry()? == committed.entry()?,
@@ -444,15 +447,17 @@ pub fn verify_restart(run: &mut Run, launches: &[Checked]) -> Result {
     )?;
     // The photograph itself is the edited one again, to the same measured brightness.
     let reopened_luminance = pixels::window_luminance(reopened)?;
-    same(
+    compare(
         "the reopened render against the render launch 1 committed",
         reopened_luminance,
         edited_luminance,
+        Tolerance::Within(SAME),
     )?;
-    brighter(
+    compare(
         "the reopened render against a neutral open",
         reopened_luminance,
         neutral_luminance,
+        Tolerance::Above(BRIGHTER),
     )?;
     write_json(
         &run.out().join("basic-restart-checks.json"),
