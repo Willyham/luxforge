@@ -108,9 +108,9 @@ An action request goes through one path for the desktop, the JSON API and headle
 
 1. Validate the mutation envelope; find the action in the registry, else `validation: unknown action`; refuse an action whose module is registered as unavailable with `incompatible: unavailable module <id>`.
 2. Generic parameter checks, then module `parse`. A patch action's check validates only the fields that were sent.
-3. Request deduplication: the stored input hash covers `{action: <durable action id>, mutation}` merged with the parsed parameters. A retry returns the original result; the same request ID with different input is a `conflict`.
+3. Request deduplication: the stored input hash covers `{action: <durable action id>, mutation}` merged with the parsed parameters. A retry returns the original result marked `deduplicated` and emits no event, because the first attempt emitted it; the same request ID with different input is a `conflict`.
 4. Revision check, then module `plan` against the current stack with the cached verified source.
-5. `NoOp` records the request without a row. `Commit` places the layer by its effect stage, and `Compose` resolves its steps into one final stack or a no-op; `Commit`, `Update` and a changing `Compose` validate the resulting recipe through the registry, compile it against the cached source so no later layer is left addressing a stage that no longer exists, and persist the snapshot, entry, current pointer, revision, cleared redo and request result in one transaction.
+5. `NoOp` records the request without a row. `Commit` places the layer by its effect stage, and `Compose` resolves its steps into one final stack or a no-op; `Commit`, `Update` and a changing `Compose` admit the resulting recipe and persist the snapshot, entry, current pointer, revision, cleared redo and request result in one transaction. Admission is one function that every new snapshot passes, a `mask.*` command's and a Restore's included: the registry validates the recipe, it is checked against the asset's source kind, every artifact it lists must be recorded with a present file and is bound, and it is compiled against the asset, which resolves every stroke it references and leaves no later layer addressing a stage that no longer exists.
 
 ## Drafts
 

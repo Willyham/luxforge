@@ -2192,9 +2192,14 @@ impl EditorService {
     /// before it produced: the registry finds the action, which must be a field patch of an
     /// available module; the generic check and the module's `parse` take its fields; and the module
     /// plans against the intermediate stack through the same [`StageContext`] construction. A step
-    /// that is itself a composite is refused, and so is any refused step, before anything is
-    /// written. The final stack is `None` when it equals the starting one. Each step plans by
-    /// comparing payloads, so a composite costs `O(steps × layers)` and rasterizes nothing.
+    /// carries no mask target, so like an action sent without one it addresses the global layer:
+    /// it plans against [`recipe_for_target`]'s view of the intermediate stack for no mask, and its
+    /// plan is applied to the whole intermediate stack, so a masked layer of the step's effect is
+    /// neither read nor changed. A composite that was itself given a mask target is refused, since
+    /// its steps could not honour it. A step that is itself a composite is refused, and so is any
+    /// refused step, before anything is written. The final stack is `None` when it equals the
+    /// starting one. Each step plans by comparing payloads, so a composite costs
+    /// `O(steps × layers)` and rasterizes nothing.
     fn resolve_plan(
         &self,
         source: &PreparedSource,
@@ -2206,6 +2211,12 @@ impl EditorService {
             ActionPlan::Compose(steps) => steps,
             plan => return self.apply_plan(recipe, plan, mask),
         };
+        if mask.is_some() {
+            return Err(Error::new(
+                ErrorKind::Validation,
+                "a composite action's steps address the global layer, so it takes no mask target",
+            ));
+        }
         if steps.len() > MAX_COMPOSE_STEPS {
             return Err(Error::new(
                 ErrorKind::Validation,
@@ -2237,9 +2248,16 @@ impl EditorService {
             }
             let checked = check_parameters(action, &Value::Object(step.parameters))?;
             let input = module.parse(action_id, &checked)?;
-            let plan =
-                self.with_stage_context(source, &resolved, |context| module.plan(&input, context))?;
-            if let Some(next) = self.apply_plan(&resolved, plan, mask)? {
+            let plan = {
+                let target = recipe_for_target(
+                    &registry,
+                    &resolved,
+                    registry.action_accepts_mask(action_id),
+                    None,
+                );
+                self.with_stage_context(source, &target, |context| module.plan(&input, context))?
+            };
+            if let Some(next) = self.apply_plan(&resolved, plan, None)? {
                 resolved = next;
             }
         }
@@ -2414,12 +2432,33 @@ impl EditorService {
         )
     }
 
-    /// Persist one resulting stack: the same path for an appended and an updated layer. The
-    /// resulting recipe is validated and compiled against the cached verified source first, so a
-    /// stack that leaves a later layer addressing a stage that no longer exists is rejected with
-    /// the compile error and nothing is written. Compiling is O(layers) and rasterizes nothing.
-    /// Every artifact the stack lists must be recorded with a present file before it is bound and
-    /// compiled; the transaction checks that again and records the entry's references with it.
+    /// Admit one stack a write is about to persist as a new snapshot. Every path that writes one —
+    /// an action, a composite, a `mask.*` command and a restore — admits through here, so none
+    /// persists a stack with fewer checks than another.
+    ///
+    /// The stack is validated against the registry (an unavailable provider, a refused payload or a
+    /// mask on a stage that cannot carry one is refused by name) and against the asset's source
+    /// kind. Every artifact it lists must be recorded with a present file, and is then bound; the
+    /// bound bytes are returned for the caller to hold until the write, whose transaction checks
+    /// the references again and records them. Last, the stack is compiled against the asset's
+    /// dimensions, which resolves every stroke it references, so a later layer addressing a stage
+    /// that no longer exists or a stroke the store has lost is refused with the compile error and
+    /// nothing is written. `O(layers)`; it rasterizes nothing.
+    fn admit(
+        &self,
+        asset: &AssetRecord,
+        recipe: &Recipe,
+    ) -> Result<Vec<Arc<PreparedArtifact>>, Error> {
+        self.registry.validate_recipe(recipe)?;
+        validate_source_recipe(asset, recipe)?;
+        artifact_store::recorded_artifacts(&self.connection, &self.artifact_root, recipe)?;
+        let artifacts = self.require_artifacts(recipe)?;
+        self.registry.compile(asset.width, asset.height, recipe)?;
+        Ok(artifacts)
+    }
+
+    /// Persist one resulting stack: the same path for an appended and an updated layer. The stack
+    /// is [admitted](Self::admit) first, so a stack any check refuses writes nothing.
     fn commit_snapshot(
         &mut self,
         asset_id: &AssetId,
@@ -2431,16 +2470,7 @@ impl EditorService {
     ) -> Result<MutationResult, Error> {
         let mut state = self.state(asset_id)?;
         ensure_revision(&state, mutation.expected_revision)?;
-        self.registry.validate_recipe(&snapshot.recipe)?;
-        validate_source_recipe(asset, &snapshot.recipe)?;
-        artifact_store::recorded_artifacts(
-            &self.connection,
-            &self.artifact_root,
-            &snapshot.recipe,
-        )?;
-        let _artifacts = self.require_artifacts(&snapshot.recipe)?;
-        self.registry
-            .compile(asset.width, asset.height, &snapshot.recipe)?;
+        let _artifacts = self.admit(asset, &snapshot.recipe)?;
         let entry = HistoryEntry {
             id: EntryId::new(),
             asset_id: asset_id.clone(),
@@ -2567,9 +2597,10 @@ impl EditorService {
         let state = self.state(asset_id)?;
         ensure_revision(&state, mutation.expected_revision)?;
         let target = self.entry(asset_id, target_id)?;
-        // Restoring a stack the current providers cannot evaluate fails explicitly; browsing it
-        // with undo, redo and history stays available.
-        self.registry.validate_recipe(&target.snapshot.recipe)?;
+        // A restore admits the stack it copies exactly as a commit admits the stack it writes, so
+        // restoring one this build cannot evaluate — an unavailable provider, a lost stroke or
+        // artifact — fails explicitly; browsing it with undo, redo and history stays available.
+        let _artifacts = self.admit(&state.asset, &target.snapshot.recipe)?;
         if target.snapshot.recipe == state.current_entry.snapshot.recipe {
             return self.persist_noop(asset_id, &mutation, &input, &state);
         }
@@ -3020,8 +3051,9 @@ fn resolve_mask_target<'a>(
 /// geometry tail is never hidden, so `stage`, `stage_before` and `insertion_index` answer exactly
 /// what they answer for the whole stack. What a sampler reads does change — it no longer includes the
 /// other targets' colour — and that is why the filtered view is used only for planning an action of a
-/// maskable module and for that module's own queries, where the layers before the module's own layer
-/// are what is sampled and a masked layer of the same effect is never among them.
+/// maskable module, a composite's steps included, and for that module's own queries, where the layers
+/// before the module's own layer are what is sampled and a masked layer of the same effect is never
+/// among them.
 ///
 /// A recipe with no masks is handed back as it is, so the ordinary path allocates nothing.
 fn recipe_for_target<'a>(
@@ -3038,14 +3070,20 @@ fn recipe_for_target<'a>(
         layers: recipe
             .layers
             .iter()
-            .filter(|layer| {
-                layer.mask.as_ref() == mask || !registry.effect_maskable(&layer.effect_id)
-            })
+            .filter(|layer| in_target(registry, layer, mask))
             .cloned()
             .collect(),
         masks: recipe.masks.clone(),
         strokes: recipe.strokes.clone(),
     })
+}
+
+/// Whether `layer` is part of the stack the target `mask` sees: a layer of a maskable effect only
+/// when it carries that same target, and every other layer always. `None` is the global target.
+/// [`recipe_for_target`] filters by it, and a preset's capture reads a module's layer by it, so a
+/// capture reads the one layer a preset step of the same action would plan against.
+pub(crate) fn in_target(registry: &ModuleRegistry, layer: &Layer, mask: Option<&MaskId>) -> bool {
+    layer.mask.as_ref() == mask || !registry.effect_maskable(&layer.effect_id)
 }
 
 fn input_hash(input: &Value) -> Result<String, Error> {
@@ -7430,6 +7468,131 @@ mod tests {
         assert_eq!(
             service.render_current(&asset).unwrap().pixel(0, 0),
             Some([4, 5, 6, 255])
+        );
+        drop(service);
+        std::fs::remove_file(catalog).unwrap();
+    }
+
+    /// Restore admits the stack it copies through the one admission every commit uses, so it
+    /// refuses exactly what a commit of that stack refuses: here a stack naming a stroke the store
+    /// has lost, which a registry check alone admits, and a stack whose provider this build does
+    /// not have. Nothing is written, and undo still reaches the refused stack.
+    #[test]
+    fn restore_refuses_a_stack_exactly_as_a_commit_of_it_is_refused() {
+        /// Restore `target` over the current entry, then commit its stack through the commit path,
+        /// and return both refusals after checking that neither wrote anything.
+        fn refusals(service: &mut EditorService, asset: &AssetId, target: &EntryId) -> [Error; 2] {
+            let before = service.state(asset).unwrap();
+            let rows = service.history(asset, None, 50).unwrap().entries.len();
+            let restored = service
+                .restore(asset, mutation(before.revision, "restore"), target)
+                .expect_err("restore refuses the stack");
+            let recipe = service.entry(asset, target).unwrap().snapshot.recipe;
+            let committed = service
+                .commit_snapshot(
+                    asset,
+                    mutation(before.revision, "commit"),
+                    json!({"action": "commit"}),
+                    Snapshot {
+                        id: SnapshotId::new(),
+                        asset_id: asset.clone(),
+                        recipe,
+                    },
+                    &before.asset,
+                    CommittedAction {
+                        input: ActionInput {
+                            action_id: "commit".into(),
+                            parameters: Map::new(),
+                        },
+                        label: "Commit".into(),
+                    },
+                )
+                .expect_err("a commit refuses the stack");
+            assert_eq!(service.state(asset).unwrap(), before, "nothing moved");
+            assert_eq!(
+                service.history(asset, None, 50).unwrap().entries.len(),
+                rows,
+                "no entry was written"
+            );
+            [restored, committed]
+        }
+
+        // A stroke the store has lost.
+        let catalog = temp("restore-admission-stroke.sqlite");
+        let mut service = EditorService::open(&catalog).unwrap();
+        let asset = service.import(&fixture()).unwrap().asset.id;
+        let original = service.state(&asset).unwrap();
+        let drawn = stroke(3);
+        let brushed_entry = next_entry(
+            &original,
+            brushed(
+                &original.current_entry.snapshot.recipe,
+                std::slice::from_ref(&drawn),
+            ),
+        );
+        drop(service);
+        commit(&catalog, &brushed_entry);
+        let mut service = EditorService::open(&catalog).unwrap();
+        service
+            .restore(&asset, mutation(1, "back"), &original.current_entry.id)
+            .unwrap();
+        drop(service);
+        Connection::open(&catalog)
+            .unwrap()
+            .execute(
+                "DELETE FROM strokes WHERE id=?1",
+                params![drawn.id().as_str()],
+            )
+            .unwrap();
+        let mut service = EditorService::open(&catalog).unwrap();
+        let [restored, committed] = refusals(&mut service, &asset, &brushed_entry.id);
+        assert_eq!(restored.kind, ErrorKind::Incompatible);
+        assert_eq!(
+            restored.detail,
+            format!(
+                "stroke {} of entry {} is not in the stroke store referenced by component \
+                 Brush 1 of mask Mask 1",
+                drawn.id(),
+                brushed_entry.id
+            )
+        );
+        assert_eq!(
+            (restored.kind, &restored.detail),
+            (committed.kind, &committed.detail)
+        );
+        service.undo(&asset, mutation(2, "undo")).unwrap();
+        assert_eq!(
+            service.state(&asset).unwrap().current_entry.id,
+            brushed_entry.id,
+            "undo still reaches the refused stack"
+        );
+        drop(service);
+        std::fs::remove_file(catalog).unwrap();
+
+        // A provider this build does not have.
+        let catalog = temp("restore-admission-provider.sqlite");
+        let mut service = EditorService::open_with(&catalog, ShrinkModule::registry()).unwrap();
+        let asset = service.import(&fixture()).unwrap().asset.id;
+        let original = service.state(&asset).unwrap().current_entry.id;
+        let shrunk = service
+            .apply_action(&asset, mutation(0, "shrink"), SHRINK_ACTION, shrink(10, 10))
+            .unwrap()
+            .current_entry_id;
+        service
+            .restore(&asset, mutation(1, "back"), &original)
+            .unwrap();
+        drop(service);
+        let mut service = EditorService::open(&catalog).unwrap();
+        let [restored, committed] = refusals(&mut service, &asset, &shrunk);
+        assert_eq!(restored.kind, ErrorKind::Incompatible);
+        assert!(
+            restored.detail.contains(SHRINK_EFFECT),
+            "{}",
+            restored.detail
+        );
+        assert_eq!(
+            (restored.kind, &restored.detail),
+            (committed.kind, &committed.detail)
         );
         drop(service);
         std::fs::remove_file(catalog).unwrap();

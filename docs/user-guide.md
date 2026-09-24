@@ -429,11 +429,11 @@ The first non-neutral value adds the stack's one Basic layer before the quarter-
 {"id":"preset","method":"edit.apply-preset","params":{"asset_id":"asset-…","mutation":{"expected_revision":8,"request_id":"preset-1","actor":"my-client"},"name":"Soft film","preset-id":"preset-…","settings":{"set-basic":{"exposure":0.35,"contrast":12},"set-vignette":{"amount":-18}}}}
 ```
 
-The host runs each named action exactly as that action would run alone, in alphabetical order of the action names, and commits the result once as one entry, "Preset: Soft film". An unknown, non-patch or unavailable action, or a field its action refuses, refuses the whole preset and writes nothing.
+The host runs each named action exactly as that action would run alone without a `mask`, in alphabetical order of the action names, and commits the result once as one entry, "Preset: Soft film". A preset therefore edits the global layer of a masked photo, creating one if there is none, and never a masked layer. An unknown, non-patch or unavailable action, or a field its action refuses, refuses the whole preset and writes nothing.
 
 | Method | Parameters | Does |
 | --- | --- | --- |
-| `preset.capture` | `asset_id`, `fields`, optional `entry_id` | Reads a settings set from an entry's stack (default: the displayed one). `fields` maps each action to an array of parameter names or `true` for all of them. Without a layer, a field takes its default |
+| `preset.capture` | `asset_id`, `fields`, optional `entry_id` | Reads a settings set from an entry's stack (default: the displayed one). `fields` maps each action to an array of parameter names or `true` for all of them. Each action reads its global layer, never a masked one; without one, a field takes its default |
 | `preset.create` | `name`, `settings`, `actor`, optional `group` | Saves a preset; the group defaults to `User presets` |
 | `preset.update` | `preset_id`, `actor`, optional `name`, `group`, `settings` | Renames, regroups or replaces the settings |
 | `preset.delete` | `preset_id` | Removes it; a no-op when absent |

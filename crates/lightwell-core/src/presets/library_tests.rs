@@ -1101,6 +1101,65 @@ fn capture_refuses_a_stack_with_two_layers_of_one_module_as_ambiguous() {
     std::fs::remove_file(path).expect("the catalog is removed");
 }
 
+/// A preset addresses the global layer, so capture reads the global layer and never a masked one:
+/// with a global and a masked Basic layer it reads the global values instead of refusing the pair
+/// as ambiguous, and with only a masked one it reads the defaults a missing global layer holds.
+#[test]
+fn capture_reads_the_global_layer_of_a_masked_photo() {
+    for global in [true, false] {
+        let (mut service, asset, path) = opened("capture-masked", None);
+        if global {
+            service
+                .apply_action(
+                    &asset,
+                    mutation(0, "global"),
+                    "set-basic",
+                    json!({"exposure": 0.2, "contrast": 10}),
+                )
+                .expect("a global Basic layer");
+        }
+        let revision = service.state(&asset).expect("state").revision;
+        let mask = service
+            .apply_mask_command(
+                &asset,
+                mutation(revision, "mask"),
+                crate::mask::commands::find("mask.create-linear").expect("a declared command"),
+                json!({"x0": 0.5, "y0": 0.2, "x1": 0.5, "y1": 0.8}),
+                crate::mask::commands::MaskTarget::default(),
+            )
+            .expect("a mask")
+            .mask
+            .expect("the created mask");
+        service
+            .apply_action(
+                &asset,
+                mutation(revision + 1, "masked"),
+                "set-basic",
+                json!({"exposure": 1.0, "contrast": 40, "mask": mask}),
+            )
+            .expect("a masked Basic layer");
+        let entry = current(&service, &asset);
+        let expected = if global {
+            json!({"set-basic": {"exposure": 0.2, "contrast": 10.0}})
+        } else {
+            json!({"set-basic": {"exposure": 0.0, "contrast": 0.0}})
+        };
+        assert_eq!(
+            capture(
+                &service,
+                &asset,
+                &entry,
+                json!({"set-basic": ["exposure", "contrast"]})
+            )
+            .unwrap_or_else(|error| panic!("global {global}: {error}")),
+            expected,
+            "global {global}"
+        );
+        drop(service);
+        std::fs::remove_file(path).expect("the catalog is removed");
+    }
+}
+
 /// A field with no stored value and no declared default has nothing to capture, so it is refused
 /// rather than left out of the set.
 #[test]

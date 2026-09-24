@@ -1460,7 +1460,8 @@ fn owner_loop(
                                     &request.params,
                                 ),
                             ),
-                            _ => event_response(request, sequence, &events),
+                            "events.since" => event_response(request, sequence, &events),
+                            _ => unrouted(request, sequence),
                         }
                     }
                     Some(method) => {
@@ -1565,6 +1566,23 @@ fn record_event(events: &mut VecDeque<ApiEvent>, sequence: &mut u64, origin: &Or
         method: origin.method.clone(),
         request_id: origin.request_id.clone(),
     });
+}
+
+/// A method the table lists without a service handler and that no owner route answers. It is a
+/// defect in this build, never a request a client got wrong, so it is refused as an internal error
+/// naming the method rather than answered as some other method would be.
+fn unrouted(request: &ApiRequest, sequence: u64) -> ApiResponse {
+    answer(
+        request,
+        sequence,
+        Err(Error::new(
+            ErrorKind::Internal,
+            format!(
+                "{} has no service handler and no catalog-owner route",
+                request.method
+            ),
+        )),
+    )
 }
 
 /// Wrap one owner-answered result in the shared response envelope.
@@ -3626,5 +3644,157 @@ mod tests {
         owner.stop();
         join.join().unwrap();
         std::fs::remove_file(catalog).unwrap();
+    }
+
+    /// The events a client reads after `after`, as `(method, request_id)`, and the log's sequence.
+    fn events_after(
+        owner: &OwnerHandle,
+        client: ClientId,
+        after: u64,
+    ) -> (Vec<(String, String)>, u64) {
+        let read = ok(
+            owner,
+            client,
+            "events",
+            "events.since",
+            json!({"after": after}),
+        );
+        let events = read["events"]
+            .as_array()
+            .expect("the events")
+            .iter()
+            .map(|event| {
+                (
+                    event["method"].as_str().unwrap().to_owned(),
+                    event["request_id"].as_str().unwrap().to_owned(),
+                )
+            })
+            .collect();
+        (events, read["current_sequence"].as_u64().unwrap())
+    }
+
+    /// A retry answered from the request table changed nothing, so it records no event: the first
+    /// attempt announced the change, and a client watching the log sees it once. The retry still
+    /// answers with the original result, marked `deduplicated`, at the unchanged sequence.
+    #[test]
+    fn a_retried_mutation_answered_from_the_request_table_records_no_event() {
+        let catalog = temp("retry-event.sqlite");
+        let _ = std::fs::remove_file(&catalog);
+        let (owner, join) = OwnerHandle::start(&catalog).unwrap();
+        let client = owner.register();
+        let asset = import_asset(&owner, client, &fixture())["asset"]["id"].clone();
+        let (_, before) = events_after(&owner, client, 0);
+
+        let first = send(
+            &owner,
+            client,
+            "first",
+            "edit.set-pixel",
+            json!({
+                "asset_id": asset,
+                "mutation": {"expected_revision": 0, "request_id": "first", "actor": "test"},
+                "x": 0, "y": 0, "rgb": [1, 2, 3],
+            }),
+        );
+        let applied = first.result.expect("the first attempt applies");
+        assert_eq!(applied["outcome"], json!("applied"));
+        assert_eq!(applied["deduplicated"], json!(false));
+        assert_eq!(
+            first.sequence,
+            before + 1,
+            "the first attempt records one event"
+        );
+        assert_eq!(
+            events_after(&owner, client, before),
+            (
+                vec![("edit.set-pixel".to_owned(), "first".to_owned())],
+                before + 1
+            )
+        );
+
+        let retry = send(
+            &owner,
+            client,
+            "first",
+            "edit.set-pixel",
+            json!({
+                "asset_id": asset,
+                "mutation": {"expected_revision": 0, "request_id": "first", "actor": "test"},
+                "x": 0, "y": 0, "rgb": [1, 2, 3],
+            }),
+        );
+        let retried = retry.result.expect("the retry answers");
+        assert_eq!(retried["deduplicated"], json!(true));
+        assert_eq!(retried["outcome"], applied["outcome"]);
+        assert_eq!(retried["current_entry_id"], applied["current_entry_id"]);
+        assert_eq!(retry.sequence, before + 1, "the retry records no event");
+        assert_eq!(
+            events_after(&owner, client, before),
+            (
+                vec![("edit.set-pixel".to_owned(), "first".to_owned())],
+                before + 1
+            ),
+            "the log holds the first attempt's event alone"
+        );
+        owner.stop();
+        join.join().unwrap();
+        std::fs::remove_file(catalog).unwrap();
+    }
+
+    /// Every method the table lists without a service handler reaches an owner route: none is
+    /// refused as unrouted, and only `events.since` answers with the event log. One that reached
+    /// no route is an internal error naming it, never the `events.since` answer.
+    #[test]
+    fn every_handler_less_method_is_routed_and_an_unrouted_one_is_an_internal_error() {
+        let catalog = temp("unrouted.sqlite");
+        let _ = std::fs::remove_file(&catalog);
+        let (owner, join) = OwnerHandle::start(&catalog).unwrap();
+        let client = owner.register();
+        let owner_answered: Vec<&str> = methods::METHODS
+            .iter()
+            .filter(|spec| spec.handler.is_none())
+            .map(|spec| spec.name)
+            .collect();
+        assert!(owner_answered.contains(&"events.since"));
+        for name in owner_answered {
+            // Parameters no method declares, so every route refuses them without acting.
+            let response = send(&owner, client, name, name, json!({"unrouted-probe": true}));
+            if let Some(error) = &response.error {
+                assert!(
+                    !error.message.contains("no catalog-owner route"),
+                    "{name} is listed without a handler but no owner route answers it"
+                );
+            }
+            if name != "events.since" {
+                assert!(
+                    response
+                        .result
+                        .as_ref()
+                        .is_none_or(|result| result.get("current_sequence").is_none()),
+                    "{name} was answered with the event log"
+                );
+            }
+        }
+        owner.stop();
+        join.join().unwrap();
+        std::fs::remove_file(catalog).unwrap();
+
+        let refused = unrouted(
+            &ApiRequest {
+                id: "probe".into(),
+                method: "test.unrouted".into(),
+                params: json!({"after": 0}),
+                token: None,
+            },
+            7,
+        );
+        assert!(refused.result.is_none(), "no event log is answered");
+        assert_eq!(refused.sequence, 7);
+        let error = refused.error.expect("an unrouted method is refused");
+        assert_eq!(error.code, "internal");
+        assert_eq!(
+            error.message,
+            "test.unrouted has no service handler and no catalog-owner route"
+        );
     }
 }

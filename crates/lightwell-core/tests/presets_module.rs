@@ -2,15 +2,17 @@
 //! `EditorService`: `apply-preset` commits one entry whose stack equals the same fields sent through
 //! the individual `edit.set-*` actions, leaves every field it does not name alone, is a no-op when
 //! it changes nothing, undoes to the stack from before it, refuses every bad step with nothing
-//! written, and drafts exactly what it commits.
+//! written, drafts exactly what it commits, and on a masked photo edits the global layer as the
+//! direct action does.
 //!
 //! The descriptor, the generic `string` and `settings` checks, the `presets` control's registration
 //! rules and the module's own parse, plan and label are proved in-crate next to their code.
 
 use lightwell_core::{
     ActionDescriptor, ActionInput, ActionPlan, AssetId, Availability, Draft, EditorService, Error,
-    ErrorKind, Layer, ModuleDescriptor, ModuleRegistry, Mutation, MutationOutcome,
+    ErrorKind, Layer, MaskId, ModuleDescriptor, ModuleRegistry, Mutation, MutationOutcome,
     ParameterDescriptor, ParameterKind, Processing, Recipe, Stage, StageContext, ToolModule,
+    mask::commands::{self, MaskTarget},
 };
 use serde_json::{Map, Value, json};
 use std::{
@@ -764,4 +766,160 @@ fn a_drafted_preset_resolves_to_exactly_what_it_commits() {
     assert_eq!(unchanged, committed);
     drop(service);
     fs::remove_file(path).expect("the catalog is removed");
+}
+
+// -------------------------------------------------------------------------------------------
+// Masked photos.
+// -------------------------------------------------------------------------------------------
+
+/// A linear-gradient mask, then a Basic layer bound to it; with `global`, a global Basic layer
+/// first. Returns the mask.
+fn masked_basic(service: &mut EditorService, asset: &AssetId, global: bool) -> MaskId {
+    if global {
+        let current = revision(service, asset);
+        service
+            .apply_action(
+                asset,
+                mutation(current, "global"),
+                "set-basic",
+                json!({"exposure": 0.2, "contrast": 10}),
+            )
+            .expect("a global Basic layer");
+    }
+    let current = revision(service, asset);
+    let mask = service
+        .apply_mask_command(
+            asset,
+            mutation(current, "mask"),
+            commands::find("mask.create-linear").expect("a declared command"),
+            json!({"x0": 0.5, "y0": 0.2, "x1": 0.5, "y1": 0.8}),
+            MaskTarget::default(),
+        )
+        .expect("a mask")
+        .mask
+        .expect("the created mask");
+    let current = revision(service, asset);
+    service
+        .apply_action(
+            asset,
+            mutation(current, "masked"),
+            "set-basic",
+            json!({"exposure": 1.0, "mask": mask}),
+        )
+        .expect("a masked Basic layer");
+    mask
+}
+
+/// A stack as its layers' effects, payloads and targets in order, without the identities a fresh
+/// layer mints.
+fn targets(recipe: &Recipe) -> Vec<(String, Value, Option<MaskId>)> {
+    recipe
+        .layers
+        .iter()
+        .map(|layer| {
+            (
+                layer.effect_id.clone(),
+                layer.payload.clone(),
+                layer.mask.clone(),
+            )
+        })
+        .collect()
+}
+
+/// A preset addresses the global layer, as `set-basic` sent without a mask does. With a global
+/// and a masked Basic layer it updates the global one instead of refusing the pair as ambiguous;
+/// with only a masked one it creates a global layer instead of editing the masked one. Either way
+/// the masked layer keeps its identity, place and payload, and the stack is exactly what the
+/// direct action writes from the same starting stack. A draft of the preset resolves the same way.
+#[test]
+fn a_preset_on_a_masked_photo_edits_the_global_layer_as_the_direct_action_does() {
+    for global in [true, false] {
+        let (mut service, asset, path) = opened("masked", None);
+        let mask = masked_basic(&mut service, &asset, global);
+        let before = recipe(&service, &asset);
+        let masked_at = before
+            .layers
+            .iter()
+            .position(|layer| layer.mask.as_ref() == Some(&mask))
+            .expect("the masked layer");
+        let masked_layer = before.layers[masked_at].clone();
+        let count = entries(&service, &asset);
+        let sent = json!({"settings": {"set-basic": {"exposure": 0.5}}, "name": "Brighter"});
+
+        let mut draft = Draft::new("apply-preset", asset.clone(), revision(&service, &asset));
+        draft.merge(sent.as_object().expect("an object").clone());
+        let (drafted, _) = service
+            .draft_recipe(&asset, &draft)
+            .unwrap_or_else(|error| panic!("global {global}: the draft: {error}"));
+
+        let result = apply_preset(&mut service, &asset, "preset", sent)
+            .unwrap_or_else(|error| panic!("global {global}: {error}"));
+        assert_eq!(result.outcome, MutationOutcome::Applied, "global {global}");
+        assert_eq!(entries(&service, &asset), count + 1, "one entry");
+        let preset = recipe(&service, &asset);
+        assert_eq!(
+            targets(&drafted),
+            targets(&preset),
+            "global {global}: the draft resolves to what the preset commits"
+        );
+        let untouched = preset
+            .layers
+            .iter()
+            .find(|layer| layer.id == masked_layer.id);
+        assert_eq!(
+            untouched,
+            Some(&masked_layer),
+            "global {global}: the masked layer is untouched"
+        );
+        let global_layers: Vec<&Layer> = preset
+            .layers
+            .iter()
+            .filter(|layer| layer.effect_id == lightwell_core::BASIC_EFFECT && layer.mask.is_none())
+            .collect();
+        assert_eq!(
+            global_layers.len(),
+            1,
+            "global {global}: one global Basic layer"
+        );
+        let expected = if global {
+            json!({"exposure": 0.5, "contrast": 10.0})
+        } else {
+            json!({"exposure": 0.5})
+        };
+        assert_eq!(
+            global_layers[0].payload, expected,
+            "global {global}: the preset's field lands on the global layer"
+        );
+        if global {
+            assert_eq!(
+                global_layers[0].id, before.layers[0].id,
+                "the global layer is updated in place"
+            );
+        }
+
+        // The direct action from the same starting stack writes the same stack.
+        let current = revision(&service, &asset);
+        service
+            .undo(&asset, mutation(current, "undo"))
+            .expect("an undo");
+        assert_eq!(recipe(&service, &asset), before);
+        let current = revision(&service, &asset);
+        service
+            .apply_action(
+                &asset,
+                mutation(current, "direct"),
+                "set-basic",
+                json!({"exposure": 0.5}),
+            )
+            .expect("the direct action");
+        let direct = recipe(&service, &asset);
+        assert_eq!(
+            targets(&preset),
+            targets(&direct),
+            "global {global}: the preset and the direct action write the same stack"
+        );
+        assert_eq!(preset.masks, direct.masks);
+        drop(service);
+        fs::remove_file(path).expect("the catalog is removed");
+    }
 }

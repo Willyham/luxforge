@@ -14,7 +14,7 @@ use super::{
 use crate::{
     AssetId, EditorService, EntryId, Error, ErrorKind, MAX_PRESET_NAME, MAX_SETTINGS_ACTIONS,
     MAX_SETTINGS_FIELDS, ModuleRegistry, MutationOutcome, PresetId,
-    editor::{catalog_error, decode, encode, now_ms},
+    editor::{catalog_error, decode, encode, in_target, now_ms},
 };
 use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
 use serde::{Deserialize, Serialize};
@@ -534,10 +534,11 @@ impl EditorService {
 
     /// `preset.capture`: a settings set read from one entry's stack. `fields` maps field-patch
     /// actions to an array of their parameter names or to `true` for all of them. Each action reads
-    /// the layers of its module's effects: with none, each field takes its declared default; with
-    /// one, its value comes from the module's `values` for that layer and a missing value takes the
-    /// default; two or more are `validation: ambiguous`. A field with no value and no default is
-    /// refused rather than left out.
+    /// the global layers of its module's effects — a masked layer is another target's, and a preset
+    /// never reads or writes one: with none, each field takes its declared default; with one, its
+    /// value comes from the module's `values` for that layer and a missing value takes the default;
+    /// two or more are `validation: ambiguous`. A field with no value and no default is refused
+    /// rather than left out.
     ///
     /// This reads stored payloads only, `O(layers × actions)`: no source is opened and nothing is
     /// sampled or rendered, so a JPEG and a RAW entry cost the same.
@@ -610,9 +611,11 @@ impl EditorService {
                     )));
                 }
             };
-            let mut owned = layers
-                .iter()
-                .filter(|layer| descriptor.effect(&layer.effect_id).is_some());
+            // A preset addresses the global layer, so capture reads the layers a preset step of
+            // this action plans against: the global target's, never a masked layer's.
+            let mut owned = layers.iter().filter(|layer| {
+                descriptor.effect(&layer.effect_id).is_some() && in_target(registry, layer, None)
+            });
             let values = match (owned.next(), owned.next()) {
                 (None, _) => Map::new(),
                 (Some(layer), None) => {

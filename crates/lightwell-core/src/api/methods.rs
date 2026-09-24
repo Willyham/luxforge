@@ -771,13 +771,15 @@ pub(super) fn find(service: &EditorService, name: &str) -> Option<Method> {
         .map(|_| Method::Query(query_id.to_owned()))
 }
 
-/// A method emits an event when it is mutating and its result is not a no-op.
+/// A method emits an event when it is mutating and its result changed something: not a no-op, and
+/// not a retry answered from the request table, which keeps the original `outcome` but reports
+/// `deduplicated` because the first attempt already emitted the event.
 pub(super) fn mutates(method: &Method, result: Option<&Value>) -> bool {
     method.mutates()
-        && result
-            .and_then(|value| value.get("outcome"))
-            .and_then(Value::as_str)
-            != Some("no-op")
+        && result.is_none_or(|value| {
+            value.get("outcome").and_then(Value::as_str) != Some("no-op")
+                && value.get("deduplicated").and_then(Value::as_bool) != Some(true)
+        })
 }
 
 pub(super) fn dispatch(
@@ -2604,6 +2606,13 @@ mod tests {
             assert!(
                 !mutates(&spec, Some(&json!({"outcome": "no-op"}))),
                 "{name} must not emit events for a no-op"
+            );
+            assert!(
+                !mutates(
+                    &spec,
+                    Some(&json!({"outcome": "applied", "deduplicated": true}))
+                ),
+                "{name} must not emit a second event for a retry"
             );
             assert_eq!(
                 mutates(&spec, Some(&json!({"outcome": "applied"}))),

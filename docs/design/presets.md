@@ -46,8 +46,8 @@ A module returns `Compose` when its action applies other modules' settings. The 
 
 1. The step's action must be registered, declared with `patch: true` and provided by an available module. Otherwise the result is `validation: unknown action X`, `validation: X is not a field-patch action` or `incompatible: unavailable module M`.
 2. The host runs the step's fields through the action's generic check, which for a patch validates only the fields sent, and then through its module's `parse`.
-3. The step's module plans against the intermediate stack, using the same `StageContext` construction a single action uses. A step whose plan is itself `Compose` is refused with `validation: composite actions do not nest`.
-4. `Commit` inserts at `insertion_index_for`, `Update` replaces in place and `NoOp` changes nothing.
+3. The step's module plans against the intermediate stack, using the same `StageContext` construction a single action uses. A step carries no mask target, so like the action sent without one it addresses the global layer: it plans against the intermediate stack as the global target sees it, with the masked layers of maskable effects hidden. A step whose plan is itself `Compose` is refused with `validation: composite actions do not nest`.
+4. The plan is applied to the whole intermediate stack exactly as a single action's plan is: `Commit` inserts at `insertion_index_for`, `Update` replaces in place, `Edits` applies each edit in order and `NoOp` changes nothing. A masked layer is never read or changed, so on a masked photo a preset updates the global layer, or creates one when there is none.
 
 At most 16 steps are allowed. Planning costs O(steps × layers) and rasterizes nothing: every presettable module plans by comparing payloads.
 
@@ -129,7 +129,7 @@ Every method is a host method listed by `schema.list`. Create, update and import
 
 `preset.create`, `preset.update` and `preset.import` validate every action and field of the set against the registry, without a stack. An empty set is refused. Applying a preset is `edit.apply-preset`; the library has no second apply path.
 
-**Capture.** `fields` maps presettable actions to either an array of their parameter names or `true` for all of them. For each action the host finds the layers of its module's effects in the entry's stack. With no layer, each field takes its parameter's declared default. With one layer, each field takes its value from the module's `values` for that layer, and a missing value takes the default. With two or more layers the result is `validation: ambiguous`. Capture reads payloads only: it opens no source, renders nothing and works on JPEG and RAW assets alike. The desktop captures and then creates.
+**Capture.** `fields` maps presettable actions to either an array of their parameter names or `true` for all of them. For each action the host finds the global layers of its module's effects in the entry's stack, the layers a preset step of that action plans against; a masked layer is never read. With no layer, each field takes its parameter's declared default. With one layer, each field takes its value from the module's `values` for that layer, and a missing value takes the default. With two or more layers the result is `validation: ambiguous`. Capture reads payloads only: it opens no source, renders nothing and works on JPEG and RAW assets alike. The desktop captures and then creates.
 
 ## Import
 
