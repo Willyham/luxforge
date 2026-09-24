@@ -427,7 +427,7 @@ pub fn verify(_: &mut Run, launches: &[Checked]) -> Result {
     )?;
     let stage: (u32, u32) = {
         let dims: [u32; 2] =
-            serde_json::from_value(frames[0]["state"]["source_dimensions"].clone())
+            serde_json::from_value(launch.at("opened")?["state"]["source_dimensions"].clone())
                 .map_err(|_| "The opened frame records no source dimensions")?;
         (dims[0], dims[1])
     };

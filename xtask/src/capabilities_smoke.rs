@@ -237,7 +237,7 @@ pub fn run(mut run: Run, scenario: &'static Scenario, sources: Vec<PathBuf>) -> 
         write_json(&file, &checks)?;
         ensure(found.is_empty(), format!("A secret reached {found:?}"))?;
         run.sources_unchanged()?;
-        run.record("backend", checked.frames[0].state()["backend"].clone());
+        run.record("backend", checked.at("opened")?.state()["backend"].clone());
         Ok(())
     })();
     // The runner's own files are scanned too: nothing it wrote may hold the key either.
