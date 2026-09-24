@@ -6,7 +6,8 @@
 //! (amount 0, midpoint 50, roundness 0, feather 50) rather than 0, unlike the Basic module, where a
 //! missing key means neutral 0 for every field because every Basic field's neutral value happens to
 //! be 0. The canonical all-default payload is `{}`, and `{"midpoint": 50}` is the same state written
-//! differently.
+//! differently. The field-patch behaviour lives in [`super::field_patch`]; this file is the field
+//! table, the neutrality rule and the compilation.
 //!
 //! The layer as a whole is neutral — compiles to no processing at all — exactly when `amount` is
 //! `0`, whatever `midpoint`, `roundness` and `feather` hold: the frozen mask geometry
@@ -19,14 +20,11 @@
 mod unit;
 
 use super::{
-    ActionDescriptor, ActionInput, ActionPlan, Availability, ColorOperation, Control,
-    EffectDescriptor, EffectStage, ModuleDescriptor, ParameterDescriptor, ParameterKind,
-    PointwiseColor, Processing, ResetAction, Stage, StageContext, ToolModule,
+    ColorOperation, EffectDescriptor, EffectStage, PointwiseColor, Processing, Stage,
+    field_patch::{ActionText, Field, FieldPatch, FieldPatchModule, Group, Spec, Values},
 };
-use crate::{EFFECT_FORMAT, Error, ErrorKind, Layer, LayerId, VIGNETTE_EFFECT};
-use serde_json::{Map, Number, Value};
+use crate::{EFFECT_FORMAT, Error, VIGNETTE_EFFECT};
 use std::sync::Arc;
-use unit::Vignette;
 
 pub(super) const SET_VIGNETTE: &str = "set-vignette";
 pub(super) const RESET_VIGNETTE: &str = "reset-vignette";
@@ -36,567 +34,149 @@ const MIDPOINT: &str = "midpoint";
 const ROUNDNESS: &str = "roundness";
 const FEATHER: &str = "feather";
 
-const AMOUNT_LABEL: &str = "Amount";
-const MIDPOINT_LABEL: &str = "Midpoint";
-const ROUNDNESS_LABEL: &str = "Roundness";
-const FEATHER_LABEL: &str = "Feather";
-
-const AMOUNT_MIN: f64 = -100.0;
-const AMOUNT_MAX: f64 = 100.0;
-const MIDPOINT_MIN: f64 = 0.0;
-const MIDPOINT_MAX: f64 = 100.0;
-const ROUNDNESS_MIN: f64 = -100.0;
-const ROUNDNESS_MAX: f64 = 100.0;
-const FEATHER_MIN: f64 = 0.0;
-const FEATHER_MAX: f64 = 100.0;
-
-const STEP: f64 = 1.0;
-const PRECISION: u8 = 0;
-
 /// Every implemented Vignette field, in the payload's declared order, which is also the order the
 /// group's four sliders render in.
 const FIELDS: [&str; 4] = [AMOUNT, MIDPOINT, ROUNDNESS, FEATHER];
-
-/// Each field's own default, read when its key is missing from a payload — **not** a shared
-/// neutral value the way Basic's fields are: `midpoint` and `feather` default to `50`, not `0`.
-const DEFAULTS: [f64; 4] = [0.0, 50.0, 0.0, 50.0];
 
 /// The label the one group and the module section share (`"Vignette"` in both places, since there
 /// is only one group).
 const GROUP_LABEL: &str = "Vignette";
 
-fn validation(detail: impl Into<String>) -> Error {
-    Error::new(ErrorKind::Validation, detail)
-}
-
-fn incompatible(detail: impl Into<String>) -> Error {
-    Error::new(ErrorKind::Incompatible, detail)
-}
-
-fn index_of(name: &str) -> usize {
-    FIELDS
-        .iter()
-        .position(|field| *field == name)
-        .expect("index_of is only ever called with a name from FIELDS")
-}
-
-fn default_of(name: &str) -> f64 {
-    DEFAULTS[index_of(name)]
-}
-
-fn range(name: &str) -> (f64, f64) {
-    match name {
-        AMOUNT => (AMOUNT_MIN, AMOUNT_MAX),
-        MIDPOINT => (MIDPOINT_MIN, MIDPOINT_MAX),
-        ROUNDNESS => (ROUNDNESS_MIN, ROUNDNESS_MAX),
-        FEATHER => (FEATHER_MIN, FEATHER_MAX),
-        // Unreachable: FIELDS is the closed set and every caller matched a name against it.
-        _ => (0.0, 0.0),
-    }
-}
-
-fn label_of(name: &str) -> &'static str {
-    match name {
-        AMOUNT => AMOUNT_LABEL,
-        MIDPOINT => MIDPOINT_LABEL,
-        ROUNDNESS => ROUNDNESS_LABEL,
-        FEATHER => FEATHER_LABEL,
-        _ => "Vignette",
-    }
-}
-
-/// `amount` and `roundness` are signed in their history label (`+20`/`-35`); `midpoint` and
-/// `feather` are unsigned (`60`/`40`), matching the study's ranges: the first two are bipolar
-/// about 0, the second two are one-sided magnitudes.
-fn signed(name: &str) -> bool {
-    matches!(name, AMOUNT | ROUNDNESS)
-}
-
-/// A history label names the module and the field, `Vignette amount -35`, because `Amount` alone
-/// says nothing in a history list shared with every other module.
-fn field_label(name: &str, value: f64) -> String {
-    let label = label_of(name).to_ascii_lowercase();
-    if signed(name) {
-        format!("{GROUP_LABEL} {label} {value:+.0}")
-    } else {
-        format!("{GROUP_LABEL} {label} {value:.0}")
-    }
-}
-
-/// One named field of a canonical value array.
-fn value_of(values: &[f64; FIELDS.len()], name: &str) -> f64 {
-    values[index_of(name)]
-}
-
-/// One field of a validated payload or request: a missing key is that field's own default.
-fn field(source: &Map<String, Value>, name: &str) -> f64 {
-    source
-        .get(name)
-        .and_then(Value::as_f64)
-        .unwrap_or_else(|| default_of(name))
-}
-
-/// The canonical values a payload represents, in `FIELDS` order. Absent and explicitly
-/// default-valued keys produce the same array, which is what makes `{}` and
-/// `{"midpoint": 50}` compare equal.
-fn canonical(payload: &Map<String, Value>) -> [f64; FIELDS.len()] {
-    FIELDS.map(|name| field(payload, name))
-}
-
-/// Whether the layer as a whole is neutral: `amount == 0`, whatever the other three fields hold.
-/// The frozen mask geometry never runs when the amount equation is itself the identity.
-fn is_amount_neutral(values: &[f64; FIELDS.len()]) -> bool {
-    value_of(values, AMOUNT) == 0.0
-}
-
-fn is_all_default(values: &[f64; FIELDS.len()]) -> bool {
-    *values == DEFAULTS
-}
-
-/// The canonical stored form of a set of values: only the fields that differ from their own
-/// default, so the all-default payload is exactly `{}`.
-fn payload_of(values: &[f64; FIELDS.len()]) -> Value {
-    let mut payload = Map::new();
-    for (name, value) in FIELDS.iter().zip(values) {
-        if *value != default_of(name) {
-            payload.insert((*name).to_owned(), number(*value));
-        }
-    }
-    Value::Object(payload)
-}
-
-/// A finite f64 as a JSON number. Finiteness is checked before every call, so the fallback is
-/// never reached in practice and never panics if it is.
-fn number(value: f64) -> Value {
-    Number::from_f64(value).map_or(Value::Null, Value::Number)
-}
-
-/// The object a stored payload must be, with the effect identity and format checked first: an
-/// unsupported format is `incompatible` and is never rewritten, and every present field is a
-/// finite number inside its declared range.
-fn read_payload(effect_id: &str, format: u32, value: &Value) -> Result<Map<String, Value>, Error> {
-    if effect_id != VIGNETTE_EFFECT {
-        return Err(incompatible(format!("unavailable effect {effect_id}")));
-    }
-    if format != EFFECT_FORMAT {
-        return Err(incompatible(format!("unsupported effect format {format}")));
-    }
-    let object = value
-        .as_object()
-        .ok_or_else(|| validation("vignette payload must be a JSON object"))?;
-    for (name, value) in object {
-        if !FIELDS.contains(&name.as_str()) {
-            return Err(validation(format!("unknown vignette field {name}")));
-        }
-        let number = value
-            .as_f64()
-            .filter(|number| number.is_finite())
-            .ok_or_else(|| validation(format!("vignette field {name} must be a finite number")))?;
-        let (min, max) = range(name);
-        if number < min || number > max {
-            return Err(validation(format!(
-                "vignette field {name} must be a number within {min}..={max}"
-            )));
-        }
-    }
-    Ok(object.clone())
-}
-
 /// The one ambiguity message, shared by planning and by the host's whole-stack compile check
 /// (which builds the same text from the module's own title).
+#[cfg(test)]
 pub(crate) const AMBIGUOUS: &str = "ambiguous Vignette layers";
 
-/// The stack's one Vignette layer. Two of them would each claim to be the Vignette state, so every
-/// path refuses to guess which one an action addresses; nothing is rewritten.
-fn locate(layers: &[Layer]) -> Result<Option<&Layer>, Error> {
-    let mut found = None;
-    for layer in layers {
-        if layer.effect_id == VIGNETTE_EFFECT {
-            if found.is_some() {
-                return Err(validation(AMBIGUOUS));
-            }
-            found = Some(layer);
-        }
-    }
-    Ok(found)
-}
-
-fn number_parameter(
-    name: &str,
-    min: f64,
-    max: f64,
-    default: f64,
+/// One Vignette field. Its default is its own — `midpoint` and `feather` default to 50, not 0 —
+/// and a history label names the module and the field, `Vignette amount -35`, because `Amount`
+/// alone says nothing in a history list shared with every other module. `amount` and `roundness`
+/// are bipolar about 0 and show a sign; `midpoint` and `feather` are one-sided magnitudes and do
+/// not.
+fn vignette_field(
+    name: &'static str,
+    label: &str,
+    (min, default): (f64, f64),
     zero: Option<f64>,
     notes: &str,
-) -> ParameterDescriptor {
-    ParameterDescriptor {
-        name: name.into(),
-        kind: ParameterKind::Number { min, max },
-        required: false,
-        default: Some(number(default)),
-        unit: None,
-        step: Some(STEP),
-        precision: Some(PRECISION),
-        notes: notes.into(),
-        soft_min: None,
-        soft_max: None,
-        fine_step: None,
+) -> Field {
+    Field {
+        history: format!("{GROUP_LABEL} {}", label.to_ascii_lowercase()),
+        min,
+        default,
         zero,
+        ..Field::slider(name, label, notes)
     }
 }
 
-fn amount_parameter() -> ParameterDescriptor {
-    number_parameter(
-        AMOUNT,
-        AMOUNT_MIN,
-        AMOUNT_MAX,
-        default_of(AMOUNT),
-        Some(0.0),
-        "post-crop vignette strength: negative darkens toward black in linear light with gain \
-         1 - |amount|*mask, positive lightens toward encoded white through a compressive mapping \
-         that never pushes a below-white channel past it. 0 is the exact identity whatever \
-         midpoint, roundness and feather hold, and a missing key defaults to 0.",
-    )
-}
+/// The Vignette module's table, neutrality rule and compilation.
+#[derive(Debug, Default)]
+pub struct Vignette;
 
-fn midpoint_parameter() -> ParameterDescriptor {
-    number_parameter(
-        MIDPOINT,
-        MIDPOINT_MIN,
-        MIDPOINT_MAX,
-        default_of(MIDPOINT),
-        None,
-        "where the falloff begins, as a fraction of the shape radius from the centre; a missing \
-         key defaults to 50.",
-    )
-}
+/// The Vignette module: [`Vignette`] as a field-patch module.
+pub type VignetteModule = FieldPatchModule<Vignette>;
 
-fn roundness_parameter() -> ParameterDescriptor {
-    number_parameter(
-        ROUNDNESS,
-        ROUNDNESS_MIN,
-        ROUNDNESS_MAX,
-        default_of(ROUNDNESS),
-        Some(0.0),
-        "morphs the mask shape from a rounded rectangle (-100) through an ellipse (0) to a circle \
-         (100); a missing key defaults to 0.",
-    )
-}
-
-fn feather_parameter() -> ParameterDescriptor {
-    number_parameter(
-        FEATHER,
-        FEATHER_MIN,
-        FEATHER_MAX,
-        default_of(FEATHER),
-        None,
-        "the width of the falloff transition, as a fraction of the shape radius; a missing key \
-         defaults to 50.",
-    )
-}
-
-/// The all-default preset a reset writes, keyed by field name.
-fn default_preset() -> Map<String, Value> {
-    FIELDS
-        .iter()
-        .map(|name| ((*name).to_owned(), number(default_of(name))))
-        .collect()
-}
-
-/// Whether a sent `set-vignette` patch holds exactly every field, each at its own default: the
-/// group's own reset button sends this patch, so it deserves the same "Reset Vignette" label the
-/// non-patch `reset-vignette` action gets.
-fn is_reset_patch(sent: &[(&String, f64)]) -> bool {
-    sent.len() == FIELDS.len()
-        && sent
-            .iter()
-            .all(|(name, value)| FIELDS.contains(&name.as_str()) && *value == default_of(name))
-}
-
-#[derive(Debug)]
-pub struct VignetteModule {
-    descriptor: ModuleDescriptor,
-}
-
-impl Default for VignetteModule {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl VignetteModule {
-    pub fn new() -> Self {
-        Self {
-            descriptor: ModuleDescriptor {
-                id: "lightwell.vignette".into(),
-                title: GROUP_LABEL.into(),
-                hint: Some("Darken or lighten the corners after the crop".into()),
-                effects: vec![EffectDescriptor {
-                    id: VIGNETTE_EFFECT.into(),
-                    format: EFFECT_FORMAT,
-                    stage: EffectStage::Finish,
-                    order: 0,
-                    maskable: false,
-                    artifacts: false,
-                }],
-                actions: vec![
-                    ActionDescriptor {
-                        id: SET_VIGNETTE.into(),
-                        title: "Set Vignette".into(),
-                        notes: "merges the named Vignette fields into the stack's one Vignette \
-                                 layer. A missing key means that field's own default (amount 0, \
-                                 midpoint 50, roundness 0, feather 50), not neutral 0 for every \
-                                 field: unlike Basic, midpoint and feather default away from 0. \
-                                 The host places the layer at the end of the stack, after the \
-                                 geometry tail, on the first commit whose merged amount is \
-                                 non-zero, and updates it there in place afterwards; a patch that \
-                                 changes nothing is a reported no-op, and a first set whose \
-                                 merged amount is still 0 commits no layer at all."
-                            .into(),
-                        summary: None,
-                        patch: true,
-                        parameters: vec![
-                            amount_parameter(),
-                            midpoint_parameter(),
-                            roundness_parameter(),
-                            feather_parameter(),
-                        ],
-                    },
-                    ActionDescriptor {
-                        id: RESET_VIGNETTE.into(),
-                        title: "Reset Vignette".into(),
-                        notes: "returns the stack's one Vignette layer to its all-default \
-                                 payload, keeping its identity and position; a no-op without one \
-                                 and when it is already all default."
-                            .into(),
-                        summary: None,
-                        patch: false,
-                        parameters: Vec::new(),
-                    },
-                ],
-                queries: Vec::new(),
-                controls: vec![Control::Group {
-                    label: GROUP_LABEL.into(),
-                    reset: Some(ResetAction {
-                        action: SET_VIGNETTE.into(),
-                        preset: default_preset(),
-                    }),
-                    controls: vec![
-                        Control::Number {
-                            action: SET_VIGNETTE.into(),
-                            parameter: AMOUNT.into(),
-                            label: AMOUNT_LABEL.into(),
-                            style: crate::NumberStyle::Slider,
-                            rail: None,
-                            reset: None,
-                        },
-                        Control::Number {
-                            action: SET_VIGNETTE.into(),
-                            parameter: MIDPOINT.into(),
-                            label: MIDPOINT_LABEL.into(),
-                            style: crate::NumberStyle::Slider,
-                            rail: None,
-                            reset: None,
-                        },
-                        Control::Number {
-                            action: SET_VIGNETTE.into(),
-                            parameter: ROUNDNESS.into(),
-                            label: ROUNDNESS_LABEL.into(),
-                            style: crate::NumberStyle::Slider,
-                            rail: None,
-                            reset: None,
-                        },
-                        Control::Number {
-                            action: SET_VIGNETTE.into(),
-                            parameter: FEATHER.into(),
-                            label: FEATHER_LABEL.into(),
-                            style: crate::NumberStyle::Slider,
-                            rail: None,
-                            reset: None,
-                        },
-                    ],
-                    collapsed: false,
-                }],
-                reset: Some(ResetAction {
-                    action: RESET_VIGNETTE.into(),
-                    preset: Map::new(),
-                }),
-                canvas: None,
-                developer: false,
-                collapsed: true,
-                layout: crate::ModuleLayout::Stacked,
-                availability: Availability::Available,
-                ..ModuleDescriptor::default()
+impl FieldPatch for Vignette {
+    fn spec() -> Spec {
+        Spec {
+            id: "lightwell.vignette",
+            title: GROUP_LABEL,
+            hint: "Darken or lighten the corners after the crop",
+            noun: "vignette",
+            effect: EffectDescriptor {
+                id: VIGNETTE_EFFECT.into(),
+                format: EFFECT_FORMAT,
+                stage: EffectStage::Finish,
+                order: 0,
+                maskable: false,
+                artifacts: false,
             },
-        }
-    }
-}
-
-impl ToolModule for VignetteModule {
-    fn descriptor(&self) -> &ModuleDescriptor {
-        &self.descriptor
-    }
-
-    /// At most one Vignette layer exists in a stack, so the host refuses to compile or plan
-    /// against a stack that holds two instead of guessing which one an action addresses.
-    fn single_layer(&self, effect_id: &str) -> bool {
-        effect_id == VIGNETTE_EFFECT
-    }
-
-    fn parse(
-        &self,
-        action_id: &str,
-        parameters: &Map<String, Value>,
-    ) -> Result<ActionInput, Error> {
-        let parameters = match action_id {
-            SET_VIGNETTE => parameters.clone(),
-            RESET_VIGNETTE => Map::new(),
-            _ => return Err(validation(format!("unknown action {action_id}"))),
-        };
-        Ok(ActionInput {
-            action_id: action_id.to_owned(),
-            parameters,
-        })
-    }
-
-    fn plan(&self, input: &ActionInput, context: &StageContext<'_>) -> Result<ActionPlan, Error> {
-        let existing = locate(context.layers)?;
-        let current = match existing {
-            Some(layer) => canonical(&read_payload(
-                &layer.effect_id,
-                layer.effect_format,
-                &layer.payload,
-            )?),
-            None => DEFAULTS,
-        };
-        let merged = match input.action_id.as_str() {
-            SET_VIGNETTE => {
-                let mut merged = current;
-                for (slot, name) in merged.iter_mut().zip(FIELDS) {
-                    if let Some(value) = input.parameters.get(name) {
-                        *slot = value
-                            .as_f64()
-                            .filter(|value| value.is_finite())
-                            .ok_or_else(|| {
-                                validation(format!("vignette field {name} must be a finite number"))
-                            })?;
-                        let (min, max) = range(name);
-                        if *slot < min || *slot > max {
-                            return Err(validation(format!(
-                                "vignette field {name} must be a number within {min}..={max}"
-                            )));
-                        }
-                    }
-                }
-                merged
-            }
-            RESET_VIGNETTE => DEFAULTS,
-            action_id => return Err(validation(format!("unknown action {action_id}"))),
-        };
-        match existing {
-            Some(_) if current == merged => Ok(ActionPlan::NoOp),
-            Some(layer) => Ok(ActionPlan::Update(Layer {
-                id: layer.id.clone(),
-                effect_id: VIGNETTE_EFFECT.into(),
-                effect_format: EFFECT_FORMAT,
-                payload: payload_of(&merged),
-                // The mask is the host's: an update keeps whatever this layer already carries.
-                mask: layer.mask.clone(),
-                artifacts: Vec::new(),
-            })),
-            // The host inserts a finish-stage layer at the end of the stack; a first set whose
-            // merged amount is still 0 has nothing visible to store, so it adds no layer at all.
-            None if is_amount_neutral(&merged) => Ok(ActionPlan::NoOp),
-            None => Ok(ActionPlan::Commit(Layer {
-                id: LayerId::new(),
-                effect_id: VIGNETTE_EFFECT.into(),
-                effect_format: EFFECT_FORMAT,
-                payload: payload_of(&merged),
-                mask: None,
-                artifacts: Vec::new(),
-            })),
+            set: ActionText {
+                id: SET_VIGNETTE,
+                title: "Set Vignette",
+                notes: "merges the named Vignette fields into the stack's one Vignette \
+                         layer. A missing key means that field's own default (amount 0, \
+                         midpoint 50, roundness 0, feather 50), not neutral 0 for every \
+                         field: unlike Basic, midpoint and feather default away from 0. \
+                         The host places the layer at the end of the stack, after the \
+                         geometry tail, on the first commit whose merged amount is \
+                         non-zero, and updates it there in place afterwards; a patch that \
+                         changes nothing is a reported no-op, and a first set whose \
+                         merged amount is still 0 commits no layer at all.",
+            },
+            reset: ActionText {
+                id: RESET_VIGNETTE,
+                title: "Reset Vignette",
+                notes: "returns the stack's one Vignette layer to its all-default \
+                         payload, keeping its identity and position; a no-op without one \
+                         and when it is already all default.",
+            },
+            fields: vec![
+                vignette_field(
+                    AMOUNT,
+                    "Amount",
+                    (-100.0, 0.0),
+                    Some(0.0),
+                    "post-crop vignette strength: negative darkens toward black in linear light with gain \
+                     1 - |amount|*mask, positive lightens toward encoded white through a compressive mapping \
+                     that never pushes a below-white channel past it. 0 is the exact identity whatever \
+                     midpoint, roundness and feather hold, and a missing key defaults to 0.",
+                ),
+                vignette_field(
+                    MIDPOINT,
+                    "Midpoint",
+                    (0.0, 50.0),
+                    None,
+                    "where the falloff begins, as a fraction of the shape radius from the centre; a missing \
+                     key defaults to 50.",
+                ),
+                vignette_field(
+                    ROUNDNESS,
+                    "Roundness",
+                    (-100.0, 0.0),
+                    Some(0.0),
+                    "morphs the mask shape from a rounded rectangle (-100) through an ellipse (0) to a circle \
+                     (100); a missing key defaults to 0.",
+                ),
+                vignette_field(
+                    FEATHER,
+                    "Feather",
+                    (0.0, 50.0),
+                    None,
+                    "the width of the falloff transition, as a fraction of the shape radius; a missing key \
+                     defaults to 50.",
+                ),
+            ],
+            groups: vec![Group {
+                label: GROUP_LABEL,
+                fields: FIELDS.to_vec(),
+                collapsed: false,
+                extra: Vec::new(),
+            }],
+            queries: Vec::new(),
+            canvas: None,
+            collapsed: true,
+            layout: crate::ModuleLayout::Stacked,
         }
     }
 
-    fn validate_payload(&self, effect_id: &str, format: u32, value: &Value) -> Result<(), Error> {
-        read_payload(effect_id, format, value).map(|_| ())
+    /// The layer as a whole is neutral exactly when `amount` is 0, whatever the other three
+    /// fields hold: the frozen mask geometry never runs when the amount equation is itself the
+    /// identity.
+    fn is_neutral(&self, values: &Values<'_>) -> bool {
+        values.get(AMOUNT) == 0.0
     }
 
-    fn describe_layer(&self, effect_id: &str, format: u32, value: &Value) -> Result<String, Error> {
-        let values = canonical(&read_payload(effect_id, format, value)?);
-        if is_all_default(&values) {
-            return Ok("Neutral".into());
-        }
-        Ok(FIELDS
-            .iter()
-            .zip(values)
-            .filter(|(name, value)| *value != default_of(name))
-            .map(|(name, value)| field_label(name, value))
-            .collect::<Vec<_>>()
-            .join(", "))
-    }
-
-    /// The history label for a request the action's title cannot describe: the one field a
-    /// slider moved, the group's reset sent as a full-default patch, or a reset action.
-    fn label(&self, input: &ActionInput) -> Option<String> {
-        match input.action_id.as_str() {
-            RESET_VIGNETTE => Some(format!("Reset {GROUP_LABEL}")),
-            SET_VIGNETTE => {
-                let sent: Vec<(&String, f64)> = input
-                    .parameters
-                    .iter()
-                    .map(|(name, value)| (name, value.as_f64().unwrap_or_else(|| default_of(name))))
-                    .collect();
-                if is_reset_patch(&sent) {
-                    Some(format!("Reset {GROUP_LABEL}"))
-                } else {
-                    match sent.as_slice() {
-                        [(name, value)] => Some(field_label(name, *value)),
-                        [] => None,
-                        fields => Some(format!("{GROUP_LABEL} ({} fields)", fields.len())),
-                    }
-                }
-            }
-            _ => None,
-        }
-    }
-
-    /// The four effective values this stored layer represents, with defaults filled: named
-    /// exactly as `set-vignette`'s parameters are, so a client seeds its sliders from the
-    /// displayed entry.
-    fn values(
-        &self,
-        effect_id: &str,
-        format: u32,
-        value: &Value,
-    ) -> Result<Map<String, Value>, Error> {
-        let values = canonical(&read_payload(effect_id, format, value)?);
-        Ok(FIELDS
-            .iter()
-            .zip(values)
-            .map(|(name, value)| ((*name).to_owned(), number(value)))
-            .collect())
-    }
-
-    fn compile(
-        &self,
-        effect_id: &str,
-        format: u32,
-        value: &Value,
-        stage: Stage,
-    ) -> Result<Processing, Error> {
-        let values = canonical(&read_payload(effect_id, format, value)?);
-        // The layer as a whole is neutral whenever amount is 0, whatever the other three fields
-        // hold: the mask never has to be built, and the identity byte path and shared source
-        // buffer are kept.
-        if is_amount_neutral(&values) {
+    fn compile(&self, values: &Values<'_>, stage: Stage) -> Result<Processing, Error> {
+        // The mask never has to be built for a neutral layer, and the identity byte path and
+        // shared source buffer are kept.
+        if self.is_neutral(values) {
             return Ok(Processing::Color(ColorOperation::neutral()));
         }
-        let unit: Arc<dyn PointwiseColor> = Arc::new(Vignette::new(
-            value_of(&values, AMOUNT),
-            value_of(&values, MIDPOINT),
-            value_of(&values, ROUNDNESS),
-            value_of(&values, FEATHER),
+        let unit: Arc<dyn PointwiseColor> = Arc::new(unit::Vignette::new(
+            values.get(AMOUNT),
+            values.get(MIDPOINT),
+            values.get(ROUNDNESS),
+            values.get(FEATHER),
             stage,
         ));
         Ok(Processing::Color(ColorOperation::new(vec![unit])))
@@ -607,7 +187,12 @@ impl ToolModule for VignetteModule {
 mod tests {
     use super::*;
     use crate::modules::check_parameters;
+    use crate::modules::{
+        ActionInput, ActionPlan, Control, ParameterKind, ResetAction, StageContext, ToolModule,
+    };
+    use crate::{ErrorKind, Layer, LayerId};
     use serde_json::json;
+    use serde_json::{Map, Value};
 
     const STAGE: Stage = Stage {
         width: 480,

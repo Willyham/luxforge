@@ -1,23 +1,22 @@
 //! The colour mixer module: one colour-stage layer holding hue, saturation and luminance for each
 //! of eight colour ranges, edited by one field-patch action.
 //!
-//! This mirrors the Basic module's shape (`docs/design/modules-and-api.md`'s field-patch
-//! contract): a payload is a JSON object whose keys are the implemented parameter names, a missing
-//! key is neutral, and the canonical neutral payload is the empty object `{}`. The module owns
-//! exactly one layer of `lightwell.mixer.hsl`, declared order 10 so a mixer layer always follows
-//! the Basic layer in the colour run (`docs/design/presence-mixer-vignette.md`, "Placement and
-//! stage order"). The one pointwise unit's equations are frozen in `docs/design/mixer-study.md`
-//! and implemented in [`unit::Mixer`]; this file owns only the parameters, validation, controls and
-//! API surface around it.
+//! This is a field-patch module (`docs/design/modules-and-api.md`'s field-patch contract, shared in
+//! [`super::field_patch`]): a payload is a JSON object whose keys are the implemented parameter
+//! names, a missing key is neutral, and the canonical neutral payload is the empty object `{}`. The
+//! module owns exactly one layer of `lightwell.mixer.hsl`, declared order 10 so a mixer layer
+//! always follows the Basic layer in the colour run (`docs/design/presence-mixer-vignette.md`,
+//! "Placement and stage order"). The one pointwise unit's equations are frozen in
+//! `docs/design/mixer-study.md` and implemented in [`unit::Mixer`]; this file owns only the field
+//! table, the controls' rails and the compilation into that unit.
 mod unit;
 
 use super::{
-    ActionDescriptor, ActionInput, ActionPlan, Availability, Control, EffectDescriptor,
-    EffectStage, ModuleDescriptor, ParameterDescriptor, ParameterKind, PointwiseColor, Processing,
-    RailDecoration, ResetAction, Stage, StageContext, ToolModule,
+    ColorOperation, EffectDescriptor, EffectStage, PointwiseColor, Processing, RailDecoration,
+    Stage,
+    field_patch::{ActionText, Field, FieldPatch, FieldPatchModule, Group, Spec, Values},
 };
-use crate::{EFFECT_FORMAT, Error, ErrorKind, Layer, LayerId, MIXER_EFFECT};
-use serde_json::{Map, Number, Value};
+use crate::{EFFECT_FORMAT, Error, MIXER_EFFECT};
 use std::sync::Arc;
 
 pub(super) const SET_MIXER: &str = "set-mixer";
@@ -71,19 +70,9 @@ const LUMINANCE_GROUP: &str = "Luminance";
 /// The neutral value of every mixer field.
 const NEUTRAL: f64 = 0.0;
 
-fn validation(detail: impl Into<String>) -> Error {
-    Error::new(ErrorKind::Validation, detail)
-}
-
-fn incompatible(detail: impl Into<String>) -> Error {
-    Error::new(ErrorKind::Incompatible, detail)
-}
-
-/// A finite f64 as a JSON number. Finiteness is checked before every call, so the fallback is
-/// never reached in practice and never panics if it is.
-fn number(value: f64) -> Value {
-    Number::from_f64(value).map_or(Value::Null, Value::Number)
-}
+/// The one ambiguity message, shared by planning and by the host's whole-stack compile check.
+#[cfg(test)]
+pub(crate) const AMBIGUOUS: &str = "ambiguous Colour mixer layers";
 
 /// A declared field's range index and property, parsed from its `<range>-<property>` name.
 fn parse_field(name: &str) -> Option<(usize, &'static str)> {
@@ -107,156 +96,6 @@ fn range_label(range: usize) -> String {
     match characters.next() {
         Some(first) => first.to_uppercase().chain(characters).collect(),
         None => String::new(),
-    }
-}
-
-/// One field's history label: the range name, the lowercase property and the value with its sign
-/// always shown, e.g. `Red hue +20`, `Aqua luminance -15`.
-fn field_label(name: &str, value: f64) -> String {
-    let (range, property) = parse_field(name).expect("a declared mixer field");
-    format!("{} {property} {value:+.0}", range_label(range))
-}
-
-/// One field of a validated payload or request: a missing key is neutral.
-fn field(source: &Map<String, Value>, name: &str) -> f64 {
-    source.get(name).and_then(Value::as_f64).unwrap_or(NEUTRAL)
-}
-
-/// The canonical values a payload represents, in [`FIELDS`] order. Absent and explicitly neutral
-/// keys produce the same array, which is what makes `{}` and `{"red-hue": 0}` compare equal.
-fn canonical(payload: &Map<String, Value>) -> [f64; FIELDS.len()] {
-    FIELDS.map(|name| field(payload, name))
-}
-
-fn is_neutral(values: &[f64; FIELDS.len()]) -> bool {
-    values.iter().all(|value| *value == NEUTRAL)
-}
-
-/// The canonical stored form of a set of values: only the fields that are not neutral, so the
-/// neutral payload is exactly `{}`.
-fn payload_of(values: &[f64; FIELDS.len()]) -> Value {
-    let mut payload = Map::new();
-    for (name, value) in FIELDS.iter().zip(values) {
-        if *value != NEUTRAL {
-            payload.insert((*name).to_owned(), number(*value));
-        }
-    }
-    Value::Object(payload)
-}
-
-/// The object a stored payload must be, with the effect identity and format checked first: an
-/// unsupported format is `incompatible` and is never rewritten, and every field is a finite
-/// number inside its declared range.
-fn read_payload(effect_id: &str, format: u32, value: &Value) -> Result<Map<String, Value>, Error> {
-    if effect_id != MIXER_EFFECT {
-        return Err(incompatible(format!("unavailable effect {effect_id}")));
-    }
-    if format != EFFECT_FORMAT {
-        return Err(incompatible(format!("unsupported effect format {format}")));
-    }
-    let object = value
-        .as_object()
-        .ok_or_else(|| validation("mixer payload must be a JSON object"))?;
-    for (name, value) in object {
-        if !FIELDS.contains(&name.as_str()) {
-            return Err(validation(format!("unknown mixer field {name}")));
-        }
-        let number = value
-            .as_f64()
-            .filter(|number| number.is_finite())
-            .ok_or_else(|| validation(format!("mixer field {name} must be a finite number")))?;
-        if !(-100.0..=100.0).contains(&number) {
-            return Err(validation(format!(
-                "mixer field {name} must be a number within -100..=100"
-            )));
-        }
-    }
-    Ok(object.clone())
-}
-
-/// The group a patch returns entirely to neutral, when it is one: a patch holding exactly one
-/// property's eight fields, all at neutral, is that group's reset however it was sent.
-fn reset_group(sent: &[(&String, f64)]) -> Option<&'static str> {
-    [
-        (HUE_GROUP, &FIELDS[0..8]),
-        (SATURATION_GROUP, &FIELDS[8..16]),
-        (LUMINANCE_GROUP, &FIELDS[16..24]),
-    ]
-    .into_iter()
-    .find(|(_, fields)| {
-        sent.len() == fields.len()
-            && sent
-                .iter()
-                .all(|(name, value)| fields.contains(&name.as_str()) && *value == NEUTRAL)
-    })
-    .map(|(label, _)| label)
-}
-
-/// The stack's one Colour mixer layer. Two of them would each claim to be the mixer state, so
-/// every path refuses to guess which one an action addresses rather than silently choosing one;
-/// nothing is rewritten.
-fn locate(layers: &[Layer]) -> Result<Option<&Layer>, Error> {
-    Ok(locate_index(layers)?.map(|index| &layers[index]))
-}
-
-fn locate_index(layers: &[Layer]) -> Result<Option<usize>, Error> {
-    let mut found = None;
-    for (index, layer) in layers.iter().enumerate() {
-        if layer.effect_id == MIXER_EFFECT {
-            if found.is_some() {
-                return Err(validation(AMBIGUOUS));
-            }
-            found = Some(index);
-        }
-    }
-    Ok(found)
-}
-
-/// The one ambiguity message, shared by planning and by the host's whole-stack compile check.
-pub(crate) const AMBIGUOUS: &str = "ambiguous Colour mixer layers";
-
-/// One `<range>_<property>` parameter descriptor: -100..100, step 1, no display decimals, no unit.
-fn mixer_parameter(field: &str) -> ParameterDescriptor {
-    let (range, property) = parse_field(field).expect("a declared mixer field");
-    let label = range_label(range);
-    let notes = match property {
-        HUE => format!(
-            "moves the {label} range's hues toward a neighbouring range: +100 carries its centre colour 85% of the way to the next range's centre and -100 85% of the way to the previous one; two neighbours driven at each other share one slider's travel"
-        ),
-        SATURATION => format!(
-            "scales chroma within the {label} range; -100 is exactly neutral grey for that range's own colour and +100 doubles chroma; every saturation slider at -100 makes the whole photo exactly grey"
-        ),
-        LUMINANCE => format!(
-            "scales Oklab L within the {label} range through a compressive response with the near-black rule"
-        ),
-        _ => unreachable!("parse_field returns only hue, saturation or luminance"),
-    };
-    ParameterDescriptor {
-        name: field.into(),
-        kind: ParameterKind::Number {
-            min: -100.0,
-            max: 100.0,
-        },
-        required: false,
-        default: Some(number(NEUTRAL)),
-        unit: None,
-        step: Some(1.0),
-        precision: Some(0),
-        notes,
-        soft_min: None,
-        soft_max: None,
-        fine_step: None,
-        zero: Some(NEUTRAL),
-    }
-}
-
-fn group_reset(fields: &[&str]) -> ResetAction {
-    ResetAction {
-        action: SET_MIXER.into(),
-        preset: fields
-            .iter()
-            .map(|name| ((*name).to_owned(), number(NEUTRAL)))
-            .collect(),
     }
 }
 
@@ -304,281 +143,130 @@ fn luminance_rail(range: usize) -> RailDecoration {
     }
 }
 
-/// The eight sliders of one property group, in range order, each labelled by its range name and
-/// railed by the given decoration.
-fn range_controls(fields: &[&str], rail: fn(usize) -> RailDecoration) -> Vec<Control> {
-    fields
-        .iter()
-        .enumerate()
-        .map(|(range, field)| Control::Number {
-            action: SET_MIXER.into(),
-            parameter: (*field).into(),
-            label: range_label(range),
-            style: crate::NumberStyle::Slider,
-            rail: Some(rail(range)),
-            reset: None,
-        })
-        .collect()
-}
-
-#[derive(Debug)]
-pub struct MixerModule {
-    descriptor: ModuleDescriptor,
-}
-
-impl Default for MixerModule {
-    fn default() -> Self {
-        Self::new()
+/// One `<range>-<property>` field: -100..100, step 1, no display decimals, no unit, a zero hint,
+/// the range's name on its slider and the range's colours on its rail. Its history label names
+/// the range and the property, e.g. `Red hue +20`.
+fn mixer_field(name: &'static str) -> Field {
+    let (range, property) = parse_field(name).expect("a declared mixer field");
+    let label = range_label(range);
+    let (notes, rail) = match property {
+        HUE => (
+            format!(
+                "moves the {label} range's hues toward a neighbouring range: +100 carries its centre colour 85% of the way to the next range's centre and -100 85% of the way to the previous one; two neighbours driven at each other share one slider's travel"
+            ),
+            hue_rail(range),
+        ),
+        SATURATION => (
+            format!(
+                "scales chroma within the {label} range; -100 is exactly neutral grey for that range's own colour and +100 doubles chroma; every saturation slider at -100 makes the whole photo exactly grey"
+            ),
+            saturation_rail(range),
+        ),
+        LUMINANCE => (
+            format!(
+                "scales Oklab L within the {label} range through a compressive response with the near-black rule"
+            ),
+            luminance_rail(range),
+        ),
+        _ => unreachable!("parse_field returns only hue, saturation or luminance"),
+    };
+    Field {
+        history: format!("{label} {property}"),
+        zero: Some(NEUTRAL),
+        rail: Some(rail),
+        ..Field::slider(name, label, notes)
     }
 }
 
-impl MixerModule {
-    pub fn new() -> Self {
-        Self {
-            descriptor: ModuleDescriptor {
-                id: "lightwell.mixer".into(),
-                title: "Colour mixer".into(),
-                hint: Some("Hue, saturation and luminance by range".into()),
-                effects: vec![EffectDescriptor {
-                    id: MIXER_EFFECT.into(),
-                    format: EFFECT_FORMAT,
-                    stage: EffectStage::Color,
-                    order: 10,
-                    maskable: true,
-                    artifacts: false,
-                }],
-                actions: vec![
-                    ActionDescriptor {
-                        id: SET_MIXER.into(),
-                        title: "Set Colour mixer".into(),
-                        notes: "merges the named mixer fields into the stack's one Colour mixer layer, which the host places after Basic by declared order on the first non-neutral value and updates in place afterwards; omitted fields keep their stored values and a patch that changes nothing is a reported no-op".into(),
-                        summary: None,
-                        patch: true,
-                        parameters: FIELDS.iter().map(|field| mixer_parameter(field)).collect(),
-                    },
-                    ActionDescriptor {
-                        id: RESET_MIXER.into(),
-                        title: "Reset Colour mixer".into(),
-                        notes: "returns the stack's one Colour mixer layer to its neutral payload, keeping its identity and position; a no-op without one and when it is already neutral".into(),
-                        summary: None,
-                        patch: false,
-                        parameters: Vec::new(),
-                    },
-                ],
-                queries: Vec::new(),
-                controls: vec![
-                    Control::Group {
-                        label: HUE_GROUP.into(),
-                        reset: Some(group_reset(&FIELDS[0..8])),
-                        controls: range_controls(&FIELDS[0..8], hue_rail),
-                        collapsed: false,
-                    },
-                    Control::Group {
-                        label: SATURATION_GROUP.into(),
-                        reset: Some(group_reset(&FIELDS[8..16])),
-                        controls: range_controls(&FIELDS[8..16], saturation_rail),
-                        collapsed: true,
-                    },
-                    Control::Group {
-                        label: LUMINANCE_GROUP.into(),
-                        reset: Some(group_reset(&FIELDS[16..24])),
-                        controls: range_controls(&FIELDS[16..24], luminance_rail),
-                        collapsed: true,
-                    },
-                ],
-                reset: Some(ResetAction {
-                    action: RESET_MIXER.into(),
-                    preset: Map::new(),
-                }),
-                canvas: None,
-                developer: false,
-                // A Presence module will later be registered between Basic and the mixer.
-                collapsed: true,
-                // The three groups are parallel views of the same eight ranges, so the desktop
-                // draws them as one segmented row instead of stacked sections.
-                layout: crate::ModuleLayout::Tabs,
-                availability: Availability::Available,
-                ..ModuleDescriptor::default()
+/// The colour mixer's table and compilation.
+#[derive(Debug, Default)]
+pub struct Mixer;
+
+/// The colour mixer module: [`Mixer`] as a field-patch module.
+pub type MixerModule = FieldPatchModule<Mixer>;
+
+impl FieldPatch for Mixer {
+    fn spec() -> Spec {
+        Spec {
+            id: "lightwell.mixer",
+            title: "Colour mixer",
+            hint: "Hue, saturation and luminance by range",
+            noun: "mixer",
+            effect: EffectDescriptor {
+                id: MIXER_EFFECT.into(),
+                format: EFFECT_FORMAT,
+                stage: EffectStage::Color,
+                order: 10,
+                maskable: true,
+                artifacts: false,
             },
-        }
-    }
-}
-
-impl ToolModule for MixerModule {
-    fn descriptor(&self) -> &ModuleDescriptor {
-        &self.descriptor
-    }
-
-    /// At most one Colour mixer layer exists in a stack, so the host refuses to compile or plan
-    /// against a stack that holds two instead of guessing which one the parameters belong to.
-    fn single_layer(&self, effect_id: &str) -> bool {
-        effect_id == MIXER_EFFECT
-    }
-
-    fn parse(
-        &self,
-        action_id: &str,
-        parameters: &Map<String, Value>,
-    ) -> Result<ActionInput, Error> {
-        let parameters = match action_id {
-            // A patch stores exactly the fields the caller sent: the history entry, the label and
-            // request deduplication all describe the patch, not the merged payload.
-            SET_MIXER => parameters.clone(),
-            RESET_MIXER => Map::new(),
-            _ => return Err(validation(format!("unknown action {action_id}"))),
-        };
-        Ok(ActionInput {
-            action_id: action_id.to_owned(),
-            parameters,
-        })
-    }
-
-    fn plan(&self, input: &ActionInput, context: &StageContext<'_>) -> Result<ActionPlan, Error> {
-        let existing = locate(context.layers)?;
-        let current = match existing {
-            Some(layer) => canonical(&read_payload(
-                &layer.effect_id,
-                layer.effect_format,
-                &layer.payload,
-            )?),
-            None => [NEUTRAL; FIELDS.len()],
-        };
-        let merged = match input.action_id.as_str() {
-            SET_MIXER => {
-                let mut merged = current;
-                for (slot, name) in merged.iter_mut().zip(FIELDS) {
-                    if let Some(value) = input.parameters.get(name) {
-                        *slot = value
-                            .as_f64()
-                            .filter(|value| value.is_finite())
-                            .ok_or_else(|| {
-                                validation(format!("mixer field {name} must be a finite number"))
-                            })?;
-                        if !(-100.0..=100.0).contains(slot) {
-                            return Err(validation(format!(
-                                "mixer field {name} must be a number within -100..=100"
-                            )));
-                        }
-                    }
-                }
-                merged
-            }
-            RESET_MIXER => [NEUTRAL; FIELDS.len()],
-            action_id => return Err(validation(format!("unknown action {action_id}"))),
-        };
-        match existing {
-            Some(_) if current == merged => Ok(ActionPlan::NoOp),
-            Some(layer) => Ok(ActionPlan::Update(Layer {
-                id: layer.id.clone(),
-                effect_id: MIXER_EFFECT.into(),
-                effect_format: EFFECT_FORMAT,
-                payload: payload_of(&merged),
-                // The mask is the host's: an update keeps whatever this layer already carries.
-                mask: layer.mask.clone(),
-                artifacts: Vec::new(),
-            })),
-            // The host inserts a colour-stage layer after Basic by declared order; a neutral first
-            // set has nothing to store, so it adds no layer at all.
-            None if is_neutral(&merged) => Ok(ActionPlan::NoOp),
-            None => Ok(ActionPlan::Commit(Layer {
-                id: LayerId::new(),
-                effect_id: MIXER_EFFECT.into(),
-                effect_format: EFFECT_FORMAT,
-                payload: payload_of(&merged),
-                mask: None,
-                artifacts: Vec::new(),
-            })),
+            set: ActionText {
+                id: SET_MIXER,
+                title: "Set Colour mixer",
+                notes: "merges the named mixer fields into the stack's one Colour mixer layer, which the host places after Basic by declared order on the first non-neutral value and updates in place afterwards; omitted fields keep their stored values and a patch that changes nothing is a reported no-op",
+            },
+            reset: ActionText {
+                id: RESET_MIXER,
+                title: "Reset Colour mixer",
+                notes: "returns the stack's one Colour mixer layer to its neutral payload, keeping its identity and position; a no-op without one and when it is already neutral",
+            },
+            fields: FIELDS.iter().map(|name| mixer_field(name)).collect(),
+            groups: vec![
+                Group {
+                    label: HUE_GROUP,
+                    fields: FIELDS[0..8].to_vec(),
+                    collapsed: false,
+                    extra: Vec::new(),
+                },
+                Group {
+                    label: SATURATION_GROUP,
+                    fields: FIELDS[8..16].to_vec(),
+                    collapsed: true,
+                    extra: Vec::new(),
+                },
+                Group {
+                    label: LUMINANCE_GROUP,
+                    fields: FIELDS[16..24].to_vec(),
+                    collapsed: true,
+                    extra: Vec::new(),
+                },
+            ],
+            queries: Vec::new(),
+            canvas: None,
+            collapsed: true,
+            // The three groups are parallel views of the same eight ranges, so the desktop draws
+            // them as one segmented row instead of stacked sections.
+            layout: crate::ModuleLayout::Tabs,
         }
     }
 
-    fn validate_payload(&self, effect_id: &str, format: u32, value: &Value) -> Result<(), Error> {
-        read_payload(effect_id, format, value).map(|_| ())
-    }
-
-    fn describe_layer(&self, effect_id: &str, format: u32, value: &Value) -> Result<String, Error> {
-        let values = canonical(&read_payload(effect_id, format, value)?);
-        if is_neutral(&values) {
-            return Ok("Neutral".into());
-        }
-        Ok(FIELDS
-            .iter()
-            .zip(values)
-            .filter(|(_, value)| *value != NEUTRAL)
-            .map(|(name, value)| field_label(name, value))
-            .collect::<Vec<_>>()
-            .join(", "))
-    }
-
-    /// The history label for a request the action's title cannot describe: the one field a slider
-    /// moved, or the group a reset cleared.
-    fn label(&self, input: &ActionInput) -> Option<String> {
-        match input.action_id.as_str() {
-            RESET_MIXER => Some("Reset Colour mixer".into()),
-            SET_MIXER => {
-                let sent: Vec<(&String, f64)> = input
-                    .parameters
-                    .iter()
-                    .map(|(name, value)| (name, value.as_f64().unwrap_or(NEUTRAL)))
-                    .collect();
-                match (reset_group(&sent), sent.as_slice()) {
-                    (Some(group), _) => Some(format!("Reset {group}")),
-                    (None, [(name, value)]) => Some(field_label(name, *value)),
-                    // An empty patch changes nothing and commits no entry; the host falls back to
-                    // the action's own title if it ever asks.
-                    (None, []) => None,
-                    // Any other patch: several fields changed at once, not a declared group reset.
-                    (None, fields) => Some(format!("Colour mixer ({} fields)", fields.len())),
-                }
-            }
-            _ => None,
-        }
-    }
-
-    /// The values this stored layer represents, named exactly as `set-mixer`'s parameters are, so a
-    /// client seeds its sliders from the displayed entry. A neutral layer reports the neutral value
-    /// of every field rather than an empty object.
-    fn values(
-        &self,
-        effect_id: &str,
-        format: u32,
-        value: &Value,
-    ) -> Result<Map<String, Value>, Error> {
-        let values = canonical(&read_payload(effect_id, format, value)?);
-        Ok(FIELDS
-            .iter()
-            .zip(values)
-            .map(|(name, value)| ((*name).to_owned(), number(value)))
-            .collect())
-    }
-
-    fn compile(
-        &self,
-        effect_id: &str,
-        format: u32,
-        value: &Value,
-        _: Stage,
-    ) -> Result<Processing, Error> {
-        let values = canonical(&read_payload(effect_id, format, value)?);
+    fn compile(&self, values: &Values<'_>, _: Stage) -> Result<Processing, Error> {
         // A neutral payload compiles to no units, which the host drops entirely: the identity
         // byte path and the shared source buffer are kept.
-        if is_neutral(&values) {
-            return Ok(Processing::Color(super::ColorOperation::neutral()));
+        if values.all_default() {
+            return Ok(Processing::Color(ColorOperation::neutral()));
         }
+        let values = values.as_slice();
         let hue: [f64; unit::RANGE_COUNT] = values[0..8].try_into().expect("eight hue fields");
         let saturation: [f64; unit::RANGE_COUNT] =
             values[8..16].try_into().expect("eight saturation fields");
         let luminance: [f64; unit::RANGE_COUNT] =
             values[16..24].try_into().expect("eight luminance fields");
         let mixer: Arc<dyn PointwiseColor> = Arc::new(unit::Mixer::new(hue, saturation, luminance));
-        Ok(Processing::Color(super::ColorOperation::new(vec![mixer])))
+        Ok(Processing::Color(ColorOperation::new(vec![mixer])))
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::modules::{
+        ActionInput, ActionPlan, Control, ParameterKind, ResetAction, StageContext, ToolModule,
+    };
     use crate::{BASIC_EFFECT, modules::check_parameters};
+    use crate::{ErrorKind, Layer, LayerId};
     use serde_json::json;
+    use serde_json::{Map, Value};
 
     const STAGE: Stage = Stage {
         width: 4,

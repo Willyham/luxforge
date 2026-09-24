@@ -6,6 +6,7 @@ mod capabilities_proof;
 mod controls;
 mod crop;
 mod descriptor;
+mod field_patch;
 mod mixer;
 mod pixel;
 mod presence;

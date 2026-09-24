@@ -5,8 +5,8 @@
 //! Highlights, Shadows, Whites and Blacks), Vibrance and Saturation. A payload is a JSON object
 //! whose keys are the implemented parameter names; a missing key is neutral, so the canonical
 //! neutral payload is the empty object `{}` and `{"exposure": 0}` is the same state written
-//! differently. Every comparison here is between canonical values, never between JSON maps, so the
-//! two forms are never mistaken for a change.
+//! differently. The field-patch behaviour every such module shares lives in
+//! [`super::field_patch`]; this file is the field table, the compilation and the neutral picker.
 //!
 //! The units compile in the frozen internal order — white balance, then exposure, then the tonal
 //! curve, then vibrance and saturation — whatever order the fields were set in, so the result never
@@ -32,14 +32,16 @@ pub(crate) mod tone;
 mod white_balance;
 
 use super::{
-    ActionDescriptor, ActionInput, ActionPlan, Availability, CanvasInteraction, ColorOperation,
-    Control, EffectDescriptor, EffectStage, ModuleDescriptor, ParameterDescriptor, ParameterKind,
-    PointwiseColor, Processing, ResetAction, Stage, StageContext, ToolModule,
+    ActionDescriptor, CanvasInteraction, ColorOperation, Control, EffectDescriptor, EffectStage,
+    ParameterDescriptor, ParameterKind, PointwiseColor, Processing, Stage, StageContext,
+    field_patch::{
+        ActionText, Field, FieldPatch, FieldPatchModule, Group, Spec, Values, own_layer,
+    },
 };
-use crate::{BASIC_EFFECT, EFFECT_FORMAT, Error, ErrorKind, Layer, LayerId};
+use crate::{BASIC_EFFECT, EFFECT_FORMAT, Error, ErrorKind};
 use colour::ColourAdjust;
 use exposure::Exposure;
-use serde_json::{Map, Number, Value};
+use serde_json::{Map, Value};
 use std::sync::Arc;
 use tone::Tone;
 use white_balance::{PARAMETER_RANGE, WhiteBalance};
@@ -50,20 +52,8 @@ pub(super) const RESET_BASIC: &str = "reset-basic";
 pub(super) const NEUTRAL_SAMPLE: &str = "neutral-sample";
 
 const EXPOSURE: &str = "exposure";
-const EXPOSURE_MIN: f64 = -5.0;
-const EXPOSURE_MAX: f64 = 5.0;
-const EXPOSURE_STEP: f64 = 0.01;
-const EXPOSURE_PRECISION: u8 = 2;
-const EXPOSURE_UNIT: &str = "EV";
-const EXPOSURE_LABEL: &str = "Exposure";
-
 const TEMPERATURE: &str = "temperature";
 const TINT: &str = "tint";
-const WHITE_BALANCE_STEP: f64 = 1.0;
-const WHITE_BALANCE_PRECISION: u8 = 0;
-const TEMPERATURE_LABEL: &str = "Temperature";
-const TINT_LABEL: &str = "Tint";
-
 /// The five Tone-curve fields, each in the agreed -100..100 UI range with step 1 and no display
 /// decimals, holding no unit.
 const CONTRAST: &str = "contrast";
@@ -71,37 +61,10 @@ const HIGHLIGHTS: &str = "highlights";
 const SHADOWS: &str = "shadows";
 const WHITES: &str = "whites";
 const BLACKS: &str = "blacks";
-const TONE_MIN: f64 = -100.0;
-const TONE_MAX: f64 = 100.0;
-const TONE_STEP: f64 = 1.0;
-const TONE_PRECISION: u8 = 0;
-const CONTRAST_LABEL: &str = "Contrast";
-const HIGHLIGHTS_LABEL: &str = "Highlights";
-const SHADOWS_LABEL: &str = "Shadows";
-const WHITES_LABEL: &str = "Whites";
-const BLACKS_LABEL: &str = "Blacks";
-
 /// Vibrance and Saturation: `docs/design/basic-colour.md`'s frozen range, step and precision. No
 /// unit is declared; the design states the accepted range directly in slider units.
 const VIBRANCE: &str = "vibrance";
 const SATURATION: &str = "saturation";
-const COLOUR_MIN: f64 = -100.0;
-const COLOUR_MAX: f64 = 100.0;
-const COLOUR_STEP: f64 = 1.0;
-const COLOUR_PRECISION: u8 = 0;
-const VIBRANCE_LABEL: &str = "Vibrance";
-const SATURATION_LABEL: &str = "Saturation";
-
-/// The group label the Tone controls share, and the label a patch that returns every one of its
-/// fields to neutral takes in history.
-const TONE_GROUP: &str = "Tone";
-
-/// The group label the Vibrance/Saturation controls share, and the label a patch that returns
-/// every one of its fields to neutral takes in history.
-const COLOUR_GROUP: &str = "Colour";
-
-/// The group label the White balance controls share.
-const WHITE_BALANCE_GROUP: &str = "White balance";
 
 /// The neutral picker's name, on its control in the White balance group and on its canvas mode.
 const NEUTRAL_PICKER_LABEL: &str = "Neutral picker";
@@ -109,6 +72,7 @@ const NEUTRAL_PICKER_LABEL: &str = "Neutral picker";
 /// Every implemented Basic field, in the payload's declared order. A later slice adds further
 /// optional keys of the same format, and a neutral-defaulting key changes no existing
 /// interpretation.
+#[cfg(test)]
 const FIELDS: [&str; 10] = [
     TEMPERATURE,
     TINT,
@@ -122,337 +86,24 @@ const FIELDS: [&str; 10] = [
     SATURATION,
 ];
 
-/// The fields of the White balance group, so a patch holding exactly these at neutral is that
-/// group's reset however it was sent.
-const WHITE_BALANCE_FIELDS: [&str; 2] = [TEMPERATURE, TINT];
-
-/// The fields of the Tone group: a patch holding exactly these at neutral is that group's reset.
-const TONE_FIELDS: [&str; 6] = [EXPOSURE, CONTRAST, HIGHLIGHTS, SHADOWS, WHITES, BLACKS];
-
-/// The fields of the Colour group: a patch holding exactly these at neutral is that group's reset.
-const COLOUR_FIELDS: [&str; 2] = [VIBRANCE, SATURATION];
-
 /// The neutral value of every Basic field.
 const NEUTRAL: f64 = 0.0;
+
+/// The one ambiguity message, shared by planning and by the host's whole-stack compile check.
+#[cfg(test)]
+pub(crate) const AMBIGUOUS: &str = "ambiguous Basic layers";
 
 fn validation(detail: impl Into<String>) -> Error {
     Error::new(ErrorKind::Validation, detail)
 }
 
-fn incompatible(detail: impl Into<String>) -> Error {
-    Error::new(ErrorKind::Incompatible, detail)
-}
-
-/// The inclusive range one field accepts, which is also the range its descriptor declares, so the
-/// generic parameter check and a stored payload are refused by the same numbers.
-fn range(name: &str) -> (f64, f64) {
-    match name {
-        TEMPERATURE | TINT => (-PARAMETER_RANGE, PARAMETER_RANGE),
-        EXPOSURE => (EXPOSURE_MIN, EXPOSURE_MAX),
-        CONTRAST | HIGHLIGHTS | SHADOWS | WHITES | BLACKS => (TONE_MIN, TONE_MAX),
-        VIBRANCE | SATURATION => (COLOUR_MIN, COLOUR_MAX),
-        // Unreachable: `FIELDS` is the closed set and every caller matched a name against it.
-        _ => (0.0, 0.0),
-    }
-}
-
-/// The display precision and unit a field's label uses, taken from the same numbers its descriptor
-/// declares.
-fn display(name: &str) -> (&'static str, u8, &'static str) {
-    match name {
-        TEMPERATURE => (TEMPERATURE_LABEL, WHITE_BALANCE_PRECISION, ""),
-        TINT => (TINT_LABEL, WHITE_BALANCE_PRECISION, ""),
-        EXPOSURE => (EXPOSURE_LABEL, EXPOSURE_PRECISION, EXPOSURE_UNIT),
-        CONTRAST => (CONTRAST_LABEL, TONE_PRECISION, ""),
-        HIGHLIGHTS => (HIGHLIGHTS_LABEL, TONE_PRECISION, ""),
-        SHADOWS => (SHADOWS_LABEL, TONE_PRECISION, ""),
-        WHITES => (WHITES_LABEL, TONE_PRECISION, ""),
-        BLACKS => (BLACKS_LABEL, TONE_PRECISION, ""),
-        VIBRANCE => (VIBRANCE_LABEL, COLOUR_PRECISION, ""),
-        SATURATION => (SATURATION_LABEL, COLOUR_PRECISION, ""),
-        _ => ("Basic", 2, ""),
-    }
-}
-
-/// One named field of a canonical value array. Reading by name rather than destructuring keeps each
-/// implemented parameter's compilation independent of where it sits in [`FIELDS`].
-fn value_of(values: &[f64; FIELDS.len()], name: &str) -> f64 {
-    FIELDS
-        .iter()
-        .position(|field| *field == name)
-        .map_or(NEUTRAL, |index| values[index])
-}
-
-/// One field of a validated payload or request: a missing key is neutral.
-fn field(source: &Map<String, Value>, name: &str) -> f64 {
-    source.get(name).and_then(Value::as_f64).unwrap_or(NEUTRAL)
-}
-
-/// The canonical values a payload represents, in `FIELDS` order. Absent and explicitly neutral keys
-/// produce the same array, which is what makes `{}` and `{"exposure": 0}` compare equal.
-fn canonical(payload: &Map<String, Value>) -> [f64; FIELDS.len()] {
-    FIELDS.map(|name| field(payload, name))
-}
-
-fn is_neutral(values: &[f64; FIELDS.len()]) -> bool {
-    values.iter().all(|value| *value == NEUTRAL)
-}
-
-/// The canonical stored form of a set of values: only the fields that are not neutral, so the
-/// neutral payload is exactly `{}`.
-fn payload_of(values: &[f64; FIELDS.len()]) -> Value {
-    let mut payload = Map::new();
-    for (name, value) in FIELDS.iter().zip(values) {
-        if *value != NEUTRAL {
-            payload.insert((*name).to_owned(), number(*value));
-        }
-    }
-    Value::Object(payload)
-}
-
-/// A finite f64 as a JSON number. Finiteness is checked before every call, so the fallback is never
-/// reached in practice and never panics if it is.
-fn number(value: f64) -> Value {
-    Number::from_f64(value).map_or(Value::Null, Value::Number)
-}
-
-/// The object a stored payload must be, with the effect identity and format checked first: an
-/// unsupported format is `incompatible` and is never rewritten, and every field is a finite number
-/// inside its declared range.
-fn read_payload(effect_id: &str, format: u32, value: &Value) -> Result<Map<String, Value>, Error> {
-    if effect_id != BASIC_EFFECT {
-        return Err(incompatible(format!("unavailable effect {effect_id}")));
-    }
-    if format != EFFECT_FORMAT {
-        return Err(incompatible(format!("unsupported effect format {format}")));
-    }
-    let object = value
-        .as_object()
-        .ok_or_else(|| validation("basic payload must be a JSON object"))?;
-    for (name, value) in object {
-        if !FIELDS.contains(&name.as_str()) {
-            return Err(validation(format!("unknown basic field {name}")));
-        }
-        let number = value
-            .as_f64()
-            .filter(|number| number.is_finite())
-            .ok_or_else(|| validation(format!("basic field {name} must be a finite number")))?;
-        let (min, max) = range(name);
-        if number < min || number > max {
-            return Err(validation(format!(
-                "basic field {name} must be a number within {min}..={max}"
-            )));
-        }
-    }
-    Ok(object.clone())
-}
-
-/// The group a patch returns entirely to neutral, when it is one: a patch holding exactly one
-/// group's fields, all at neutral, is that group's reset however it was sent — from the header
-/// button, a keyboard reset or an API call.
-fn reset_group(sent: &[(&String, f64)]) -> Option<&'static str> {
-    [
-        (WHITE_BALANCE_GROUP, WHITE_BALANCE_FIELDS.as_slice()),
-        (TONE_GROUP, TONE_FIELDS.as_slice()),
-        (COLOUR_GROUP, COLOUR_FIELDS.as_slice()),
-    ]
-    .into_iter()
-    .find(|(_, fields)| {
-        sent.len() == fields.len()
-            && sent
-                .iter()
-                .all(|(name, value)| fields.contains(&name.as_str()) && *value == NEUTRAL)
-    })
-    .map(|(label, _)| label)
-}
-
-/// One field's history label: the control's name, the value with its sign and declared decimals,
-/// and the declared unit.
-fn field_label(name: &str, value: f64) -> String {
-    let (label, precision, unit) = display(name);
-    let precision = usize::from(precision);
-    if unit.is_empty() {
-        format!("{label} {value:+.precision$}")
-    } else {
-        format!("{label} {value:+.precision$} {unit}")
-    }
-}
-
-/// The stack's one Basic layer. Two of them would each claim to be the Basic state, so every path
-/// refuses to guess which one an action addresses rather than silently choosing one; nothing is
-/// rewritten.
-fn locate(layers: &[Layer]) -> Result<Option<&Layer>, Error> {
-    Ok(locate_index(layers)?.map(|index| &layers[index]))
-}
-
-/// The position of the stack's one Basic layer, which is also the index whose input stage the
-/// neutral picker samples: the stage that layer receives, so a pick sees the image as it is before
-/// the Basic layer, not after it.
-fn locate_index(layers: &[Layer]) -> Result<Option<usize>, Error> {
-    let mut found = None;
-    for (index, layer) in layers.iter().enumerate() {
-        if layer.effect_id == BASIC_EFFECT {
-            if found.is_some() {
-                return Err(validation(AMBIGUOUS));
-            }
-            found = Some(index);
-        }
-    }
-    Ok(found)
-}
-
-/// The one ambiguity message, shared by planning and by the host's whole-stack compile check.
-pub(crate) const AMBIGUOUS: &str = "ambiguous Basic layers";
-
-fn exposure_parameter() -> ParameterDescriptor {
-    ParameterDescriptor {
-        name: EXPOSURE.into(),
-        kind: ParameterKind::Number {
-            min: EXPOSURE_MIN,
-            max: EXPOSURE_MAX,
-        },
-        required: false,
-        default: Some(number(NEUTRAL)),
-        unit: Some(EXPOSURE_UNIT.into()),
-        step: Some(EXPOSURE_STEP),
-        precision: Some(EXPOSURE_PRECISION),
-        notes: "multiplies the linear-light channels by 2^EV. The input is a rendered sRGB JPEG decoded through the sRGB transfer function, not scene-linear RAW data, so this is an exposure correction of a rendered image and cannot recover detail a clipped plateau no longer holds".into(),
-        soft_min: None,
-        soft_max: None,
-        fine_step: None,
-        zero: None,
-    }
-}
-
 /// Temperature and Tint share a range, a step and a precision; only their name, label and the
 /// direction they describe differ.
-fn white_balance_parameter(name: &str, notes: &str) -> ParameterDescriptor {
-    ParameterDescriptor {
-        name: name.into(),
-        kind: ParameterKind::Number {
-            min: -PARAMETER_RANGE,
-            max: PARAMETER_RANGE,
-        },
-        required: false,
-        default: Some(number(NEUTRAL)),
-        unit: None,
-        step: Some(WHITE_BALANCE_STEP),
-        precision: Some(WHITE_BALANCE_PRECISION),
-        notes: notes.into(),
-        soft_min: None,
-        soft_max: None,
-        fine_step: None,
-        zero: None,
-    }
-}
-
-fn temperature_parameter() -> ParameterDescriptor {
-    white_balance_parameter(
-        TEMPERATURE,
-        "a relative warm/cool correction of the rendered JPEG, not a camera Kelvin value: 0 is the image's existing rendering and nothing here recovers or reproduces the camera's own white balance. Positive temperature warms the image, raising red and lowering blue; negative cools it. The correction is a von Kries chromatic adaptation in Bradford LMS anchored at the sRGB D65 white",
-    )
-}
-
-fn tint_parameter() -> ParameterDescriptor {
-    white_balance_parameter(
-        TINT,
-        "a relative green/magenta correction of the rendered JPEG, not a camera Kelvin or tint value: 0 is the image's existing rendering. Positive tint is magenta, raising red and blue and lowering green; negative is green. It offsets the target chromaticity perpendicular to the daylight locus in CIE 1960 (u, v)",
-    )
-}
-
-/// One Tone-curve parameter descriptor: -100..100, step 1, no display decimals, no unit.
-fn tone_parameter(name: &str, notes: &str) -> ParameterDescriptor {
-    ParameterDescriptor {
-        name: name.into(),
-        kind: ParameterKind::Number {
-            min: TONE_MIN,
-            max: TONE_MAX,
-        },
-        required: false,
-        default: Some(number(NEUTRAL)),
-        unit: None,
-        step: Some(TONE_STEP),
-        precision: Some(TONE_PRECISION),
-        notes: notes.into(),
-        soft_min: None,
-        soft_max: None,
-        fine_step: None,
-        zero: None,
-    }
-}
-
-fn contrast_parameter() -> ParameterDescriptor {
-    tone_parameter(
-        CONTRAST,
-        "changes midtone separation with a fixed pivot at encoded mid-grey using a smooth, monotone S-curve",
-    )
-}
-
-fn highlights_parameter() -> ParameterDescriptor {
-    tone_parameter(
-        HIGHLIGHTS,
-        "smoothly lifts or crushes the image's bright tones while leaving pure white exactly unchanged",
-    )
-}
-
-fn shadows_parameter() -> ParameterDescriptor {
-    tone_parameter(
-        SHADOWS,
-        "smoothly lifts or crushes the image's dark tones while leaving pure black exactly unchanged",
-    )
-}
-
-fn whites_parameter() -> ParameterDescriptor {
-    tone_parameter(
-        WHITES,
-        "moves the white point, extending or protecting highlight clipping, separately from Highlights",
-    )
-}
-
-fn blacks_parameter() -> ParameterDescriptor {
-    tone_parameter(
-        BLACKS,
-        "moves the black point, crushing or lifting the darkest tones, separately from Shadows",
-    )
-}
-
-fn vibrance_parameter() -> ParameterDescriptor {
-    ParameterDescriptor {
-        name: VIBRANCE.into(),
-        kind: ParameterKind::Number {
-            min: COLOUR_MIN,
-            max: COLOUR_MAX,
-        },
-        required: false,
-        default: Some(number(NEUTRAL)),
-        unit: None,
-        step: Some(COLOUR_STEP),
-        precision: Some(COLOUR_PRECISION),
-        notes: "raises chroma more for near-neutral colour than for colour already close to the sRGB gamut edge, with reduced gain in a skin-like hue band; that hue weighting is a colour heuristic, not skin detection, and is not a promise about every skin tone".into(),
-        soft_min: None,
-        soft_max: None,
-        fine_step: None,
-        zero: None,
-    }
-}
-
-fn saturation_parameter() -> ParameterDescriptor {
-    ParameterDescriptor {
-        name: SATURATION.into(),
-        kind: ParameterKind::Number {
-            min: COLOUR_MIN,
-            max: COLOUR_MAX,
-        },
-        required: false,
-        default: Some(number(NEUTRAL)),
-        unit: None,
-        step: Some(COLOUR_STEP),
-        precision: Some(COLOUR_PRECISION),
-        notes: "scales chroma uniformly about the achromatic axis; -100 is neutral grayscale, not merely a strong desaturation".into(),
-        soft_min: None,
-        soft_max: None,
-        fine_step: None,
-        zero: None,
+fn white_balance(name: &'static str, label: &str, notes: &str) -> Field {
+    Field {
+        min: -PARAMETER_RANGE,
+        max: PARAMETER_RANGE,
+        ..Field::slider(name, label, notes)
     }
 }
 
@@ -486,401 +137,174 @@ fn sample_coordinate(name: &str) -> ParameterDescriptor {
 /// The largest coordinate a query accepts, matching the host's maximum image side.
 const MAX_COORDINATE: i64 = 16383;
 
-#[derive(Debug)]
-pub struct BasicModule {
-    descriptor: ModuleDescriptor,
-}
+/// The Basic module's table, compilation and neutral picker.
+#[derive(Debug, Default)]
+pub struct Basic;
 
-impl Default for BasicModule {
-    fn default() -> Self {
-        Self::new()
-    }
-}
+/// The Basic module: [`Basic`] as a field-patch module.
+pub type BasicModule = FieldPatchModule<Basic>;
 
-impl BasicModule {
-    pub fn new() -> Self {
-        Self {
-            descriptor: ModuleDescriptor {
-                id: "lightwell.basic".into(),
-                title: "Basic".into(),
-                hint: Some("Exposure, tone, white balance and colour".into()),
-                effects: vec![EffectDescriptor {
-                    id: BASIC_EFFECT.into(),
-                    format: EFFECT_FORMAT,
-                    stage: EffectStage::Color,
-                    order: 0,
-                    maskable: true,
-                    artifacts: false,
-                }],
-                actions: vec![
-                    ActionDescriptor {
-                        id: SET_BASIC.into(),
-                        title: "Set Basic".into(),
-                        notes: "merges the named Basic fields into the stack's one Basic layer, which the host places before the geometry tail on the first non-neutral value and updates in place afterwards; omitted fields keep their stored values and a patch that changes nothing is a reported no-op".into(),
-                        summary: None,
-                        patch: true,
-                        parameters: vec![
-                            temperature_parameter(),
-                            tint_parameter(),
-                            exposure_parameter(),
-                            contrast_parameter(),
-                            highlights_parameter(),
-                            shadows_parameter(),
-                            whites_parameter(),
-                            blacks_parameter(),
-                            vibrance_parameter(),
-                            saturation_parameter(),
-                        ],
-                    },
-                    ActionDescriptor {
-                        id: RESET_BASIC.into(),
-                        title: "Reset Basic".into(),
-                        notes: "returns the stack's one Basic layer to its neutral payload, keeping its identity and position; a no-op without one and when it is already neutral".into(),
-                        summary: None,
-                        patch: false,
-                        parameters: Vec::new(),
-                    },
-                ],
-                queries: vec![ActionDescriptor {
-                    id: NEUTRAL_SAMPLE.into(),
-                    title: "Neutral sample".into(),
-                    notes: "reads a 5x5 patch of the stage the Basic layer receives, centred on the named content pixel and clipped at that stage's edges, and returns the temperature and tint that make its average neutral. It evaluates before the Basic layer, so picking the same patch twice gives the same answer whatever white balance is already set. A clipped, near-black or non-finite patch, a correction outside the representable range and a point outside the stage are each refused with their reason; nothing is guessed, clamped or committed".into(),
-                    summary: None,
-                    patch: false,
-                    parameters: vec![sample_coordinate("x"), sample_coordinate("y")],
-                }],
-                controls: vec![
-                    Control::Group {
-                        label: WHITE_BALANCE_GROUP.into(),
-                        reset: Some(ResetAction {
-                            action: SET_BASIC.into(),
-                            preset: WHITE_BALANCE_FIELDS
-                                .iter()
-                                .map(|name| ((*name).to_owned(), number(NEUTRAL)))
-                                .collect(),
-                        }),
-                        controls: vec![
-                            Control::Number {
-                                action: SET_BASIC.into(),
-                                parameter: TEMPERATURE.into(),
-                                label: TEMPERATURE_LABEL.into(),
-                                style: crate::NumberStyle::Slider,
-                                rail: Some(crate::RailDecoration::Temperature),
-                                reset: None,
-                            },
-                            Control::Number {
-                                action: SET_BASIC.into(),
-                                parameter: TINT.into(),
-                                label: TINT_LABEL.into(),
-                                style: crate::NumberStyle::Slider,
-                                rail: Some(crate::RailDecoration::Tint),
-                                reset: None,
-                            },
-                            // The neutral picker, beside the two fields a pick sets.
-                            Control::Picker {
-                                label: NEUTRAL_PICKER_LABEL.into(),
-                            },
-                        ],
-                        collapsed: false,
-                    },
-                    Control::Group {
-                        label: TONE_GROUP.into(),
-                        reset: Some(ResetAction {
-                            action: SET_BASIC.into(),
-                            preset: TONE_FIELDS
-                                .iter()
-                                .map(|name| ((*name).to_owned(), number(NEUTRAL)))
-                                .collect(),
-                        }),
-                        controls: vec![
-                            Control::Number {
-                                action: SET_BASIC.into(),
-                                parameter: EXPOSURE.into(),
-                                label: EXPOSURE_LABEL.into(),
-                                style: crate::NumberStyle::Slider,
-                                rail: None,
-                                reset: None,
-                            },
-                            Control::Number {
-                                action: SET_BASIC.into(),
-                                parameter: CONTRAST.into(),
-                                label: CONTRAST_LABEL.into(),
-                                style: crate::NumberStyle::Slider,
-                                rail: None,
-                                reset: None,
-                            },
-                            Control::Number {
-                                action: SET_BASIC.into(),
-                                parameter: HIGHLIGHTS.into(),
-                                label: HIGHLIGHTS_LABEL.into(),
-                                style: crate::NumberStyle::Slider,
-                                rail: None,
-                                reset: None,
-                            },
-                            Control::Number {
-                                action: SET_BASIC.into(),
-                                parameter: SHADOWS.into(),
-                                label: SHADOWS_LABEL.into(),
-                                style: crate::NumberStyle::Slider,
-                                rail: None,
-                                reset: None,
-                            },
-                            Control::Number {
-                                action: SET_BASIC.into(),
-                                parameter: WHITES.into(),
-                                label: WHITES_LABEL.into(),
-                                style: crate::NumberStyle::Slider,
-                                rail: None,
-                                reset: None,
-                            },
-                            Control::Number {
-                                action: SET_BASIC.into(),
-                                parameter: BLACKS.into(),
-                                label: BLACKS_LABEL.into(),
-                                style: crate::NumberStyle::Slider,
-                                rail: None,
-                                reset: None,
-                            },
-                        ],
-                        collapsed: false,
-                    },
-                    Control::Group {
-                        label: COLOUR_GROUP.into(),
-                        reset: Some(ResetAction {
-                            action: SET_BASIC.into(),
-                            preset: COLOUR_FIELDS
-                                .iter()
-                                .map(|name| ((*name).to_owned(), number(NEUTRAL)))
-                                .collect(),
-                        }),
-                        controls: vec![
-                            Control::Number {
-                                action: SET_BASIC.into(),
-                                parameter: VIBRANCE.into(),
-                                label: VIBRANCE_LABEL.into(),
-                                style: crate::NumberStyle::Slider,
-                                rail: None,
-                                reset: None,
-                            },
-                            Control::Number {
-                                action: SET_BASIC.into(),
-                                parameter: SATURATION.into(),
-                                label: SATURATION_LABEL.into(),
-                                style: crate::NumberStyle::Slider,
-                                rail: None,
-                                reset: None,
-                            },
-                        ],
-                        collapsed: false,
-                    },
-                ],
-                reset: Some(ResetAction {
-                    action: RESET_BASIC.into(),
-                    preset: Map::new(),
-                }),
-                // The neutral picker: a pick runs the query at the content pixel behind it and
-                // submits the settings it returns to `set-basic` once. A refusal commits nothing.
-                canvas: Some(CanvasInteraction::SampleApply {
-                    query: NEUTRAL_SAMPLE.into(),
-                    x: "x".into(),
-                    y: "y".into(),
-                    action: SET_BASIC.into(),
-                    title: NEUTRAL_PICKER_LABEL.into(),
-                    shortcut: Some("W".into()),
-                }),
-                developer: false,
-                collapsed: false,
-                layout: crate::ModuleLayout::Stacked,
-                availability: Availability::Available,
-                ..ModuleDescriptor::default()
+impl FieldPatch for Basic {
+    fn spec() -> Spec {
+        let tone = |name, label, notes| Field::slider(name, label, notes);
+        Spec {
+            id: "lightwell.basic",
+            title: "Basic",
+            hint: "Exposure, tone, white balance and colour",
+            noun: "basic",
+            effect: EffectDescriptor {
+                id: BASIC_EFFECT.into(),
+                format: EFFECT_FORMAT,
+                stage: EffectStage::Color,
+                order: 0,
+                maskable: true,
+                artifacts: false,
             },
-        }
-    }
-}
-
-impl ToolModule for BasicModule {
-    fn descriptor(&self) -> &ModuleDescriptor {
-        &self.descriptor
-    }
-
-    /// At most one Basic layer exists in a stack, so the host refuses to compile or plan against a
-    /// stack that holds two instead of guessing which one the parameters belong to.
-    fn single_layer(&self, effect_id: &str) -> bool {
-        effect_id == BASIC_EFFECT
-    }
-
-    fn parse(
-        &self,
-        action_id: &str,
-        parameters: &Map<String, Value>,
-    ) -> Result<ActionInput, Error> {
-        let parameters = match action_id {
-            // A patch stores exactly the fields the caller sent, which the generic check has
-            // already validated against the declared range: the history entry, the label and
-            // request deduplication all describe the patch, not the merged payload.
-            SET_BASIC => parameters.clone(),
-            RESET_BASIC => Map::new(),
-            _ => return Err(validation(format!("unknown action {action_id}"))),
-        };
-        Ok(ActionInput {
-            action_id: action_id.to_owned(),
-            parameters,
-        })
-    }
-
-    fn plan(&self, input: &ActionInput, context: &StageContext<'_>) -> Result<ActionPlan, Error> {
-        let existing = locate(context.layers)?;
-        let current = match existing {
-            Some(layer) => canonical(&read_payload(
-                &layer.effect_id,
-                layer.effect_format,
-                &layer.payload,
-            )?),
-            None => [NEUTRAL; FIELDS.len()],
-        };
-        let merged = match input.action_id.as_str() {
-            // The sent fields over the stored payload, or over neutral when no layer exists.
-            SET_BASIC => {
-                let mut merged = current;
-                for (slot, name) in merged.iter_mut().zip(FIELDS) {
-                    if let Some(value) = input.parameters.get(name) {
-                        *slot = value
-                            .as_f64()
-                            .filter(|value| value.is_finite())
-                            .ok_or_else(|| {
-                                validation(format!("basic field {name} must be a finite number"))
-                            })?;
-                        let (min, max) = range(name);
-                        if *slot < min || *slot > max {
-                            return Err(validation(format!(
-                                "basic field {name} must be a number within {min}..={max}"
-                            )));
-                        }
-                    }
-                }
-                merged
-            }
-            RESET_BASIC => [NEUTRAL; FIELDS.len()],
-            action_id => return Err(validation(format!("unknown action {action_id}"))),
-        };
-        match existing {
-            // Canonical comparison, so returning a field to 0 on a layer that stores no key at all
-            // is the no-op it looks like.
-            Some(_) if current == merged => Ok(ActionPlan::NoOp),
-            Some(layer) => Ok(ActionPlan::Update(Layer {
-                id: layer.id.clone(),
-                effect_id: BASIC_EFFECT.into(),
-                effect_format: EFFECT_FORMAT,
-                payload: payload_of(&merged),
-                // The mask is the host's: an update keeps whatever this layer already carries.
-                mask: layer.mask.clone(),
-                artifacts: Vec::new(),
-            })),
-            // The host inserts a colour-stage layer before the geometry tail; a neutral first set
-            // has nothing to store, so it adds no layer at all.
-            None if is_neutral(&merged) => Ok(ActionPlan::NoOp),
-            None => Ok(ActionPlan::Commit(Layer {
-                id: LayerId::new(),
-                effect_id: BASIC_EFFECT.into(),
-                effect_format: EFFECT_FORMAT,
-                payload: payload_of(&merged),
-                mask: None,
-                artifacts: Vec::new(),
-            })),
-        }
-    }
-
-    fn validate_payload(&self, effect_id: &str, format: u32, value: &Value) -> Result<(), Error> {
-        read_payload(effect_id, format, value).map(|_| ())
-    }
-
-    fn describe_layer(&self, effect_id: &str, format: u32, value: &Value) -> Result<String, Error> {
-        let values = canonical(&read_payload(effect_id, format, value)?);
-        if is_neutral(&values) {
-            return Ok("Neutral".into());
-        }
-        Ok(FIELDS
-            .iter()
-            .zip(values)
-            .filter(|(_, value)| *value != NEUTRAL)
-            .map(|(name, value)| field_label(name, value))
-            .collect::<Vec<_>>()
-            .join(", "))
-    }
-
-    /// The history label for a request the action's title cannot describe: the one field a slider
-    /// moved, or the group a reset cleared.
-    fn label(&self, input: &ActionInput) -> Option<String> {
-        match input.action_id.as_str() {
-            RESET_BASIC => Some("Reset Basic".into()),
-            SET_BASIC => {
-                let sent: Vec<(&String, f64)> = input
-                    .parameters
-                    .iter()
-                    .map(|(name, value)| (name, value.as_f64().unwrap_or(NEUTRAL)))
-                    .collect();
-                match (reset_group(&sent), sent.as_slice()) {
-                    (Some(group), _) => Some(format!("Reset {group}")),
-                    (None, [(name, value)]) => Some(field_label(name, *value)),
-                    // An empty patch changes nothing and commits no entry; the host falls back to
-                    // the action's own title if it ever asks.
-                    (None, []) => None,
-                    // Any other patch: several fields changed at once, not a declared group reset.
-                    (None, fields) => Some(format!("Basic ({} fields)", fields.len())),
-                }
-            }
-            _ => None,
+            set: ActionText {
+                id: SET_BASIC,
+                title: "Set Basic",
+                notes: "merges the named Basic fields into the stack's one Basic layer, which the host places before the geometry tail on the first non-neutral value and updates in place afterwards; omitted fields keep their stored values and a patch that changes nothing is a reported no-op",
+            },
+            reset: ActionText {
+                id: RESET_BASIC,
+                title: "Reset Basic",
+                notes: "returns the stack's one Basic layer to its neutral payload, keeping its identity and position; a no-op without one and when it is already neutral",
+            },
+            fields: vec![
+                Field {
+                    rail: Some(crate::RailDecoration::Temperature),
+                    ..white_balance(
+                        TEMPERATURE,
+                        "Temperature",
+                        "a relative warm/cool correction of the rendered JPEG, not a camera Kelvin value: 0 is the image's existing rendering and nothing here recovers or reproduces the camera's own white balance. Positive temperature warms the image, raising red and lowering blue; negative cools it. The correction is a von Kries chromatic adaptation in Bradford LMS anchored at the sRGB D65 white",
+                    )
+                },
+                Field {
+                    rail: Some(crate::RailDecoration::Tint),
+                    ..white_balance(
+                        TINT,
+                        "Tint",
+                        "a relative green/magenta correction of the rendered JPEG, not a camera Kelvin or tint value: 0 is the image's existing rendering. Positive tint is magenta, raising red and blue and lowering green; negative is green. It offsets the target chromaticity perpendicular to the daylight locus in CIE 1960 (u, v)",
+                    )
+                },
+                Field {
+                    min: -5.0,
+                    max: 5.0,
+                    step: 0.01,
+                    precision: 2,
+                    unit: Some("EV"),
+                    ..Field::slider(
+                        EXPOSURE,
+                        "Exposure",
+                        "multiplies the linear-light channels by 2^EV. The input is a rendered sRGB JPEG decoded through the sRGB transfer function, not scene-linear RAW data, so this is an exposure correction of a rendered image and cannot recover detail a clipped plateau no longer holds",
+                    )
+                },
+                tone(
+                    CONTRAST,
+                    "Contrast",
+                    "changes midtone separation with a fixed pivot at encoded mid-grey using a smooth, monotone S-curve",
+                ),
+                tone(
+                    HIGHLIGHTS,
+                    "Highlights",
+                    "smoothly lifts or crushes the image's bright tones while leaving pure white exactly unchanged",
+                ),
+                tone(
+                    SHADOWS,
+                    "Shadows",
+                    "smoothly lifts or crushes the image's dark tones while leaving pure black exactly unchanged",
+                ),
+                tone(
+                    WHITES,
+                    "Whites",
+                    "moves the white point, extending or protecting highlight clipping, separately from Highlights",
+                ),
+                tone(
+                    BLACKS,
+                    "Blacks",
+                    "moves the black point, crushing or lifting the darkest tones, separately from Shadows",
+                ),
+                Field::slider(
+                    VIBRANCE,
+                    "Vibrance",
+                    "raises chroma more for near-neutral colour than for colour already close to the sRGB gamut edge, with reduced gain in a skin-like hue band; that hue weighting is a colour heuristic, not skin detection, and is not a promise about every skin tone",
+                ),
+                Field::slider(
+                    SATURATION,
+                    "Saturation",
+                    "scales chroma uniformly about the achromatic axis; -100 is neutral grayscale, not merely a strong desaturation",
+                ),
+            ],
+            groups: vec![
+                Group {
+                    label: "White balance",
+                    fields: vec![TEMPERATURE, TINT],
+                    collapsed: false,
+                    // The neutral picker, beside the two fields a pick sets.
+                    extra: vec![Control::Picker {
+                        label: NEUTRAL_PICKER_LABEL.into(),
+                    }],
+                },
+                Group {
+                    label: "Tone",
+                    fields: vec![EXPOSURE, CONTRAST, HIGHLIGHTS, SHADOWS, WHITES, BLACKS],
+                    collapsed: false,
+                    extra: Vec::new(),
+                },
+                Group {
+                    label: "Colour",
+                    fields: vec![VIBRANCE, SATURATION],
+                    collapsed: false,
+                    extra: Vec::new(),
+                },
+            ],
+            queries: vec![ActionDescriptor {
+                id: NEUTRAL_SAMPLE.into(),
+                title: "Neutral sample".into(),
+                notes: "reads a 5x5 patch of the stage the Basic layer receives, centred on the named content pixel and clipped at that stage's edges, and returns the temperature and tint that make its average neutral. It evaluates before the Basic layer, so picking the same patch twice gives the same answer whatever white balance is already set. A clipped, near-black or non-finite patch, a correction outside the representable range and a point outside the stage are each refused with their reason; nothing is guessed, clamped or committed".into(),
+                summary: None,
+                patch: false,
+                parameters: vec![sample_coordinate("x"), sample_coordinate("y")],
+            }],
+            // The neutral picker: a pick runs the query at the content pixel behind it and submits
+            // the settings it returns to `set-basic` once. A refusal commits nothing.
+            canvas: Some(CanvasInteraction::SampleApply {
+                query: NEUTRAL_SAMPLE.into(),
+                x: "x".into(),
+                y: "y".into(),
+                action: SET_BASIC.into(),
+                title: NEUTRAL_PICKER_LABEL.into(),
+                shortcut: Some("W".into()),
+            }),
+            collapsed: false,
+            layout: crate::ModuleLayout::Stacked,
         }
     }
 
-    /// The values this stored layer represents, named exactly as `set-basic`'s parameters are, so a
-    /// client seeds its sliders from the displayed entry. A neutral layer reports the neutral value
-    /// of every implemented field rather than an empty object.
-    fn values(
-        &self,
-        effect_id: &str,
-        format: u32,
-        value: &Value,
-    ) -> Result<Map<String, Value>, Error> {
-        let values = canonical(&read_payload(effect_id, format, value)?);
-        Ok(FIELDS
-            .iter()
-            .zip(values)
-            .map(|(name, value)| ((*name).to_owned(), number(value)))
-            .collect())
-    }
-
-    fn compile(
-        &self,
-        effect_id: &str,
-        format: u32,
-        value: &Value,
-        _: Stage,
-    ) -> Result<Processing, Error> {
-        let values = canonical(&read_payload(effect_id, format, value)?);
+    fn compile(&self, values: &Values<'_>, _: Stage) -> Result<Processing, Error> {
         // A neutral payload compiles to no units, which the host drops entirely: the identity byte
         // path and the shared source buffer are kept.
-        if is_neutral(&values) {
+        if values.all_default() {
             return Ok(Processing::Color(ColorOperation::neutral()));
         }
         // The frozen internal order: white balance, then exposure, then the tonal curve, then
         // vibrance and saturation. Each unit is added only when its own field is not neutral, so a
         // layer that moves one slider costs one unit.
         let mut units: Vec<Arc<dyn PointwiseColor>> = Vec::new();
-        let temperature = value_of(&values, TEMPERATURE);
-        let tint = value_of(&values, TINT);
+        let temperature = values.get(TEMPERATURE);
+        let tint = values.get(TINT);
         if temperature != NEUTRAL || tint != NEUTRAL {
             units.push(Arc::new(WhiteBalance::new(temperature, tint)));
         }
-        let exposure = value_of(&values, EXPOSURE);
+        let exposure = values.get(EXPOSURE);
         if exposure != NEUTRAL {
             units.push(Arc::new(Exposure::new(exposure)));
         }
-        let contrast = value_of(&values, CONTRAST);
-        let highlights = value_of(&values, HIGHLIGHTS);
-        let shadows = value_of(&values, SHADOWS);
-        let whites = value_of(&values, WHITES);
-        let blacks = value_of(&values, BLACKS);
+        let contrast = values.get(CONTRAST);
+        let highlights = values.get(HIGHLIGHTS);
+        let shadows = values.get(SHADOWS);
+        let whites = values.get(WHITES);
+        let blacks = values.get(BLACKS);
         if [contrast, highlights, shadows, whites, blacks] != [NEUTRAL; 5] {
             units.push(Arc::new(Tone::new(
                 contrast, highlights, shadows, whites, blacks,
@@ -890,8 +314,8 @@ impl ToolModule for BasicModule {
         // (see `colour.rs`) whenever at least one of the two fields is non-neutral, so a layer
         // that moves either slider alone still costs exactly one unit, and moving both costs one
         // unit rather than two.
-        let vibrance = value_of(&values, VIBRANCE);
-        let saturation = value_of(&values, SATURATION);
+        let vibrance = values.get(VIBRANCE);
+        let saturation = values.get(SATURATION);
         if vibrance != NEUTRAL || saturation != NEUTRAL {
             units.push(Arc::new(ColourAdjust::new(vibrance, saturation)));
         }
@@ -923,7 +347,7 @@ impl ToolModule for BasicModule {
         };
         let (centre_x, centre_y) = (coordinate("x")?, coordinate("y")?);
 
-        let index = match locate_index(context.layers)? {
+        let index = match own_layer(context.layers, BASIC_EFFECT, "Basic")? {
             Some(index) => index,
             // The stage this module's own layer would be committed at, by its declared stage and
             // order, so the picker reads the pixels the layer it creates will receive.
@@ -983,6 +407,8 @@ impl ToolModule for BasicModule {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::modules::{ActionInput, ActionPlan, ResetAction, ToolModule};
+    use crate::{Layer, LayerId};
     use crate::{ORIENTATION_EFFECT, Orientation, PIXEL_EFFECT, modules::check_parameters};
     use serde_json::json;
 
@@ -2395,16 +1821,13 @@ mod tests {
         let orientation = Layer::orientation(Orientation::NEUTRAL);
         let basic = basic_layer(json!({"exposure": 1.0}));
         let stack = [pixel.clone(), basic.clone(), orientation.clone()];
-        assert_eq!(
-            locate(&stack).unwrap().map(|layer| &layer.id),
-            Some(&basic.id)
-        );
-        assert_eq!(
-            locate(&[pixel, orientation])
+        let locate = |layers: &[Layer]| {
+            crate::modules::field_patch::own_layer(layers, BASIC_EFFECT, "Basic")
                 .unwrap()
-                .map(|layer| &layer.id),
-            None
-        );
+                .map(|index| layers[index].id.clone())
+        };
+        assert_eq!(locate(&stack), Some(basic.id.clone()));
+        assert_eq!(locate(&[pixel, orientation]), None);
         assert!(PIXEL_EFFECT != BASIC_EFFECT && ORIENTATION_EFFECT != BASIC_EFFECT);
     }
 }
