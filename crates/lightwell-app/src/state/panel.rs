@@ -1,7 +1,7 @@
 //! The state panel model: what has happened to this photograph. Versions, history and the recipe
 //! are three views of the same stored entries, never of the tools panel's values.
 use crate::{app::message::MenuTarget, state::Inputs};
-use lightwell_core::{EntryId, HistoryEntry, LayerId, MaskId};
+use lightwell_core::{EntryId, LayerId, MaskId};
 use std::collections::HashSet;
 
 /// Where an entry sits relative to the current state.
@@ -163,7 +163,7 @@ pub(crate) fn derive(inputs: &Inputs<'_>) -> StatePanelModel {
 
 /// An entry is on the current chain when the lineage walk reached it, or when the walk was
 /// truncated above it and nothing can be said about it.
-pub(crate) fn on_current_lineage(inputs: &Inputs<'_>, entry: &HistoryEntry) -> bool {
+pub(crate) fn on_current_lineage(inputs: &Inputs<'_>, entry: &lightwell_core::HistoryRow) -> bool {
     inputs.lineage.contains(&entry.id)
         || inputs
             .lineage_floor

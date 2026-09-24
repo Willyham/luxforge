@@ -7,7 +7,7 @@
 //! `describe` the read-only views; `entries` the cache of hydrated entries and asset heads those
 //! reads are answered from; and `artifact_store` derived artifacts.
 use crate::{
-    AssetId, Draft, DraftId, EntryId, Error, ErrorKind, HistoryEntry, LayerId, MaskId,
+    AssetId, Draft, DraftId, EntryId, Error, ErrorKind, HistoryEntry, HistoryRow, LayerId, MaskId,
     ModuleRegistry, PreviewSource, Recipe, SnapshotId,
     analysis::AnalysisIdentity,
     artifacts::{ArtifactId, LiveArtifacts, PreparedArtifacts},
@@ -235,10 +235,11 @@ pub struct DraftStamp {
     pub draft_revision: u64,
 }
 
+/// One page of an asset's history rows, newest first. `next_before_sequence` continues it.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct HistoryPage {
-    pub entries: Vec<HistoryEntry>,
+    pub entries: Vec<HistoryRow>,
     pub next_before_sequence: Option<u64>,
 }
 

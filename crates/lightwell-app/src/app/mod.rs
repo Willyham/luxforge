@@ -53,8 +53,9 @@ use iced::{Element, Subscription, Task, widget::operation};
 use iced_runtime::image as image_memory;
 use lightwell_core::{
     ClientAuthority, ClientId, ClientSession, CropStage, EditorState, ErrorKind, HistoryPage,
-    HistorySelection, HostConfig, LocalServer, ModuleDescriptor, ModuleRegistry, OwnerHandle,
-    POINTER_MODE, PreviewPhase, PreviewQueue, ProxyBounds, RecipeDescription, Version, Zoom,
+    HistoryRow, HistorySelection, HostConfig, LocalServer, ModuleDescriptor, ModuleRegistry,
+    OwnerHandle, POINTER_MODE, PreviewPhase, PreviewQueue, ProxyBounds, RecipeDescription, Version,
+    Zoom,
     capabilities::secrets::{MemorySecretStore, SecretStore, platform_secret_store},
 };
 use message::{ClipEndpoint, CropMessage, MenuTarget, Message, PaletteAction, Panel};
@@ -71,9 +72,9 @@ use std::{
     time::{Duration, Instant},
 };
 use tasks::{
-    Refresh, Upload, import_task, locate_task, merge_current_entry, modules_task, mutation,
-    older_task, pan_task, presets_task, preview_task, query_task, recipe_task, sample_task,
-    session_task, state_task, sync_task, versions_task, workspace_task,
+    PreviewPayload, Refresh, Upload, import_task, locate_task, merge_current_entry, modules_task,
+    mutation, older_task, pan_task, presets_task, preview_task, query_task, recipe_task,
+    sample_task, session_task, state_task, sync_task, versions_task, workspace_task,
 };
 
 /// What the editor was last asked to show, correlated with logged events and captured frames.
@@ -2400,7 +2401,9 @@ impl Editor {
                 return Task::batch([refreshed, presets_task(self.owner.clone(), self.client)]);
             }
             Message::Refreshed(result) => {
-                if matches!(&result, Err(error) if error == "superseded preview") {
+                // Overtaken by a selection or a state this desktop already holds: whatever
+                // overtook it ended the request it answered, and brought its own frame.
+                if matches!(&result, Ok(refresh) if self.superseded(refresh)) {
                     return Task::none();
                 }
                 self.busy = false;
@@ -2609,7 +2612,7 @@ impl Editor {
                 };
             }
             Message::PreviewLoaded(result) => {
-                if matches!(&result, Err(error) if error == "superseded preview") {
+                if matches!(&result, Ok(payload) if self.preview_superseded(payload)) {
                     return Task::none();
                 }
                 self.busy = false;
@@ -2739,10 +2742,19 @@ impl Editor {
                         if let Some((presets, sequence)) = sync.presets {
                             self.adopt_presets(presets, sequence);
                         }
-                        if let Some(refresh) = sync.refresh {
+                        // A poll whose state read was overtaken leaves the sequence where it was,
+                        // so the next poll reads the events it answered again rather than
+                        // skipping a change that never reached the screen.
+                        let superseded = sync
+                            .refresh
+                            .as_ref()
+                            .is_some_and(|refresh| self.superseded(refresh));
+                        if let Some(refresh) = sync.refresh.filter(|_| !superseded) {
                             self.accept(*refresh);
                         }
-                        self.api_sequence = self.api_sequence.max(sync.sequence);
+                        if !superseded {
+                            self.api_sequence = self.api_sequence.max(sync.sequence);
+                        }
                         if sync.capabilities {
                             return self.reload_capabilities();
                         }
@@ -4168,27 +4180,70 @@ impl Editor {
         })
     }
 
+    /// A refresh read before something this desktop already holds: a history selection made after
+    /// it read the session, whose preview generation is then behind the one held, or a newer state
+    /// of the same asset. Its frame and panels describe what the screen has since moved on from, so
+    /// it is dropped whole; whatever overtook it brought its own. This is the currency check, made
+    /// from what the answer carries, with no request of its own: the preview queue's generation then
+    /// keeps any frame requested earlier from following a newer one on screen.
+    fn superseded(&self, refresh: &Refresh) -> bool {
+        refresh.session.preview.generation < self.session.preview.generation
+            || self.state.as_ref().is_some_and(|held| {
+                held.asset.id == refresh.state.asset.id && held.revision > refresh.state.revision
+            })
+    }
+
+    /// The same for a history selection's frame: a newer selection overtook it, or it shows the
+    /// current entry and that is not the current entry this desktop holds — a commit was read after
+    /// it was planned, or one it saw has not been read yet and brings its own frame when it is.
+    fn preview_superseded(&self, payload: &PreviewPayload) -> bool {
+        payload.session.preview.generation < self.session.preview.generation
+            || (payload.session.preview.selection == HistorySelection::Current
+                && self
+                    .state
+                    .as_ref()
+                    .is_some_and(|held| held.current_entry.id != payload.job.entry.id))
+    }
+
     pub(crate) fn accept(&mut self, refresh: Refresh) {
+        if self.superseded(&refresh) {
+            return;
+        }
         self.controls_ui.curve_samples.clear();
         self.curve_sample_requested_source.clear();
-        self.api_sequence = refresh.sequence;
+        // Never backwards: a poll that read everything since may already have moved past the
+        // command's own answer, which is where a narrow refresh leaves its sequence.
+        self.api_sequence = self.api_sequence.max(refresh.sequence);
         self.adopt(refresh.session);
         match refresh.history {
             Some(history) => self.history = history,
-            None => merge_current_entry(&mut self.history, refresh.state.current_entry.clone()),
+            None => merge_current_entry(
+                &mut self.history,
+                HistoryRow::from(&refresh.state.current_entry),
+            ),
         }
-        self.versions = refresh.versions;
-        self.lineage = refresh
-            .lineage
-            .steps
-            .iter()
-            .map(|step| step.entry_id.clone())
-            .collect();
-        self.lineage_floor = refresh
-            .lineage
-            .next_entry_id
-            .as_ref()
-            .and_then(|_| refresh.lineage.steps.last().map(|step| step.sequence));
+        if let Some(versions) = refresh.versions {
+            self.versions = versions;
+        }
+        match refresh.lineage {
+            Some(lineage) => {
+                self.lineage = lineage
+                    .steps
+                    .iter()
+                    .map(|step| step.entry_id.clone())
+                    .collect();
+                self.lineage_floor = lineage
+                    .next_entry_id
+                    .as_ref()
+                    .and_then(|_| lineage.steps.last().map(|step| step.sequence));
+            }
+            // This desktop's own commit: its entry's undo parent is the entry that was current,
+            // which the loaded lineage already holds, so the chain gains exactly this entry and
+            // the floor below a truncated walk stays where it was.
+            None => {
+                self.lineage.insert(refresh.state.current_entry.id.clone());
+            }
+        }
         if refresh.original.is_some() {
             self.original_entry = refresh.original;
         }
@@ -8344,7 +8399,7 @@ mod tests {
     fn a_historical_preview_names_the_entry_and_keeps_the_panels_visible() {
         let (mut editor, catalog, asset, entry_id) = opened(Vec::new(), 4);
         let older = entry(&asset, 2, None);
-        editor.history.entries.push(older.clone());
+        editor.history.entries.push(HistoryRow::from(&older));
         let upload = Upload {
             generation: 1,
             draft_revision: None,
@@ -8619,6 +8674,166 @@ mod tests {
             Some(false),
             "below a truncated lineage nothing is marked as a branch"
         );
+        finish(editor, catalog);
+    }
+
+    /// This desktop's own commit reads no page, lineage or versions: its entry's row merges into
+    /// the loaded page, the entry joins the loaded lineage beside the one it continues, the floor
+    /// below a truncated walk stays, and the versions stay as they were.
+    #[test]
+    fn a_commit_merges_its_row_and_lineage_without_reading_them() {
+        let (mut editor, catalog) = boot();
+        let asset = AssetId::new();
+        let original = entry(&asset, 0, None);
+        let a = entry(&asset, 1, Some(&original.id));
+        let b = entry(&asset, 2, Some(&a.id));
+        let c = entry(&asset, 3, Some(&a.id));
+        let mut opened = refresh_for(
+            &asset,
+            &c,
+            vec![c.clone(), b.clone(), a.clone(), original.clone()],
+            &[&c, &a],
+            true,
+        );
+        let version = lightwell_core::Version {
+            asset_id: asset.clone(),
+            name: "Keep".into(),
+            entry_id: a.id.clone(),
+            entry_sequence: 1,
+            actor: "test".into(),
+            created_ms: 0,
+        };
+        opened.versions = Some(vec![version.clone()]);
+        let _ = editor.update(Message::Refreshed(Ok(Box::new(opened))));
+        let floor = editor.lineage_floor;
+        assert_eq!(floor, Some(1));
+
+        let d = entry(&asset, 4, Some(&c.id));
+        let mut committed = refresh_for(&asset, &d, Vec::new(), &[], false);
+        committed.lineage = None;
+        committed.versions = None;
+        let _ = editor.update(Message::Refreshed(Ok(Box::new(committed))));
+        assert_eq!(editor.history.entries[0], HistoryRow::from(&d));
+        assert_eq!(editor.history.entries.len(), 5);
+        assert!(editor.lineage.contains(&d.id) && editor.lineage.contains(&c.id));
+        assert!(!editor.lineage.contains(&b.id));
+        assert_eq!(editor.lineage_floor, floor);
+        assert_eq!(editor.versions, [version]);
+        let branch = |id: &lightwell_core::EntryId| {
+            editor
+                .workspace
+                .panel
+                .history
+                .iter()
+                .find(|row| &row.entry_id == id)
+                .map(|row| row.branch)
+        };
+        assert_eq!(branch(&d.id), Some(false));
+        assert_eq!(branch(&b.id), Some(true), "b is still an abandoned branch");
+        finish(editor, catalog);
+    }
+
+    /// With no currency request, an answer overtaken by what the desktop already holds is dropped
+    /// when it arrives: a refresh read before a newer selection or a newer revision of the asset,
+    /// and a selection's frame planned before a newer selection or showing a current entry that is
+    /// not the one held. Nothing of it is adopted and nothing is rendered; a poll whose state read
+    /// was overtaken leaves the event sequence where it was, so the next poll reads it again.
+    #[test]
+    fn answers_overtaken_by_a_newer_selection_or_revision_are_dropped() {
+        let (mut editor, catalog, asset, _) = opened(Vec::new(), 4);
+        let current = editor.state.as_ref().unwrap().current_entry.clone();
+        let older = entry(&asset, 2, None);
+        let mut selected = editor.session.clone();
+        selected
+            .preview
+            .select(HistorySelection::Entry(older.id.clone()));
+        selected.revision += 1;
+        let _ = editor.update(Message::PreviewLoaded(Ok(Box::new(
+            tasks::PreviewPayload {
+                job: refresh_for(&asset, &older, Vec::new(), &[&older], false).job,
+                session: selected.clone(),
+                sequence: 8,
+            },
+        ))));
+        assert_eq!(editor.display_entry, Some(older.id.clone()));
+        let held = (
+            editor.display_entry.clone(),
+            editor.preview_generation,
+            editor.session.clone(),
+            editor.api_sequence,
+        );
+        let unchanged = |editor: &Editor, case: &str| {
+            assert_eq!(
+                (
+                    editor.display_entry.clone(),
+                    editor.preview_generation,
+                    editor.session.clone(),
+                    editor.api_sequence,
+                ),
+                held,
+                "{case}"
+            );
+            assert_eq!(
+                editor.state.as_ref().unwrap().current_entry.id,
+                current.id,
+                "{case}"
+            );
+        };
+
+        // A commit's refresh that read the session before the selection.
+        let next = entry(&asset, 5, Some(&current.id));
+        let before_selection = refresh_for(&asset, &next, Vec::new(), &[&next], false);
+        editor.busy = true;
+        let _ = editor.update(Message::Refreshed(Ok(Box::new(before_selection.clone()))));
+        unchanged(&editor, "a refresh behind the selection");
+        assert!(editor.busy, "the answer that overtook it ends the request");
+        let mut polled = before_selection;
+        polled.sequence = 20;
+        let _ = editor.update(Message::Synced(Ok(tasks::SyncResult::changed(polled))));
+        unchanged(&editor, "a poll behind the selection");
+
+        // A refresh of an older revision than the one held.
+        let mut stale = refresh_for(&asset, &older, Vec::new(), &[&older], false);
+        stale.state.revision = 3;
+        stale.session = selected.clone();
+        let _ = editor.update(Message::Refreshed(Ok(Box::new(stale))));
+        unchanged(&editor, "a refresh of an older revision");
+
+        // A selection's frame planned before the newer selection.
+        let mut earlier = editor.session.clone();
+        earlier.preview.generation -= 1;
+        earlier.preview.selection = HistorySelection::Current;
+        let _ = editor.update(Message::PreviewLoaded(Ok(Box::new(
+            tasks::PreviewPayload {
+                job: refresh_for(&asset, &current, Vec::new(), &[&current], false).job,
+                session: earlier,
+                sequence: 9,
+            },
+        ))));
+        unchanged(&editor, "a frame behind the selection");
+
+        // Return to current whose frame shows a current entry this desktop does not hold.
+        let mut returned = editor.session.clone();
+        returned.preview.return_current();
+        returned.revision += 1;
+        let _ = editor.update(Message::PreviewLoaded(Ok(Box::new(
+            tasks::PreviewPayload {
+                job: refresh_for(&asset, &next, Vec::new(), &[&next], false).job,
+                session: returned.clone(),
+                sequence: 10,
+            },
+        ))));
+        unchanged(&editor, "a current frame of another entry");
+
+        // The same return with the entry held is shown.
+        let _ = editor.update(Message::PreviewLoaded(Ok(Box::new(
+            tasks::PreviewPayload {
+                job: refresh_for(&asset, &current, Vec::new(), &[&current], false).job,
+                session: returned,
+                sequence: 10,
+            },
+        ))));
+        assert_eq!(editor.display_entry, Some(current.id.clone()));
         finish(editor, catalog);
     }
 

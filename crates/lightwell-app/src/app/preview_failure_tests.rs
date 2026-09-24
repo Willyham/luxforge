@@ -601,16 +601,22 @@ fn a_reapply_whose_input_stage_a_newer_request_replaces_keeps_the_conflicted_dra
     finish(editor, catalog);
 }
 
-/// The stack changed while the owner planned the draft's job, which it answers as superseded
-/// rather than planning a stale input stage: the draft ends explicitly as a cancelled one does.
+/// The stack changed while the owner planned the draft's job: the job it answers truncates an entry
+/// that is not the current one the desktop holds, so its input stage is stale and the draft ends
+/// explicitly as a cancelled one does, without a render — decided from the answer itself, with no
+/// currency request of its own.
 #[test]
 fn a_draft_whose_job_the_owner_finds_superseded_ends_explicitly() {
-    let (mut editor, catalog, _, _) = opened(Vec::new(), 4);
+    let (mut editor, catalog, asset, _) = opened(Vec::new(), 4);
     let log = attach_log(&mut editor);
     let _ = editor.update(Message::Crop(CropMessage::Start));
-    let _ = editor.dispatch(Message::Crop(CropMessage::PreviewReady(Err(
-        "superseded preview".into(),
-    ))));
+    let mut job = draft_job(&editor, small());
+    job.entry = entry(&asset, 5, Some(&job.entry.id));
+    let _ = editor.dispatch(Message::Crop(CropMessage::PreviewReady(Ok(Box::new(job)))));
+    assert_eq!(
+        editor.draft_generation, None,
+        "the stale stage was not requested"
+    );
     assert!(editor.crop_pending().is_none() && editor.crop().is_none());
     assert_eq!(editor.mode_sync.as_deref(), Some(POINTER_MODE));
     assert!(

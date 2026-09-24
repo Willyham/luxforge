@@ -24,11 +24,15 @@ Restoring a version is the existing `history.restore` on the version's entry. Th
 
 ## Lineage
 
-`history.lineage` walks `undo_parent` from an entry (default current) newest first, returning entry id, sequence, action and parent per step, at most one hundred steps per call with `next_entry_id` to continue. It reads the `undo_parent_id` column rather than parsing entry JSON, so the desktop can afford it after every change. The desktop marks loaded entries that are not on the current lineage as branches; when the chain was truncated it marks nothing at or below the oldest returned step, because it cannot know.
+`history.lineage` walks `undo_parent` from an entry (default current) newest first, returning entry id, sequence, action and parent per step, at most one hundred steps per call with `next_entry_id` to continue. It reads the `undo_parent_id` column rather than parsing entry JSON. The desktop reads it when an asset opens, after its own undo, redo and restore, and when another client changed the asset; after its own commit it adds the new entry to the loaded lineage itself, because that entry's undo parent is the entry that was current, which the lineage already holds. It marks loaded entries that are not on the current lineage as branches; when the chain was truncated it marks nothing at or below the oldest returned step, because it cannot know.
 
-## Storage: catalog format 7
+## History rows
 
-Entry JSON is the authoritative stored recipe snapshot; each entry also has an `undo_parent_id` for bounded lineage queries. The `versions` table holds named references to entries. The current catalog format is 7, the merged shape: format 5 added the [preset library](presets.md#library), and two branches then each claimed format 6 — one for the [mask](masking.md) table and the content-addressed stroke store, the other for the catalog's identity and the [derived-artifact](module-capabilities.md#derived-artifacts) tables, whose per-entry references keep every artifact a version or branch reaches alive. Format 7 holds all of it, so a format-6 catalog written by either branch is refused by name rather than read as the other. History inserts name their columns explicitly.
+`history.list` answers pages of **rows**, newest first: each entry's `id`, `sequence`, `action_id`, `label`, `actor`, `timestamp_ms`, `undo_parent` and `restore_target`, and no stack or parameters. The rows are read from the entry's own columns without decoding its JSON, so a page costs the same whatever the stacks hold, masks included. `history.inspect` answers one whole entry with its complete stack. The desktop's history panel reads only rows: an open or a change made elsewhere reads the newest page, and its own commit, undo, redo or restore merges the current entry's row into the loaded page instead.
+
+## Storage: catalog format 8
+
+Entry JSON is the authoritative stored recipe snapshot. Beside it each entry's row fields have their own columns — `sequence`, `action_id`, `label`, `actor`, `timestamp_ms`, `undo_parent_id` and `restore_target_id` — written from the same entry by the one insert every commit and every import takes, so a history page and a lineage walk read columns only. Both are immutable. The `versions` table holds named references to entries. The current catalog format is 8. It holds what format 7 merged — the [preset library](presets.md#library), the [mask](masking.md) table and content-addressed stroke store, and the catalog's identity with the [derived-artifact](module-capabilities.md#derived-artifacts) tables, whose per-entry references keep every artifact a version or branch reaches alive — plus the row columns. A format 7 catalog keeps those fields only inside the entry JSON, so it is refused by name rather than read by decoding every entry. History inserts name their columns explicitly.
 
 An empty, unmarked database is initialized with the current schema. Existing catalogs must use the current format marker. Unsupported or nonempty unmarked catalogs are refused without rewriting their data, with an error directing the user to a new catalog path. Only current shapes are supported during pre-release development.
 
@@ -44,6 +48,7 @@ The same change moved client sessions into the catalog owner, keyed by a registe
 | `version.delete` | Remove a name; the entry remains |
 | `version.list` | Versions in creation order with their entry sequence |
 | `history.lineage` | Undo-parent chain from an entry, paged |
+| `history.list` | History rows newest first, paged, without stacks; `history.inspect` reads one whole entry |
 
 The one method table in the core carries each method's declared parameters, notes and handler; the schema and the parser are generated from the same declaration, a method mutates exactly when it carries a mutation envelope, and a generated test sends every listed method its declared fields and one undeclared one. `version.create {asset_id, name, mutation, entry_id?}` and `version.delete {asset_id, name, mutation}` take the `{request_id, actor}` envelope, and a version records its `actor`.
 
@@ -54,4 +59,5 @@ The one method table in the core carries each method's declared parameters, note
 - Versions survive reopen, reject empty, oversized and control-character names, treat case-insensitive duplicates as conflicts, restore through the ordinary restore path and keep their entry after deletion.
 - Lineage skips abandoned branches, pages with a continuation id and rejects unknown assets.
 - An independent JSON client creates a version, undoes, lists versions and reads a one-step lineage in one session.
-- Desktop: stale session responses are not adopted, pan coalesces to one in-flight request, and a refresh replaces or merges history and marks branches. `cargo xtask check` passes.
+- History rows carry no stack, equal their entries' row fields before and after reopen, page without gaps and decode no entry. A format 7 catalog is refused by name and left as it was.
+- Desktop: stale session responses are not adopted, pan coalesces to one in-flight request, and a refresh replaces or merges history and marks branches. A commit's refresh reads no page, lineage or versions and merges its row and lineage; undo, redo and restore read the lineage; an answer overtaken by a newer selection or revision is dropped; a test counts the owner calls of each. `cargo xtask check` passes.

@@ -7,7 +7,7 @@ use super::{
     capabilities::{poll, run},
     evidence::{CapabilityAction, Step, parse_script},
     message::{CapabilityMessage, Message},
-    tasks::{REQUEST_NUMBER, call, refresh},
+    tasks::{REQUEST_NUMBER, Scope, call, refresh},
     testing::{attach_log, logged},
 };
 use crate::{
@@ -114,7 +114,7 @@ impl Proof {
             json!({"job_id": imported["job_id"]}),
         )
         .unwrap();
-        let shown = refresh(&owner, client, asset.clone(), true, 0, None).unwrap();
+        let shown = refresh(&owner, client, asset.clone(), Scope::Open, 0, None).unwrap();
         let _ = editor.update(Message::Refreshed(Ok(Box::new(shown))));
         Self {
             editor,
@@ -608,7 +608,8 @@ fn the_whole_journey_goes_through_consent_jobs_and_apply_with_no_secret_anywhere
     )
     .unwrap();
     assert_eq!(applied["outcome"], "applied");
-    let shown = refresh(&owner, client, proof.asset.clone(), false, sequence, None).unwrap();
+    let scope = Scope::after("edit.apply-proof-tint", &applied);
+    let shown = refresh(&owner, client, proof.asset.clone(), scope, sequence, None).unwrap();
     let _ = proof.editor.update(Message::Refreshed(Ok(Box::new(shown))));
     assert!(matches!(
         &proof.task_control().state,

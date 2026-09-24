@@ -146,7 +146,7 @@ pub(super) const METHODS: &[MethodSpec] = &[
         "history.list",
         HistoryList,
         history_list,
-        "chronological entries newest first, including abandoned branches"
+        "chronological entry rows newest first, including abandoned branches: identity, sequence, action, label, actor, time, undo parent and restore target, without the stack; history.inspect reads one whole entry"
     ),
     service!(
         "history.inspect",

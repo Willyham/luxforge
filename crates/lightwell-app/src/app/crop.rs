@@ -105,6 +105,12 @@ impl Editor {
             CropMessage::Start => return self.crop_start(false),
             CropMessage::Reapply => return self.crop_start(true),
             CropMessage::PreviewReady(result) => match result {
+                // The stack or the selection changed since the draft started, so the input stage
+                // the owner planned is not the one the draft would open on, and nothing else will
+                // arrive for it.
+                Ok(job) if !self.crop_stage_current(&job.entry.id) => {
+                    self.draft_preview_superseded(None);
+                }
                 Ok(job) => {
                     // A job an earlier start asked for is no longer the draft's once this one is
                     // requested, so this request superseding it ends nothing.
@@ -113,12 +119,6 @@ impl Editor {
                     self.status = "Rendering the crop's input stage…".into();
                 }
                 Err(error) => {
-                    // The stack or the selection changed while the owner planned the job, so its
-                    // input stage would be stale and nothing else will arrive for this draft.
-                    if error == "superseded preview" {
-                        self.draft_preview_superseded(None);
-                        return Task::none();
-                    }
                     self.set_crop_pending(None);
                     self.status = error;
                     self.settle_step(Settle::Draft);
@@ -287,6 +287,19 @@ impl Editor {
             layer_count,
             displaced,
         )
+    }
+
+    /// A starting or reapplied draft's input stage, planned from `entry`, is still the one it would
+    /// open on: the session still shows the current state, that entry is the current one this
+    /// desktop holds, and the state has not moved since the draft started. Decided from what the
+    /// answer and the desktop already hold, so the job needs no currency request of its own.
+    fn crop_stage_current(&self, entry: &lightwell_core::EntryId) -> bool {
+        let (Some(state), Some(pending)) = (self.state.as_ref(), self.crop_pending()) else {
+            return false;
+        };
+        self.session.preview.can_edit()
+            && &state.current_entry.id == entry
+            && state.revision == pending.base_revision
     }
 
     /// The truncated preview arrived, so the crop layer's input stage is known: open or rebase the

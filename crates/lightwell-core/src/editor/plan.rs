@@ -1887,7 +1887,13 @@ mod tests {
             );
 
             // Undo, redo and restore keep every entry and every snapshot.
-            let recorded = service.history(&asset, None, 50).unwrap().entries;
+            let recorded: Vec<_> = service
+                .history(&asset, None, 50)
+                .unwrap()
+                .entries
+                .iter()
+                .map(|row| service.entry(&asset, &row.id).unwrap())
+                .collect();
             let reset_entry = reset.current_entry_id.clone();
             let at = revision(&service);
             service.undo(&asset, mutation(at, "undo")).unwrap();

@@ -1,7 +1,7 @@
 //! Current command contracts across the core service and the JSON API.
 use crate::{
-    ApiRequest, ClientId, EditorService, ErrorKind, Mutation, MutationOutcome, OwnerHandle,
-    Transform,
+    ApiRequest, AssetId, ClientId, EditorService, ErrorKind, Mutation, MutationOutcome,
+    OwnerHandle, Transform,
 };
 use serde_json::{Value, json};
 use std::{
@@ -65,6 +65,33 @@ fn mutation(revision: u64, request: &str, actor: &str) -> Mutation {
         request_id: request.into(),
         actor: actor.into(),
     }
+}
+
+/// Every entry a history page lists, each read whole: a row carries no stack or parameters, so the
+/// direct path reads them the way `history.inspect` does for a JSON client.
+fn listed_entries(service: &EditorService, asset: &AssetId) -> Vec<Value> {
+    service
+        .history(asset, None, 50)
+        .unwrap()
+        .entries
+        .iter()
+        .map(|row| serde_json::to_value(service.entry(asset, &row.id).unwrap()).unwrap())
+        .collect()
+}
+
+/// The same through the API: `history.list`, then `history.inspect` for each row it lists.
+fn inspected_entries(call: impl Fn(&str, Value) -> Value, asset: &Value) -> Vec<Value> {
+    call("history.list", json!({"asset_id":asset,"limit":50}))["entries"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|row| {
+            call(
+                "history.inspect",
+                json!({"asset_id":asset,"entry_id":row["id"]}),
+            )
+        })
+        .collect()
 }
 
 fn stacks(entries: &[Value]) -> Vec<Value> {
@@ -133,11 +160,7 @@ fn direct_journey(catalog: &Path, source: &Path, wrappers: bool) -> (Vec<Value>,
                 .unwrap();
         }
     }
-    let entries: Vec<Value> = serde_json::to_value(service.history(&asset, None, 50).unwrap())
-        .unwrap()["entries"]
-        .as_array()
-        .unwrap()
-        .clone();
+    let entries = listed_entries(&service, &asset);
     let current = service.state(&asset).unwrap().current_entry.id;
     let samples = PROBES
         .iter()
@@ -193,10 +216,7 @@ fn api_journey(catalog: &Path, source: &Path) -> (Vec<Value>, Vec<Value>, Value)
         );
         call(client, method, params);
     }
-    let entries = call(client, "history.list", json!({"asset_id":asset,"limit":50}))["entries"]
-        .as_array()
-        .unwrap()
-        .clone();
+    let entries = inspected_entries(|method, params| call(client, method, params), &asset);
     let samples = PROBES
         .iter()
         .map(|(x, y)| {
@@ -625,12 +645,7 @@ fn crop_actions_are_discoverable_and_identical_through_actions_and_the_api() {
             .unwrap_or_else(|error| panic!("{action}: {error}"));
         assert_eq!(result.outcome, MutationOutcome::Applied, "{action}");
     }
-    let direct_entries: Vec<Value> =
-        serde_json::to_value(service.history(&asset, None, 50).unwrap()).unwrap()["entries"]
-            .as_array()
-            .unwrap()
-            .clone();
-    let direct_stacks = stacks(&direct_entries);
+    let direct_stacks = stacks(&listed_entries(&service, &asset));
     let direct_layers = service
         .state(&asset)
         .unwrap()
@@ -776,10 +791,7 @@ fn crop_actions_are_discoverable_and_identical_through_actions_and_the_api() {
         );
         call(&format!("edit.{action}"), params);
     }
-    let api_entries = call("history.list", json!({"asset_id":asset,"limit":50}))["entries"]
-        .as_array()
-        .unwrap()
-        .clone();
+    let api_entries = inspected_entries(call, &asset);
     let mut uncovered = parameters(UNCOVERED);
     let object = uncovered.as_object_mut().unwrap();
     object.insert("asset_id".into(), asset.clone());

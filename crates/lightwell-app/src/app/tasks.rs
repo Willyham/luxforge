@@ -11,7 +11,7 @@ use crate::{
 use iced::Task;
 use lightwell_core::{
     ApiRequest, AssetId, ClientId, ClientSession, ContentPoint, Draft, DraftId, EditorState,
-    EntryId, ErrorKind, EventsResult, HistoryEntry, HistoryPage, HistorySelection, Lineage,
+    EntryId, ErrorKind, EventsResult, HistoryPage, HistoryRow, HistorySelection, Lineage,
     MAX_PRESET_BYTES, ModuleDescriptor, Mutation, MutationOutcome, MutationRequest, OwnerHandle,
     PresetSummary, PreviewJob, PreviewRequest, ProxyBounds, RecipeDescription, StageTransform,
     Version,
@@ -33,14 +33,21 @@ pub(crate) const HISTORY_PAGE_SIZE: usize = 50;
 const LINEAGE_LIMIT: usize = 100;
 pub(crate) const ACTOR: &str = "desktop";
 
-/// Authoritative state read back from the owner after a change. `history` is `None` when only the
-/// current entry needs merging into the loaded page.
+/// Authoritative state read back from the owner after a change, as much of it as the change's
+/// [`Scope`] could have touched. A part that is `None` was not read, and the desktop keeps what it
+/// holds or brings it forward itself.
 #[derive(Clone, Debug)]
 pub(crate) struct Refresh {
     pub(crate) state: EditorState,
+    /// The newest page of history rows, read when an asset opens or changed elsewhere. `None`
+    /// merges the current entry's row into the loaded page.
     pub(crate) history: Option<HistoryPage>,
-    pub(crate) versions: Vec<Version>,
-    pub(crate) lineage: Lineage,
+    /// Read when an asset opens or changed elsewhere; a command of this desktop's names no version,
+    /// and a version's own methods read the list in their own task.
+    pub(crate) versions: Option<Vec<Version>>,
+    /// Read unless the change was this desktop's own commit, whose entry continues the chain from
+    /// the entry that was current and joins the loaded lineage on the desktop.
+    pub(crate) lineage: Option<Lineage>,
     /// The displayed entry's layers as the recipe panel reads them.
     pub(crate) recipe: RecipeDescription,
     /// The current entry's layers while another entry is displayed, for what follows the current
@@ -50,11 +57,57 @@ pub(crate) struct Refresh {
     /// The same entry's masks. It is read beside the recipe and never on its own, so the panel can
     /// never show a mask list and a layer list that describe two different entries.
     pub(crate) masks: MaskListing,
-    /// The Original entry, looked up once per asset so Compare needs no search.
+    /// The Original entry, read once when an asset opens so Compare needs no search.
     pub(crate) original: Option<EntryId>,
     pub(crate) job: PreviewJob,
     pub(crate) session: ClientSession,
     pub(crate) sequence: u64,
+}
+
+/// What a refresh reads back, by what the change before it could have touched. Every scope reads
+/// `asset.state`, the session, the displayed entry's recipe rows and masks, and one preview job;
+/// the rest is read only where the change could have moved it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Scope {
+    /// An asset opened: the newest history page, its versions and lineage, and the Original's id,
+    /// which is read here once for the asset and never again.
+    Open,
+    /// Another client changed the asset, or a gap in the event log could have hidden any change:
+    /// everything an open reads but the Original, which never changes.
+    Elsewhere,
+    /// This desktop's own commit, answered at this revision. Its entry merges into the loaded page
+    /// and joins the loaded lineage on the desktop, so neither is read.
+    Commit(u64),
+    /// This desktop's own undo, redo or restore, answered at this revision. The current entry moved
+    /// along or off the chain, so the lineage is read; the page takes the merge as a commit's does.
+    Navigate(u64),
+}
+
+impl Scope {
+    /// The scope of a mutation from what `method` answered. Undo, redo and restore navigate; every
+    /// other command that answers a revision commits. An answer without one says nothing about what
+    /// it touched, so it is read as a change made elsewhere.
+    pub(crate) fn after(method: &str, answer: &Value) -> Self {
+        let Some(revision) = answer["revision"].as_u64() else {
+            return Self::Elsewhere;
+        };
+        match method {
+            "history.undo" | "history.redo" | "history.restore" => Self::Navigate(revision),
+            _ => Self::Commit(revision),
+        }
+    }
+
+    /// The scope once `asset.state` has been read. A commit or a navigation is merged on the desktop
+    /// only when the state read is the one the command left: a later revision means another change
+    /// landed in between, which a merge of the current entry would miss, so it is read as one.
+    fn at(self, revision: u64) -> Self {
+        match self {
+            Self::Commit(answered) | Self::Navigate(answered) if answered != revision => {
+                Self::Elsewhere
+            }
+            scope => scope,
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -195,6 +248,8 @@ pub(crate) fn call(
     method: &str,
     params: Value,
 ) -> Result<(Value, u64), String> {
+    #[cfg(test)]
+    owner_calls::record(method);
     let request = ApiRequest {
         id: format!("ui-{}", REQUEST_NUMBER.fetch_add(1, Ordering::Relaxed)),
         method: method.into(),
@@ -211,6 +266,37 @@ pub(crate) fn call(
     }
 }
 
+/// One preview job from the owner: a request on the owner thread like `call`, which is not a JSON
+/// method, so it is counted here.
+fn plan_preview(
+    owner: &OwnerHandle,
+    request: PreviewRequest,
+) -> Result<PreviewJob, lightwell_core::Error> {
+    #[cfg(test)]
+    owner_calls::record("preview_job");
+    owner.preview_job(request)
+}
+
+/// The owner requests this thread made, in order, so a test can count what one completion path
+/// costs. Thread-local, so tests running beside each other count only their own.
+#[cfg(test)]
+pub(crate) mod owner_calls {
+    use std::cell::RefCell;
+
+    thread_local! {
+        static CALLS: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
+    }
+
+    pub(crate) fn record(method: &str) {
+        CALLS.with(|calls| calls.borrow_mut().push(method.to_owned()));
+    }
+
+    /// Every request since the last take, in the order it was made.
+    pub(crate) fn take() -> Vec<String> {
+        CALLS.with(|calls| std::mem::take(&mut *calls.borrow_mut()))
+    }
+}
+
 fn parse<T: serde::de::DeserializeOwned>(value: Value) -> Result<T, String> {
     serde_json::from_value(value).map_err(|error| error.to_string())
 }
@@ -222,20 +308,12 @@ fn wait_source_job(
     client: ClientId,
     job_id: &str,
     open_guard: Option<(&AtomicU64, u64)>,
-    preview_guard: Option<(&AssetId, &PreviewExpectation)>,
 ) -> Result<EditorState, String> {
     loop {
         if open_guard.is_some_and(|(guard, generation)| guard.load(Ordering::Acquire) != generation)
         {
             let _ = call(owner, client, "job.cancel", json!({"job_id":job_id}));
             return Err("superseded open".into());
-        }
-        if let Some((asset, expected)) = preview_guard
-            && !preview_still_current(owner, client, asset, expected)?
-        {
-            // Other requests from this client may share this source flight. Let the bounded
-            // worker finish once, but stop this obsolete caller from retrying or publishing it.
-            return Err("superseded preview".into());
         }
         let (status, _) = call(owner, client, "job.status", json!({"job_id":job_id}))?;
         match status["status"].as_str() {
@@ -255,60 +333,18 @@ fn wait_source_job(
     }
 }
 
-struct PreviewExpectation {
-    session_generation: u64,
-    entry: EntryId,
-    current: bool,
-}
-
-fn preview_still_current(
-    owner: &OwnerHandle,
-    client: ClientId,
-    asset_id: &AssetId,
-    expected: &PreviewExpectation,
-) -> Result<bool, String> {
-    let (session, _) = call(owner, client, "session.state", json!({}))?;
-    let session: ClientSession = parse(session)?;
-    if session.preview.generation != expected.session_generation {
-        return Ok(false);
-    }
-    if expected.current {
-        let (state, _) = call(owner, client, "asset.state", json!({"asset_id":asset_id}))?;
-        let state: EditorState = parse(state)?;
-        Ok(state.current_entry.id == expected.entry)
-    } else {
-        Ok(
-            matches!(session.preview.selection, HistorySelection::Entry(ref id) if *id == expected.entry),
-        )
-    }
-}
-
-fn ready_preview_job(
-    owner: &OwnerHandle,
-    request: PreviewRequest,
-    expected: &PreviewExpectation,
-) -> Result<PreviewJob, String> {
+/// One preview job, waiting for the source preparation it needs first. Whether the job is still
+/// wanted is not asked here: the desktop decides that when the answer arrives, from the session
+/// generation and the asset revision the answer carries beside the job ([`super::Editor`]'s
+/// `superseded`), and the preview queue's own generation keeps an older frame from following a
+/// newer one on screen.
+fn ready_preview_job(owner: &OwnerHandle, request: PreviewRequest) -> Result<PreviewJob, String> {
     let client = request.client;
-    let asset_id = request.asset_id.clone();
     loop {
-        if !preview_still_current(owner, client, &asset_id, expected)? {
-            return Err("superseded preview".into());
-        }
-        match owner.preview_job(request.clone()) {
-            Ok(job) => {
-                if preview_still_current(owner, client, &asset_id, expected)? {
-                    return Ok(job);
-                }
-                return Err("superseded preview".into());
-            }
+        match plan_preview(owner, request.clone()) {
+            Ok(job) => return Ok(job),
             Err(error) if error.kind == lightwell_core::ErrorKind::PreparationRequired => {
-                let _ = wait_source_job(
-                    owner,
-                    client,
-                    &error.detail,
-                    None,
-                    Some((&asset_id, expected)),
-                )?;
+                let _ = wait_source_job(owner, client, &error.detail, None)?;
             }
             Err(error)
                 if error.kind == lightwell_core::ErrorKind::ResourceLimit
@@ -322,22 +358,26 @@ fn ready_preview_job(
     }
 }
 
-/// Read authoritative state back after a change or an external event.
+/// Read authoritative state back after a change or an external event, as much of it as `scope`
+/// says the change could have touched.
 pub(crate) fn refresh(
     owner: &OwnerHandle,
     client: ClientId,
     asset_id: AssetId,
-    with_history: bool,
+    scope: Scope,
     mut sequence: u64,
     proxy: Option<ProxyBounds>,
 ) -> Result<Refresh, String> {
+    let answered = sequence;
     let mut fetch = |method: &str, params: Value| -> Result<Value, String> {
         let (value, seen) = call(owner, client, method, params)?;
         sequence = sequence.max(seen);
         Ok(value)
     };
     let state: EditorState = parse(fetch("asset.state", json!({"asset_id":asset_id}))?)?;
-    let history = if with_history {
+    let scope = scope.at(state.revision);
+    let whole = matches!(scope, Scope::Open | Scope::Elsewhere);
+    let history = if whole {
         Some(parse::<HistoryPage>(fetch(
             "history.list",
             json!({"asset_id":asset_id,"before_sequence":null,"limit":HISTORY_PAGE_SIZE}),
@@ -345,46 +385,64 @@ pub(crate) fn refresh(
     } else {
         None
     };
-    let versions: Vec<Version> =
-        parse(fetch("version.list", json!({"asset_id":asset_id}))?["versions"].take())?;
-    let lineage: Lineage = parse(fetch(
-        "history.lineage",
-        json!({"asset_id":asset_id,"limit":LINEAGE_LIMIT}),
-    )?)?;
+    let versions = if whole {
+        Some(parse::<Vec<Version>>(
+            fetch("version.list", json!({"asset_id":asset_id}))?["versions"].take(),
+        )?)
+    } else {
+        None
+    };
+    let lineage = if matches!(scope, Scope::Commit(_)) {
+        None
+    } else {
+        Some(parse::<Lineage>(fetch(
+            "history.lineage",
+            json!({"asset_id":asset_id,"limit":LINEAGE_LIMIT}),
+        )?)?)
+    };
     let session: ClientSession = parse(fetch("session.state", json!({}))?)?;
-    let selected = match &session.preview.selection {
-        HistorySelection::Current => None,
-        HistorySelection::Entry(entry_id) => Some(entry_id.clone()),
+    // The entry the screen will show, named rather than left to the owner, so the recipe rows, the
+    // masks and the preview job all describe the entry this state names even if another client
+    // commits while they are read. That commit's own event brings its state and frame.
+    let displayed = match &session.preview.selection {
+        HistorySelection::Current => state.current_entry.id.clone(),
+        HistorySelection::Entry(entry_id) => entry_id.clone(),
     };
     // The recipe rows of the entry that will be displayed: O(layers) payload reads, no render.
     let recipe: RecipeDescription = parse(fetch(
         "recipe.describe",
-        json!({"asset_id":asset_id,"entry_id":selected}),
+        json!({"asset_id":asset_id,"entry_id":displayed}),
     )?)?;
     // A historical preview leaves the current entry's rows unread, and a section's dot follows the
     // current entry, so they are read too: one more O(layers) payload read, only while previewing.
-    let current_recipe = match &selected {
-        Some(_) => Some(parse::<RecipeDescription>(fetch(
+    let current_recipe = match &session.preview.selection {
+        HistorySelection::Entry(_) => Some(parse::<RecipeDescription>(fetch(
             "recipe.describe",
             json!({"asset_id":asset_id,"entry_id":state.current_entry.id}),
         )?)?),
-        None => None,
+        HistorySelection::Current => None,
     };
     // The masks of that same entry. `recipe.describe` names each layer's mask and `mask.list` names
     // each mask's layers, so reading both together is what lets the panel show the relation from
     // either side without a second round trip.
-    let masks: MaskListing = parse(fetch("mask.list", mask_list_params(&asset_id, &selected))?)?;
-    // The Original entry is sequence 0, so one bounded page before sequence 1 finds it.
-    let original: HistoryPage = parse(fetch(
-        "history.list",
-        json!({"asset_id":asset_id,"before_sequence":1,"limit":1}),
+    let masks: MaskListing = parse(fetch(
+        "mask.list",
+        mask_list_params(&asset_id, &Some(displayed.clone())),
     )?)?;
-    let expected = PreviewExpectation {
-        session_generation: session.preview.generation,
-        entry: selected
-            .clone()
-            .unwrap_or_else(|| state.current_entry.id.clone()),
-        current: selected.is_none(),
+    // The Original entry is sequence 0: the last row of a page that reaches it, or else the one row
+    // before sequence 1. Read once, when the asset opens.
+    let original = match (scope, &history) {
+        (Scope::Open, Some(page)) => match page.entries.last().filter(|row| row.sequence == 0) {
+            Some(row) => Some(row.id.clone()),
+            None => parse::<HistoryPage>(fetch(
+                "history.list",
+                json!({"asset_id":asset_id,"before_sequence":1,"limit":1}),
+            )?)?
+            .entries
+            .first()
+            .map(|row| row.id.clone()),
+        },
+        _ => None,
     };
     // Every preview of the displayed target is reduced by the same worker that rendered it, so
     // the histogram needs no second render and an `analysis.request` for this identity is a
@@ -394,12 +452,15 @@ pub(crate) fn refresh(
         owner,
         proxied(
             PreviewRequest::new(client, asset_id)
-                .entry(selected)
+                .entry(Some(displayed))
                 .analyse(),
             proxy,
         ),
-        &expected,
     )?;
+    // A narrow read vouches only for what it read. Another client's change that moves no revision —
+    // a version named meanwhile — is not in it, so the event sequence stays at the command's own
+    // answer and the next poll reads that change from there rather than stepping over it.
+    let sequence = if whole { sequence } else { answered };
     Ok(Refresh {
         state,
         history,
@@ -408,7 +469,7 @@ pub(crate) fn refresh(
         recipe,
         current_recipe,
         masks,
-        original: original.entries.first().map(|entry| entry.id.clone()),
+        original,
         job,
         session,
         sequence,
@@ -445,13 +506,7 @@ pub(crate) fn import_task(
             let job_id = result["job_id"]
                 .as_str()
                 .ok_or("catalog.import did not return a source job")?;
-            let state = wait_source_job(
-                &owner,
-                client,
-                job_id,
-                Some((&open_guard, generation)),
-                None,
-            )?;
+            let state = wait_source_job(&owner, client, job_id, Some((&open_guard, generation)))?;
             if open_guard.load(Ordering::Acquire) != generation {
                 let _ = call(&owner, client, "job.cancel", json!({"job_id":job_id}));
                 return Err("superseded open".into());
@@ -462,7 +517,7 @@ pub(crate) fn import_task(
                 &owner,
                 client,
                 state.asset.id,
-                true,
+                Scope::Open,
                 sequence.max(adopted_sequence),
                 proxy,
             )?;
@@ -475,6 +530,22 @@ pub(crate) fn import_task(
     )
 }
 
+/// One command and the refresh its answer calls for, as the plain calls [`state_task`] runs: an
+/// ordinary commit reads `asset.state`, the session, the displayed entry's recipe rows and masks and
+/// one preview job; undo, redo and restore add the lineage ([`Scope`]).
+pub(crate) fn command_now(
+    owner: &OwnerHandle,
+    client: ClientId,
+    asset_id: AssetId,
+    method: &str,
+    params: Value,
+    proxy: Option<ProxyBounds>,
+) -> Result<Refresh, String> {
+    let (answer, sequence) = call(owner, client, method, params)?;
+    let scope = Scope::after(method, &answer);
+    refresh(owner, client, asset_id, scope, sequence, proxy)
+}
+
 pub(crate) fn state_task(
     owner: OwnerHandle,
     client: ClientId,
@@ -484,10 +555,7 @@ pub(crate) fn state_task(
     proxy: Option<ProxyBounds>,
 ) -> Task<Message> {
     Task::perform(
-        async move {
-            let (_, sequence) = call(&owner, client, &method, params)?;
-            refresh(&owner, client, asset_id, false, sequence, proxy)
-        },
+        async move { command_now(&owner, client, asset_id, &method, params, proxy) },
         |result| Message::Refreshed(result.map(Box::new)),
     )
 }
@@ -505,20 +573,6 @@ pub(crate) fn preview_task(
         async move {
             let (mut result, sequence) = call(&owner, client, method, params)?;
             let session: ClientSession = parse(result["session"].take())?;
-            let current = entry_id.is_none();
-            let entry = match entry_id.as_ref() {
-                Some(id) => id.clone(),
-                None => {
-                    let (value, _) =
-                        call(&owner, client, "asset.state", json!({"asset_id":asset_id}))?;
-                    parse::<EditorState>(value)?.current_entry.id
-                }
-            };
-            let expected = PreviewExpectation {
-                session_generation: session.preview.generation,
-                entry,
-                current,
-            };
             let job = ready_preview_job(
                 &owner,
                 proxied(
@@ -527,7 +581,6 @@ pub(crate) fn preview_task(
                         .analyse(),
                     proxy,
                 ),
-                &expected,
             )?;
             Ok(PreviewPayload {
                 job,
@@ -591,7 +644,8 @@ pub(crate) struct RecipeRead {
 /// is exactly that layer's input stage. Starting a draft and reapplying it are the only two requests.
 ///
 /// A draft the crop displaced — an armed brush's — is cancelled first, in this same task, so the
-/// session read below can no longer hold it.
+/// job is planned once the owner no longer holds it. The job names the entry it truncated, and the
+/// desktop opens the draft on it only while that entry is still the current one it holds.
 pub(crate) fn crop_preview_task(
     owner: OwnerHandle,
     client: ClientId,
@@ -604,19 +658,9 @@ pub(crate) fn crop_preview_task(
             if let Some(draft_id) = displaced {
                 let _ = call(&owner, client, "draft.cancel", json!({"draft_id":draft_id}));
             }
-            let (session, _) = call(&owner, client, "session.state", json!({}))?;
-            let session: ClientSession = parse(session)?;
-            let (state, _) = call(&owner, client, "asset.state", json!({"asset_id":asset_id}))?;
-            let state: EditorState = parse(state)?;
-            let expected = PreviewExpectation {
-                session_generation: session.preview.generation,
-                entry: state.current_entry.id,
-                current: true,
-            };
             ready_preview_job(
                 &owner,
                 PreviewRequest::new(client, asset_id).layers(layer_count),
-                &expected,
             )
         },
         |result| {
@@ -720,14 +764,16 @@ pub(crate) fn draft_set_now(
     )?;
     let answered = Instant::now();
     let draft = parse::<Draft>(draft)?;
-    let job = owner
-        .preview_job(proxied(
+    let job = plan_preview(
+        owner,
+        proxied(
             PreviewRequest::new(client, asset_id)
                 .draft(draft_id)
                 .analyse(),
             proxy,
-        ))
-        .map_err(|error| error.to_string())?;
+        ),
+    )
+    .map_err(|error| error.to_string())?;
     let planned = Instant::now();
     Ok((
         draft,
@@ -795,7 +841,8 @@ pub(crate) fn draft_commit_now(
     if result.mutation.outcome == MutationOutcome::NoOp {
         return Ok(None);
     }
-    refresh(owner, client, asset_id, false, sequence, proxy).map(Some)
+    let scope = Scope::Commit(result.mutation.revision);
+    refresh(owner, client, asset_id, scope, sequence, proxy).map(Some)
 }
 
 pub(crate) fn draft_commit_task(
@@ -918,14 +965,16 @@ fn current_preview(
     entry_id: Option<EntryId>,
     proxy: Option<ProxyBounds>,
 ) -> Result<PreviewPayload, String> {
-    let job = owner
-        .preview_job(proxied(
+    let job = plan_preview(
+        owner,
+        proxied(
             PreviewRequest::new(client, asset_id)
                 .entry(entry_id)
                 .analyse(),
             proxy,
-        ))
-        .map_err(|error| error.to_string())?;
+        ),
+    )
+    .map_err(|error| error.to_string())?;
     let (session, sequence) = call(owner, client, "session.state", json!({}))?;
     Ok(PreviewPayload {
         job,
@@ -1220,7 +1269,7 @@ pub(crate) fn sync_now(
         None
     };
     let refresh = if asset {
-        let refreshed = refresh(owner, client, asset_id, true, sequence, proxy)?;
+        let refreshed = refresh(owner, client, asset_id, Scope::Elsewhere, sequence, proxy)?;
         sequence = sequence.max(refreshed.sequence);
         Some(Box::new(refreshed))
     } else {
@@ -1491,7 +1540,10 @@ pub(crate) fn older_task(
     )
 }
 
-pub(crate) fn merge_current_entry(history: &mut HistoryPage, entry: HistoryEntry) {
+/// Merge one entry's row into the loaded page, newest first and bounded to one page: what a commit,
+/// an undo, a redo and a restore of this desktop's own do in place of reading the page again, as
+/// performance rule 7 asks.
+pub(crate) fn merge_current_entry(history: &mut HistoryPage, entry: HistoryRow) {
     history.entries.retain(|existing| existing.id != entry.id);
     let position = history
         .entries
@@ -1507,48 +1559,258 @@ mod tests {
     use super::*;
     use crate::app::testing::entry;
 
-    #[test]
-    fn superseded_history_generation_stops_a_waiting_preview() {
-        let catalog = std::env::temp_dir().join(format!(
-            "lightwell-preview-guard-{}-{}.sqlite",
-            std::process::id(),
-            REQUEST_NUMBER.fetch_add(1, Ordering::Relaxed)
-        ));
-        let (owner, join) = OwnerHandle::start(&catalog).unwrap();
-        let client = owner.register();
-        let asset = AssetId::new();
-        let expected = PreviewExpectation {
-            session_generation: 0,
-            entry: EntryId::new(),
-            current: false,
-        };
-        let _ = call(&owner, client, "preview.return-current", json!({})).unwrap();
-        assert!(!preview_still_current(&owner, client, &asset, &expected).unwrap());
-        assert_eq!(
-            ready_preview_job(
+    /// A real owner with the S0 fixture imported, and the refresh the open task reads for it.
+    struct Opened {
+        owner: OwnerHandle,
+        join: std::thread::JoinHandle<()>,
+        catalog: PathBuf,
+        client: ClientId,
+        asset: AssetId,
+        refresh: Refresh,
+    }
+
+    impl Opened {
+        /// The plain calls [`import_task`] runs, with the calls of its refresh recorded.
+        fn new() -> (Self, Vec<String>) {
+            let catalog = std::env::temp_dir().join(format!(
+                "lightwell-refresh-scope-{}-{}.sqlite",
+                std::process::id(),
+                REQUEST_NUMBER.fetch_add(1, Ordering::Relaxed)
+            ));
+            let (owner, join) = OwnerHandle::start(&catalog).unwrap();
+            let client = owner.register();
+            let fixture =
+                Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/s0/orientation-1.jpg");
+            let (queued, _) = call(
                 &owner,
-                PreviewRequest::new(client, asset).entry(Some(expected.entry.clone())),
-                &expected
+                client,
+                "catalog.import",
+                json!({"path": fixture, "mutation": request()}),
             )
-            .unwrap_err(),
-            "superseded preview"
+            .unwrap();
+            let job = queued["job_id"].as_str().unwrap().to_owned();
+            let state = wait_source_job(&owner, client, &job, None).unwrap();
+            call(&owner, client, "job.adopt", json!({"job_id": job})).unwrap();
+            let asset = state.asset.id;
+            owner_calls::take();
+            let refresh = refresh(&owner, client, asset.clone(), Scope::Open, 0, None).unwrap();
+            let calls = owner_calls::take();
+            let opened = Self {
+                owner,
+                join,
+                catalog,
+                client,
+                asset,
+                refresh,
+            };
+            (opened, calls)
+        }
+
+        /// One command of the desktop's own, as [`state_task`] runs it, and the owner calls it made.
+        fn command(&mut self, method: &str, mut params: Value) -> Vec<String> {
+            params["asset_id"] = json!(self.asset);
+            params["mutation"] = json!(mutation(self.refresh.state.revision));
+            owner_calls::take();
+            self.refresh = command_now(
+                &self.owner,
+                self.client,
+                self.asset.clone(),
+                method,
+                params,
+                None,
+            )
+            .unwrap_or_else(|error| panic!("{method}: {error}"));
+            owner_calls::take()
+        }
+
+        fn finish(self) {
+            self.owner.stop();
+            self.join.join().unwrap();
+            std::fs::remove_file(self.catalog).unwrap();
+        }
+    }
+
+    /// The owner calls each completion path makes, counted at the call helper: a commit reads only
+    /// what its panels show and one preview job, undo, redo and restore add the lineage, and only
+    /// the open reads the page, the versions and the Original — which it finds on that page.
+    #[test]
+    fn a_commit_an_undo_and_a_restore_read_back_only_what_they_changed() {
+        let (mut opened, open) = Opened::new();
+        assert_eq!(
+            open,
+            [
+                "asset.state",
+                "history.list",
+                "version.list",
+                "history.lineage",
+                "session.state",
+                "recipe.describe",
+                "mask.list",
+                "preview_job",
+            ],
+            "an open finds the Original on the page it read"
         );
-        owner.stop();
-        join.join().unwrap();
-        std::fs::remove_file(catalog).unwrap();
+        let original = opened.refresh.state.current_entry.id.clone();
+        assert_eq!(opened.refresh.original, Some(original.clone()));
+
+        let commit = opened.command("edit.transform", json!({"transform": "rotate-left"}));
+        assert_eq!(
+            commit,
+            [
+                "edit.transform",
+                "asset.state",
+                "session.state",
+                "recipe.describe",
+                "mask.list",
+                "preview_job",
+            ]
+        );
+        let refreshed = &opened.refresh;
+        assert!(refreshed.history.is_none() && refreshed.versions.is_none());
+        assert!(refreshed.lineage.is_none() && refreshed.original.is_none());
+        assert_eq!(refreshed.job.entry.id, refreshed.state.current_entry.id);
+        assert_eq!(refreshed.recipe.entry_id, refreshed.state.current_entry.id);
+
+        let navigated = [
+            "asset.state",
+            "history.lineage",
+            "session.state",
+            "recipe.describe",
+            "mask.list",
+            "preview_job",
+        ];
+        let undo = opened.command("history.undo", json!({}));
+        assert_eq!(undo[0], "history.undo");
+        assert_eq!(undo[1..], navigated);
+        assert_eq!(opened.refresh.state.current_entry.id, original);
+        let redo = opened.command("history.redo", json!({}));
+        assert_eq!(redo[0], "history.redo");
+        assert_eq!(redo[1..], navigated);
+        let restore = opened.command("history.restore", json!({"entry_id": original}));
+        assert_eq!(restore[0], "history.restore");
+        assert_eq!(restore[1..], navigated);
+        let lineage = opened
+            .refresh
+            .lineage
+            .as_ref()
+            .expect("a restore reads the lineage");
+        assert_eq!(
+            lineage.steps[0].entry_id,
+            opened.refresh.state.current_entry.id
+        );
+        opened.finish();
+    }
+
+    /// A commit is merged on the desktop only when the state read is the one the commit left: when
+    /// another client's commit landed in between, the refresh reads what an event from elsewhere
+    /// reads, page and lineage included, so no entry goes missing from the loaded page.
+    #[test]
+    fn a_commit_overtaken_by_another_clients_reads_the_page() {
+        let (opened, _) = Opened::new();
+        let agent = opened.owner.register();
+        let answered = opened.refresh.state.revision;
+        call(
+            &opened.owner,
+            agent,
+            "edit.transform",
+            json!({"asset_id": opened.asset, "mutation": mutation(answered),
+                   "transform": "rotate-right"}),
+        )
+        .unwrap();
+        owner_calls::take();
+        let read = refresh(
+            &opened.owner,
+            opened.client,
+            opened.asset.clone(),
+            Scope::Commit(answered),
+            0,
+            None,
+        )
+        .unwrap();
+        assert_eq!(
+            owner_calls::take(),
+            [
+                "asset.state",
+                "history.list",
+                "version.list",
+                "history.lineage",
+                "session.state",
+                "recipe.describe",
+                "mask.list",
+                "preview_job",
+            ]
+        );
+        assert_eq!(read.history.expect("the page").entries.len(), 2);
+        assert!(
+            read.original.is_none(),
+            "the Original is read once, at open"
+        );
+        opened.finish();
+    }
+
+    /// A commit's narrow refresh reads no versions, so it leaves the event sequence at the
+    /// command's own answer: a version another client names before the refresh reads anything,
+    /// which moves no revision, is still ahead of it, and the next poll reads it and the list.
+    #[test]
+    fn a_version_named_during_a_commits_refresh_is_left_for_the_next_poll() {
+        let (opened, _) = Opened::new();
+        let agent = opened.owner.register();
+        let (answer, answered) = call(
+            &opened.owner,
+            opened.client,
+            "edit.transform",
+            json!({"asset_id": opened.asset, "mutation": mutation(opened.refresh.state.revision),
+                   "transform": "rotate-left"}),
+        )
+        .unwrap();
+        call(
+            &opened.owner,
+            agent,
+            "version.create",
+            json!({"asset_id": opened.asset, "name": "Keep", "mutation": request()}),
+        )
+        .unwrap();
+        let read = refresh(
+            &opened.owner,
+            opened.client,
+            opened.asset.clone(),
+            Scope::after("edit.transform", &answer),
+            answered,
+            None,
+        )
+        .unwrap();
+        assert!(read.versions.is_none() && read.history.is_none());
+        assert_eq!(
+            read.sequence, answered,
+            "the reads vouch for no later event"
+        );
+        let polled = sync_now(
+            &opened.owner,
+            opened.client,
+            opened.asset.clone(),
+            read.sequence,
+            None,
+        )
+        .unwrap();
+        let versions = polled
+            .refresh
+            .expect("the poll reads the asset again")
+            .versions
+            .expect("with its versions");
+        assert_eq!(versions.len(), 1);
+        assert_eq!(versions[0].name, "Keep");
+        opened.finish();
     }
 
     #[test]
     fn current_entry_merge_is_newest_first_and_bounded() {
         let asset = AssetId::new();
+        let row = |sequence: u64| HistoryRow::from(&entry(&asset, sequence, None));
         let mut history = HistoryPage {
-            entries: (0..HISTORY_PAGE_SIZE as u64)
-                .rev()
-                .map(|sequence| entry(&asset, sequence, None))
-                .collect(),
+            entries: (0..HISTORY_PAGE_SIZE as u64).rev().map(row).collect(),
             next_before_sequence: None,
         };
-        merge_current_entry(&mut history, entry(&asset, HISTORY_PAGE_SIZE as u64, None));
+        merge_current_entry(&mut history, row(HISTORY_PAGE_SIZE as u64));
         assert_eq!(history.entries.len(), HISTORY_PAGE_SIZE);
         assert_eq!(history.entries[0].sequence, HISTORY_PAGE_SIZE as u64);
         assert_eq!(history.entries.last().unwrap().sequence, 1);

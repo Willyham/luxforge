@@ -9,8 +9,8 @@ use super::{
     source::validate_source_recipe,
 };
 use crate::{
-    AssetId, EntryId, Error, ErrorKind, HistoryEntry, MaskId, Mutation, Recipe, Snapshot,
-    SnapshotId, modules::ActionInput,
+    AssetId, EntryId, Error, ErrorKind, HistoryEntry, HistoryRow, MaskId, Mutation, Recipe,
+    Snapshot, SnapshotId, modules::ActionInput,
 };
 use rusqlite::{OptionalExtension, params};
 use serde_json::{Map, Value, json};
@@ -19,6 +19,9 @@ const MAX_HISTORY_PAGE: usize = 100;
 const MAX_VERSION_NAME: usize = 64;
 
 impl EditorService {
+    /// One page of the asset's history rows, newest first, before `before_sequence`. Each row is
+    /// read from its entry's columns: no entry JSON is decoded and no stack is read, so a page costs
+    /// `O(limit)` whatever the stacks hold. `history.inspect` reads one whole entry.
     pub fn history(
         &self,
         asset_id: &AssetId,
@@ -34,16 +37,47 @@ impl EditorService {
         let before = before_sequence
             .unwrap_or(i64::MAX as u64)
             .min(i64::MAX as u64) as i64;
-        let mut statement = self
-            .connection
-            .prepare("SELECT entry_json FROM entries WHERE asset_id=?1 AND sequence<?2 ORDER BY sequence DESC LIMIT ?3")?;
-        let rows = statement
-            .query_map(params![asset_id.as_str(), before, limit as i64], |row| {
-                row.get::<_, String>(0)
+        let mut statement = self.connection.prepare(
+            "SELECT id,sequence,action_id,label,actor,timestamp_ms,undo_parent_id,restore_target_id
+             FROM entries WHERE asset_id=?1 AND sequence<?2 ORDER BY sequence DESC LIMIT ?3",
+        )?;
+        type Columns = (
+            String,
+            i64,
+            String,
+            String,
+            String,
+            i64,
+            Option<String>,
+            Option<String>,
+        );
+        let rows =
+            statement.query_map(params![asset_id.as_str(), before, limit as i64], |row| {
+                Ok::<Columns, _>((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                    row.get(5)?,
+                    row.get(6)?,
+                    row.get(7)?,
+                ))
             })?;
-        let mut entries: Vec<HistoryEntry> = Vec::new();
+        let mut entries: Vec<HistoryRow> = Vec::new();
         for row in rows {
-            entries.push(decode("invalid history entry", row?)?);
+            let (id, sequence, action_id, label, actor, timestamp_ms, parent, target) = row?;
+            entries.push(HistoryRow {
+                id: EntryId::parse(id)?,
+                sequence: u64::try_from(sequence)
+                    .map_err(|_| Error::new(ErrorKind::Catalog, "invalid history sequence"))?,
+                action_id,
+                label,
+                actor,
+                timestamp_ms,
+                undo_parent: parent.map(EntryId::parse).transpose()?,
+                restore_target: target.map(EntryId::parse).transpose()?,
+            });
         }
         let next_before_sequence =
             (entries.len() == limit).then(|| entries.last().unwrap().sequence);
@@ -698,6 +732,72 @@ mod tests {
                 .entry(&AssetId::new(), &first.current_entry_id)
                 .is_err()
         );
+        drop(service);
+        std::fs::remove_file(catalog).unwrap();
+    }
+
+    /// A history page is read from the entries' own columns: every row is exactly its entry's row
+    /// fields — a restore's target and an undone branch's parent included — before and after a
+    /// reopen, pages continue without gaps or repeats, and listing decodes no entry at all.
+    #[test]
+    fn history_rows_are_read_from_columns_without_decoding_an_entry() {
+        let catalog = temp("rows.sqlite");
+        let (asset, a, restored);
+        {
+            let mut service = EditorService::open(&catalog).unwrap();
+            asset = service.import(&fixture()).unwrap().asset.id;
+            a = service
+                .apply_pixel(&asset, mutation(0, "a"), 0, 0, [1, 2, 3])
+                .unwrap()
+                .current_entry_id;
+            service
+                .apply_pixel(&asset, mutation(1, "b"), 1, 0, [4, 5, 6])
+                .unwrap();
+            service.undo(&asset, mutation(2, "undo")).unwrap();
+            service
+                .apply_pixel(&asset, mutation(3, "c"), 2, 0, [7, 8, 9])
+                .unwrap();
+            restored = service
+                .restore(&asset, mutation(4, "restore"), &a)
+                .unwrap()
+                .current_entry_id;
+        }
+        let service = EditorService::open(&catalog).unwrap();
+        crate::editor::read_counts::take();
+        let page = service.history(&asset, None, 50).unwrap();
+        assert_eq!(
+            crate::editor::read_counts::take().0,
+            0,
+            "a page decodes no entry"
+        );
+        assert_eq!(page.entries.len(), 5);
+        assert_eq!(page.next_before_sequence, None);
+        for row in &page.entries {
+            let entry = service.entry(&asset, &row.id).unwrap();
+            assert_eq!(row, &HistoryRow::from(&entry), "entry {}", row.sequence);
+        }
+        let restore = &page.entries[0];
+        assert_eq!(restore.id, restored);
+        assert_eq!(restore.restore_target, Some(a.clone()));
+        assert_eq!(restore.actor, "test");
+        assert!(restore.timestamp_ms > 0);
+        let json = serde_json::to_value(restore).unwrap();
+        assert!(
+            json.get("snapshot").is_none() && json.get("parameters").is_none(),
+            "a row carries no stack: {json}"
+        );
+        // Pages of two walk the same rows in the same order.
+        let mut walked = Vec::new();
+        let mut before = None;
+        loop {
+            let next = service.history(&asset, before, 2).unwrap();
+            walked.extend(next.entries);
+            match next.next_before_sequence {
+                Some(sequence) => before = Some(sequence),
+                None => break,
+            }
+        }
+        assert_eq!(walked, page.entries);
         drop(service);
         std::fs::remove_file(catalog).unwrap();
     }

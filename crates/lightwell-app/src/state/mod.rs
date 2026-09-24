@@ -261,6 +261,8 @@ mod tests {
     struct Scene {
         state: Option<EditorState>,
         history: HistoryPage,
+        /// The whole entries behind the page's rows, where the displayed entry's layers are read.
+        stacks: Vec<lightwell_core::HistoryEntry>,
         versions: Vec<Version>,
         lineage: HashSet<EntryId>,
         lineage_floor: Option<u64>,
@@ -307,6 +309,7 @@ mod tests {
                     entries: Vec::new(),
                     next_before_sequence: None,
                 },
+                stacks: Vec::new(),
                 versions: Vec::new(),
                 lineage: HashSet::new(),
                 lineage_floor: None,
@@ -357,9 +360,10 @@ mod tests {
             self.current_recipe = Some(crate::app::testing::described(&current));
             self.lineage.insert(current.id.clone());
             self.history = HistoryPage {
-                entries: vec![current.clone()],
+                entries: vec![lightwell_core::HistoryRow::from(&current)],
                 next_before_sequence: None,
             };
+            self.stacks = vec![current.clone()];
             self.state = Some(EditorState {
                 asset: AssetRecord {
                     id: asset,
@@ -480,11 +484,18 @@ mod tests {
         /// The stored layers of the displayed entry: whichever history entry the scene displays.
         fn displayed_layers(&self) -> Option<&[lightwell_core::Layer]> {
             let displayed = self.display_entry.as_ref()?;
-            self.history
-                .entries
+            self.stacks
                 .iter()
                 .find(|entry| &entry.id == displayed)
                 .map(|entry| entry.snapshot.recipe.layers.as_slice())
+        }
+
+        /// Add one entry's row to the loaded page, and its stack to what the scene can display.
+        fn list(&mut self, entry: lightwell_core::HistoryEntry) {
+            self.history
+                .entries
+                .push(lightwell_core::HistoryRow::from(&entry));
+            self.stacks.push(entry);
         }
 
         /// The open asset's source dimensions, which the crop layer's input stage starts from.
@@ -560,7 +571,7 @@ mod tests {
         let asset = scene.state.as_ref().expect("an asset").asset.id.clone();
         let older = entry(&asset, 1, None);
         let mut scene = scene;
-        scene.history.entries.push(older.clone());
+        scene.list(older.clone());
         scene.display_entry = Some(older.id.clone());
         scene.session.preview.selection = lightwell_core::HistorySelection::Entry(older.id.clone());
         let workspace = scene.derive();
@@ -577,7 +588,7 @@ mod tests {
         let mut scene = Scene::new(descriptors()).opened(Vec::new());
         let asset = scene.state.as_ref().expect("an asset").asset.id.clone();
         let abandoned = entry(&asset, 2, None);
-        scene.history.entries.push(abandoned.clone());
+        scene.list(abandoned.clone());
         assert!(
             scene.derive().panel.history[1].branch,
             "an entry the lineage walk never reached is a branch"
@@ -791,7 +802,7 @@ mod tests {
 
         let asset = scene.state.as_ref().expect("an asset").asset.id.clone();
         let older = entry(&asset, 1, None);
-        scene.history.entries.push(older.clone());
+        scene.list(older.clone());
         scene.display_entry = Some(older.id.clone());
         scene.session.preview.selection = lightwell_core::HistorySelection::Entry(older.id);
         let model = crop_model(&scene.derive(), &crop.id);

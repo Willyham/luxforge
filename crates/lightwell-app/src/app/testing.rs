@@ -14,7 +14,7 @@ use crate::{
 use lightwell_core::{
     ActionDescriptor, AssetId, AssetRecord, Availability, CanvasInteraction, ClientSession,
     Control, CropPayload, Draft, DraftId, EditorState, EffectStage, EntryId, HistoryEntry,
-    HistoryPage, LayerId, Lineage, LineageStep, MAX_ANGLE, MIN_ANGLE, ModuleDescriptor,
+    HistoryPage, HistoryRow, LayerId, Lineage, LineageStep, MAX_ANGLE, MIN_ANGLE, ModuleDescriptor,
     ParameterDescriptor, ParameterKind, PreviewJob, RecipeDescription, Snapshot, SourceImage,
 };
 use serde_json::{Map, Value, json};
@@ -310,11 +310,11 @@ pub(crate) fn refresh_for(
             redo: Vec::new(),
         },
         history: (!page.is_empty()).then_some(HistoryPage {
-            entries: page,
+            entries: page.iter().map(HistoryRow::from).collect(),
             next_before_sequence: None,
         }),
-        versions: Vec::new(),
-        lineage: Lineage {
+        versions: Some(Vec::new()),
+        lineage: Some(Lineage {
             steps: lineage
                 .iter()
                 .map(|entry| LineageStep {
@@ -325,7 +325,7 @@ pub(crate) fn refresh_for(
                 })
                 .collect(),
             next_entry_id: truncated.then(EntryId::new),
-        },
+        }),
         recipe: RecipeDescription {
             entry_id: current.id.clone(),
             layers: Vec::new(),

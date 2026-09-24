@@ -797,6 +797,37 @@ pub struct HistoryEntry {
     pub restore_target: Option<EntryId>,
 }
 
+/// One history entry as a history listing shows it: what its row says and where it sits in the
+/// graph, without its stack. The catalog keeps these fields in the entry's own columns, so a page of
+/// rows decodes no entry; [`HistoryEntry`] is the whole entry, which `history.inspect` answers.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct HistoryRow {
+    pub id: EntryId,
+    pub sequence: u64,
+    pub action_id: String,
+    pub label: String,
+    pub actor: String,
+    pub timestamp_ms: i64,
+    pub undo_parent: Option<EntryId>,
+    pub restore_target: Option<EntryId>,
+}
+
+impl From<&HistoryEntry> for HistoryRow {
+    fn from(entry: &HistoryEntry) -> Self {
+        Self {
+            id: entry.id.clone(),
+            sequence: entry.sequence,
+            action_id: entry.action_id.clone(),
+            label: entry.label.clone(),
+            actor: entry.actor.clone(),
+            timestamp_ms: entry.timestamp_ms,
+            undo_parent: entry.undo_parent.clone(),
+            restore_target: entry.restore_target.clone(),
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Mutation {

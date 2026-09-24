@@ -11,17 +11,15 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-/// Format 7 is the merged shape. It holds the mask table a recipe carries and the layer's mask
-/// reference, the content-addressed stroke store a painted path is kept in — so no catalog ever
-/// holds embedded stroke points — the preset library, and the catalog's own identity with the
-/// derived-artifact tables. Two branches each claimed format **6** for one half of that, the masks
-/// and strokes on one and the catalog identity and artifact tables on the other, exactly as two
-/// earlier branches each claimed format 5; the merged shape is neither, so a catalog written by
-/// either is refused by name rather than read as the other and is left byte for byte as it was.
-/// Format 4 made entry records the only stored copy of a stack and format 3 stored each entry's
-/// rendered label. Every other marker, earlier or later, is refused by name and left as it is;
-/// choose a new catalog path.
-pub(super) const CATALOG_FORMAT: i64 = 7;
+/// Format 8 keeps each entry's history row — its label, actor, timestamp and restore target, beside
+/// the sequence, action and undo parent format 7 already held — in the entry's own columns, so a
+/// page of history rows decodes no entry. Format 7 was the merged shape: the mask table a recipe
+/// carries and the layer's mask reference, the content-addressed stroke store a painted path is
+/// kept in — so no catalog ever holds embedded stroke points — the preset library, and the
+/// catalog's own identity with the derived-artifact tables. Format 4 made entry records the only
+/// stored copy of a stack and format 3 stored each entry's rendered label. Every other marker,
+/// earlier or later, is refused by name and left as it is; choose a new catalog path.
+pub(super) const CATALOG_FORMAT: i64 = 8;
 pub(super) const ASSET_COLUMNS: &str =
     "id,source_root,locator,fingerprint,file_identity,byte_len,width,height,source_json";
 
@@ -113,7 +111,11 @@ impl EditorService {
                     asset_id TEXT NOT NULL REFERENCES assets(id),
                     sequence INTEGER NOT NULL,
                     action_id TEXT NOT NULL,
+                    label TEXT NOT NULL,
+                    actor TEXT NOT NULL,
+                    timestamp_ms INTEGER NOT NULL,
                     undo_parent_id TEXT,
+                    restore_target_id TEXT,
                     entry_json TEXT NOT NULL,
                     UNIQUE(asset_id, sequence)
                  );
@@ -249,6 +251,9 @@ pub(super) fn default_artifact_root(catalog: &Path) -> PathBuf {
 /// checked and recorded with the entry or not at all: a snapshot can never point at an artifact the
 /// catalog does not hold.
 ///
+/// The fields of the entry's [`HistoryRow`](crate::HistoryRow) are written to their own columns from the same entry,
+/// beside its JSON, so a history page reads them without decoding it. Neither ever changes.
+///
 /// It writes and does not validate. The caller [admitted](EditorService::admit) the stack before it
 /// opened the transaction, and that is the one validation a commit makes.
 pub(super) fn insert_entry(
@@ -258,14 +263,19 @@ pub(super) fn insert_entry(
 ) -> Result<(), Error> {
     store_strokes(tx, &entry.snapshot.recipe)?;
     tx.execute(
-        "INSERT INTO entries (id,asset_id,sequence,action_id,undo_parent_id,entry_json)
-         VALUES (?1,?2,?3,?4,?5,?6)",
+        "INSERT INTO entries (id,asset_id,sequence,action_id,label,actor,timestamp_ms,
+                              undo_parent_id,restore_target_id,entry_json)
+         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)",
         params![
             entry.id.as_str(),
             entry.asset_id.as_str(),
             entry.sequence as i64,
             entry.action_id,
+            entry.label,
+            entry.actor,
+            entry.timestamp_ms,
             entry.undo_parent.as_ref().map(EntryId::as_str),
+            entry.restore_target.as_ref().map(EntryId::as_str),
             encode(entry)?
         ],
     )?;
@@ -531,7 +541,45 @@ mod tests {
         assert_eq!(error.kind, ErrorKind::Incompatible);
         assert_eq!(
             error.detail,
-            "catalog format 2 is not supported; expected 7; choose a new catalog path"
+            "catalog format 2 is not supported; expected 8; choose a new catalog path"
+        );
+        assert_eq!(
+            std::fs::read(&catalog).unwrap(),
+            before,
+            "a refused catalog is left byte for byte as it was"
+        );
+        std::fs::remove_file(catalog).unwrap();
+    }
+
+    /// A format 7 catalog's entries hold their label, actor, timestamp and restore target only in
+    /// the entry JSON, so a history page could not read its rows from columns: it is refused by name
+    /// and left as it is rather than read by decoding every entry.
+    #[test]
+    fn a_format_7_catalog_without_row_columns_is_refused_by_name_without_rewriting_it() {
+        let catalog = temp("format-7.sqlite");
+        let mut service = EditorService::open(&catalog).unwrap();
+        let asset = service.import(&fixture()).unwrap().asset.id;
+        service
+            .apply_pixel(&asset, mutation(0, "pixel"), 1, 1, [9, 8, 7])
+            .unwrap();
+        drop(service);
+        let connection = Connection::open(&catalog).unwrap();
+        connection
+            .execute_batch(
+                "ALTER TABLE entries DROP COLUMN label;
+                 ALTER TABLE entries DROP COLUMN actor;
+                 ALTER TABLE entries DROP COLUMN timestamp_ms;
+                 ALTER TABLE entries DROP COLUMN restore_target_id;
+                 PRAGMA user_version=7;",
+            )
+            .unwrap();
+        drop(connection);
+        let before = std::fs::read(&catalog).unwrap();
+        let error = EditorService::open(&catalog).unwrap_err();
+        assert_eq!(error.kind, ErrorKind::Incompatible);
+        assert_eq!(
+            error.detail,
+            "catalog format 7 is not supported; expected 8; choose a new catalog path"
         );
         assert_eq!(
             std::fs::read(&catalog).unwrap(),
@@ -1538,7 +1586,7 @@ mod tests {
         assert_eq!(error.kind, ErrorKind::Incompatible);
         assert_eq!(
             error.detail,
-            "catalog format 5 is not supported; expected 7; choose a new catalog path"
+            "catalog format 5 is not supported; expected 8; choose a new catalog path"
         );
         assert_eq!(
             std::fs::read(&catalog).unwrap(),

@@ -267,8 +267,18 @@ fn a_preset_imports_applies_like_its_individual_actions_and_round_trips_through_
     assert_eq!(entries[0]["id"], preset_entry);
     assert_eq!(entries[0]["label"], json!("Preset: Soft Film"));
     assert_eq!(entries[0]["action_id"], json!("apply-preset"));
-    assert_eq!(entries[0]["parameters"]["preset-id"], row["id"]);
-    assert_eq!(entries[0]["parameters"]["settings"], settings);
+    assert!(
+        entries[0].get("parameters").is_none() && entries[0].get("snapshot").is_none(),
+        "a history row carries no parameters or stack: {}",
+        entries[0]
+    );
+    // The stored parameters are the whole entry's, which `history.inspect` reads.
+    let inspected = client.call(
+        "history.inspect",
+        json!({"asset_id": asset, "entry_id": preset_entry}),
+    );
+    assert_eq!(inspected["parameters"]["preset-id"], row["id"]);
+    assert_eq!(inspected["parameters"]["settings"], settings);
     let preset_state = client.state(&asset);
     let preset_stack = contents(&preset_state);
     assert_eq!(preset_stack.len(), 4, "Basic, mixer, Presence and vignette");

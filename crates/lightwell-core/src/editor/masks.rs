@@ -412,14 +412,19 @@ mod tests {
         let connection = Connection::open(catalog).unwrap();
         connection
             .execute(
-                "INSERT INTO entries (id,asset_id,sequence,action_id,undo_parent_id,entry_json)
-                 VALUES (?1,?2,?3,?4,?5,?6)",
+                "INSERT INTO entries (id,asset_id,sequence,action_id,label,actor,timestamp_ms,
+                                      undo_parent_id,restore_target_id,entry_json)
+                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)",
                 params![
                     entry.id.as_str(),
                     entry.asset_id.as_str(),
                     entry.sequence as i64,
                     entry.action_id,
+                    entry.label,
+                    entry.actor,
+                    entry.timestamp_ms,
                     entry.undo_parent.as_ref().map(EntryId::as_str),
+                    entry.restore_target.as_ref().map(EntryId::as_str),
                     serde_json::to_string(entry).unwrap(),
                 ],
             )

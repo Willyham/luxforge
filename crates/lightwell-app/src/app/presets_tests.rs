@@ -106,7 +106,7 @@ impl Library {
             &self.owner(),
             self.editor.client,
             self.asset.clone(),
-            true,
+            tasks::Scope::Open,
             self.editor.api_sequence,
             None,
         )

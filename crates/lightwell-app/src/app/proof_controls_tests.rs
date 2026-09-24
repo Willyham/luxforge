@@ -81,8 +81,15 @@ impl Proof {
         assert!(modules[0].developer);
         editor.expanded.insert(MODULE.into(), true);
         let _ = editor.update(Message::ModulesLoaded(Ok(modules)));
-        let refreshed =
-            tasks::refresh(&owner, editor.client, asset.clone(), true, 0, None).unwrap();
+        let refreshed = tasks::refresh(
+            &owner,
+            editor.client,
+            asset.clone(),
+            tasks::Scope::Open,
+            0,
+            None,
+        )
+        .unwrap();
         let sequence = refreshed.sequence;
         let _ = editor.update(Message::Refreshed(Ok(Box::new(refreshed))));
         assert!(editor.editable());
@@ -194,7 +201,7 @@ impl Proof {
             &self.editor.owner,
             self.editor.client,
             self.asset.clone(),
-            false,
+            tasks::Scope::Elsewhere,
             self.sequence,
             None,
         )
@@ -253,7 +260,7 @@ impl Proof {
             &self.editor.owner,
             self.editor.client,
             self.asset.clone(),
-            false,
+            tasks::Scope::Elsewhere,
             self.sequence,
             None,
         )
@@ -629,7 +636,7 @@ fn proof_action_styles_and_group_reset_reach_the_same_json_method() {
         &proof.editor.owner,
         proof.editor.client,
         proof.asset.clone(),
-        false,
+        tasks::Scope::Elsewhere,
         proof.sequence,
         None,
     )
