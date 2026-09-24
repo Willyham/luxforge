@@ -71,3 +71,4 @@ Accepted or pending decisions. Do not "fix" them without the referenced scope.
 | Debug build as the default development launch | Release-profile `develop`; explicit `--debug` for debugging only |
 | Tiny fixture as the only timing evidence | `editor-performance` on generated 24 MP and 60 MP inputs |
 | Desktop tasks carrying a session copy out and writing it back after the round trip | Owner-held sessions per client with a revision; the desktop adopts only newer responses |
+| Decode an entry's JSON, look up, hash and parse each of its strokes, and re-parse the RAW interpretation on every state read, three times per slider tick; deep-copy every stroke with each recipe clone | The owner's bounded cache of hydrated entries and asset heads, updated by every write; `revision()` for a draft's conflict check; a shared stroke table; the RAW interpretation typed once per row read |

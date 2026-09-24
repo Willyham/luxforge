@@ -35,7 +35,7 @@ use crate::{Error, ErrorKind};
 use serde::{Deserialize, Deserializer, Serialize, Serializer, de};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
-use std::collections::BTreeMap;
+use std::{collections::BTreeMap, sync::Arc};
 
 /// The reserved payload field a stored payload lists its stroke references in.
 ///
@@ -117,6 +117,8 @@ pub struct StrokeId(String);
 impl StrokeId {
     /// The address of these canonical bytes.
     pub fn of(canonical: &[u8]) -> Self {
+        #[cfg(test)]
+        crate::editor::read_counts::hashed();
         let digest = Sha256::digest(canonical);
         let leading = u128::from_be_bytes(digest[..16].try_into().expect("SHA-256 is 32 bytes"));
         Self(format!("{leading:032x}"))
@@ -409,6 +411,8 @@ impl Stroke {
                 format!("stored stroke {id} does not match its content address"),
             ));
         }
+        #[cfg(test)]
+        crate::editor::read_counts::decoded();
         let stroke: Self = serde_json::from_slice(stored).map_err(|error| {
             Error::new(
                 ErrorKind::Incompatible,
@@ -603,19 +607,25 @@ impl StrokeFault {
 /// almost none of them reference a stroke, so the table a recipe without a painted edit carries
 /// costs eight bytes and no allocation. It is also what keeps the enums that carry a recipe from
 /// growing a large variant.
+///
+/// **Shared, never copied.** A table does not change once its recipe has been read, so cloning a
+/// recipe — which every plan, draft, preview and cached history entry does — shares the one table
+/// instead of copying up to [`crate::MASKS_PER_RECIPE`] masks of [`crate::POINTS_PER_MASK`]
+/// positions. The one writer, a stroke command adding the stroke it captured to the recipe it is
+/// building, copies on write: the map of pointers once, and never a stroke's positions.
 #[derive(Clone, Debug, Default)]
-pub struct StrokeTable(Option<Box<Resolved>>);
+pub struct StrokeTable(Option<Arc<Resolved>>);
 
 #[derive(Clone, Debug)]
 struct Resolved {
     origin: String,
-    strokes: BTreeMap<StrokeId, Stroke>,
+    strokes: BTreeMap<StrokeId, Arc<Stroke>>,
     faults: BTreeMap<StrokeId, StrokeFault>,
 }
 
 impl StrokeTable {
     pub fn new(origin: impl Into<String>) -> Self {
-        Self(Some(Box::new(Resolved {
+        Self(Some(Arc::new(Resolved {
             origin: origin.into(),
             strokes: BTreeMap::new(),
             faults: BTreeMap::new(),
@@ -632,21 +642,23 @@ impl StrokeTable {
             .is_none_or(|held| held.strokes.is_empty() && held.faults.is_empty())
     }
 
+    /// The table to write into: this one when no other recipe shares it, and otherwise a copy of
+    /// its map of pointers, so a write never changes a table another recipe holds.
     fn held(&mut self) -> &mut Resolved {
-        self.0.get_or_insert_with(|| {
-            Box::new(Resolved {
+        Arc::make_mut(self.0.get_or_insert_with(|| {
+            Arc::new(Resolved {
                 origin: String::new(),
                 strokes: BTreeMap::new(),
                 faults: BTreeMap::new(),
             })
-        })
+        }))
     }
 
     /// Record a resolved stroke under its own address. The address is recomputed rather than
     /// trusted, so a table cannot hold a stroke under a name that is not its content's.
     pub fn insert(&mut self, stroke: Stroke) -> StrokeId {
         let id = stroke.id();
-        self.held().strokes.insert(id.clone(), stroke);
+        self.held().strokes.insert(id.clone(), Arc::new(stroke));
         id
     }
 
@@ -657,11 +669,37 @@ impl StrokeTable {
     }
 
     pub fn get(&self, id: &StrokeId) -> Option<&Stroke> {
-        self.0.as_ref().and_then(|held| held.strokes.get(id))
+        self.0
+            .as_ref()
+            .and_then(|held| held.strokes.get(id))
+            .map(Arc::as_ref)
     }
 
     pub fn strokes(&self) -> impl Iterator<Item = (&StrokeId, &Stroke)> {
-        self.0.iter().flat_map(|held| held.strokes.iter())
+        self.0
+            .iter()
+            .flat_map(|held| held.strokes.iter())
+            .map(|(id, stroke)| (id, stroke.as_ref()))
+    }
+
+    /// Whether some reference was not in the store at all. That is the one fault a later write can
+    /// repair, by storing the same content under the same address, so a resolution holding one is
+    /// never kept as if it were final.
+    pub(crate) fn has_missing(&self) -> bool {
+        self.0.as_ref().is_some_and(|held| {
+            held.faults
+                .values()
+                .any(|fault| *fault == StrokeFault::Missing)
+        })
+    }
+
+    /// Whether two tables are one shared table rather than two copies.
+    #[cfg(test)]
+    pub(crate) fn shares(&self, other: &Self) -> bool {
+        match (&self.0, &other.0) {
+            (Some(one), Some(two)) => Arc::ptr_eq(one, two),
+            _ => false,
+        }
     }
 
     /// Resolve one reference, or say why it cannot be. This is the refusal the whole store is

@@ -1237,7 +1237,7 @@ mod tests {
     /// temperature and tint, a neutral pick and explicit gains each have one.
     #[test]
     fn the_raw_section_is_active_only_when_its_development_is_not_as_shot_at_zero_ev() {
-        use crate::app::testing::{Z6_AS_SHOT, Z6_CAM_XYZ};
+        use crate::app::testing::{Z6_AS_SHOT, Z6_CAM_XYZ, raw_source};
         use lightwell_core::{RawPayload, WhiteBalanceMode};
         let raw = descriptors()
             .into_iter()
@@ -1246,10 +1246,7 @@ mod tests {
         let active = |payload: &RawPayload| {
             let mut scene = Scene::new(vec![raw.clone()])
                 .opened(vec![payload.layer(lightwell_core::LayerId::new())]);
-            scene.state.as_mut().expect("an asset").asset.source =
-                lightwell_core::SourceKind::Raw {
-                    metadata: serde_json::json!({}),
-                };
+            scene.state.as_mut().expect("an asset").asset.source = raw_source();
             section(&scene.derive(), &raw.id).active
         };
         let original = RawPayload::for_as_shot(Z6_AS_SHOT, Z6_CAM_XYZ).unwrap();
@@ -1835,9 +1832,7 @@ mod tests {
         let mut scene = Scene::new(modules.clone()).opened(Vec::new());
         scene.developer = true;
         if let Some(state) = &mut scene.state {
-            state.asset.source = lightwell_core::SourceKind::Raw {
-                metadata: json!({}),
-            };
+            state.asset.source = crate::app::testing::raw_source();
         }
         let workspace = scene.derive();
         let groups = |section: &tools::SectionModel| {

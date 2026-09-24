@@ -1,7 +1,4 @@
-use super::{
-    AssetRecord, EditorService, EditorState, MutationResult, SourceKind, artifact_store,
-    source::parse_raw_interpretation,
-};
+use super::{AssetRecord, EditorService, MutationResult, artifact_store, entries::Head};
 use crate::{AssetId, EntryId, Error, ErrorKind, HistoryEntry, ModuleRegistry, Recipe};
 use rusqlite::{Connection, ErrorCode, OptionalExtension, Transaction, params};
 use serde::{Serialize, de::DeserializeOwned};
@@ -50,6 +47,8 @@ pub(crate) fn encode<T: Serialize>(value: &T) -> Result<String, Error> {
 }
 
 pub(crate) fn decode<T: DeserializeOwned>(context: &str, value: String) -> Result<T, Error> {
+    #[cfg(test)]
+    super::read_counts::decoded();
     serde_json::from_str(&value).map_err(|e| json_error(context, e))
 }
 
@@ -349,41 +348,67 @@ pub(super) fn next_sequence(connection: &Connection, asset_id: &AssetId) -> Resu
     u64::try_from(sequence).map_err(|_| Error::new(ErrorKind::Catalog, "invalid history sequence"))
 }
 
-pub(super) fn asset_record(row: &rusqlite::Row<'_>) -> rusqlite::Result<AssetRecord> {
+/// One asset row, with its source interpretation still the text the catalog holds.
+pub(super) struct AssetRow {
+    id: AssetId,
+    source_root: String,
+    locator: String,
+    fingerprint: String,
+    file_identity: String,
+    byte_len: i64,
+    width: i64,
+    height: i64,
+    source: String,
+}
+
+pub(super) fn asset_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<AssetRow> {
     let id = AssetId::parse(row.get::<_, String>(0)?).map_err(|error| {
         rusqlite::Error::FromSqlConversionFailure(0, rusqlite::types::Type::Text, Box::new(error))
     })?;
-    Ok(AssetRecord {
+    Ok(AssetRow {
         id,
-        source_root: PathBuf::from(row.get::<_, String>(1)?),
-        locator: PathBuf::from(row.get::<_, String>(2)?),
+        source_root: row.get(1)?,
+        locator: row.get(2)?,
         fingerprint: row.get(3)?,
         file_identity: row.get(4)?,
-        byte_len: row.get::<_, i64>(5)? as u64,
-        width: row.get::<_, i64>(6)? as u32,
-        height: row.get::<_, i64>(7)? as u32,
-        source: serde_json::from_str(&row.get::<_, String>(8)?).map_err(|e| {
-            rusqlite::Error::FromSqlConversionFailure(8, rusqlite::types::Type::Text, Box::new(e))
-        })?,
+        byte_len: row.get(5)?,
+        width: row.get(6)?,
+        height: row.get(7)?,
+        source: row.get(8)?,
     })
 }
 
-pub(super) fn state_from(
-    connection: &Connection,
-    asset_id: &AssetId,
-) -> Result<EditorState, Error> {
+impl AssetRow {
+    /// The record, with its source interpretation parsed into its type and checked — a RAW
+    /// interpretation's correction record against its mode — once, here, for this row read. One
+    /// this build cannot read is refused by name and left as it is stored.
+    pub(super) fn into_record(self) -> Result<AssetRecord, Error> {
+        Ok(AssetRecord {
+            id: self.id,
+            source_root: PathBuf::from(self.source_root),
+            locator: PathBuf::from(self.locator),
+            fingerprint: self.fingerprint,
+            file_identity: self.file_identity,
+            byte_len: self.byte_len as u64,
+            width: self.width as u32,
+            height: self.height as u32,
+            source: decode("stored source interpretation", self.source)?,
+        })
+    }
+}
+
+/// One asset's head as its rows hold it: the asset, parsed once, and where its history stands.
+pub(super) fn head_from(connection: &Connection, asset_id: &AssetId) -> Result<Head, Error> {
     let asset = connection
         .query_row(
             &format!("SELECT {ASSET_COLUMNS} FROM assets WHERE id=?1"),
             [asset_id.as_str()],
-            asset_record,
+            asset_row,
         )
         .optional()
         .map_err(catalog_error)?
-        .ok_or_else(|| Error::new(ErrorKind::Validation, "unknown asset"))?;
-    if let SourceKind::Raw { metadata } = &asset.source {
-        parse_raw_interpretation(metadata, "stored RAW interpretation")?;
-    }
+        .ok_or_else(|| Error::new(ErrorKind::Validation, "unknown asset"))?
+        .into_record()?;
     let (current, revision, redo): (String, i64, String) = connection
         .query_row(
             "SELECT current_entry_id,revision,redo_json FROM asset_state WHERE asset_id=?1",
@@ -391,13 +416,26 @@ pub(super) fn state_from(
             |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
         )
         .map_err(catalog_error)?;
-    let current_id = EntryId::parse(current)?;
-    Ok(EditorState {
+    Ok(Head {
         asset,
         revision: revision as u64,
-        current_entry: entry_from(connection, asset_id, &current_id)?,
+        current: EntryId::parse(current)?,
         redo: decode("invalid redo state", redo)?,
     })
+}
+
+/// The asset's revision from its one integer column, decoding nothing.
+pub(super) fn stored_revision(connection: &Connection, asset_id: &AssetId) -> Result<u64, Error> {
+    connection
+        .query_row(
+            "SELECT revision FROM asset_state WHERE asset_id=?1",
+            [asset_id.as_str()],
+            |row| row.get::<_, i64>(0),
+        )
+        .optional()
+        .map_err(catalog_error)?
+        .map(|revision| revision as u64)
+        .ok_or_else(|| Error::new(ErrorKind::Validation, "unknown asset"))
 }
 
 pub(super) fn entry_from(
@@ -421,8 +459,9 @@ pub(super) fn entry_from(
         })?;
     let mut entry: HistoryEntry = decode("invalid history entry", json)?;
     // One lookup per referenced stroke, here and nowhere else: every path that evaluates an entry —
-    // state, preview, undo, redo, Restore, export — reads it through this function, and a listing,
-    // which never draws anything, keeps the stored addresses and pays nothing.
+    // state, preview, undo, redo, Restore, export — reads it through this function, once, and then
+    // from the owner's entry cache; a listing, which never draws anything, keeps the stored
+    // addresses and pays nothing.
     let origin = format!("entry {}", entry.id);
     hydrate_strokes(connection, &mut entry.snapshot.recipe, &origin)?;
     Ok(entry)

@@ -456,6 +456,8 @@ fn verify_catalog(
     let SourceKind::Raw { metadata } = &asset.source else {
         return Err("RAW source was imported as JPEG".into());
     };
+    // Compared as the JSON object the catalog row and the API carry.
+    let metadata = &serde_json::to_value(metadata)?;
     let crop = &metadata["default_crop"];
     let crop_dimensions = if source.orientation >= 5 {
         [crop["height"].as_u64(), crop["width"].as_u64()]

@@ -130,6 +130,9 @@ impl EditorService {
         tx.execute("UPDATE asset_state SET current_entry_id=?2,revision=?3,redo_json='[]' WHERE asset_id=?1", params![asset_id.as_str(), entry.id.as_str(), entry.result_revision as i64]).map_err(catalog_error)?;
         insert_request(&tx, asset_id, &mutation.request_id, &request, &result)?;
         tx.commit().map_err(catalog_error)?;
+        self.entries
+            .get_mut()
+            .moved(asset_id, entry.result_revision, &entry.id, Vec::new());
         state.current_entry = entry;
         Ok(result)
     }
@@ -207,6 +210,9 @@ impl EditorService {
         .map_err(catalog_error)?;
         insert_request(&tx, asset_id, &mutation.request_id, &input, &result)?;
         tx.commit().map_err(catalog_error)?;
+        self.entries
+            .get_mut()
+            .moved(asset_id, result.revision, &target, redo);
         Ok(result)
     }
 
@@ -267,6 +273,9 @@ impl EditorService {
         tx.execute("UPDATE asset_state SET current_entry_id=?2,revision=?3,redo_json='[]' WHERE asset_id=?1", params![asset_id.as_str(), entry.id.as_str(), entry.result_revision as i64]).map_err(catalog_error)?;
         insert_request(&tx, asset_id, &mutation.request_id, &input, &result)?;
         tx.commit().map_err(catalog_error)?;
+        self.entries
+            .get_mut()
+            .moved(asset_id, entry.result_revision, &entry.id, Vec::new());
         Ok(result)
     }
 

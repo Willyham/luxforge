@@ -1,13 +1,32 @@
 use super::{
     AssetRecord, EditorService, EditorState, LayerDescription, RecipeDescription,
-    catalog::{ASSET_COLUMNS, asset_record, catalog_error, entry_from, state_from},
+    catalog::{ASSET_COLUMNS, asset_row, catalog_error, stored_revision},
 };
 use crate::{AssetId, EntryId, Error, HistoryEntry};
 use serde_json::Map;
 
 impl EditorService {
+    /// The asset, its revision, its current entry with its strokes resolved, and what redo would
+    /// return to. After the first read of an asset and its current entry this decodes and hashes
+    /// nothing: it copies the cached head and entry, which every write that moves them updates.
     pub fn state(&self, asset_id: &AssetId) -> Result<EditorState, Error> {
-        state_from(&self.connection, asset_id)
+        let head = self.head(asset_id)?;
+        let entry = self.shared_entry(asset_id, &head.current)?;
+        Ok(EditorState {
+            asset: head.asset,
+            revision: head.revision,
+            current_entry: HistoryEntry::clone(&entry),
+            redo: head.redo,
+        })
+    }
+
+    /// The asset's current revision, which is all a draft's conflict check compares. It decodes
+    /// nothing, whether or not the asset's head is cached.
+    pub fn revision(&self, asset_id: &AssetId) -> Result<u64, Error> {
+        match self.entries.borrow().revision(asset_id) {
+            Some(revision) => Ok(revision),
+            None => stored_revision(&self.connection, asset_id),
+        }
     }
 
     /// Every referenced asset in import order.
@@ -18,14 +37,16 @@ impl EditorService {
                 "SELECT {ASSET_COLUMNS} FROM assets ORDER BY rowid"
             ))
             .map_err(catalog_error)?;
-        let rows = statement
-            .query_map([], asset_record)
-            .map_err(catalog_error)?;
-        rows.map(|row| row.map_err(catalog_error)).collect()
+        let rows = statement.query_map([], asset_row).map_err(catalog_error)?;
+        rows.map(|row| row.map_err(catalog_error)?.into_record())
+            .collect()
     }
 
+    /// One entry of this asset's history with its strokes resolved: decoded once, then copied
+    /// from the cache.
     pub fn entry(&self, asset_id: &AssetId, entry_id: &EntryId) -> Result<HistoryEntry, Error> {
-        entry_from(&self.connection, asset_id, entry_id)
+        self.shared_entry(asset_id, entry_id)
+            .map(|entry| HistoryEntry::clone(&entry))
     }
 
     /// Describe one entry's stored layers for the recipe panel: `O(layers)` registry lookups and

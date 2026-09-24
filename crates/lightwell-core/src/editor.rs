@@ -4,7 +4,8 @@
 //! storage; `history` the admission and the transactions that write history; `source` source
 //! preparation, the source cache and RAW settings; `evaluate` preview and analysis jobs, renders
 //! and samples; `plan` action planning and drafts; `masks` the `mask.*` commands and mask targets;
-//! `describe` the read-only views; and `artifact_store` derived artifacts.
+//! `describe` the read-only views; `entries` the cache of hydrated entries and asset heads those
+//! reads are answered from; and `artifact_store` derived artifacts.
 use crate::{
     AssetId, Draft, DraftId, EntryId, Error, ErrorKind, HistoryEntry, LayerId, MaskId,
     ModuleRegistry, PreviewSource, Recipe, SnapshotId,
@@ -28,6 +29,7 @@ mod artifact_store;
 mod artifact_tests;
 mod catalog;
 mod describe;
+mod entries;
 mod evaluate;
 mod history;
 mod masks;
@@ -40,13 +42,42 @@ pub(crate) use catalog::{catalog_error, decode, encode, now_ms};
 pub use masks::MASK_FIELD;
 pub(crate) use masks::in_target;
 pub(crate) use plan::prefix;
+pub use source::RawInterpretation;
 pub(crate) use source::source_signature;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "kebab-case", deny_unknown_fields)]
 pub enum SourceKind {
     Jpeg,
-    Raw { metadata: Value },
+    Raw { metadata: RawInterpretation },
+}
+
+/// What reads cost the catalog, counted per thread, for the tests that prove a cached read decodes
+/// and hashes nothing: every JSON decode of a stored value and every stroke address computed.
+#[cfg(test)]
+pub(crate) mod read_counts {
+    use std::cell::Cell;
+
+    thread_local! {
+        static DECODED: Cell<u64> = const { Cell::new(0) };
+        static HASHED: Cell<u64> = const { Cell::new(0) };
+    }
+
+    pub(crate) fn decoded() {
+        DECODED.with(|count| count.set(count.get() + 1));
+    }
+
+    pub(crate) fn hashed() {
+        HASHED.with(|count| count.set(count.get() + 1));
+    }
+
+    /// The decodes and the stroke hashes this thread made since it last asked.
+    pub(crate) fn take() -> (u64, u64) {
+        (
+            DECODED.with(|count| count.replace(0)),
+            HASHED.with(|count| count.replace(0)),
+        )
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -305,6 +336,9 @@ struct CachedSource {
 pub struct EditorService {
     /// The catalog. The preset library in `presets::library` keeps its own table here.
     pub(crate) connection: Connection,
+    /// Hydrated entries and asset heads, so a read after the first decodes nothing. Every write
+    /// that moves a head updates it where it commits.
+    entries: RefCell<entries::EntryCache>,
     source_cache: RefCell<Option<CachedSource>>,
     allow_sync_source: bool,
     registry: Arc<ModuleRegistry>,
@@ -385,6 +419,8 @@ impl EditorService {
         let artifact_root = default_artifact_root(path);
         Ok(Self {
             connection,
+            // Opening starts empty: nothing read before a reopen is trusted after it.
+            entries: RefCell::new(entries::EntryCache::default()),
             source_cache: RefCell::new(None),
             allow_sync_source: true,
             registry,

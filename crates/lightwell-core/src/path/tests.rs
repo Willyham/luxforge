@@ -498,3 +498,48 @@ fn a_stroke_keeps_its_content_address_through_a_round_trip_of_any_setting() {
         );
     }
 }
+
+/// Cloning a recipe shares its stroke table instead of copying every stroke's positions, and a
+/// stroke added to a clone copies the table's pointers only: the recipe it was cloned from keeps
+/// its table unchanged, and both still hold the one allocation of each stroke they share.
+#[test]
+fn cloning_a_recipe_shares_its_strokes_and_a_write_copies_only_pointers() {
+    let drawn = Stroke::capture(&[[0.1, 0.1], [0.4, 0.3]], 0.05, 50.0, 100.0, false).unwrap();
+    let mut table = StrokeTable::new("entry entry-1");
+    let first = table.insert(drawn);
+    let recipe = crate::Recipe {
+        strokes: table,
+        ..crate::Recipe::default()
+    };
+    let clone = recipe.clone();
+    assert!(
+        clone.strokes.shares(&recipe.strokes),
+        "a clone shares the table"
+    );
+    assert!(std::ptr::eq(
+        clone.strokes.get(&first).unwrap(),
+        recipe.strokes.get(&first).unwrap()
+    ));
+
+    let mut next = recipe.clone();
+    let second = next
+        .strokes
+        .insert(Stroke::capture(&[[0.6, 0.6]], 0.05, 50.0, 100.0, true).unwrap());
+    assert!(
+        !next.strokes.shares(&recipe.strokes),
+        "a write copies on write"
+    );
+    assert!(
+        recipe.strokes.get(&second).is_none(),
+        "and leaves the original alone"
+    );
+    assert_eq!(recipe.strokes.strokes().count(), 1);
+    assert_eq!(next.strokes.strokes().count(), 2);
+    assert!(
+        std::ptr::eq(
+            next.strokes.get(&first).unwrap(),
+            recipe.strokes.get(&first).unwrap()
+        ),
+        "the copy holds the same stroke, not a copy of its positions"
+    );
+}

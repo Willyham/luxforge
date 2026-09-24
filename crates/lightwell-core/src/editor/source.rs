@@ -1,7 +1,7 @@
 use super::{
     AssetRecord, CachedSource, EditorService, EditorState, PreparedFile, RawDevelopment,
     SourceKind, SourceSignature,
-    catalog::{catalog_error, encode, insert_entry, json_error, now_ms},
+    catalog::{catalog_error, encode, insert_entry, now_ms},
 };
 use crate::{
     AssetId, EntryId, Error, ErrorKind, HistoryEntry, LayerId, Snapshot, open_source_bytes,
@@ -9,6 +9,7 @@ use crate::{
     source::{PreparedSource, RawPrepared},
 };
 use rusqlite::{OptionalExtension, TransactionBehavior, params};
+use serde::{Deserialize, Deserializer, Serialize, Serializer, de};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::{
@@ -17,6 +18,107 @@ use std::{
     sync::{Arc, atomic::AtomicBool},
 };
 
+/// A RAW original's camera interpretation: the decoder's metadata, typed, and checked once where it
+/// enters — an asset row read or an import — then shared by every state that carries it.
+///
+/// It serializes exactly as [`lightwell_raw::RawMetadata`] does, so the catalog row and the API
+/// carry the object they always have. Equality is the typed fields' own at their native precision:
+/// an `f32` compares as the `f32` it is, whichever decimal spelling it was read from.
+#[derive(Clone, Debug, PartialEq)]
+pub struct RawInterpretation(Arc<lightwell_raw::RawMetadata>);
+
+/// Equality is reflexive because no field can hold a NaN: the decoder refuses a non-finite
+/// calibration, gain, black level or white level, and JSON has no spelling for one.
+impl Eq for RawInterpretation {}
+
+impl RawInterpretation {
+    /// Accept a decoder's metadata once its correction record agrees with its mode: a mode that
+    /// needs DNG corrections carries their record, and no other mode carries one.
+    pub(crate) fn new(metadata: lightwell_raw::RawMetadata) -> Result<Self, Error> {
+        if metadata.mode.requires_dng_corrections() != metadata.dng_corrections.is_some() {
+            return Err(Error::new(
+                ErrorKind::Incompatible,
+                "RAW correction record differs from mode",
+            ));
+        }
+        Ok(Self(Arc::new(metadata)))
+    }
+}
+
+impl std::ops::Deref for RawInterpretation {
+    type Target = lightwell_raw::RawMetadata;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl Serialize for RawInterpretation {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        self.0.serialize(serializer)
+    }
+}
+
+impl<'de> Deserialize<'de> for RawInterpretation {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        Self::new(lightwell_raw::RawMetadata::deserialize(deserializer)?)
+            .map_err(|error| de::Error::custom(error.detail))
+    }
+}
+
+impl SourceKind {
+    /// How a prepared original is interpreted: a JPEG, or a RAW with its checked interpretation.
+    fn of(source: &PreparedSource) -> Result<Self, Error> {
+        Ok(match source.metadata() {
+            None => Self::Jpeg,
+            Some(metadata) => Self::Raw {
+                metadata: RawInterpretation::new(metadata.clone())?,
+            },
+        })
+    }
+}
+
+/// A source path in the one spelling every catalog lookup uses.
+fn canonical_source(path: &Path) -> Result<PathBuf, Error> {
+    path.canonicalize().map_err(|e| {
+        Error::new(
+            ErrorKind::FileAccess,
+            format!("cannot resolve source: {}", e.kind()),
+        )
+    })
+}
+
+fn file_access(error: std::io::Error) -> Error {
+    Error::new(ErrorKind::FileAccess, error.kind().to_string())
+}
+
+/// A source path's canonical spelling and its file's current signature.
+fn located_signature(path: &Path) -> Result<(PathBuf, Metadata, SourceSignature), Error> {
+    let canonical = canonical_source(path)?;
+    let metadata = canonical.metadata().map_err(file_access)?;
+    let signature = source_signature(&canonical, &metadata);
+    Ok((canonical, metadata, signature))
+}
+
+/// The signature an asset's original has now, refused when the file is gone or is no longer the
+/// file that was imported.
+fn original_signature(asset: &AssetRecord) -> Result<SourceSignature, Error> {
+    let metadata = asset.locator.metadata().map_err(|_| {
+        Error::new(
+            ErrorKind::SourceUnavailable,
+            "original source is unavailable",
+        )
+    })?;
+    let signature = source_signature(&asset.locator, &metadata);
+    if signature.file_identity != asset.file_identity || signature.byte_len != asset.byte_len {
+        return Err(Error::new(
+            ErrorKind::SourceUnavailable,
+            "original source fingerprint changed",
+        ));
+    }
+    Ok(signature)
+}
+
 impl EditorService {
     /// The catalog owner disables synchronous source misses; workers prepare these separately.
     pub(crate) fn disable_sync_source(&mut self) {
@@ -24,22 +126,33 @@ impl EditorService {
     }
 
     pub(crate) fn request_signature(path: &Path) -> Result<(PathBuf, SourceSignature), Error> {
-        let canonical = path.canonicalize().map_err(|e| {
-            Error::new(
-                ErrorKind::FileAccess,
-                format!("cannot resolve source: {}", e.kind()),
-            )
-        })?;
-        let metadata = canonical
-            .metadata()
-            .map_err(|e| Error::new(ErrorKind::FileAccess, e.kind().to_string()))?;
+        let (canonical, metadata, signature) = located_signature(path)?;
         if !metadata.is_file() {
             return Err(Error::new(
                 ErrorKind::UnsupportedInput,
                 "expected a regular file",
             ));
         }
-        Ok((canonical.clone(), source_signature(&canonical, &metadata)))
+        Ok((canonical, signature))
+    }
+
+    /// The asset already imported from this file, found by either identity a source has — its
+    /// canonical path, or the file's own identity, which a hard link keeps — with its fingerprint.
+    fn asset_for_source(
+        &self,
+        canonical: &Path,
+        file_identity: &str,
+    ) -> Result<Option<(AssetId, String)>, Error> {
+        self.connection
+            .query_row(
+                "SELECT id,fingerprint FROM assets WHERE canonical_locator=?1 OR file_identity=?2 LIMIT 1",
+                params![canonical.to_string_lossy(), file_identity],
+                |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+            )
+            .optional()
+            .map_err(catalog_error)?
+            .map(|(id, fingerprint)| Ok((AssetId::parse(id)?, fingerprint)))
+            .transpose()
     }
 
     /// Read, hash and decode from the same bounded, stable read-only file handle on a worker.
@@ -51,20 +164,10 @@ impl EditorService {
         path: &Path,
         cancel: &AtomicBool,
     ) -> Result<PreparedFile, Error> {
-        let canonical = path.canonicalize().map_err(|e| {
-            Error::new(
-                ErrorKind::FileAccess,
-                format!("cannot resolve source: {}", e.kind()),
-            )
-        })?;
-        let mut file = File::open(&canonical)
-            .map_err(|e| Error::new(ErrorKind::FileAccess, e.kind().to_string()))?;
-        let handle_before = file
-            .metadata()
-            .map_err(|e| Error::new(ErrorKind::FileAccess, e.kind().to_string()))?;
-        let path_before = canonical
-            .metadata()
-            .map_err(|e| Error::new(ErrorKind::FileAccess, e.kind().to_string()))?;
+        let canonical = canonical_source(path)?;
+        let mut file = File::open(&canonical).map_err(file_access)?;
+        let handle_before = file.metadata().map_err(file_access)?;
+        let path_before = canonical.metadata().map_err(file_access)?;
         let signature = source_signature(&canonical, &handle_before);
         if signature != source_signature(&canonical, &path_before) {
             return Err(Error::new(
@@ -82,12 +185,8 @@ impl EditorService {
             let raw = RawPrepared::decode(bytes, fingerprint.clone(), cancel)?;
             (PreparedSource::Raw(raw), fingerprint)
         };
-        let handle_after = file
-            .metadata()
-            .map_err(|e| Error::new(ErrorKind::FileAccess, e.kind().to_string()))?;
-        let path_after = canonical
-            .metadata()
-            .map_err(|e| Error::new(ErrorKind::FileAccess, e.kind().to_string()))?;
+        let handle_after = file.metadata().map_err(file_access)?;
+        let path_after = canonical.metadata().map_err(file_access)?;
         if signature != source_signature(&canonical, &handle_after)
             || signature != source_signature(&canonical, &path_after)
         {
@@ -106,36 +205,18 @@ impl EditorService {
 
     pub(crate) fn known_fingerprint(&self, path: &Path) -> Result<Option<String>, Error> {
         let (canonical, signature) = Self::request_signature(path)?;
-        self.connection.query_row(
-            "SELECT fingerprint FROM assets WHERE canonical_locator=?1 OR file_identity=?2 LIMIT 1",
-            params![canonical.to_string_lossy(), signature.file_identity],
-            |row| row.get(0),
-        ).optional().map_err(catalog_error)
+        Ok(self
+            .asset_for_source(&canonical, &signature.file_identity)?
+            .map(|(_, fingerprint)| fingerprint))
     }
 
     /// A repeated import can reuse the one verified immutable decode without a new worker job.
     pub(crate) fn cached_import(&self, path: &Path) -> Result<Option<EditorState>, Error> {
-        let canonical = path.canonicalize().map_err(|e| {
-            Error::new(
-                ErrorKind::FileAccess,
-                format!("cannot resolve source: {}", e.kind()),
-            )
-        })?;
-        let metadata = canonical
-            .metadata()
-            .map_err(|e| Error::new(ErrorKind::FileAccess, e.kind().to_string()))?;
-        let signature = source_signature(&canonical, &metadata);
-        let id = self
-            .connection
-            .query_row(
-                "SELECT id FROM assets WHERE canonical_locator=?1 OR file_identity=?2 LIMIT 1",
-                params![canonical.to_string_lossy(), signature.file_identity],
-                |row| row.get::<_, String>(0),
-            )
-            .optional()
-            .map_err(catalog_error)?;
-        let Some(id) = id else { return Ok(None) };
-        let state = self.state(&AssetId::parse(id)?)?;
+        let (canonical, _, signature) = located_signature(path)?;
+        let Some((id, _)) = self.asset_for_source(&canonical, &signature.file_identity)? else {
+            return Ok(None);
+        };
+        let state = self.state(&id)?;
         if state.asset.file_identity != signature.file_identity
             || state.asset.byte_len != signature.byte_len
         {
@@ -279,21 +360,7 @@ impl EditorService {
 
     pub(crate) fn cached_state(&self, asset_id: &AssetId) -> Result<Option<EditorState>, Error> {
         let state = self.state(asset_id)?;
-        let metadata = state.asset.locator.metadata().map_err(|_| {
-            Error::new(
-                ErrorKind::SourceUnavailable,
-                "original source is unavailable",
-            )
-        })?;
-        let signature = source_signature(&state.asset.locator, &metadata);
-        if signature.file_identity != state.asset.file_identity
-            || signature.byte_len != state.asset.byte_len
-        {
-            return Err(Error::new(
-                ErrorKind::SourceUnavailable,
-                "original source fingerprint changed",
-            ));
-        }
+        let signature = original_signature(&state.asset)?;
         let cache = self.source_cache.borrow();
         Ok(cache
             .as_ref()
@@ -330,31 +397,15 @@ impl EditorService {
         }
         let identity = signature.file_identity.clone();
         let canonical_text = canonical.to_string_lossy().into_owned();
-        if let Some(existing) = self
-            .connection
-            .query_row(
-                "SELECT id FROM assets WHERE canonical_locator=?1 OR file_identity=?2 LIMIT 1",
-                params![canonical_text, identity],
-                |row| row.get::<_, String>(0),
-            )
-            .optional()
-            .map_err(catalog_error)?
-        {
-            let state = self.state(&AssetId::parse(existing)?)?;
+        if let Some((existing, _)) = self.asset_for_source(&canonical, &identity)? {
+            let state = self.state(&existing)?;
             if state.asset.fingerprint != fingerprint {
                 return Err(Error::new(
                     ErrorKind::SourceUnavailable,
                     "original source fingerprint changed",
                 ));
             }
-            let interpretation = match source.metadata() {
-                None => SourceKind::Jpeg,
-                Some(metadata) => SourceKind::Raw {
-                    metadata: serde_json::to_value(metadata)
-                        .map_err(|e| json_error("RAW metadata", e))?,
-                },
-            };
-            if !source_kinds_equal(&state.asset.source, &interpretation)? {
+            if state.asset.source != SourceKind::of(&source)? {
                 return Err(Error::new(
                     ErrorKind::Incompatible,
                     "original source interpretation changed",
@@ -368,13 +419,7 @@ impl EditorService {
             return Ok((state, false));
         }
         let (width, height) = source.dimensions();
-        let source_kind = match source.metadata() {
-            None => SourceKind::Jpeg,
-            Some(metadata) => SourceKind::Raw {
-                metadata: serde_json::to_value(metadata)
-                    .map_err(|e| json_error("RAW metadata", e))?,
-            },
-        };
+        let source_kind = SourceKind::of(&source)?;
         let asset = AssetRecord {
             id: AssetId::new(),
             source_root: canonical.parent().unwrap_or(Path::new("")).to_path_buf(),
@@ -460,23 +505,14 @@ impl EditorService {
     }
 
     pub(super) fn verified_prepared(&self, asset: &AssetRecord) -> Result<PreparedSource, Error> {
-        let before = asset.locator.metadata().map_err(|_| {
-            Error::new(
-                ErrorKind::SourceUnavailable,
-                "original source is unavailable",
-            )
-        })?;
-        let signature = source_signature(&asset.locator, &before);
+        let signature = original_signature(asset)?;
         let raw_source = matches!(&asset.source, SourceKind::Raw { .. });
         let max_source_bytes = if raw_source {
             lightwell_raw::MAX_SOURCE_BYTES as u64
         } else {
             crate::source::MAX_JPEG_BYTES as u64
         };
-        if signature.byte_len != asset.byte_len
-            || signature.byte_len > max_source_bytes
-            || signature.file_identity != asset.file_identity
-        {
+        if signature.byte_len > max_source_bytes {
             return Err(Error::new(
                 ErrorKind::SourceUnavailable,
                 "original source fingerprint changed",
@@ -503,14 +539,8 @@ impl EditorService {
         }
         match (&asset.source, &prepared.source) {
             (SourceKind::Jpeg, PreparedSource::Jpeg(_)) => {}
-            (SourceKind::Raw { .. }, PreparedSource::Raw(raw))
-                if source_kinds_equal(
-                    &asset.source,
-                    &SourceKind::Raw {
-                        metadata: serde_json::to_value(raw.sensor.metadata())
-                            .map_err(|e| json_error("RAW metadata", e))?,
-                    },
-                )? => {}
+            (SourceKind::Raw { metadata }, PreparedSource::Raw(raw))
+                if **metadata == *raw.sensor.metadata() => {}
             _ => {
                 return Err(Error::new(
                     ErrorKind::Incompatible,
@@ -546,8 +576,9 @@ pub(super) fn validate_source_recipe(
         }
         SourceKind::Raw { ref metadata } => {
             let payload = raw_payload(recipe)?;
-            let stored = parse_raw_interpretation(metadata, "RAW interpretation")?;
-            if payload.as_shot_gains != stored.as_shot_gains || payload.cam_xyz != stored.cam_xyz {
+            if payload.as_shot_gains != metadata.as_shot_gains
+                || payload.cam_xyz != metadata.cam_xyz
+            {
                 return Err(Error::new(
                     ErrorKind::Incompatible,
                     "RAW source layer calibration differs from original",
@@ -556,47 +587,6 @@ pub(super) fn validate_source_recipe(
         }
     }
     Ok(())
-}
-
-pub(super) fn parse_raw_interpretation(
-    metadata: &Value,
-    context: &str,
-) -> Result<lightwell_raw::RawMetadata, Error> {
-    let parsed: lightwell_raw::RawMetadata =
-        serde_json::from_value(metadata.clone()).map_err(|e| json_error(context, e))?;
-    let is_dng = parsed.mode.requires_dng_corrections();
-    if (is_dng
-        && (!metadata
-            .as_object()
-            .is_some_and(|fields| fields.contains_key("dng_corrections"))
-            || parsed.dng_corrections.is_none()))
-        || (!is_dng && parsed.dng_corrections.is_some())
-    {
-        return Err(Error::new(
-            ErrorKind::Incompatible,
-            format!("{context}: RAW correction record differs from mode"),
-        ));
-    }
-    Ok(parsed)
-}
-
-/// Compare typed camera interpretation after JSON roundtrip. A stored f32 has a shortest decimal
-/// encoding while a fresh serde_json::Value can hold its exact f64 widening; comparing those
-/// Values directly can reject an unchanged original on reopen (seen on the Fuji corpus file).
-/// Parsing back to RawMetadata preserves strict field equality at the native f32 precision.
-fn source_kinds_equal(left: &SourceKind, right: &SourceKind) -> Result<bool, Error> {
-    match (left, right) {
-        (SourceKind::Jpeg, SourceKind::Jpeg) => Ok(true),
-        (SourceKind::Raw { metadata: a }, SourceKind::Raw { metadata: b }) => {
-            let a = parse_raw_interpretation(a, "stored RAW interpretation")?;
-            let b = parse_raw_interpretation(b, "RAW interpretation")?;
-            Ok(
-                serde_json::to_value(a).map_err(|e| json_error("stored RAW interpretation", e))?
-                    == serde_json::to_value(b).map_err(|e| json_error("RAW interpretation", e))?,
-            )
-        }
-        _ => Ok(false),
-    }
 }
 
 /// Whether an evaluation may approximate a RAW white balance the developed planes do not hold.
@@ -807,32 +797,40 @@ mod tests {
             warnings: vec![],
             dng_corrections: None,
         };
-        let fresh = SourceKind::Raw {
-            metadata: serde_json::to_value(&metadata).unwrap(),
+        // A row read parses the stored text into the type once, here, as `into_record` does.
+        let read = |text: String| -> Result<SourceKind, Error> {
+            crate::editor::decode("stored source interpretation", text)
         };
-        let stored: SourceKind =
-            serde_json::from_str(&serde_json::to_string(&fresh).unwrap()).unwrap();
-        assert!(source_kinds_equal(&stored, &fresh).unwrap());
+        let fresh = SourceKind::Raw {
+            metadata: RawInterpretation::new(metadata.clone()).unwrap(),
+        };
+        // The catalog and the API spell each f32 as its shortest decimal; a JSON value holds its
+        // exact f64 widening instead. Both read back to the same f32s, because the comparison is
+        // the type's own and not the text's.
+        let shortest = serde_json::to_string(&fresh).unwrap();
+        let spelled = serde_json::to_value(&fresh).unwrap();
+        assert_ne!(shortest, spelled.to_string(), "the two spellings differ");
+        let stored = read(shortest).unwrap();
+        assert_eq!(stored, fresh);
+        assert_eq!(read(spelled.to_string()).unwrap(), fresh);
         for field in ["backend", "default_crop", "cam_xyz"] {
-            let mut changed = fresh.clone();
-            if let SourceKind::Raw { metadata } = &mut changed {
-                match field {
-                    "backend" => metadata["backend"] = json!("other backend"),
-                    "default_crop" => metadata["default_crop"]["x"] = json!(1),
-                    "cam_xyz" => metadata["cam_xyz"][0][0] = json!(0.5),
-                    _ => unreachable!(),
-                }
+            let mut changed = spelled.clone();
+            let metadata = &mut changed["metadata"];
+            match field {
+                "backend" => metadata["backend"] = json!("other backend"),
+                "default_crop" => metadata["default_crop"]["x"] = json!(1),
+                "cam_xyz" => metadata["cam_xyz"][0][0] = json!(0.5),
+                _ => unreachable!(),
             }
-            assert!(!source_kinds_equal(&stored, &changed).unwrap(), "{field}");
+            assert_ne!(read(changed.to_string()).unwrap(), stored, "{field}");
         }
-        let mut unknown = fresh;
-        if let SourceKind::Raw { metadata } = &mut unknown {
-            metadata["unexpected"] = json!(true);
-        }
-        assert!(source_kinds_equal(&stored, &unknown).is_err());
-        if let SourceKind::Raw { metadata } = &stored {
-            assert!(metadata.get("dng_corrections").is_none());
-        }
+        let mut unknown = spelled.clone();
+        unknown["metadata"]["unexpected"] = json!(true);
+        assert_eq!(
+            read(unknown.to_string()).unwrap_err().kind,
+            ErrorKind::Incompatible
+        );
+        assert!(spelled["metadata"].get("dng_corrections").is_none());
         let mut dng = metadata.clone();
         dng.mode = RawMode::DjiAir2sDng16;
         dng.dng_corrections = Some(lightwell_raw::DngCorrectionMetadata {
@@ -854,38 +852,46 @@ mod tests {
                 selected: "ColorMatrix2-D65-fixed-XYZ-to-camera".into(),
             },
         });
-        let dng = SourceKind::Raw {
-            metadata: serde_json::to_value(dng).unwrap(),
+        let dng_kind = SourceKind::Raw {
+            metadata: RawInterpretation::new(dng.clone()).unwrap(),
         };
-        let dng_stored: SourceKind =
-            serde_json::from_str(&serde_json::to_string(&dng).unwrap()).unwrap();
-        assert!(source_kinds_equal(&dng_stored, &dng).unwrap());
-        let mut changed_correction = dng.clone();
-        if let SourceKind::Raw { metadata } = &mut changed_correction {
-            metadata["dng_corrections"]["applied"][0]["payload_sha256"] = json!("changed");
+        let dng_spelled = serde_json::to_value(&dng_kind).unwrap();
+        let dng_stored = read(serde_json::to_string(&dng_kind).unwrap()).unwrap();
+        assert_eq!(dng_stored, dng_kind);
+        let mut changed_correction = dng_spelled.clone();
+        changed_correction["metadata"]["dng_corrections"]["applied"][0]["payload_sha256"] =
+            json!("changed");
+        assert_ne!(read(changed_correction.to_string()).unwrap(), dng_stored);
+        // A mode that needs its correction record refuses a row without one, spelled null or left
+        // out, when the row is read.
+        let mut missing_correction = dng_spelled.clone();
+        missing_correction["metadata"]["dng_corrections"] = Value::Null;
+        let mut absent_correction = dng_spelled.clone();
+        absent_correction["metadata"]
+            .as_object_mut()
+            .unwrap()
+            .remove("dng_corrections");
+        for refused in [missing_correction, absent_correction] {
+            assert_eq!(
+                read(refused.to_string()).unwrap_err().kind,
+                ErrorKind::Incompatible
+            );
         }
-        assert!(!source_kinds_equal(&dng_stored, &changed_correction).unwrap());
-        let mut missing_correction = dng.clone();
-        if let SourceKind::Raw { metadata } = &mut missing_correction {
-            metadata["dng_corrections"] = Value::Null;
-        }
+        assert_ne!(stored, SourceKind::Jpeg);
+        // And a mode that takes none refuses a record where it enters, so no asset holds one.
+        let mut mismatched = metadata.clone();
+        mismatched.dng_corrections = dng.dng_corrections.clone();
         assert_eq!(
-            source_kinds_equal(&missing_correction, &dng)
-                .unwrap_err()
-                .kind,
+            RawInterpretation::new(mismatched).unwrap_err().kind,
             ErrorKind::Incompatible
         );
-        let mut absent_correction = dng.clone();
-        if let SourceKind::Raw { metadata } = &mut absent_correction {
-            metadata.as_object_mut().unwrap().remove("dng_corrections");
-        }
+        let mut mismatched = spelled.clone();
+        mismatched["metadata"]["dng_corrections"] =
+            dng_spelled["metadata"]["dng_corrections"].clone();
         assert_eq!(
-            source_kinds_equal(&absent_correction, &dng)
-                .unwrap_err()
-                .kind,
+            read(mismatched.to_string()).unwrap_err().kind,
             ErrorKind::Incompatible
         );
-        assert!(!source_kinds_equal(&stored, &SourceKind::Jpeg).unwrap());
 
         let asset = AssetRecord {
             id: AssetId::new(),
@@ -905,22 +911,6 @@ mod tests {
             .with_layer_inserted(0, payload.layer(layer_id.clone()))
             .unwrap();
         validate_source_recipe(&asset, &snapshot.recipe).unwrap();
-        let mut incompatible_asset = asset.clone();
-        if let (
-            SourceKind::Raw { metadata },
-            SourceKind::Raw {
-                metadata: dng_metadata,
-            },
-        ) = (&mut incompatible_asset.source, &dng)
-        {
-            metadata["dng_corrections"] = dng_metadata["dng_corrections"].clone();
-        }
-        assert_eq!(
-            validate_source_recipe(&incompatible_asset, &snapshot.recipe)
-                .unwrap_err()
-                .kind,
-            ErrorKind::Incompatible
-        );
         for calibration in ["as_shot_gains", "cam_xyz"] {
             let mut corrupted = payload.clone();
             if calibration == "as_shot_gains" {
@@ -1081,9 +1071,7 @@ mod tests {
             panic!("a RAW source");
         };
         let metadata = match &state.asset.source {
-            SourceKind::Raw { metadata } => {
-                parse_raw_interpretation(metadata, "RAW interpretation").unwrap()
-            }
+            SourceKind::Raw { metadata } => metadata.clone(),
             SourceKind::Jpeg => panic!("a RAW asset"),
         };
         // A temperature drafted from As shot keeps the camera's as-shot tint.
@@ -1297,6 +1285,34 @@ mod tests {
             original_hash
         );
         drop(reopened);
+        std::fs::remove_file(catalog).unwrap();
+    }
+
+    /// The typed interpretation a reopened catalog reads back is equal to the one the decoder
+    /// produces again: a repeated import finds the same asset rather than a changed original, and a
+    /// synchronous preparation after reopen accepts the file it decodes. Run with
+    /// LIGHTWELL_RAW_FIXTURE pointing to a private qualified NEF, RAF or DNG.
+    #[test]
+    #[ignore = "requires a photo-sized RAW fixture; run explicitly on the owner's Mac"]
+    fn a_reopened_raw_interpretation_equals_the_decoders_again() {
+        let path = PathBuf::from(std::env::var("LIGHTWELL_RAW_FIXTURE").expect("fixture path"));
+        let catalog = temp("raw-reinterpretation.sqlite");
+        let mut service = EditorService::open(&catalog).unwrap();
+        let imported = service.import(&path).unwrap();
+        drop(service);
+
+        let mut service = EditorService::open(&catalog).unwrap();
+        let again = service.import(&path).expect("the same interpretation");
+        assert_eq!(again.asset, imported.asset);
+        drop(service);
+
+        let service = EditorService::open(&catalog).unwrap();
+        let state = service.state(&imported.asset.id).unwrap();
+        assert_eq!(state.asset.source, imported.asset.source);
+        service
+            .verified_prepared(&state.asset)
+            .expect("a preparation after reopen accepts the decoded interpretation");
+        drop(service);
         std::fs::remove_file(catalog).unwrap();
     }
 

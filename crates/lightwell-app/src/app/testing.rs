@@ -375,6 +375,44 @@ pub(crate) const Z6_CAM_XYZ: [[f32; 3]; 4] = [
 ];
 pub(crate) const Z6_AS_SHOT: [f32; 3] = [1.683_593_8, 1.0, 1.345_703_1];
 
+/// A RAW source as the owner reports one: the Z6's typed camera interpretation, read from the JSON
+/// object `asset.state` carries.
+pub(crate) fn raw_source() -> lightwell_core::SourceKind {
+    let rect = json!({"x": 0, "y": 0, "width": 6048, "height": 4032});
+    serde_json::from_value(json!({
+        "kind": "raw",
+        "metadata": {
+            "make": "Nikon",
+            "model": "Z 6",
+            "mode": "NikonZ6Lossless14",
+            "sensor_width": 6048,
+            "sensor_height": 4032,
+            "active_area": rect,
+            "default_crop": rect,
+            "cfa_width": 2,
+            "cfa_height": 2,
+            "cfa": [0, 1, 1, 2],
+            "black_cfa": [0, 0, 0, 0],
+            "black_base": 1008.0,
+            "black_channels": [0.0, 0.0, 0.0, 0.0],
+            "black_repeat_width": 0,
+            "black_repeat_height": 0,
+            "black_repeat": [],
+            "sensor_white": 15520.0,
+            "as_shot_gains": Z6_AS_SHOT,
+            "libraw_flip": 0,
+            "rgb_cam": [[1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0], [0.0, 0.0, 1.0, 0.0]],
+            "cam_xyz": Z6_CAM_XYZ,
+            "backend": "test",
+            "exif_orientation": 1,
+            "libraw_inset": null,
+            "format_identity": "test",
+            "warnings": [],
+        },
+    }))
+    .expect("a RAW interpretation")
+}
+
 /// An entry whose stack is one RAW development layer holding `payload`.
 pub(crate) fn raw_entry(
     asset: &AssetId,
@@ -395,9 +433,7 @@ pub(crate) fn raw_entry(
 pub(crate) fn raw_refresh(asset: &AssetId, current: &HistoryEntry) -> Refresh {
     use lightwell_core::ToolModule;
     let mut refresh = refresh_for(asset, current, vec![current.clone()], &[current], false);
-    refresh.state.asset.source = lightwell_core::SourceKind::Raw {
-        metadata: json!({}),
-    };
+    refresh.state.asset.source = raw_source();
     let module = lightwell_core::RawModule::new();
     refresh.recipe.layers = current
         .snapshot
