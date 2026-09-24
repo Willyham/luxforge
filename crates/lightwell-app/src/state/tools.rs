@@ -20,7 +20,7 @@ use lightwell_core::{
     ActionDescriptor, ActionStyle, AssetId, CanvasInteraction, ChoiceStyle, ColorStyle, Control,
     CropPayload, CropStage, CurveBackground, EffectStage, EntryId, Layer, MAX_ANGLE, MIN_ANGLE,
     MaskId, ModuleDescriptor, NumberStyle, ORIENTATION_EFFECT, Orientation, ParameterDescriptor,
-    ParameterKind, RAW_EFFECT, RailDecoration, RawPayload, ResetAction,
+    ParameterKind, RailDecoration, ResetAction,
 };
 use serde_json::{Map, Value};
 use std::{
@@ -730,47 +730,20 @@ fn disabled_reason(unavailable: Option<&str>, inputs: &Inputs<'_>) -> Option<Str
 /// that layer does something.
 ///
 /// The target is what makes the section's dot honest while a mask is open: a global Basic layer says
-/// nothing about whether this mask's Basic layer is doing anything, and vice versa.
+/// nothing about whether this mask's Basic layer is doing anything, and vice versa. Whether a layer
+/// does something is the core's answer, each row's `neutral` from `recipe.describe`, so a field
+/// patch returned to its neutral values, a whole-image crop, the identity orientation and a RAW
+/// development at As shot and 0 EV are stored but carry no dot. The rows are the current entry's,
+/// never a historical preview's.
 fn active(module: &ModuleDescriptor, inputs: &Inputs<'_>) -> bool {
-    let Some(state) = inputs.state else {
+    let (Some(_), Some(recipe)) = (inputs.state, inputs.current_recipe) else {
         return false;
     };
-    state
-        .current_entry
-        .snapshot
-        .recipe
+    recipe
         .layers
         .iter()
-        .filter(|layer| layer.mask.as_ref() == inputs.target)
-        .any(|layer| {
-            module
-                .effects
-                .iter()
-                .any(|effect| effect.id == layer.effect_id)
-                && !neutral(module, layer)
-        })
-}
-
-/// A neutral layer is stored but changes nothing, so it is not an edit. Three stored payloads have a
-/// neutral form: the orientation layer's identity, which is what four quarter turns leave behind, a
-/// crop-frame module's whole image, and the RAW development at As shot and 0 EV, which every RAW
-/// recipe holds from its Original on. The core answers each, beside the payload it describes; a
-/// payload with no neutral form is always an edit.
-fn neutral(module: &ModuleDescriptor, layer: &Layer) -> bool {
-    if layer.effect_id == ORIENTATION_EFFECT {
-        return serde_json::from_value::<Orientation>(layer.payload.clone())
-            .map(|orientation| orientation == Orientation::NEUTRAL)
-            .unwrap_or(false);
-    }
-    if layer.effect_id == RAW_EFFECT {
-        return RawPayload::from_layer(layer).is_ok_and(|payload| payload.is_neutral());
-    }
-    if !matches!(module.canvas, Some(CanvasInteraction::CropFrame { .. })) {
-        return false;
-    }
-    serde_json::from_value::<CropPayload>(layer.payload.clone())
-        .map(|payload| payload == CropPayload::NEUTRAL)
-        .unwrap_or(false)
+        .filter(|row| row.mask.as_ref() == inputs.target)
+        .any(|row| module.effects.iter().any(|effect| effect.id == row.effect) && !row.neutral)
 }
 
 /// Everything this section is derived from, so an unrelated change leaves its version alone.

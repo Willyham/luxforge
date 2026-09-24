@@ -246,6 +246,15 @@ pub trait ToolModule: Send + Sync {
         format: u32,
         payload: &Value,
     ) -> Result<String, Error>;
+    /// Whether this stored layer changes nothing, so a client need not show it as an edit: a field
+    /// patch at its neutral values, a whole-image crop, the identity orientation, a RAW development
+    /// at As shot and 0 EV. `recipe.describe` reports it on the layer's row. Reading a payload only,
+    /// like [`ToolModule::describe_layer`]: no render, no sample, no source. The default is `false`,
+    /// because a payload with no neutral form is always an edit.
+    fn is_neutral(&self, effect_id: &str, format: u32, payload: &Value) -> Result<bool, Error> {
+        let _ = (effect_id, format, payload);
+        Ok(false)
+    }
     /// The history label this request deserves, when the rendered `summary` template cannot say it:
     /// a patch naming the one field it changed, or a reset naming the group it cleared. The host
     /// consults this before the template and the title. Reading the request only.

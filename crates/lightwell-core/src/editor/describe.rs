@@ -70,6 +70,7 @@ impl EditorService {
                     available: false,
                     mask: layer.mask.clone(),
                     artifacts: layer.artifacts.clone(),
+                    neutral: false,
                 },
                 Some((module, _)) => {
                     let descriptor = module.descriptor();
@@ -112,6 +113,7 @@ impl EditorService {
                         available,
                         mask: layer.mask.clone(),
                         artifacts: layer.artifacts.clone(),
+                        neutral: self.registry.layer_neutral(layer),
                     }
                 }
             };

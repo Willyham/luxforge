@@ -545,6 +545,19 @@ impl ToolModule for RawModule {
         })
         .map(|_| ())
     }
+    /// The Original's development: As shot at 0 EV, whatever custom values the payload keeps
+    /// ([`RawPayload::is_neutral`]). Every RAW recipe holds this layer from its Original on.
+    fn is_neutral(&self, effect_id: &str, format: u32, value: &Value) -> Result<bool, Error> {
+        Ok(RawPayload::from_layer(&Layer {
+            id: LayerId::new(),
+            effect_id: effect_id.into(),
+            effect_format: format,
+            payload: value.clone(),
+            mask: None,
+            artifacts: Vec::new(),
+        })?
+        .is_neutral())
+    }
     fn describe_layer(&self, effect_id: &str, format: u32, value: &Value) -> Result<String, Error> {
         let payload = RawPayload::from_layer(&Layer {
             id: LayerId::new(),

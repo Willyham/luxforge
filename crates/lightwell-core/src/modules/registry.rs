@@ -118,6 +118,14 @@ impl ToolModule for Unavailable {
     ) -> Result<String, Error> {
         self.inner.describe_layer(effect_id, format, payload)
     }
+    fn is_neutral(
+        &self,
+        effect_id: &str,
+        format: u32,
+        payload: &serde_json::Value,
+    ) -> Result<bool, Error> {
+        self.inner.is_neutral(effect_id, format, payload)
+    }
     fn label(&self, input: &super::ActionInput) -> Option<String> {
         self.inner.label(input)
     }
@@ -682,6 +690,18 @@ impl ModuleRegistry {
     fn provider(&self, effect_id: &str) -> Option<&dyn ToolModule> {
         let (module, _) = self.effect(effect_id)?;
         module.descriptor().is_available().then_some(module)
+    }
+
+    /// Whether this stored layer changes nothing, by its available provider's own rule
+    /// ([`ToolModule::is_neutral`]). A layer whose provider is missing or unavailable, or whose
+    /// payload the provider cannot read, is not neutral: nothing can say it changes nothing.
+    /// Reading the payload only.
+    pub fn layer_neutral(&self, layer: &Layer) -> bool {
+        self.provider(&layer.effect_id).is_some_and(|module| {
+            module
+                .is_neutral(&layer.effect_id, layer.effect_format, &layer.payload)
+                .unwrap_or(false)
+        })
     }
 
     /// Structural validation stays in the model; effect availability, whether the effect may
@@ -2120,6 +2140,94 @@ pub(crate) mod tests {
             described(&Layer::crop(crate::CropPayload::NEUTRAL)),
             "Whole image"
         );
+    }
+
+    /// Whether a stored layer changes nothing is its module's answer, for every module with a
+    /// neutral form: a field patch at its neutral values however they are spelled (the vignette's
+    /// is any shape at amount 0), a whole-image crop, the identity orientation and a RAW
+    /// development at As shot and 0 EV. A pixel replacement has no neutral form, and a layer whose
+    /// provider is missing or unavailable, or whose payload cannot be read, is never neutral.
+    #[test]
+    fn a_layer_is_neutral_by_its_own_modules_rule() {
+        let registry = ModuleRegistry::builtin();
+        let layer = |effect: &str, payload: Value| Layer::new(effect, payload);
+        let as_shot = crate::RawPayload::for_as_shot([2.0, 1.0, 1.5], [[0.5; 3]; 4]).unwrap();
+        let cases = [
+            (layer(BASIC_EFFECT, json!({})), true),
+            (
+                layer(BASIC_EFFECT, json!({"exposure": 0.0, "tint": 0})),
+                true,
+            ),
+            (layer(BASIC_EFFECT, json!({"exposure": 0.5})), false),
+            (layer(crate::PRESENCE_EFFECT, json!({"texture": 0})), true),
+            (layer(crate::PRESENCE_EFFECT, json!({"dehaze": -3})), false),
+            (layer(crate::MIXER_EFFECT, json!({"red-hue": 0})), true),
+            (
+                layer(crate::MIXER_EFFECT, json!({"aqua-luminance": 12})),
+                false,
+            ),
+            (layer(crate::VIGNETTE_EFFECT, json!({})), true),
+            (
+                layer(
+                    crate::VIGNETTE_EFFECT,
+                    json!({"midpoint": 60, "feather": 0}),
+                ),
+                true,
+            ),
+            (layer(crate::VIGNETTE_EFFECT, json!({"amount": -10})), false),
+            (Layer::crop(CropPayload::NEUTRAL), true),
+            (
+                Layer::crop(CropPayload {
+                    angle: 0.0,
+                    x: 0.1,
+                    y: 0.1,
+                    width: 0.5,
+                    height: 0.5,
+                }),
+                false,
+            ),
+            (
+                Layer::crop(CropPayload {
+                    angle: 2.0,
+                    ..CropPayload::NEUTRAL
+                }),
+                false,
+            ),
+            (Layer::orientation(Orientation::NEUTRAL), true),
+            (
+                Layer::orientation(Orientation {
+                    mirror: true,
+                    turns: 0,
+                }),
+                false,
+            ),
+            (as_shot.layer(LayerId::new()), true),
+            (
+                crate::RawPayload {
+                    exposure_ev: 0.25,
+                    ..as_shot.clone()
+                }
+                .layer(LayerId::new()),
+                false,
+            ),
+            (Layer::pixel(0, 0, [1, 2, 3]), false),
+            (layer(BASIC_EFFECT, json!({"gamma": 1})), false),
+            (layer("test.nobody", json!({})), false),
+        ];
+        for (layer, neutral) in cases {
+            assert_eq!(
+                registry.layer_neutral(&layer),
+                neutral,
+                "{} {}",
+                layer.effect_id,
+                layer.payload
+            );
+        }
+        let mut unavailable = ModuleRegistry::new();
+        unavailable
+            .register_unavailable(Arc::new(super::BasicModule::new()), "switched off")
+            .unwrap();
+        assert!(!unavailable.layer_neutral(&layer(BASIC_EFFECT, json!({}))));
     }
 
     /// One list of built-in modules serves every registry, and registering one of them unavailable

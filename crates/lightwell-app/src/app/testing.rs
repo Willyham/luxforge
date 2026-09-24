@@ -330,6 +330,7 @@ pub(crate) fn refresh_for(
             entry_id: current.id.clone(),
             layers: Vec::new(),
         },
+        current_recipe: None,
         masks: lightwell_core::mask::commands::MaskListing {
             entry_id: current.id.clone(),
             masks: Vec::new(),
@@ -364,6 +365,54 @@ pub(crate) fn refresh_for(
         },
         session: ClientSession::default(),
         sequence: 7,
+    }
+}
+
+/// The rows the owner's `recipe.describe` gives an entry, from the core's own built-in modules:
+/// each layer's provider, summary and values, and the core's answer to whether it is neutral. The
+/// desktop derives none of this from a payload, so its tests describe a stack as the owner does.
+pub(crate) fn described(entry: &HistoryEntry) -> RecipeDescription {
+    let registry = lightwell_core::ModuleRegistry::builtin();
+    RecipeDescription {
+        entry_id: entry.id.clone(),
+        layers: entry
+            .snapshot
+            .recipe
+            .layers
+            .iter()
+            .map(|layer| {
+                let module = registry.effect(&layer.effect_id).map(|(module, _)| module);
+                let read = |layer: &lightwell_core::Layer| {
+                    module.and_then(|module| {
+                        Some((
+                            module
+                                .describe_layer(
+                                    &layer.effect_id,
+                                    layer.effect_format,
+                                    &layer.payload,
+                                )
+                                .ok()?,
+                            module
+                                .values(&layer.effect_id, layer.effect_format, &layer.payload)
+                                .ok()?,
+                        ))
+                    })
+                };
+                let (summary, values) = read(layer).unwrap_or_default();
+                lightwell_core::LayerDescription {
+                    id: layer.id.clone(),
+                    effect: layer.effect_id.clone(),
+                    module: module.map(|module| module.descriptor().id.clone()),
+                    title: module.map(|module| module.descriptor().title.clone()),
+                    summary,
+                    values,
+                    available: module.is_some(),
+                    mask: layer.mask.clone(),
+                    artifacts: layer.artifacts.clone(),
+                    neutral: registry.layer_neutral(layer),
+                }
+            })
+            .collect(),
     }
 }
 
@@ -456,6 +505,9 @@ pub(crate) fn raw_refresh(asset: &AssetId, current: &HistoryEntry) -> Refresh {
             available: true,
             mask: layer.mask.clone(),
             artifacts: layer.artifacts.clone(),
+            neutral: module
+                .is_neutral(&layer.effect_id, layer.effect_format, &layer.payload)
+                .expect("RAW neutrality"),
         })
         .collect();
     refresh

@@ -427,6 +427,11 @@ impl ToolModule for TransformModule {
         payload(effect_id, format, value).map(|_| ())
     }
 
+    /// The identity orientation, which is what four quarter turns leave behind.
+    fn is_neutral(&self, effect_id: &str, format: u32, value: &Value) -> Result<bool, Error> {
+        Ok(payload(effect_id, format, value)? == Orientation::NEUTRAL)
+    }
+
     fn describe_layer(&self, effect_id: &str, format: u32, value: &Value) -> Result<String, Error> {
         Ok(describe(payload(effect_id, format, value)?))
     }

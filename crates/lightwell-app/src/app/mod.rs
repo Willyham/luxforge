@@ -465,6 +465,9 @@ pub(crate) struct Editor {
     pub(crate) expanded: BTreeMap<String, bool>,
     /// The displayed entry's layers as the recipe panel reads them.
     pub(crate) recipe: Option<RecipeDescription>,
+    /// The current entry's layers, whichever entry is displayed: a section's edited dot follows the
+    /// current entry, never a historical preview.
+    pub(crate) current_recipe: Option<RecipeDescription>,
     /// The last `recipe.describe` for a displayed entry failed, so no rows will come for it.
     pub(crate) recipe_failed: bool,
     pub(crate) menu: Option<MenuTarget>,
@@ -688,6 +691,7 @@ impl Editor {
             displayed_draft_revision: None,
             expanded: BTreeMap::new(),
             recipe: None,
+            current_recipe: None,
             recipe_failed: false,
             menu: None,
             palette_open: false,
@@ -2235,6 +2239,7 @@ impl Editor {
             modules: &self.modules,
             modules_ready: self.modules_ready,
             recipe: self.recipe.as_ref(),
+            current_recipe: self.current_recipe.as_ref(),
             displayed_layers: self
                 .requested_render_entry
                 .as_ref()
@@ -2669,6 +2674,15 @@ impl Editor {
                 Ok(read) => {
                     let read = *read;
                     self.recipe_failed = false;
+                    // Rows of the current entry, read when a preview returns to it, are also the
+                    // rows the section dot follows.
+                    if self
+                        .state
+                        .as_ref()
+                        .is_some_and(|state| state.current_entry.id == read.recipe.entry_id)
+                    {
+                        self.current_recipe = Some(read.recipe.clone());
+                    }
                     self.recipe = Some(read.recipe);
                     self.masks = Some(read.masks);
                     self.seed_values();
@@ -4178,6 +4192,11 @@ impl Editor {
         if refresh.original.is_some() {
             self.original_entry = refresh.original;
         }
+        self.current_recipe = Some(
+            refresh
+                .current_recipe
+                .unwrap_or_else(|| refresh.recipe.clone()),
+        );
         self.recipe = Some(refresh.recipe);
         self.masks = Some(refresh.masks);
         self.recipe_failed = false;
@@ -5700,6 +5719,7 @@ mod tests {
                     available: true,
                     mask: None,
                     artifacts: Vec::new(),
+                    neutral: false,
                 })
                 .collect();
             let _ = editor.update(Message::Refreshed(Ok(Box::new(refresh))));
@@ -6261,6 +6281,63 @@ mod tests {
     /// Selecting a history entry shows that entry's own saved values in the disabled fields, and
     /// returning to current puts the current ones back. The values come from the displayed entry's
     /// own `recipe.describe` rows: nothing is recomputed on the desktop.
+    /// The section dot reads the current entry's rows, which the editor keeps whichever entry is
+    /// displayed: rows read for a historical preview never replace them, a refresh during a preview
+    /// brings them separately, and rows read on returning to the current entry are theirs again.
+    #[test]
+    fn the_current_entrys_rows_are_kept_whichever_entry_is_displayed() {
+        let (mut editor, catalog) = opened_with_modules(descriptors(), 4);
+        let current = editor.state.as_ref().expect("open").current_entry.clone();
+        let asset = current.asset_id.clone();
+        let rows = |entry: &lightwell_core::HistoryEntry| testing::described(entry);
+        let read = |entry: &lightwell_core::HistoryEntry| {
+            Message::RecipeDescribed(Ok(Box::new(crate::app::tasks::RecipeRead {
+                recipe: rows(entry),
+                masks: lightwell_core::mask::commands::MaskListing {
+                    entry_id: entry.id.clone(),
+                    masks: Vec::new(),
+                },
+            })))
+        };
+        let current_rows = |editor: &Editor| {
+            editor
+                .current_recipe
+                .as_ref()
+                .map(|recipe| recipe.entry_id.clone())
+        };
+        let _ = editor.update(Message::Refreshed(Ok(Box::new(refresh_for(
+            &asset,
+            &current,
+            vec![current.clone()],
+            &[&current],
+            false,
+        )))));
+        assert_eq!(current_rows(&editor), Some(current.id.clone()));
+
+        let older = entry(&asset, 2, None);
+        let _ = editor.update(read(&older));
+        assert_eq!(
+            editor.recipe.as_ref().map(|recipe| &recipe.entry_id),
+            Some(&older.id)
+        );
+        assert_eq!(
+            current_rows(&editor),
+            Some(current.id.clone()),
+            "a preview's rows are not the current entry's"
+        );
+
+        let mut previewing =
+            refresh_for(&asset, &current, vec![current.clone()], &[&current], false);
+        previewing.recipe = rows(&older);
+        previewing.current_recipe = Some(rows(&current));
+        let _ = editor.update(Message::Refreshed(Ok(Box::new(previewing))));
+        assert_eq!(current_rows(&editor), Some(current.id.clone()));
+
+        let _ = editor.update(read(&current));
+        assert_eq!(current_rows(&editor), Some(current.id.clone()));
+        finish(editor, catalog);
+    }
+
     #[test]
     fn historical_values_fill_the_disabled_fields_and_return_to_current_restores_them() {
         let (mut editor, catalog) = opened_with_modules(descriptors(), 4);
@@ -6290,6 +6367,7 @@ mod tests {
                 available: true,
                 mask: None,
                 artifacts: Vec::new(),
+                neutral: false,
             }];
             Box::new(refresh)
         };

@@ -47,6 +47,9 @@ pub(crate) struct Inputs<'a> {
     pub(crate) modules_ready: bool,
     /// The displayed entry's layers as the owner described them.
     pub(crate) recipe: Option<&'a RecipeDescription>,
+    /// The current entry's layers as the owner described them, whichever entry is displayed. A
+    /// section's edited dot reads each row's `neutral`, the core's own answer.
+    pub(crate) current_recipe: Option<&'a RecipeDescription>,
     /// The displayed entry's stored layers, payloads included, as the preview job that shows it
     /// carries them. The idle crop section reads the committed crop from these.
     pub(crate) displayed_layers: Option<&'a [lightwell_core::Layer]>,
@@ -264,6 +267,7 @@ mod tests {
         display_entry: Option<EntryId>,
         modules: Vec<ModuleDescriptor>,
         recipe: Option<RecipeDescription>,
+        current_recipe: Option<RecipeDescription>,
         fields: Fields,
         control_ui: tools::ControlsUi,
         editing: Option<(String, String)>,
@@ -309,6 +313,7 @@ mod tests {
                 display_entry: None,
                 modules,
                 recipe: None,
+                current_recipe: None,
                 fields,
                 control_ui: tools::ControlsUi::default(),
                 editing: None,
@@ -349,6 +354,7 @@ mod tests {
                 current.snapshot = current.snapshot.append(layer).expect("a valid stack");
             }
             self.display_entry = Some(current.id.clone());
+            self.current_recipe = Some(crate::app::testing::described(&current));
             self.lineage.insert(current.id.clone());
             self.history = HistoryPage {
                 entries: vec![current.clone()],
@@ -384,6 +390,7 @@ mod tests {
                 modules: &self.modules,
                 modules_ready: true,
                 recipe: self.recipe.as_ref(),
+                current_recipe: self.current_recipe.as_ref(),
                 displayed_layers: self.displayed_layers(),
                 fields: &self.fields,
                 control_ui: &self.control_ui,
@@ -1322,6 +1329,113 @@ mod tests {
         assert!(active(&back_exposed), "As shot at -0.5 EV is an edit");
     }
 
+    /// A field-patch layer returned to its neutral values stays in the stack but is not an edit, so
+    /// its band has no dot; any field that changes the picture lights it. Neutrality is the core's
+    /// answer on each `recipe.describe` row, which is what makes the vignette's rule (amount 0,
+    /// whatever its shape) come out right with no payload parsing here. (Known bug TASK-001.)
+    #[test]
+    fn a_field_patch_section_has_no_dot_once_its_layer_is_neutral() {
+        let modules = descriptors();
+        for (module_id, effect, neutral, edited) in [
+            (
+                "lightwell.basic",
+                lightwell_core::BASIC_EFFECT,
+                json!({"exposure": 0.0}),
+                json!({"exposure": 0.5}),
+            ),
+            (
+                "lightwell.presence",
+                lightwell_core::PRESENCE_EFFECT,
+                json!({}),
+                json!({"clarity": -20}),
+            ),
+            (
+                "lightwell.mixer",
+                lightwell_core::MIXER_EFFECT,
+                json!({"red-hue": 0}),
+                json!({"blue-saturation": 30}),
+            ),
+            (
+                "lightwell.vignette",
+                lightwell_core::VIGNETTE_EFFECT,
+                json!({"midpoint": 70, "roundness": -40}),
+                json!({"amount": -25}),
+            ),
+        ] {
+            let module = modules
+                .iter()
+                .find(|module| module.id == module_id)
+                .expect("a registered module")
+                .clone();
+            let dot = |payload: &serde_json::Value| {
+                let scene = Scene::new(vec![module.clone()])
+                    .opened(vec![lightwell_core::Layer::new(effect, payload.clone())]);
+                section(&scene.derive(), module_id).active
+            };
+            assert!(
+                !dot(&neutral),
+                "{module_id}: {neutral} is stored but not an edit"
+            );
+            assert!(dot(&edited), "{module_id}: {edited} is an edit");
+        }
+    }
+
+    /// The dot follows the current entry's rows, not the displayed entry's: previewing an older
+    /// entry whose Basic layer was an edit leaves the dot as the current, reset layer has it.
+    #[test]
+    fn the_dot_follows_the_current_entry_not_a_historical_preview() {
+        let basic = descriptors()
+            .into_iter()
+            .find(|module| module.id == "lightwell.basic")
+            .expect("the registered Basic module");
+        let mut scene = Scene::new(vec![basic.clone()]).opened(vec![lightwell_core::Layer::new(
+            lightwell_core::BASIC_EFFECT,
+            json!({}),
+        )]);
+        let current = scene
+            .state
+            .as_ref()
+            .expect("an asset")
+            .current_entry
+            .clone();
+        let mut older = entry(&current.asset_id, 2, None);
+        older.snapshot = older
+            .snapshot
+            .append(lightwell_core::Layer::new(
+                lightwell_core::BASIC_EFFECT,
+                json!({"exposure": 1.0}),
+            ))
+            .expect("a valid stack");
+        scene.session.preview.selection = lightwell_core::HistorySelection::Entry(older.id.clone());
+        scene.display_entry = Some(older.id.clone());
+        scene.recipe = Some(crate::app::testing::described(&older));
+        assert!(
+            !section(&scene.derive(), &basic.id).active,
+            "the previewed edit does not light the current entry's dot"
+        );
+        // And the other way round: a current edit keeps its dot while a neutral entry is shown.
+        let mut edited = Scene::new(vec![basic.clone()]).opened(vec![lightwell_core::Layer::new(
+            lightwell_core::BASIC_EFFECT,
+            json!({"exposure": 1.0}),
+        )]);
+        let mut neutral = entry(&current.asset_id, 1, None);
+        neutral.snapshot = neutral
+            .snapshot
+            .append(lightwell_core::Layer::new(
+                lightwell_core::BASIC_EFFECT,
+                json!({}),
+            ))
+            .expect("a valid stack");
+        edited.session.preview.selection =
+            lightwell_core::HistorySelection::Entry(neutral.id.clone());
+        edited.display_entry = Some(neutral.id.clone());
+        edited.recipe = Some(crate::app::testing::described(&neutral));
+        assert!(
+            section(&edited.derive(), &basic.id).active,
+            "the current edit keeps its dot during a preview"
+        );
+    }
+
     #[test]
     fn recipe_rows_come_from_the_owners_own_layer_descriptions() {
         let crop = crop_descriptor();
@@ -1349,6 +1463,7 @@ mod tests {
                 available: true,
                 mask: None,
                 artifacts: Vec::new(),
+                neutral: true,
             }],
         });
         let workspace = scene.derive();

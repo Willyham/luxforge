@@ -164,7 +164,7 @@ pub(super) const METHODS: &[MethodSpec] = &[
         "recipe.describe",
         RecipeDescribe,
         recipe_describe,
-        "an entry's stored layers in order with their module, title, summary and availability; reads payloads only and renders nothing"
+        "an entry's stored layers in order with their module, title, summary, values, availability and whether each is neutral (changes nothing, by its module's own rule); reads payloads only and renders nothing"
     ),
     service!(
         "module.list",
@@ -2883,6 +2883,82 @@ mod tests {
                 output_height: stage.height,
             }))
         }
+    }
+
+    /// A row says whether its stored layer changes nothing, by the layer's own module: a Basic layer
+    /// returned to 0 EV stays in the stack and reads neutral, and the orientation four quarter turns
+    /// leave behind does too, while any other value is an edit.
+    #[test]
+    fn recipe_describe_reports_whether_each_layer_is_neutral() {
+        let catalog = std::env::temp_dir().join(format!(
+            "lightwell-methods-neutral-{}.sqlite",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_file(&catalog);
+        let mut service = EditorService::open(&catalog).unwrap();
+        let mut session = ClientSession::default();
+        let asset = json!(service.import(&fixture()).unwrap().asset.id);
+        let mut revision = 0;
+        let mut edit = |service: &mut EditorService, action: &str, fields: Value| {
+            let mut params = json!({
+                "asset_id": asset,
+                "mutation": {"expected_revision": revision, "request_id": format!("r{revision}"), "actor": "test"},
+            });
+            for (name, value) in fields.as_object().unwrap() {
+                params[name] = value.clone();
+            }
+            ok(
+                service,
+                &mut ClientSession::default(),
+                &format!("edit.{action}"),
+                params,
+            );
+            revision += 1;
+        };
+        let rows = |service: &mut EditorService, session: &mut ClientSession| {
+            ok(
+                service,
+                session,
+                "recipe.describe",
+                json!({"asset_id": asset}),
+            )["layers"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|row| (row["effect"].clone(), row["neutral"].clone()))
+                .collect::<Vec<_>>()
+        };
+        edit(&mut service, "set-basic", json!({"exposure": 0.5}));
+        edit(
+            &mut service,
+            "transform",
+            json!({"transform": "rotate-right"}),
+        );
+        assert_eq!(
+            rows(&mut service, &mut session),
+            [
+                (json!(crate::BASIC_EFFECT), json!(false)),
+                (json!(crate::ORIENTATION_EFFECT), json!(false)),
+            ]
+        );
+        edit(&mut service, "set-basic", json!({"exposure": 0}));
+        for _ in 0..3 {
+            edit(
+                &mut service,
+                "transform",
+                json!({"transform": "rotate-right"}),
+            );
+        }
+        assert_eq!(
+            rows(&mut service, &mut session),
+            [
+                (json!(crate::BASIC_EFFECT), json!(true)),
+                (json!(crate::ORIENTATION_EFFECT), json!(true)),
+            ],
+            "both layers are still stored and neither changes anything"
+        );
+        drop(service);
+        std::fs::remove_file(catalog).unwrap();
     }
 
     #[test]

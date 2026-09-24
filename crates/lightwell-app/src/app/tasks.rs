@@ -43,6 +43,10 @@ pub(crate) struct Refresh {
     pub(crate) lineage: Lineage,
     /// The displayed entry's layers as the recipe panel reads them.
     pub(crate) recipe: RecipeDescription,
+    /// The current entry's layers while another entry is displayed, for what follows the current
+    /// entry rather than the displayed one: a section's edited dot. `None` when `recipe` is the
+    /// current entry's own.
+    pub(crate) current_recipe: Option<RecipeDescription>,
     /// The same entry's masks. It is read beside the recipe and never on its own, so the panel can
     /// never show a mask list and a layer list that describe two different entries.
     pub(crate) masks: MaskListing,
@@ -357,6 +361,15 @@ pub(crate) fn refresh(
         "recipe.describe",
         json!({"asset_id":asset_id,"entry_id":selected}),
     )?)?;
+    // A historical preview leaves the current entry's rows unread, and a section's dot follows the
+    // current entry, so they are read too: one more O(layers) payload read, only while previewing.
+    let current_recipe = match &selected {
+        Some(_) => Some(parse::<RecipeDescription>(fetch(
+            "recipe.describe",
+            json!({"asset_id":asset_id,"entry_id":state.current_entry.id}),
+        )?)?),
+        None => None,
+    };
     // The masks of that same entry. `recipe.describe` names each layer's mask and `mask.list` names
     // each mask's layers, so reading both together is what lets the panel show the relation from
     // either side without a second round trip.
@@ -393,6 +406,7 @@ pub(crate) fn refresh(
         versions,
         lineage,
         recipe,
+        current_recipe,
         masks,
         original: original.entries.first().map(|entry| entry.id.clone()),
         job,

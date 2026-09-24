@@ -285,6 +285,12 @@ pub struct LayerDescription {
     /// The derived artifacts the stored layer references, in its order. Omitted when it has none.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub artifacts: Vec<ArtifactId>,
+    /// Whether the stored layer changes nothing, as its provider answers
+    /// ([`crate::ModuleRegistry::layer_neutral`]): a neutral field patch, a whole-image crop, the
+    /// identity orientation or a RAW development at As shot and 0 EV. False for a layer whose
+    /// provider is missing or unavailable or whose payload it cannot read. A client's "edited" mark
+    /// reads this rather than parsing a payload.
+    pub neutral: bool,
 }
 
 /// One entry's ordered layers with their provider and summary. Reading only: no source, no render.

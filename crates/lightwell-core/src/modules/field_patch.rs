@@ -509,6 +509,13 @@ impl<M: FieldPatch> ToolModule for FieldPatchModule<M> {
         self.read(effect_id, format, payload).map(|_| ())
     }
 
+    /// The module's own neutrality rule over the payload's canonical values: every field at its
+    /// default, or the vignette's amount of 0.
+    fn is_neutral(&self, effect_id: &str, format: u32, payload: &Value) -> Result<bool, Error> {
+        let values = self.read(effect_id, format, payload)?;
+        Ok(self.module.is_neutral(&values))
+    }
+
     /// `Neutral` for the all-default payload, and otherwise every field that differs from its
     /// default, as its history label names it.
     fn describe_layer(

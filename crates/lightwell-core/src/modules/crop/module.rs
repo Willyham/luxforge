@@ -594,6 +594,11 @@ impl ToolModule for CropModule {
         payload(effect_id, format, value)?.validate()
     }
 
+    /// The whole image, unstraightened: the payload `crop-reset` writes.
+    fn is_neutral(&self, effect_id: &str, format: u32, value: &Value) -> Result<bool, Error> {
+        Ok(payload(effect_id, format, value)?.is_neutral())
+    }
+
     fn describe_layer(&self, effect_id: &str, format: u32, value: &Value) -> Result<String, Error> {
         let crop = payload(effect_id, format, value)?;
         crop.validate()?;
