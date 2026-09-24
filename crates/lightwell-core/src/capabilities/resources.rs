@@ -13,8 +13,8 @@
 //! proves they are the pinned bytes, not that they are safe or licensed for reuse. See
 //! `docs/design/module-capabilities.md#lifecycle-jobs-and-resources`.
 use super::{
-    atomic,
     descriptor::ResourceDescriptor,
+    document::JsonDocument,
     grants::now_ms,
     jobs::JobControl,
     transport::{
@@ -22,7 +22,7 @@ use super::{
         TransportRequest, parse_endpoint,
     },
 };
-use crate::{Error, ErrorKind, JobId, ModuleRegistry};
+use crate::{Error, ErrorKind, JobId, ModuleRegistry, atomic_file};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
@@ -37,7 +37,6 @@ use std::{
 /// The only `installed.json` format this build reads or writes.
 pub const INSTALLED_FORMAT: u32 = 1;
 pub const INSTALLED_FILE: &str = "installed.json";
-const INSTALLED_TEMPORARY: &str = "installed.json.tmp";
 /// Where transfers are staged, under the resource root. Its name starts with a dot, which no module
 /// identity does, so it never collides with a module's directory.
 pub const STAGING_DIR: &str = ".staging";
@@ -72,11 +71,11 @@ pub enum InstalledFrom {
     File,
 }
 
-/// `installed.json`: what was installed, from where, by whom and when.
+/// `installed.json`: what was installed, from where, by whom and when, in a [`JsonDocument`] with
+/// its own `format: 1` marker.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct InstalledMarker {
-    pub format: u32,
     pub module_id: String,
     pub resource_id: String,
     pub version: String,
@@ -91,9 +90,23 @@ pub struct InstalledMarker {
 }
 
 impl InstalledMarker {
+    /// The marker document of one version directory.
+    fn document(version_dir: &Path) -> JsonDocument<Self> {
+        JsonDocument::new(
+            version_dir,
+            INSTALLED_FILE,
+            MAX_MARKER_BYTES,
+            INSTALLED_FORMAT,
+        )
+    }
+
+    /// The marker a version directory holds, when it holds one this build reads.
+    fn read(version_dir: &Path) -> Option<Self> {
+        Self::document(version_dir).read().ok().flatten()
+    }
+
     fn matches(&self, module_id: &str, resource: &ResourceDescriptor) -> bool {
-        self.format == INSTALLED_FORMAT
-            && self.module_id == module_id
+        self.module_id == module_id
             && self.resource_id == resource.id
             && self.version == resource.version
             && self.sha256 == resource.sha256
@@ -195,7 +208,7 @@ impl ResourceStore {
         module_id: &str,
         resource: &ResourceDescriptor,
     ) -> Option<InstalledMarker> {
-        let marker = read_marker(&self.version_dir(module_id, resource).join(INSTALLED_FILE))?;
+        let marker = InstalledMarker::read(&self.version_dir(module_id, resource))?;
         let length = fs::metadata(self.file_path(module_id, resource))
             .ok()
             .filter(fs::Metadata::is_file)?
@@ -224,7 +237,7 @@ impl ResourceStore {
             }
             for resource in entries(&module) {
                 for version in entries(&resource) {
-                    if let Some(marker) = read_marker(&version.join(INSTALLED_FILE)) {
+                    if let Some(marker) = InstalledMarker::read(&version) {
                         used = used.saturating_add(marker.bytes);
                     }
                 }
@@ -232,11 +245,6 @@ impl ResourceStore {
         }
         used
     }
-}
-
-fn read_marker(path: &Path) -> Option<InstalledMarker> {
-    let bytes = atomic::read(path, MAX_MARKER_BYTES).ok()??;
-    serde_json::from_slice(&bytes).ok()
 }
 
 /// Refuse an install that would take the stored resources past the quota.
@@ -401,7 +409,7 @@ fn clear_staging(store: &ResourceStore) -> Result<(), Error> {
     let entries = match fs::read_dir(&staging) {
         Ok(entries) => entries,
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
-        Err(error) => return Err(atomic::file_error(&staging, error)),
+        Err(error) => return Err(atomic_file::file_error(&staging, error)),
     };
     for entry in entries.flatten() {
         let path = entry.path();
@@ -410,7 +418,7 @@ fn clear_staging(store: &ResourceStore) -> Result<(), Error> {
         } else {
             fs::remove_file(&path)
         };
-        removed.map_err(|error| atomic::file_error(&path, error))?;
+        removed.map_err(|error| atomic_file::file_error(&path, error))?;
     }
     Ok(())
 }
@@ -623,7 +631,6 @@ fn publish(job: &InstallJob, staging: &Path, from: InstalledFrom) -> Result<(), 
     })();
     moved.map_err(|error| write_failure(&target, error.kind()))?;
     let marker = InstalledMarker {
-        format: INSTALLED_FORMAT,
         module_id: job.module_id.clone(),
         resource_id: resource.id.clone(),
         version: resource.version.clone(),
@@ -636,12 +643,10 @@ fn publish(job: &InstallJob, staging: &Path, from: InstalledFrom) -> Result<(), 
         actor: job.actor.clone(),
         installed_ms: now_ms(),
     };
-    let bytes = serde_json::to_vec_pretty(&marker)
-        .map_err(|error| Error::new(ErrorKind::Internal, error.to_string()))?;
-    let written = atomic::sync_dir(&parent).and_then(|()| {
-        atomic::try_replace(&target, INSTALLED_FILE, INSTALLED_TEMPORARY, &bytes)
-            .map_err(|(path, error)| write_failure(&path, error.kind()))
-    });
+    // The transfer lane runs one job at a time, so the install is the marker's one writer.
+    let written = atomic_file::sync_dir(&parent)
+        .map_err(|error| write_failure(&parent, error.kind()))
+        .and_then(|()| InstalledMarker::document(&target).write(&marker));
     if written.is_err() {
         let _ = fs::remove_dir_all(&target);
     }
@@ -664,12 +669,12 @@ pub(crate) fn remove(
     match fs::remove_file(&marker) {
         Ok(()) => {}
         Err(error) if error.kind() == io::ErrorKind::NotFound => {}
-        Err(error) => return Err(atomic::file_error(&marker, error)),
+        Err(error) => return Err(atomic_file::file_error(&marker, error)),
     }
     match fs::remove_dir_all(&target) {
         Ok(()) => {}
         Err(error) if error.kind() == io::ErrorKind::NotFound => {}
-        Err(error) => return Err(atomic::file_error(&target, error)),
+        Err(error) => return Err(atomic_file::file_error(&target, error)),
     }
     // Emptied parents go too; a parent that still holds another version stays.
     for parent in target.ancestors().skip(1).take(2) {

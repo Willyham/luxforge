@@ -7,7 +7,7 @@ use super::{
     lock,
 };
 use crate::{
-    Error, ErrorKind,
+    Error, ErrorKind, atomic_file,
     editor::{SourceSignature, source_signature},
     modules::valid_identity,
 };
@@ -16,7 +16,7 @@ use sha2::{Digest, Sha256};
 use std::{
     collections::HashSet,
     fs::{self, File},
-    io::{self, Read, Write},
+    io::{self, Read},
     path::{Path, PathBuf},
     sync::{
         Arc, Mutex,
@@ -62,19 +62,6 @@ fn now_ms() -> i64 {
         .unwrap_or_default()
         .as_millis()
         .min(i64::MAX as u128) as i64
-}
-
-/// Make a rename durable: on Unix the directory entry is only on disk once the directory is synced.
-#[cfg(unix)]
-fn sync_directory(directory: &Path) -> Result<(), Error> {
-    File::open(directory)
-        .and_then(|directory| directory.sync_all())
-        .map_err(|error| access("cannot sync artifact directory", &error))
-}
-
-#[cfg(not(unix))]
-fn sync_directory(_: &Path) -> Result<(), Error> {
-    Ok(())
 }
 
 /// Fill `buffer` from `file`, retrying interrupted reads; `0` is the end of the file.
@@ -262,9 +249,8 @@ impl ArtifactWriter {
             self.live.mark(&id);
             match object_holds(&object, bytes) {
                 Ok(true) => Ok(()),
-                Ok(false) => fs::rename(&staged, &object)
-                    .map_err(|error| access("cannot publish artifact", &error))
-                    .and_then(|()| sync_directory(&self.root.join(OBJECTS))),
+                Ok(false) => atomic_file::publish(&staged, &object)
+                    .map_err(|error| access("cannot publish artifact", &error)),
                 Err(error) => Err(error),
             }
         };
@@ -327,13 +313,10 @@ impl ArtifactWriter {
         })
         .map_err(|error| Error::new(ErrorKind::Internal, error.to_string()))?;
         let staged = self.stage(&manifest)?;
-        let renamed = fs::rename(&staged, self.root.join(MANIFEST))
-            .map_err(|error| access("cannot write artifact manifest", &error));
-        if renamed.is_err() {
+        atomic_file::publish(&staged, &self.root.join(MANIFEST)).map_err(|error| {
             let _ = fs::remove_file(&staged);
-        }
-        renamed?;
-        sync_directory(&self.root)
+            access("cannot write artifact manifest", &error)
+        })
     }
 
     /// Write `bytes` to a new file in `tmp/` and sync it. A failed write removes what it staged.
@@ -342,14 +325,8 @@ impl ArtifactWriter {
             .root
             .join(TEMPORARY)
             .join(uuid::Uuid::new_v4().simple().to_string());
-        let written = File::create_new(&staged).and_then(|mut file| {
-            file.write_all(bytes)?;
-            file.sync_all()
-        });
-        if let Err(error) = written {
-            let _ = fs::remove_file(&staged);
-            return Err(access("cannot stage artifact", &error));
-        }
+        atomic_file::stage(&staged, bytes)
+            .map_err(|error| access("cannot stage artifact", &error))?;
         Ok(staged)
     }
 }

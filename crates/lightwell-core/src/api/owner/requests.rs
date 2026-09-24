@@ -1,18 +1,19 @@
-//! The owner's request table: the first answer of every mutation that carries the `request`
-//! envelope, the methods that change nothing with a revision — the preset library, versions, the
-//! catalog's import and artifact collection, and module permissions, activation, resources and
-//! capability jobs.
+//! The owner's request table: the first answer of every mutation the catalog does not deduplicate
+//! itself. That is every method with the `request` envelope, which changes nothing with a revision —
+//! the preset library, versions, the catalog's import and artifact collection, and module
+//! permissions, activation, resources and capability jobs — and a module's settings writes, whose
+//! revision the settings file holds without a request log.
 //!
 //! A retry, the same `request_id` in the same scope with the same method and parameters, is
 //! answered with the first answer marked `deduplicated: true`, and its handler does not run, so it
 //! changes nothing and emits no event. The same `request_id` with a different input is a
-//! `conflict`. A mutation that has a revision — an asset's edits and history, or a module's settings
-//! — is deduplicated by the store that holds the revision, durably and in the same write as the
-//! change, because a retry after a restart must be answered rather than refused as stale. The
-//! methods here have no revision, and every one of them is safe to run again after a restart: it is
-//! a no-op, joins the work already done, or fails visibly on the uniqueness it would break. So the
+//! `conflict`. An asset's edits and history are deduplicated by the catalog, durably and in the same
+//! write as the change, because a retry after a restart must be answered rather than refused as
+//! stale. Every method here is safe to run again after a restart: it is a no-op, joins the work
+//! already done, fails visibly on the uniqueness it would break, or, for a settings write, which
+//! sets values rather than changing them, conflicts on the revision it was made against. So the
 //! table lives with the owner, holds only successful answers, and is bounded.
-use crate::{Error, ErrorKind, MutationRequest};
+use crate::{Error, ErrorKind, Mutation, MutationRequest, capabilities::redact::redacted};
 use serde::Deserialize;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
@@ -30,23 +31,29 @@ pub(super) struct RequestKey {
     /// `preset.delete` share `preset`.
     scope: String,
     request_id: String,
-    /// SHA-256 of the method name and every parameter, the envelope included.
+    /// SHA-256 of the method name and every parameter, the envelope included, with a secret's value
+    /// redacted: the table never holds a hash of a secret, so a secret write's retry is matched by
+    /// the setting alone.
     input: [u8; 32],
 }
 
 impl RequestKey {
-    /// The key of one request, or `None` when it carries no well-formed envelope, which its handler
-    /// then refuses by name.
+    /// The key of one request, or `None` when it carries no well-formed envelope of either kind,
+    /// which its handler then refuses by name.
     pub(super) fn of(method: &str, params: &Value) -> Option<Self> {
-        let mutation = MutationRequest::deserialize(params.get("mutation")?).ok()?;
+        let envelope = params.get("mutation")?;
+        let request_id = MutationRequest::deserialize(envelope)
+            .map(|mutation| mutation.request_id)
+            .or_else(|_| Mutation::deserialize(envelope).map(|mutation| mutation.request_id))
+            .ok()?;
         let scope = method.rsplit_once('.').map_or(method, |(family, _)| family);
         let mut hash = Sha256::new();
         hash.update(method.as_bytes());
         hash.update([0]);
-        hash.update(serde_json::to_vec(params).ok()?);
+        hash.update(serde_json::to_vec(&redacted(method, params)).ok()?);
         Some(Self {
             scope: scope.to_owned(),
-            request_id: mutation.request_id,
+            request_id,
             input: hash.finalize().into(),
         })
     }
@@ -167,6 +174,39 @@ mod tests {
         assert!(
             RequestKey::of("preset.create", &json!({"name": "Soft"})).is_none(),
             "a request without an envelope has no key; its handler refuses it"
+        );
+    }
+
+    #[test]
+    fn a_settings_write_is_keyed_and_its_secret_is_never_part_of_the_input() {
+        let secret = |value: &str| {
+            json!({
+                "module_id": "test.module", "setting": "token", "value": value,
+                "mutation": {"expected_revision": 1, "request_id": "one", "actor": "test"},
+            })
+        };
+        let method = "module.settings.set-secret";
+        let first = RequestKey::of(method, &secret("first")).expect("the revision envelope");
+        let other = RequestKey::of(method, &secret("second")).unwrap();
+        assert_eq!(first.scope, "module.settings");
+        assert_eq!(first.request_id, "one");
+        assert_eq!(first.input, other.input, "matched by the setting alone");
+        let set = |mode: &str| {
+            json!({
+                "module_id": "test.module", "values": {"mode": mode},
+                "mutation": {"expected_revision": 1, "request_id": "one", "actor": "test"},
+            })
+        };
+        let fast = RequestKey::of("module.settings.set", &set("fast")).unwrap();
+        let exact = RequestKey::of("module.settings.set", &set("exact")).unwrap();
+        assert_ne!(fast.input, exact.input);
+        assert!(
+            RequestKey::of(
+                "module.settings.set",
+                &json!({"mutation": {"expected_revision": 1, "request_id": "one"}})
+            )
+            .is_none(),
+            "a malformed envelope has no key; its handler refuses it"
         );
     }
 

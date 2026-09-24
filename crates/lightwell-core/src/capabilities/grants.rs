@@ -1,19 +1,16 @@
-//! Scoped permission grants and denials, outside every catalog, in `<config>/modules/grants.json`.
-//! The file follows the settings file's discipline: a `format: 1` marker, an advisory lock on
-//! `grants.lock` for writers, a fresh read on every call, a synced temporary file renamed over the
-//! old one, and refusal with `incompatible` of any other shape, which is never rewritten. Nothing
+//! Scoped permission grants and denials, outside every catalog, in `<config>/modules/grants.json`:
+//! a [`JsonDocument`] like the settings file, with its own `format: 1` marker and bound. Nothing
 //! here ever holds a secret: a scope names a resource version, or a profile, adapter, origin, data
 //! class and asset. See `docs/design/module-capabilities.md#capability-and-consent-contract`.
 use super::{
-    atomic,
     descriptor::{CapabilityKind, DataClass},
+    document::JsonDocument,
 };
 use crate::{AssetId, Error, ErrorKind};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::Value;
 use std::{
-    fs::File,
-    path::{Path, PathBuf},
+    path::PathBuf,
     time::{SystemTime, UNIX_EPOCH},
 };
 
@@ -26,8 +23,6 @@ pub const MAX_GRANT_RECORDS: usize = 1024;
 pub const MAX_GRANTS_BYTES: u64 = 2 * 1024 * 1024;
 
 pub const GRANTS_FILE: &str = "grants.json";
-pub const GRANTS_LOCK: &str = "grants.lock";
-const GRANTS_TEMPORARY: &str = "grants.json.tmp";
 
 /// The permission methods.
 pub const GRANT: &str = "module.permission.grant";
@@ -40,13 +35,6 @@ pub const MAX_REASON: usize = 256;
 
 fn validation(detail: impl Into<String>) -> Error {
     Error::new(ErrorKind::Validation, detail)
-}
-
-fn incompatible(path: &Path, reason: impl std::fmt::Display) -> Error {
-    Error::new(
-        ErrorKind::Incompatible,
-        format!("{}: {reason}; the file is kept unchanged", path.display()),
-    )
 }
 
 pub(crate) fn now_ms() -> u64 {
@@ -198,10 +186,9 @@ pub struct GrantList {
 }
 
 /// `{format: 1, grants: [...], denials: [...]}`.
-#[derive(Serialize, Deserialize)]
+#[derive(Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Document {
-    format: u32,
     #[serde(default)]
     grants: Vec<Grant>,
     #[serde(default)]
@@ -209,16 +196,30 @@ struct Document {
 }
 
 impl Document {
-    fn empty() -> Self {
-        Self {
-            format: GRANTS_FORMAT,
-            grants: Vec::new(),
-            denials: Vec::new(),
-        }
-    }
-
     fn records(&self) -> usize {
         self.grants.len() + self.denials.len()
+    }
+
+    /// What the shape cannot say: every record's scope is of its kind, and the records are
+    /// within their bound.
+    fn check(&self) -> Result<(), String> {
+        let mismatched = self
+            .grants
+            .iter()
+            .map(|grant| (grant.kind, grant.scope.kind()))
+            .chain(
+                self.denials
+                    .iter()
+                    .map(|denial| (denial.kind, denial.scope.kind())),
+            )
+            .any(|(kind, scope)| kind != scope);
+        if mismatched {
+            return Err("a record's scope does not match its kind".into());
+        }
+        if self.records() > MAX_GRANT_RECORDS {
+            return Err(format!("it holds more than {MAX_GRANT_RECORDS} records"));
+        }
+        Ok(())
     }
 
     /// Make room for one more record by removing the oldest revoked grant or denial, by the time it
@@ -284,17 +285,20 @@ pub(crate) struct NewGrant<'a> {
 /// file again.
 #[derive(Clone, Debug)]
 pub struct GrantsStore {
-    dir: PathBuf,
+    document: JsonDocument<Document>,
 }
 
 impl GrantsStore {
     /// A store over `<dir>/grants.json`. Nothing is created until the first write.
     pub fn new(dir: impl Into<PathBuf>) -> Self {
-        Self { dir: dir.into() }
+        Self {
+            document: JsonDocument::new(dir, GRANTS_FILE, MAX_GRANTS_BYTES, GRANTS_FORMAT)
+                .checked(Document::check),
+        }
     }
 
-    fn path(&self) -> PathBuf {
-        self.dir.join(GRANTS_FILE)
+    fn load(&self) -> Result<Document, Error> {
+        Ok(self.document.read()?.unwrap_or_default())
     }
 
     /// Every grant and denial, optionally of one module.
@@ -337,8 +341,6 @@ impl GrantsStore {
     /// Record a grant. A live grant of the same scope is returned instead of a duplicate. A matching
     /// denial is cleared either way. The request identity is kept on the grant as its provenance.
     pub(crate) fn grant(&self, request: NewGrant<'_>) -> Result<GrantOutcome, Error> {
-        let _lock = self.lock()?;
-        let mut document = self.load()?;
         let NewGrant {
             module_id,
             capability,
@@ -346,46 +348,44 @@ impl GrantsStore {
             actor,
             request_id,
         } = request;
-        let denials = document.denials.len();
-        document
-            .denials
-            .retain(|denial| !denial.covers(module_id, capability, &scope));
-        let cleared = document.denials.len() != denials;
-        if let Some(live) = document
-            .grants
-            .iter()
-            .find(|grant| grant.is_live() && grant.covers(module_id, capability, &scope))
-            .cloned()
-        {
-            if cleared {
-                self.save(&document)?;
+        self.document.transact(|document| {
+            let denials = document.denials.len();
+            document
+                .denials
+                .retain(|denial| !denial.covers(module_id, capability, &scope));
+            let cleared = document.denials.len() != denials;
+            if let Some(live) = document
+                .grants
+                .iter()
+                .find(|grant| grant.is_live() && grant.covers(module_id, capability, &scope))
+                .cloned()
+            {
+                return Ok(GrantOutcome {
+                    grant: live,
+                    outcome: if cleared {
+                        super::settings::WriteOutcome::Committed
+                    } else {
+                        super::settings::WriteOutcome::NoOp
+                    },
+                });
             }
-            return Ok(GrantOutcome {
-                grant: live,
-                outcome: if cleared {
-                    super::settings::WriteOutcome::Committed
-                } else {
-                    super::settings::WriteOutcome::NoOp
-                },
-            });
-        }
-        document.make_room()?;
-        let grant = Grant {
-            grant_id: format!("grant-{}", uuid::Uuid::new_v4().simple()),
-            module_id: module_id.to_owned(),
-            capability: capability.to_owned(),
-            kind: scope.kind(),
-            scope,
-            actor: actor.to_owned(),
-            request_id: request_id.to_owned(),
-            created_ms: now_ms(),
-            revoked: None,
-        };
-        document.grants.push(grant.clone());
-        self.save(&document)?;
-        Ok(GrantOutcome {
-            grant,
-            outcome: super::settings::WriteOutcome::Committed,
+            document.make_room()?;
+            let grant = Grant {
+                grant_id: format!("grant-{}", uuid::Uuid::new_v4().simple()),
+                module_id: module_id.to_owned(),
+                capability: capability.to_owned(),
+                kind: scope.kind(),
+                scope,
+                actor: actor.to_owned(),
+                request_id: request_id.to_owned(),
+                created_ms: now_ms(),
+                revoked: None,
+            };
+            document.grants.push(grant.clone());
+            Ok(GrantOutcome {
+                grant,
+                outcome: super::settings::WriteOutcome::Committed,
+            })
         })
     }
 
@@ -397,44 +397,41 @@ impl GrantsStore {
         scope: GrantScope,
         actor: &str,
     ) -> Result<Denial, Error> {
-        let _lock = self.lock()?;
-        let mut document = self.load()?;
-        document
-            .denials
-            .retain(|denial| !denial.covers(module_id, capability, &scope));
-        document.make_room()?;
-        let denial = Denial {
-            module_id: module_id.to_owned(),
-            capability: capability.to_owned(),
-            kind: scope.kind(),
-            scope,
-            actor: actor.to_owned(),
-            ms: now_ms(),
-        };
-        document.denials.push(denial.clone());
-        self.save(&document)?;
-        Ok(denial)
+        self.document.transact(|document| {
+            document
+                .denials
+                .retain(|denial| !denial.covers(module_id, capability, &scope));
+            document.make_room()?;
+            let denial = Denial {
+                module_id: module_id.to_owned(),
+                capability: capability.to_owned(),
+                kind: scope.kind(),
+                scope,
+                actor: actor.to_owned(),
+                ms: now_ms(),
+            };
+            document.denials.push(denial.clone());
+            Ok(denial)
+        })
     }
 
     /// Revoke one grant. Revoking a revoked grant changes nothing and returns it with `false`.
     pub(crate) fn revoke(&self, grant_id: &str, reason: &str) -> Result<(Grant, bool), Error> {
-        let _lock = self.lock()?;
-        let mut document = self.load()?;
-        let grant = document
-            .grants
-            .iter_mut()
-            .find(|grant| grant.grant_id == grant_id)
-            .ok_or_else(|| validation(format!("unknown grant {grant_id}")))?;
-        if !grant.is_live() {
-            return Ok((grant.clone(), false));
-        }
-        grant.revoked = Some(Revocation {
-            ms: now_ms(),
-            reason: reason.to_owned(),
-        });
-        let revoked = grant.clone();
-        self.save(&document)?;
-        Ok((revoked, true))
+        self.document.transact(|document| {
+            let grant = document
+                .grants
+                .iter_mut()
+                .find(|grant| grant.grant_id == grant_id)
+                .ok_or_else(|| validation(format!("unknown grant {grant_id}")))?;
+            if !grant.is_live() {
+                return Ok((grant.clone(), false));
+            }
+            grant.revoked = Some(Revocation {
+                ms: now_ms(),
+                reason: reason.to_owned(),
+            });
+            Ok((grant.clone(), true))
+        })
     }
 
     /// Revoke every live grant `matches` selects and return them. A file with nothing to revoke is
@@ -453,89 +450,20 @@ impl GrantsStore {
         if !selected(&self.load()?) {
             return Ok(Vec::new());
         }
-        let _lock = self.lock()?;
-        let mut document = self.load()?;
-        let ms = now_ms();
-        let mut revoked = Vec::new();
-        for grant in &mut document.grants {
-            if grant.is_live() && matches(grant) {
-                grant.revoked = Some(Revocation {
-                    ms,
-                    reason: reason.to_owned(),
-                });
-                revoked.push(grant.clone());
+        self.document.transact(|document| {
+            let ms = now_ms();
+            let mut revoked = Vec::new();
+            for grant in &mut document.grants {
+                if grant.is_live() && matches(grant) {
+                    grant.revoked = Some(Revocation {
+                        ms,
+                        reason: reason.to_owned(),
+                    });
+                    revoked.push(grant.clone());
+                }
             }
-        }
-        if !revoked.is_empty() {
-            self.save(&document)?;
-        }
-        Ok(revoked)
-    }
-
-    fn lock(&self) -> Result<File, Error> {
-        atomic::lock(&self.dir, GRANTS_LOCK)
-    }
-
-    /// The whole file, bounded and checked. An absent file is an empty document; a file of another
-    /// format, or one that is not the current shape, is refused and left exactly as it is.
-    fn load(&self) -> Result<Document, Error> {
-        let path = self.path();
-        let Some(bytes) = atomic::read(&path, MAX_GRANTS_BYTES)? else {
-            return Ok(Document::empty());
-        };
-        let value: Value = serde_json::from_slice(&bytes)
-            .map_err(|error| incompatible(&path, format!("not valid JSON ({error})")))?;
-        match value.get("format").and_then(Value::as_u64) {
-            Some(format) if format == u64::from(GRANTS_FORMAT) => {}
-            Some(format) => {
-                return Err(incompatible(
-                    &path,
-                    format!("grants format {format} is not supported"),
-                ));
-            }
-            None => return Err(incompatible(&path, "no grants format marker")),
-        }
-        let document: Document = serde_json::from_value(value)
-            .map_err(|error| incompatible(&path, format!("not a grants file ({error})")))?;
-        let mismatched = document
-            .grants
-            .iter()
-            .map(|grant| (grant.kind, grant.scope.kind()))
-            .chain(
-                document
-                    .denials
-                    .iter()
-                    .map(|denial| (denial.kind, denial.scope.kind())),
-            )
-            .any(|(kind, scope)| kind != scope);
-        if mismatched {
-            return Err(incompatible(
-                &path,
-                "a record's scope does not match its kind",
-            ));
-        }
-        if document.records() > MAX_GRANT_RECORDS {
-            return Err(incompatible(
-                &path,
-                format!("it holds more than {MAX_GRANT_RECORDS} records"),
-            ));
-        }
-        Ok(document)
-    }
-
-    fn save(&self, document: &Document) -> Result<(), Error> {
-        let bytes = serde_json::to_vec_pretty(document)
-            .map_err(|error| Error::new(ErrorKind::Internal, error.to_string()))?;
-        if bytes.len() as u64 > MAX_GRANTS_BYTES {
-            return Err(Error::new(
-                ErrorKind::ResourceLimit,
-                format!(
-                    "grants would be {} bytes; the file is at most {MAX_GRANTS_BYTES}",
-                    bytes.len()
-                ),
-            ));
-        }
-        atomic::replace(&self.dir, GRANTS_FILE, GRANTS_TEMPORARY, &bytes)
+            Ok(revoked)
+        })
     }
 }
 
@@ -699,7 +627,7 @@ mod tests {
     #[test]
     fn records_are_bounded_and_the_oldest_revoked_or_denied_is_pruned_first() {
         let fixture = Fixture::new("grants-bounds");
-        let mut document = Document::empty();
+        let mut document = Document::default();
         let live = |index: usize| Grant {
             grant_id: format!("grant-{index}"),
             module_id: MODULE.into(),
@@ -713,7 +641,7 @@ mod tests {
         };
         document.grants = (0..MAX_GRANT_RECORDS).map(live).collect();
         fs::create_dir_all(fixture.root.join("modules")).unwrap();
-        fixture.store.save(&document).unwrap();
+        fixture.store.document.write(&document).unwrap();
         let error = fixture
             .store
             .grant(new_grant(download_scope("/new"), "new"))
@@ -737,7 +665,7 @@ mod tests {
             ms: 10,
             reason: "earlier".into(),
         });
-        fixture.store.save(&document).unwrap();
+        fixture.store.document.write(&document).unwrap();
         fixture
             .store
             .grant(new_grant(download_scope("/new"), "new"))

@@ -19,8 +19,9 @@ pub(crate) enum Envelope {
     /// None: the method reads, or changes only the caller's own session.
     None,
     /// `{expected_revision, request_id, actor}`: the method changes something that has a revision,
-    /// and the store that holds the revision records the request with the change, so it answers a
-    /// retry itself, durably.
+    /// and a stale `expected_revision` is a conflict. The catalog records an asset change's request
+    /// with the change and answers its retry itself, durably; the catalog owner answers a settings
+    /// write's retry from its request table.
     Revision,
     /// `{request_id, actor}`: nothing the method changes has a revision; the catalog owner answers a
     /// retry from its request table.

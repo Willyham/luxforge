@@ -1215,11 +1215,14 @@ impl Owner {
                 format!("unknown method {}", request.method),
             )
         })?;
-        // A mutation of something without a revision is answered from the request table when it
-        // is a retry, and its handler does not run again; a revisioned store answers its own.
-        let key = match method.envelope() {
-            Envelope::Request => RequestKey::of(&request.method, &request.params),
-            Envelope::None | Envelope::Revision => None,
+        // A retried mutation is answered from the request table, and its handler does not run
+        // again, unless the catalog answers it: the service records an asset change's request
+        // with the change. A settings write has a revision but no request log, so it is here too.
+        let key = match (method.envelope(), method.route()) {
+            (Envelope::Request, _) | (Envelope::Revision, Route::Owner(_)) => {
+                RequestKey::of(&request.method, &request.params)
+            }
+            (Envelope::None, _) | (Envelope::Revision, Route::Service) => None,
         };
         if let Some(key) = &key
             && let Some(first) = self.requests.answered(key)?

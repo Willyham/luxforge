@@ -3,6 +3,7 @@ pub mod activity;
 pub mod analysis;
 mod api;
 pub mod artifacts;
+mod atomic_file;
 pub mod capabilities;
 #[cfg(test)]
 mod command_contracts;

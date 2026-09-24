@@ -2,11 +2,11 @@
 //! consent, the network transport, the capability worker and managed resources. A module declares
 //! what it needs; only the host stores, downloads, contacts or schedules anything. See
 //! `docs/design/module-capabilities.md`.
-mod atomic;
 pub mod consent;
 pub mod context;
 pub mod data;
 pub mod descriptor;
+mod document;
 pub mod grants;
 pub mod host;
 pub mod jobs;

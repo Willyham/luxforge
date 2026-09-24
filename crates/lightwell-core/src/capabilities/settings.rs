@@ -1,25 +1,24 @@
-//! User-level module settings and provider profiles, outside every catalog, in one JSON file per
-//! user. Every operation reads the file again, so two processes never act on a stale copy; a write
-//! holds an advisory lock on a sibling file, checks the module's revision and its request log,
-//! writes a synced temporary file and renames it over the old one, so a failure leaves the previous
-//! file. A file of any other format is refused and never rewritten. Secrets never enter this file:
-//! they go to the [`SecretStore`]. See `docs/design/module-capabilities.md#settings-store`.
+//! User-level module settings and provider profiles, outside every catalog, in one
+//! [`JsonDocument`] per user. A write is one locked read-modify-write of that document that checks
+//! the module's revision. A write sets values rather than changing them, so a retry either conflicts
+//! on the revision it was made against or, while the owner that answered it runs, is answered from
+//! the owner's request table before it gets here. A file of any other format is refused and never
+//! rewritten. Secrets never enter this file: they go to the [`SecretStore`]. See
+//! `docs/design/module-capabilities.md#settings-store`.
 use super::{
-    atomic,
     descriptor::{
         AdapterAuth, ProfilesDescriptor, SettingDescriptor, SettingKind, SettingsDescriptor,
         check_plain_value,
     },
+    document::JsonDocument,
     secrets::{SecretKey, SecretStore, SecretValue},
     transport::parse_endpoint,
 };
 use crate::{Error, ErrorKind, ModuleDescriptor, Mutation};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
-use sha2::{Digest, Sha256};
 use std::{
-    collections::{BTreeMap, VecDeque},
-    fs::File,
+    collections::BTreeMap,
     path::{Path, PathBuf},
 };
 
@@ -27,20 +26,16 @@ use std::{
 pub const SETTINGS_FORMAT: u32 = 1;
 /// The largest settings file, read or written.
 pub const MAX_SETTINGS_BYTES: u64 = 1024 * 1024;
-/// How many recent requests of one module a retry is recognised against.
-pub const REQUEST_LOG: usize = 64;
 /// The longest profile label, in characters.
 pub const MAX_PROFILE_LABEL: usize = 128;
 /// The longest endpoint or path a setting accepts before it is parsed, in bytes.
 const MAX_LOCATOR_BYTES: usize = 4096;
 
 pub const SETTINGS_FILE: &str = "settings.json";
-pub const SETTINGS_LOCK: &str = "settings.lock";
-const SETTINGS_TEMPORARY: &str = "settings.json.tmp";
 
 /// The one settings method that only reads.
 pub const READ: &str = "module.settings.read";
-/// The API methods that write settings. Each is part of the request identity a retry is matched by.
+/// The API methods that write settings.
 pub const SET: &str = "module.settings.set";
 pub const SET_SECRET: &str = "module.settings.set-secret";
 pub const CLEAR_SECRET: &str = "module.settings.clear-secret";
@@ -52,29 +47,12 @@ fn validation(detail: impl Into<String>) -> Error {
     Error::new(ErrorKind::Validation, detail)
 }
 
-fn incompatible(path: &Path, reason: impl std::fmt::Display) -> Error {
-    Error::new(
-        ErrorKind::Incompatible,
-        format!("{}: {reason}; the file is kept unchanged", path.display()),
-    )
-}
-
 /// `{format: 1, modules: {<module_id>: <entry>}}`. Entries stay raw JSON until a module is
 /// operated on, so an entry of a module that is not registered is written back exactly as read.
-#[derive(Serialize, Deserialize)]
+#[derive(Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Document {
-    format: u32,
     modules: Map<String, Value>,
-}
-
-impl Document {
-    fn empty() -> Self {
-        Self {
-            format: SETTINGS_FORMAT,
-            modules: Map::new(),
-        }
-    }
 }
 
 /// One module's stored settings.
@@ -87,8 +65,6 @@ struct ModuleEntry {
     values: Map<String, Value>,
     #[serde(default)]
     profiles: Vec<StoredProfile>,
-    #[serde(default)]
-    requests: VecDeque<StoredRequest>,
 }
 
 impl ModuleEntry {
@@ -98,7 +74,6 @@ impl ModuleEntry {
             revision: 0,
             values: Map::new(),
             profiles: Vec::new(),
-            requests: VecDeque::new(),
         }
     }
 }
@@ -113,16 +88,6 @@ pub struct StoredProfile {
     pub label: String,
     #[serde(default)]
     pub values: Map<String, Value>,
-}
-
-/// One recent request: its identity, the SHA-256 of its canonical input (never of a secret) and the
-/// result a retry receives.
-#[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct StoredRequest {
-    request_id: String,
-    hash: String,
-    result: WriteResult,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -141,8 +106,7 @@ pub struct ProfileSummary {
     pub label: String,
 }
 
-/// What one settings write did. It is stored with the request and returned unchanged to a retry,
-/// with `deduplicated` set, so it is small and holds no value of any field.
+/// What one settings write did. It holds no value of any field.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct WriteResult {
@@ -150,8 +114,6 @@ pub struct WriteResult {
     pub outcome: WriteOutcome,
     /// The module's settings revision after the write; a no-op keeps it.
     pub revision: u64,
-    #[serde(default)]
-    pub deduplicated: bool,
     /// The profile the write addressed, created or removed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub profile_id: Option<String>,
@@ -166,8 +128,8 @@ pub struct WriteResult {
     pub invalidates_activation: bool,
 }
 
-/// A committed write as the host sees it: the result a client receives, and what the host needs to
-/// revoke grants scoped to old values. A retry carries only the stored result.
+/// A write as the host sees it: the result a client receives, and what the host needs to revoke
+/// grants scoped to old values.
 #[derive(Clone, Debug, PartialEq)]
 pub struct SettingsWrite {
     pub result: WriteResult,
@@ -275,8 +237,8 @@ impl SettingsRead {
 }
 
 /// A stored entry as far as this build can use it. An incompatible entry is kept verbatim in the
-/// file; what could be recovered from it — its revision, its request log and its profile
-/// identities — lets a reset stay monotonic, recognise a retry and clear the profiles' secrets.
+/// file; what could be recovered from it — its revision and its profile identities — lets a reset
+/// keep the revision counting and clear the profiles' secrets.
 struct Loaded {
     entry: ModuleEntry,
     /// `Some(reason)` when the stored entry cannot be used as it is.
@@ -314,19 +276,18 @@ fn load_entry(raw: Option<&Value>, schema: u32) -> Loaded {
 /// What a reset needs from an entry this build cannot read as a whole.
 fn salvage(raw: &Value) -> ModuleEntry {
     let number = |name: &str| raw.get(name).and_then(Value::as_u64);
-    let array = |name: &str| {
-        raw.get(name)
-            .and_then(Value::as_array)
-            .cloned()
-            .unwrap_or_default()
-    };
+    let profiles = raw
+        .get("profiles")
+        .and_then(Value::as_array)
+        .map(Vec::as_slice)
+        .unwrap_or_default();
     ModuleEntry {
         schema: number("schema")
             .and_then(|schema| u32::try_from(schema).ok())
             .unwrap_or(0),
         revision: number("revision").unwrap_or(0),
         values: Map::new(),
-        profiles: array("profiles")
+        profiles: profiles
             .iter()
             .filter_map(|profile| {
                 let text =
@@ -338,10 +299,6 @@ fn salvage(raw: &Value) -> ModuleEntry {
                     values: Map::new(),
                 })
             })
-            .collect(),
-        requests: array("requests")
-            .into_iter()
-            .filter_map(|request| serde_json::from_value(request).ok())
             .collect(),
     }
 }
@@ -627,35 +584,6 @@ impl Applied {
     }
 }
 
-/// The canonical request a retry is matched by: the method, the module, the mutation envelope and
-/// the method's own fields, with object keys in sorted order. A secret is never part of it.
-fn request_hash(
-    method: &str,
-    module_id: &str,
-    mut fields: Map<String, Value>,
-    mutation: &Mutation,
-) -> Result<String, Error> {
-    fields.insert("method".into(), Value::from(method));
-    fields.insert("module_id".into(), Value::from(module_id));
-    fields.insert(
-        "mutation".into(),
-        serde_json::to_value(mutation)
-            .map_err(|error| Error::new(ErrorKind::Internal, error.to_string()))?,
-    );
-    let bytes = serde_json::to_vec(&Value::Object(fields))
-        .map_err(|error| Error::new(ErrorKind::Internal, error.to_string()))?;
-    Ok(format!("{:x}", Sha256::digest(bytes)))
-}
-
-/// The request fields that name a profile, when the request names one.
-fn profile_field(profile_id: Option<&str>) -> Map<String, Value> {
-    let mut fields = Map::new();
-    if let Some(profile_id) = profile_id {
-        fields.insert("profile_id".into(), Value::from(profile_id));
-    }
-    fields
-}
-
 fn stored_profile<'a>(
     entry: &'a mut ModuleEntry,
     profiles: &ProfilesDescriptor,
@@ -679,32 +607,29 @@ fn stored_profile<'a>(
 /// the file again.
 #[derive(Clone, Debug)]
 pub struct SettingsStore {
-    dir: PathBuf,
+    document: JsonDocument<Document>,
 }
 
 impl SettingsStore {
     /// A store over `<dir>/settings.json`. Nothing is created until the first write.
     pub fn new(dir: impl Into<PathBuf>) -> Self {
-        Self { dir: dir.into() }
+        Self {
+            document: JsonDocument::new(dir, SETTINGS_FILE, MAX_SETTINGS_BYTES, SETTINGS_FORMAT),
+        }
     }
 
     pub fn dir(&self) -> &Path {
-        &self.dir
+        self.document.dir()
     }
 
-    fn path(&self) -> PathBuf {
-        self.dir.join(SETTINGS_FILE)
-    }
-
-    /// One module's settings. Reads the file without the lock, which a rename makes safe: a reader
-    /// sees the previous file or the next one, never a partial one.
+    /// One module's settings.
     pub fn read(
         &self,
         descriptor: &ModuleDescriptor,
         secrets: &dyn SecretStore,
     ) -> Result<SettingsRead, Error> {
         let settings = declared(descriptor)?;
-        let document = self.load()?;
+        let document = self.document.read()?.unwrap_or_default();
         let loaded = load_entry(document.modules.get(&descriptor.id), settings.schema);
         Ok(settings_read(descriptor, settings, &loaded, secrets))
     }
@@ -730,9 +655,7 @@ impl SettingsStore {
             };
             normalized.push((field, stored));
         }
-        let mut request = profile_field(profile_id);
-        request.insert("values".into(), Value::Object(values.clone()));
-        self.transact(descriptor, SET, request, mutation, false, |entry| {
+        self.transact(descriptor, mutation, false, |entry| {
             let mut applied = Applied::new(profile_id);
             let stored = match profile_id {
                 None => &mut entry.values,
@@ -760,8 +683,7 @@ impl SettingsStore {
     }
 
     /// `module.settings.set-secret`: store one secret field's value in the secret store. The value
-    /// is never written here and never part of a request hash, so a retry is matched by the
-    /// setting's identity alone; writing a secret is idempotent.
+    /// is never written here; writing a secret is idempotent.
     pub fn set_secret(
         &self,
         descriptor: &ModuleDescriptor,
@@ -788,9 +710,7 @@ impl SettingsStore {
                 "secret {setting} must be 1..={max_length} characters; clear it with module.settings.clear-secret"
             )));
         }
-        let mut request = profile_field(profile_id);
-        request.insert("setting".into(), Value::from(setting));
-        self.transact(descriptor, SET_SECRET, request, mutation, false, |entry| {
+        self.transact(descriptor, mutation, false, |entry| {
             if let Some(profile_id) = profile_id {
                 stored_profile(entry, declared_profiles(descriptor, settings)?, profile_id)?;
             }
@@ -820,33 +740,23 @@ impl SettingsStore {
         if !matches!(field.kind, SettingKind::Secret { .. }) {
             return Err(validation(format!("setting {setting} is not a secret")));
         }
-        let mut request = profile_field(profile_id);
-        request.insert("setting".into(), Value::from(setting));
-        self.transact(
-            descriptor,
-            CLEAR_SECRET,
-            request,
-            mutation,
-            false,
-            |entry| {
-                if let Some(profile_id) = profile_id {
-                    stored_profile(entry, declared_profiles(descriptor, settings)?, profile_id)?;
-                }
-                let key = SecretKey::new(&descriptor.id, profile_id, setting);
-                let mut applied = Applied::new(profile_id);
-                if secrets.present(&key)? {
-                    secrets.clear(&key)?;
-                    applied.change(field);
-                }
-                Ok(applied)
-            },
-        )
+        self.transact(descriptor, mutation, false, |entry| {
+            if let Some(profile_id) = profile_id {
+                stored_profile(entry, declared_profiles(descriptor, settings)?, profile_id)?;
+            }
+            let key = SecretKey::new(&descriptor.id, profile_id, setting);
+            let mut applied = Applied::new(profile_id);
+            if secrets.present(&key)? {
+                secrets.clear(&key)?;
+                applied.change(field);
+            }
+            Ok(applied)
+        })
     }
 
     /// `module.settings.reset`: delete the module's stored values and profiles and clear their
     /// secrets. It is the explicit way out of an incompatible entry, so it is the one write an
-    /// incompatible entry accepts. The entry keeps its revision and request log, so the revision
-    /// stays monotonic and a retried reset is recognised.
+    /// incompatible entry accepts. The entry keeps its revision, so the revision keeps counting.
     pub fn reset(
         &self,
         descriptor: &ModuleDescriptor,
@@ -854,7 +764,7 @@ impl SettingsStore {
         mutation: &Mutation,
     ) -> Result<SettingsWrite, Error> {
         let settings = declared(descriptor)?;
-        self.transact(descriptor, RESET, Map::new(), mutation, true, |entry| {
+        self.transact(descriptor, mutation, true, |entry| {
             let mut applied = Applied::new(None);
             for field in &settings.fields {
                 let changed = match field.kind {
@@ -918,42 +828,32 @@ impl SettingsStore {
                 "a profile label is 1..={MAX_PROFILE_LABEL} characters"
             )));
         }
-        let mut request = Map::new();
-        request.insert("adapter".into(), Value::from(adapter));
-        request.insert("label".into(), Value::from(label));
-        self.transact(
-            descriptor,
-            CREATE_PROFILE,
-            request,
-            mutation,
-            false,
-            |entry| {
-                if entry.profiles.len() >= usize::from(profiles.max) {
-                    return Err(Error::new(
-                        ErrorKind::ResourceLimit,
-                        format!(
-                            "module {} already holds its maximum of {} profiles",
-                            descriptor.id, profiles.max
-                        ),
-                    ));
-                }
-                let profile = StoredProfile {
-                    id: format!("profile-{}", uuid::Uuid::new_v4().simple()),
-                    adapter: adapter.to_owned(),
-                    label: trimmed.to_owned(),
-                    values: Map::new(),
-                };
-                let mut applied = Applied::new(Some(&profile.id));
-                applied.outcome = WriteOutcome::Committed;
-                applied.profile = Some(ProfileSummary {
-                    id: profile.id.clone(),
-                    adapter: profile.adapter.clone(),
-                    label: profile.label.clone(),
-                });
-                entry.profiles.push(profile);
-                Ok(applied)
-            },
-        )
+        self.transact(descriptor, mutation, false, |entry| {
+            if entry.profiles.len() >= usize::from(profiles.max) {
+                return Err(Error::new(
+                    ErrorKind::ResourceLimit,
+                    format!(
+                        "module {} already holds its maximum of {} profiles",
+                        descriptor.id, profiles.max
+                    ),
+                ));
+            }
+            let profile = StoredProfile {
+                id: format!("profile-{}", uuid::Uuid::new_v4().simple()),
+                adapter: adapter.to_owned(),
+                label: trimmed.to_owned(),
+                values: Map::new(),
+            };
+            let mut applied = Applied::new(Some(&profile.id));
+            applied.outcome = WriteOutcome::Committed;
+            applied.profile = Some(ProfileSummary {
+                id: profile.id.clone(),
+                adapter: profile.adapter.clone(),
+                label: profile.label.clone(),
+            });
+            entry.profiles.push(profile);
+            Ok(applied)
+        })
     }
 
     /// `module.profile.remove`: clear the profile's secrets, then remove it and its values. The
@@ -968,192 +868,101 @@ impl SettingsStore {
     ) -> Result<SettingsWrite, Error> {
         let settings = declared(descriptor)?;
         let profiles = declared_profiles(descriptor, settings)?;
-        let request = profile_field(Some(profile_id));
-        self.transact(
-            descriptor,
-            REMOVE_PROFILE,
-            request,
-            mutation,
-            false,
-            |entry| {
-                let index = entry
-                    .profiles
-                    .iter()
-                    .position(|profile| profile.id == profile_id)
-                    .ok_or_else(|| validation(format!("unknown profile {profile_id}")))?;
-                let mut applied = Applied::new(Some(profile_id));
-                applied.outcome = WriteOutcome::Committed;
-                for field in &profiles.fields {
-                    let changed = match field.kind {
-                        SettingKind::Secret { .. } => {
-                            let key = SecretKey::new(&descriptor.id, Some(profile_id), &field.id);
-                            let present = secrets.present(&key)?;
-                            secrets.clear(&key)?;
-                            present
-                        }
-                        _ => entry.profiles[index].values.contains_key(&field.id),
-                    };
-                    if changed {
-                        applied.change(field);
+        self.transact(descriptor, mutation, false, |entry| {
+            let index = entry
+                .profiles
+                .iter()
+                .position(|profile| profile.id == profile_id)
+                .ok_or_else(|| validation(format!("unknown profile {profile_id}")))?;
+            let mut applied = Applied::new(Some(profile_id));
+            applied.outcome = WriteOutcome::Committed;
+            for field in &profiles.fields {
+                let changed = match field.kind {
+                    SettingKind::Secret { .. } => {
+                        let key = SecretKey::new(&descriptor.id, Some(profile_id), &field.id);
+                        let present = secrets.present(&key)?;
+                        secrets.clear(&key)?;
+                        present
                     }
+                    _ => entry.profiles[index].values.contains_key(&field.id),
+                };
+                if changed {
+                    applied.change(field);
                 }
-                let removed = entry.profiles.remove(index);
-                applied.profile = Some(ProfileSummary {
-                    id: removed.id.clone(),
-                    adapter: removed.adapter.clone(),
-                    label: removed.label.clone(),
-                });
-                applied.removed.push(removed);
-                Ok(applied)
-            },
-        )
+            }
+            let removed = entry.profiles.remove(index);
+            applied.profile = Some(ProfileSummary {
+                id: removed.id.clone(),
+                adapter: removed.adapter.clone(),
+                label: removed.label.clone(),
+            });
+            applied.removed.push(removed);
+            Ok(applied)
+        })
     }
 
-    /// One locked read-modify-write of one module's entry: check the envelope, recognise a retry,
-    /// refuse an incompatible entry unless this is a reset, check the revision, apply, number the
-    /// result, record the request and replace the file atomically.
+    /// One locked read-modify-write of one module's entry: check the envelope, refuse an
+    /// incompatible entry unless this is a reset, check the revision, apply and number the result.
+    /// Only a committed change is written; a no-op or a refusal leaves the file as it was.
     fn transact(
         &self,
         descriptor: &ModuleDescriptor,
-        method: &str,
-        request: Map<String, Value>,
         mutation: &Mutation,
         reset: bool,
         apply: impl FnOnce(&mut ModuleEntry) -> Result<Applied, Error>,
     ) -> Result<SettingsWrite, Error> {
         mutation.validate()?;
         let settings = declared(descriptor)?;
-        let hash = request_hash(method, &descriptor.id, request, mutation)?;
-        let _lock = self.lock()?;
-        let mut document = self.load()?;
-        let Loaded {
-            mut entry,
-            incompatible,
-        } = load_entry(document.modules.get(&descriptor.id), settings.schema);
-        if let Some(previous) = entry
-            .requests
-            .iter()
-            .find(|previous| previous.request_id == mutation.request_id)
-        {
-            if previous.hash != hash {
+        self.document.transact(|document| {
+            let Loaded {
+                mut entry,
+                incompatible,
+            } = load_entry(document.modules.get(&descriptor.id), settings.schema);
+            if let Some(reason) = &incompatible
+                && !reset
+            {
+                return Err(Error::new(
+                    ErrorKind::Incompatible,
+                    format!("module {}: {reason}", descriptor.id),
+                ));
+            }
+            if entry.revision != mutation.expected_revision {
                 return Err(Error::new(
                     ErrorKind::Conflict,
-                    "request_id was already used with different input",
+                    format!(
+                        "stale settings revision {}; the current revision of module {} is {}",
+                        mutation.expected_revision, descriptor.id, entry.revision
+                    ),
                 ));
             }
-            let mut result = previous.result.clone();
-            result.deduplicated = true;
-            return Ok(SettingsWrite {
-                result,
-                previous: Map::new(),
-                removed: Vec::new(),
-            });
-        }
-        if let Some(reason) = &incompatible
-            && !reset
-        {
-            return Err(Error::new(
-                ErrorKind::Incompatible,
-                format!("module {}: {reason}", descriptor.id),
-            ));
-        }
-        if entry.revision != mutation.expected_revision {
-            return Err(Error::new(
-                ErrorKind::Conflict,
-                format!(
-                    "stale settings revision {}; the current revision of module {} is {}",
-                    mutation.expected_revision, descriptor.id, entry.revision
-                ),
-            ));
-        }
-        let mut applied = apply(&mut entry)?;
-        // Clearing an entry this build cannot use is itself the change a reset makes.
-        if reset && incompatible.is_some() {
-            applied.outcome = WriteOutcome::Committed;
-        }
-        if applied.outcome == WriteOutcome::Committed {
-            entry.revision = entry.revision.saturating_add(1);
-        }
-        if reset {
-            entry.schema = settings.schema;
-        }
-        let result = WriteResult {
-            module_id: descriptor.id.clone(),
-            outcome: applied.outcome,
-            revision: entry.revision,
-            deduplicated: false,
-            profile_id: applied.profile_id,
-            profile: applied.profile,
-            changed: applied.changed,
-            invalidates_activation: applied.invalidates_activation,
-        };
-        entry.requests.push_back(StoredRequest {
-            request_id: mutation.request_id.clone(),
-            hash,
-            result: result.clone(),
-        });
-        while entry.requests.len() > REQUEST_LOG {
-            entry.requests.pop_front();
-        }
-        // A no-op is recorded too, even as the first entry of a module with nothing stored, so a
-        // retry with another input is still recognised as a conflict.
-        document.modules.insert(
-            descriptor.id.clone(),
-            serde_json::to_value(&entry)
-                .map_err(|error| Error::new(ErrorKind::Internal, error.to_string()))?,
-        );
-        self.save(&document)?;
-        Ok(SettingsWrite {
-            result,
-            previous: applied.previous,
-            removed: applied.removed,
+            let mut applied = apply(&mut entry)?;
+            // Clearing an entry this build cannot use is itself the change a reset makes.
+            if reset && incompatible.is_some() {
+                applied.outcome = WriteOutcome::Committed;
+            }
+            if applied.outcome == WriteOutcome::Committed {
+                entry.revision = entry.revision.saturating_add(1);
+                entry.schema = settings.schema;
+                document.modules.insert(
+                    descriptor.id.clone(),
+                    serde_json::to_value(&entry)
+                        .map_err(|error| Error::new(ErrorKind::Internal, error.to_string()))?,
+                );
+            }
+            Ok(SettingsWrite {
+                result: WriteResult {
+                    module_id: descriptor.id.clone(),
+                    outcome: applied.outcome,
+                    revision: entry.revision,
+                    profile_id: applied.profile_id,
+                    profile: applied.profile,
+                    changed: applied.changed,
+                    invalidates_activation: applied.invalidates_activation,
+                },
+                previous: applied.previous,
+                removed: applied.removed,
+            })
         })
-    }
-
-    /// Take the advisory lock that serializes writers, across processes as well as threads. It is
-    /// released when the returned handle drops.
-    fn lock(&self) -> Result<File, Error> {
-        atomic::lock(&self.dir, SETTINGS_LOCK)
-    }
-
-    /// The whole file, bounded and checked. An absent file is an empty document; a file of another
-    /// format, or one that is not the current shape, is refused and left exactly as it is.
-    fn load(&self) -> Result<Document, Error> {
-        let path = self.path();
-        let Some(bytes) = atomic::read(&path, MAX_SETTINGS_BYTES)? else {
-            return Ok(Document::empty());
-        };
-        let value: Value = serde_json::from_slice(&bytes)
-            .map_err(|error| incompatible(&path, format!("not valid JSON ({error})")))?;
-        match value.get("format").and_then(Value::as_u64) {
-            Some(format) if format == u64::from(SETTINGS_FORMAT) => {}
-            Some(format) => {
-                return Err(incompatible(
-                    &path,
-                    format!("settings format {format} is not supported"),
-                ));
-            }
-            None => return Err(incompatible(&path, "no settings format marker")),
-        }
-        serde_json::from_value(value)
-            .map_err(|error| incompatible(&path, format!("not a settings file ({error})")))
-    }
-
-    /// Write the whole document to a synced temporary file and rename it over the old one, so a
-    /// failure at any point leaves the previous file.
-    fn save(&self, document: &Document) -> Result<(), Error> {
-        let bytes = serde_json::to_vec_pretty(document)
-            .map_err(|error| Error::new(ErrorKind::Internal, error.to_string()))?;
-        if bytes.len() as u64 > MAX_SETTINGS_BYTES {
-            return Err(Error::new(
-                ErrorKind::ResourceLimit,
-                format!(
-                    "settings would be {} bytes; the file is at most {MAX_SETTINGS_BYTES}",
-                    bytes.len()
-                ),
-            ));
-        }
-        atomic::replace(&self.dir, SETTINGS_FILE, SETTINGS_TEMPORARY, &bytes)
     }
 }
 
@@ -1372,12 +1181,17 @@ mod tests {
         assert_eq!(read.state, SettingsState::Incomplete);
     }
 
+    /// The store keeps no request log: a write sets values, so a retry that reaches the store after
+    /// the first attempt committed conflicts on the revision it was made against, and one made at
+    /// the new revision changes nothing. The owner's request table answers a retry before it gets
+    /// here (see the host's tests).
     #[test]
-    fn a_stale_revision_conflicts_and_a_retry_returns_the_original_result() {
+    fn a_stale_revision_conflicts_and_a_repeated_write_changes_nothing() {
         let fixture = Fixture::new("revisions");
         let first = fixture
             .set(None, json!({"mode": "fast"}), 0, "one")
             .unwrap();
+        assert_eq!(first.result.revision, 1);
         let stale = fixture
             .set(None, json!({"mode": "exact"}), 0, "two")
             .unwrap_err();
@@ -1388,31 +1202,21 @@ mod tests {
         );
         let retry = fixture
             .set(None, json!({"mode": "fast"}), 0, "one")
+            .unwrap_err();
+        assert_eq!(retry.kind, ErrorKind::Conflict, "the retry is stale");
+        let again = fixture
+            .set(None, json!({"mode": "fast"}), 1, "one")
             .unwrap();
-        assert!(retry.result.deduplicated);
-        assert_eq!(
-            WriteResult {
-                deduplicated: false,
-                ..retry.result
-            },
-            first.result
-        );
-        for different in [
-            fixture.set(None, json!({"mode": "exact"}), 0, "one"),
-            fixture.set(None, json!({"mode": "fast"}), 1, "one"),
-            fixture
-                .store
-                .create_profile(&fixture.descriptor, ADAPTER, "Echo", &mutation(0, "one")),
-        ] {
-            let error = different.unwrap_err();
-            assert_eq!(error.kind, ErrorKind::Conflict);
-            assert_eq!(
-                error.detail,
-                "request_id was already used with different input"
-            );
-        }
+        assert_eq!(again.result.outcome, WriteOutcome::NoOp);
         assert_eq!(fixture.read().revision, 1);
         assert_eq!(value_of(&fixture.read(), "mode").0, json!("fast"));
+        assert!(
+            !fixture.raw()["modules"]["test.capabilities"]
+                .as_object()
+                .unwrap()
+                .contains_key("requests"),
+            "no request is recorded"
+        );
         let invalid = fixture
             .store
             .set(
@@ -1435,20 +1239,18 @@ mod tests {
         let empty = fixture.set(None, json!({}), 0, "empty").unwrap();
         assert_eq!(empty.result.outcome, WriteOutcome::NoOp);
         assert_eq!(empty.result.revision, 0);
+        assert!(!fixture.file().exists(), "a no-op writes nothing");
         fixture
             .set(None, json!({"mode": "fast"}), 0, "one")
             .unwrap();
+        let written = fs::read(fixture.file()).unwrap();
         let again = fixture
             .set(None, json!({"mode": "fast"}), 1, "two")
             .unwrap();
         assert_eq!(again.result.outcome, WriteOutcome::NoOp);
         assert_eq!(again.result.revision, 1);
         assert!(again.result.changed.is_empty());
-        let retry = fixture
-            .set(None, json!({"mode": "fast"}), 1, "two")
-            .unwrap();
-        assert!(retry.result.deduplicated);
-        assert_eq!(retry.result.outcome, WriteOutcome::NoOp);
+        assert_eq!(fs::read(fixture.file()).unwrap(), written);
         // Returning an unset field to its default changes nothing either.
         let unset = fixture
             .set(None, json!({"note": null}), 1, "three")
@@ -1594,12 +1396,12 @@ mod tests {
         assert_eq!((read.schema, read.stored_schema), (2, None));
         assert!(read.profiles.is_empty());
         assert_eq!(value_of(&read, "mode").1, ValueSource::Default);
-        // A retried reset is recognised, and a second reset of nothing is a no-op.
-        let retry = fixture
+        // A reset made against the old revision is stale, and a second reset of nothing is a no-op.
+        let stale = fixture
             .store
             .reset(&fixture.descriptor, &fixture.secrets, &mutation(3, "reset"))
-            .unwrap();
-        assert!(retry.result.deduplicated);
+            .unwrap_err();
+        assert_eq!(stale.kind, ErrorKind::Conflict);
         let again = fixture
             .store
             .reset(&fixture.descriptor, &fixture.secrets, &mutation(4, "again"))
@@ -1684,7 +1486,13 @@ mod tests {
             .unwrap_err();
         assert_eq!(error.kind, ErrorKind::ResourceLimit, "{}", error.detail);
         assert_eq!(fs::read(fixture.file()).unwrap(), near);
-        assert!(!fixture.store.dir().join(SETTINGS_TEMPORARY).exists());
+        assert!(
+            !fixture
+                .store
+                .dir()
+                .join(format!("{SETTINGS_FILE}.tmp"))
+                .exists()
+        );
         // A file over the limit is refused without being read whole, and kept.
         let mut over = near.clone();
         over.resize(MAX_SETTINGS_BYTES as usize + 1, b' ');
@@ -1695,28 +1503,6 @@ mod tests {
             .unwrap_err();
         assert_eq!(error.kind, ErrorKind::ResourceLimit);
         assert_eq!(fs::read(fixture.file()).unwrap(), over);
-    }
-
-    #[test]
-    fn the_request_log_keeps_the_last_sixty_four_requests_of_a_module() {
-        let fixture = Fixture::new("log");
-        for index in 0..70u64 {
-            let note = format!("n{index}");
-            fixture
-                .set(None, json!({"note": note}), index, &format!("r{index}"))
-                .unwrap();
-        }
-        let requests = &fixture.raw()["modules"]["test.capabilities"]["requests"];
-        assert_eq!(requests.as_array().unwrap().len(), REQUEST_LOG);
-        assert_eq!(requests[0]["request_id"], json!("r6"));
-        // The oldest requests are forgotten: a retry of one is a new request at a stale revision.
-        let forgotten = fixture
-            .set(None, json!({"note": "n0"}), 0, "r0")
-            .unwrap_err();
-        assert_eq!(forgotten.kind, ErrorKind::Conflict);
-        assert!(forgotten.detail.starts_with("stale settings revision"));
-        let remembered = fixture.set(None, json!({"note": "n6"}), 6, "r6").unwrap();
-        assert!(remembered.result.deduplicated);
     }
 
     #[test]
@@ -1955,9 +1741,9 @@ mod tests {
                 error: None,
             }
         );
-        // A retry is matched by the setting alone, so it neither conflicts nor writes again.
-        let retry = set("another", 0, "one").unwrap();
-        assert!(retry.result.deduplicated);
+        // A second write against the old revision is stale and stores nothing.
+        let stale = set("another", 0, "two").unwrap_err();
+        assert_eq!(stale.kind, ErrorKind::Conflict);
         let key = SecretKey::new("test.capabilities", None, "token");
         assert_eq!(fixture.secrets.read(&key).unwrap().unwrap().expose(), "abc");
         assert_eq!(set("", 1, "empty").unwrap_err().kind, ErrorKind::Validation);

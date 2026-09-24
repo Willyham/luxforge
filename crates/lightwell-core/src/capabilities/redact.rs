@@ -4,6 +4,7 @@
 //! `docs/design/module-capabilities.md#secrets-and-redaction`.
 use crate::ApiRequest;
 use serde_json::Value;
+use std::borrow::Cow;
 
 /// What a redacted secret reads as.
 pub const REDACTED: &str = "<redacted>";
@@ -14,13 +15,17 @@ const SET_SECRET: &str = super::settings::SET_SECRET;
 /// A copy of one request's parameters that is safe to log: the `value` of a
 /// `module.settings.set-secret` request is replaced with `"<redacted>"`, whatever its type.
 pub fn redact_params(method: &str, params: &Value) -> Value {
-    let mut params = params.clone();
-    if method == SET_SECRET
-        && let Some(value) = params.get_mut("value")
-    {
-        *value = Value::from(REDACTED);
+    redacted(method, params).into_owned()
+}
+
+/// [`redact_params`], copying only the parameters that carry a secret.
+pub(crate) fn redacted<'a>(method: &str, params: &'a Value) -> Cow<'a, Value> {
+    if method != SET_SECRET || params.get("value").is_none() {
+        return Cow::Borrowed(params);
     }
-    params
+    let mut params = params.clone();
+    params["value"] = Value::from(REDACTED);
+    Cow::Owned(params)
 }
 
 /// A copy of one request that is safe to log, capture as evidence or copy as JSON. The live-session

@@ -648,9 +648,9 @@ impl CapabilityHost {
         )
     }
 
-    /// Every committed settings write: apply what it implies for grants and activation, and answer
-    /// with its result and the module's settings as they read now. Neither holds a secret. A retry
-    /// answered from the request log implies nothing new: it was applied the first time.
+    /// Every settings write: apply what a committed one implies for grants and activation, and
+    /// answer with its result and the module's settings as they read now. Neither holds a secret. A
+    /// retry never gets here: the owner's request table answers it with the first answer.
     fn settings_written(
         &mut self,
         registry: &Arc<ModuleRegistry>,
@@ -661,7 +661,7 @@ impl CapabilityHost {
         announce: &mut Vec<Origin>,
     ) -> Result<Value, Error> {
         let mut value = encode(&write.result)?;
-        if write.result.outcome == WriteOutcome::Committed && !write.result.deduplicated {
+        if write.result.outcome == WriteOutcome::Committed {
             announce_once(announce, origin);
             // The write is committed whatever follows, so a grants file that cannot be updated is
             // reported beside the result rather than as the write's failure. Nothing it leaves
@@ -2077,6 +2077,34 @@ mod tests {
         );
         assert_eq!(events["current_sequence"], json!(1));
         assert_eq!(events["events"].as_array().unwrap().len(), 1);
+        // The same request_id with other input is a conflict, within the method family.
+        let (code, message) = failure(
+            &owner,
+            client,
+            "set-1",
+            SET,
+            json!({"module_id": MODULE, "values": {"mode": "exact"}, "mutation": mutation(0, "set-1")}),
+        );
+        assert_eq!(
+            (code.as_str(), message.as_str()),
+            (
+                "conflict",
+                "request_id was already used with different input"
+            )
+        );
+        // A secret write's retry is matched by the setting alone: the value is never part of the
+        // request's identity, and the retry stores nothing.
+        let secret = |value: &str| json!({"module_id": MODULE, "setting": "token", "value": value, "mutation": mutation(1, "secret")});
+        let first = ok(&owner, client, "secret", SET_SECRET, secret("first-value"));
+        assert_eq!(first["deduplicated"], json!(false));
+        let again = ok(&owner, client, "secret", SET_SECRET, secret("other-value"));
+        assert_eq!(again["deduplicated"], json!(true));
+        assert_eq!(again["revision"], json!(2));
+        let key = SecretKey::new(MODULE, None, "token");
+        assert_eq!(
+            fixture.secrets.read(&key).unwrap().unwrap().expose(),
+            "first-value"
+        );
         let (code, message) = failure(
             &owner,
             client,
@@ -2090,21 +2118,31 @@ mod tests {
             "{message}"
         );
         stop(owner, join);
-        // A new owner over the same directory reads what the first one committed.
+        // A new owner over the same directory reads what the first one committed. The request
+        // table went with the first owner, so a retry now conflicts on the revision it was made
+        // against, and the client reads the settings its write left.
         let (owner, join) = fixture.start();
         let client = owner.register();
         let read = ok(&owner, client, "read", READ, json!({"module_id": MODULE}));
-        assert_eq!(read["revision"], json!(1));
+        assert_eq!(read["revision"], json!(2));
         assert_eq!(read["fields"]["mode"]["value"], json!("fast"));
         assert_eq!(read["state"], json!("ready"));
-        let (code, _) = failure(
+        let (code, message) = failure(
             &owner,
             client,
-            "stale",
+            "set-1",
             SET,
-            json!({"module_id": MODULE, "values": {"mode": "exact"}, "mutation": mutation(0, "after")}),
+            json!({
+                "module_id": MODULE,
+                "values": {"mode": "fast", "label": "tint"},
+                "mutation": mutation(0, "set-1"),
+            }),
         );
         assert_eq!(code, "conflict");
+        assert!(
+            message.starts_with("stale settings revision 0"),
+            "{message}"
+        );
         stop(owner, join);
     }
 
