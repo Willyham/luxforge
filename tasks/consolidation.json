@@ -1016,7 +1016,7 @@
     {
       "id": "TASK-019",
       "description": "Make Basic, the colour mixer, Presence and the vignette one declarative field-patch module each (a field table plus `compile`), let the host own a planned layer's identity, format and mask, declare single-layer effects with one host lookup of a module's own layer, build the desktop's and the registry's module lists from one function with an availability override, and have the core report whether a stored layer is neutral.",
-      "status": "in_progress",
+      "status": "completed",
       "dependencies": [
         "TASK-001",
         "TASK-015"
