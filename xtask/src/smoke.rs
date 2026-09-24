@@ -77,6 +77,8 @@ pub struct Scenario {
     pub verify: Verify,
     pub source: Source,
     pub window: Option<[&'static str; 2]>,
+    /// The paragraph `reproduce.md` gives it, when its launches need saying more about.
+    pub note: Option<&'static str>,
     /// A scenario whose shape a list of launches cannot say runs its own function instead, through
     /// the same library and with the same launches and checks: `zoom` makes its launch once per
     /// photograph, each a whole run of its own, and `capabilities` starts a proof endpoint in this
@@ -136,6 +138,7 @@ pub static SCENARIOS: &[Scenario] = &[
         verify: plain,
         source: Source::Fixtures(&[]),
         window: None,
+        note: None,
         own: None,
     },
     Scenario {
@@ -145,6 +148,7 @@ pub static SCENARIOS: &[Scenario] = &[
         verify: plain,
         source: Source::Fixtures(&[ORIENTATION_6]),
         window: None,
+        note: None,
         own: None,
     },
     Scenario {
@@ -162,6 +166,7 @@ pub static SCENARIOS: &[Scenario] = &[
         verify: plain,
         source: Source::Fixtures(&[ORIENTATION_6, INVALID]),
         window: None,
+        note: None,
         own: None,
     },
     Scenario {
@@ -174,6 +179,7 @@ pub static SCENARIOS: &[Scenario] = &[
         verify: plain,
         source: Source::Fixtures(&[INVALID]),
         window: None,
+        note: None,
         own: None,
     },
     Scenario {
@@ -183,6 +189,7 @@ pub static SCENARIOS: &[Scenario] = &[
         verify: plain,
         source: Source::Fixtures(&[ORIENTATION_6; 8]),
         window: None,
+        note: None,
         own: None,
     },
     Scenario {
@@ -201,6 +208,7 @@ pub static SCENARIOS: &[Scenario] = &[
             ORIENTATION_1,
         ]),
         window: None,
+        note: None,
         own: None,
     },
     Scenario {
@@ -210,6 +218,7 @@ pub static SCENARIOS: &[Scenario] = &[
         verify: plain,
         source: Source::Fixtures(&["fixtures/generated/24mp.jpg"]),
         window: None,
+        note: None,
         own: None,
     },
     Scenario {
@@ -219,6 +228,7 @@ pub static SCENARIOS: &[Scenario] = &[
         verify: plain,
         source: Source::Fixtures(&["fixtures/generated/60mp.jpg"]),
         window: None,
+        note: None,
         own: None,
     },
     Scenario {
@@ -231,6 +241,7 @@ pub static SCENARIOS: &[Scenario] = &[
         verify: |_, launches| legacy::verify(zoom::verify, launches),
         source: Source::Fixtures(&["fixtures/generated/24mp.jpg", "fixtures/generated/60mp.jpg"]),
         window: Some(PANELLED),
+        note: None,
         own: Some(|run, _, _| zoom::run(run)),
     },
     Scenario {
@@ -249,6 +260,7 @@ pub static SCENARIOS: &[Scenario] = &[
         },
         source: Source::Fixtures(&[ORIENTATION_1]),
         window: Some(["1280", "800"]),
+        note: None,
         own: None,
     },
     Scenario {
@@ -267,6 +279,7 @@ pub static SCENARIOS: &[Scenario] = &[
         },
         source: Source::Fixtures(&[ORIENTATION_1]),
         window: Some(["1280", "800"]),
+        note: None,
         own: None,
     },
     Scenario {
@@ -279,6 +292,7 @@ pub static SCENARIOS: &[Scenario] = &[
         verify: |_, launches| legacy::verify(workspace::verify, launches),
         source: Source::Fixtures(&[ORIENTATION_1]),
         window: Some(PANELLED),
+        note: None,
         own: None,
     },
     Scenario {
@@ -291,6 +305,7 @@ pub static SCENARIOS: &[Scenario] = &[
         verify: |_, launches| legacy::verify(basic::verify, launches),
         source: Source::Fixtures(&[ORIENTATION_1]),
         window: Some(PANELLED),
+        note: None,
         own: None,
     },
     Scenario {
@@ -303,6 +318,7 @@ pub static SCENARIOS: &[Scenario] = &[
         verify: |_, launches| legacy::verify(basic::verify_panel, launches),
         source: Source::Fixtures(&["fixtures/s0/greyscale.jpg"]),
         window: Some(PANELLED),
+        note: None,
         own: None,
     },
     Scenario {
@@ -321,6 +337,7 @@ pub static SCENARIOS: &[Scenario] = &[
         },
         source: Source::Fixtures(&[ORIENTATION_1]),
         window: Some(PANELLED),
+        note: None,
         own: None,
     },
     Scenario {
@@ -330,6 +347,7 @@ pub static SCENARIOS: &[Scenario] = &[
         verify: |_, _| Ok(()),
         source: Source::Fixtures(&[ORIENTATION_1]),
         window: Some(PANELLED),
+        note: None,
         own: Some(|run, _, _| basic::restart(run)),
     },
     Scenario {
@@ -348,6 +366,7 @@ pub static SCENARIOS: &[Scenario] = &[
         },
         source: Source::Fixtures(&[ORIENTATION_1]),
         window: Some(PANELLED),
+        note: None,
         own: None,
     },
     Scenario {
@@ -360,6 +379,7 @@ pub static SCENARIOS: &[Scenario] = &[
         verify: |_, launches| legacy::verify(presence::verify, launches),
         source: Source::Fixtures(&[presence::FIXTURE]),
         window: Some(PANELLED),
+        note: None,
         own: None,
     },
     Scenario {
@@ -372,6 +392,7 @@ pub static SCENARIOS: &[Scenario] = &[
         verify: |_, launches| legacy::verify(mixer::verify, launches),
         source: Source::Fixtures(&[mixer::FIXTURE]),
         window: Some(PANELLED),
+        note: None,
         own: None,
     },
     Scenario {
@@ -384,6 +405,7 @@ pub static SCENARIOS: &[Scenario] = &[
         verify: vignette::verify,
         source: Source::Fixtures(&[vignette::FIXTURE]),
         window: Some(PANELLED),
+        note: None,
         own: None,
     },
     Scenario {
@@ -396,6 +418,7 @@ pub static SCENARIOS: &[Scenario] = &[
         verify: |_, launches| legacy::verify(presets::verify, launches),
         source: Source::Fixtures(&[presets::FIXTURE]),
         window: Some(PANELLED),
+        note: None,
         own: None,
     },
     Scenario {
@@ -405,6 +428,7 @@ pub static SCENARIOS: &[Scenario] = &[
         verify: |_, _| Ok(()),
         source: Source::Fixtures(&[ORIENTATION_1]),
         window: Some(PANELLED),
+        note: None,
         own: Some(|run, _, _| mask::run(run)),
     },
     Scenario {
@@ -414,6 +438,7 @@ pub static SCENARIOS: &[Scenario] = &[
         verify: |_, _| Ok(()),
         source: Source::Fixtures(&["fixtures/generated/presence.jpg"]),
         window: Some(PANELLED),
+        note: None,
         own: Some(|run, _, _| mask_combine::run(run)),
     },
     Scenario {
@@ -423,6 +448,7 @@ pub static SCENARIOS: &[Scenario] = &[
         verify: |_, _| Ok(()),
         source: Source::Fixtures(&["fixtures/generated/presence.jpg"]),
         window: Some(PANELLED),
+        note: None,
         own: Some(|run, _, _| mask_brush::run(run)),
     },
     Scenario {
@@ -432,6 +458,7 @@ pub static SCENARIOS: &[Scenario] = &[
         verify: |_, _| Ok(()),
         source: Source::Fixtures(&["fixtures/generated/range.jpg"]),
         window: Some(PANELLED),
+        note: None,
         own: Some(|run, _, _| mask_range::run(run)),
     },
     Scenario {
@@ -447,6 +474,7 @@ pub static SCENARIOS: &[Scenario] = &[
         verify: |_, launches| legacy::verify(performance::verify, launches),
         source: Source::Default(&[performance::FIXTURE]),
         window: Some(PANELLED),
+        note: None,
         own: None,
     },
     Scenario {
@@ -460,6 +488,7 @@ pub static SCENARIOS: &[Scenario] = &[
         verify: |_, launches| legacy::verify(gallery::verify, launches),
         source: Source::Fixtures(&[ORIENTATION_1]),
         window: Some(gallery::WINDOW),
+        note: None,
         own: None,
     },
     Scenario {
@@ -473,6 +502,7 @@ pub static SCENARIOS: &[Scenario] = &[
         verify: |_, launches| legacy::verify(controls::verify, launches),
         source: Source::Fixtures(&[ORIENTATION_1]),
         window: Some(PANELLED),
+        note: None,
         own: None,
     },
     Scenario {
@@ -482,6 +512,7 @@ pub static SCENARIOS: &[Scenario] = &[
         verify: |_, _| Ok(()),
         source: Source::Fixtures(&[ORIENTATION_1]),
         window: Some(PANELLED),
+        note: None,
         own: Some(|run, _, _| capabilities::run(run)),
     },
     Scenario {
@@ -491,6 +522,7 @@ pub static SCENARIOS: &[Scenario] = &[
         verify: |_, _| Ok(()),
         source: Source::Fixtures(&[ORIENTATION_1]),
         window: Some(PANELLED),
+        note: None,
         own: Some(|run, _, _| workspace::unavailable(run)),
     },
     Scenario {
@@ -503,6 +535,7 @@ pub static SCENARIOS: &[Scenario] = &[
         verify: |_, launches| legacy::verify(raw_panel::verify, launches),
         source: Source::Supplied,
         window: Some(PANELLED),
+        note: None,
         own: None,
     },
 ];
@@ -599,7 +632,10 @@ pub fn verify_only(
 
 /// Every launch of `scenario` over `sources`, in order, each checked against its plan as soon as
 /// it exits, then the scenario's own checks over all of them.
-pub fn launch_all(run: Run, scenario: &Scenario, sources: Vec<PathBuf>) -> Result {
+pub fn launch_all(mut run: Run, scenario: &Scenario, sources: Vec<PathBuf>) -> Result {
+    if let Some(note) = scenario.note {
+        run.note(note);
+    }
     run.check(|run| {
         for source in &sources {
             ensure(
