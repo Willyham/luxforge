@@ -841,7 +841,7 @@
     {
       "id": "TASK-016",
       "description": "Remove the S0 viewer loader from `lib.rs` and move JPEG decoding into `source.rs` with one size limit, decoding straight into the shared frame instead of copying it.",
-      "status": "in_progress",
+      "status": "completed",
       "dependencies": [
         "TASK-004"
       ],
