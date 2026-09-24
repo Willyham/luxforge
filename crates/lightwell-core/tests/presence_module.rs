@@ -21,6 +21,7 @@ use lightwell_core::{
 };
 use reference::presence::{PresenceParams, Rgb, apply_presence};
 use serde_json::{Value, json};
+use sha2::{Digest, Sha256};
 use std::{
     fs,
     path::PathBuf,
@@ -209,12 +210,15 @@ fn byte_source(width: i64, height: i64, pixels: &[[f64; 3]]) -> (SourceImage, Ve
         rgba.push(255);
         decoded.push(codes.map(reference::srgb_to_linear));
     }
+    // The estimate cache is keyed by immutable source identity. Distinct synthetic pictures must
+    // not borrow each other's atmosphere just because their dimensions and recipe match.
+    let fingerprint = format!("sha256:{:x}", Sha256::digest(&rgba));
     (
         SourceImage {
             width: width as u32,
             height: height as u32,
             rgba: rgba.into(),
-            fingerprint: "sha256:presence-module-fixture".into(),
+            fingerprint,
             orientation: 1,
         },
         decoded,
@@ -231,12 +235,16 @@ fn linear_source(width: i64, height: i64, pixels: &[[f64; 3]]) -> (LinearImage, 
         .iter()
         .map(|pixel| pixel.map(|value| f64::from(value as f32)))
         .collect();
+    let mut fingerprint = Sha256::new();
+    for value in &planes {
+        fingerprint.update(value.to_bits().to_le_bytes());
+    }
     (
         LinearImage::with_fingerprint(
             width as u32,
             height as u32,
             planes,
-            "sha256:presence-module-linear-fixture",
+            format!("sha256:{:x}", fingerprint.finalize()),
         )
         .unwrap(),
         rounded,
