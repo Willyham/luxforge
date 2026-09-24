@@ -1166,7 +1166,7 @@
     {
       "id": "TASK-021",
       "description": "Drive every desktop gesture that uses the core draft lifecycle through one pure draft state machine and one gesture field, so the one-draft-per-client rule is a type invariant, and fix each draft race the mask work found, each with a test.",
-      "status": "in_progress",
+      "status": "completed",
       "dependencies": [
         "TASK-002",
         "TASK-015"
@@ -1364,7 +1364,7 @@
     {
       "id": "TASK-024",
       "description": "Carry a recipe's prepared artifacts on the recipe, as its strokes are, so compiling reads them from the recipe instead of a process-global weak index kept alive by pins that every caller must remember.",
-      "status": "in_progress",
+      "status": "completed",
       "dependencies": [
         "TASK-022"
       ],
