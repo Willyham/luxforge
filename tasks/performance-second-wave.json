@@ -1,0 +1,303 @@
+{
+  "schema_version": "1.0",
+  "plan_id": "performance-second-wave",
+  "title": "Source preparation and rendering performance",
+  "objective": "Implement and qualify six bounded exact optimizations identified by the current native investigation.",
+  "context_summary": "Owner authorized subagents and worktrees. Preserve numerical and editing contracts; benchmark serially on the owner M4. GPU/approximation/startup architecture remain proposals.",
+  "tasks": [
+    {
+      "id": "TASK-001",
+      "description": "Prepare cold known RAW directly at the validated requested WB.",
+      "status": "ready",
+      "dependencies": [],
+      "extra_context": [
+        "Implementation scope and constraints are in the design. Agent worktrees run targeted tests and quick at handoff; coordinator schedules serial before/after timing."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Second performance wave",
+          "target": "docs/design/performance-second-wave.md",
+          "relevance": "Scope, numerical contracts, memory and verification requirements."
+        },
+        {
+          "kind": "file",
+          "label": "Implementation",
+          "target": "crates/lightwell-core/src/api/owner.rs",
+          "relevance": "Current implementation to optimize."
+        }
+      ],
+      "acceptance_criteria": [
+        "Known cold saved-WB opens perform one development; unknown imports remain as-shot.",
+        "Historical requests, source identity changes and concurrent WB changes preserve strict validation and stale-result rejection."
+      ],
+      "test_strategy": {
+        "approach": "mixed",
+        "steps": [
+          "Exercise source preparation/import/reopen tests and native current/historical WB journeys.",
+          "Run quick verification when the isolated change is complete; timing is coordinated by integration."
+        ],
+        "commands": [],
+        "expected_results": [
+          "Exact existing semantics and bounded resources; no source mutations."
+        ]
+      }
+    },
+    {
+      "id": "TASK-002",
+      "description": "Avoid unused spatial reductions and reuse strength-independent Dehaze estimates.",
+      "status": "ready",
+      "dependencies": [],
+      "extra_context": [
+        "Implementation scope and constraints are in the design. Agent worktrees run targeted tests and quick at handoff; coordinator schedules serial before/after timing."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Second performance wave",
+          "target": "docs/design/performance-second-wave.md",
+          "relevance": "Scope, numerical contracts, memory and verification requirements."
+        },
+        {
+          "kind": "file",
+          "label": "Implementation",
+          "target": "crates/lightwell-core/src/render/spatial.rs",
+          "relevance": "Current implementation to optimize."
+        }
+      ],
+      "acceptance_criteria": [
+        "Texture/Clarity skip reduction; Dehaze amount-only edits reuse its estimate.",
+        "Source/upstream/stage/WB changes still invalidate; exact rendered and sampled bytes and bounded cache semantics remain."
+      ],
+      "test_strategy": {
+        "approach": "mixed",
+        "steps": [
+          "Compare exact outputs and assert preparation/reduction counts and invalidation.",
+          "Run quick verification when the isolated change is complete; timing is coordinated by integration."
+        ],
+        "commands": [],
+        "expected_results": [
+          "Exact existing semantics and bounded resources; no source mutations."
+        ]
+      }
+    },
+    {
+      "id": "TASK-003",
+      "description": "Parallelize independent DNG correction rows through the shared pool.",
+      "status": "ready",
+      "dependencies": [],
+      "extra_context": [
+        "Implementation scope and constraints are in the design. Agent worktrees run targeted tests and quick at handoff; coordinator schedules serial before/after timing."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Second performance wave",
+          "target": "docs/design/performance-second-wave.md",
+          "relevance": "Scope, numerical contracts, memory and verification requirements."
+        },
+        {
+          "kind": "file",
+          "label": "Implementation",
+          "target": "crates/lightwell-raw/src/dng.rs",
+          "relevance": "Current implementation to optimize."
+        }
+      ],
+      "acceptance_criteria": [
+        "Serial and pool outputs match exactly, including stage/channel order and boundaries.",
+        "Cancellation/overflow fail explicitly; only existing scratch exists; small inputs remain serial."
+      ],
+      "test_strategy": {
+        "approach": "mixed",
+        "steps": [
+          "Run DNG numerical references, serial/pool tests and supplied-file RAW checks.",
+          "Run quick verification when the isolated change is complete; timing is coordinated by integration."
+        ],
+        "commands": [],
+        "expected_results": [
+          "Exact existing semantics and bounded resources; no source mutations."
+        ]
+      }
+    },
+    {
+      "id": "TASK-004",
+      "description": "Accelerate exact terminal code-threshold lookup.",
+      "status": "ready",
+      "dependencies": [],
+      "extra_context": [
+        "Implementation scope and constraints are in the design. Agent worktrees run targeted tests and quick at handoff; coordinator schedules serial before/after timing."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Second performance wave",
+          "target": "docs/design/performance-second-wave.md",
+          "relevance": "Scope, numerical contracts, memory and verification requirements."
+        },
+        {
+          "kind": "file",
+          "label": "Implementation",
+          "target": "crates/lightwell-core/src/render.rs",
+          "relevance": "Current implementation to optimize."
+        }
+      ],
+      "acceptance_criteria": [
+        "All clamp/tie/nonfinite/helper semantics and RAW boundary fallback remain.",
+        "A bounded static coarse index reduces search work and photo buffers remain exact."
+      ],
+      "test_strategy": {
+        "approach": "mixed",
+        "steps": [
+          "Compare canonical binary search and terminal oracle across all threshold/bin neighbours and complete buffers.",
+          "Run quick verification when the isolated change is complete; timing is coordinated by integration."
+        ],
+        "commands": [],
+        "expected_results": [
+          "Exact existing semantics and bounded resources; no source mutations."
+        ]
+      }
+    },
+    {
+      "id": "TASK-005",
+      "description": "Reduce clipping cells into disjoint final-buffer rows.",
+      "status": "ready",
+      "dependencies": [],
+      "extra_context": [
+        "Implementation scope and constraints are in the design. Agent worktrees run targeted tests and quick at handoff; coordinator schedules serial before/after timing."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Second performance wave",
+          "target": "docs/design/performance-second-wave.md",
+          "relevance": "Scope, numerical contracts, memory and verification requirements."
+        },
+        {
+          "kind": "file",
+          "label": "Implementation",
+          "target": "crates/lightwell-core/src/analysis/overlay.rs",
+          "relevance": "Current implementation to optimize."
+        }
+      ],
+      "acceptance_criteria": [
+        "Every cell equals a serial reference for nondivisible grids and edge clips.",
+        "One bounded final grid replaces per-fold complete grids; resource/error behavior remains."
+      ],
+      "test_strategy": {
+        "approach": "mixed",
+        "steps": [
+          "Exercise clipping fixtures, parallel/serial exact cells and rendered overlays.",
+          "Run quick verification when the isolated change is complete; timing is coordinated by integration."
+        ],
+        "commands": [],
+        "expected_results": [
+          "Exact existing semantics and bounded resources; no source mutations."
+        ]
+      }
+    },
+    {
+      "id": "TASK-006",
+      "description": "Render source-only RAW rows without per-pixel generic resolution.",
+      "status": "ready",
+      "dependencies": [],
+      "extra_context": [
+        "Implementation scope and constraints are in the design. Agent worktrees run targeted tests and quick at handoff; coordinator schedules serial before/after timing."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Second performance wave",
+          "target": "docs/design/performance-second-wave.md",
+          "relevance": "Scope, numerical contracts, memory and verification requirements."
+        },
+        {
+          "kind": "file",
+          "label": "Implementation",
+          "target": "crates/lightwell-core/src/render/linear.rs",
+          "relevance": "Current implementation to optimize."
+        }
+      ],
+      "acceptance_criteria": [
+        "Classify after normal compilation; generic fallback covers unsupported shapes.",
+        "Exact output/source metadata across all orientations/crops/exposure, cancellation and invalid inputs; no new full-frame scratch."
+      ],
+      "test_strategy": {
+        "approach": "mixed",
+        "steps": [
+          "Compare fast path against generic pixels and complete output buffers on synthetic and photo-sized sources.",
+          "Run quick verification when the isolated change is complete; timing is coordinated by integration."
+        ],
+        "commands": [],
+        "expected_results": [
+          "Exact existing semantics and bounded resources; no source mutations."
+        ]
+      }
+    },
+    {
+      "id": "TASK-007",
+      "description": "Integrate accepted kernels, quantify gains and verify native editing behavior.",
+      "status": "pending",
+      "dependencies": [
+        "TASK-001",
+        "TASK-002",
+        "TASK-003",
+        "TASK-004",
+        "TASK-005",
+        "TASK-006"
+      ],
+      "extra_context": [
+        "Reject ineffective candidates and state their disposition. No additive performance claims across overlapping stages."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Performance rules",
+          "target": "docs/engineering/performance-rules.md",
+          "relevance": "Required checklist and photo-sized evidence."
+        },
+        {
+          "kind": "file",
+          "label": "Verification",
+          "target": "docs/engineering/development.md",
+          "relevance": "Quick/rendered/timing/full native methodology."
+        }
+      ],
+      "acceptance_criteria": [
+        "Record serial release before/after distributions and complete-buffer equivalence on 24/60 MP and supplied RAW where relevant.",
+        "Integrated verification includes native RAW opening/editing/reopen with immutable originals.",
+        "Specs/features/user guide reflect accepted behavior and measured scope; completed plan is removed."
+      ],
+      "test_strategy": {
+        "approach": "mixed",
+        "steps": [
+          "Pause agent builds/tests and run serial paired performance comparisons,30 samples per variant.",
+          "Run integrated native full verification with the three-camera manifest and inspect correlated captures.",
+          "Document results and performance checklist."
+        ],
+        "commands": [],
+        "expected_results": [
+          "Recorded evidence supports every gain; no correctness, memory or UI/API regression."
+        ]
+      }
+    }
+  ],
+  "execution_waves": [
+    {
+      "wave": 1,
+      "task_ids": [
+        "TASK-001",
+        "TASK-002",
+        "TASK-003",
+        "TASK-004",
+        "TASK-005",
+        "TASK-006"
+      ]
+    },
+    {
+      "wave": 2,
+      "task_ids": [
+        "TASK-007"
+      ]
+    }
+  ]
+}
