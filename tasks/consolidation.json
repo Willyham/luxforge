@@ -510,8 +510,8 @@
     },
     {
       "id": "TASK-009",
-      "description": "Wave 2, core front doors: one mutation path and one plan path over a lazy `StageContext`, table-driven method dispatch with parameters declared once, typed preparation needs, a cache of immutable entries with shared strokes, history rows without snapshots with a narrow desktop refresh, artifacts carried on the recipe and one job status; then split `editor.rs` around a bound evaluation context.",
-      "status": "pending",
+      "description": "Split `editor.rs` into an `editor/` module along its seams — service and types, catalog storage, history transactions, source preparation, evaluation, planning, mask glue and describe — as a pure move with no behaviour change, so the rest of wave 2 edits separate files.",
+      "status": "in_progress",
       "dependencies": [
         "TASK-001",
         "TASK-003",
@@ -520,32 +520,45 @@
         "TASK-006"
       ],
       "extra_context": [
-        "Detailed into its own tasks when wave 1 is integrated."
+        "`editor.rs` is about 7.7k lines, half of it tests, and one `impl EditorService` holds catalog SQL, transactions, source preparation, evaluation, planning, mask glue and describe. Every wave 2 task edits it, so it is split first by moving code, not by changing it.",
+        "Function bodies stay as they are; only module placement, visibility and imports change. Tests move with the code they test. The preset library reaches into the service's connection directly; give it narrow catalog functions instead if that is a move, not a redesign."
       ],
       "context_links": [
         {
           "kind": "file",
           "label": "Consolidation design",
           "target": "docs/design/consolidation.md",
-          "relevance": "Constraints and the one-path-per-concept table this task follows."
+          "relevance": "Constraints and the one-path-per-concept table."
+        },
+        {
+          "kind": "file",
+          "label": "Editor service",
+          "target": "crates/lightwell-core/src/editor.rs",
+          "relevance": "The file to split."
+        },
+        {
+          "kind": "file",
+          "label": "Architecture",
+          "target": "docs/design/architecture.md",
+          "relevance": "Crate layout to update."
         }
       ],
       "acceptance_criteria": [
-        "Each replaced copy is deleted in the change that replaces it.",
-        "Renders are byte-identical and UI/API parity holds."
+        "`editor.rs` becomes `editor/` with one file per seam and a small `mod.rs`; `git diff -M` shows the change as moves plus visibility and imports.",
+        "Every test passes unchanged in name and assertion.",
+        "The architecture doc names the new layout."
       ],
       "test_strategy": {
-        "approach": "mixed",
+        "approach": "unit",
         "steps": [
-          "Targeted tests per task; rendered and timing once on the integrated wave."
+          "Build and run the whole core suite once at the end."
         ],
         "commands": [
-          "cargo xtask verify --tier quick",
-          "cargo xtask verify --tier rendered",
-          "cargo xtask verify --tier timing"
+          "cargo test -p lightwell-core",
+          "cargo xtask verify --tier quick"
         ],
         "expected_results": [
-          "Every tier passes; timing shows no regression."
+          "All tests pass unchanged."
         ]
       }
     },
@@ -752,6 +765,136 @@
           "Counts are bounded as stated; exactness tests pass unchanged."
         ]
       }
+    },
+    {
+      "id": "TASK-015",
+      "description": "Route every host method through one table whose entries are service or owner handlers, declare each method's parameters once so the schema and the parser cannot differ, and give every mutating method the same `{request_id, actor}` envelope with deduplication.",
+      "status": "in_progress",
+      "dependencies": [
+        "TASK-001"
+      ],
+      "extra_context": [
+        "Today 31 handler-less methods are routed by three string-match layers in the owner loop plus the capability host's own match, and the event append is copied three times beside `record_event`.",
+        "Parameters are declared as required and optional strings in `METHODS`, again as about 37 serde structs, and again in a hand-copied schema test; the parser exists four times and clones the request; five methods ignore their parameters, against the rule that a misspelt filter is never silently ignored.",
+        "The owner decided on 2026-09-24 that every mutating method carries `{request_id, actor}` and is deduplicated, with `expected_revision` wherever a revision exists; today presets, versions, resources and artifacts use four different conventions."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Consolidation design",
+          "target": "docs/design/consolidation.md",
+          "relevance": "Constraints and the one-path-per-concept table."
+        },
+        {
+          "kind": "file",
+          "label": "API methods",
+          "target": "crates/lightwell-core/src/api/methods.rs",
+          "relevance": "The METHODS table and handlers."
+        },
+        {
+          "kind": "file",
+          "label": "Owner loop",
+          "target": "crates/lightwell-core/src/api/owner.rs",
+          "relevance": "Owner-answered methods and events."
+        },
+        {
+          "kind": "file",
+          "label": "Capability host",
+          "target": "crates/lightwell-core/src/capabilities/host.rs",
+          "relevance": "`answer`'s own method match."
+        },
+        {
+          "kind": "file",
+          "label": "Modules and API",
+          "target": "docs/design/modules-and-api.md",
+          "relevance": "The API contract."
+        },
+        {
+          "kind": "file",
+          "label": "Decisions",
+          "target": "docs/decisions.md",
+          "relevance": "Architecture review: the mutation envelope."
+        }
+      ],
+      "acceptance_criteria": [
+        "One table dispatches every host method; the owner loop has no per-method string match and no fallthrough.",
+        "Each method's parameters are declared once and generate both the schema and the parser; every method refuses an unknown parameter.",
+        "Every mutating method takes `{request_id, actor}` and a retry returns the first answer; the desktop, `lightwell-json`, xtask and the docs use the new shapes.",
+        "The event recording, held-draft lookup and selected-entry resolution each exist once."
+      ],
+      "test_strategy": {
+        "approach": "unit",
+        "steps": [
+          "A generated test sends every listed method its declared fields and gets no unknown-field error, and one unknown field gets a validation error.",
+          "A retry test per mutating method family."
+        ],
+        "commands": [
+          "cargo test -p lightwell-core",
+          "cargo test -p lightwell-app",
+          "cargo xtask verify --tier quick"
+        ],
+        "expected_results": [
+          "All pass; schema.list matches the parsers by construction."
+        ]
+      }
+    },
+    {
+      "id": "TASK-016",
+      "description": "Remove the S0 viewer loader from `lib.rs` and move JPEG decoding into `source.rs` with one size limit, decoding straight into the shared frame instead of copying it.",
+      "status": "in_progress",
+      "dependencies": [
+        "TASK-004"
+      ],
+      "extra_context": [
+        "`Loader`, `Photo`, `DecodeTimings`, `open()` and `read_bounded` serve only their own tests and one xtask fixture check that needs width, height and orientation, which `open_source` also returns.",
+        "The 128 MiB JPEG limit is defined twice.",
+        "`open_source_bytes` copies the decoded pixels into a new `Arc<[u8]>`, 96 MB at 24 MP; `render::zeroed_frame` gives a frame to write into once."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Consolidation design",
+          "target": "docs/design/consolidation.md",
+          "relevance": "Constraints and the one-path-per-concept table."
+        },
+        {
+          "kind": "file",
+          "label": "Core lib",
+          "target": "crates/lightwell-core/src/lib.rs",
+          "relevance": "The loader and decode code."
+        },
+        {
+          "kind": "file",
+          "label": "Source",
+          "target": "crates/lightwell-core/src/source.rs",
+          "relevance": "Where decoding belongs."
+        },
+        {
+          "kind": "file",
+          "label": "xtask fixtures",
+          "target": "xtask/src/fixtures.rs",
+          "relevance": "The one external user of `open`."
+        }
+      ],
+      "acceptance_criteria": [
+        "The loader, `Photo`, `DecodeTimings`, `open()` and `read_bounded` are gone and `lib.rs` is re-exports and module declarations.",
+        "JPEG decoding lives in `source.rs` with one limit constant and writes RGBA into its shared frame once.",
+        "Decoded bytes are identical and the input-contract tests pass against `open_source`."
+      ],
+      "test_strategy": {
+        "approach": "unit",
+        "steps": [
+          "Port the input-contract tests to `open_source`; run the source and fixture checks."
+        ],
+        "commands": [
+          "cargo test -p lightwell-core",
+          "cargo xtask fixtures check",
+          "cargo xtask verify --tier quick"
+        ],
+        "expected_results": [
+          "Identical decode results."
+        ]
+      }
     }
   ],
   "execution_waves": [
@@ -773,7 +916,9 @@
       "task_ids": [
         "TASK-009",
         "TASK-013",
-        "TASK-014"
+        "TASK-014",
+        "TASK-015",
+        "TASK-016"
       ]
     },
     {
