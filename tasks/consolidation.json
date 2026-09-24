@@ -1231,7 +1231,7 @@
     {
       "id": "TASK-022",
       "description": "Give every catalog write one path: a `mutate` that validates the envelope, answers a retry, checks the revision, runs the caller's plan, admits the recipe once and writes one transaction that also updates the entry cache; one `write` helper and `From<rusqlite::Error>` for every transaction, including the preset library and the artifact store.",
-      "status": "in_progress",
+      "status": "completed",
       "dependencies": [
         "TASK-015",
         "TASK-017"
