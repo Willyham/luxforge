@@ -24,7 +24,7 @@ Accepted owner decisions and the questions still open. Proposals stay proposals 
 - One workspace: centered photo, collapsible controls, visible history, Fit, numeric zoom and true 100%. No library grid during the editor milestones. Cmd/Ctrl+O imports; Cmd/Ctrl+Z and Shift+Cmd/Ctrl+Z navigate history.
 - Geometry: the visible composition travels with mirror and quarter-turns, and a locked ratio swaps orientation on a quarter-turn. Fine angle is limited to ±45°. Space-drag pans.
 - Pixel-stage edits address the content stage (the source after EXIF orientation) and are placed before quarter-turns, reflections and the crop, so changing the crop never moves or invalidates them. The host chooses a new layer's position from its effect stage. See [content-space edits](design/content-space-edits.md).
-- Quarter-turns and reflections are one orientation layer holding the composed exact state, updated in place while it is the last layer; four rotations leave one neutral layer. See [orientation layer](design/orientation-layer.md).
+- Quarter-turns and reflections are one orientation layer holding the composed exact state, updated in place while it is the last layer; four rotations leave one neutral layer. See [orientation layer](design/orientation-layer.md). Decided on 2026-09-24: a finish-stage layer after it, such as the post-crop vignette, no longer stops the fold; the layer updated in place is the orientation layer just before the finish region.
 - Selecting the current entry in history is Return to current, not a historical preview.
 - Crop (M4): free handles, composition move, thirds overlay, Free/Original/1:1/3:2/4:3/16:9/custom ratios, a drag-to-straighten guide, Apply, Cancel and reset. Option/Alt scales proportionally about a fixed center. Straightening preserves composition with only the trimming needed. Apply commits once; Cancel discards.
 - Export (follow-up): JPEG quality 90, native destination picker, suggested `-edited.jpg`, never overwrite an existing file or a source alias. Optional metadata is stripped by default; Keep metadata retains supported descriptive, capture and GPS fields with correct geometry and profile.
@@ -87,11 +87,17 @@ Accepted on 2026-09-21 for the [UI components design](design/ui-components.md), 
 Decided on 2026-09-23 under the owner's delegation for the [shared module capabilities](design/module-capabilities.md) ("make sensible decisions, don't block on me"); each is a default the owner can change.
 
 - Settings are user-level only: module settings and named provider profiles, outside every catalog, with no history entries. Secrets live only in the OS credential store, starting with the macOS Keychain; a locked or unsupported store fails explicitly with no plaintext fallback.
-- Sending image data is consented **per asset**: a grant names the module, profile, adapter, endpoint origin, data class and asset, and is not remembered for later photos. Downloads are granted per resource version and origin, file reads per canonical path.
+- Sending image data is consented **per asset**: a grant names the module, profile, adapter, endpoint origin, data class and asset, and is not remembered for later photos. Downloads are granted per resource version and origin.
 - Only the desktop (after Allow) or `lightwell-json --permission-authority` may grant. Live-session clients cannot; anyone may deny or revoke. Revocation cancels dependent jobs and never touches recipes, history or accepted artifacts; an endpoint or path change revokes the old grants.
 - Remote endpoints require HTTPS and public addresses; plain HTTP is allowed only to loopback, labelled as such. No proxies.
 - No remote provider adapter ships with the framework; the first real adapters arrive with Corrections. `managed-storage` and `local-runtime` wait for their first consumer.
 - Derived artifacts live in a directory beside the catalog and move with it; catalog format 7 holds their references beside the preset library, the mask table and the stroke store, and earlier formats are refused.
+
+Revised by the owner on 2026-09-24, after the [architecture review](#architecture-review):
+
+- The framework stays and is trimmed to what its consumers need: bound artifacts travel on the recipe as strokes do, `artifact.relocate` goes because the directory moves with its catalog, a grant no longer records its last use, settings and grants share one document store, settings use the module parameter vocabulary, capability jobs report through the activity board, and the proof endpoint leaves the shipped core crate.
+- The transport uses a well-known, tested HTTP client, pinned (such as `ureq`), behind the existing address policy, instead of the hand-written HTTP/1.1 client. The policy itself is unchanged.
+- The `read-user-file` capability and the `file` setting kind are removed until a module needs them. They were thought to serve presets, but `preset.import` takes the file's text from its client, so nothing uses them. A module that reads a user-chosen file may add them back later, consented per canonical path.
 
 ## Programmable operations and modules
 
@@ -118,6 +124,25 @@ The owner asked on 2026-09-23 for presets, with native presets and Lightroom imp
 
 - A shared working-memory budget is a target that keeps memory low, not a limit that refuses the user's work (owner, 2026-09-23). Work that needs more than the target has left still runs and completes. The 256 MiB spatial budget lowers how many tiles run at once, down to one. The 64 MiB colour scratch budget's row chunks are sized so the pool's workers stay well inside it, and a chunk past it still runs. Both keep a high-water mark that the timing tier reads against the target. Size limits on what is accepted — source and frame sizes, the halo and unit bounds a module declares — still refuse with `resource-limit`.
 - When the spatial target holds a render's batch to fewer tiles than the pool has workers, each tile's own passes run on the pool rather than the target being raised (owner, 2026-09-23): the same bytes and the same memory, all three Presence fields at 60 MP in about 3.9 s instead of 11 s, for about twice the CPU time. Larger tiles for a large summed halo remain a proposal.
+
+## Architecture review
+
+Decided by the owner on 2026-09-24 after a whole-codebase review of `main` at `7ce9557`. The owner decided the first two and asked for the review's recommendation on the rest. Implementation waits for the owner's go-ahead, and each spec changes when its behaviour does.
+
+- Consolidate rather than rewrite. Each cross-cutting mechanism keeps one implementation that every feature extends, and the copies are deleted. That covers committing and planning an edit, method dispatch and parameters, jobs, latest-job workers, desktop drafts, the JPEG and RAW evaluators, field-patch modules, colour math, smoke scenarios and test support.
+- **Controls are the same for every source kind.** A JPEG and a RAW photo show one Exposure control and one White balance (temperature and tint) control set, as Lightroom does. Each control behaves as its source requires: on a RAW photo it sets the source development's white balance and exposure, and on a JPEG it sets Basic's relative adjustment. The RAW section's duplicate Exposure and white-balance controls merge into that one set. A module's applicability to a source kind is declared, not named by the desktop.
+- **Mask coverage stays bit-identical** to its frozen `f64` reference. The mask gesture's extra runtime hop is fixed first. Faster `f32` coverage within the `1e-6` tolerance is considered only if a measurement then shows coverage limiting a paint gesture.
+- The brush's cap of 64 segments per grid cell is measured on a realistic back-and-forth scrub before it changes. After that, either the cap rises with its recorded per-pixel cost, or a stroke that reaches it starts a new brush component.
+- The crop draft moves onto the core `draft.*` lifecycle once the desktop has one draft driver, so agents see it in `session.state`. The crop geometry and canvas stay as they are. This supersedes "the crop draft stays desktop-local".
+- Every mutating method carries `{request_id, actor}` and is deduplicated, with `expected_revision` wherever a revision exists, so an agent can retry any mutation safely. This supersedes the presets default that library methods take no mutation envelope.
+- A mask's coverage grid is delivered with the proxy phase rather than after the exact render, because it reads no pixel of the exact frame.
+- Mask, component and stroke identities become a declared parameter kind, validated and deduplicated like any other parameter.
+- The path primitives stay host primitives, and the recipe stops scanning every layer payload for strokes until a consumer other than masks exists.
+- The developer component gallery's page is desktop view state and leaves the core session schema.
+- The curve control vocabulary stays, although only the developer controls proof uses it; Tone Curve is its planned consumer.
+- `probes/s0` and `cargo xtask probe` are removed; the Iced selection stays recorded in the research docs.
+- The Develop workspace mockup images stay in git without LFS and are regenerated only when the design changes, because every agent worktree would otherwise need LFS.
+- Fusing Basic's colour units (exposure into the white-balance matrix, and one Oklab pass shared by colour and the mixer) waits for a measurement showing that the pointwise pass limits a gesture.
 
 ## Open product questions
 
