@@ -1300,6 +1300,66 @@
           "All pass; one validation per commit."
         ]
       }
+    },
+    {
+      "id": "TASK-023",
+      "description": "Register each smoke scenario once in a table and pair every scripted step with its expectations, so the runner derives the script and the frame count, applies the universal per-frame checks to every scenario, and leaves each scenario only its own pixel predicates.",
+      "status": "in_progress",
+      "dependencies": [
+        "TASK-018"
+      ],
+      "extra_context": [
+        "Adding a scenario edits six places in `smoke.rs` (the list, dispatch, the verify chain, the source match, the window-size chains) plus the docs; frame counts are hand-kept constants apart from the script; about 1,250 `frames[N]` indices tie checks to positions, so inserting a step renumbers every later check.",
+        "The universal invariants are opted into per file: input-error checks in 16 of 20 files, the recorded-step check in 10.",
+        "`zoom_smoke::PLAN` already derives its script and frame count from one table. Per-scenario tolerance helpers are still copied with their own thresholds.",
+        "`smoke --verify-only` replays a verifier over a recorded run; the wave 1 rendered runs are the replay input."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Consolidation design",
+          "target": "docs/design/consolidation.md",
+          "relevance": "Constraints and the one-path-per-concept table."
+        },
+        {
+          "kind": "file",
+          "label": "Smoke runner",
+          "target": "xtask/src/smoke.rs",
+          "relevance": "Scenario registration and dispatch."
+        },
+        {
+          "kind": "file",
+          "label": "Scenario library",
+          "target": "xtask/src/scenario/launch.rs",
+          "relevance": "The shared launch envelope and replay."
+        },
+        {
+          "kind": "file",
+          "label": "Development",
+          "target": "docs/engineering/development.md",
+          "relevance": "Scenario docs."
+        }
+      ],
+      "acceptance_criteria": [
+        "A scenario is registered by one table row; `smoke --list` and verify read the table.",
+        "Scripted steps carry their expectations and the runner derives each launch's script and frame count; checks address steps by name or position in the plan, not by hand-kept frame indices.",
+        "Provenance, state-equals-frame, recorded-step and input-error checks run on every frame of every scenario.",
+        "Replaying the recorded wave 1 runs gives the same verdicts; removing one step or changing one expected label fails the migrated scenario on that step."
+      ],
+      "test_strategy": {
+        "approach": "mixed",
+        "steps": [
+          "Replay every recorded wave 1 run with old and new verifiers; mutation checks per migrated scenario."
+        ],
+        "commands": [
+          "cargo test -p xtask",
+          "cargo xtask verify --tier quick",
+          "cargo xtask verify --tier rendered"
+        ],
+        "expected_results": [
+          "Same verdicts on replay; the rendered tier passes."
+        ]
+      }
     }
   ],
   "execution_waves": [
@@ -1336,7 +1396,8 @@
         "TASK-017",
         "TASK-019",
         "TASK-020",
-        "TASK-021"
+        "TASK-021",
+        "TASK-023"
       ]
     },
     {
