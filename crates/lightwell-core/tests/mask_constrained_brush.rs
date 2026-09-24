@@ -186,6 +186,7 @@ fn masked_stack(mask: Mask, strokes: StrokeTable) -> Recipe {
             effect_format: EFFECT_FORMAT,
             payload: json!({"exposure": MASKED_EV}),
             mask: Some(mask.id.clone()),
+            artifacts: Vec::new(),
         }],
         masks: vec![mask],
         strokes,

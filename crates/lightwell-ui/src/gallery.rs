@@ -349,6 +349,9 @@ pub fn gallery() -> Vec<Element<'static, ()>> {
         Some(()),
     ));
 
+    // -- The state panel's Performance section, beside the history rows it sits under.
+    states.extend(crate::gallery_performance::gallery_performance());
+
     // -- Notice cards: neutral and warning tone.
     states.push(notice_card(
         &NoticeCardModel {

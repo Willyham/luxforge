@@ -163,6 +163,7 @@ impl TransformModule {
                     stage: EffectStage::Geometry,
                     order: 0,
                     maskable: false,
+                    artifacts: false,
                 }],
                 actions: vec![ActionDescriptor {
                     id: TRANSFORM_ACTION.into(),
@@ -209,6 +210,7 @@ notes: "the exact transform to compose into the stack's orientation".into(),
                 collapsed: true,
                 layout: crate::ModuleLayout::Stacked,
                 availability: Availability::Available,
+                ..ModuleDescriptor::default()
             },
         }
     }
@@ -426,6 +428,7 @@ mod tests {
             effect_format: EFFECT_FORMAT,
             payload: json!({}),
             mask: None,
+            artifacts: Vec::new(),
         }
     }
 
@@ -444,6 +447,7 @@ mod tests {
                 stage: EffectStage::Geometry,
                 order: 0,
                 maskable: false,
+                artifacts: false,
             }]
         );
         let action = descriptor

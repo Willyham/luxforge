@@ -15,6 +15,7 @@ use crate::{
     app::{
         Editor,
         evidence::Settle,
+        fields,
         message::Message,
         tasks::{
             draft_begin_task, draft_cancel_task, draft_commit_task, draft_reapply_task,
@@ -25,7 +26,17 @@ use crate::{
 };
 use iced::Task;
 use lightwell_core::{AssetId, Draft, DraftId, ErrorKind};
-use serde_json::{Value, json};
+use serde_json::{Map, Value, json};
+
+/// A double-click reset that arrived while this client still had a gesture's commit, or another
+/// request, in flight. It runs, as the one action it is, as soon as nothing is in flight.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct PendingReset {
+    pub(crate) action: String,
+    pub(crate) parameter: String,
+    /// The photograph it was asked for: a reset never runs against another one.
+    pub(crate) asset: AssetId,
+}
 
 /// How the gesture ends once the round trip in flight has answered.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -57,6 +68,9 @@ pub(crate) struct SliderDraft {
     pub(crate) sent: Option<Value>,
     /// The gesture ended while a round trip was in flight.
     pub(crate) finish: Option<Finish>,
+    /// The last accepted value's preview job was refused, so no frame of its own is coming: the
+    /// frame on screen is what that value shows until release.
+    pub(crate) unpreviewed: bool,
 }
 
 impl SliderDraft {
@@ -182,6 +196,7 @@ impl Editor {
             pending: Some(value),
             sent: None,
             finish: None,
+            unpreviewed: false,
         });
         self.status = format!("Drafting {label}…");
         // The host-owned target this gesture drafts through. For a module action it is the mask the
@@ -296,6 +311,7 @@ impl Editor {
                     "since_update_end_ms": since(timing.last_update_end),
                 });
                 draft.draft_revision = set.draft_revision;
+                draft.unpreviewed = false;
                 draft.conflicted = set.conflicted;
                 let label = draft.label.clone();
                 let (draft_revision, sent) = (set.draft_revision, draft.sent.clone());
@@ -313,8 +329,35 @@ impl Editor {
                 self.after_slider_round_trip()
             }
             Err(error) => {
-                self.status = error;
-                self.after_slider_round_trip()
+                // The draft accepted the value but its preview job was refused, so no frame of its
+                // own is coming. A drafted RAW temperature or tint is not this: the core previews
+                // it approximately on the developed planes. What is left is a RAW whose
+                // development is not in memory at all — evicted while a redevelopment or a source
+                // preparation of an earlier request is in flight — which the core answers with
+                // preparation-required rather than a stale frame. The gesture goes on, its release
+                // commits and that commit's frame waits for the development; the status bar says
+                // so instead of showing the error code.
+                let label = draft.label.clone();
+                let (draft_revision, sent) = (draft.draft_revision, draft.sent.clone());
+                draft.unpreviewed = true;
+                self.status = if error.starts_with(ErrorKind::PreparationRequired.code()) {
+                    format!(
+                        "{label} cannot be previewed until the RAW development is ready; it shows on release"
+                    )
+                } else {
+                    error.clone()
+                };
+                self.event(
+                    "slider_draft_unpreviewed",
+                    json!({"draft_revision":draft_revision,"value":sent,"error":error}),
+                );
+                let task = self.after_slider_round_trip();
+                // A drained gesture whose newest value has no frame of its own is still drained:
+                // the frame on screen is the evidence of that, so a scripted step settles on it.
+                if self.slider_draft.as_ref().is_some_and(SliderDraft::drained) {
+                    self.settle_step(Settle::SliderDraft);
+                }
+                task
             }
         }
     }
@@ -493,6 +536,131 @@ impl Editor {
                 Task::none()
             }
         }
+    }
+
+    /// A release of a drafting control with no draft open. Such a control opens its draft on its
+    /// first change, so nothing changed: the press landed exactly on the value, or the draft was
+    /// refused and the status bar says why. There is nothing to commit. Submitting the unchanged
+    /// field instead would send a request that changes nothing — or, for a RAW custom white
+    /// balance still showing its 6504 K starting value under As shot, one that switches to Custom —
+    /// and hold the section busy for its round trip, which is exactly when a double-click's second
+    /// press arrives.
+    pub(crate) fn release_without_draft(&mut self, action: &str, parameter: &str) -> Task<Message> {
+        if self
+            .dragging
+            .as_ref()
+            .is_some_and(|(dragged, field)| dragged == action && field == parameter)
+        {
+            self.dragging = None;
+        }
+        Task::none()
+    }
+
+    /// Double-clicking a control's label or rail: reset that one field. A number control that
+    /// declares its own reset runs that action, such as RAW's temperature and tint returning to As
+    /// shot; otherwise the field goes to its declared default, as one action where that one field
+    /// is a whole request, and otherwise only its text is refilled ([`fields::field_reset`]).
+    ///
+    /// The first click of a double-click on a rail usually moves the value a step or two, so it
+    /// opens a gesture whose release commits; the second click arrives while that commit is still
+    /// answering. Sent then, the reset would name the revision the commit is replacing and be
+    /// refused as stale — for a RAW white balance, whose commit waits for the mosaic to be
+    /// redeveloped, for a second or more. So a reset that is one action waits while this client has
+    /// a gesture or a request in flight, and [`Editor::run_pending_reset`] sends it, against the
+    /// revision that answer brings, as soon as nothing is.
+    pub(crate) fn reset_field(&mut self, action: String, parameter: String) -> Task<Message> {
+        let Some(declared) =
+            tools::declared_action(&self.modules, &action).and_then(|d| d.parameter(&parameter))
+        else {
+            self.status = fields::undeclared_label(&action, &parameter);
+            return Task::none();
+        };
+        let default = fields::seed_text(declared);
+        let declared_reset =
+            tools::declared_field_reset(&self.modules, &action, &parameter).is_some();
+        let reset = fields::field_reset(&self.modules, &action, &parameter);
+        if reset.is_some()
+            && (self.slider_draft.is_some() || self.busy)
+            && self.session.preview.can_edit()
+            && let Some(state) = &self.state
+        {
+            let (asset, revision) = (state.asset.id.clone(), state.revision);
+            self.event(
+                "field_reset_queued",
+                json!({"action":action,"parameter":parameter,"revision":revision,
+                    "gesture_open":self.slider_draft.is_some(),"busy":self.busy}),
+            );
+            self.pending_reset = Some(PendingReset {
+                action,
+                parameter,
+                asset,
+            });
+            return Task::none();
+        }
+        self.editing = None;
+        if declared_reset {
+            // What the declared action leaves is known only from its answer, so until then the
+            // field shows the authoritative value again rather than a default nothing will set.
+            self.seed_values();
+        } else {
+            self.fields.set(&action, &parameter, default);
+        }
+        match reset.filter(|_| self.editable()) {
+            Some((reset, preset)) => self.send_reset((action, parameter), reset, preset),
+            None => Task::none(),
+        }
+    }
+
+    /// Run a waiting reset once nothing is in flight: the gesture has ended and its commit, if it
+    /// made one, has been adopted, so the reset names the revision that commit produced. A reset
+    /// whose photograph is no longer open, or that would now land on a historical preview, is
+    /// dropped with its reason rather than run somewhere it was not asked for.
+    pub(crate) fn run_pending_reset(&mut self) -> Task<Message> {
+        if self.pending_reset.is_none() || self.slider_draft.is_some() || self.busy {
+            return Task::none();
+        }
+        let Some(reset) = self.pending_reset.take() else {
+            return Task::none();
+        };
+        let label = tools::control_label(&self.modules, &reset.action, &reset.parameter)
+            .unwrap_or_else(|| reset.parameter.clone());
+        let reason = if self
+            .state
+            .as_ref()
+            .is_none_or(|state| state.asset.id != reset.asset)
+        {
+            Some("another photograph is open")
+        } else if !self.session.preview.can_edit() {
+            Some("a historical entry is shown")
+        } else {
+            None
+        };
+        if let Some(reason) = reason {
+            self.status = format!("{label} was not reset: {reason}");
+            self.event(
+                "field_reset_dropped",
+                json!({"action":reset.action,"parameter":reset.parameter,"reason":reason}),
+            );
+            return Task::none();
+        }
+        self.reset_field(reset.action, reset.parameter)
+    }
+
+    /// Send one field's reset as its own action: `action` and `preset` are the request, `field` the
+    /// control it was asked of.
+    fn send_reset(
+        &mut self,
+        field: (String, String),
+        action: String,
+        preset: Map<String, Value>,
+    ) -> Task<Message> {
+        let revision = self.state.as_ref().map(|state| state.revision);
+        self.event(
+            "field_reset_sent",
+            json!({"action":action,"preset":preset,"revision":revision,
+                "field":{"action":field.0,"parameter":field.1}}),
+        );
+        self.dispatch(Message::RunAction { action, preset })
     }
 
     /// Drop the gesture's own state. The core draft is ended by its own request; this is only what

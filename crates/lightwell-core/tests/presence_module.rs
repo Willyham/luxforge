@@ -61,6 +61,7 @@ fn presence_layer(payload: Value) -> Layer {
         effect_format: EFFECT_FORMAT,
         payload,
         mask: None,
+        artifacts: Vec::new(),
     }
 }
 
@@ -890,6 +891,7 @@ fn a_crop_after_a_presence_layer_still_samples_the_rendered_byte() {
                 "x": 0.1, "y": 0.1, "width": 0.6, "height": 0.6, "angle": 0.0,
             }),
             mask: None,
+            artifacts: Vec::new(),
         },
     ]);
     let rendered = render(&registry, &source, SnapshotId::new(), &stack).expect("a cropped render");

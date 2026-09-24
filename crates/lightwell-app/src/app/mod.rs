@@ -1,6 +1,9 @@
 //! The Iced application: the editor's own state, the update function and the effects it starts.
 //! Every change to authoritative state goes through an owner call; the view models are re-derived
 //! after each message and the view renders those alone.
+pub(crate) mod capabilities;
+#[cfg(test)]
+mod capabilities_tests;
 pub(crate) mod controls;
 #[cfg(test)]
 mod controls_tests;
@@ -13,9 +16,12 @@ pub(crate) mod masks;
 mod masks_tests;
 pub(crate) mod message;
 pub(crate) mod overlay;
+pub(crate) mod performance;
 pub(crate) mod presets;
 #[cfg(test)]
 mod presets_tests;
+#[cfg(test)]
+mod preview_failure_tests;
 #[cfg(test)]
 mod proof_controls_tests;
 pub(crate) mod slider;
@@ -27,9 +33,11 @@ pub(crate) mod waker;
 use crate::{
     Config,
     diagnostics::Diagnostics,
+    draft_photo,
     paths::Paths,
     state::{
         self, Workspace,
+        capabilities::CapabilityStore,
         histogram::{Analysis, Readout},
         presets::{PresetForm, PresetLibrary},
         tools,
@@ -38,14 +46,15 @@ use crate::{
 };
 use crop::PendingDraft;
 use evidence::{EVIDENCE_DEADLINE, Evidence, SCRIPT_EVIDENCE_DEADLINE, Settle};
-use fields::{Fields, action_params, number_text, reset_field_preset, submit_preset};
+use fields::{Fields, action_params, number_text, submit_preset};
 use iced::{Element, Subscription, Task, widget::operation};
 use iced_runtime::image as image_memory;
 use lightwell_core::{
-    ActionInput, ActionPlan, Availability, ClientId, ClientSession, CropStage, EditorState, Error,
-    ErrorKind, HistoryPage, HistorySelection, LocalServer, ModuleDescriptor, ModuleRegistry,
-    OwnerHandle, POINTER_MODE, PreviewPhase, PreviewQueue, Processing, ProxyBounds,
-    RecipeDescription, StageContext, ToolModule, Version, Zoom,
+    ActionInput, ActionPlan, Availability, ClientAuthority, ClientId, ClientSession, CropStage,
+    EditorState, Error, ErrorKind, HistoryPage, HistorySelection, HostConfig, LocalServer,
+    ModuleDescriptor, ModuleRegistry, OwnerHandle, POINTER_MODE, PreviewPhase, PreviewQueue,
+    Processing, ProxyBounds, RecipeDescription, StageContext, ToolModule, Version, Zoom,
+    capabilities::secrets::{MemorySecretStore, SecretStore, platform_secret_store},
 };
 use message::{ClipEndpoint, CropMessage, MenuTarget, Message, PaletteAction, Panel};
 use overlay::{OverlayQueue, OverlayRequest};
@@ -80,10 +89,15 @@ pub(crate) struct Activity {
     pub(crate) preview_dimensions: Option<(u32, u32)>,
     pub(crate) orientation: Option<u8>,
     pub(crate) backend: Option<Value>,
+    /// When the newest open or commit-style request began. Only the events that measure a request
+    /// end to end read it (`open_to_raster_ms`, `request_to_capture_ms`); a frame's own render time
+    /// is [`Self::render`], because slider drafts, zoom hand-overs, refits and exact phases all
+    /// present frames long after this was last reset.
     pub(crate) request_started: Instant,
-    /// How long the displayed preview took from its request to reaching the screen, for the
-    /// status bar.
-    pub(crate) render_ms: Option<f64>,
+    /// How long the frame on the photo surface took to render, as the preview worker measured that
+    /// frame's own phase, for the status bar. Set by every presented frame, including a retained
+    /// one a zoom hands back, which brings the time recorded with it.
+    pub(crate) render: Option<state::status::RenderTime>,
 }
 
 /// Catalog ownership and the live service start before the window so failures are reported, not panics.
@@ -154,8 +168,14 @@ impl ToolModule for Disabled {
     }
 }
 
-/// The providers this run serves, with any `--disable-module` built-in wrapped as unavailable.
-fn registry(disabled: &[String], developer: bool) -> Result<ModuleRegistry, String> {
+/// The providers this run serves, with any `--disable-module` built-in wrapped as unavailable. In
+/// developer mode the controls proof joins them, and the capability proof too when a proof endpoint
+/// is named.
+fn registry(
+    disabled: &[String],
+    developer: bool,
+    proof_endpoint: Option<&str>,
+) -> Result<ModuleRegistry, String> {
     let mut registry = ModuleRegistry::new();
     let mut unknown: Vec<&str> = disabled.iter().map(String::as_str).collect();
     let mut modules = vec![
@@ -171,6 +191,9 @@ fn registry(disabled: &[String], developer: bool) -> Result<ModuleRegistry, Stri
     ];
     if developer {
         modules.push(Arc::new(lightwell_core::ControlsModule::new()));
+        if let Some(base) = proof_endpoint {
+            modules.push(Arc::new(lightwell_core::CapabilitiesProofModule::new(base)));
+        }
     }
     for module in modules {
         let id = module.descriptor().id.clone();
@@ -190,6 +213,29 @@ fn registry(disabled: &[String], developer: bool) -> Result<ModuleRegistry, Stri
     }
 }
 
+/// Where the capability host keeps module settings, grants and resources, and which secret store
+/// it uses. An evidence run keeps all of it inside its evidence directory with an in-memory store,
+/// so it never touches the person's configuration or login keychain. Nothing is created here: the
+/// host creates a directory on its first write.
+fn host_config(config: &Config) -> HostConfig {
+    let (paths, secrets): (_, Arc<dyn SecretStore>) = match &config.evidence {
+        Some(evidence) => (
+            Paths::resolve(Some(&evidence.join("host"))),
+            Arc::new(MemorySecretStore::new()),
+        ),
+        None => (
+            Paths::resolve(config.data_root.as_ref()),
+            platform_secret_store(),
+        ),
+    };
+    HostConfig {
+        config_dir: paths.as_ref().map(Paths::module_config),
+        resource_dir: paths.as_ref().map(Paths::module_resources),
+        secrets,
+        ..HostConfig::unconfigured()
+    }
+}
+
 pub(crate) fn run(config: Config, size: (f32, f32)) -> Result<(), String> {
     // Evidence runs never touch a real catalog: theirs lives inside the new evidence directory.
     let catalog = match (&config.catalog, &config.evidence) {
@@ -200,9 +246,13 @@ pub(crate) fn run(config: Config, size: (f32, f32)) -> Result<(), String> {
             .config
             .join("catalog.sqlite"),
     };
-    let registry = Arc::new(registry(&config.disabled, config.developer)?);
-    let (owner, join) =
-        OwnerHandle::start_with(&catalog, registry).map_err(|error| match error.kind {
+    let registry = Arc::new(registry(
+        &config.disabled,
+        config.developer,
+        config.proof_endpoint.as_deref(),
+    )?);
+    let (owner, join) = OwnerHandle::start_with_host(&catalog, registry, host_config(&config))
+        .map_err(|error| match error.kind {
             ErrorKind::Conflict => format!(
                 "another Lightwell instance owns the catalog {}; close it or pass --catalog",
                 catalog.display()
@@ -275,6 +325,12 @@ pub(crate) struct ProxyFrame {
     /// Whether the frame approximates the exact render at display size, and why: a spatial layer
     /// whose neighbourhoods scale with the stage, a thin mask, or both.
     pub(crate) approximation: lightwell_core::ProxyApproximation,
+    /// The frame approximates a drafted RAW white balance on planes developed at another one, as
+    /// the exact phase of the same job does.
+    pub(crate) approximate_white_balance: bool,
+    /// The proxy phase's own worker time, so a zoom that hands this frame back to the surface
+    /// reports how long this picture took rather than whatever was presented last.
+    pub(crate) render_ms: f64,
 }
 
 /// What a presented proxy frame holds back until its generation's exact phase lands.
@@ -296,6 +352,8 @@ pub(crate) struct HeldByProxy {
 /// whether a message waited on the desktop's own work or on the runtime.
 #[derive(Clone, Copy, Debug, Default)]
 pub(crate) struct LoopTiming {
+    /// How many times the view has been built, over the life of the process.
+    pub(crate) views: u64,
     pub(crate) last_update_ms: f64,
     pub(crate) last_rederive_ms: f64,
     pub(crate) last_view_ms: f64,
@@ -328,6 +386,11 @@ pub(crate) struct Editor {
     /// Oldest lineage sequence when the chain was truncated; entries at or below it are unknown.
     pub(crate) lineage_floor: Option<u64>,
     pub(crate) display_entry: Option<lightwell_core::EntryId>,
+    /// The entry whose pixels the photo surface holds: the entry the presented generation was
+    /// rendered for. [`Self::display_entry`] moves to a newly requested entry as soon as its job is
+    /// asked for; this moves only when that entry's frame is on screen, and is cleared when a
+    /// failure withdraws the frame.
+    pub(crate) presented_entry: Option<lightwell_core::EntryId>,
     requested_render_entry: Option<lightwell_core::HistoryEntry>,
     rendered_entry: Option<lightwell_core::HistoryEntry>,
     /// The Original entry, so Compare needs no search.
@@ -353,6 +416,15 @@ pub(crate) struct Editor {
     /// still rendering does not, so the mask always describes the photograph on screen — a drafted
     /// one during a gesture exactly as much as a committed one.
     pub(crate) raster: Option<(u64, Arc<lightwell_core::Raster>)>,
+    /// The retained raster approximates a drafted RAW white balance: it is the full-size phase of
+    /// such a job, which carries no report. A clipping overlay derived from it says `approximate`,
+    /// and it replaces no report.
+    pub(crate) raster_approximate_white_balance: bool,
+    /// The exact phase's own worker time for the generation it names, recorded when that phase is
+    /// taken up, so a zoom that hands the retained exact raster to the surface reports that
+    /// picture's render time. Keyed by generation like [`Self::raster`], and only read for the
+    /// generation on screen.
+    pub(crate) exact_render_ms: Option<(u64, f64)>,
     /// The displayed frame's histogram report, adopted with the pixels under the same generation.
     pub(crate) analysis: Option<Analysis>,
     /// The report and raster of a frame whose pixels have not reached the GPU yet. The histogram
@@ -369,6 +441,9 @@ pub(crate) struct Editor {
     pub(crate) presented_generation: u64,
     /// The texture on screen is the display proxy rather than the exact render.
     pub(crate) presented_proxy: bool,
+    /// The frame on screen approximates a drafted RAW white balance on planes developed at another
+    /// one. The histogram is never adopted from such a frame.
+    pub(crate) presented_approximate_white_balance: bool,
     /// The bounds each requested job was given, by generation, until its frame is presented. The
     /// bounds are decided when the job is requested, on this thread, so the frame reflects the
     /// window, the panels and the display scale of that moment rather than of the moment its
@@ -383,11 +458,6 @@ pub(crate) struct Editor {
     pub(crate) proxy_frame: Option<ProxyFrame>,
     /// Why the newest job that offered bounds has no proxy phase, as the core reported it.
     pub(crate) proxy_declined: Option<String>,
-    /// The generation of a delivered proxy whose exact phase has not arrived yet, so a cancelled
-    /// exact phase — which carries no frame at all — can be named.
-    pub(crate) awaiting_exact: Option<u64>,
-    /// Cancelled exact phases already reported, so each is announced exactly once.
-    pub(crate) cancelled_exact_seen: u64,
     /// What the presented proxy is holding until its exact phase lands.
     pub(crate) held_by_proxy: Option<HeldByProxy>,
     /// One active and one replaceable pending overlay derivation, off the UI thread.
@@ -446,12 +516,16 @@ pub(crate) struct Editor {
     /// The open slider gesture's draft, when a control of a patch action is being moved. At most
     /// one draft exists per client, so this and the crop draft exclude each other.
     pub(crate) slider_draft: Option<SliderDraft>,
+    /// A field reset waiting for the gesture commit or request in flight to answer.
+    pub(crate) pending_reset: Option<slider::PendingReset>,
     /// The draft revision the displayed preview was rendered from, for correlation.
     pub(crate) displayed_draft_revision: Option<u64>,
     /// Sections the person collapsed or expanded; every other follows the default.
     pub(crate) expanded: BTreeMap<String, bool>,
     /// The displayed entry's layers as the recipe panel reads them.
     pub(crate) recipe: Option<RecipeDescription>,
+    /// The last `recipe.describe` for a displayed entry failed, so no rows will come for it.
+    pub(crate) recipe_failed: bool,
     pub(crate) menu: Option<MenuTarget>,
     pub(crate) palette_open: bool,
     pub(crate) palette_query: String,
@@ -466,9 +540,11 @@ pub(crate) struct Editor {
     pub(crate) crop: Option<crate::crop_draft::CropDraft>,
     /// What a started or reapplied draft still needs from its truncated preview.
     pub(crate) crop_pending: Option<PendingDraft>,
-    /// The crop layer's input stage on the GPU: one extra texture, bounded like the main preview
-    /// and dropped as soon as the draft ends.
-    pub(crate) draft_photo: Option<image_memory::Allocation>,
+    /// The crop layer's input stage on the GPU: one extra picture, bounded like the main preview,
+    /// held in tiles of at most one atlas layer and dropped as soon as the draft ends.
+    pub(crate) draft_photo: Option<draft_photo::DraftPhoto>,
+    /// The input stage's tiles while they are uploaded; the draft opens once all have arrived.
+    pub(crate) draft_assembly: Option<draft_photo::Assembly>,
     /// The preview generation that belongs to the draft rather than to the displayed state.
     pub(crate) draft_generation: Option<u64>,
     /// This desktop's own Apply is in flight, so the revision it produces is not a conflict.
@@ -533,10 +609,21 @@ pub(crate) struct Editor {
     pub(crate) mask_overlay_pending: Option<(u64, lightwell_core::analysis::MaskOverlay)>,
     /// The mask overlay on the GPU, with the preview generation it belongs to.
     pub(crate) mask_overlay_photo: Option<(u64, image_memory::Allocation)>,
+    /// What the desktop knows about every capability-declaring module: its last settings and
+    /// status reads, the jobs it follows, task runs and the open consent notice. The owner holds
+    /// the authoritative state; this is what was last read back.
+    pub(crate) capabilities: CapabilityStore,
+    /// Every capability operation the update function started, in order, so a test can run
+    /// exactly those through the owner and hand the answers back.
+    #[cfg(test)]
+    pub(crate) capability_started: Vec<(String, state::capabilities::Operation)>,
     /// The preset library as `preset.list` last answered it.
     pub(crate) presets: PresetLibrary,
     /// The Presets section's create form.
     pub(crate) preset_form: PresetForm,
+    /// The state panel's Performance section: its flag, what it has read and its one read in
+    /// flight. It samples only while expanded with the state panel shown.
+    pub(crate) performance: performance::Sampler,
     /// The whole screen as plain data, re-derived after every message.
     pub(crate) workspace: Workspace,
 }
@@ -550,7 +637,9 @@ impl Editor {
             mut config,
             window,
         } = boot;
-        let client = owner.register();
+        // The desktop's own client may grant module permissions: it does so only after the person
+        // presses Allow in its consent notice.
+        let client = owner.register_with(ClientAuthority::Permissions);
         let script = std::mem::take(&mut config.script);
         let evidence = config.evidence.take().map(|dir| {
             let queue = std::mem::take(&mut config.files);
@@ -570,7 +659,11 @@ impl Editor {
                 had_errors: false,
                 paced_slider: None,
                 paced_stroke: None,
+                second_click: None,
                 tools_scroll: None,
+                capability_wait: None,
+                wait_until: None,
+                sync: evidence::CaptureSync::default(),
             }
         });
         let initial = config.files.pop_front();
@@ -593,7 +686,7 @@ impl Editor {
                 orientation: None,
                 backend: None,
                 request_started: Instant::now(),
-                render_ms: None,
+                render: None,
             },
             evidence,
             diagnostics: config.diagnostics.clone(),
@@ -609,6 +702,7 @@ impl Editor {
             lineage: HashSet::new(),
             lineage_floor: None,
             display_entry: None,
+            presented_entry: None,
             requested_render_entry: None,
             rendered_entry: None,
             original_entry: None,
@@ -619,17 +713,18 @@ impl Editor {
             preview_queue: PreviewQueue::default(),
             preview_generation: 0,
             raster: None,
+            raster_approximate_white_balance: false,
+            exact_render_ms: None,
             analysis: None,
             incoming: None,
             presented_generation: 0,
             presented_proxy: false,
+            presented_approximate_white_balance: false,
             pending_bounds: BTreeMap::new(),
             presented_bounds: None,
             refit_pending: false,
             proxy_frame: None,
             proxy_declined: None,
-            awaiting_exact: None,
-            cancelled_exact_seen: 0,
             held_by_proxy: None,
             overlay_queue: OverlayQueue::default(),
             overlay_photo: None,
@@ -662,9 +757,11 @@ impl Editor {
             editing: None,
             dragging: None,
             slider_draft: None,
+            pending_reset: None,
             displayed_draft_revision: None,
             expanded: BTreeMap::new(),
             recipe: None,
+            recipe_failed: false,
             menu: None,
             palette_open: false,
             palette_query: String::new(),
@@ -676,6 +773,7 @@ impl Editor {
             crop: None,
             crop_pending: None,
             draft_photo: None,
+            draft_assembly: None,
             draft_generation: None,
             crop_applying: None,
             crop_angle: "0".into(),
@@ -703,8 +801,12 @@ impl Editor {
             mask_command_in_flight: false,
             mask_overlay_pending: None,
             mask_overlay_photo: None,
+            capabilities: CapabilityStore::default(),
+            #[cfg(test)]
+            capability_started: Vec::new(),
             presets: PresetLibrary::default(),
             preset_form: PresetForm::default(),
+            performance: performance::Sampler::open(),
             workspace: Workspace::default(),
         };
         // Both workers wake the event loop through one channel instead of a poll. The closure is
@@ -712,6 +814,8 @@ impl Editor {
         // its signals comes and goes with the queues' business.
         editor.preview_queue.set_waker(waker::waker());
         editor.overlay_queue.set_waker(waker::waker());
+        // Preview jobs are listed on the owner's activity board beside its own work.
+        editor.preview_queue.set_activity(editor.owner.activity());
         if editor.live_server.is_none() {
             editor.status = "Editor ready; live API unavailable on this host".into();
         }
@@ -839,7 +943,7 @@ impl Editor {
                 entry.as_ref(),
             );
         }
-        json!({"run_id":self.run_id,"mode":if self.evidence.is_some() {"evidence"} else {"editor"},"selection":self.session.preview.selection,"orientation":self.activity.orientation,"phase":self.activity.phase,"requested_generation":self.activity.requested,"displayed_generation":self.activity.displayed,"displayed_draft_revision":self.displayed_draft_revision,"source_dimensions":self.activity.source_dimensions,"preview_dimensions":self.activity.preview_dimensions,"backend":self.activity.backend,"status":self.status,"error_code":self.activity.error_code,"modules":module_summary(&self.modules),"controls":self.fields.summary(),"control_ui":{"group_expanded":self.controls_ui.group_expanded,"selected_tab":self.controls_ui.selected_tab,"curve_channels":curve_channels,"curve_points":curve_points,"picker_open":picker_open,"curves":curves,"pickers":pickers},"gallery":gallery,"tools_scroll":tools_scroll,"crop":self.crop_summary(),"masks":self.workspace.masks.summary(),"mask_draft":self.mask_draft.as_ref().map(|draft| draft.summary()),"last_mask_request":self.last_mask_request.as_ref().map(|(method, params)| json!({"method":method,"params":params})),"draft":self.draft_summary(),"stack":self.stack_summary(),"workspace":serde_json::to_value(&self.session.workspace).unwrap_or(Value::Null),"developer":self.developer,"expanded":self.workspace.expanded(),"pickers":self.workspace.pickers(),"notices":self.notice_titles(),"compare":self.compare_return.is_some(),"render_error":self.render_error_summary(),"palette":{"open":self.palette_open,"query":self.palette_query},"presets":self.presets_summary(),"histogram":self.histogram_summary(),"readout":self.readout_summary(),"proxy":self.proxy_summary(),"scratch":Self::scratch_summary()})
+        json!({"run_id":self.run_id,"mode":if self.evidence.is_some() {"evidence"} else {"editor"},"selection":self.session.preview.selection,"orientation":self.activity.orientation,"phase":self.activity.phase,"requested_generation":self.activity.requested,"displayed_generation":self.activity.displayed,"displayed_draft_revision":self.displayed_draft_revision,"source_dimensions":self.activity.source_dimensions,"preview_dimensions":self.activity.preview_dimensions,"backend":self.activity.backend,"status":self.status,"error_code":self.activity.error_code,"modules":module_summary(&self.modules),"controls":self.fields.summary(),"control_ui":{"group_expanded":self.controls_ui.group_expanded,"selected_tab":self.controls_ui.selected_tab,"curve_channels":curve_channels,"curve_points":curve_points,"picker_open":picker_open,"curves":curves,"pickers":pickers},"gallery":gallery,"tools_scroll":tools_scroll,"crop":self.crop_summary(),"masks":self.workspace.masks.summary(),"mask_draft":self.mask_draft.as_ref().map(|draft| draft.summary()),"last_mask_request":self.last_mask_request.as_ref().map(|(method, params)| json!({"method":method,"params":params})),"draft":self.draft_summary(),"stack":self.stack_summary(),"workspace":serde_json::to_value(&self.session.workspace).unwrap_or(Value::Null),"developer":self.developer,"expanded":self.workspace.expanded(),"pickers":self.workspace.pickers(),"notices":self.notice_titles(),"compare":self.compare_return.is_some(),"render_error":self.render_error_summary(),"palette":{"open":self.palette_open,"query":self.palette_query},"presets":self.presets_summary(),"histogram":self.histogram_summary(),"readout":self.readout_summary(),"status_bar":self.status_bar_summary(),"proxy":self.proxy_summary(),"approximate_white_balance":self.presented_approximate_white_balance,"surface":self.surface_summary(),"active":self.workspace.active(),"scratch":Self::scratch_summary(),"capabilities":state::capabilities::summary(&self.capabilities,&self.modules,self.state.as_ref()),"performance":self.performance_summary()})
     }
 
     /// The Presets section as the frame drew it: its rows, the create form and whether the section
@@ -862,7 +966,11 @@ impl Editor {
     /// figure a resource measurement wants.
     fn scratch_summary() -> Value {
         let budget = lightwell_core::ScratchBudget::default();
-        json!({"limit_bytes":budget.limit(),"in_use_bytes":budget.in_use(),"peak_bytes":budget.peak()})
+        json!({
+            "target_bytes": budget.target(),
+            "in_use_bytes": budget.in_use(),
+            "peak_bytes": budget.peak(),
+        })
     }
 
     /// The core draft this client holds, as `session.state` reports it. The desktop adopts every
@@ -887,7 +995,10 @@ impl Editor {
 
     /// The histogram inspector as a captured frame reports it: its status, the render identity the
     /// counts belong to, all ten endpoint counters and the count one full-height bin stands for, so
-    /// a frame's plot can be checked against an independent reduction of the same fixture.
+    /// a frame's plot can be checked against an independent reduction of the same fixture. Beside
+    /// them, where the inspector's words are drawn: `caption` is the domain the plot states on
+    /// hover, `notice` the text drawn inside the plot's own area (null while there is a report),
+    /// and `tooltips` what the plot and the two triangles state on hover.
     fn histogram_summary(&self) -> Value {
         let model = &self.workspace.histogram;
         let counters = &model.counters;
@@ -897,7 +1008,8 @@ impl Editor {
             }
             None => Value::Null,
         };
-        json!({"status":model.status.as_str(),"stale":model.stale,"caption":model.caption,"identity":identity,"plotted_max":model.plotted_max,"reason":model.reason,"counters":{"r0":counters.r0,"g0":counters.g0,"b0":counters.b0,"r255":counters.r255,"g255":counters.g255,"b255":counters.b255,"any_shadow":counters.any_shadow,"any_highlight":counters.any_highlight,"all_shadow":counters.all_shadow,"all_highlight":counters.all_highlight,"both":counters.both},"overlay":self.overlay_summary()})
+        let tooltips = json!({"plot":model.caption,"shadow":model.shadow_tooltip(),"highlight":model.highlight_tooltip()});
+        json!({"status":model.status.as_str(),"stale":model.stale,"caption":model.caption,"notice":model.notice(),"tooltips":tooltips,"identity":identity,"plotted_max":model.plotted_max,"reason":model.reason,"counters":{"r0":counters.r0,"g0":counters.g0,"b0":counters.b0,"r255":counters.r255,"g255":counters.g255,"b255":counters.b255,"any_shadow":counters.any_shadow,"any_highlight":counters.any_highlight,"all_shadow":counters.all_shadow,"all_highlight":counters.all_highlight,"both":counters.both},"overlay":self.overlay_summary()})
     }
 
     /// The clipping overlay a captured frame was drawn with: its cell grid, which flags it covers
@@ -909,6 +1021,25 @@ impl Editor {
             }
             None => Value::Null,
         }
+    }
+
+    /// The photograph's surface as a captured frame reports it: the view it is drawn at, the preview
+    /// generation whose raster it holds, that raster's size and version, how many rasters the
+    /// surface has written into its texture and how many times the view has been built. Two frames
+    /// with the same version and the same write count prove nothing was written between them,
+    /// however often the view was rebuilt meanwhile.
+    fn surface_summary(&self) -> Value {
+        json!({
+            "view": serde_json::to_value(&self.session.preview.view).unwrap_or(Value::Null),
+            "generation": self.presented_generation,
+            "raster": self.photo.as_ref().map(|photo| {
+                let (width, height) = photo.size();
+                json!([width, height])
+            }),
+            "version": self.photo.as_ref().map(lightwell_ui::PhotoRaster::version),
+            "texture_writes": lightwell_ui::photo_surface::texture_writes(),
+            "views": self.loop_timing.get().views,
+        })
     }
 
     /// The display proxy as a captured frame reports it: the bounds the next job will offer, what
@@ -951,6 +1082,13 @@ impl Editor {
         }
     }
 
+    /// The status bar as the captured frame drew it: the pointer readout's slot (null when empty)
+    /// and the renderer's figure for the picture on screen.
+    fn status_bar_summary(&self) -> Value {
+        let model = &self.workspace.status;
+        json!({"readout":model.readout,"render":model.render,"render_ms":self.activity.render.map(|time| time.ms),"render_proxy":self.activity.render.map(|time| time.proxy),"render_approximate":self.activity.render.map(|time| time.approximate)})
+    }
+
     /// The notices the captured frame drew, by title, so a frame's chrome is observable.
     fn notice_titles(&self) -> Value {
         Value::Array(
@@ -984,14 +1122,14 @@ impl Editor {
                     .layers
                     .iter()
                     .map(|layer| {
-                        json!({"id":layer.id.as_str(),"effect":layer.effect_id,"payload":layer.payload,"mask":layer.mask.as_ref().map(lightwell_core::MaskId::as_str)})
+                        json!({"id":layer.id.as_str(),"effect":layer.effect_id,"payload":layer.payload,"mask":layer.mask.as_ref().map(lightwell_core::MaskId::as_str),"artifacts":layer.artifacts})
                     })
                     .collect();
                 let displayed = self.rendered_entry.as_ref().map(|entry| json!({
                     "entry": entry.id.as_str(),
                     "snapshot": entry.snapshot.id.as_str(),
                     "dimensions": self.dimensions,
-                    "layers": entry.snapshot.recipe.layers.iter().map(|layer| json!({"id":layer.id.as_str(),"effect":layer.effect_id,"payload":layer.payload,"mask":layer.mask.as_ref().map(lightwell_core::MaskId::as_str)})).collect::<Vec<_>>(),
+                    "layers": entry.snapshot.recipe.layers.iter().map(|layer| json!({"id":layer.id.as_str(),"effect":layer.effect_id,"payload":layer.payload,"mask":layer.mask.as_ref().map(lightwell_core::MaskId::as_str),"artifacts":layer.artifacts})).collect::<Vec<_>>(),
                 }));
                 json!({"revision":state.revision,"entry":state.current_entry.id.as_str(),"label":state.current_entry.label,"layers":layers,"displayed":displayed})
             }
@@ -1018,11 +1156,51 @@ impl Editor {
                         "input_stage_loaded".into(),
                         Value::from(self.draft_photo.is_some()),
                     );
+                    object.insert("section".into(), self.crop_section_summary());
+                    // How many atlas-sized tiles hold the input stage on the GPU: one up to 2048
+                    // px a side, more for any photograph-sized stage.
+                    object.insert(
+                        "input_stage_tiles".into(),
+                        Value::from(
+                            self.draft_photo
+                                .as_ref()
+                                .map(draft_photo::DraftPhoto::allocated),
+                        ),
+                    );
                 }
                 summary
             }
-            None => json!({"drafting":false,"pending":self.crop_pending.is_some()}),
+            None => {
+                json!({"drafting":false,"pending":self.crop_pending.is_some(),"section":self.crop_section_summary()})
+            }
         }
+    }
+
+    /// What the crop section shows, exactly as its model derived it for the frame on screen: the
+    /// chosen ratio chip, the lock, the angle's box and rail, and whether its controls act. A
+    /// capture of the section is checked against these.
+    fn crop_section_summary(&self) -> Value {
+        self.workspace
+            .tools
+            .all()
+            .flat_map(|section| section.controls.iter())
+            .find_map(|control| match control {
+                state::tools::ControlModel::CropFrame(model) => Some(model),
+                _ => None,
+            })
+            .map_or(Value::Null, |model| {
+                json!({
+                    "drafting": model.drafting,
+                    "pending": model.pending,
+                    "enabled": model.enabled,
+                    "chosen": model.presets.iter().find(|chip| chip.chosen).map(|chip| chip.label.clone()),
+                    "locked": model.locked,
+                    "can_swap": model.can_swap,
+                    "angle": model.angle,
+                    "rail": model.angle_rail.as_ref().map(|rail| rail.value),
+                    "guide": model.guide,
+                })
+            })
     }
 
     /// One request whose outcome a frame is captured for: the next generation is pending until its
@@ -1150,6 +1328,9 @@ impl Editor {
     pub(crate) fn update(&mut self, message: Message) -> Task<Message> {
         let started = Instant::now();
         let task = self.update_inner(message);
+        if let Some(evidence) = &mut self.evidence {
+            evidence.sync.updates += 1;
+        }
         let mut timing = self.loop_timing.get();
         timing.last_update_ms = started.elapsed().as_secs_f64() * 1000.0;
         timing.last_update_end = Some(Instant::now());
@@ -1162,6 +1343,12 @@ impl Editor {
         let busy = self.preview_queue.is_busy() || self.overlay_queue.is_busy();
         let before_entry = self.displayed_entry();
         let task = self.dispatch(message);
+        // Whatever route opened, closed, hid or showed the Performance section is answered in one
+        // place: starting to sample reads at once, and stopping drops the read in flight.
+        let task = Task::batch([task, self.performance_transition()]);
+        // A reset that waited for this client's commit or request runs once nothing is in flight.
+        let task = Task::batch([task, self.run_pending_reset()]);
+        self.settle_when_quiet();
         if self.displayed_entry() != before_entry {
             self.controls_ui.curve_samples.clear();
             self.curve_sample_requested_source.clear();
@@ -1181,6 +1368,12 @@ impl Editor {
         self.refresh_overlay();
         let rederive_started = Instant::now();
         self.rederive();
+        // A capability section is read for the first time once it is on screen: its first read is
+        // what the section then shows, so the screen is derived again to show it loading.
+        let loads = self.request_capability_loads();
+        if loads.is_some() {
+            self.rederive();
+        }
         let mut timing = self.loop_timing.get();
         timing.last_rederive_ms = rederive_started.elapsed().as_secs_f64() * 1000.0;
         self.loop_timing.set(timing);
@@ -1192,7 +1385,7 @@ impl Editor {
         } else {
             Task::none()
         };
-        Task::batch([task, zoomed, refit, woken])
+        Task::batch([task, zoomed, refit, woken, loads.unwrap_or_else(Task::none)])
     }
 
     /// A newer frame has been requested than the one the histogram describes, so the plotted counts
@@ -1237,30 +1430,27 @@ impl Editor {
         self.overlay_queue.request(raster, request);
     }
 
-    /// One preview result, and the account of every exact phase the queue cancelled while producing
-    /// it.
+    /// The next preview result that carries something to show: a frame or a failure.
     ///
-    /// A superseded exact phase carries no frame at all — the queue drops it rather than delivering
-    /// it — so its count is the only record that a full-resolution render was abandoned. Reporting
-    /// it here means every path out of the `Poll` handler has already reported it.
+    /// An exact phase a newer request stopped is delivered too, under its own generation, but it
+    /// carries no frame, so it is taken up here and never reaches the `Poll` handler: it is
+    /// recorded as that generation's, and when it was the crop draft's input stage the draft it was
+    /// for ends, because no frame for it will come.
     fn poll_preview(&mut self) -> Option<lightwell_core::PreviewResult> {
-        let result = self.preview_queue.poll();
-        let counted = self.preview_queue.cancelled_exact();
-        while self.cancelled_exact_seen < counted {
-            self.cancelled_exact_seen = self.cancelled_exact_seen.saturating_add(1);
-            // The queue cancels the **active** job's exact phase, which is the job whose proxy was
-            // the last one delivered; that is the generation the desktop knows it by. A job that
-            // had no proxy delivered nothing, so there is nothing better than the newest request.
-            let generation = self
-                .awaiting_exact
-                .take()
-                .unwrap_or(self.preview_generation);
+        loop {
+            let result = self.preview_queue.poll()?;
+            if !result.cancelled() {
+                return Some(result);
+            }
+            let draft = Some(result.generation) == self.draft_generation;
             self.event(
                 "preview_exact_cancelled",
-                json!({ "generation": generation }),
+                json!({ "generation": result.generation, "draft": draft }),
             );
+            if draft {
+                self.draft_preview_superseded(Some(result.generation));
+            }
         }
-        result
     }
 
     /// The exact phase of a job whose proxy is already on screen.
@@ -1276,8 +1466,14 @@ impl Editor {
         identity: lightwell_core::analysis::AnalysisIdentity,
         report: Option<lightwell_core::analysis::Report>,
         raster: lightwell_core::Raster,
+        render_ms: f64,
+        approximate_white_balance: bool,
     ) -> Task<Message> {
         let dimensions = (identity.width, identity.height);
+        // Recorded beside the retained raster, so a zoom to 100% that hands it to the surface
+        // reports this render's time. The status bar keeps the proxy's figure meanwhile: the proxy
+        // is the picture on screen.
+        self.exact_render_ms = Some((generation, render_ms));
         // Shares the render's own `Arc<[u8]>`: retaining it copies no pixels.
         let retained = Arc::new(raster);
         match report {
@@ -1295,19 +1491,34 @@ impl Editor {
                 // not arrive.
                 self.adopt_analysis(generation);
             }
-            None => {
-                self.incoming = None;
-                self.analysis = None;
-                self.raster = Some((generation, retained));
-            }
+            None => self.retain_unreduced(generation, retained, approximate_white_balance),
         }
         self.event(
             "preview_exact_adopted",
-            json!({"generation":generation,"dimensions":[dimensions.0,dimensions.1]}),
+            json!({"generation":generation,"dimensions":[dimensions.0,dimensions.1],"render_ms":render_ms,"approximate_white_balance":approximate_white_balance}),
         );
         self.release_held(generation);
         // The queue may hold its next result; nothing else would ask for it.
         Task::done(Message::Poll)
+    }
+
+    /// Retain an exact-phase raster that carries no report. It replaces the retained raster now,
+    /// so no overlay is derived from an older image. A frame with no reduction for an ordinary
+    /// reason clears the report too; a frame that approximates a drafted RAW white balance never
+    /// had one to give, so the last exact report stays plotted, marked updating, until an exact
+    /// frame's report replaces it: the histogram is never adopted from an approximate frame.
+    fn retain_unreduced(
+        &mut self,
+        generation: u64,
+        raster: Arc<lightwell_core::Raster>,
+        approximate_white_balance: bool,
+    ) {
+        self.incoming = None;
+        if !approximate_white_balance {
+            self.analysis = None;
+        }
+        self.raster = Some((generation, raster));
+        self.raster_approximate_white_balance = approximate_white_balance;
     }
 
     /// Release what the presented proxy of this generation was holding back: the scripted step it
@@ -1332,6 +1543,180 @@ impl Editor {
             );
             self.outcome_ready(false);
         }
+    }
+
+    /// A preview of the displayed target failed: say so on the canvas, and never leave another
+    /// entry's picture on screen as though it were this one.
+    ///
+    /// The frame on screen stays only when it is the target that failed — the display proxy of the
+    /// same entry and draft revision, whose full-resolution phase is what failed — because then it
+    /// still shows that state. Any other frame belongs to an earlier entry or draft revision: after
+    /// a commit whose render failed it is the picture from before the edit, while history and the
+    /// recipe already name the edit, so it is withdrawn with everything derived from it and the
+    /// canvas shows the failure in its place. The edit itself is untouched; the next frame that
+    /// renders puts a picture back.
+    fn preview_failed(
+        &mut self,
+        generation: u64,
+        proxy: bool,
+        entry: &lightwell_core::EntryId,
+        draft_revision: Option<u64>,
+        error: &lightwell_core::Error,
+    ) {
+        self.refit_pending = false;
+        self.status = error.to_string();
+        // The canvas explains the failure: the kind and the detail are all the view model needs to
+        // name the cause and offer the allowed actions.
+        self.render_error = Some((error.kind, error.detail.clone()));
+        self.event(
+            "preview_failed",
+            json!({"generation":generation,"entry_id":entry,"draft_revision":draft_revision,"proxy":proxy,"error_code":error.kind.code(),"detail":error.detail}),
+        );
+        let shows_target = self.presented_entry.as_ref() == Some(entry)
+            && self.displayed_draft_revision == draft_revision;
+        if !shows_target && self.photo.is_some() {
+            self.withdraw_photo(generation, entry, error);
+        }
+        // A scripted step waiting for the newest preview's pixels ends on its failure instead: the
+        // failure is that step's outcome, and its frame shows it.
+        if generation >= self.preview_generation {
+            self.settle_step(Settle::Preview);
+        }
+        // A failed exact phase releases whatever its proxy was holding, so a scripted step ends on
+        // the failure rather than waiting for a frame that will never arrive.
+        if !proxy {
+            self.release_held(generation);
+        }
+        if self.activity.pending {
+            self.activity.pending = false;
+            self.activity.phase = "error";
+            self.activity.error_code = Some(error.kind.code().into());
+            self.event("render_failed", json!({"error_code":error.kind.code()}));
+            self.outcome_ready(true);
+        }
+    }
+
+    /// Take the picture of an earlier entry or draft revision off the surface, with everything
+    /// that describes it — the retained rasters, the histogram, the overlay's source, the readout
+    /// and the render time — so nothing on screen claims to show a state it does not.
+    fn withdraw_photo(
+        &mut self,
+        generation: u64,
+        target: &lightwell_core::EntryId,
+        error: &lightwell_core::Error,
+    ) {
+        let shown = self.presented_entry.take();
+        self.event(
+            "preview_withdrawn",
+            json!({
+                "generation": generation,
+                "presented_generation": self.presented_generation,
+                "target_entry": target,
+                "withdrawn_entry": shown,
+                "error_code": error.kind.code(),
+            }),
+        );
+        self.photo = None;
+        self.proxy_frame = None;
+        self.raster = None;
+        self.raster_approximate_white_balance = false;
+        self.exact_render_ms = None;
+        self.incoming = None;
+        self.analysis = None;
+        self.held_by_proxy = None;
+        self.presented_proxy = false;
+        self.presented_approximate_white_balance = false;
+        self.rendered_entry = None;
+        self.displayed_draft_revision = None;
+        self.readout = None;
+        self.pending_sample = None;
+        self.activity.render = None;
+    }
+
+    /// Upload the crop layer's input stage, tile by tile, and hold the queue until every tile is on
+    /// the GPU: the draft opens on the whole stage or not at all.
+    fn upload_draft(
+        &mut self,
+        upload: Upload,
+        tiles: Vec<(draft_photo::TileRect, iced::widget::image::Handle)>,
+    ) -> Task<Message> {
+        self.draft_assembly = Some(draft_photo::Assembly {
+            generation: upload.generation,
+            width: upload.width,
+            height: upload.height,
+            tiles: tiles.iter().map(|(rect, _)| (*rect, None)).collect(),
+        });
+        Task::batch(tiles.into_iter().enumerate().map(|(index, (_, handle))| {
+            let upload = upload.clone();
+            image_memory::allocate(handle)
+                .map(move |result| Message::DraftUploaded(upload.clone(), index, result))
+        }))
+    }
+
+    /// The crop layer's input stage could not be rendered, so the draft it was for cannot open or
+    /// rebase.
+    pub(crate) fn draft_preview_failed(&mut self, error: &lightwell_core::Error) {
+        self.end_pending_draft(
+            format!("The crop's input stage could not be rendered: {error}"),
+            error.kind.code(),
+            &error.detail,
+            None,
+        );
+    }
+
+    /// The crop layer's input stage was superseded before it rendered: a newer preview request
+    /// stopped its job or replaced it in the pending slot, or the stack changed while the owner was
+    /// planning it (`generation` is then `None`). No frame will come, so the draft it was for ends
+    /// as a failed one does.
+    ///
+    /// It is never re-requested and never shielded from the request that superseded it. Every such
+    /// request but a view change comes from a change to the stack or the selection the job was
+    /// planned from — another client's commit, this client's own command, undo or history
+    /// selection — so its input stage and base revision are stale, and a draft opened on them would
+    /// not even be marked conflicted. Shielding it would hold the newer state's frame behind the
+    /// whole input-stage render, and requesting it again would stop that frame in turn.
+    pub(crate) fn draft_preview_superseded(&mut self, generation: Option<u64>) {
+        let Some(pending) = &self.crop_pending else {
+            return;
+        };
+        let again = if pending.reapply { "reapply" } else { "start" };
+        self.end_pending_draft(
+            format!(
+                "The crop's input stage was superseded by a newer preview: {again} the crop again"
+            ),
+            lightwell_core::ErrorKind::Cancelled.code(),
+            "superseded by a newer preview",
+            generation,
+        );
+    }
+
+    /// A starting or reapplied draft whose input stage will not arrive ends here, explicitly,
+    /// rather than waiting for pixels: a start returns to the pointer mode, a reapply keeps the
+    /// draft it was rebasing, still conflicted. The photograph on screen is the current state and
+    /// stays. The reason reaches the status bar and the log, and a scripted step waiting for the
+    /// draft ends on it.
+    fn end_pending_draft(
+        &mut self,
+        status: String,
+        error_code: &str,
+        detail: &str,
+        generation: Option<u64>,
+    ) {
+        let reapply = self
+            .crop_pending
+            .as_ref()
+            .is_some_and(|pending| pending.reapply);
+        self.crop_pending = None;
+        self.draft_generation = None;
+        if !reapply {
+            self.end_draft();
+        }
+        self.status = status;
+        self.event(
+            "crop_draft_failed",
+            json!({"reapply": reapply, "error_code": error_code, "detail": detail, "generation": generation}),
+        );
+        self.settle_step(Settle::Draft);
     }
 
     /// The zoom changed. This is the **one** place a view change can ask for a render, and it only
@@ -1363,11 +1748,17 @@ impl Editor {
         if self.presented_generation == 0 || wants_proxy == self.presented_proxy {
             return Task::none();
         }
+        // A failure withdrew the picture: nothing retained may be handed over in its place, and a
+        // view change asks for no render. The next frame of the target puts a picture back.
+        if self.photo.is_none() && self.render_error.is_some() {
+            return Task::none();
+        }
         if wants_proxy && self.presented_proxy_frame().is_none() {
             // Nothing to hand over: the frame on screen is a full-resolution render with no proxy
             // beside it. One preview job produces the display-size frame this zoom wants, and it is
             // the only render any view change asks for.
             self.event("preview_proxy_requested", json!({ "zoom": zoom }));
+            self.await_requested_frame();
             return self.request_current_preview();
         }
         if !wants_proxy && self.presented_exact_raster().is_none() {
@@ -1397,25 +1788,42 @@ impl Editor {
             let Some(frame) = self.presented_proxy_frame() else {
                 return Task::none();
             };
-            let (generation, raster, dimensions, built, approximation) = (
+            let (generation, raster, dimensions, built, approximation, white_balance, render_ms) = (
                 frame.generation,
                 frame.raster.clone(),
                 frame.dimensions,
                 frame.built,
                 frame.approximation,
+                frame.approximate_white_balance,
+                frame.render_ms,
             );
-            return self.hand_retained(generation, raster, Some(dimensions), built, approximation);
+            return self.hand_retained(
+                generation,
+                raster,
+                Some(dimensions),
+                built,
+                approximation,
+                white_balance,
+                Some(render_ms),
+            );
         }
         let Some(raster) = self.presented_exact_raster().cloned() else {
             return Task::none();
         };
         let generation = self.presented_generation;
+        let render_ms = self
+            .exact_render_ms
+            .filter(|(recorded, _)| *recorded == generation)
+            .map(|(_, ms)| ms);
+        let white_balance = self.raster_approximate_white_balance;
         self.hand_retained(
             generation,
             raster,
             None,
             false,
             lightwell_core::ProxyApproximation::default(),
+            white_balance,
+            render_ms,
         )
     }
 
@@ -1423,8 +1831,8 @@ impl Editor {
     /// is the only caller, and only when the pixels it needs do not exist.
     /// Queue one preview job with the bounds of this moment. Every job goes through here: the
     /// bounds a task carried from the owner are replaced by what the window, the panels and the
-    /// display scale ask for now, so the first frame after launch is already at the display's
-    /// scale and a job requested during a resize is sized for the window it will be shown in. A
+    /// display scale ask for now, so a job requested once the display scale is known is already at
+    /// it and a job requested during a resize is sized for the window it will be shown in. A
     /// truncated job never gets a proxy.
     pub(crate) fn request_preview(&mut self, mut job: lightwell_core::PreviewJob) -> u64 {
         job.proxy = if job.layer_count.is_some() {
@@ -1447,8 +1855,15 @@ impl Editor {
             }
         }
         let bounds = job.proxy;
+        // The job still waiting in the pending slot is replaced by this one and never starts, so
+        // nothing about it will ever be delivered: when it was the crop draft's input stage, the
+        // draft it was for ends here, as a cancelled one does in `poll_preview`.
+        let replaced = self.preview_queue.pending_generation();
         let generation = self.preview_queue.request(job);
         self.pending_bounds.insert(generation, bounds);
+        if replaced.is_some() && replaced == self.draft_generation {
+            self.draft_preview_superseded(replaced);
+        }
         generation
     }
 
@@ -1478,14 +1893,22 @@ impl Editor {
             "preview_proxy_requested",
             json!({"reason":"bounds","bounds":{"width":bounds.width,"height":bounds.height}}),
         );
-        // A scripted step waiting on the session round trip now waits for the refitted frame, so
-        // the capture never shows a proxy of the previous bounds.
+        self.await_requested_frame();
+        self.request_current_preview()
+    }
+
+    /// A view change has just asked for the frame it needs. A scripted step whose frame is still
+    /// to be captured — waiting on the session round trip, or already settled by it earlier in this
+    /// same update — waits for that frame instead, so the capture never shows the picture the view
+    /// has already replaced, such as a proxy of the previous bounds.
+    fn await_requested_frame(&mut self) {
         if let Some(evidence) = &mut self.evidence
-            && evidence.awaiting == Some(Settle::Session)
+            && (evidence.awaiting == Some(Settle::Session)
+                || (evidence.awaiting.is_none() && evidence.capture_pending))
         {
+            evidence.capture_pending = false;
             evidence.awaiting = Some(Settle::Preview);
         }
-        self.request_current_preview()
     }
 
     fn request_current_preview(&mut self) -> Task<Message> {
@@ -1507,6 +1930,7 @@ impl Editor {
     /// is the only caller: preferring a retained raster over a render whenever the pixels exist is
     /// what keeps a view change free. No write happens here at all — the next redraw's `prepare`
     /// puts these bytes in the texture — so a zoom costs the desktop one `Arc` clone.
+    #[allow(clippy::too_many_arguments)]
     fn hand_retained(
         &mut self,
         generation: u64,
@@ -1514,10 +1938,16 @@ impl Editor {
         proxy_dimensions: Option<(u32, u32)>,
         proxy_built: bool,
         proxy_approximation: lightwell_core::ProxyApproximation,
+        approximate_white_balance: bool,
+        render_ms: Option<f64>,
     ) -> Task<Message> {
         // The texture is a proxy exactly when there are proxy dimensions to describe it.
         let proxy = proxy_dimensions.is_some();
-        let Some((stage, entry)) = self.dimensions.zip(self.displayed_entry()) else {
+        // Every retained frame belongs to the generation on screen, so it is stamped with the entry
+        // that generation rendered — never with the entry the desktop has asked for since, whose
+        // frame may still be rendering or may have failed. Handing an older picture over under a
+        // newer entry would present it as that entry's result.
+        let Some((stage, entry)) = self.dimensions.zip(self.presented_entry.clone()) else {
             return Task::none();
         };
         let upload = Upload {
@@ -1532,7 +1962,9 @@ impl Editor {
             proxy_dimensions,
             proxy_built,
             proxy_approximation,
+            approximate_white_balance,
             reason: Some("zoom"),
+            render_ms,
         };
         self.present(upload, &raster);
         Task::none()
@@ -1562,13 +1994,19 @@ impl Editor {
         self.dimensions = Some((upload.width, upload.height));
         self.presented_generation = upload.generation;
         self.presented_proxy = upload.proxy;
+        self.presented_approximate_white_balance = upload.approximate_white_balance;
         if let Some(bounds) = self.pending_bounds.remove(&upload.generation) {
             self.presented_bounds = bounds;
         }
         self.pending_bounds
             .retain(|generation, _| *generation > upload.generation);
         self.refit_pending = false;
-        self.show_entry(upload.entry_id.clone());
+        // A zoom hands over a retained frame of the entry already on screen; the entry the desktop
+        // is waiting for stays the one picks, readouts and the next request are addressed to.
+        if upload.reason.is_none() {
+            self.show_entry(upload.entry_id.clone());
+        }
+        self.presented_entry = Some(upload.entry_id.clone());
         self.displayed_draft_revision = upload.draft_revision;
         self.adopt_analysis(upload.generation);
         if self
@@ -1580,8 +2018,14 @@ impl Editor {
         }
         // A frame on screen is the proof the last failure is over.
         self.render_error = None;
-        self.activity.render_ms =
-            Some(self.activity.request_started.elapsed().as_secs_f64() * 1000.);
+        // The status bar's figure is this frame's own render time, measured on the worker for the
+        // phase that produced it — never the time since the last open or commit, which a drag, a
+        // zoom hand-over or a refit presents long after.
+        self.activity.render = upload.render_ms.map(|ms| state::status::RenderTime {
+            ms,
+            proxy: upload.proxy,
+            approximate: upload.approximate_white_balance,
+        });
         self.event(
             "preview_displayed",
             json!({
@@ -1596,7 +2040,9 @@ impl Editor {
                 "proxy_built":upload.proxy_built,
                 "proxy_approximate":upload.proxy_approximation.is_approximate(),
                 "proxy_approximate_reason":upload.proxy_approximation.reason(),
+                "approximate_white_balance":upload.approximate_white_balance,
                 "reason":upload.reason,
+                "render_ms":upload.render_ms,
             }),
         );
         // A scripted preview selection settles on these same pixels, whether or not this frame also
@@ -1652,6 +2098,8 @@ impl Editor {
             return;
         }
         self.raster = Some((generation, raster));
+        // A reduced frame is exact: an approximate one is never reduced.
+        self.raster_approximate_white_balance = false;
         self.event(
             "analysis_adopted",
             json!({"generation":generation,"entry_id":analysis.identity.entry_id.as_str(),"draft_revision":analysis.identity.draft.as_ref().map(|draft| draft.draft_revision),"width":analysis.identity.width,"height":analysis.identity.height,"any_shadow":analysis.report.any_shadow,"any_highlight":analysis.report.any_highlight,"both":analysis.report.both}),
@@ -1762,15 +2210,17 @@ impl Editor {
         state::histogram::overlay_cells(source, displayed)
     }
 
-    /// The raster a clipping overlay is derived from, with whether it is the display proxy.
+    /// The raster a clipping overlay is derived from, with whether the mask is approximate: derived
+    /// from the display proxy, or from a frame that approximates a drafted RAW white balance.
     ///
     /// Only the frame on screen qualifies: a mask is never derived from an image the person is not
     /// looking at. The exact raster is preferred, and the proxy stands in for it until that phase
-    /// lands, at which point the request changes and the mask is re-derived exactly.
+    /// lands, at which point the request changes and the mask is re-derived exactly. The full-size
+    /// phase of an approximate white balance is still approximate, and says so.
     fn overlay_source(&self) -> Option<(u64, &Arc<lightwell_core::Raster>, bool)> {
         let generation = self.presented_generation;
         if let Some(raster) = self.presented_exact_raster() {
-            return Some((generation, raster, false));
+            return Some((generation, raster, self.raster_approximate_white_balance));
         }
         self.presented_proxy_frame()
             .map(|frame| (generation, &frame.raster, true))
@@ -1852,6 +2302,10 @@ impl Editor {
             modules: &self.modules,
             modules_ready: self.modules_ready,
             recipe: self.recipe.as_ref(),
+            displayed_layers: self
+                .requested_render_entry
+                .as_ref()
+                .map(|entry| entry.snapshot.recipe.layers.as_slice()),
             fields: &self.fields,
             control_ui: &self.controls_ui,
             editing: self.editing.as_ref(),
@@ -1894,7 +2348,7 @@ impl Editor {
             photo: self.photo.is_some(),
             clients: self.live_server.as_ref().map(LocalServer::connected),
             rendering: self.preview_queue.is_busy() || self.uploading,
-            render_ms: self.activity.render_ms,
+            render: self.activity.render,
             render_error: self.render_error.as_ref(),
             pointer: self.pointer,
             analysis: self.analysis.as_ref(),
@@ -1904,8 +2358,11 @@ impl Editor {
             palette_open: self.palette_open,
             palette_query: &self.palette_query,
             palette_selected: self.palette_selected,
+            capabilities: &self.capabilities,
             presets: &self.presets,
             preset_form: &self.preset_form,
+            performance_expanded: self.performance.expanded,
+            performance: &self.performance.history,
         };
         workspace.derive(&inputs);
         self.workspace = workspace;
@@ -2034,6 +2491,9 @@ impl Editor {
                         if mask_command {
                             self.mask_command_failed(&error);
                         }
+                        // Recorded, so a refused request is visible in the evidence log even when
+                        // a later frame's status line has replaced it.
+                        self.event("command_failed", json!({ "error": error }));
                         // A failed Apply keeps the draft; a stale revision makes it conflicted so
                         // the user chooses Discard or Reapply rather than losing the composition.
                         if self.crop_applying.take().is_some() {
@@ -2074,23 +2534,30 @@ impl Editor {
                     eprintln!("Evidence deadline exceeded; inspect retained subprocess output");
                     std::process::exit(3);
                 }
+                self.wait_elapsed();
             }
             Message::PacedSliderTick => return self.slider_paced_tick(),
             Message::PacedStrokeTick => return self.stroke_paced_tick(),
+            Message::DoubleClickSecond => return self.double_click_second(),
             Message::Capture => {
+                let rows_shown = self.recipe_rows_shown();
                 let Some(evidence) = &mut self.evidence else {
                     return Task::none();
                 };
                 // Wait for the backend, for tool discovery and for the preset library, so a frame
                 // always shows real controls and the library rather than their loading lines.
                 let overlay_wanted = evidence.capture_overlay;
+                // The screenshot reads back the frame drawn last, so it waits for a frame built
+                // after every update so far; the next frame tick tries again.
                 if !evidence.capture_pending
                     || evidence.saving
+                    || !evidence.sync.current()
                     || self.activity.backend.is_none()
                     || !self.modules_ready
                     || !self.presets.ready()
                     || self.curve_sample_in_flight
                     || self.curve_sample_pending.is_some()
+                    || !rows_shown
                 {
                     return Task::none();
                 }
@@ -2107,6 +2574,10 @@ impl Editor {
                 evidence.capture_pending = false;
                 evidence.capture_overlay = false;
                 evidence.saving = true;
+                let recorded = (self.snapshot(), self.activity.requested);
+                if let Some(evidence) = &mut self.evidence {
+                    evidence.sync.state = Some(recorded);
+                }
                 return iced::window::oldest()
                     .and_then(iced::window::screenshot)
                     .map(Message::Captured);
@@ -2116,12 +2587,22 @@ impl Editor {
                     "frame_captured",
                     json!({"displayed_generation":self.activity.displayed,"request_to_capture_ms":self.activity.request_started.elapsed().as_secs_f64()*1000.}),
                 );
-                let state = self.snapshot();
-                let generation = self.activity.requested;
+                // The state as it stood when the screenshot was asked for, which is the state the
+                // frame it reads back was built from.
+                let (state, generation) = self
+                    .evidence
+                    .as_mut()
+                    .and_then(|evidence| evidence.sync.state.take())
+                    .unwrap_or_else(|| (self.snapshot(), self.activity.requested));
                 let scale = shot.scale_factor;
                 let logical_width = shot.size.width as f32 / scale;
                 // The photo surface spans the window minus padding, the sidebar and their spacing.
                 let columns = view::surface_columns(logical_width, scale, &self.workspace);
+                let canvas = view::canvas_rect(
+                    (logical_width, shot.size.height as f32 / scale),
+                    scale,
+                    &self.workspace,
+                );
                 let Some(evidence) = &self.evidence else {
                     return Task::none();
                 };
@@ -2143,7 +2624,7 @@ impl Editor {
                             ::image::ColorType::Rgba8,
                         )
                         .map_err(|e| e.to_string())?;
-                        let frame = json!({"file":name,"state":state,"step":step,"capture_provenance":"window-renderer-readback","color":"sRGB","physical_size":[shot.size.width,shot.size.height],"scale":scale,"surface_columns":columns});
+                        let frame = json!({"file":name,"state":state,"step":step,"capture_provenance":"window-renderer-readback","color":"sRGB","physical_size":[shot.size.width,shot.size.height],"scale":scale,"surface_columns":columns,"canvas_rect":canvas});
                         std::fs::write(
                             dir.join(format!("state-{number}.json")),
                             serde_json::to_vec_pretty(&frame).expect("frame is serializable"),
@@ -2192,15 +2673,10 @@ impl Editor {
                         self.adopt(payload.session);
                         // History selection changes the authoritative values shown by generated
                         // controls. A field being edited in the previous entry must not pin its
-                        // text while the selected entry is read-only.
+                        // text while the selected entry is read-only; the entry's own values arrive
+                        // with its recipe rows, below.
                         self.editing = None;
                         self.dragging = None;
-                        self.fields.bind_raw(
-                            &self.modules,
-                            &payload.job.entry.snapshot.recipe,
-                            None,
-                            None,
-                        );
                         let entry = payload.job.entry.id.clone();
                         self.requested_render_entry = Some(payload.job.entry.clone());
                         self.show_entry(entry.clone());
@@ -2250,11 +2726,15 @@ impl Editor {
             Message::RecipeDescribed(result) => match result {
                 Ok(read) => {
                     let read = *read;
+                    self.recipe_failed = false;
                     self.recipe = Some(read.recipe);
                     self.masks = Some(read.masks);
                     self.seed_values();
                 }
-                Err(error) => self.status = format!("Recipe unavailable: {error}"),
+                Err(error) => {
+                    self.recipe_failed = true;
+                    self.status = format!("Recipe unavailable: {error}");
+                }
             },
             Message::PanSynced(result) => {
                 self.pan_in_flight = false;
@@ -2265,6 +2745,7 @@ impl Editor {
                 if let Some((x, y)) = self.pending_pan.take() {
                     return self.pan(x, y);
                 }
+                self.settle_step(Settle::Pan);
             }
             Message::VersionsLoaded(result) => {
                 self.busy = false;
@@ -2297,7 +2778,8 @@ impl Editor {
                 match result {
                     Ok(sync) => {
                         // Another client's preset change reaches the library in the same poll that
-                        // brings its asset changes, and costs no asset refresh of its own.
+                        // brings its asset changes, and costs no asset refresh of its own; a
+                        // capability event re-reads the modules and renders nothing.
                         if let Some((presets, sequence)) = sync.presets {
                             self.adopt_presets(presets, sequence);
                         }
@@ -2305,6 +2787,9 @@ impl Editor {
                             self.accept(*refresh);
                         }
                         self.api_sequence = self.api_sequence.max(sync.sequence);
+                        if sync.capabilities {
+                            return self.reload_capabilities();
+                        }
                     }
                     Err(error) => self.status = format!("Live refresh failed: {error}"),
                 }
@@ -2364,6 +2849,8 @@ impl Editor {
                     let proxy_dimensions = result.proxy_dimensions;
                     let proxy_built = result.proxy_built;
                     let proxy_approximation = result.proxy_approximation;
+                    let approximate_white_balance = result.approximate_white_balance;
+                    let render_ms = result.render_ms;
                     // The mask overlay's coverage grid rides the frame the worker already produced,
                     // so the overlay costs no second render. Only the exact phase fills it; the
                     // proxy phase leaves the previous grid on screen until it lands. The upload is
@@ -2380,17 +2867,10 @@ impl Editor {
                         // "never silently omit an effect" forbids.
                         self.mask_overlay_unavailable(generation, &reason);
                     }
-                    if !for_draft {
-                        if proxy {
-                            self.awaiting_exact = Some(generation);
-                        } else {
-                            if self.awaiting_exact == Some(generation) {
-                                self.awaiting_exact = None;
-                            }
-                            // Only an exact result can say why a job that offered bounds has no
-                            // proxy phase, and it says nothing when the job had one.
-                            self.proxy_declined = result.proxy_declined.clone();
-                        }
+                    // Only an exact result can say why a job that offered bounds has no proxy phase,
+                    // and it says nothing when the job had one.
+                    if !for_draft && !proxy {
+                        self.proxy_declined = result.proxy_declined.clone();
                     }
                     match result.result {
                         Ok(raster) => {
@@ -2405,7 +2885,14 @@ impl Editor {
                                 && self.presented_proxy
                                 && self.proxy_bounds().is_some()
                             {
-                                return self.adopt_exact(generation, identity, report, raster);
+                                return self.adopt_exact(
+                                    generation,
+                                    identity,
+                                    report,
+                                    raster,
+                                    render_ms,
+                                    approximate_white_balance,
+                                );
                             }
                             if for_draft {
                                 // The crop draft's input stage is the one photo path left that
@@ -2451,8 +2938,11 @@ impl Editor {
                                         dimensions: proxy_dimensions.unwrap_or(stage),
                                         built: proxy_built,
                                         approximation: proxy_approximation,
+                                        approximate_white_balance,
+                                        render_ms,
                                     });
                                 } else {
+                                    self.exact_render_ms = Some((generation, render_ms));
                                     match report {
                                         Some(report) => {
                                             self.incoming = Some((
@@ -2466,11 +2956,11 @@ impl Editor {
                                         }
                                         // A frame with no reduction still replaces the retained
                                         // raster now, so no overlay is derived from an older image.
-                                        None => {
-                                            self.incoming = None;
-                                            self.analysis = None;
-                                            self.raster = Some((generation, retained));
-                                        }
+                                        None => self.retain_unreduced(
+                                            generation,
+                                            retained,
+                                            approximate_white_balance,
+                                        ),
                                     }
                                 }
                             }
@@ -2486,17 +2976,22 @@ impl Editor {
                                 proxy_dimensions,
                                 proxy_built,
                                 proxy_approximation,
+                                approximate_white_balance,
                                 reason: None,
+                                render_ms: Some(render_ms),
                             };
                             if for_draft {
-                                let handle = iced::widget::image::Handle::from_rgba(
-                                    raster.width,
-                                    raster.height,
-                                    iced_runtime::core::Bytes::from_owner(raster.rgba),
+                                // A stage within one atlas layer is uploaded as it is; a larger
+                                // one is cut into layer-sized tiles off this thread first, because
+                                // the toolkit draws its own fragments of a rotated image wrongly.
+                                if !draft_photo::needs_cutting(raster.width, raster.height) {
+                                    return self
+                                        .upload_draft(upload, vec![draft_photo::whole(raster)]);
+                                }
+                                return Task::perform(
+                                    async move { draft_photo::handles(draft_photo::cut(&raster)) },
+                                    move |tiles| Message::DraftCut(upload.clone(), tiles),
                                 );
-                                return image_memory::allocate(handle).map(move |result| {
-                                    Message::DraftUploaded(upload.clone(), result)
-                                });
                             }
                             // The photograph reaches the screen from here: the raster becomes the
                             // surface's source now and is drawn by the redraw this update requests,
@@ -2511,40 +3006,55 @@ impl Editor {
                             ]);
                         }
                         Err(error) => {
-                            self.refit_pending = false;
-                            self.status = error.to_string();
-                            // The canvas explains the failure: the kind and the detail are all the
-                            // view model needs to name the cause and offer the allowed actions.
-                            self.render_error = Some((error.kind, error.detail.clone()));
-                            // A failed exact phase releases whatever its proxy was holding, so a
-                            // scripted step ends on the failure rather than waiting for a frame
-                            // that will never arrive.
-                            if !proxy && !for_draft {
-                                self.release_held(generation);
-                            }
-                            if self.activity.pending {
-                                self.activity.pending = false;
-                                self.activity.phase = "error";
-                                self.activity.error_code = Some(error.kind.code().into());
-                                self.event(
-                                    "render_failed",
-                                    json!({"error_code":error.kind.code()}),
+                            if for_draft {
+                                self.draft_preview_failed(&error);
+                            } else {
+                                self.preview_failed(
+                                    generation,
+                                    proxy,
+                                    &entry_id,
+                                    result.draft_revision,
+                                    &error,
                                 );
-                                self.outcome_ready(true);
                             }
                             return Task::done(Message::Poll);
                         }
                     }
                 }
             }
-            Message::DraftUploaded(upload, result) => {
-                self.uploading = false;
+            Message::DraftCut(upload, tiles) => {
                 if Some(upload.generation) != self.draft_generation {
-                    return Task::none();
+                    self.uploading = false;
+                    return Task::done(Message::Poll);
+                }
+                return self.upload_draft(upload, tiles);
+            }
+            Message::DraftUploaded(upload, index, result) => {
+                let current = Some(upload.generation) == self.draft_generation
+                    && self
+                        .draft_assembly
+                        .as_ref()
+                        .is_some_and(|assembly| assembly.generation == upload.generation);
+                if !current {
+                    // A tile of a stage the draft no longer waits for: nothing is assembled, and
+                    // the upload gate opens.
+                    self.draft_assembly = None;
+                    self.uploading = false;
+                    return Task::done(Message::Poll);
                 }
                 match result {
                     Ok(allocation) => {
-                        self.draft_photo = Some(allocation);
+                        let Some(photo) = self
+                            .draft_assembly
+                            .as_mut()
+                            .and_then(|assembly| assembly.arrived(index, allocation))
+                        else {
+                            // More tiles are still on their way.
+                            return Task::none();
+                        };
+                        self.draft_assembly = None;
+                        self.uploading = false;
+                        self.draft_photo = Some(photo);
                         self.open_draft(CropStage {
                             width: upload.width,
                             height: upload.height,
@@ -2552,6 +3062,8 @@ impl Editor {
                         });
                     }
                     Err(_) => {
+                        self.draft_assembly = None;
+                        self.uploading = false;
                         self.crop_pending = None;
                         self.draft_generation = None;
                         self.status = "Could not upload the crop's input stage".into();
@@ -2648,6 +3160,7 @@ impl Editor {
                     evidence.capture_overlay = false;
                 }
             }
+            Message::Capability(message) => return self.capability_update(message),
             Message::Preset(message) => return self.preset_update(message),
             Message::HostAnswered(result) => self.host_answered(result.map(|answer| *answer)),
             Message::ModulesLoaded(result) => {
@@ -2655,18 +3168,11 @@ impl Editor {
                 match result {
                     Ok(modules) => {
                         self.fields = Fields::seeded(&modules);
-                        if let Some(state) = &self.state
-                            && matches!(state.asset.source, lightwell_core::SourceKind::Raw { .. })
-                        {
-                            self.fields.bind_raw(
-                                &modules,
-                                &state.current_entry.snapshot.recipe,
-                                self.editing.as_ref(),
-                                self.dragging.as_ref(),
-                            );
-                        }
                         self.event("modules_loaded", module_summary(&modules));
                         self.modules = modules;
+                        // A photograph that opened before discovery answered already has its
+                        // recipe rows: seed the new fields from them.
+                        self.seed_values();
                     }
                     Err(error) => {
                         self.status = format!("Tool discovery failed: {error}");
@@ -2754,6 +3260,13 @@ impl Editor {
                 *open = !*open;
             }
             Message::ToggleGroup { module_id, path } => {
+                // A module's only group is drawn without a header and is always shown, so there is
+                // no disclosure to toggle and no per-client state to record for it.
+                if tools::module_of(&self.modules, &module_id)
+                    .is_some_and(|module| tools::is_headerless_group(module, &path))
+                {
+                    return Task::none();
+                }
                 let key = format!(
                     "{module_id}/{}",
                     path.iter()
@@ -2793,6 +3306,7 @@ impl Editor {
             Message::EditValue { action, parameter } => {
                 let id = fields::field_id(&action, &parameter, None);
                 self.editing = Some((action, parameter));
+                self.seed_idle_angle();
                 return operation::focus(iced::widget::Id::from(id));
             }
             Message::CancelEdit => self.editing = None,
@@ -2801,6 +3315,9 @@ impl Editor {
                 // drafted submits its own field exactly as Enter in that field does.
                 if self.slider_draft.is_some() {
                     return self.slider_commit();
+                }
+                if tools::drafts(&self.modules, &action, &parameter) {
+                    return self.release_without_draft(&action, &parameter);
                 }
                 return self.dispatch(Message::Submit {
                     action,
@@ -2828,23 +3345,7 @@ impl Editor {
                 return self.dispatch(Message::RunAction { action, preset });
             }
             Message::ResetField { action, parameter } => {
-                let default = tools::declared_action(&self.modules, &action)
-                    .and_then(|declared| declared.parameter(&parameter))
-                    .map(fields::seed_text);
-                let Some(default) = default else {
-                    self.status = fields::undeclared_label(&action, &parameter);
-                    return Task::none();
-                };
-                self.fields.set(&action, &parameter, default);
-                self.editing = None;
-                // One field is one action when the action merges it or declares nothing else; an
-                // action with a second parameter has no way to send one field alone, so the
-                // double-click only refills the text there.
-                if let Some(preset) = reset_field_preset(&self.modules, &action, &parameter)
-                    .filter(|_| self.editable())
-                {
-                    return self.dispatch(Message::RunAction { action, preset });
-                }
+                return self.reset_field(action, parameter);
             }
             Message::SliderDraftTick => return self.slider_tick(),
             Message::SliderDraftBegun(result) => {
@@ -2864,6 +3365,11 @@ impl Editor {
             Message::SliderDraftReapply => return self.slider_reapply(),
             Message::SliderDraftReapplied(result) => {
                 return self.slider_reapplied(result.map(|draft| *draft));
+            }
+            Message::TogglePerformance => self.performance.expanded = !self.performance.expanded,
+            Message::PerformanceTick => return self.performance_tick(),
+            Message::PerformanceSampled { epoch, result } => {
+                return self.performance_sampled(epoch, result);
             }
             Message::ToggleSection(module_id) => {
                 let expanded = self
@@ -3056,6 +3562,9 @@ impl Editor {
                     Some(PaletteAction::TogglePanel(panel)) => {
                         self.dispatch(Message::TogglePanel(panel))
                     }
+                    Some(PaletteAction::TogglePerformance) => {
+                        self.dispatch(Message::TogglePerformance)
+                    }
                     Some(PaletteAction::ToggleThirds) => self.dispatch(Message::ToggleThirds),
                     Some(PaletteAction::Fit) => self.dispatch(Message::Fit),
                     Some(PaletteAction::HundredPercent) => self.dispatch(Message::HundredPercent),
@@ -3089,6 +3598,14 @@ impl Editor {
                     Some(method) => format!("Copied the {method} request"),
                     None => format!("Copied the {} request", tools::published_method(&action)),
                 };
+                // A copied request passes through the same redaction as every recorded one.
+                let request = json!({
+                    "method": request["method"],
+                    "params": lightwell_core::redact_params(
+                        request["method"].as_str().unwrap_or_default(),
+                        &request["params"],
+                    ),
+                });
                 return iced::clipboard::write(
                     serde_json::to_string_pretty(&request).unwrap_or_default(),
                 );
@@ -3771,19 +4288,12 @@ impl Editor {
         }
         self.recipe = Some(refresh.recipe);
         self.masks = Some(refresh.masks);
-        if matches!(
-            refresh.state.asset.source,
-            lightwell_core::SourceKind::Raw { .. }
-        ) {
-            self.fields.bind_raw(
-                &self.modules,
-                &refresh.job.entry.snapshot.recipe,
-                self.editing.as_ref(),
-                self.dragging.as_ref(),
-            );
-        }
+        self.recipe_failed = false;
         let revision = refresh.state.revision;
         let entry = refresh.state.current_entry.id.clone();
+        if self.state.as_ref().map(|state| &state.asset.id) != Some(&refresh.state.asset.id) {
+            self.capabilities_asset_changed(&refresh.state.asset.id);
+        }
         self.state = Some(refresh.state);
         self.show_entry(refresh.job.entry.id.clone());
         self.requested_render_entry = Some(refresh.job.entry.clone());
@@ -3990,6 +4500,16 @@ impl Editor {
 
     /// The entry whose stack the canvas is showing: the uploaded preview's entry, or the current
     /// one before the first preview has arrived. A pick is answered against exactly this stack.
+    /// The recipe rows in hand describe the entry on screen, or none will come for it. The
+    /// generated fields are seeded from those rows, so an evidence frame waits for this: the
+    /// controls it records are then the displayed entry's own values.
+    pub(crate) fn recipe_rows_shown(&self) -> bool {
+        self.state.is_none()
+            || self.recipe_failed
+            || self.recipe.as_ref().map(|recipe| &recipe.entry_id)
+                == self.displayed_entry().as_ref()
+    }
+
     pub(crate) fn displayed_entry(&self) -> Option<lightwell_core::EntryId> {
         self.display_entry.clone().or_else(|| {
             self.state
@@ -4012,26 +4532,32 @@ impl Editor {
 
     fn view(&self) -> Element<'_, Message> {
         let started = Instant::now();
-        if let Some(page) = self.gallery_page() {
-            return view::gallery(page);
-        }
-        let element = view::workspace(
-            &self.workspace,
-            view::Surfaces {
-                photo: self.photo.as_ref(),
-                draft_photo: self.draft_photo.as_ref(),
-                overlay: self.overlay_surface(),
-                mask_overlay: self.mask_overlay_surface(),
-                mask_draft: self.mask_draft.as_ref(),
-                mask_map: self.mask_map,
-                draft: self.crop.as_ref(),
-            },
-        );
+        let element = match self.gallery_page() {
+            Some(page) => view::gallery(page),
+            None => view::workspace(
+                &self.workspace,
+                view::Surfaces {
+                    photo: self.photo.as_ref(),
+                    draft_photo: self.draft_photo.as_ref(),
+                    overlay: self.overlay_surface(),
+                    mask_overlay: self.mask_overlay_surface(),
+                    mask_draft: self.mask_draft.as_ref(),
+                    mask_map: self.mask_map,
+                    draft: self.crop.as_ref(),
+                },
+            ),
+        };
         let mut timing = self.loop_timing.get();
+        timing.views += 1;
         timing.last_view_ms = started.elapsed().as_secs_f64() * 1000.0;
         timing.last_view_end = Some(Instant::now());
         self.loop_timing.set(timing);
-        element
+        match &self.evidence {
+            // An evidence run marks which update each drawn frame was built after, so a capture
+            // records the state of the frame it reads back.
+            Some(evidence) => evidence::marked(element, &evidence.sync),
+            None => element,
+        }
     }
 
     /// What the keyboard table depends on right now.
@@ -4078,6 +4604,12 @@ impl Editor {
             subscriptions
                 .push(iced::time::every(Duration::from_millis(500)).map(|_| Message::Sync));
         }
+        // The Performance section's sampler, gated on the section being expanded with the state
+        // panel on screen. Collapsed or hidden, there is no timer at all, in evidence runs too.
+        if self.performance_sampling() {
+            subscriptions
+                .push(iced::time::every(performance::INTERVAL).map(|_| Message::PerformanceTick));
+        }
         if let Some(evidence) = &self.evidence {
             subscriptions
                 .push(iced::time::every(Duration::from_millis(250)).map(|_| Message::EvidenceTick));
@@ -4101,7 +4633,17 @@ impl Editor {
                         .map(|_| Message::PacedStrokeTick),
                 );
             }
+            // A scripted double-click's gap before its second press, which the first tick ends.
+            if let Some(second) = &evidence.second_click {
+                subscriptions.push(
+                    iced::time::every(Duration::from_millis(second.gap_ms.max(1)))
+                        .map(|_| Message::DoubleClickSecond),
+                );
+            }
         }
+        // Capability jobs are read while one the desktop follows is queued or running, and never
+        // otherwise; the interval is justified where it is declared.
+        subscriptions.extend(self.capability_poll_subscription());
         Subscription::batch(subscriptions)
     }
 }
@@ -4265,12 +4807,13 @@ mod tests {
     use super::*;
     use crate::state::histogram::HistogramStatus;
     use lightwell_core::{
-        AssetId, ContentPoint, EntryId, LayerId, POINTER_MODE, PreviewJob, PreviewSource,
-        RawPayload, SourceImage, SourceKind, WhiteBalanceMode, Zoom,
+        AssetId, ContentPoint, EntryId, POINTER_MODE, PreviewJob, PreviewSource, RawPayload,
+        SourceImage, WhiteBalanceMode, Zoom,
     };
     use testing::{
-        attach_log, boot, crop_descriptor, descriptors, entry, finish, logged, opened, pick_events,
-        pick_fields, pick_mode, picking, refresh_for, sample_mode,
+        Z6_AS_SHOT, Z6_CAM_XYZ, attach_log, boot, crop_descriptor, descriptors, entry, finish,
+        logged, opened, pick_events, pick_fields, pick_mode, picking, raw_entry, raw_refresh,
+        refresh_for, sample_mode,
     };
 
     #[test]
@@ -4619,6 +5162,397 @@ mod tests {
         finish(editor, catalog);
     }
 
+    /// One double-click on a drafting slider, as the rail's wrapper and iced's slider deliver it:
+    /// the first press moves the value (the gesture opens, `draft.begin` and `draft.set` answer),
+    /// its release sends `draft.commit`, and the second press — the reset — arrives before that
+    /// commit has answered. Returns the entry the commit would produce.
+    fn double_click_before_the_commit_answers(
+        editor: &mut Editor,
+        asset: &AssetId,
+        action: &str,
+        parameter: &str,
+        value: f64,
+    ) -> lightwell_core::HistoryEntry {
+        let current = editor
+            .state
+            .as_ref()
+            .expect("an open asset")
+            .current_entry
+            .clone();
+        let _ = editor.update(Message::SliderMoved {
+            action: action.into(),
+            parameter: parameter.into(),
+            value,
+        });
+        begun(editor, asset, action, current.sequence);
+        let _ = editor.update(Message::SliderDraftTick);
+        was_set(editor, asset, &current);
+        let _ = editor.update(Message::ControlReleased {
+            action: action.into(),
+            parameter: parameter.into(),
+        });
+        assert!(
+            editor
+                .slider_draft
+                .as_ref()
+                .is_some_and(|draft| draft.in_flight),
+            "the release's commit is in flight"
+        );
+        let _ = editor.update(Message::ResetField {
+            action: action.into(),
+            parameter: parameter.into(),
+        });
+        entry(asset, current.sequence + 1, Some(&current.id))
+    }
+
+    /// The double-click race that lost every RAW white balance reset. The first press's commit is
+    /// still answering when the second press arrives — for a RAW temperature or tint for as long as
+    /// the mosaic takes to redevelop, a second or more — and a reset sent then names the revision
+    /// that commit is replacing, which the core refuses as stale. The reset now waits for the
+    /// commit's answer and is sent once, against the revision it produced. Basic's patch field and
+    /// every RAW slider take the same path; what is sent is the field's own reset: As shot for the
+    /// RAW temperature and tint, the declared default for RAW and Basic exposure.
+    #[test]
+    fn a_reset_during_a_gesture_commit_waits_and_names_the_revision_the_commit_produced() {
+        let cases = [
+            (
+                "set-raw-exposure",
+                "ev",
+                0.35,
+                "set-raw-exposure",
+                json!({"ev": 0.0}),
+            ),
+            (
+                "set-raw-temperature",
+                "kelvin",
+                5000.0,
+                "use-as-shot-wb",
+                json!({}),
+            ),
+            ("set-raw-tint", "tint", 12.0, "use-as-shot-wb", json!({})),
+            (
+                "set-basic",
+                "exposure",
+                0.4,
+                "set-basic",
+                json!({"exposure": 0.0}),
+            ),
+        ];
+        for (action, parameter, value, reset, preset) in cases {
+            let (mut editor, catalog, log, asset, _, _) = drafting();
+            let revision = editor.state.as_ref().expect("an open asset").revision;
+            let committed = double_click_before_the_commit_answers(
+                &mut editor,
+                &asset,
+                action,
+                parameter,
+                value,
+            );
+            let records = logged(&mut editor, &log);
+            let queued = draft_events(&records, "field_reset_queued");
+            assert_eq!(queued.len(), 1, "{action}: the reset waits: {records:?}");
+            assert_eq!(queued[0]["revision"], json!(revision));
+            assert!(
+                draft_events(&records, "field_reset_sent").is_empty(),
+                "{action}: nothing is sent against the revision the commit is replacing"
+            );
+            assert!(!editor.busy, "{action}: no request was started");
+            assert!(editor.pending_reset.is_some());
+
+            // The commit answers with the next revision; the reset goes out in the same update.
+            let log = attach_log(&mut editor);
+            let refresh = refresh_for(&asset, &committed, Vec::new(), &[&committed], false);
+            let _ = editor.update(Message::SliderDraftCommitted(Ok(Some(Box::new(refresh)))));
+            let records = logged(&mut editor, &log);
+            let sent = draft_events(&records, "field_reset_sent");
+            assert_eq!(sent.len(), 1, "{action}: sent once");
+            assert_eq!(
+                sent[0]["revision"],
+                json!(revision + 1),
+                "{action}: against the commit's revision"
+            );
+            assert_eq!(sent[0]["action"], json!(reset), "{action}");
+            assert_eq!(sent[0]["preset"], preset, "{action}");
+            assert_eq!(
+                sent[0]["field"],
+                json!({"action": action, "parameter": parameter})
+            );
+            assert_eq!(editor.status, format!("Running edit.{reset}…"));
+            assert!(editor.busy && editor.pending_reset.is_none());
+            finish(editor, catalog);
+        }
+    }
+
+    /// A double-click on the RAW custom temperature or tint label, with nothing in flight, runs As
+    /// shot at once — the very request an independent JSON client builds from the control's reset
+    /// in `module.list` — and the field shows the authoritative value until the answer brings the
+    /// as-shot equivalent, never the 6504 K and 0 nothing set. RAW exposure and Basic's own
+    /// temperature, which declare no reset, still reset to their declared defaults.
+    #[test]
+    fn a_double_click_on_a_raw_white_balance_field_returns_to_as_shot() {
+        let listed = serde_json::to_value(descriptors()).unwrap();
+        for (action, parameter) in [("set-raw-temperature", "kelvin"), ("set-raw-tint", "tint")] {
+            let (mut editor, catalog) = opened_with_modules(descriptors(), 4);
+            let log = attach_log(&mut editor);
+            let asset = editor.state.as_ref().expect("open").asset.id.clone();
+            let original = RawPayload::for_as_shot(Z6_AS_SHOT, Z6_CAM_XYZ).unwrap();
+            let mut custom = original.clone();
+            custom.wb_mode = WhiteBalanceMode::Custom;
+            custom.temperature_kelvin = Some(5000.0);
+            custom.tint = Some(12.0);
+            custom.gains =
+                lightwell_core::gains_from_temperature_tint(5000.0, 12.0, Z6_CAM_XYZ).unwrap();
+            let current = raw_entry(&asset, 5, None, &custom);
+            let _ = editor.update(Message::Refreshed(Ok(Box::new(raw_refresh(
+                &asset, &current,
+            )))));
+            let committed = editor.fields.get(action, parameter).map(str::to_owned);
+            assert_eq!(
+                committed.as_deref(),
+                Some(if parameter == "kelvin" { "5000" } else { "12" })
+            );
+
+            // The JSON request a client builds from the control's declared reset.
+            let control = listed
+                .as_array()
+                .unwrap()
+                .iter()
+                .flat_map(|module| module["controls"][0]["controls"].as_array().cloned())
+                .flatten()
+                .find(|control| control["action"] == action && control["parameter"] == parameter)
+                .expect("the listed control");
+            let reset = &control["reset"];
+            assert_eq!(reset, &json!({"action": "use-as-shot-wb", "preset": {}}));
+            let mut params = json!({"asset_id": asset, "mutation": mutation(5)});
+            params
+                .as_object_mut()
+                .unwrap()
+                .extend(reset["preset"].as_object().unwrap().clone());
+            let independent = json!({"method": format!("edit.{}", reset["action"].as_str().unwrap()), "params": params});
+            let (sent, preset) = fields::field_reset(&editor.modules, action, parameter).unwrap();
+            // Each envelope mints its own request identity; everything else is the same request.
+            let without_request_id = |mut request: Value| {
+                request["params"]["mutation"]
+                    .as_object_mut()
+                    .expect("a mutation")
+                    .remove("request_id");
+                request
+            };
+            assert_eq!(
+                editor
+                    .request_for_preset(&sent, None, Some(&preset))
+                    .map(without_request_id),
+                Some(without_request_id(independent)),
+                "{action}: the desktop's reset request is the JSON client's"
+            );
+
+            // Typed but not committed, then double-clicked.
+            editor.fields.set(action, parameter, "7777".into());
+            editor.editing = Some((action.into(), parameter.into()));
+            let _ = editor.update(Message::ResetField {
+                action: action.into(),
+                parameter: parameter.into(),
+            });
+            let records = logged(&mut editor, &log);
+            let sent = draft_events(&records, "field_reset_sent");
+            assert_eq!(sent.len(), 1, "{action}: {records:?}");
+            assert_eq!(sent[0]["action"], json!("use-as-shot-wb"));
+            assert_eq!(sent[0]["preset"], json!({}));
+            assert_eq!(editor.status, "Running edit.use-as-shot-wb…");
+            assert!(editor.editing.is_none());
+            assert_eq!(
+                editor.fields.get(action, parameter).map(str::to_owned),
+                committed,
+                "{action}: the field shows the committed value until the answer, not a default"
+            );
+
+            // The answer: As shot, whose rows report the camera's equivalent.
+            let answered = raw_entry(&asset, 6, Some(&current.id), &original);
+            let _ = editor.update(Message::Refreshed(Ok(Box::new(raw_refresh(
+                &asset, &answered,
+            )))));
+            assert_eq!(
+                editor.fields.get(action, parameter),
+                Some(if parameter == "kelvin" { "4861" } else { "-50" }),
+                "{action}: the as-shot equivalent"
+            );
+            finish(editor, catalog);
+        }
+
+        // Exposure and Basic's temperature keep their declared defaults.
+        for (action, parameter, preset) in [
+            ("set-raw-exposure", "ev", json!({"ev": 0.0})),
+            ("set-basic", "temperature", json!({"temperature": 0.0})),
+        ] {
+            let (mut editor, catalog) = opened_with_modules(descriptors(), 4);
+            let log = attach_log(&mut editor);
+            let _ = editor.update(Message::ResetField {
+                action: action.into(),
+                parameter: parameter.into(),
+            });
+            let records = logged(&mut editor, &log);
+            let sent = draft_events(&records, "field_reset_sent");
+            assert_eq!(sent.len(), 1, "{action}");
+            assert_eq!(sent[0]["action"], json!(action));
+            assert_eq!(sent[0]["preset"], preset);
+            finish(editor, catalog);
+        }
+    }
+
+    /// A reset that arrives while another request is in flight waits for its answer too, and is
+    /// dropped, with its reason, if what it was asked for is no longer on screen by then.
+    #[test]
+    fn a_waiting_reset_runs_after_a_request_and_is_dropped_on_a_historical_entry() {
+        let (mut editor, catalog, log, asset, _, _) = drafting();
+        let (action, parameter) = single_parameter_control(&editor);
+        let current = editor
+            .state
+            .as_ref()
+            .expect("an open asset")
+            .current_entry
+            .clone();
+        editor.busy = true;
+        let _ = editor.update(Message::ResetField {
+            action: action.clone(),
+            parameter: parameter.clone(),
+        });
+        assert!(editor.pending_reset.is_some(), "it waits for the request");
+        let next = entry(&asset, current.sequence + 1, Some(&current.id));
+        let refresh = refresh_for(&asset, &next, Vec::new(), &[&next], false);
+        let _ = editor.update(Message::Refreshed(Ok(Box::new(refresh))));
+        let sent = draft_events(&logged(&mut editor, &log), "field_reset_sent")
+            .into_iter()
+            .cloned()
+            .collect::<Vec<_>>();
+        assert_eq!(sent.len(), 1);
+        assert_eq!(sent[0]["revision"], json!(current.sequence + 1));
+
+        // Asked for while a request is in flight, then the session shows a historical entry.
+        let log = attach_log(&mut editor);
+        let _ = editor.update(Message::ResetField {
+            action: action.clone(),
+            parameter: parameter.clone(),
+        });
+        assert!(editor.pending_reset.is_some());
+        editor.session.preview.selection =
+            lightwell_core::HistorySelection::Entry(current.id.clone());
+        editor.busy = false;
+        let _ = editor.update(Message::Sync);
+        let records = logged(&mut editor, &log);
+        let dropped = draft_events(&records, "field_reset_dropped");
+        assert_eq!(dropped.len(), 1, "{records:?}");
+        assert_eq!(dropped[0]["reason"], json!("a historical entry is shown"));
+        assert!(editor.pending_reset.is_none());
+        assert!(draft_events(&records, "field_reset_sent").is_empty());
+        assert!(
+            editor
+                .status
+                .ends_with("was not reset: a historical entry is shown")
+        );
+        finish(editor, catalog);
+    }
+
+    /// A RAW draft is accepted, but its preview job answers preparation-required: the development
+    /// is not in memory, because a redevelopment or a source preparation is in flight, and the core
+    /// renders no stale frame. (A drafted temperature over a development that is in memory previews
+    /// approximately instead; this is what is left.) The status bar says what the person will see
+    /// rather than the error code, and the gesture stays open and drained, so its release still
+    /// commits.
+    #[test]
+    fn a_draft_the_core_cannot_preview_says_so_and_stays_open() {
+        let (mut editor, catalog, log, asset, _, _) = drafting();
+        let _ = editor.update(Message::SliderMoved {
+            action: "set-raw-temperature".into(),
+            parameter: "kelvin".into(),
+            value: 5000.0,
+        });
+        begun(&mut editor, &asset, "set-raw-temperature", 4);
+        let _ = editor.update(Message::SliderDraftSet(Err(
+            "preparation-required: source-job-7".into(),
+        )));
+        assert_eq!(
+            editor.status,
+            "Custom temperature cannot be previewed until the RAW development is ready; it shows on release"
+        );
+        assert!(
+            editor
+                .slider_draft
+                .as_ref()
+                .is_some_and(slider::SliderDraft::drained),
+            "the gesture is still open and has nothing in flight"
+        );
+        assert!(
+            editor
+                .slider_draft
+                .as_ref()
+                .is_some_and(|draft| draft.unpreviewed),
+            "and no frame of its own is coming for the value it holds"
+        );
+        let records = logged(&mut editor, &log);
+        let unpreviewed = draft_events(&records, "slider_draft_unpreviewed");
+        assert_eq!(
+            unpreviewed.last().map(|detail| &detail["error"]),
+            Some(&json!("preparation-required: source-job-7"))
+        );
+        assert_eq!(unpreviewed.last().unwrap()["value"], json!(5000.0));
+        finish(editor, catalog);
+    }
+
+    /// A drafting slider opens its draft on its first change, so a release with no draft open
+    /// changed nothing and sends nothing — not the unchanged field, which would hold the section
+    /// busy through the moment a double-click's second press arrives, and which for a RAW custom
+    /// white balance under As shot would switch it to Custom.
+    #[test]
+    fn releasing_a_drafting_slider_that_never_moved_sends_nothing() {
+        for (action, parameter) in [("set-raw-temperature", "kelvin"), ("set-basic", "exposure")] {
+            let (mut editor, catalog, log, _, _, _) = drafting();
+            let _ = editor.update(Message::ControlReleased {
+                action: action.into(),
+                parameter: parameter.into(),
+            });
+            let _ = editor.update(Message::SliderReleased {
+                action: action.into(),
+                parameter: parameter.into(),
+            });
+            assert!(!editor.busy, "{action}: no request is in flight");
+            assert!(editor.editable());
+            assert!(
+                !editor.status.starts_with("Running"),
+                "{action}: {}",
+                editor.status
+            );
+            assert!(draft_events(&logged(&mut editor, &log), "slider_draft_begin").is_empty());
+            finish(editor, catalog);
+        }
+    }
+
+    /// A module's only group is drawn without a header, so its disclosure message records nothing,
+    /// while a group of a module with several still toggles.
+    #[test]
+    fn toggling_a_modules_only_group_records_nothing() {
+        let (mut editor, catalog, _, _, _, _) = drafting();
+        let _ = editor.update(Message::ToggleGroup {
+            module_id: "lightwell.presence".into(),
+            path: vec![0],
+        });
+        assert!(
+            editor.controls_ui.group_expanded.is_empty(),
+            "the only group has no disclosure"
+        );
+        let _ = editor.update(Message::ToggleGroup {
+            module_id: "lightwell.basic".into(),
+            path: vec![1],
+        });
+        assert_eq!(
+            editor
+                .controls_ui
+                .group_expanded
+                .get(&tools::group_key("lightwell.basic", &[1])),
+            Some(&false)
+        );
+        finish(editor, catalog);
+    }
+
     /// The double-click reset follows the same rule: one field is one action where that field is
     /// the whole request, and it sends the parameter's declared default.
     #[test]
@@ -4629,8 +5563,9 @@ mod tests {
             .and_then(|declared| declared.parameter(&parameter))
             .and_then(|declared| declared.default.clone())
             .expect("the parameter declares a default");
-        let preset = fields::reset_field_preset(&editor.modules, &action, &parameter)
+        let (sent, preset) = fields::field_reset(&editor.modules, &action, &parameter)
             .expect("a single-parameter action resets that field as one action");
+        assert_eq!(sent, action, "exposure declares no reset of its own");
         assert_eq!(
             preset,
             [(parameter.clone(), default.clone())]
@@ -4963,6 +5898,7 @@ mod tests {
                     values: values.as_object().cloned().unwrap_or_default(),
                     available: true,
                     mask: None,
+                    artifacts: Vec::new(),
                 })
                 .collect();
             let _ = editor.update(Message::Refreshed(Ok(Box::new(refresh))));
@@ -5543,6 +6479,7 @@ mod tests {
                     .unwrap_or_default(),
                 available: true,
                 mask: None,
+                artifacts: Vec::new(),
             }];
             Box::new(refresh)
         };
@@ -5880,7 +6817,8 @@ mod tests {
         assert_eq!(model.status, HistogramStatus::Updating);
         assert!(model.stale);
         assert!(model.bins.is_some(), "the previous plot is still shown");
-        assert_eq!(model.notice().as_deref(), Some("Updating\u{2026}"));
+        // The dimmed plot is the stale label; no words are drawn over it.
+        assert_eq!(model.notice(), None);
         finish(editor, catalog);
     }
 
@@ -6204,20 +7142,30 @@ mod tests {
         assert_eq!(readout.rgba, [128, 64, 255, 255]);
         assert!(!editor.sample_in_flight);
         editor.rederive();
-        // No frame has been analysed in this test, so the caption row carries the pending notice
-        // as well as the readout: both share that one row rather than taking one each.
+        // The readout is the status bar's. No frame has been analysed in this test, so the plot
+        // draws its pending notice inside its own area, and neither reaches the other.
         assert_eq!(
-            editor.workspace.histogram.caption_line(),
-            "Output \u{b7} sRGB \u{b7} after crop \u{b7} R 128 \u{b7} G 64 \u{b7} B 255 \u{b7} 7, 8 \u{b7} No analysis yet"
+            editor.workspace.status.readout.as_deref(),
+            Some("R 128 \u{b7} G 64 \u{b7} B 255 \u{b7} 7, 8")
         );
         assert_eq!(
-            editor.snapshot()["readout"]["rgba"],
-            json!([128, 64, 255, 255])
+            editor.workspace.histogram.notice().as_deref(),
+            Some("No analysis yet")
         );
+        let snapshot = editor.snapshot();
+        assert_eq!(snapshot["readout"]["rgba"], json!([128, 64, 255, 255]));
+        assert_eq!(
+            snapshot["status_bar"]["readout"],
+            json!("R 128 \u{b7} G 64 \u{b7} B 255 \u{b7} 7, 8")
+        );
+        assert_eq!(snapshot["histogram"]["notice"], json!("No analysis yet"));
 
         // The pointer leaving clears the readout and any waiting position.
         let _ = editor.update(Message::PointerMoved(None));
         assert!(editor.readout.is_none() && editor.pending_sample.is_none());
+        editor.rederive();
+        assert_eq!(editor.workspace.status.readout, None);
+        assert_eq!(editor.snapshot()["status_bar"]["readout"], Value::Null);
         finish(editor, catalog);
     }
 
@@ -6347,7 +7295,7 @@ mod tests {
     /// written once and a pan writes nothing.
     #[test]
     fn a_zoom_hands_the_retained_raster_to_the_surface_and_asks_for_no_preview() {
-        let (mut editor, catalog, _, _) = opened(Vec::new(), 4);
+        let (mut editor, catalog, _, entry_id) = opened(Vec::new(), 4);
         editor.window = (1440.0, 900.0);
         editor.dimensions = Some((4000, 3000));
         editor.session.preview.view.zoom = Zoom::Fit;
@@ -6362,6 +7310,7 @@ mod tests {
             })
         };
         editor.presented_generation = 7;
+        editor.presented_entry = Some(entry_id);
         editor.presented_proxy = true;
         editor.preview_generation = 7;
         editor.proxy_frame = Some(ProxyFrame {
@@ -6370,8 +7319,18 @@ mod tests {
             dimensions: (1200, 900),
             built: true,
             approximation: lightwell_core::ProxyApproximation::default(),
+            approximate_white_balance: false,
+            render_ms: 12.0,
         });
         editor.raster = Some((7, pixels(2)));
+        editor.exact_render_ms = Some((7, 85.0));
+        // What the status bar reports is the time of the picture on screen, and each retained
+        // frame brings its own: the proxy's while the proxy is shown, the exact render's at 100%.
+        editor.activity.render = Some(state::status::RenderTime {
+            ms: 12.0,
+            proxy: true,
+            approximate: false,
+        });
 
         // Fit to 100%: the retained exact raster becomes the surface's source and no job is
         // queued. Nothing is written here; the next redraw's `prepare` writes it once.
@@ -6383,6 +7342,15 @@ mod tests {
         );
         let exact = editor.photo_version;
         assert!(exact > 0, "the exact raster was handed to the surface");
+        assert_eq!(
+            editor.activity.render,
+            Some(state::status::RenderTime {
+                ms: 85.0,
+                proxy: false,
+                approximate: false,
+            }),
+            "the exact raster on screen reports its own render time"
+        );
         assert_eq!(
             editor.preview_generation, 7,
             "no preview job was requested: nothing was rendered for a view change"
@@ -6408,9 +7376,226 @@ mod tests {
             "the retained proxy was handed to the surface"
         );
         assert_eq!(
+            editor.activity.render,
+            Some(state::status::RenderTime {
+                ms: 12.0,
+                proxy: true,
+                approximate: false,
+            }),
+            "the proxy on screen reports its own render time again"
+        );
+        assert_eq!(
             editor.preview_generation, 7,
             "no preview job was requested: nothing was rendered for a view change"
         );
+        finish(editor, catalog);
+    }
+
+    /// A frame that approximates a drafted RAW white balance is presented like any frame and says
+    /// so — in the status bar, the `preview_displayed` event and the state summary, at Fit and at
+    /// 100% — but it is never taken for a report: the last exact report stays plotted, marked
+    /// updating, through both phases of the approximate job, and the next exact report replaces it.
+    /// An overlay derived from its full-size phase is approximate too.
+    #[test]
+    fn an_approximate_white_balance_frame_is_shown_and_labelled_but_never_replaces_the_report() {
+        let (mut editor, catalog, _, entry_id) = opened(Vec::new(), 4);
+        let log = attach_log(&mut editor);
+        editor.window = (1440.0, 900.0);
+        editor.dimensions = Some((4000, 3000));
+        editor.session.preview.view.zoom = Zoom::Fit;
+        editor.preview_queue = PreviewQueue::default();
+        let pixels = [
+            [0, 0, 0, 255],
+            [255, 255, 255, 255],
+            [0, 200, 255, 255],
+            [12, 34, 56, 255],
+        ];
+        let (analysis, raster) = analysed(&editor, 7, &pixels, 2, 2);
+        let identity = analysis.identity.clone();
+        editor.preview_generation = 7;
+        editor.incoming = Some((analysis, raster.clone()));
+        editor.adopt_analysis(7);
+
+        // The drafted job's proxy phase is presented.
+        editor.preview_generation = 8;
+        editor.proxy_frame = Some(ProxyFrame {
+            generation: 8,
+            raster: raster.clone(),
+            dimensions: (2, 2),
+            built: false,
+            approximation: lightwell_core::ProxyApproximation::default(),
+            approximate_white_balance: true,
+            render_ms: 9.2,
+        });
+        let upload = Upload {
+            generation: 8,
+            draft_revision: Some(1),
+            width: 4000,
+            height: 3000,
+            entry_id: entry_id.clone(),
+            snapshot_id: raster.snapshot_id.to_string(),
+            source_fingerprint: raster.source_fingerprint.clone(),
+            proxy: true,
+            proxy_dimensions: Some((2, 2)),
+            proxy_built: false,
+            proxy_approximation: lightwell_core::ProxyApproximation::default(),
+            approximate_white_balance: true,
+            reason: None,
+            render_ms: Some(9.2),
+        };
+        editor.present(upload, &raster);
+        editor.rederive();
+        assert_eq!(
+            editor.workspace.status.render,
+            "Rendered in 9 ms (proxy, approximate)"
+        );
+        let histogram = |editor: &Editor| {
+            let model = &editor.workspace.histogram;
+            (
+                model.status,
+                model.identity.as_ref().map(|identity| identity.generation),
+            )
+        };
+        assert_eq!(
+            histogram(&editor),
+            (HistogramStatus::Updating, Some(7)),
+            "the last exact report stays plotted and says it is updating"
+        );
+
+        // Its exact phase lands with no report, as an approximate job's always does.
+        let _ = editor.adopt_exact(8, identity, None, (*raster).clone(), 140.0, true);
+        editor.rederive();
+        assert_eq!(
+            histogram(&editor),
+            (HistogramStatus::Updating, Some(7)),
+            "an approximate frame never replaces the report, not even with nothing"
+        );
+        assert_eq!(
+            editor.raster.as_ref().map(|(generation, _)| *generation),
+            Some(8),
+            "its pixels are retained for the overlay and the 100% view"
+        );
+        assert_eq!(
+            editor
+                .overlay_source()
+                .map(|(_, _, approximate)| approximate),
+            Some(true),
+            "a mask derived from it is approximate"
+        );
+        let snapshot = editor.snapshot();
+        assert_eq!(snapshot["approximate_white_balance"], json!(true));
+        assert_eq!(snapshot["status_bar"]["render_approximate"], json!(true));
+        assert_eq!(snapshot["histogram"]["status"], json!("updating"));
+
+        // At 100% the retained full-size phase is shown, and says so.
+        editor.session.preview.view.zoom = Zoom::Percent { value: 100.0 };
+        let _ = editor.zoom_changed(&Zoom::Fit);
+        editor.rederive();
+        assert!(!editor.presented_proxy);
+        assert_eq!(
+            editor.workspace.status.render,
+            "Rendered in 140 ms (approximate)"
+        );
+        let records = logged(&mut editor, &log);
+        let displayed: Vec<_> = records
+            .iter()
+            .filter(|record| record["event"] == "preview_displayed")
+            .map(|record| record["detail"]["approximate_white_balance"].clone())
+            .collect();
+        assert_eq!(displayed, vec![json!(true), json!(true)]);
+        assert!(
+            !records
+                .iter()
+                .any(|record| record["event"] == "analysis_adopted"
+                    && record["detail"]["generation"] == json!(8)),
+            "no report was adopted for the approximate generation"
+        );
+
+        // The exact frame the release produces replaces the report, and the flag.
+        let (analysis, raster) = analysed(&editor, 9, &pixels, 2, 2);
+        editor.preview_generation = 9;
+        editor.incoming = Some((analysis, raster.clone()));
+        let upload = Upload {
+            generation: 9,
+            draft_revision: None,
+            width: 4000,
+            height: 3000,
+            entry_id,
+            snapshot_id: raster.snapshot_id.to_string(),
+            source_fingerprint: raster.source_fingerprint.clone(),
+            proxy: false,
+            proxy_dimensions: None,
+            proxy_built: false,
+            proxy_approximation: lightwell_core::ProxyApproximation::default(),
+            approximate_white_balance: false,
+            reason: None,
+            render_ms: Some(150.0),
+        };
+        editor.present(upload, &raster);
+        editor.rederive();
+        assert_eq!(histogram(&editor), (HistogramStatus::Ready, Some(9)));
+        assert!(!editor.raster_approximate_white_balance);
+        assert_eq!(editor.snapshot()["approximate_white_balance"], json!(false));
+        assert_eq!(editor.workspace.status.render, "Rendered in 150 ms");
+        finish(editor, catalog);
+    }
+
+    /// The status bar's "Rendered in" figure is the presented frame's own worker time, not the
+    /// time since the last open or commit. A drafted frame, a zoom hand-over or a refit is
+    /// presented long after that request; before this was measured on the worker, a frame
+    /// presented minutes after the open reported minutes.
+    #[test]
+    fn the_render_figure_is_the_presented_frames_own_time_not_the_time_since_the_request() {
+        let (mut editor, catalog, _, entry_id) = opened(Vec::new(), 4);
+        let log = attach_log(&mut editor);
+        // The last open or commit began long ago, as it has in any real session after a while.
+        editor.activity.request_started = Instant::now()
+            .checked_sub(std::time::Duration::from_secs(500))
+            .unwrap_or_else(Instant::now);
+        let raster = lightwell_core::Raster {
+            width: 2,
+            height: 2,
+            rgba: vec![7; 16].into(),
+            source_fingerprint: "source-1".into(),
+            snapshot_id: lightwell_core::SnapshotId::new(),
+        };
+        let upload = |generation: u64, proxy: bool, render_ms: f64| Upload {
+            generation,
+            draft_revision: None,
+            width: 480,
+            height: 320,
+            entry_id: entry_id.clone(),
+            snapshot_id: raster.snapshot_id.to_string(),
+            source_fingerprint: raster.source_fingerprint.clone(),
+            proxy,
+            proxy_dimensions: proxy.then_some((240, 160)),
+            proxy_built: false,
+            proxy_approximation: lightwell_core::ProxyApproximation::default(),
+            approximate_white_balance: false,
+            reason: None,
+            render_ms: Some(render_ms),
+        };
+        // The renderer is idle, so the bar reports a figure rather than "Rendering…".
+        editor.preview_queue = PreviewQueue::default();
+        editor.present(upload(5, true, 12.4), &raster);
+        editor.rederive();
+        assert_eq!(
+            editor.workspace.status.render, "Rendered in 12 ms (proxy)",
+            "the proxy's own time, not the 500 s since the request"
+        );
+        // An exact frame presented later (a 100% view) reports its own time and says nothing of a
+        // proxy.
+        editor.present(upload(6, false, 85.2), &raster);
+        editor.rederive();
+        assert_eq!(editor.workspace.status.render, "Rendered in 85 ms");
+        // The evidence event carries the same figure, so a run can assert it is plausible.
+        let records = logged(&mut editor, &log);
+        let displayed: Vec<_> = records
+            .iter()
+            .filter(|record| record["event"] == "preview_displayed")
+            .map(|record| record["detail"]["render_ms"].clone())
+            .collect();
+        assert_eq!(displayed, vec![json!(12.4), json!(85.2)]);
         finish(editor, catalog);
     }
 
@@ -6441,7 +7626,7 @@ mod tests {
 
     #[test]
     fn desktop_registry_contains_every_core_builtin_including_raw() {
-        let desktop = registry(&[], false).unwrap();
+        let desktop = registry(&[], false, None).unwrap();
         let core = ModuleRegistry::builtin();
         let ids = |registry: &ModuleRegistry| {
             registry
@@ -6452,11 +7637,12 @@ mod tests {
         };
         assert_eq!(ids(&desktop), ids(&core));
         assert!(!ids(&desktop).contains(&"lightwell.controls".to_owned()));
-        let developer = registry(&[], true).unwrap();
+        let developer = registry(&[], true, None).unwrap();
         assert!(ids(&developer).contains(&"lightwell.controls".to_owned()));
-        assert!(registry(&["lightwell.controls".into()], false).is_err());
+        assert!(!ids(&developer).contains(&"lightwell.capabilities".to_owned()));
+        assert!(registry(&["lightwell.controls".into()], false, None).is_err());
         assert!(
-            !registry(&["lightwell.controls".into()], true)
+            !registry(&["lightwell.controls".into()], true, None)
                 .unwrap()
                 .descriptors()
                 .iter()
@@ -6464,7 +7650,7 @@ mod tests {
                 .unwrap()
                 .is_available()
         );
-        let disabled = registry(&["lightwell.raw".into()], false).unwrap();
+        let disabled = registry(&["lightwell.raw".into()], false, None).unwrap();
         assert!(
             !disabled
                 .descriptors()
@@ -6473,6 +7659,24 @@ mod tests {
                 .unwrap()
                 .is_available()
         );
+        // The capability proof joins a developer run that names a proof endpoint, and no other.
+        let proof = registry(&[], true, Some("http://127.0.0.1:9")).unwrap();
+        let proof_module = proof
+            .descriptors()
+            .into_iter()
+            .find(|module| module.id == "lightwell.capabilities")
+            .expect("the capability proof is registered");
+        assert!(proof_module.developer);
+        assert_eq!(
+            proof_module.resources[0].url,
+            "http://127.0.0.1:9/proof-palette.bin"
+        );
+        assert!(
+            !ids(&registry(&[], false, Some("http://127.0.0.1:9")).unwrap())
+                .contains(&"lightwell.capabilities".to_owned())
+        );
+        let refused = registry(&[], true, Some("http://example.com")).unwrap_err();
+        assert!(refused.contains("proof-palette"), "{refused}");
     }
 
     #[test]
@@ -7127,64 +8331,106 @@ mod tests {
         finish(editor, catalog);
     }
 
+    /// The RAW fields follow the displayed entry's own `recipe.describe` row, exactly as every other
+    /// module's do: the desktop reads no RAW payload. Under As shot the temperature and tint show
+    /// the camera's as-shot equivalent the core reports, not the 6504 K and 0 no one set; a custom
+    /// value shows itself; a field being edited is left alone until the selection changes.
     #[test]
-    fn historical_raw_preview_rebinds_controls_and_return_restores_current_values() {
+    fn raw_fields_show_the_displayed_entrys_described_values() {
         let (mut editor, catalog, asset, _) = opened(Vec::new(), 4);
         // The real descriptors, because the RAW parameters' declared precision is what decides how
-        // a bound field reads: 1.2 sensor gain shows as `1.20`, the same as one the person set.
+        // a seeded field reads.
         let _ = editor.update(Message::ModulesLoaded(Ok(descriptors())));
-        let original = RawPayload::for_as_shot([2.0, 1.0, 1.5], [[0.0; 3]; 4]).unwrap();
-        let mut historical = entry(&asset, 0, None);
-        historical.snapshot = historical
-            .snapshot
-            .with_layer_inserted(0, original.layer(LayerId::new()))
-            .unwrap();
-        let mut current = entry(&asset, 4, Some(&historical.id));
+        let original = RawPayload::for_as_shot(Z6_AS_SHOT, Z6_CAM_XYZ).unwrap();
+        let historical = raw_entry(&asset, 0, None, &original);
         let mut adjusted = original.clone();
         adjusted.exposure_ev = 1.0;
         adjusted.wb_mode = WhiteBalanceMode::Custom;
-        adjusted.gains = [1.2, 1.0, 0.9];
-        current.snapshot = current
-            .snapshot
-            .with_layer_inserted(0, adjusted.layer(LayerId::new()))
-            .unwrap();
-        editor.state.as_mut().unwrap().asset.source = SourceKind::Raw {
-            metadata: json!({}),
-        };
-        editor.state.as_mut().unwrap().current_entry = current.clone();
-        editor
-            .fields
-            .bind_raw(&editor.modules, &current.snapshot.recipe, None, None);
-        assert_eq!(editor.fields.get("set-raw-exposure", "ev"), Some("1.00"));
-        assert_eq!(editor.fields.get("set-raw-red-gain", "gain"), Some("1.20"));
+        adjusted.temperature_kelvin = Some(3500.0);
+        adjusted.tint = Some(12.0);
+        adjusted.gains =
+            lightwell_core::gains_from_temperature_tint(3500.0, 12.0, Z6_CAM_XYZ).unwrap();
+        let current = raw_entry(&asset, 4, Some(&historical.id), &adjusted);
 
-        let job = |entry: lightwell_core::HistoryEntry| PreviewJob {
-            source: PreviewSource::Jpeg(SourceImage {
-                width: 1,
-                height: 1,
-                rgba: vec![0, 0, 0, 255].into(),
-                fingerprint: "test".into(),
-                orientation: 1,
-            }),
-            registry: Arc::new(ModuleRegistry::builtin()),
-            recipe: entry.snapshot.recipe.clone(),
-            layer_count: None,
-            draft_revision: None,
-            identity: lightwell_core::analysis::AnalysisIdentity::of(
-                &entry.asset_id,
-                "test",
-                &entry,
-                &entry.snapshot.recipe,
-                None,
-                Some((1, 1)),
-            )
-            .expect("a test analysis identity"),
-            analyse: false,
-            proxy: None,
-            mask_overlay: None,
-            entry,
+        let _ = editor.update(Message::Refreshed(Ok(Box::new(raw_refresh(
+            &asset, &current,
+        )))));
+        let shown = |editor: &Editor| {
+            [
+                "set-raw-exposure.ev",
+                "set-raw-temperature.kelvin",
+                "set-raw-tint.tint",
+            ]
+            .map(|key| editor.fields.summary()[key].as_str().map(str::to_owned))
         };
+        assert_eq!(
+            shown(&editor),
+            [Some("1.00"), Some("3500"), Some("12")].map(|text| text.map(str::to_owned))
+        );
+        // The explicit gains have no control, so no field shows them.
+        assert_eq!(editor.fields.get("set-raw-red-gain", "gain"), None);
+
+        // A historical As shot entry: the fields change when its rows arrive, not before, and the
+        // field being edited is released by the selection.
         editor.editing = Some(("set-raw-exposure".into(), "ev".into()));
+        let mut session = editor.session.clone();
+        session
+            .preview
+            .select(HistorySelection::Entry(historical.id.clone()));
+        session.revision += 1;
+        let job = raw_refresh(&asset, &historical).job;
+        let _ = editor.update(Message::PreviewLoaded(Ok(Box::new(
+            tasks::PreviewPayload {
+                job,
+                session,
+                sequence: 8,
+            },
+        ))));
+        assert_eq!(editor.display_entry, Some(historical.id.clone()));
+        assert!(editor.editing.is_none());
+        assert!(
+            !editor.recipe_rows_shown(),
+            "an evidence frame waits for the displayed entry's own rows"
+        );
+        let read = raw_refresh(&asset, &historical);
+        let _ = editor.update(Message::RecipeDescribed(Ok(Box::new(tasks::RecipeRead {
+            recipe: read.recipe,
+            masks: read.masks,
+        }))));
+        assert!(editor.recipe_rows_shown());
+        let [kelvin, tint] =
+            lightwell_core::temperature_tint_from_gains(Z6_AS_SHOT, Z6_CAM_XYZ).unwrap();
+        assert_eq!((kelvin.round(), tint.round()), (4861.0, -50.0));
+        assert_eq!(
+            shown(&editor),
+            [Some("0.00"), Some("4861"), Some("-50")].map(|text| text.map(str::to_owned)),
+            "As shot shows the camera's own white balance as a temperature and tint"
+        );
+
+        // Return to current: the custom values come back.
+        let mut session = editor.session.clone();
+        session.preview.return_current();
+        session.revision += 1;
+        let _ = editor.update(Message::PreviewLoaded(Ok(Box::new(
+            tasks::PreviewPayload {
+                job: raw_refresh(&asset, &current).job,
+                session,
+                sequence: 9,
+            },
+        ))));
+        let read = raw_refresh(&asset, &current);
+        let _ = editor.update(Message::RecipeDescribed(Ok(Box::new(tasks::RecipeRead {
+            recipe: read.recipe,
+            masks: read.masks,
+        }))));
+        assert_eq!(editor.display_entry, Some(current.id));
+        assert_eq!(
+            shown(&editor),
+            [Some("1.00"), Some("3500"), Some("12")].map(|text| text.map(str::to_owned))
+        );
+
+        // A describe that fails for the displayed entry does not hold a frame forever: it is
+        // captured with the failure in the status bar.
         let mut session = editor.session.clone();
         session
             .preview
@@ -7192,31 +8438,15 @@ mod tests {
         session.revision += 1;
         let _ = editor.update(Message::PreviewLoaded(Ok(Box::new(
             tasks::PreviewPayload {
-                job: job(historical.clone()),
+                job: raw_refresh(&asset, &historical).job,
                 session,
-                sequence: 8,
+                sequence: 10,
             },
         ))));
-        assert_eq!(editor.display_entry, Some(historical.id));
-        assert!(editor.editing.is_none());
-        assert_eq!(editor.fields.get("set-raw-exposure", "ev"), Some("0.00"));
-        assert_eq!(editor.fields.get("set-raw-red-gain", "gain"), Some("2.00"));
-        assert_eq!(editor.fields.get("set-raw-blue-gain", "gain"), Some("1.50"));
-
-        let mut session = editor.session.clone();
-        session.preview.return_current();
-        session.revision += 1;
-        let _ = editor.update(Message::PreviewLoaded(Ok(Box::new(
-            tasks::PreviewPayload {
-                job: job(current.clone()),
-                session,
-                sequence: 9,
-            },
-        ))));
-        assert_eq!(editor.display_entry, Some(current.id));
-        assert_eq!(editor.fields.get("set-raw-exposure", "ev"), Some("1.00"));
-        assert_eq!(editor.fields.get("set-raw-red-gain", "gain"), Some("1.20"));
-        assert_eq!(editor.fields.get("set-raw-blue-gain", "gain"), Some("0.90"));
+        assert!(!editor.recipe_rows_shown());
+        let _ = editor.update(Message::RecipeDescribed(Err("unavailable".into())));
+        assert!(editor.recipe_rows_shown());
+        assert_eq!(editor.status, "Recipe unavailable: unavailable");
         finish(editor, catalog);
     }
 
@@ -7239,7 +8469,9 @@ mod tests {
             proxy_dimensions: None,
             proxy_built: false,
             proxy_approximation: lightwell_core::ProxyApproximation::default(),
+            approximate_white_balance: false,
             reason: None,
+            render_ms: Some(3.0),
         };
         assert!(
             editor.displayed_status(&upload).starts_with("Current · "),
@@ -7286,6 +8518,45 @@ mod tests {
         assert!(!section.enabled && section.reset.is_some());
         let _ = std::hint::black_box(&entry_id);
         finish(editor, catalog);
+    }
+
+    #[test]
+    fn an_evidence_run_keeps_module_state_in_its_directory_and_memory() {
+        let evidence = std::env::temp_dir().join("lightwell-evidence-host-paths");
+        let host = host_config(&Config {
+            evidence: Some(evidence.clone()),
+            data_root: Some(std::env::temp_dir().join("lightwell-ignored-root")),
+            ..Config::default()
+        });
+        assert_eq!(
+            host.config_dir,
+            Some(evidence.join("host").join("config").join("modules"))
+        );
+        assert_eq!(
+            host.resource_dir,
+            Some(
+                evidence
+                    .join("host")
+                    .join("data")
+                    .join("modules")
+                    .join("resources")
+            )
+        );
+        assert_eq!(host.secrets.name(), "in-memory secret store");
+        let root = std::env::temp_dir().join("lightwell-data-root");
+        let host = host_config(&Config {
+            data_root: Some(root.clone()),
+            ..Config::default()
+        });
+        assert_eq!(host.config_dir, Some(root.join("config").join("modules")));
+        assert_eq!(
+            host.resource_dir,
+            Some(root.join("data").join("modules").join("resources"))
+        );
+        assert!(
+            !evidence.exists() && !root.exists(),
+            "choosing directories creates none"
+        );
     }
 
     #[test]
@@ -7493,12 +8764,13 @@ mod tests {
             proxy: None,
             mask_overlay: None,
             entry,
+            artifacts: Vec::new(),
         }
     }
 
     /// The bounds a job renders for are the window, the panels and the display scale of the
     /// moment it is requested, not of the moment its owner task was created: the display scale
-    /// arrives after launch, and the first frame must already be at it.
+    /// arrives after launch, and every job requested after it must already be at it.
     #[test]
     fn a_preview_job_takes_the_bounds_of_the_moment_it_is_requested() {
         let (mut editor, catalog, _, _) = opened(Vec::new(), 4);
@@ -7555,6 +8827,32 @@ mod tests {
             })
             .count();
         assert_eq!(refits, 1, "a refit is asked for once, not per event");
+        finish(editor, catalog);
+    }
+
+    /// A scripted step whose frame is due — its session round trip settled it earlier in the same
+    /// update — waits instead for the refit the view just asked for, so its capture never shows a
+    /// proxy made for the previous bounds.
+    #[test]
+    fn a_settled_step_waits_for_the_refit_its_view_asked_for() {
+        let (mut editor, catalog, _, _) = crate::app::testing::scripted(r#"[{"wait":{"ms":1}}]"#);
+        editor.window = (1440.0, 900.0);
+        editor.dimensions = Some((4000, 3000));
+        editor.session.preview.view.zoom = Zoom::Fit;
+        editor.scale_factor = 1.0;
+        editor.presented_generation = 7;
+        editor.presented_proxy = true;
+        editor.preview_generation = 7;
+        editor.presented_bounds = editor.proxy_bounds();
+        if let Some(evidence) = &mut editor.evidence {
+            evidence.awaiting = None;
+            evidence.capture_pending = true;
+        }
+        let _ = editor.update(Message::ScaleFactor(2.0));
+        assert!(editor.refit_pending, "the new bounds asked for a frame");
+        let evidence = crate::app::testing::evidence(&editor);
+        assert!(!evidence.capture_pending, "the old proxy is not captured");
+        assert_eq!(evidence.awaiting, Some(Settle::Preview));
         finish(editor, catalog);
     }
 }

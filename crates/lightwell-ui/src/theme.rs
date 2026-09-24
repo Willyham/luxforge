@@ -36,6 +36,9 @@ pub const TEXT_SECONDARY: Color = Color::from_rgb8(0xa8, 0xa8, 0xae);
 pub const TEXT_TERTIARY: Color = Color::from_rgb8(0x77, 0x77, 0x7f);
 /// A slider or field label: a step under primary, so the value on the same line reads first.
 pub const TEXT_LABEL: Color = Color::from_rgb8(0xc9, 0xc9, 0xce);
+/// Faint text, a step under tertiary: a finished job's duration, which matters less than the dimmed
+/// label beside it, as the performance mockup draws it. Opaque for the same reason as [`RULE`].
+pub const TEXT_FAINT: Color = Color::from_rgb8(0x55, 0x55, 0x5c);
 
 // -- Slider rail and rules ----------------------------------------------------------------------
 
@@ -157,6 +160,10 @@ pub const SIZE_TITLE: f32 = 13.0;
 pub const SIZE_CAPTION: f32 = 11.0;
 /// Capitalised section labels.
 pub const SIZE_SECTION_LABEL: f32 = 10.5;
+/// A small caption in sentence case: a metric's unit, a job's elapsed time and detail line, and a
+/// disclosure heading's caption. It is the section label's step of the type scale, so a caption
+/// beside a section label reads as the same size.
+pub const SIZE_SMALL_CAPTION: f32 = SIZE_SECTION_LABEL;
 /// A caption's line: a whole number of points, so the rows stacked under a block of captions (the
 /// histogram's readout) start on a whole point and their 1 px rules stay sharp.
 pub const CAPTION_LINE_HEIGHT: f32 = 14.0;
@@ -375,6 +382,43 @@ pub const MARKER_RING_WIDTH: f32 = 1.0;
 /// [`RULE`].
 pub const LIST_ROW_CURRENT: Color = Color::from_rgb8(47, 47, 50);
 
+// -- Performance section ------------------------------------------------------------------------
+//
+// The state panel's Performance block, from the layout table of the performance panel design.
+// Its greys are the slider rail's ([`RAIL`], [`RAIL_FILL`], [`THUMB`]) and the group rule
+// ([`RULE`]), never the accent: the photograph is the only colour on screen.
+
+/// A disclosure heading's row: the section label, its caption and the chevron, all one button.
+pub const DISCLOSURE_HEADING_HEIGHT: f32 = 22.0;
+/// A disclosure heading's chevron, a size under a band's [`DISCLOSURE_SIZE`] because it sits
+/// beside a 10.5 pt section label rather than a 13 pt title.
+pub const DISCLOSURE_CHEVRON_SIZE: f32 = 10.0;
+/// A metric row: its label, sparkline and value.
+pub const METRIC_ROW_HEIGHT: f32 = 24.0;
+/// A metric row's label box.
+pub const METRIC_LABEL_WIDTH: f32 = 48.0;
+/// A metric row's value box, the value and its unit right-aligned in it, so the last character
+/// stays put as the figure changes width (see [`crate::value_text`]'s tabular-numeral note).
+pub const METRIC_VALUE_WIDTH: f32 = 56.0;
+/// A sparkline's height; its width is whatever its row leaves it.
+pub const SPARKLINE_HEIGHT: f32 = 16.0;
+/// A sparkline's line.
+pub const SPARKLINE_LINE_WIDTH: f32 = 1.25;
+/// The dot on a sparkline's newest point. The line's points are inset by this radius on every
+/// side, so the dot is never clipped at a window edge, at zero or at the top of the scale.
+pub const SPARKLINE_DOT_RADIUS: f32 = 1.75;
+/// The area under a sparkline's line: [`RAIL_FILL`] at 16% over [`PANEL`], precomputed opaque
+/// because Iced blends in linear light and renders a small alpha much brighter (asserted in the
+/// tests below).
+pub const SPARKLINE_AREA: Color = Color::from_rgb8(0x35, 0x35, 0x39);
+/// A job row's first line: the marker, the label and the elapsed time. The detail line under it is
+/// a caption line, [`CAPTION_LINE_HEIGHT`] tall.
+pub const JOB_LABEL_HEIGHT: f32 = 16.0;
+/// Where a job row's label and detail line start: the [`MARKER_SIZE`] marker and the gap after it.
+pub const JOB_LABEL_INSET: f32 = 16.0;
+/// Between a job row's detail line and its progress bar, which is a [`RAIL_WIDTH`] rail.
+pub const JOB_PROGRESS_GAP: f32 = 2.0;
+
 /// Builds the dark, custom Lightwell theme from the tokens above. There is no light theme yet;
 /// see the [visual language](../../../docs/design/develop-workspace.md#visual-language) decision.
 pub fn theme() -> Theme {
@@ -568,6 +612,31 @@ pub fn button_bare(_theme: &Theme, status: button::Status) -> button::Style {
         border: Border::default(),
         shadow: Shadow::default(),
         snap: false,
+    }
+}
+
+/// A disclosure heading: no surface in any state, its label tertiary at rest and secondary under
+/// the pointer or while pressed. The label takes this text colour, so the style is the one place
+/// that decides how the heading answers a hover.
+pub fn button_disclosure(_theme: &Theme, status: button::Status) -> button::Style {
+    button::Style {
+        background: None,
+        text_color: disclosure_color(matches!(
+            status,
+            button::Status::Hovered | button::Status::Pressed
+        )),
+        border: Border::default(),
+        shadow: Shadow::default(),
+        snap: false,
+    }
+}
+
+/// A disclosure heading's ink, label and chevron alike: secondary while hovered, else tertiary.
+pub fn disclosure_color(hovered: bool) -> Color {
+    if hovered {
+        TEXT_SECONDARY
+    } else {
+        TEXT_TERTIARY
     }
 }
 
@@ -921,6 +990,71 @@ mod tests {
         assert_eq!(ZERO_TICK, Color::from_rgb8(0x5a, 0x5a, 0x62));
         assert_eq!(THUMB_OUTLINE, Color::from_rgb8(0x11, 0x11, 0x13));
         assert_eq!(TEXT_LABEL, Color::from_rgb8(0xc9, 0xc9, 0xce));
+    }
+
+    /// The Performance section's layout table, pinned: the heading, the metric row and its boxes,
+    /// the sparkline and the job row's lines.
+    #[test]
+    fn performance_section_sizes_match_the_design() {
+        assert_eq!(DISCLOSURE_HEADING_HEIGHT, 22.0);
+        assert_eq!(DISCLOSURE_CHEVRON_SIZE, 10.0);
+        assert_eq!(METRIC_ROW_HEIGHT, 24.0);
+        assert_eq!((METRIC_LABEL_WIDTH, METRIC_VALUE_WIDTH), (48.0, 56.0));
+        assert_eq!(SPACING, 8.0, "the metric row's gaps");
+        assert_eq!(SPARKLINE_HEIGHT, 16.0);
+        assert_eq!(SPARKLINE_LINE_WIDTH, 1.25);
+        assert_eq!(SPARKLINE_DOT_RADIUS, 1.75);
+        assert_eq!(BORDER_WIDTH, 1.0, "the sparkline's baseline");
+        assert_eq!((JOB_LABEL_HEIGHT, CAPTION_LINE_HEIGHT), (16.0, 14.0));
+        assert_eq!(JOB_LABEL_INSET, 16.0);
+        const { assert!(JOB_LABEL_INSET > MARKER_SIZE, "the label clears its marker") };
+        assert_eq!((RAIL_WIDTH, JOB_PROGRESS_GAP), (2.0, 2.0));
+        assert_eq!(SIZE_SMALL_CAPTION, 10.5);
+        assert_eq!(SIZE_SMALL_CAPTION, SIZE_SECTION_LABEL);
+    }
+
+    /// The sparkline's area is the rail fill at 16% over the panel, stored opaque; its baseline,
+    /// line and dot are the rule, the rail fill and the thumb.
+    #[test]
+    fn the_sparkline_area_is_the_rail_fill_at_sixteen_percent_over_the_panel() {
+        let [r, g, b] = crate::geometry::over(
+            [RAIL_FILL.r, RAIL_FILL.g, RAIL_FILL.b],
+            [PANEL.r, PANEL.g, PANEL.b],
+            0.16,
+        )
+        .map(|channel| (channel * 255.0).round() as u8);
+        assert_eq!(SPARKLINE_AREA, Color::from_rgb8(r, g, b));
+        assert_eq!(SPARKLINE_AREA, Color::from_rgb8(0x35, 0x35, 0x39));
+        assert_eq!(
+            SPARKLINE_AREA.a, 1.0,
+            "opaque, not an alpha Iced would brighten"
+        );
+    }
+
+    #[test]
+    fn faint_text_sits_between_the_panel_and_tertiary_text() {
+        assert_eq!(TEXT_FAINT, Color::from_rgb8(0x55, 0x55, 0x5c));
+        for (panel, faint, tertiary) in [
+            (PANEL.r, TEXT_FAINT.r, TEXT_TERTIARY.r),
+            (PANEL.g, TEXT_FAINT.g, TEXT_TERTIARY.g),
+            (PANEL.b, TEXT_FAINT.b, TEXT_TERTIARY.b),
+        ] {
+            assert!(panel < faint && faint < tertiary);
+        }
+    }
+
+    #[test]
+    fn a_disclosure_heading_lifts_to_secondary_under_the_pointer() {
+        let colour = |status| button_disclosure(&theme(), status).text_color;
+        assert_eq!(colour(button::Status::Active), TEXT_TERTIARY);
+        assert_eq!(colour(button::Status::Hovered), TEXT_SECONDARY);
+        assert_eq!(colour(button::Status::Pressed), TEXT_SECONDARY);
+        assert_eq!(
+            button_disclosure(&theme(), button::Status::Hovered).background,
+            None
+        );
+        assert_eq!(disclosure_color(false), TEXT_TERTIARY);
+        assert_eq!(disclosure_color(true), TEXT_SECONDARY);
     }
 
     /// The white-balance rails, drawn at the colour-rail opacity over the panel, land on the

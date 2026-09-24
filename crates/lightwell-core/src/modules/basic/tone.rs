@@ -5,12 +5,13 @@
 //! constant here is named identically to the constant of the same name there.
 //!
 //! Everything that does not depend on the pixel is precomputed once, in `f64`, in the constructor:
-//! the Contrast logistic's slope and its endpoint normalization, the Highlights/Shadows odds-bias
-//! exponentials `e^(+-k)`, and the Whites/Blacks endpoint remap's intercept and inverse gap. The
-//! per-pixel work in `apply_row` is plain `f32` arithmetic plus, unavoidably, one `exp` for
-//! Contrast's pixel-dependent logistic argument and the sRGB encode/decode of the pixel's own
-//! luminance; nothing here is clamped, matching the pointwise colour contract that the host clamps
-//! once at the end of a run, not each unit.
+//! the Contrast logistic's slope, its endpoint normalization and negative Contrast's reflection
+//! weight `kappa`, the Highlights/Shadows odds-bias exponentials `e^(+-k)`, and the Whites/Blacks
+//! endpoint remap's intercept and inverse gap. The per-pixel work in `apply_row` is plain `f32`
+//! arithmetic plus, unavoidably, one `exp` for Contrast's pixel-dependent logistic argument (on
+//! either side of the slider) and the sRGB encode/decode of the pixel's own luminance; nothing here
+//! is clamped, matching the pointwise colour contract that the host clamps once at the end of a
+//! run, not each unit.
 use crate::modules::PointwiseColor;
 
 /// Rec. 709 / sRGB luma coefficients on linear sRGB. See "Luminance" in the design doc.
@@ -30,7 +31,8 @@ const LUMA_B: f32 = LUMA_B_F64 as f32;
 /// The curve domain's pivot: encoded mid-grey. See "Contrast" in the design doc.
 const PIVOT: f32 = 0.5;
 
-/// Contrast steepness scale: `alpha = ALPHA_MAX * contrast / 100`. See "Contrast" in the design doc.
+/// Contrast steepness scale: `alpha = ALPHA_MAX * |contrast| / 100`; the sign selects the curve,
+/// not the exponent's sign. See "Contrast" in the design doc.
 const ALPHA_MAX: f64 = 6.0;
 
 /// Whites/Blacks endpoint range and the crossing-prevention clamp's minimum gap. See "Whites and
@@ -58,12 +60,15 @@ pub(super) struct Tone {
     shadows: f64,
     whites: f64,
     blacks: f64,
-    /// Contrast: `alpha = ALPHA_MAX * contrast / 100`, computed once. Only read when
+    /// Contrast: `alpha = ALPHA_MAX * |contrast| / 100`, computed once. Only read when
     /// `contrast != 0.0`; the identity branch in `contrast_stage` never reaches it otherwise.
     alpha: f32,
     /// Contrast's endpoint normalization, `g(0)` and `1 / (g(1) - g(0))`, computed once in `f64`.
     contrast_g0: f32,
     contrast_inv_gap: f32,
+    /// Negative Contrast's reflection weight, `kappa = 1 / sigma` with `sigma = S'(PIVOT)` the
+    /// normalized logistic's pivot slope, computed once in `f64`. Only read when `contrast < 0.0`.
+    contrast_kappa: f32,
     /// The odds-bias exponential `e^(-k)`, precomputed once per stage so the per-pixel path needs
     /// no `exp` call for either Shadows or Highlights.
     shadows_exp_neg_k: f32,
@@ -82,18 +87,22 @@ impl Tone {
         whites: f64,
         blacks: f64,
     ) -> Self {
-        // Contrast: a logistic S-curve normalized to fix (0, 0) and (1, 1).
-        let alpha = ALPHA_MAX * (contrast / 100.0);
+        // Contrast: a logistic S-curve normalized to fix (0, 0) and (1, 1), built from the
+        // slider's magnitude. Negative Contrast reflects its deviation from the identity, scaled by
+        // kappa = 1 / sigma, sigma = S'(PIVOT) = alpha * g(PIVOT) * (1 - g(PIVOT)) / (g1 - g0) with
+        // g(PIVOT) = 1/2 (see `contrast_stage`).
+        let alpha = ALPHA_MAX * (contrast.abs() / 100.0);
         let g = |u: f64| 1.0 / (1.0 + (-alpha * (u - 0.5)).exp());
         let g0 = g(0.0);
         let g1 = g(1.0);
         // contrast == 0.0 makes alpha == 0.0 and so g1 - g0 == 0.0; the identity branch in
-        // `contrast_stage` never reads `contrast_inv_gap` in that case, so 0.0 here is a safe,
-        // finite placeholder rather than an unused NaN/inf from dividing by zero.
-        let contrast_inv_gap = if contrast == 0.0 {
-            0.0
+        // `contrast_stage` never reads `contrast_inv_gap` or `contrast_kappa` in that case, so 0.0
+        // here is a safe, finite placeholder rather than an unused NaN/inf from dividing by zero.
+        let (contrast_inv_gap, contrast_kappa) = if contrast == 0.0 {
+            (0.0, 0.0)
         } else {
-            1.0 / (g1 - g0)
+            let sigma = (alpha / 4.0) / (g1 - g0);
+            (1.0 / (g1 - g0), 1.0 / sigma)
         };
 
         // Highlights/Shadows: the odds-bias curve's exponential, one per stage.
@@ -122,6 +131,7 @@ impl Tone {
             alpha: alpha as f32,
             contrast_g0: g0 as f32,
             contrast_inv_gap: contrast_inv_gap as f32,
+            contrast_kappa: contrast_kappa as f32,
             shadows_exp_neg_k: shadows_exp_neg_k as f32,
             highlights_exp_neg_k: highlights_exp_neg_k as f32,
             blacks_bp: bp as f32,
@@ -172,15 +182,23 @@ impl Tone {
         1.0 - inner
     }
 
-    /// Stage 3: Contrast, the normalized logistic. `contrast == 0.0` is an explicit identity
-    /// branch, matching the reference (the formula is a `0/0` form at `alpha = 0`, and the branch
-    /// also guarantees bit-exact identity rather than a numerically-close approximation).
+    /// Stage 3: Contrast. Positive Contrast is the normalized logistic `S`; negative Contrast is
+    /// `x - kappa * (S(x) - x)`, the same curve's deviation from the identity reflected and scaled
+    /// so its pivot slope is the reciprocal of the positive curve's. `contrast == 0.0` is an
+    /// explicit identity branch, matching the reference (the formula is a `0/0` form at
+    /// `alpha = 0`, and the branch also guarantees bit-exact identity rather than a
+    /// numerically-close approximation).
     fn contrast_stage(&self, x: f32) -> f32 {
         if self.contrast == 0.0 {
             return x;
         }
         let g = 1.0 / (1.0 + (-self.alpha * (x - PIVOT)).exp());
-        (g - self.contrast_g0) * self.contrast_inv_gap
+        let s = (g - self.contrast_g0) * self.contrast_inv_gap;
+        if self.contrast > 0.0 {
+            s
+        } else {
+            x - self.contrast_kappa * (s - x)
+        }
     }
 
     /// The complete curve in the encoded working domain: Whites/Blacks, then Shadows, then
@@ -249,6 +267,7 @@ impl PointwiseColor for Tone {
             && self.alpha.is_finite()
             && self.contrast_g0.is_finite()
             && self.contrast_inv_gap.is_finite()
+            && self.contrast_kappa.is_finite()
             && self.shadows_exp_neg_k.is_finite()
             && self.highlights_exp_neg_k.is_finite()
             && self.blacks_bp.is_finite()
@@ -306,15 +325,16 @@ mod tests {
     /// `fixtures/basic/tone-cases.json`, applied to the decoded linear inputs the fixture already
     /// carries.
     ///
-    /// Maximum observed error across all 49 committed cases and all three channels:
+    /// Maximum observed error across all 89 committed cases and all three channels:
     /// `~4.99e-7` (well inside the frozen `1e-5 + 1e-5 * |reference|` tolerance), measured by this
     /// test's own `max_error` tracking and printed with `cargo test -p lightwell-core --lib --
     /// --nocapture modules::basic::tone::tests::production_matches_the_frozen_oracle_fixture_within_tolerance`.
+    /// The 26 negative-Contrast cases stay within `~4.3e-7`.
     #[test]
     fn production_matches_the_frozen_oracle_fixture_within_tolerance() {
         let raw = fs::read_to_string(fixture_path()).expect("the tone-cases fixture");
         let cases: Vec<ToneCase> = serde_json::from_str(&raw).expect("valid JSON");
-        assert!(cases.len() >= 49, "the committed fixture has 49 cases");
+        assert!(cases.len() >= 89, "the committed fixture has 89 cases");
         let mut max_error = 0.0_f64;
         for case in &cases {
             let unit = Tone::new(

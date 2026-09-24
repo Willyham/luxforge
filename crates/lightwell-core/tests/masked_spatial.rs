@@ -108,6 +108,7 @@ fn presence_layer() -> Layer {
         effect_format: EFFECT_FORMAT,
         payload: json!({"clarity": 80.0, "texture": 60.0}),
         mask: None,
+        artifacts: Vec::new(),
     }
 }
 

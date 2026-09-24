@@ -61,6 +61,7 @@ fn stack(width: u32, height: u32) -> Recipe {
                 effect_format: EFFECT_FORMAT,
                 payload: json!({"exposure": 0.5, "contrast": 20.0, "vibrance": 30.0}),
                 mask: None,
+                artifacts: Vec::new(),
             },
             Layer::crop(fitted.normalized(&stage)),
         ],

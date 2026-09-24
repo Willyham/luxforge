@@ -102,7 +102,7 @@ Preview during a gesture: `OwnerHandle::preview_job` accepts a `draft: Option<Dr
 - Domain: input codes decode through the sRGB transfer function into f32 linear sRGB (D65) using a 256-entry table computed in f64. Units run in declared order in f32 with coefficients computed in f64. Values outside `[0, 1]` and negative values are preserved between units of one operation and between consecutive colour operations in the same segment. Alpha is never touched.
 - Output boundary: at the end of a run of consecutive colour operations the host clamps each channel to `[0, 1]` and quantizes to the code `k` whose exact linear threshold interval contains the value, using 255 thresholds `t_k = decode((k − 0.5) / 255)` precomputed in f64; this equals `floor(255 · encode(v) + 0.5)` for every representable value and costs no per-pixel power function. A point replacement, a resample and the end of the recipe are the quantization boundaries and are explicit in the compiled segment. A non-finite value after any unit fails the render or sample with `resource-limit: colour processing produced a non-finite value`, never a NaN in a frame.
 - Segment placement: colour operations join the segment's operation list in stack order. Exact geometry commutes with pointwise colour and composes as today; a point replacement earlier in the list is processed by later colour operations and one later in the list is not; a resample quantizes before it interpolates. The rasterizing pass keeps one u8 frame per segment: geometry pass, then the operation list in order as phases of replacements and colour runs, each colour run streamed over the frame in place in bounded row chunks on the shared Rayon pool above the existing one-megapixel threshold. `Evaluation::pixel_in` applies the same phases to one pixel, so samples and rasters agree byte for byte.
-- Buffers: an identity segment with a colour operation materializes its frame with the existing `has_pixels` copy, bounded by the 512 MiB frame limit; peak memory stays two frames. Row-chunk scratch is reserved from a process-wide `ScratchBudget` (default 64 MiB, `ResourceLimit` when exceeded) before allocation and released after each chunk. Nothing else scales with image size.
+- Buffers: an identity segment with a colour operation materializes its frame with the existing `has_pixels` copy, bounded by the 512 MiB frame limit; peak memory stays two frames. Row-chunk scratch is reserved from a process-wide `ScratchBudget` (a 64 MiB target that never refuses a chunk, with a high-water mark) before allocation and released after each chunk. Nothing else scales with image size.
 - A recipe with only neutral Basic layers compiles to no colour operation, keeps the identity byte path and shares the source buffer.
 
 ### Analysis jobs and identity
@@ -178,13 +178,13 @@ Frozen: [Saturation and Vibrance mathematics](basic-colour.md). Oklab passed eve
 
 ## Histogram and clipping contract
 
-The inspector describes the **rendered SDR sRGB output of the full current composition**, after crop and edits, before UI overlays, scaling for the viewport or monitor conversion. It is not the camera/RAW histogram. Panning, zoom and display scale do not change its population. Label this domain in the UI/API so users do not read output endpoint counts as evidence of sensor clipping or recoverable detail.
+The inspector describes the **rendered SDR sRGB output of the full current composition**, after crop and edits, before UI overlays, scaling for the viewport or monitor conversion. It is not the camera/RAW histogram. Panning, zoom and display scale do not change its population. Label this domain in the UI/API so users do not read output endpoint counts as evidence of sensor clipping or recoverable detail. The desktop states it on the plot itself, as the plot's hover tooltip ("Output · sRGB · after crop"), and the API in every report's `domain`.
 
 - Three arrays of 256 unsigned 64-bit counts; each output byte selects its exact channel bin. Every channel sum equals the full output pixel count. Use integer reductions with deterministic merging. An overlapped gray area means overlapping RGB counts, not a separate luminance histogram.
-- Plot filled RGB channels with a shared linear vertical scale and visible overlap. Counts returned by the API stay raw; presentation normalization must not change their meaning. Empty, pending, unavailable, superseded and failed are explicit states. A stale result may remain only with a visible stale label. Those states share the caption row with the domain and the pointer readout, and the count rows stay in place showing a dash while there is no report, so the inspector's height never depends on the analysis status and nothing below it moves during a gesture.
-- Shadow/highlight counters report per-channel endpoints (`code == 0`, `code == 255`) plus any-channel and all-channel pixel counts. Endpoints include values quantized to those codes; these are output clipping warnings, not an inference about the original capture. A colored indicator identifies channels with endpoint pixels; add textual counts for accessibility.
-- Clicking a triangle toggles its overlay; hover may preview it. Default mask rule: any-channel endpoint, blue for shadow, red for highlight; a pixel matching both uses magenta. Tooltips state this rule. Masks never alter the raster, saved recipe, histogram population or future export. UI and API share the predicate.
-- RGB hover readout uses the compiled sample at final image coordinates, reports 0–255 codes, and includes the selected render identity. The histogram computation itself is a full-image worker operation, not a repeated owner-thread point query.
+- Plot filled RGB channels with a shared linear vertical scale and visible overlap. Counts returned by the API stay raw; presentation normalization must not change their meaning. Empty, pending, unavailable, superseded and failed are explicit states. A stale result may remain only with a visible stale label: the plot is dimmed while a newer frame renders. A state with no report is written inside the plot's own area — "No analysis yet", or "Unavailable:" with the reason — never in a row of its own. The inspector is the plot and the triangle row and nothing else, so its height never depends on the pointer, the analysis status or the counts, and nothing below it moves during a gesture.
+- Shadow/highlight counters report per-channel endpoints (`code == 0`, `code == 255`) plus any-channel and all-channel pixel counts. Endpoints include values quantized to those codes; these are output clipping warnings, not an inference about the original capture. A colored indicator identifies channels with endpoint pixels; the counts are also stated in words, in the triangles' tooltips: the shadow triangle's gives the code-0 line, the highlight triangle's the code-255 line and the both-endpoints count. With no report behind them each shows a dash, never zeros.
+- Clicking a triangle toggles its overlay; hover may preview it. Default mask rule: any-channel endpoint, blue for shadow, red for highlight; a pixel matching both uses magenta. Tooltips state this rule, above the counts. Masks never alter the raster, saved recipe, histogram population or future export. UI and API share the predicate.
+- RGB hover readout uses the compiled sample at final image coordinates, reports 0–255 codes, and includes the selected render identity. The desktop shows it in the status bar, in a slot that is laid out whether or not the pointer is over the photograph, so it moves nothing in the tools panel or the bar. The histogram computation itself is a full-image worker operation, not a repeated owner-thread point query.
 - Key each result to asset/source fingerprint, entry/snapshot, effective recipe identity, client draft ID/revision when present, output dimensions and color contract. Carry render generation with delivery. Counts and overlays must match the image currently presented, including drafts and history preview, not simply the newest catalog revision.
 
 First implementation uses exact full-resolution counts. Reuse the final raster allocation, reduce during its production where practical, or scan it on a worker without a second render/copy. Exposure or view-only changes must not cause duplicate source decoding. During active gestures the previous histogram can be marked updating while an exact replacement is pending; do not secretly switch to thumbnail counts that miss single-pixel clipping. Approximate draft analysis is a later measured proposal, not the default contract.
@@ -253,8 +253,13 @@ cancel leaving another's shared job intact. The original file's SHA-256 is uncha
 Item 5 is demonstrated natively on the owner's M4 by the rendered scenarios `basic`, `basic-panel`,
 `basic-crop`, `basic-restart`, `histogram`, `workspace`, `crop`, `crop-draft`, `unavailable`,
 `large24` and `large60`, each correlating its captures with the recorded revision, entry, draft,
-render generation and state. Calibrated colour and screen-reader behaviour are not claimed: every
-pixel measurement is renderer readback of displayed brightness or channel balance.
+render generation and state. The `histogram` scenario's hover frame shows the readout in the status
+bar with the tools panel pixel for pixel the frame before it and the status bar changed only inside
+the readout's slot; every frame's triangle tooltips carry the independent reduction's counts, and
+`unavailable` shows the reason inside the plot. Tooltips are checked through the recorded state,
+not in a capture: the harness cannot hover a widget. Calibrated colour and screen-reader behaviour
+are not claimed: every pixel measurement is renderer readback of displayed brightness or channel
+balance.
 
 Item 3 of the histogram and clipping contract — counts and overlays matching the image currently
 presented, drafts included — holds during an active gesture as well. The drafted preview job asks
@@ -267,7 +272,11 @@ committed render; it never goes to zero counters. At Fit the drafted pixels on s
 proxy phase and the report is reduced from its exact phase, which a newer input cancels, so during a
 fast drag the plot follows the frames the gesture pauses on and the counts are never approximate.
 The bound is one `draft.set` and one preview job per accepted value, with the analysis riding that
-job and no second render.
+job and no second render. The one exception is a drafted RAW temperature or tint, which is previewed
+approximately on the planes developed at the committed white balance
+([instant previews](instant-preview.md#a-raw-white-balance-during-a-drag)): no phase of that job is
+reduced, so the previous exact report stays plotted and marked updating until the committed frame's
+own report replaces it, and the counts are never taken from approximate pixels.
 The `histogram` scenario's open-gesture frame proves it on the M4 — status ready,
 `identity.draft_revision` present, and the eleven counters equal to an independent core render and
 reduction of the drafted stack rebuilt from the committed layers the frame displays and the drafted

@@ -670,6 +670,7 @@ mod tests {
             effect_format: EFFECT_FORMAT,
             payload,
             mask: None,
+            artifacts: Vec::new(),
         }
     }
 
@@ -953,6 +954,86 @@ mod tests {
         }
     }
 
+    /// The white-balance approximation is one matrix per pixel and the downscale an area average,
+    /// both linear, so they commute: the proxy of planes the matrix was applied to equals the
+    /// matrix applied to the proxy of the planes, to f32 rounding. That is why an approximate
+    /// job's proxy phase describes the same approximation its full-size phase does, at display
+    /// size, through the same filter as every other proxy.
+    #[test]
+    fn a_white_balance_approximation_commutes_with_the_downscale() {
+        let matrix = [[1.31, 0.07, -0.03], [0.02, 0.96, 0.05], [-0.08, 0.03, 0.69]];
+        let (width, height) = (37, 23);
+        let pixels: Vec<[f32; 3]> = (0..width * height)
+            .map(|index| {
+                let value = index as f32;
+                [
+                    (value * 0.031) % 1.4 - 0.1,
+                    (value * 0.047) % 1.2,
+                    (value * 0.019) % 1.7,
+                ]
+            })
+            .collect();
+        let balanced: Vec<[f32; 3]> = pixels
+            .iter()
+            .map(|pixel| {
+                matrix.map(|row| {
+                    (row[0] * f64::from(pixel[0])
+                        + row[1] * f64::from(pixel[1])
+                        + row[2] * f64::from(pixel[2])) as f32
+                })
+            })
+            .collect();
+        let settings = LinearSettings::default();
+        let proxy_of = |pixels: &[[f32; 3]]| {
+            PreviewSource::Raw {
+                image: raw_source(width, height, pixels),
+                settings,
+            }
+            .proxy(plan(11, 7, (11, 7)))
+            .expect("a proxy")
+        };
+        let downscaled = proxy_of(&pixels);
+        let balanced_then_downscaled = proxy_of(&balanced);
+        for y in 0..7 {
+            for x in 0..11 {
+                let proxy = raw_of(&downscaled).pixel(x, y).unwrap().map(f64::from);
+                let expected = raw_of(&balanced_then_downscaled).pixel(x, y).unwrap();
+                let balanced_proxy =
+                    matrix.map(|row| row[0] * proxy[0] + row[1] * proxy[1] + row[2] * proxy[2]);
+                for channel in 0..3 {
+                    let expected = f64::from(expected[channel]);
+                    assert!(
+                        (balanced_proxy[channel] - expected).abs()
+                            <= 1.0e-5 * expected.abs().max(1.0),
+                        "({x}, {y}) channel {channel}: {} against {expected}",
+                        balanced_proxy[channel]
+                    );
+                }
+            }
+        }
+        // And so do the frames the two render: the approximation over the proxy, against the
+        // matrix applied before the downscale, agree to one code at most — f32 rounding at a code
+        // boundary, never a visible difference.
+        let registry = ModuleRegistry::builtin();
+        let approximate = PreviewSource::Raw {
+            image: raw_of(&downscaled).clone(),
+            settings: LinearSettings {
+                exposure_ev: 0.0,
+                white_balance: Some(crate::WhiteBalanceApproximation::from_matrix(matrix).unwrap()),
+            },
+        };
+        let over_proxy = approximate
+            .render(&registry, SnapshotId::new(), &recipe(Vec::new()))
+            .unwrap();
+        let before = balanced_then_downscaled
+            .render(&registry, SnapshotId::new(), &recipe(Vec::new()))
+            .unwrap();
+        assert_eq!(over_proxy.rgba.len(), before.rgba.len());
+        for (a, b) in over_proxy.rgba.iter().zip(before.rgba.iter()) {
+            assert!(a.abs_diff(*b) <= 1, "{a} against {b}");
+        }
+    }
+
     // -----------------------------------------------------------------------------------------
     // 5. The plan
     // -----------------------------------------------------------------------------------------
@@ -1158,6 +1239,7 @@ mod tests {
             effect_format: EFFECT_FORMAT,
             payload: json!({}),
             mask: None,
+            artifacts: Vec::new(),
         }]);
         let error = registry
             .proxy_eligible(&unknown)
@@ -1179,6 +1261,7 @@ mod tests {
                 effect_format: EFFECT_FORMAT,
                 payload: json!({ "amount": -40 }),
                 mask: None,
+                artifacts: Vec::new(),
             },
         ]);
         registry
@@ -1194,6 +1277,7 @@ mod tests {
                 effect_format: EFFECT_FORMAT,
                 payload: json!({ "clarity": 60 }),
                 mask: None,
+                artifacts: Vec::new(),
             },
         ]);
         registry

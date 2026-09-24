@@ -1,0 +1,414 @@
+{
+  "schema_version": "1.0",
+  "plan_id": "known-bugs",
+  "title": "Known bugs",
+  "objective": "Fix the defects found while repairing zoom, the tools panel, contrast, the colour mixer and RAW editing, and while building the Performance section, on 2026-09-23.",
+  "context_summary": "Each task is an independent defect with its measured symptom. None blocks the delivered behaviour; each is recorded so it is fixed deliberately rather than rediscovered.",
+  "tasks": [
+    {
+      "id": "TASK-001",
+      "description": "Show no edited dot on a module band whose stored layer is neutral, such as Basic after its only changed field is reset to its default.",
+      "status": "ready",
+      "dependencies": [],
+      "extra_context": [
+        "The band's dot comes from `active` and `neutral` in the desktop's tools-panel state. `neutral` recognises the orientation identity, a whole-image crop and a RAW layer at As shot and 0 EV only.",
+        "A Basic layer left with every field at zero (for example after a double-click reset of Exposure) keeps the dot while its `recipe.describe` row reads Neutral. Presence, Colour mixer and Vignette layers left at neutral values are expected to behave the same way.",
+        "The dot reads the current entry's stored layers, not the displayed entry's rows, so it must not follow a historical preview. Prefer a neutrality answer owned by the core over more payload parsing in the desktop."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Tools-panel state",
+          "target": "crates/lightwell-app/src/state/tools.rs",
+          "relevance": "`active` and `neutral` decide the band's dot."
+        },
+        {
+          "kind": "file",
+          "label": "Develop workspace design",
+          "target": "docs/design/develop-workspace.md",
+          "relevance": "Defines the dot as a non-neutral layer in the current recipe."
+        }
+      ],
+      "acceptance_criteria": [
+        "A stored Basic, Presence, Colour mixer or Vignette layer whose fields are all neutral shows no dot; any non-neutral field shows it.",
+        "Orientation, crop and RAW neutrality behave as today.",
+        "The rule that a payload is neutral is owned by the core, not re-derived in the desktop."
+      ],
+      "test_strategy": {
+        "approach": "mixed",
+        "steps": [
+          "Unit-test the dot for neutral and non-neutral layers of every module with a neutral form.",
+          "Extend a rendered scenario (`basic-panel` or `raw-panel`) to reset Basic's Exposure and assert the band has no dot."
+        ],
+        "commands": [
+          "cargo xtask check",
+          "cargo xtask smoke --scenario basic-panel --output NEW_DIR"
+        ],
+        "expected_results": [
+          "The dot follows whether the stored layer changes the picture, for every module."
+        ]
+      }
+    },
+    {
+      "id": "TASK-002",
+      "description": "Answer `render.sample` through a spatial layer off the catalog owner thread, so a pointer readout never delays another client's request.",
+      "status": "ready",
+      "dependencies": [],
+      "extra_context": [
+        "A point sample through a spatial layer now evaluates only the tile that contains its pixel on both paths, equal to the render by construction: about 20 ms with Clarity and 38 ms with Clarity and Dehaze on the Z6 and X100VI, 11 and 34 ms on a 24 MP JPEG. It still runs on the owner, so while another client samples in a loop every other owner call, the desktop's synchronous `draft.set` included, waits up to one sample: p50 19 to 20 ms against 0.3 ms idle, one to three frames at 120 Hz during a drag.",
+        "Proposed shape: the owner only plans the sample (state read, cached source verification, the draft's effective recipe when `draft_id` is named, an `O(layers)` compile, the prepared artifacts pinned), as `EditorService::sample_plan` already binds the current entry for capability tasks, and hands the plan with the call's own reply channel (`OwnerCall::response`) to a point worker that evaluates it and answers. The owner loop already answers the source-job methods outside the plain handler table; this would be the first method answered after the owner has moved on to other calls.",
+        "Clients see no change: the loopback transport serves each connection serially and every call carries its own reply channel. The answer keeps naming the entry and snapshot it was planned against, which the desktop already checks before showing a readout, and carries the event sequence the owner had when it planned the sample.",
+        "Bounds: one worker thread, blocked on its queue while idle (rule 8); a queue no longer than the live-client limit plus the desktop, since a connection has one call outstanding and the desktop keeps one sample in flight, with a full queue answering `resource-limit` (rule 6). A disconnect drops that client's queued sample. The readout is not on the gesture path, so the hop costs no frame under rule 12.",
+        "Keep the tile's input pull serial, or measure it again on the worker: pulled on the shared pool it waited behind a render holding the pool (p50 116 ms against 21 ms serially on the Z6).",
+        "Out of scope unless measured: the samplers a module's planning and queries use (`with_stage_context`) stay on the owner, because a commit is planned against them; in the canonical stage order their prefix holds no spatial layer.",
+        "Separately, the estimate store reduces the whole stage on a miss even when no unit asks for a global estimate (Clarity alone), which adds 23 to 113 ms to a stack's first sample on the owner; skipping that reduction is a small saving on both paths."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Owner loop",
+          "target": "crates/lightwell-core/src/api/owner.rs",
+          "relevance": "`OwnerCall` carries the reply channel; the loop's special-cased methods and its analysis worker are the pattern for a deferred answer and a bounded worker."
+        },
+        {
+          "kind": "file",
+          "label": "Sample planning",
+          "target": "crates/lightwell-core/src/editor.rs",
+          "relevance": "`sample_entry`, `sample_draft` and `SamplePlan`, which binds a stack for sampling off the owner."
+        },
+        {
+          "kind": "file",
+          "label": "Loopback transport",
+          "target": "crates/lightwell-core/src/api/transport.rs",
+          "relevance": "Serves one call at a time per connection, so a deferred answer keeps each client's order."
+        },
+        {
+          "kind": "file",
+          "label": "Linear point evaluation",
+          "target": "crates/lightwell-core/src/render/linear.rs",
+          "relevance": "`sample_linear` and the point evaluation of the last spatial segment."
+        },
+        {
+          "kind": "file",
+          "label": "Performance rules",
+          "target": "docs/engineering/performance-rules.md",
+          "relevance": "Rule 5 and the declared point-sample exception, whose owner-thread part this removes."
+        },
+        {
+          "kind": "file",
+          "label": "Point-sample measurements",
+          "target": "docs/specs/performance.md",
+          "locator": "Point samples through a spatial layer",
+          "relevance": "The before and after figures and the method to repeat them."
+        }
+      ],
+      "acceptance_criteria": [
+        "`render.sample` through a spatial layer is evaluated off the owner on both paths, with the same request and response, and the sampled value still equals the full render's value at that pixel.",
+        "While another client samples in a loop over a real RAW with Presence, the desktop's `draft.set` and `asset.state` stay within a few milliseconds of their idle latency, measured on the Z6 and X100VI with load and sample counts recorded.",
+        "The worker sleeps when idle, its queue is bounded with a `resource-limit` answer when full, and a disconnect or a newer commit never shows a readout for the wrong entry.",
+        "The performance rules' known-costs row for the point-sample exception is updated to the owner-free cost."
+      ],
+      "test_strategy": {
+        "approach": "mixed",
+        "steps": [
+          "Core tests: a deferred sample answers the calling client in order, the queue bound refuses with `resource-limit`, a disconnect drops the queued sample, and the answer names the entry it was planned against across a concurrent commit.",
+          "Live-API measurement with two clients against a `develop --background` editor, one sampling in a loop and one timing `draft.set` and `asset.state`, before and after, back to back and reversed on the shared host.",
+          "A background evidence run with `hover` steps over a RAW with Presence."
+        ],
+        "commands": [
+          "cargo xtask check"
+        ],
+        "expected_results": [
+          "Hover readouts over a RAW with Presence stay exact and no other owner request waits behind them."
+        ]
+      }
+    },
+    {
+      "id": "TASK-003",
+      "description": "Stop a crop draft from hanging silently when its input-stage preview is superseded or cancelled.",
+      "status": "in_progress",
+      "dependencies": [],
+      "extra_context": [
+        "Opening a crop draft requests a truncated preview of the crop layer's input stage. If that job is superseded or cancelled before it answers, the pending draft is never opened and nothing tells the user; queued idle-section changes wait forever.",
+        "A render failure of the same job already ends the draft with a status; a cancellation does not.",
+        "A separate session is working on this."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Crop draft driver",
+          "target": "crates/lightwell-app/src/app/crop.rs",
+          "relevance": "Pending draft start, queued idle changes and draft end."
+        },
+        {
+          "kind": "file",
+          "label": "Single-image crop contract",
+          "target": "docs/specs/single-image.md",
+          "relevance": "Draft lifecycle and failure behaviour."
+        }
+      ],
+      "acceptance_criteria": [
+        "A superseded or cancelled input-stage job either re-requests the stage or ends the pending draft with a visible reason.",
+        "Queued idle changes are replayed or dropped consistently with that outcome.",
+        "A scripted draft step settles instead of waiting for its deadline."
+      ],
+      "test_strategy": {
+        "approach": "mixed",
+        "steps": [
+          "App test that cancels the pending draft's preview job and asserts the outcome and status.",
+          "Rendered crop scenario still passes."
+        ],
+        "commands": [
+          "cargo xtask check",
+          "cargo xtask smoke --scenario crop-draft --output NEW_DIR"
+        ],
+        "expected_results": [
+          "No crop draft start can hang without a visible reason."
+        ]
+      }
+    },
+    {
+      "id": "TASK-004",
+      "description": "Make the `raw-panel` scenario pass on the DJI Air 2S, whose approximate white-balance drag frame misses the one-code average agreement check.",
+      "status": "ready",
+      "dependencies": [],
+      "extra_context": [
+        "`raw-panel` on the Air 2S fails the check that the released exact frame is within one code of the drafted approximate frame on average: 1.226 codes was measured.",
+        "The approximation's error is larger on the Air 2S than on the Z6 and X100VI: at 3200 K about 10% of display-proxy pixels differ by more than two codes (mean red error 1.23 codes), concentrated on glittering water and sand, where the demosaic's nonlinearity under a strong gain change dominates.",
+        "Decide between improving the approximation for such scenes and a per-source threshold justified by the measurements; the release always lands the exact frame."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "RAW panel scenario",
+          "target": "xtask/src/raw_panel_smoke.rs",
+          "relevance": "The drafted-versus-released agreement check."
+        },
+        {
+          "kind": "file",
+          "label": "Instant preview design",
+          "target": "docs/design/instant-preview.md",
+          "relevance": "The approximate RAW white-balance drag and its measured accuracy."
+        },
+        {
+          "kind": "file",
+          "label": "Air 2S DNG contract",
+          "target": "docs/design/air2s-dng.md",
+          "relevance": "The source's corrections and qualified mode."
+        }
+      ],
+      "acceptance_criteria": [
+        "`raw-panel` passes on the Z6, X100VI and Air 2S.",
+        "Any threshold change is justified by recorded measurements and stated in the design."
+      ],
+      "test_strategy": {
+        "approach": "end-to-end",
+        "steps": [
+          "Run `raw-panel` on all three manifest sources and record the agreement figures."
+        ],
+        "commands": [
+          "cargo xtask smoke --scenario raw-panel --source RAW --output NEW_DIR"
+        ],
+        "expected_results": [
+          "The scenario passes on every supplied RAW with an honest, documented tolerance."
+        ]
+      }
+    },
+    {
+      "id": "TASK-005",
+      "description": "Bound the display proxy of a tightly cropped RAW to the size the display needs.",
+      "status": "ready",
+      "dependencies": [],
+      "extra_context": [
+        "The proxy fits the crop's output to the display bounds, so a tight crop's proxy source approaches the source's own size: a 1801 × 1574 crop of the X100VI built a 7363 × 4909 proxy (414 MiB of float planes).",
+        "With a Presence layer on that crop each commit took about 8.7 s and the process peaked at 3.9 GiB RSS. The documents state this behaviour; nothing bounds it.",
+        "A candidate is to build the proxy over the crop's input region plus the resample margin, so the proxy is display-sized whatever the crop."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Proxy source",
+          "target": "crates/lightwell-core/src/proxy.rs",
+          "relevance": "Proxy scale and source construction."
+        },
+        {
+          "kind": "file",
+          "label": "Instant preview design",
+          "target": "docs/design/instant-preview.md",
+          "relevance": "Proxy bounds and the proxy-equals-exact-downscale guarantee."
+        },
+        {
+          "kind": "file",
+          "label": "Architecture limits",
+          "target": "docs/design/architecture.md",
+          "relevance": "The recorded proxy memory figures."
+        }
+      ],
+      "acceptance_criteria": [
+        "A cropped RAW's proxy source is bounded by the display bounds and a stated margin, independent of how tight the crop is.",
+        "Commit time and peak memory for the X100VI tight crop with Presence are measured before and after.",
+        "The proxy still equals the exact recipe rendered against the exact downscale."
+      ],
+      "test_strategy": {
+        "approach": "mixed",
+        "steps": [
+          "Core tests for the bounded proxy over a cropped linear source.",
+          "Measure the X100VI tight-crop journey with Presence before and after."
+        ],
+        "commands": [
+          "cargo xtask check"
+        ],
+        "expected_results": [
+          "Tight crops preview at display cost and memory."
+        ]
+      }
+    },
+    {
+      "id": "TASK-006",
+      "description": "Have the core report the crop layer's input stage instead of the desktop deriving it for the idle crop section.",
+      "status": "ready",
+      "dependencies": [],
+      "extra_context": [
+        "To show which ratio the committed crop reads as, the desktop folds the orientation layers over the photo's dimensions to size the crop's input stage, a copy of a geometry rule the core owns. It shows Free whenever any other geometry layer precedes the crop.",
+        "A clean fix is for `recipe.describe` (or an equivalent query) to report each layer's input stage, with UI/API parity."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Tools-panel state",
+          "target": "crates/lightwell-app/src/state/tools.rs",
+          "relevance": "`crop_input_stage` and `committed_crop`."
+        },
+        {
+          "kind": "file",
+          "label": "Modules and API",
+          "target": "docs/design/modules-and-api.md",
+          "relevance": "Where a described layer's fields are defined."
+        },
+        {
+          "kind": "file",
+          "label": "Develop workspace design",
+          "target": "docs/design/develop-workspace.md",
+          "relevance": "The idle crop section's reading of the committed crop."
+        }
+      ],
+      "acceptance_criteria": [
+        "The desktop reads the crop's input stage from the core and no longer derives geometry itself.",
+        "The idle crop section shows the committed ratio for every stack the core can describe."
+      ],
+      "test_strategy": {
+        "approach": "mixed",
+        "steps": [
+          "Core test for the reported input stage through orientation and other geometry layers.",
+          "Rendered crop scenarios still pass."
+        ],
+        "commands": [
+          "cargo xtask check",
+          "cargo xtask smoke --scenario crop --output NEW_DIR"
+        ],
+        "expected_results": [
+          "One geometry rule, owned by the core."
+        ]
+      }
+    },
+    {
+      "id": "TASK-007",
+      "description": "Decide whether a spatial operation with a large summed halo runs in larger tiles, so Texture and Dehaze stop recomputing the margin Clarity needs around every tile.",
+      "status": "blocked",
+      "dependencies": [],
+      "extra_context": [
+        "Blocked on the owner's decision; measured, not implemented.",
+        "A render the spatial target holds to fewer tiles than the pool has workers already spreads each tile's passes over the pool, so a 60 MP render with all three Presence fields uses about twelve cores and takes about 3.4 s. What remains is work repeated in the halo: in 512 px tiles Dehaze computes 5.2 times the stage and Texture 4.9 times, because each tile carries Clarity's 327 px halo, and the render spends about twice the CPU time it did when two tiles ran with serial passes.",
+        "Measured with 1024 px tiles and pooled passes on the generated 60 MP JPEG (5 samples, load 8 to 12): all three fields 2.09 s against 3.67 s in 512 px tiles on the same run, Texture and Clarity 1.62 s against 2.63 s, with total CPU time back to the serial-pass figure. One tile's working set is then 208.5 MiB, so batches hold one tile inside the 256 MiB target. The frame was byte-identical to the 512 px render for Texture with Clarity and for all three fields on the 24 MP and 60 MP fixtures.",
+        "Costs to weigh: a point sample through the layer evaluates a 1024 px tile, so the pointer readout on the owner goes from 104 to 107 ms to 217 to 218 ms with all three fields at 60 MP and from 13 to 50 ms with Texture alone (9 interior points, each equal to the rendered byte), until samples are answered off the owner. Byte identity across tile sizes is asserted by tests and held on these fixtures, but the box passes' running sums start at each rectangle's edge, so it rests on evidence rather than construction.",
+        "A tile size chosen from the summed halo (512 px for a small one, 1024 px once it passes some bound) would keep samples through a small-halo stack as cheap as today."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Spatial primitive",
+          "target": "crates/lightwell-core/src/render/spatial.rs",
+          "relevance": "Tile batching under the spatial target, halos and global estimates."
+        },
+        {
+          "kind": "file",
+          "label": "Rendering and limits",
+          "target": "docs/design/architecture.md",
+          "locator": "Rendering and limits",
+          "relevance": "The spatial stage boundary, 512 px tiles and the 256 MiB target that sets batch concurrency."
+        },
+        {
+          "kind": "file",
+          "label": "Rendering memory decision",
+          "target": "docs/decisions.md",
+          "locator": "Rendering memory",
+          "relevance": "Budgets are targets that keep memory low, not limits that refuse work."
+        }
+      ],
+      "acceptance_criteria": [
+        "The owner decides the tile size rule, or declines it; the decision is recorded in docs/decisions.md.",
+        "If adopted: rendered bytes stay identical to the 512 px render on the generated 24 MP and 60 MP fixtures with each Presence combination, a sample still equals the rendered byte, and the before and after render, CPU time and sample cost are recorded with load and sample counts."
+      ],
+      "test_strategy": {
+        "approach": "mixed",
+        "steps": [
+          "`presence_timing` and the tile-size render comparison at 24 MP and 60 MP before and after, back to back and reversed on the shared host.",
+          "A point-sample timing through the layer at both tile sizes, on the owner's path."
+        ],
+        "commands": [
+          "cargo xtask check"
+        ],
+        "expected_results": [
+          "The owner has chosen, with the render, CPU time and sample cost of each option measured."
+        ]
+      }
+    },
+    {
+      "id": "TASK-008",
+      "description": "Make the desktop's capability journey test wait for the install to report progress instead of reading it at once.",
+      "status": "ready",
+      "dependencies": [],
+      "extra_context": [
+        "`the_whole_journey_goes_through_consent_jobs_and_apply_with_no_secret_anywhere` asserts that the resource install's row already carries a progress fraction immediately after the grant retries the install. On 2026-09-23 it failed once during a full `cargo xtask check` at a load near 20 (`installing.progress` was `None`) and passed on seven reruns, alone and with the whole desktop suite: the install job had not yet reported progress when the row was read."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Capability journey test",
+          "target": "crates/lightwell-app/src/app/capabilities_tests.rs",
+          "relevance": "The progress assertion right after the grant and the install are sent."
+        }
+      ],
+      "acceptance_criteria": [
+        "The test polls the tracked job until it reports progress, with a deadline, before asserting the fraction's range, and keeps asserting that the row reads Installing."
+      ],
+      "test_strategy": {
+        "approach": "unit",
+        "steps": [
+          "Run the desktop suite repeatedly under load, for example beside `cargo xtask check` in another worktree."
+        ],
+        "commands": [
+          "cargo test -p lightwell-app --bin lightwell the_whole_journey"
+        ],
+        "expected_results": [
+          "No failure across repeated loaded runs."
+        ]
+      }
+    }
+  ],
+  "execution_waves": [
+    {
+      "wave": 1,
+      "task_ids": [
+        "TASK-001",
+        "TASK-002",
+        "TASK-003",
+        "TASK-004",
+        "TASK-005",
+        "TASK-006",
+        "TASK-007",
+        "TASK-008"
+      ]
+    }
+  ]
+}

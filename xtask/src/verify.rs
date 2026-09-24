@@ -124,8 +124,9 @@ impl Launches {
         match self {
             Self::None => 0,
             // A scenario records one exit code per launch it made: the multi-launch scenarios
-            // (`unavailable`, `basic-restart`, `mask-linear`, `mask-brush`) record
-            // `launch1_exit_code` and its siblings, every other one a single `exit_code`.
+            // (`unavailable`, `basic-restart`, `zoom`, `mask-linear`, `mask-combine`, `mask-brush`
+            // and `mask-range`) record `launch1_exit_code` and its siblings, every other one a
+            // single `exit_code`.
             Self::Smoke => [
                 "exit_code",
                 "launch1_exit_code",

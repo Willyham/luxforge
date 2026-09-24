@@ -87,6 +87,10 @@ pub(crate) enum NoticeAction {
     DiscardMaskDraft,
     ReapplyMaskDraft,
     ReturnCurrent,
+    /// Grant exactly the scope the open consent notice names, then retry what was refused.
+    AllowConsent,
+    /// Record that the person did not allow that scope.
+    DenyConsent,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -307,6 +311,9 @@ fn draft_bar(inputs: &Inputs<'_>) -> Option<DraftBar> {
 /// mapping from an error kind to a cause is editing knowledge.
 fn notices(inputs: &Inputs<'_>) -> Vec<Notice> {
     let mut notices = Vec::new();
+    // A capability operation the desktop started was refused for want of consent: the person
+    // decides here, and nothing else on screen waits for the answer.
+    notices.extend(crate::state::capabilities::consent_notice(inputs));
     // A slider gesture's draft conflicts exactly as the crop draft does, and offers the same two
     // decisions. Only one draft exists at a time, so only one of these two ever appears.
     if inputs.slider_draft.is_some_and(|draft| draft.conflicted) {

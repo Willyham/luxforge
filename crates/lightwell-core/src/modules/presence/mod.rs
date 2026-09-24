@@ -209,6 +209,7 @@ fn sliders() -> Vec<Control> {
             label: field_label(field).into(),
             style: crate::NumberStyle::Slider,
             rail: None,
+            reset: None,
         })
         .collect()
 }
@@ -237,6 +238,7 @@ impl PresenceModule {
                     stage: EffectStage::Spatial,
                     order: 0,
                     maskable: true,
+                    artifacts: false,
                 }],
                 actions: vec![
                     ActionDescriptor {
@@ -272,6 +274,7 @@ impl PresenceModule {
                 collapsed: true,
                 layout: crate::ModuleLayout::Stacked,
                 availability: Availability::Available,
+                ..ModuleDescriptor::default()
             },
         }
     }
@@ -348,6 +351,7 @@ impl ToolModule for PresenceModule {
                 payload: payload_of(&merged),
                 // The mask is the host's: an update keeps whatever this layer already carries.
                 mask: layer.mask.clone(),
+                artifacts: Vec::new(),
             })),
             // The host inserts a spatial layer after every pixel and colour layer and before the
             // geometry tail; a neutral first set has nothing to store, so it adds no layer at all.
@@ -358,6 +362,7 @@ impl ToolModule for PresenceModule {
                 effect_format: EFFECT_FORMAT,
                 payload: payload_of(&merged),
                 mask: None,
+                artifacts: Vec::new(),
             })),
         }
     }
@@ -489,6 +494,7 @@ mod tests {
             effect_format: EFFECT_FORMAT,
             payload,
             mask: None,
+            artifacts: Vec::new(),
         }
     }
 

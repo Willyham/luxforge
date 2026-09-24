@@ -28,7 +28,7 @@ Doctor reports missing tools and the graphics environment without installing any
 | Run an agent's editor check without taking focus (macOS) | `cargo xtask develop --background --catalog FILE [--open PATH]` |
 | Exact current-editor journey, display-independent, including the Basic and histogram and the masking chapters | `cargo run --release --locked --package xtask -- editor-acceptance --output NEW_DIR` |
 | Core timing on a real-sized JPEG | `cargo run --release --locked --package xtask -- editor-performance --source JPEG --output NEW_DIR [--samples N]` |
-| Desktop slider/curve-to-presented-frame and settled-histogram timing, peak RSS, scratch and idle CPU; `--action`/`--parameter` measure any other field-patch slider (presence, mixer, vignette, ...) in place of the default Basic exposure | `cargo run --release --locked --package xtask -- editor-latency --source JPEG --output NEW_DIR [--binary PATH] [--samples N] [--mode drag\|commit\|burst\|paint] [--control slider\|curve] [--action ID --parameter NAME] [--crop DEGREES] [--basic] [--idle]` |
+| Desktop slider/curve-to-presented-frame and settled-histogram timing, peak RSS, scratch and idle CPU; `--action`/`--parameter` measure any other slider that drafts — a field-patch slider (presence, mixer, vignette, ...) or a RAW slider, whose action declares that one parameter, over a RAW `--source` — in place of the default Basic exposure | `cargo run --release --locked --package xtask -- editor-latency --source JPEG\|RAW --output NEW_DIR [--binary PATH] [--samples N] [--mode drag\|commit\|burst\|paint] [--control slider\|curve] [--action ID --parameter NAME] [--crop DEGREES] [--basic] [--mask] [--idle]` |
 | Verify golden fixtures; generate 24 MP, 60 MP and the mixer and presence scenarios' own hue-wheel and gradient/edge/texture/flat workloads | `cargo xtask fixtures`, `cargo xtask generate-fixtures [--output NEW_DIR]` |
 | RAW corpus integrity; independent numerical stage references | `cargo xtask raw-corpus --manifest FILE --output NEW_DIR`, `cargo xtask raw-reference --output NEW_DIR` |
 | Authentic RAW editor journey, reopen and resource sampling; `--samples` defaults to 3 trials per source | `cargo run --release --locked --package xtask -- raw-editor --manifest FILE --output NEW_DIR [--samples N] [--binary PATH]` |
@@ -43,8 +43,12 @@ Doctor reports missing tools and the graphics environment without installing any
 | Rendered Presence: section expand, a Clarity drag and cancel, Texture and Clarity each committed at Fit and 100%, Dehaze at both signs, all three fields at once through the raw API and the module reset, over a generated gradient/edge/texture/flat fixture | `cargo xtask smoke --scenario presence --output NEW_DIR` |
 | Rendered Colour mixer: section expand, a Red hue drag and commit at Fit and 100%, a Saturation group reset, a stronger hue shift and the Saturation and Luminance tabs, over a generated hue wheel | `cargo xtask smoke --scenario mixer --output NEW_DIR` |
 | Rendered Vignette: section expand, an Amount drag and commit at Fit and 100%, roundness and feather extremes, a post-crop recentre and the module reset | `cargo xtask smoke --scenario vignette --output NEW_DIR` |
+| Rendered percentage zooms: 50%, 100%, 120%, 800% and 1600%, pans to the centre and the far corner at 1600%, and idle checks at Fit, 100% and 1600%, over the generated 24 MP and 60 MP JPEGs, one launch each | `cargo xtask smoke --scenario zoom --output NEW_DIR` |
 | Rendered Presets: section expand, an XMP and a Lightwell preset imported, each applied from its row, undo, the create form filled and submitted, a native preset applied to the Original, `preset.list` through the `api` step and a delete through the row menu | `cargo xtask smoke --scenario presets --output NEW_DIR` |
-| Rendered RAW section over a supplied RAW file, with Basic collapsed; not in `rendered`, because no RAW photograph is checked in | `cargo xtask smoke --scenario raw-panel --source RAW --output NEW_DIR` |
+| Rendered Performance section: open and sampling from the launch, a filled window, a straighten and a Presence Clarity commit whose render is listed as long work and then as finished, collapsed and asleep, then reopened on a fresh window, over the generated 60 MP JPEG, with the editor's memory read by the runner from outside the process; `--source RAW` swaps the Clarity commit for a RAW temperature commit, outside `rendered` | `cargo xtask smoke --scenario performance --output NEW_DIR [--source RAW]` |
+| Rendered RAW section over a supplied RAW file, with Basic collapsed; a Custom temperature drag left open and then released, at Fit and at 100%, whose drafted frame differs from the one before, is labelled approximate and adopts no histogram, and whose release's exact frame is the first drawn after the commit, carries its own report and is within a code of the approximate one on average, each drag keeping the tint in force (the first, from As shot, the core's as-shot tint) in the committed payload and in the Custom tint field throughout; then a double-click on each RAW slider and on Basic's Exposure: the first press's committed jump and the reset that follows it, each checked as two entries with the reset sent against the jump's revision and never refused — Exposure back to 0 EV, Custom temperature and tint back to As shot (`use-as-shot-wb`, the entry labelled As shot white balance, both fields showing the core's as-shot equivalent, checked back through the forward map); and the RAW band's dot, absent on the untouched photograph, present after the committed custom temperature and absent again once the resets leave As shot at 0 EV; then a crop drafted on the RAW's whole input stage, 16:9 and straightened by 7°, whose draft is one picture (under 1% of up to 4800 samples of its interior show the canvas), applied at Fit, read at 100% through two pointer readouts and replaced by a −12° 3:2 `edit.crop-fit` at 100%: no step logs a failure, every committed frame shows the current entry at the output its payload declares, placed and centred at Fit within 4 px, and each readout's codes are the canvas's own at that stage pixel within one code; not in `rendered`, because no RAW photograph is checked in | `cargo xtask smoke --scenario raw-panel --source RAW --output NEW_DIR` |
+| Rendered module capabilities: settings, a profile and a masked key, the download consent denied then allowed, install, activation, the photo-data consent, a task with progress, Apply, a refused task and a revoked grant, against a loopback proof endpoint | `cargo xtask smoke --scenario capabilities --output NEW_DIR` |
+| The capability framework's own costs (registration, capability reads, activation, a task, artifact publish, cancellation), release only | `cargo test --release --locked -p lightwell-core --lib capability_timing -- --ignored --nocapture` |
 | Inspect a capture | `cargo xtask check-capture --image PNG [--orientation N]` |
 | Process failure checks; macOS measurement, `--samples` defaults to 5 launches per workload | `cargo xtask hardening --binary PATH --output NEW_DIR`, `cargo xtask measure --binary PATH --output NEW_DIR [--samples N]` |
 | Package; dependency inventory | `cargo xtask package --output NEW_DIR`, `cargo xtask inventory --output NEW_DIR` |
@@ -60,7 +64,7 @@ Every evidence command refuses an existing output directory: use a fresh `artifa
 | Tier | What it runs |
 | --- | --- |
 | `quick` | `check` and `editor-acceptance` |
-| `rendered` | quick plus all 27 smoke scenarios, including the four `mask-*` ones, `gallery` and `controls`, through a bounded pool |
+| `rendered` | quick plus all 30 smoke scenarios, including `zoom`, `presets`, `gallery`, `controls`, `capabilities`, `performance` and the four `mask-*` ones, through a bounded pool |
 | `timing` | quick plus `editor-performance`, `editor-latency` and `measure`, in that order, serially, after everything else in the tier and behind the host-wide timing lock |
 | `full` | rendered plus timing plus `raw-reference` and, with `--manifest FILE`, `raw-editor` |
 
@@ -134,7 +138,13 @@ host, one-minute load averages of 12.96 (`--jobs 1`) and 13.24 (the default pool
 Every scenario costs one to two seconds either way, and none exceeds 2.3 s; against a rendered tier
 whose own total stays under two minutes, no single scenario is a material share of it. Every scenario
 therefore stays in `rendered`; `full` adds only the RAW components (`raw-reference` and, with
-`--manifest`, `raw-editor`), which is already the tier's composition.
+`--manifest`, `raw-editor`), which is already the tier's composition. `zoom`, which is not in that
+workload, is two launches with three one-second idle waits each and took 13.5 s inside the default
+pool at a one-minute load average near 20; it stays in `rendered` as the only rendered check of the
+percentage zooms. `performance` is one launch with 8.6 s of waits — the sampler needs real seconds
+to fill its window and to prove itself asleep — and took 12.5 s on its own at a one-minute load
+average near 30; it stays in `rendered` as the only rendered check of the Performance section and of
+its sampler's gating.
 
 | Scenario | Serial elapsed (`--jobs 1`) | Pooled elapsed (default `--jobs 3`) | Tier |
 | --- | --- | --- | --- |
@@ -162,7 +172,7 @@ were read with `sysctl -n vm.loadavg` immediately before each run.
 
 ## Running the application
 
-`cargo xtask develop` starts the editor. It owns the catalog (`--catalog FILE`, defaulting to the platform configuration directory), offers native Open with Cmd+O or Ctrl+O and starts an authenticated loopback JSON service. `--data-root DIR` isolates config, cache and log paths. The application also accepts `--window-size W H` (320 to 4096 logical), `--developer`, `--disable-module MODULE_ID`, `--hidden-window`, `--evidence-dir NEW_DIR` and `--evidence-script FILE`. `--hidden-window` creates the window invisible: it owns a real surface and renders and captures through it exactly as a visible window does, but the window server never places it on screen. Every automated editor launch the harness makes passes it; `develop` in either mode never does. `--developer` lists proof and diagnostic modules, which are hidden by default so the workspace stays a photo editor; the API is unaffected. `--disable-module MODULE_ID` registers that built-in wrapped as unavailable, keeping its effect identities readable so a stack that uses it reports the unavailable effect instead of rendering without it; an unknown identity is a startup error. Evidence mode is the same editor driven by the harness: each `--open` goes through the ordinary import call into a catalog created inside the new evidence directory, a window frame is captured after each outcome, the script's steps then run with a frame each, and the run exits after writing its results. Manual Open is disabled during collection, and `--open` may repeat only with `--evidence-dir`.
+`cargo xtask develop` starts the editor. It owns the catalog (`--catalog FILE`, defaulting to the platform configuration directory), offers native Open with Cmd+O or Ctrl+O and starts an authenticated loopback JSON service. `--data-root DIR` isolates config, cache and log paths. The application also accepts `--window-size W H` (320 to 4096 logical), `--developer`, `--disable-module MODULE_ID`, `--proof-endpoint URL` (registers the developer capability proof against that endpoint; refused without developer mode), `--hidden-window`, `--evidence-dir NEW_DIR` and `--evidence-script FILE`. `--hidden-window` creates the window invisible: it owns a real surface and renders and captures through it exactly as a visible window does, but the window server never places it on screen. Every automated editor launch the harness makes passes it; `develop` in either mode never does. `--developer` lists proof and diagnostic modules, which are hidden by default so the workspace stays a photo editor; the API is unaffected. `--disable-module MODULE_ID` registers that built-in wrapped as unavailable, keeping its effect identities readable so a stack that uses it reports the unavailable effect instead of rendering without it; an unknown identity is a startup error. Evidence mode is the same editor driven by the harness: each `--open` goes through the ordinary import call into a catalog created inside the new evidence directory, a window frame is captured after each outcome, the script's steps then run with a frame each, and the run exits after writing its results. Manual Open is disabled during collection, and `--open` may repeat only with `--evidence-dir`.
 
 The headless owner reads one JSON request per line:
 
@@ -170,7 +180,7 @@ The headless owner reads one JSON request per line:
 target/release/lightwell-json --catalog /path/to/catalog.sqlite < requests.jsonl
 ```
 
-Start with `schema.list`. Request shapes and live-session behavior are in the [user guide](../user-guide.md). Only one process owns a catalog at a time; a second instance exits with an explanatory error. Diagnostics go to stderr, or to isolated logs under an explicit data root, never to protocol stdout. Editor mode writes only the catalog and a temporary live-session file beside it; the source original is never written.
+Start with `schema.list`. Request shapes and live-session behavior are in the [user guide](../user-guide.md). `--data-root DIR` puts module settings, grants and installed resources under that root instead of the platform directories, `--secret-store memory` keeps module secrets for the process only instead of the platform store, `--permission-authority` lets this client grant module consent (an explicit local setup step; without it `module.permission.grant` is `forbidden`), and `--proof-endpoint URL` registers the capability proof module. The desktop's own client always has that authority; an evidence run keeps module state inside its evidence directory with an in-memory secret store, so no automated run touches the person's configuration or login keychain. Only one process owns a catalog at a time; a second instance exits with an explanatory error. Diagnostics go to stderr, or to isolated logs under an explicit data root, never to protocol stdout. Editor mode writes only the catalog and a temporary live-session file beside it; the source original is never written.
 
 On macOS, `develop --background` builds the selected profile and runs a temporary copy in an `LSBackgroundOnly` app bundle, preventing desktop activation. Use an isolated catalog or `--evidence-dir NEW_DIR` for automated checks. The live API and native GPU renderer remain available; this mode is for API and capture work, not keyboard, mouse or native-dialog checks. The bundle is removed after exit, and the original executable and packaged app are untouched. Restricted tool environments must permit macOS LaunchServices/window-server IPC: a background process can otherwise stall before image work, with only startup/open-request events and idle source/catalog workers. Retry with the required host access rather than activating the window. Ordinary `develop` remains an interactive launch. `--background` fails explicitly on other platforms.
 
@@ -179,36 +189,61 @@ On macOS, `develop --background` builds the selected profile and runs a temporar
 Debug builds expose the title-bar **Developer** button automatically. To inspect the gallery in
 an optimized build, run `cargo xtask develop --developer` (automated launches add `--background`).
 Its page chooser and Previous/Next controls browse ten pages; Back to editor or Escape returns.
-The `gallery` smoke covers all 74 reference states and the return to the unchanged editor via
+The `gallery` smoke covers all 78 reference states and the return to the unchanged editor via
 the same `workspace.set` path as the button.
 
 ## Rendered evidence
 
-Smoke runs the built or packaged editor through a deterministic evidence sequence (repeated `--open`, evidence directory, fixed window size, bounded deadlines); there is no separate viewer, so the captured frame is the editor window with its sidebar. Scenarios: `empty`, `load`, `replacement`, `invalid`, `repeated`, `alternating`, `large24`, `large60`, `crop`, `crop-draft`, `workspace`, `basic`, `basic-panel`, `basic-crop`, `basic-restart`, `histogram`, `unavailable`; generate the large fixtures first. Each run writes `result.json`, `app/events.jsonl`, `app/state.json`, `app/frame-*.png` (window-renderer readbacks, not OS screenshots), `subprocess.log` and `reproduce.md`. Each frame records `surface_columns`, the physical x range of the photo surface derived from the editor's layout constants, and the runner verifies fixture colors, Fit geometry and centering within that range, generation and state, backend, exit status and unchanged source hashes before writing `passed`; blank, stale or missing frames fail. The `render_ready` event marks the upload of the open request's preview raster, which is when a frame becomes capturable. Single-open evidence has a 25-second application deadline; multi-step evidence scripts have 60 seconds for repeated RAW redevelopment. Smoke retains its 35-second process deadline; the RAW editor journey has a 70-second process deadline. These are harness hang bounds, not interactive latency targets.
+Smoke runs the built or packaged editor through a deterministic evidence sequence (repeated `--open`, evidence directory, fixed window size, bounded deadlines); there is no separate viewer, so the captured frame is the editor window with its sidebar. Scenarios: `empty`, `load`, `replacement`, `invalid`, `repeated`, `alternating`, `large24`, `large60`, `zoom`, `crop`, `crop-draft`, `workspace`, `basic`, `basic-panel`, `basic-crop`, `basic-restart`, `histogram`, `presence`, `mixer`, `vignette`, `presets`, `gallery`, `controls`, `capabilities`, `unavailable`; generate the large fixtures first. Each run writes `result.json`, `app/events.jsonl`, `app/state.json`, `app/frame-*.png` (window-renderer readbacks, not OS screenshots), `subprocess.log` and `reproduce.md`. Each frame records `surface_columns`, the physical x range of the photo surface derived from the editor's layout constants, and `canvas_rect`, the canvas region between the panels and the bars as `[left, top, right, bottom]` physical pixels, which at a percentage zoom is exactly the scrollable the photograph pans in; the runner verifies fixture colors, Fit geometry and centering within that range, generation and state, backend, exit status and unchanged source hashes before writing `passed`; blank, stale or missing frames fail. The `render_ready` event marks the upload of the open request's preview raster, which is when a frame becomes capturable. Single-open evidence has a 25-second application deadline; multi-step evidence scripts have 60 seconds for repeated RAW redevelopment. Smoke retains its 35-second process deadline; the RAW editor journey has a 70-second process deadline. These are harness hang bounds, not interactive latency targets.
 
 At Fit, and at any zoom that draws the stage smaller than itself, the frame a scenario captures is
 the **display proxy**: the whole recipe rendered against a source downscaled once to the photo area,
 which is the size the display was going to minify the exact render down to anyway. `preview_displayed`
 therefore carries `proxy`, `proxy_dimensions` (the proxy source's own size, null when there is none),
 `proxy_built` (the proxy source was built for this frame rather than taken from the queue's cache)
-and `reason` (`"zoom"` when the frame is a retained raster a zoom change needed rather than a
-render). Its `dimensions` stay the exact output stage's, which is what picks, the percent-zoom box
-and the overlay cell grid map through.
+`reason` (`"zoom"` when the frame is a retained raster a zoom change needed rather than a
+render) and `render_ms`: the preview worker's own time for the phase that produced those pixels —
+the proxy build when that frame built it plus the render, or the exact render plus the reduction —
+excluding the queue wait, source preparation and the hand-over, and for a `"zoom"` frame the time
+recorded with that retained raster. It is the figure the status bar states as "Rendered in N ms",
+with "(proxy)" for a proxy. Its `dimensions` stay the exact output stage's, which is what picks, the
+percent-zoom box and the overlay cell grid map through.
 
-The photograph is drawn by a **photo surface**: a shader primitive that owns one wgpu texture,
-writes the raster it is given into that texture during the frame that draws it, and recreates the
-texture only when the raster's dimensions change. So `preview_displayed` is emitted in the update
-that makes a raster the surface's source, and carries `"path": "surface"` to say so; the pixels are
-on screen in the redraw that update requests, with no image-allocation round trip on the input path
-and no upload message to wait for. It therefore carries no `upload_ms`, and neither does
+The photograph is drawn by a **photo surface** at every zoom: a shader primitive that owns its
+wgpu texture, writes the raster it is given into that texture during the frame that draws it, and
+recreates the texture only when the raster's dimensions change. At a percentage it is the whole
+zoomed box inside the canvas's scrollable and hands the renderer only the part on screen, so the
+render pass's viewport stays within the window whatever the zoom; wgpu refuses a viewport, or a
+texture, larger than the device limit Iced requests, 8192 px a side. An exact render larger than
+that — the 60 MP fixture is 10000 px wide — is held in a grid of textures, each carrying one extra
+pixel on every side that has a neighbour, so the tiles meet without a seam. So `preview_displayed`
+is emitted in the update that makes a raster the surface's source, once per raster, and carries
+`"path": "surface"` to say so; the pixels are on screen in the redraw that update requests, with no
+image-allocation round trip on the input path and no upload message to wait for. `state.json`
+carries `surface: {view, raster, version, texture_writes, views}`: the session's zoom and pan, the
+size of the raster on the surface, its version (the count of rasters handed over, so the version-th
+`preview_displayed` is the one that put it there), how many rasters the surface has written into
+its texture, and how many times the view has been built. A redraw of an unchanged raster writes
+nothing, however often the view is rebuilt. It therefore carries no `upload_ms`, and neither does
 `render_ready`: there is no upload step to time. The clipping overlay and the crop draft's input
 stage keep the toolkit's image widget and still upload, which is what `clipping_overlay` and the
 draft's own settle report. `preview_exact_adopted` records the exact phase of such a job
-being taken up without an upload, `preview_exact_cancelled` records one a newer value superseded, and
+being taken up without an upload, with that phase's own `render_ms`, `preview_exact_cancelled` records one a newer request superseded, under its own generation and with `draft` when it was a crop draft's input stage, and
 `clipping_overlay` carries `approximate` while the mask is derived from the proxy on screen rather
-than from that exact raster. `state.json` carries `proxy: {eligible, declined, approximate, dimensions, bounds,
+than from that exact raster. `preview_failed` records every failed preview of the displayed state,
+with its entry and reason, and a scripted step waiting for the newest preview's pixels ends on it
+and captures the failure. `preview_withdrawn` records a failed preview whose target was not the
+picture on screen: that picture, named with the target, is taken off the surface with everything
+derived from it, so `state.surface.raster` and `state.stack.displayed` are null until a frame of the
+target renders, and `crop_draft_failed` records a draft whose input stage could not be rendered or was superseded before it rendered (`error_code: cancelled`, with that job's `generation` when it had one). A
+crop draft's `state.crop.input_stage_tiles` counts the atlas-sized tiles its input stage was
+uploaded as. `state.json` carries `proxy: {eligible, declined, approximate, dimensions, bounds,
 presented}`, so a stack that took the exact path — an ineligible layer, a stage already inside the
-bounds, a failed build — says so rather than being silently identical.
+bounds, a failed build — says so rather than being silently identical, and `status_bar: {readout,
+render, render_ms, render_proxy}`, what the bar drew and the figure behind it. The `histogram`,
+`basic`, `large24` and `large60` scenarios check that every `preview_displayed` carries a finite
+`render_ms` below 5 s and that each captured status bar states one of those figures in the editor's
+own wording, with `(proxy)` exactly when the frame on screen is the proxy.
 
 ### The Basic and histogram acceptance chapter
 
@@ -289,7 +324,13 @@ The absence of private fixtures is a skip, not passing authentic-file evidence. 
 
 `--evidence-script FILE` takes a JSON array of steps. They run in order after the last `--open`
 outcome, each ends in exactly one captured frame numbered after the open frames, and each frame gets
-its own `state-<n>.json` and a record in `result.json`'s `script`. Every step goes through the
+its own `state-<n>.json` and a record in `result.json`'s `script`. A capture reads back the frame
+the window renderer drew last rather than drawing a fresh one, so it is taken only once that frame
+was built after every update the editor has handled, and the frame's state is recorded at that same
+moment: a preview result that arrives beside the capture tick waits for the next frame instead of
+leaving the state describing a picture the capture does not show. A step whose frame is due when a
+view change asks for a new frame — a zoom that needs a proxy at new bounds, a panel toggle — waits
+for that frame, so a capture never shows a proxy made for the previous bounds. Every step goes through the
 messages and owner calls the controls use, so a script exercises the real paths rather than a
 parallel implementation. Parsing happens before the window opens; at most 64 steps.
 
@@ -332,6 +373,14 @@ Each step is an object with exactly one key.
   recorded as its own `slider_step_value` event (`{"value", "index"}`), even one the core's own
   gesture round trip coalesces away, so the harness can time an input that never reached the owner.
   Without `interval_ms` every value is sent at once, as before.
+- `double_click` double-clicks one drafting slider's rail: `{"action": "set-raw-temperature",
+  "parameter": "kelvin", "value": 5000, "gap_ms": 120}`. The first press is the move to `value`,
+  which opens the gesture, and its release, which commits it; `gap_ms` (0 to 250) after that
+  release, one timer tick sends the reset the rail's wrapper publishes for the second press,
+  whatever the commit is doing by then. The frame is captured once nothing the two presses started
+  is in flight. `double_click_first`, `double_click_second` and the reset's own
+  `field_reset_queued`, `field_reset_sent` or `field_reset_dropped` events record the order, and a
+  refused request logs `command_failed`.
 - `slider_draft` answers an open gesture's Changed elsewhere notice: `"discard"` or `"reapply"`.
 - `field` types into one generated field: `{"action": "set-basic", "parameter": "exposure", "text":
   "1.5"}`, with `"submit": true` for Enter, which commits that one field without a draft.
@@ -342,6 +391,14 @@ Each step is an object with exactly one key.
   first; a mode that declares none fails the step. A pick that commits is captured on the render it
   produces, and one that is refused on the status it leaves.
 - `view` sets the zoom through `view.set`: `{"zoom": "fit"}` or a percentage from 10 to 1600.
+- `pan` scrolls the percent-zoom canvas to a fraction of its scrollable range on each axis:
+  `{"x": 0.5, "y": 0.5}` is the centre and `{"x": 1, "y": 1}` the far corner. It goes through the
+  same scrollable a Space drag scrolls, and is captured once the offset the scrollable reports has
+  reached the session through `view.set`, so `state.surface.view` carries the pan the frame was drawn
+  at. At Fit there is no scrollable and the step fails.
+- `wait` (`{"ms": N}`, 1 to 10000) asks nothing of the editor for at least that long and then
+  captures. The evidence run's own 250 ms tick keeps rebuilding the view meanwhile, as the editor's
+  event sync does while a photograph is open, so the frame shows what idling did.
 - `workspace` sets any of `state_panel`, `tools_panel`, `mode`, `thirds`, `clip_shadows` and
   `clip_highlights` through `workspace.set`, naming only the fields that actually differ from the
   session's own; captured on that round trip, or immediately when nothing differs. A step that
@@ -370,6 +427,14 @@ Each step is an object with exactly one key.
 - `preset_import` imports one file through the section's own import task, bypassing only the native
   dialog: `{"path": "fixtures/presets/develop.xmp"}`, relative to the editor's working directory.
   Captured once the library answers; a refused file is a failed step.
+- `performance` opens or closes the state panel's Performance section through its heading's own
+  message: `{"expanded": true}` or `{"expanded": false}`. Opening it, with the state panel shown, is
+  captured once the section's first `resources.read` and `activity.list` have answered, so the frame
+  shows figures rather than dashes; closing it, opening it under a hidden panel and asking for the
+  state it is already in are captured on the next frame. The section is open at every launch, so
+  every scripted run samples once a second unless its script closes the section.
+
+- `capability` drives one gesture on a module's capability block, task control or consent notice through the messages those controls send: `{"module", <one of>, "wait"?: false}` with `section` (`"status"` or `"settings"`), `set` (`{field, value, profile?}`), `secret` (`{field, value, profile?}`, recorded in `result.json` as `<redacted>`), `file` (`{field, path}`, the message the native dialog's result sends), `profile` (`{create: {adapter, label}}` or `{remove: index}`), `install` or `remove` (`{resource}`), `activate` (`true` or `false`), `task` (`{task}`), `consent` (`"allow"` or `"deny"`), `apply`, `cancel` (the newest live job), `revoke` (an index into the permissions list) or `settle`. A step is captured once its round trips have answered and the jobs it started have finished; `"wait": false` captures as soon as a started job reports progress, and a later `settle` captures once the module's jobs are done. `state.json` carries a `capabilities` summary per module — settings with secrets only as `set` or `not set`, profiles, activation, resources, live jobs, the task result, permissions, requirements and the open consent — and stack layers carry their `artifacts`.
 
 A step that cannot be sent is recorded with `"status": "failed"` and its reason and still captures a
 frame, so a refused step is visible in the evidence instead of missing from it.
@@ -419,6 +484,51 @@ the red one by more than 5 codes, and each undo returns the patches of the stack
 1.5 codes. It writes `app/presets-checks.json`. The scope is stored payloads and displayed direction,
 not a colorimetric claim, and not a claim that Lightwell renders what Lightroom renders.
 
+`performance` opens the generated `60mp.jpg` at 1440 × 900 and captures eight frames: the open, with
+the Performance section open and sampling as every launch starts it; a 3600 ms `wait`; a 16:9
+`edit.crop-fit` at 3°; `edit.set-presence` with Clarity 100 over it, whose exact render — about
+0.8 to 1 s on the owner's M4, where Clarity alone is about 0.6 s — is long enough for the section to
+list; a 2500 ms `wait`; the section collapsed; a 2500 ms `wait`; and the section opened again. Each frame's
+`state.performance` records the flag, the reads asked for, the samples held, the last two
+`resources.read` answers as the owner sent them with the wall-clock time of the newer one, the last
+`activity.list`, the process id, the heading caption and the rows and job rows as shown. The runner
+re-derives, without the editor's code, the memory figure from the recorded `memory.bytes`, the CPU
+and GPU figures from the rate between the two recorded reads, each series' length from the sample
+count, and the job rows, `+N more` and caption from the recorded `activity.list` under the section's
+display rules; it requires at least four samples after the first wait, the finished render listed
+after the second, `footprint` memory with GPU time and unified GPU allocations on the M4, GPU time
+never decreasing across frames, one revision per edit and nothing else, the collapsed frames'
+reads and samples unchanged across their wait, and the reopened frame holding one sample from one
+more read, a fresh window read at once. While the editor runs, the runner reads the same
+pid with `ps -o rss=` every 100 ms and `footprint -f bytes --noCategories` on every other poll,
+which needs no privileges for the same user; each expanded frame after the open (whose first reads can precede the runner's first reading) must have its recorded resident memory and footprint
+lie between the runner's last reading at or before the sample's wall-clock time and its first
+reading after it, within 8 MiB. While the editor idles the three agree to the byte. The readings are
+in `process-readings.json` beside `app/`, and `app/performance-checks.json` records every comparison
+and tolerance. With `--source RAW` the Clarity commit becomes a RAW temperature commit, which
+redevelops the mosaic, and the finished job is whichever of the redevelopment and its render ended
+last; that run is not part of `rendered`.
+
+`zoom` is two launches, one over each of the generated `24mp.jpg` (6000 × 4000) and `60mp.jpg`
+(10000 × 6000), each writing its own `24mp/` or `60mp/` directory beside the scenario's `result.json`.
+Each opens the photograph at 1440 × 900 and runs thirteen frames: the open, a 500 ms `wait` that lets
+the refit to the display scale land, a 1000 ms `wait` at Fit, 50%, 100%, a 1000 ms `wait` at 100%,
+120%, 800%, 1600%, a `pan` to the centre, a 1000 ms `wait` there, a `pan` to the far corner and Fit
+again. Per frame the runner checks the session's zoom; that the surface holds the proxy — the stage
+scaled into the bounds the view asks for now — wherever the stage is drawn smaller than itself and
+the exact stage from 100% up, both in `state.proxy` and `state.surface` and in the version-th
+`preview_displayed`; and, at every percentage, that every sample on a 12 px grid over the canvas
+that lands at least 12 source pixels from any drawn feature shows the quadrant colour the zoom and
+the pan put under it, within 10 codes. Where the white centre line or the middle boundary is in
+view, its measured position must be the one the geometry predicts, within one source pixel plus
+3 physical pixels; at 1600% on the 60 MP fixture the centre line is exactly where its two textures
+meet. Across frames, an unchanged raster version must mean an unchanged texture write count. Each
+`wait` frame must show no `preview_displayed`, `preview_proxy_requested` or `render_ready` since the
+frame before, the same version and write count, at least two view rebuilds, and a canvas identical
+byte for byte to the frame before. A `Validation Error`, `wgpu error` or panic in the editor's log
+fails the launch. Each launch writes `app/zoom-checks.json` with the measured values and
+tolerances.
+
 `workspace` opens `fixtures/s0/orientation-1.jpg` at 1440 × 900 and drives a rotate, three panel and
 thirds changes, a historical preview and its return, a crop draft, a commit during that draft (the
 conflict, since any other commit while a draft is open marks it conflicted, whoever made it) and the
@@ -445,16 +555,21 @@ reset and discarded frames match the committed stack within the same tolerance. 
 brightness read back from the renderer, not a colorimetric claim.
 
 `histogram` opens the same fixture at 1440 × 900 and drives the inspector, both clipping overlays and
-the pointer readout over nine frames: the default screen, one `edit.set-pixel` of `(0, 128, 255)` at
-content pixel 360, 240, a hover over that pixel, the shadow overlay alone, both overlays, 100%, Fit
-again, both overlays off, and a preview of the Original. The fixture's clipped pixels are known from
+the pointer readout over twelve frames: the default screen, one `edit.set-pixel` of `(0, 128, 255)`
+at content pixel 360, 240, a hover over that pixel, the shadow overlay alone, both overlays, 100%,
+Fit again, both overlays off, a preview of the Original, the return to current, an Exposure drag
+left open and the same gesture released. The fixture's clipped pixels are known from
 its generator rather than guessed — the quadrant colours reach neither endpoint, the white centre
 line and arrow are at code 255 in every channel and the dash band across the middle is at code 0 in
 every channel — and the set pixel is the only one in the run with a channel at each endpoint, which
 is both the magenta case and the isolated-clipped-pixel case a Fit overlay must survive. The runner
-checks every frame's eleven counters and the plot's shared maximum against `analysis::reduce_raster`
-of an **independent** core render of the same fixture through the same recipe, exactly; that the
-readout reports the codes of the pixel just set and clears when the displayed entry changes; that the
+checks every frame's eleven counters, the plot's shared maximum and the counts the triangles'
+tooltips state in words against `analysis::reduce_raster` of an **independent** core render of the
+same fixture through the same recipe, exactly, and that the plot's tooltip names the domain and a
+frame with a report draws no notice over the plot; that the readout reports the codes of the pixel
+just set, is shown in the status bar and clears when the displayed entry changes; that across the
+hover the tools panel is pixel for pixel the frame before it and the status bar changed only inside
+one readout-slot-wide span short of its trailing facts, so the readout moved nothing; that the
 overlay's cell grid is one cell per source pixel at Fit and at 100%, where the photograph also
 measures 480 physical pixels wide; and, by differencing each overlay frame against the overlay-off
 frame of the same stack and zoom, that blue appears over the code-0 dashes, red over the code-255
@@ -464,10 +579,11 @@ the fixture's own red quadrant is as red as a highlight mask is, so only the cha
 frame without the mask identifies one. Each overlay frame's `state.stack` is compared with the frame
 before it, which is how the run proves a view flag commits nothing. Its last three frames return to
 current, drive an Exposure drag left open and then release it: the drafted frame must display the
-draft revision it names in `state.draft` and must report an explicit non-ready inspector state
-carrying no counts, and the released frame must advance the revision by exactly one and carry counts
-equal to an independent reduction of the composed stack it says it displays. It writes
-`app/histogram-checks.json`.
+draft revision it names in `state.draft`, and its plot must name that revision and carry counts equal
+to an independent reduction of the drafted stack; the released frame must advance the revision by
+exactly one and carry counts equal to an independent reduction of the composed stack it says it
+displays. It writes `app/histogram-checks.json`. `unavailable`'s second launch checks that the
+histogram is unavailable and that its reason is the notice drawn inside the plot.
 
 `basic-crop` opens the same fixture at 1440 × 900 and commits `edit.set-basic` at +1.00 EV, then a
 16:9 `edit.crop-fit` at angle zero and the same ratio straightened by 7°. Every one of its four
@@ -498,7 +614,9 @@ naming "Preview is stale", the crop module listed unavailable in `state.modules`
 drawn anywhere in the photo surface, and the source fixture's hash unchanged throughout. It writes
 `unavailable-checks.json` beside its own two launch directories rather than one `app/` directory.
 
-`cargo xtask smoke --scenario gallery --output NEW_DIR` captures all 74 named widget states across ten pages in the real background editor at 1440×1000 logical points. Each page has renderer readback, state metadata and a matching script event; the board includes every named vector icon at 12 and 16 points and, on its last page, module sections at the reference panel width: Basic expanded, collapsed and unavailable bands, a collapsed group, the tab row, the labelled buttons, band hints and history labels truncated to one line with an ellipsis, the icon-button row, the crop section drafting and idle, and the field rows. `cargo xtask smoke --scenario controls --output NEW_DIR` enables the developer proof, scrolls its generated panel, and exercises slider/picker/curve drafts, cancellation, channel selection, point add/remove, discrete controls, group disclosure and reset, then shows the Pixel section on its own with X and Y as px fields. Its checks correlate history revisions and values with captures and verify that the identity proof preserves the displayed photograph. The gallery and generated panel have different widths; both require visual review alongside their automated checks.
+`cargo xtask smoke --scenario gallery --output NEW_DIR` captures all 78 named widget states across ten pages in the real background editor at 1440×1000 logical points. Each page has renderer readback, state metadata and a matching script event; the board includes every named vector icon at 12 and 16 points and, on its last page, module sections at the reference panel width: Basic expanded, collapsed and unavailable bands, Basic with its three groups collapsed, the tab row, the labelled buttons, band hints and history labels truncated to one line with an ellipsis, the icon-button row and the field rows each with no group header over its module's only group, and the crop section drafting and idle. `cargo xtask smoke --scenario controls --output NEW_DIR` enables the developer proof, scrolls its generated panel, and exercises slider/picker/curve drafts, cancellation, channel selection, point add/remove, discrete controls, group disclosure (on Basic's Colour group, since the proof's controls are its module's only group and draw no header) and the module reset, then shows the Pixel section on its own with X and Y as px fields. Its checks correlate history revisions and values with captures and verify that the identity proof preserves the displayed photograph. The gallery and generated panel have different widths; both require visual review alongside their automated checks.
+
+`cargo xtask smoke --scenario capabilities --output NEW_DIR` starts the loopback `ProofEndpoint` in the runner's own process with a sentinel API key and a held palette download and generation, launches the editor with `--developer --proof-endpoint`, opens `fixtures/s0/orientation-1.jpg` at 1440 × 900 and scripts 25 capability steps: expand the section, set strength, create a profile, set its endpoint and key, choose an input file, request the palette (the consent notice, Don't allow, the notice again with its denial, Allow), capture the download in progress and installed, activate, generate (the photo-data consent, Allow, progress, success), Apply, replace the key with a wrong one and generate again (the endpoint's 401), and revoke the photo-data grant. Its checks, written to `app/capabilities-checks.json`, compare each frame's capability summary with its step; require exactly one tint layer listing the task's artifact after Apply; compare the tinted photograph's mean colour over a centred window with the pre-Apply frame, in the direction of the published gains, and with an independent core render of the same stack within 2 codes; confirm the endpoint saw one held download, one authorised generation and one refusal; and scan every text file the run wrote, the catalog and the module files included, for the sentinel key.
 
 `editor-latency --control curve` measures the controls proof's middle-point drag with the curve editor visible. The proof's colour stage is identity; this measures the control, query, draft, preview and upload path, not a future Tone Curve image algorithm. Slider remains the default workload. Both use the same provisional 100 ms p95 interaction threshold and retain all samples.
 
@@ -519,8 +637,17 @@ editor's own path to the texture and say nothing about the cost of putting that 
 screen. The last scripted value also
 releases, so its drafted preview is superseded by the commit — that is the queue cancellation the
 report counts — and it is measured through to the `analysis_adopted` of the committed frame, which
-is the settled exact histogram. A final burst step sends every value between two ticks to show the
-driver's coalescing. `--crop DEGREES` commits a straightening 16:9 crop first, so the measured stack
+is the settled exact histogram, and to that frame's own first `preview_displayed`
+(`commit_to_committed_frame`), which is what a person sees on release. A final burst step sends
+every value between two ticks to show the driver's coalescing. A RAW temperature or tint drag is
+timed like any other: its drafted values preview approximately on the developed planes, the report
+counts those frames by phase in `approximate_white_balance_frames`, and its releases, which wait
+for the mosaic to be redeveloped, show in `commit_to_committed_frame`. An input whose preview job
+was refused — logged as `slider_draft_unpreviewed`, a RAW draft whose development is not in memory
+because a redevelopment is in flight — has no frame of its own, and a drag with one is refused with
+that reason rather than timed. A RAW slider's gesture values start from zero when its range holds
+it and from its declared default otherwise (Custom temperature's 6504 K); `--mode burst` takes
+`--action`/`--parameter` too. `--crop DEGREES` commits a straightening 16:9 crop first, so the measured stack
 carries the crop resample as well as the colour pass. `--basic` commits a Basic layer with every
 field non-neutral first, so each measured frame runs every one of the module's colour units. `--idle` adds a second workload: one evidence
 run commits a Basic layer with all ten fields non-neutral into a catalog that outlives it, then an
@@ -529,10 +656,12 @@ is where peak RSS with a full stack and idle CPU come from. `latency.json` and `
 every sample, the scratch budget's high-water mark and the correlated state.
 
 `--mode burst` is a wild, undrained drag rather than the drained gesture drag and commit mode
-measure: one scripted `slider` step of exposure values, paced through `interval_ms` at 120 values a
-second for 3 seconds (360 values, a triangle wave from 0 to +2 EV, down to -2 EV and back to 0,
-released at the end) instead of sent all at once, so the desktop's own gesture round trip decides
-what reaches the owner exactly as a real fast drag would. `--samples` is ignored: every burst run
+measure: one scripted `slider` step, paced through `interval_ms` at 120 values a second for 3
+seconds (360 values, a triangle wave about the field's origin peaking at 40% of the smaller half of
+its declared range, on its own step: from 0 to +2 EV, down to -2 EV and back to 0 on an exposure
+slider, 6500 K up to 8300 K, down to 4710 K and back on Custom temperature; released at the end) instead of sent all at once, so
+the desktop's own gesture round trip decides what reaches the owner exactly as a real fast drag
+would. `--samples` is ignored: every burst run
 sends the same fixed values. Its `latency.json` keeps the same header fields as drag and commit
 (host, binary hashes, launch mode, method, queue counts) and adds a `burst` object: `scripted_values`
 and `sent_values` (the paced driver's own `slider_step_value` events, which count a value the core
@@ -542,8 +671,8 @@ over the run, drafted and committed alike, divided by the seconds from the first
 to the last of them), `staleness_ms` (each presented drafted frame's own `slider_draft_set` time to
 its `preview_displayed` time, paired by generation exactly as drag mode pairs them) and
 `frame_gap_ms` plus `max_gap_ms` (the intervals between consecutive presented drafted frames),
-`cancelled_exact` (`preview_exact_cancelled` events: full-resolution phases a newer value
-superseded, which carry no frame and are counted rather than delivered) and `proxy` (the last
+`cancelled_exact` (`preview_exact_cancelled` events: full-resolution phases a newer request
+superseded, which carry no frame) and `proxy` (the last
 presented frame's `proxy`/`proxy_dimensions`).
 
 `--mode paint` measures a **paint** gesture instead of a slider, because a stroke is not a field patch

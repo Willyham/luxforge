@@ -639,8 +639,8 @@ retention; it is not a CPU-heap figure and GPU memory is not separated.
 | Peak RSS, 24 MP, gesture process committing the full Basic layer | 645.3 MiB |
 | Peak RSS, 24 MP, second process holding that committed layer | 568.2 MiB, settling to 408.0 MiB |
 | Idle CPU, 24 MP with the full Basic layer, 30 s after settling | 1.46% of one core |
-| Scratch budget high-water mark, 24 MP colour pass | 14 112 000 B (13.46 MiB) of the 64 MiB limit |
-| Scratch budget high-water mark, 60 MP colour pass | 13 440 000 B (12.82 MiB) of the 64 MiB limit |
+| Scratch budget high-water mark, 24 MP colour pass | 14 112 000 B (13.46 MiB) of the 64 MiB target |
+| Scratch budget high-water mark, 60 MP colour pass | 13 440 000 B (12.82 MiB) of the 64 MiB target |
 | Peak RSS during a 30-input 24 MP latency run (32 window captures retained) | 1336.5 MiB |
 | Peak RSS during a 30-input 60 MP latency run (32 window captures retained) | 2143.0 MiB |
 
@@ -783,9 +783,28 @@ tables below, so these are single launches and not distributions): request to di
 exposure step is 10.5 ms on the Z6, 14.6 ms on the X100VI and 15.0 ms on the Air 2S, against
 133.3, 178.8 and the Air 2S figures recorded below for the full-resolution path; rotate, crop-fit
 and undo present in 18 to 46 ms. The white-balance steps still take 354–364 ms on the Z6 and
-1364–1428 ms on the other two, because temperature, tint, the gains and the neutral pick redevelop
-the mosaic on the source worker before any proxy exists; that is the RAW white-balance drag listed
-in the [performance rules](../engineering/performance-rules.md#known-remaining-costs).
+1364–1428 ms on the other two, because a committed temperature, tint, gain or neutral pick
+redevelops the mosaic on the source worker before its exact frame exists; that is the release cost
+listed in the [performance rules](../engineering/performance-rules.md#known-remaining-costs).
+
+A drafted RAW temperature or tint previews approximately on the developed planes
+([instant previews](../design/instant-preview.md#a-raw-white-balance-during-a-drag)), so its drag
+has a frame per input like exposure's. `editor-latency`, drained drag of 30 inputs at Fit, same
+M4 Pro host (macOS 26.5.2, release build, warm cache), input to presented frame p50 / p95: Z6
+temperature 11.2 / 21.0 ms (load average 2.4–4.1) and tint 10.9 / 19.3 ms (2.9–6.1), X100VI
+temperature 10.5 / 20.6 ms (6.7–7.0) and tint 13.6 / 20.4 ms (5.2–6.2), against RAW exposure at
+12.0 / 19.9 ms on the Z6 (6.1–6.7) and 11.9 / 21.3 ms on the X100VI (5.8–6.6). Every drafted value
+produced a frame labelled approximate and none was analysed. The release still waits for the
+redevelopment: release to the committed frame is 534–540 ms on the Z6 and 1578–1639 ms on the
+X100VI in those runs (two commits each), and in `--mode commit`, 30 commits per run with other
+agents building, 376 / 430 ms p50 / p95 for Z6 temperature at load average 11–13 (436 / 465 ms at
+23), 441 / 1458 ms for Z6 tint at 23–28 and 1516 / 3175 ms for X100VI temperature (15 commits, load
+average 20–22), against 34.5 / 120.8 ms for RAW exposure on the Z6 at 11–13. A wild drag (`--mode
+burst`, 360 values over 3 s) presents 43.2 frames per second with a staleness of 16.5 / 34.7 ms
+p50 / p95 on the Z6 temperature slider and 35.7 at 16.6 / 30.6 ms on the X100VI's, against 48.8 at
+16.7 / 40.2 ms for RAW exposure on the Z6 (load average 5.9–7.4); an earlier RAW exposure burst on
+the Z6 presented 45.0 at 16.3 / 37.4 ms, against 51.0 and 16.8 / 30.4 ms for Basic's Exposure on
+the same file in the run after it, both at load average 13.
 
 Memory and idle from the same timing tier, five launches per workload: sampled peak RSS 130.4 MiB
 empty, 389.7 MiB at 24 MP and 808.8 MiB at 60 MP (medians); idle CPU 1.53% of one core over 30 s
@@ -804,7 +823,7 @@ blocker, and no approximate processing, cache or timer was added to reach any of
 | Instant preview: drained drag p95 ≤ 33 ms at Fit, 24 and 60 MP, full Basic layer, with and without a 7° crop | 24.8, 28.9 and 28.7 ms p95 (30 samples each) | **Pass** |
 | Instant preview: burst drag ≥ 30 presented frames per second | 53.7 (exposure), 41.7 and 42.5 (full Basic, 24 and 60 MP) | **Pass** |
 | Instant preview: burst staleness p95 ≤ 50 ms | 32.9, 34.1 and 34.1 ms | **Pass** |
-| Instant preview: RAW exposure step presented within 50 ms | 10.5 / 14.6 / 15.0 ms request to display on the Z6 / X100VI / Air 2S, one trial each; a drained-drag distribution on RAW is not measured yet | **Pass** (functional) |
+| Instant preview: RAW exposure step presented within 50 ms | Drained drag, `editor-latency --action set-raw-exposure --parameter ev`, 30 inputs each: 12.5 / 23.7 ms p50 / p95 on the Z6 (load average 15) and 16.2 / 24.5 ms on the X100VI (load average 43–52), against 12.1 / 31.0 ms for Basic's Exposure on the same Z6 (load average 15–17); earlier single trials 10.5 / 14.6 / 15.0 ms on the Z6 / X100VI / Air 2S | **Pass** (every run above the 8.0 load threshold, so the figures are upper bounds) |
 | Settled exact histogram p95 below 200 ms after the final input, 24 MP | 70.3 ms p95 (60.1 p50, 30 samples) exposure only; 158.6 ms with a full Basic layer (2 commits) | **Pass** |
 | Scratch aggregate at most 64 MiB | 13.46 MiB high-water at 24 MP, 12.82 MiB at 60 MP | **Pass** |
 | 24 MP single-image edit working set ≤ 600 MiB CPU-resident | 645.3 MiB peak in the process that commits the full Basic layer, which also retains two full-window capture readbacks; 568.2 MiB in a second process holding the same committed layer with no captures, settling to 408.0 MiB | **Miss by 45 MiB** on the capturing process, **pass** on the same stack without the harness's captures |
@@ -1039,22 +1058,38 @@ Native Apple M4 Pro (14 cores, 48 GiB), macOS 26.5.2, Metal, release `--locked`,
 
 ### Core cost of the units
 
-`cargo test --release -- --ignored presence_timing` and the spatial primitive's own timing test, p50 / p95 over 10 runs, one operation over a textured frame. Working set is one tile's reserved bytes; concurrency is how many tiles the 256 MiB spatial budget allowed in flight at once.
+`cargo test --release -- --ignored presence_timing` and the spatial primitive's own timing test, p50 / p95 over 10 runs, one operation over a textured frame, with the process's CPU time over each run as a percentage of one core (p50). Working set is one tile's reserved bytes; concurrency is how many tiles the 256 MiB spatial target allows in flight at once when no other evaluation holds any of it. The Presence rows ran on 23 September 2026 at a one-minute load of 9.6 to 13; the box-blur rows are the primitive's own earlier run, whose test unit ignores the scheduling below.
 
-| Stage | Operation | p50 / p95 ms | Summed halo | Working set | Concurrency | Budget peak |
-| --- | --- | --- | --- | --- | --- | --- |
-| 6000 × 4000 | Texture +100 | 212 / 225 | 8 px | 14.7 MiB | 14 | 205.8 MiB |
-| 6000 × 4000 | Clarity +100 | 191 / 202 | 199 px | 20.2 MiB | 12 | 242.5 MiB |
-| 6000 × 4000 | Dehaze +100 | 129 / 133 | 67 px | 11.0 MiB | 14 | 154.1 MiB |
-| 6000 × 4000 | All three +100 | 1670 / 1708 | 274 px | 61.3 MiB | 4 | 245.3 MiB |
-| 10000 × 6000 | Texture +100 | 588 / 609 | 14 px | 15.2 MiB | 14 | 213.3 MiB |
-| 10000 × 6000 | Clarity +100 | 690 / 731 | 327 px | 31.2 MiB | 8 | 249.9 MiB |
-| 10000 × 6000 | Dehaze +100 | 339 / 353 | 107 px | 13.1 MiB | 14 | 183.5 MiB |
-| 10000 × 6000 | All three +100 | 12447 / 12561 | 448 px | 101.1 MiB | 2 | 202.1 MiB |
-| 6000 × 4000 | Host box blur r = 137 (test unit, naive) | 2528 / 2694 | 137 px | 17.1 MiB | 14 | 240.0 MiB |
-| 10000 × 6000 | Host box blur r = 224 (test unit, naive) | 14970 / 15074 | 224 px | 24.1 MiB | 10 | 240.9 MiB |
+| Stage | Operation | p50 / p95 ms | CPU | Summed halo | Working set | Concurrency | Budget peak |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| 6000 × 4000 | Texture +100 | 241 / 248 | 896% | 8 px | 14.7 MiB | 14 | 205.8 MiB |
+| 6000 × 4000 | Clarity +100 | 193 / 198 | 1090% | 199 px | 20.2 MiB | 12 | 242.5 MiB |
+| 6000 × 4000 | Dehaze +100 | 128 / 134 | 771% | 67 px | 11.0 MiB | 14 | 154.1 MiB |
+| 6000 × 4000 | All three +100 | 942 / 1004 | 1232% | 274 px | 61.3 MiB | 4 | 245.3 MiB |
+| 10000 × 6000 | Texture +100 | 629 / 656 | 858% | 14 px | 15.2 MiB | 14 | 213.3 MiB |
+| 10000 × 6000 | Clarity +100 | 620 / 644 | 1105% | 327 px | 31.2 MiB | 8 | 249.9 MiB |
+| 10000 × 6000 | Dehaze +100 | 355 / 374 | 713% | 107 px | 13.1 MiB | 14 | 183.5 MiB |
+| 10000 × 6000 | All three +100 | 3999 / 4116 | 1221% | 448 px | 101.1 MiB | 2 | 202.1 MiB |
+| 6000 × 4000 | Host box blur r = 137 (test unit, naive) | 2528 / 2694 | not measured | 137 px | 17.1 MiB | 14 | 240.0 MiB |
+| 10000 × 6000 | Host box blur r = 224 (test unit, naive) | 14970 / 15074 | not measured | 224 px | 24.1 MiB | 10 | 240.9 MiB |
 
-The three units together cost about eight times the sum of the singles. That is structural, not a hot loop: with a summed halo of 448 px a 512 px tile reads a 1408 px input region, dehaze fills 1194 px and texture 1166 px of it to deliver 512 px, and the 101 MiB working set cuts concurrency to two tiles. Larger tiles amortise the halo better but a 2048 px tile's input region does not fit the spatial budget with the frozen declarations; tiling each unit separately would need an intermediate frame between units. Both are open proposals for the owner, with these figures as the baseline. The vignette's unit alone, single-threaded over 6000 × 4000: 57 ms at amount −50, 505 ms at +50 (the positive branch encodes and decodes each channel), 164 ms at roundness −100.
+The three units together cost more than the sum of the singles, and that is the halo, not a hot loop: with a summed halo of 448 px a 512 px tile reads a 1408 px input region, dehaze fills 1194 px and texture 1166 px of it to deliver 512 px, so over the stage dehaze computes 5.2 times its pixels and texture 4.9 times, and the 101 MiB working set holds a batch to two tiles. Each of those tiles now runs its own passes on the pool (`Parallelism::Pool`, see the [architecture](../design/architecture.md#rendering-and-limits)), so the render uses about twelve cores instead of two; on the previous build the same test took 12447 / 12561 ms at 60 MP and 1670 / 1708 ms at 24 MP. Larger tiles would repeat less of the halo, measured below; tiling each unit separately would need an intermediate float frame between units, 687 MiB at 60 MP, over the JPEG frame limit. The vignette's unit alone, single-threaded over 6000 × 4000: 57 ms at amount −50, 505 ms at +50 (the positive branch encodes and decodes each channel), 164 ms at roundness −100.
+
+#### Presence exact renders on the generated JPEGs
+
+The core render of the generated 24 MP and 60 MP JPEGs with one Presence layer at +100 in each field it names, warm source and estimates, the 256 MiB target, timed by an uncommitted release probe that calls `render` as `presence_timing` does and reads the process's CPU time around each render; `presence_timing` above is the committed measurement to repeat. The previous build and this one ran four times alternately — previous, this, this, previous — 5 samples per stack and run, at a one-minute load of 5 to 14; every rendered frame of this build had the same SHA-256 as the previous build's for all five stacks at both sizes. p50 of each run:
+
+| Stack | Previous build | This build | Concurrency |
+| --- | --- | --- | --- |
+| 60 MP, all three | 12758 · 10708 ms, 182 · 192% | 3868 · 3854 ms, 1165 · 1191% | 2 |
+| 60 MP, Texture and Clarity | 5605 · 5613 ms, 282 · 280% | 2923 · 2889 ms, 1139 · 1175% | 3 |
+| 60 MP, Clarity | 576 · 600 ms | 609 · 636 ms | 8 |
+| 24 MP, all three | 1358 · 1414 ms, 371 · 369% | 944 · 929 ms, 1137 · 1166% | 4 |
+| 24 MP, Texture and Clarity | 879 · 951 ms | 695 · 682 ms | 5 |
+
+On the previous build the process used at most one core per tile in flight whatever the host's load (182 to 192% for two tiles, at one-minute loads from 5 to 29 across the investigation), which is what the Performance section showed as 135 to 190%; the batches themselves were 93% efficient and the one Dehaze reduction took 6 to 34 ms, so neither was the cause. Where a batch is as wide as the pool (Texture or Dehaze alone) its tiles keep their passes serial, and the two builds agree within 5% in both orders at a target wide enough to make every batch fill the pool. The Clarity row, whose eight-tile batches now spread over the pool, moved by about 5% in either direction across runs. The cost is CPU time: the two runs of this build used 697 and 700 CPU-seconds against 370 and 360 for the previous one over the same renders, because fourteen workers on two tiles' memory-bound passes each run slower and the pool spins between short passes.
+
+Two alternatives were measured and not taken. Raising the spatial target to 4 GiB lets fourteen tiles run at once: all three at 60 MP took 3326 ms at 834% (10 samples, load 10 to 22) but the budget peaked at 1415 MiB, against 202 MiB. Counting only the two plane buffers a tile holds at once would lower the all-three working set from 101.1 to 82.5 MiB, three tiles instead of two. Tiles of 1024 px with pooled passes took 2093 ms for all three at 60 MP and 1616 ms for Texture and Clarity (5 samples, load 8 to 12) with the same bytes on these fixtures and the previous build's CPU time, and are the owner's decision, tracked in [known bugs](../../tasks/known-bugs.json), because a point sample through the layer evaluates the whole tile: 217 ms against 105 ms with all three at 60 MP, on the catalog owner.
 
 ### Desktop slider-to-presented-frame
 
@@ -1121,6 +1156,28 @@ Least squares over the 37 sampled counts gives `S(n) = 19.30·n² + 1623·n + 25
 | 60 MP | 21.2 / 21.1 / 21.0 ms | 20.8 | 651 MiB | 647 MiB |
 
 Peak memory is the whole test process, which imports and decodes the fixture. Both processes wrote the identical 66 MB catalog, so the 380 MiB between the two rows is the 36 MP between the two images and nothing else: the history itself is not resident, because entries are written and read one at a time and never held together. Reopen resolves all 1809 stroke references and grows by about 7 ms between the two sizes, which is the source decode and not the store.
+### Point samples through a spatial layer
+
+Native Apple M4 Pro (14 cores, 48 GiB), release `--locked`, 23 September 2026, on a host shared with other sessions. `render.sample` through the live API of a `develop --background` editor with an isolated catalog and no photograph in its window, at random stage points with the estimate store warm, p50 / p95 over 29 samples after the first. "Before" is the previous build, which built the spatial operation's whole float frame for every RAW sample: the one-minute load moved between 4 and 28 while it was measured, so its p50 range over three runs is given too. "After" ran at load 4 to 5.
+
+| Z6 24 MP · X100VI 40 MP, ms | Before: whole frame | After: one tile |
+| --- | --- | --- |
+| `render.sample`, Clarity +60 | 292 / 619 · 842 / 1451 (p50 292–568 · 499–842) | 20.8 / 22.1 · 19.5 / 19.9 |
+| `render.sample`, Clarity +60 Dehaze +30 | 623 / 1194 · 1495 / 3152 (p50 623–1130 · 1353–1966) | 36.0 / 38.9 · 37.9 / 38.7 |
+| Another client's `draft.set` while one samples in a loop, p50 (max); idle 0.3 | 402–578 (762) · 504–647 (1236) | 19.9 (22.3) · 19.2 (22.7) |
+
+A contended owner call now waits at most one sample, as it already did on the byte path, where the same sample on the generated 24 MP JPEG costs 11.5 ms with Clarity +60 and 34.0 ms with Dehaze +30 added (p50 of 15). Answering samples off the owner is the open follow-up.
+
+Exactness on the real files is the ignored core test, run in release with `LIGHTWELL_RAW_FIXTURE` set to each private source (`cargo test --release -p lightwell-core --lib a_raw_point_sample_through_presence -- --ignored --nocapture`): 41 samples per stack, spread over the stage and including the far corner, each equal to the byte `render_linear` writes there. It also times both sides, p50 ms:
+
+| Clarity +60 · with Dehaze +30 | Z6 | X100VI | Air 2S |
+| --- | --- | --- | --- |
+| Point sample | 20.1 · 35.4 | 18.7 · 36.3 | 15.1 · 27.9 |
+| The whole spatial frame the previous sample built | 261 · 550 | 460 · 1131 | 191 · 352 |
+
+The tile's input region is pulled serially. On the shared pool its rows halved an idle sample (Z6 Clarity, 10 against 19 ms) but waited behind a render that held the pool: p50 116 ms against 21 ms serially (15 samples, two alternations each, load 6 to 9), time the catalog owner would spend blocked. The first sample of a stack whose estimates are not yet in the store also reduces the whole stage once, which added 23 to 113 ms across the three files; the store does this even for Clarity alone, which wants no global estimate.
+
+A background evidence run over the Z6 (`--evidence-script` with Clarity +60, then Clarity +60 with Dehaze +30 through `api` steps, and five `hover` steps including the far corner pixel) showed every readout in the status bar with no render error, each hover step settling within 75 ms of the one before it.
 
 ## Preset import parse
 
@@ -1137,6 +1194,61 @@ Native Apple M4 Pro (14 cores, 48 GiB), macOS 26.5.2, Rust 1.94.0, release `--lo
 | Template, one flat curve just under 100,000 values | 5.90 / 6.15 | 1 mapped, 1 unsupported |
 
 The XML parser checks each element's attributes against each other, so its cost grows with the square of an element's attribute count. Before the prescan bounded that work to 2,000,000 comparisons, the first shape took 4.1 s p50 and 7.4 s max. The prescan also bounds nesting, which the parser descends recursively, and namespace declarations, which it scans for every prefix.
+
+## Module capabilities qualification
+
+Native Apple M4 Pro (14 cores, 48 GiB), macOS 26.5.2, Metal, release `--locked`, on 23 September 2026, on a host shared with other sessions: the one-minute load average was 3 to 11 during these runs and is given per row. "Before" is `ca8eaef`, the last commit without the framework; "after" is `5f77f58`. No figure here is a p95 claim beyond its stated sample count.
+
+### The framework's own costs
+
+`cargo test --release --locked -p lightwell-core --lib capability_timing -- --ignored --nocapture`, isolated directories, an in-memory secret store and the loopback proof endpoint; load 10.9 at the start.
+
+| Measurement | p50 / p95 | Samples |
+| --- | --- | --- |
+| Registration, the eight built-ins | 0.020 / 0.022 ms | 200 |
+| Registration, built-ins and the proof module | 0.031 / 0.035 ms | 200 |
+| `module.status` owner round trip | 0.013 / 0.023 ms | 30 |
+| `module.settings.read` owner round trip | 0.009 / 0.012 ms | 30 |
+| `module.activate` to active (the proof reads and checks its palette) | 0.27 / 0.31 ms | 30 |
+| Cancel a running activation to `cancelled` (the proof's slow loader checks every ~10 ms) | 10.2 / 15.1 ms | 10 |
+| A whole `task.generate-proof-tint`: request to `succeeded`, including the 64 samples, the file read, the loopback request, the artifact publish and its row | 14.9 / 15.8 ms | 30 |
+| … of which publishing one 12-byte artifact (synced, renamed) | 9.1 / 9.9 ms | 30 |
+| Cancel a task stalled inside its request to `cancelled` (100 ms read slice) | 84.8 / 89.6 ms | 10 |
+| Installed proof resource on disk, `installed.json` included; staging left behind | 448 bytes; none | 1 |
+
+Discovery, registration and catalog reopen start no worker thread and create no directory: `schema.list` and `module.list` against a fresh data root leave it empty, and the owner tests assert that no lane has started and the secret store saw no call. The two lanes block on their channels while idle.
+
+### Editor before and after
+
+`measure` (5 launches per workload, background bundle) and `editor-performance` (24 MP, 30 samples), before and after, run back to back.
+
+| Measurement | Before | After | Load |
+| --- | --- | --- | --- |
+| Launch to first frame, empty (p50 / p95) | 963 / 1084 ms | 1012 / 1072 ms | 3.2 |
+| … of which until the process runs (median of the empty and 24 MP launches) | 419 ms | 465 ms | 3.2 |
+| … of which process start to first frame (median) | 597 ms | 589 ms | 3.2 |
+| Launch to first frame, 24 MP / 60 MP (p50) | 1022 / 1136 ms | 1081 / 1191 ms | 3.2 |
+| Sampled peak RSS, empty / 24 MP / 60 MP (median) | 158 / 419 / 850 MiB | 139 / 392 / 853 MiB | 3.2 |
+| Idle CPU over 30 s | 0.53% of one core | 0.50% of one core | 3.2 |
+| Executable size | 20.4 MB | 24.8 MB | — |
+
+The whole launch difference is in the part before the process runs, which for these background launches includes copying the executable into a temporary bundle: the executable is 4.3 MB larger (rustls, ring and the platform verifier) and now links Security.framework. Process start to first frame is unchanged. The core `editor-performance` rows (transforms, crop, Basic colour stacks, proxy renders, the histogram and the picker) moved by a few percent in either direction depending on which build ran second while the load rose from 5 to 11.6, so they show no difference attributable to the framework; the render path gained only an early return for stacks without artifacts. The full `verify` tier on `5f77f58` passed every provisional target except the empty-shell launch p95 (1012 ms against 1 s), which the baseline also misses under the same bundle copy.
+
+## Performance section, activity board and resource counters
+
+Native Apple M4 Pro (14 cores, 48 GiB), macOS 26.5.2, Rust 1.94.0, release builds, 2026-09-23, on a host shared with other sessions: one-minute load averages are given per run. The baseline is commit 9fb1fbb, the tree before this work, built in its own worktree.
+
+| Measurement | Result | Scope |
+| --- | --- | --- |
+| `resources.read` in the desktop, cache warm (`declare_gpu_presenter` called, this process's GPU clients cached) | p50 4.2 µs, p95 7.1 µs; 5.2 / 7.8 µs with JSON encoding | 1000 reads, `cargo test --release --locked -p lightwell-core --test resources_cost -- --ignored --nocapture`, load 22 to 30 |
+| One full walk of the GPU registry (82 to 84 user clients) | p50 0.31 to 0.35 ms, p95 0.39 to 1.1 ms | 200 walks, `cargo test --release --locked -p lightwell-process --test cost -- --ignored --nocapture`; taken at most every 10 s |
+| First read after `declare_gpu_presenter` | 0.6 ms when the Metal device already exists (the desktop), 37.5 ms in a process that has none | One read each |
+| `activity.list` / `resources.read` / `session.state` round trip through the headless `lightwell-json` owner, stdio and JSON included | p50 14.8 / 19.5 / 18.8 µs, p95 23.0 / 28.1 / 30.9 µs | 2000 requests each after 50 warm-up, load 12 to 18 |
+| Activity `begin` + `finish`, uncontended | p50 83 ns, p95 84 to 125 ns | 100,000 iterations; the timer resolves 42 ns |
+| Exposure drag input to presented frame, 24 MP, baseline then this work, then reversed | p50: baseline 14.7 and 16.0 ms, this work 11.1 and 15.4 ms; p95 38.9 (baseline), 44.9, 19.0 (this work) and 35.0 ms (baseline) in run order | `editor-latency --source fixtures/generated/24mp.jpg --samples 30`, one launch each, load 19 to 23. No regression; the p95s follow the host in both builds and set no baseline. The settled histogram read 60 to 68 ms p50 in this work's runs against 93 to 94 ms in the baseline's, in both orders; nothing in this work touches the exact render or its reduction, so that difference is not claimed |
+| Idle CPU, 24 MP open, Performance section collapsed / expanded | 0.75% and 0.79% collapsed, 1.37% and 1.08% expanded, of one core, in the order collapsed, expanded, expanded, collapsed | One 24 s window per launch, 2 s after the first scripted step; evidence launches (`--evidence-script` with the section's step and three 10 s waits), so both carry the evidence mode's own 250 ms tick; the expanded runs made 31 reads each and the collapsed runs none; load 11 to 15 |
+
+Expanding the section costs 0.3 to 0.6% of one core, which is one sample a second: two owner calls of a few microseconds each, the state panel's re-derivation and the window's redraw. Collapsed it costs nothing. The owner chose that it starts open, so from this change every ordinary launch samples, and the timing tier's idle figure (`measure` holds the 60 MP image in an ordinary launch) includes the open section: expect it 0.3 to 0.6% of one core above the figures recorded before.
 
 ## Method
 

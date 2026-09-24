@@ -86,7 +86,7 @@ The request carries the settings rather than an ID for three reasons. The entry,
 
 ## Library
 
-Presets live in the catalog, so they share its single owner, atomic writes and backup. The catalog format becomes **5** and adds one table:
+Presets live in the catalog, so they share its single owner, atomic writes and backup. The current catalog format (**7**) holds this table:
 
 ```sql
 CREATE TABLE presets (
@@ -99,7 +99,7 @@ CREATE TABLE presets (
 );
 ```
 
-A format 4 catalog is refused by name, as every earlier format change has been; choose a new catalog path. The desktop's default catalog lives in the configuration directory, so in practice the library is per installation.
+A catalog of an earlier format is refused by name, as every format change has been; choose a new catalog path. The current format is 7, the merged shape: it holds the [derived-artifact](module-capabilities.md#derived-artifacts) tables and the [mask](masking.md) table and stroke store beside the library's own format 5 table, and refuses the format 6 each of those two branches wrote. The desktop's default catalog lives in the configuration directory, so in practice the library is per installation.
 
 **Record.** `{id, name, group, settings, origin, report, actor, created_ms, updated_ms, unavailable}`:
 
@@ -255,7 +255,7 @@ The library is listed at startup, after each of the desktop's own preset calls, 
 
 The owner asked for this work to proceed without blocking. These are proposals the owner can revise:
 
-1. Presets are catalog data (format 6), not files in a settings folder. Sharing goes through export and import of the `.lwpreset` document.
+1. Presets are catalog data (format 7), not files in a settings folder. Sharing goes through export and import of the `.lwpreset` document.
 2. Only field-patch actions are presettable, so RAW source settings, transforms and crop are excluded.
 3. `apply-preset` carries the settings, not a library reference.
 4. Imports are value transfers for the controls Lightwell has. Lightroom's RAW Kelvin and tint are refused until a calibrated conversion exists. Nothing is clamped.

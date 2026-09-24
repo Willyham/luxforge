@@ -63,6 +63,7 @@ impl PixelModule {
                     stage: EffectStage::Pixel,
                     order: 0,
                     maskable: false,
+                    artifacts: false,
                 }],
                 actions: vec![ActionDescriptor {
                     id: SET_PIXEL.into(),
@@ -99,6 +100,7 @@ notes: "three 8-bit sRGB channels".into(),
                             label: "X".into(),
                             style: crate::NumberStyle::Field,
                             rail: None,
+                            reset: None,
                         },
                         Control::Number {
                             action: SET_PIXEL.into(),
@@ -106,6 +108,7 @@ notes: "three 8-bit sRGB channels".into(),
                             label: "Y".into(),
                             style: crate::NumberStyle::Field,
                             rail: None,
+                            reset: None,
                         },
                         Control::Color {
                             action: SET_PIXEL.into(),
@@ -140,6 +143,7 @@ notes: "three 8-bit sRGB channels".into(),
                 collapsed: false,
                 layout: crate::ModuleLayout::Stacked,
                 availability: Availability::Available,
+                ..ModuleDescriptor::default()
             },
         }
     }

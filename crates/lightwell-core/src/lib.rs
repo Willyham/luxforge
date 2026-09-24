@@ -1,6 +1,9 @@
 //! UI-independent JPEG decoding, non-destructive editing state, rendering and the JSON owner API.
+pub mod activity;
 pub mod analysis;
 mod api;
+pub mod artifacts;
+pub mod capabilities;
 #[cfg(test)]
 mod command_contracts;
 mod draft;
@@ -19,8 +22,15 @@ mod preview;
 mod profile;
 mod proxy;
 mod render;
+pub mod resources;
 mod source;
+pub use activity::{Activity, ActivityBoard, ActivitySnapshot, ActivitySpec};
 pub use api::*;
+pub use artifacts::ArtifactId;
+pub use capabilities::{
+    host::HostConfig,
+    redact::{redact_params, redact_request},
+};
 pub use draft::Draft;
 pub use editor::*;
 pub use error::{Error, ErrorKind};
@@ -32,9 +42,10 @@ pub use preview::*;
 pub use proxy::{ProxyApproximation, ProxyBounds, ProxyCache, ProxyIdentity, ProxyKey, ProxyPlan};
 pub use render::{
     Cancel, ContentPoint, LinearImage, LinearSettings, Raster, Sample, ScratchBudget,
-    SpatialBudget, StageSize, StageTransform, cached_estimates, clear_estimates, extents, locate,
-    masked_tile_counts, render, render_cancellable, render_linear, render_linear_cancellable,
-    reset_masked_tile_counts, sample, sample_linear, stage_transform,
+    SpatialBudget, StageSize, StageTransform, WhiteBalanceApproximation, cached_estimates,
+    clear_estimates, extents, locate, masked_tile_counts, render, render_cancellable,
+    render_linear, render_linear_cancellable, reset_masked_tile_counts, sample, sample_linear,
+    stage_transform,
 };
 use sha2::{Digest, Sha256};
 use std::{

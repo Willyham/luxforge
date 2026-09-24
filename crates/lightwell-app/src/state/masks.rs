@@ -627,7 +627,11 @@ fn control_action(control: &lightwell_core::Control) -> Option<&str> {
         | Rendered::Curve { action, .. }
         | Rendered::Action { action, .. }
         | Rendered::Presets { action } => Some(action),
-        Rendered::Group { .. } | Rendered::Picker { .. } | Rendered::Unsupported(_) => None,
+        // A group, a picker and a module worker task submit no mask command, so none is offered here.
+        Rendered::Group { .. }
+        | Rendered::Picker { .. }
+        | Rendered::Task { .. }
+        | Rendered::Unsupported(_) => None,
     }
 }
 

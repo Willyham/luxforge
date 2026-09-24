@@ -71,10 +71,16 @@ impl Editor {
             if self.expanded.get(&module.id).copied() == Some(false) {
                 continue;
             }
+            // A module's only group has no header and is always shown, whatever its declared or
+            // recorded disclosure, so its curves are visible whenever the section is.
+            let (controls, mut path) = match tools::headerless_group(module) {
+                Some(children) => (children, vec![0]),
+                None => (&module.controls[..], Vec::new()),
+            };
             visit(
                 &module.id,
-                &module.controls,
-                &mut Vec::new(),
+                controls,
+                &mut path,
                 &self.controls_ui,
                 &mut declared,
             );
@@ -129,13 +135,15 @@ impl Editor {
             if draft.action != action || draft.parameter != parameter {
                 return Task::none();
             }
-            self.slider_commit()
-        } else {
-            self.dispatch(Message::Submit {
-                action,
-                parameter: Some(parameter),
-            })
+            return self.slider_commit();
         }
+        if tools::drafts(&self.modules, &action, &parameter) {
+            return self.release_without_draft(&action, &parameter);
+        }
+        self.dispatch(Message::Submit {
+            action,
+            parameter: Some(parameter),
+        })
     }
     pub(crate) fn control_field_value(&self, action: &str, parameter: &str) -> Option<Value> {
         let declared = tools::declared_action(&self.modules, action)?.parameter(parameter)?;

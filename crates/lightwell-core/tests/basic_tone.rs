@@ -58,6 +58,7 @@ fn basic_layer(payload: Value) -> Layer {
         effect_format: EFFECT_FORMAT,
         payload,
         mask: None,
+        artifacts: Vec::new(),
     }
 }
 
@@ -138,6 +139,73 @@ fn nondecreasing_bytes_through_a_real_basic_layer_for_every_tone_cube_corner() {
                 );
             }
             previous = Some(pixel[0]);
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------------------------
+// Contrast's sign through the real module
+// ---------------------------------------------------------------------------------------------
+
+fn standard_deviation(codes: &[u8]) -> f64 {
+    let mean = codes.iter().map(|&c| f64::from(c)).sum::<f64>() / codes.len() as f64;
+    (codes
+        .iter()
+        .map(|&c| (f64::from(c) - mean).powi(2))
+        .sum::<f64>()
+        / codes.len() as f64)
+        .sqrt()
+}
+
+/// The owner's report as a rendered regression: Contrast `-c` must not render as `+c`. On a
+/// 256-code grey ramp rendered through a real Basic layer, `-c` pulls the output codes together and
+/// `+c` pushes them apart (the rendered codes' standard deviation falls below and rises above the
+/// source's), and a dark and a light midtone move toward the pivot at `-c` and away from it at
+/// `+c`. `+-10` moves no 8-bit grey code (see `basic_tone_reference.rs`), so this starts at 50.
+#[test]
+fn negative_contrast_renders_flatter_than_the_source_and_positive_contrast_steeper() {
+    let codes: Vec<u8> = (0u8..=255).collect();
+    let pixels: Vec<[u8; 3]> = codes.iter().map(|&c| [c, c, c]).collect();
+    let source = source_of(codes.len() as u32, 1, &pixels);
+    let registry = ModuleRegistry::builtin();
+    let rendered = |contrast: f64| -> Vec<u8> {
+        let stack = recipe(vec![basic_layer(json!({ "contrast": contrast }))]);
+        let frame = render(&registry, &source, SnapshotId::new(), &stack)
+            .unwrap_or_else(|error| panic!("contrast {contrast}: {error}"));
+        (0..codes.len() as u32)
+            .map(|x| frame.pixel(x, 0).expect("a rendered pixel")[0])
+            .collect()
+    };
+    let neutral = standard_deviation(&codes);
+    for magnitude in [50.0, 100.0] {
+        let flattened = rendered(-magnitude);
+        let steepened = rendered(magnitude);
+        assert_ne!(
+            flattened, steepened,
+            "-{magnitude} rendered the same codes as +{magnitude}"
+        );
+        let (narrow, wide) = (
+            standard_deviation(&flattened),
+            standard_deviation(&steepened),
+        );
+        assert!(
+            narrow < neutral && neutral < wide,
+            "+-{magnitude}: expected {narrow} < {neutral} < {wide}"
+        );
+        for (code, toward_pivot_is_up) in [(64usize, true), (192usize, false)] {
+            let source_code = codes[code];
+            let (low, high) = (flattened[code], steepened[code]);
+            if toward_pivot_is_up {
+                assert!(
+                    low > source_code && high < source_code,
+                    "code {code}: -{magnitude} gave {low}, +{magnitude} gave {high}"
+                );
+            } else {
+                assert!(
+                    low < source_code && high > source_code,
+                    "code {code}: -{magnitude} gave {low}, +{magnitude} gave {high}"
+                );
+            }
         }
     }
 }

@@ -8,6 +8,7 @@
 //! takes whatever remains. Every region is styled from [`lightwell_ui::theme`], never an ad hoc
 //! colour, and the window carries no outer padding: the canvas pads its photo itself.
 pub(crate) mod canvas;
+mod capabilities;
 mod gallery;
 pub(crate) mod masks_panel;
 pub(crate) mod palette;
@@ -42,7 +43,8 @@ pub(crate) struct Surfaces<'a> {
     /// owns its texture and writes this into it while it draws, so no round trip stands between a
     /// rendered frame and the screen.
     pub(crate) photo: Option<&'a lightwell_ui::PhotoRaster>,
-    pub(crate) draft_photo: Option<&'a image_memory::Allocation>,
+    /// The crop layer's input stage, in the tiles it was uploaded as.
+    pub(crate) draft_photo: Option<&'a crate::draft_photo::DraftPhoto>,
     /// The clipping overlay's own bounded texture, present only when it belongs to the photograph
     /// on screen. It is a second image laid over the first, never a change to the first.
     pub(crate) overlay: Option<&'a image_memory::Allocation>,
@@ -81,7 +83,7 @@ pub(crate) fn workspace<'a>(model: &'a Workspace, surfaces: Surfaces<'a>) -> Ele
     let mut middle = row![].height(Length::Fill);
     if model.title.state_panel_open {
         middle = middle.push(
-            container(state_panel::state_panel(&model.panel))
+            container(state_panel::state_panel(&model.panel, &model.performance))
                 .width(Length::Fixed(STATE_PANEL_WIDTH))
                 .height(Length::Fill)
                 .style(theme::panel_surface),
@@ -163,4 +165,25 @@ pub(crate) fn surface_columns(logical_width: f32, scale: f32, model: &Workspace)
         (left * scale).round() as u32,
         (right_edge * scale).round() as u32,
     ]
+}
+
+/// The canvas region inside a captured frame as `[left, top, right, bottom]` physical pixels: the
+/// area between the panels' dividers and between the rules under the title bar and over the status
+/// bar. At a percentage zoom this is exactly the scrollable the photograph pans in, so evidence can
+/// map a captured pixel back to the source pixel the zoom and the pan put there.
+pub(crate) fn canvas_rect(logical: (f32, f32), scale: f32, model: &Workspace) -> [u32; 4] {
+    let divider = theme::BORDER_WIDTH;
+    let left = if model.title.state_panel_open {
+        STATE_PANEL_WIDTH + divider
+    } else {
+        0.0
+    };
+    let right = if model.title.tools_panel_open {
+        logical.0 - TOOLS_PANEL_WIDTH - divider
+    } else {
+        logical.0
+    };
+    let top = TITLE_BAR_HEIGHT + divider;
+    let bottom = logical.1 - STATUS_BAR_HEIGHT - divider;
+    [left, top, right, bottom].map(|edge| (edge * scale).round().max(0.0) as u32)
 }

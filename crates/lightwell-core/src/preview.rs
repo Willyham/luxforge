@@ -3,16 +3,21 @@ use crate::{
     Cancel, Component, ComponentId, ComponentMode, EntryId, Error, ErrorKind, HistoryEntry,
     LinearImage, LinearSettings, Mask, MaskId, ModuleRegistry, ProxyApproximation, ProxyBounds,
     ProxyCache, ProxyKey, Raster, Recipe, SourceImage,
+    activity::{ActivityBoard, ActivitySpec, Outcome},
     analysis::{AnalysisIdentity, MAX_OVERLAY_CELLS, MaskOverlay, MaskPixels, Report},
+    artifacts::PreparedArtifact,
     mask::CompiledMask,
     modules::Stage,
     render, render_cancellable, render_linear, render_linear_cancellable, stage_transform,
 };
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
-use std::sync::{
-    Arc,
-    mpsc::{Receiver, SyncSender, TryRecvError, sync_channel},
+use std::{
+    collections::BTreeMap,
+    sync::{
+        Arc,
+        mpsc::{Receiver, SyncSender, TryRecvError, sync_channel},
+    },
+    time::Instant,
 };
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -133,6 +138,14 @@ impl PreviewSource {
         }
     }
 
+    /// Whether this source evaluates a RAW white balance its developed planes do not hold, through
+    /// a [`crate::WhiteBalanceApproximation`]. Only the preview of an open draft is planned that
+    /// way. Every frame rendered from such a source is approximate, at the proxy scale and at full
+    /// size alike, and none is ever reduced into a report.
+    pub fn approximate_white_balance(&self) -> bool {
+        matches!(self, Self::Raw { settings, .. } if settings.white_balance.is_some())
+    }
+
     /// The content-stage dimensions a recipe is compiled against.
     pub fn dimensions(&self) -> (u32, u32) {
         match self {
@@ -205,6 +218,11 @@ impl PreviewSource {
                         *settings,
                         &Cancel::never(),
                         crate::render::spatial::PRODUCTION_TILE,
+                        // A point query: this prefix is read one pixel per display cell, or once
+                        // for a stroke's colour seed, never as a whole frame. A prefix holding a
+                        // spatial layer is refused before it reaches here, so the mode changes
+                        // nothing admissible; it is named for what the read is.
+                        crate::render::linear::SpatialMode::Point,
                     )?,
                 ))
             }
@@ -290,6 +308,26 @@ impl PreviewSource {
             }
         }
     }
+
+    /// The output pixels at the centres of a `side` × `side` grid, row by row from the top-left,
+    /// through the same two paths and one evaluation of the stack: `O(side² × layers)`, no frame.
+    /// `checkpoint` is asked before each point.
+    pub(crate) fn sample_grid(
+        &self,
+        registry: &ModuleRegistry,
+        recipe: &Recipe,
+        side: u32,
+        checkpoint: &dyn Fn() -> Result<(), Error>,
+    ) -> Result<Vec<[u8; 4]>, Error> {
+        match self {
+            Self::Jpeg(image) => {
+                crate::render::sample_grid(registry, image, recipe, side, checkpoint)
+            }
+            Self::Raw { image, settings } => crate::render::linear::sample_grid_linear(
+                registry, image, recipe, *settings, side, checkpoint,
+            ),
+        }
+    }
 }
 
 /// What a preview job asks the worker for beside the frame: the coverage grid of one mask, over the
@@ -360,6 +398,11 @@ pub struct PreviewJob {
     pub identity: AnalysisIdentity,
     /// Reduce the rendered raster into a [`Report`] and return it with the frame, so the displayed
     /// target needs no second render. Refused together with [`PreviewJob::layer_count`].
+    ///
+    /// Ignored when the source approximates its white balance
+    /// ([`PreviewSource::approximate_white_balance`]): an approximate frame is never reduced into a
+    /// report, whatever the job asked, so every histogram and clipping count comes from an exact
+    /// render.
     pub analyse: bool,
     /// The physical pixels the display can show this frame in. `Some` asks for a proxy phase before
     /// the exact one; `None` is the exact path alone, as a percentage zoom at or above 100% takes.
@@ -367,6 +410,10 @@ pub struct PreviewJob {
     /// or rendering the proxy declines it in [`PreviewResult::proxy_declined`] and the exact phase
     /// runs unchanged.
     pub proxy: Option<ProxyBounds>,
+    /// The verified bytes of every derived artifact [`PreviewJob::recipe`] references. The job
+    /// holds them for as long as it lives, so the worker compiles the stack whatever the owner's
+    /// cache evicts meanwhile.
+    pub artifacts: Vec<Arc<PreparedArtifact>>,
     /// Fill one mask's coverage grid beside the frame and return it with it, exactly as
     /// [`PreviewJob::analyse`] returns a [`Report`]. Set through
     /// [`PreviewJob::with_mask_overlay`], which is what validates it against this job's own stack.
@@ -448,8 +495,10 @@ pub struct PreviewResult {
     pub draft_revision: Option<u64>,
     pub result: Result<Raster, Error>,
     /// The exact reduction of the raster in `result`, when the job asked for it. `None` means the
-    /// job did not ask, the render failed, or this is the proxy phase — a proxy raster is never
-    /// reduced. It never means an empty histogram.
+    /// job did not ask, the render failed, this is the proxy phase — a proxy raster is never
+    /// reduced — or the frame approximates its white balance
+    /// ([`Self::approximate_white_balance`]), which is never reduced either. It never means an
+    /// empty histogram.
     pub report: Option<Report>,
     /// The coverage grid of the mask the job named, over the frame in `result` and under the same
     /// generation. `None` means the job did not ask, the render failed, this is the proxy phase, or
@@ -483,6 +532,30 @@ pub struct PreviewResult {
     /// narrower than two proxy pixels, or both. Always the default — approximate in no way — on the
     /// exact phase, which is the frame every number comes from.
     pub proxy_approximation: ProxyApproximation,
+    /// Whether this frame approximates a RAW white balance the developed planes do not hold — a
+    /// drafted temperature or tint, previewed during its gesture before the release redevelops the
+    /// mosaic ([`PreviewSource::approximate_white_balance`]). Set on **both** phases of such a job:
+    /// the matrix is linear and the proxy's box filter is linear, so it applies to the proxy
+    /// exactly as it does to the full frame, and neither phase is the exact picture. Such a job
+    /// never carries a [`Self::report`], even when it asked for one.
+    pub approximate_white_balance: bool,
+    /// Milliseconds of wall-clock time the preview worker spent producing this phase's result, and
+    /// nothing else.
+    ///
+    /// - [`PreviewPhase::Proxy`]: building the proxy source when this job built it
+    ///   ([`Self::proxy_built`]), plus rendering the recipe against it. A cache hit costs only the
+    ///   render.
+    /// - [`PreviewPhase::Exact`]: rendering the prepared source, plus reducing the frame into
+    ///   [`Self::report`] and filling [`Self::mask_overlay`]'s coverage grid when the job asked for
+    ///   them. A proxy phase that was attempted and declined is not counted here; it produced no
+    ///   frame.
+    ///
+    /// It excludes everything outside the worker's own work on this phase: the wait in the queue's
+    /// pending slot, preparing or redeveloping the source on the source worker, the other phase of
+    /// the same job, and handing the result to the display. It is measured on a failed or cancelled
+    /// phase too, up to the moment it stopped. So it answers "how long did this picture take to
+    /// render", not "how long after the request did it appear".
+    pub render_ms: f64,
 }
 
 impl PreviewResult {
@@ -490,6 +563,15 @@ impl PreviewResult {
     /// says which of the two made it so.
     pub fn proxy_approximate(&self) -> bool {
         self.proxy_approximation.is_approximate()
+    }
+
+    /// Whether this is an exact phase that a newer request or [`PreviewQueue::cancel`] stopped: it
+    /// carries no frame, only the fact that this generation has ended. A proxy phase is never
+    /// delivered cancelled; a failed proxy is recorded on the exact result instead.
+    pub fn cancelled(&self) -> bool {
+        self.result
+            .as_ref()
+            .is_err_and(|error| error.kind == ErrorKind::Cancelled)
     }
 }
 
@@ -510,7 +592,9 @@ enum ProxyStep {
     /// Render this plan, against the cached source when the key already held one.
     Planned {
         key: ProxyKey,
-        cached: Option<PreviewSource>,
+        /// Boxed: a source carries its linear settings, which make it far larger than the other
+        /// variants, and this step is moved onto the worker once per job.
+        cached: Option<Box<PreviewSource>>,
     },
 }
 
@@ -550,11 +634,14 @@ fn rank(phase: PreviewPhase) -> u8 {
 /// - `poll` delivers a result whose generation is above the floor and whose `(generation, phase)`
 ///   is strictly after the last delivered one, so an older frame never follows a newer one on
 ///   screen and a job's exact phase still follows its own proxy phase.
-/// - An exact phase that answered [`ErrorKind::Cancelled`] carries no frame; it is counted in
-///   [`Self::cancelled_exact`] and never delivered.
+/// - An exact phase that answered [`ErrorKind::Cancelled`] carries no frame, and is delivered all
+///   the same, under the same rules, as that outcome ([`PreviewResult::cancelled`]). So every job
+///   that starts delivers exactly one exact-phase outcome above the floor — a frame, a failure or
+///   cancelled — and a caller waiting for one generation learns when it has ended.
 ///
 /// Newest-wins survives where it belongs: a newer request replaces the pending job, so at most one
-/// job waits and the newest value is the one that runs next.
+/// job waits and the newest value is the one that runs next. A replaced job never starts and has
+/// nothing to deliver; [`Self::pending_generation`] names it before the request that replaces it.
 #[derive(Default)]
 pub struct PreviewQueue {
     generation: u64,
@@ -564,7 +651,8 @@ pub struct PreviewQueue {
     /// replaces the old entry rather than accumulating beside it.
     cache: ProxyCache,
     waker: Option<Arc<dyn Fn() + Send + Sync>>,
-    cancelled_exact: u64,
+    /// Where each job is published as a `preview.render` activity; `None` publishes nothing.
+    activity: Option<Arc<ActivityBoard>>,
     /// Results at or below this generation are stale, whatever they carry.
     floor: u64,
     last_delivered: u64,
@@ -609,14 +697,23 @@ impl PreviewQueue {
         self.waker = Some(waker);
     }
 
-    /// How many exact phases have answered [`ErrorKind::Cancelled`] because a newer request
-    /// superseded them. Superseded frames are dropped, so this is the only account of them.
-    pub fn cancelled_exact(&self) -> u64 {
-        self.cancelled_exact
+    /// Publish every job to `board` as a `preview.render` activity, from the moment its worker
+    /// starts to the end of its exact phase, with its phase as it moves from `proxy` to `exact`. The
+    /// entry ends before the exact result is sent, so by the time [`Self::poll`] releases a job its
+    /// activity has already ended. A queue without a board publishes nothing.
+    pub fn set_activity(&mut self, board: Arc<ActivityBoard>) {
+        self.activity = Some(board);
     }
 
-    /// The generation of the last result [`Self::poll`] delivered, so a caller can correlate what
-    /// is on screen with the request that produced it. `0` before anything is delivered.
+    /// The generation of the job waiting in the pending slot. The next [`Self::request`] replaces
+    /// that job, and a replaced job never starts, so it delivers nothing at all: asking here, just
+    /// before requesting, is the only way to learn that it has ended.
+    pub fn pending_generation(&self) -> Option<u64> {
+        self.pending.as_ref().map(|(generation, _)| *generation)
+    }
+
+    /// The generation of the last result [`Self::poll`] delivered, so a caller can correlate its
+    /// frames and outcomes with the request that produced them. `0` before anything is delivered.
     pub fn last_delivered(&self) -> u64 {
         self.last_delivered
     }
@@ -650,7 +747,7 @@ impl PreviewQueue {
                 let cached = self
                     .cache
                     .get(&key)
-                    .map(|source| source.with_settings_of(&job.source));
+                    .map(|source| Box::new(source.with_settings_of(&job.source)));
                 ProxyStep::Planned { key, cached }
             }
             Ok(None) => ProxyStep::Declined(
@@ -666,10 +763,11 @@ impl PreviewQueue {
         let exact_cancel = Cancel::new();
         let tokens = (proxy_cancel.clone(), exact_cancel.clone());
         let waker = self.waker.clone();
+        let board = self.activity.clone();
         // Two results per job at most, so the worker never blocks on the desktop draining the
         // proxy frame before it can answer with the exact one.
         let (sender, receiver) = sync_channel(2);
-        std::thread::spawn(move || run(job, generation, step, tokens, sender, waker));
+        std::thread::spawn(move || run(job, generation, step, tokens, sender, waker, board));
         self.active = Some(Active {
             generation,
             receiver,
@@ -708,21 +806,15 @@ impl PreviewQueue {
                 self.cache.insert(key, source);
             }
             let result = message.result;
-            let mut cancelled = false;
             if result.phase == PreviewPhase::Exact {
-                cancelled = result
-                    .result
-                    .as_ref()
-                    .is_err_and(|error| error.kind == ErrorKind::Cancelled);
-                if cancelled {
-                    self.cancelled_exact = self.cancelled_exact.saturating_add(1);
-                }
                 self.finish_active();
             }
             let rank = rank(result.phase);
             let newer = (generation, rank) > (self.last_delivered, self.last_delivered_rank);
-            // A cancelled exact phase carries no frame at all: it is counted, never delivered.
-            if !cancelled && generation > self.floor && newer {
+            // A cancelled exact phase carries no frame, but it is this generation's outcome, so it
+            // is delivered like any other: without it a caller waiting for the generation would
+            // wait forever.
+            if generation > self.floor && newer {
                 self.last_delivered = generation;
                 self.last_delivered_rank = rank;
                 return Some(result);
@@ -751,15 +843,31 @@ fn run(
     (proxy_cancel, exact_cancel): (Cancel, Cancel),
     sender: SyncSender<WorkerMessage>,
     waker: Option<Arc<dyn Fn() + Send + Sync>>,
+    board: Option<Arc<ActivityBoard>>,
 ) {
     let wake = || {
         if let Some(waker) = &waker {
             waker();
         }
     };
+    // One activity spans both phases. A job abandoned mid-way, its queue gone before a result could
+    // be sent, drops the guard, which records it as cancelled.
+    let activity = board.map(|board| {
+        board.begin(ActivitySpec {
+            kind: "preview.render",
+            label: "Rendering preview",
+            detail: None,
+            asset_id: Some(job.entry.asset_id.clone()),
+            job_id: None,
+        })
+    });
     let entry_id = job.entry.id.clone();
     let draft_revision = job.draft_revision;
     let snapshot_id = job.entry.snapshot.id.clone();
+    // Both phases of a job share its source, so both are approximate or neither is. An approximate
+    // frame is never reduced, which is the rule on `PreviewJob::analyse`.
+    let approximate_white_balance = job.source.approximate_white_balance();
+    let analyse = job.analyse && !approximate_white_balance;
     // A truncated job copies the layer prefix only; the whole stack is rendered in place.
     let prefix = job.layer_count.map(|count| Recipe {
         format: job.recipe.format,
@@ -778,8 +886,13 @@ fn run(
         ProxyStep::Skipped => None,
         ProxyStep::Declined(reason) => Some(reason),
         ProxyStep::Planned { key, cached } => {
+            if let Some(activity) = &activity {
+                activity.phase("proxy");
+            }
+            // The proxy phase's own clock: the build when this job builds, then the render.
+            let started = Instant::now();
             let built = match cached {
-                Some(source) => Ok((source, false)),
+                Some(source) => Ok((*source, false)),
                 None => job.source.proxy(key.plan).map(|source| (source, true)),
             };
             match built {
@@ -822,6 +935,8 @@ fn run(
                                         dimensions.0,
                                         dimensions.1,
                                     ),
+                                    approximate_white_balance,
+                                    render_ms: milliseconds_since(started),
                                 },
                                 built: fresh.then_some((key, source)),
                             };
@@ -837,6 +952,12 @@ fn run(
         }
     };
 
+    if let Some(activity) = &activity {
+        activity.phase("exact");
+    }
+    // The exact phase's own clock starts here, after the proxy phase has sent its frame, so the
+    // two phases' times never overlap and neither includes the other.
+    let started = Instant::now();
     let rendered = job
         .source
         .render_cancellable(&job.registry, snapshot_id, recipe, &exact_cancel);
@@ -845,7 +966,7 @@ fn run(
     // cancelled one means the job was superseded mid-reduce, and the frame it describes is as stale
     // as the reduction, so the phase answers cancelled rather than a frame nothing will adopt.
     let (result, report) = match rendered {
-        Ok(raster) if job.analyse => {
+        Ok(raster) if analyse => {
             match crate::analysis::reduce_raster_cancellable(&raster, &exact_cancel) {
                 Ok(report) => (Ok(raster), Some(report)),
                 Err(error) if error.kind == ErrorKind::Cancelled => (Err(error), None),
@@ -864,6 +985,11 @@ fn run(
         }
         _ => (None, None),
     };
+    let render_ms = milliseconds_since(started);
+    // A superseded or abandoned exact phase answers `Cancelled`, so its activity ends cancelled.
+    if let Some(activity) = activity {
+        activity.finish(Outcome::of(&result));
+    }
     let sent = sender.send(WorkerMessage {
         result: PreviewResult {
             generation,
@@ -879,6 +1005,8 @@ fn run(
             proxy_declined: declined,
             proxy_built: false,
             proxy_approximation: ProxyApproximation::default(),
+            approximate_white_balance,
+            render_ms,
         },
         built: None,
     });
@@ -1019,6 +1147,11 @@ fn mask_overlay_for(
     )
 }
 
+/// Wall-clock milliseconds since `started`, as [`PreviewResult::render_ms`] reports them.
+fn milliseconds_since(started: Instant) -> f64 {
+    started.elapsed().as_secs_f64() * 1000.0
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1088,20 +1221,30 @@ mod tests {
             proxy: None,
             mask_overlay: None,
             entry,
+            artifacts: Vec::new(),
         }
     }
 
     /// The pending slot is still newest-wins: three rapid requests run at most two jobs, the second
     /// is replaced by the third, and the third is what the display ends on. The first job may or
     /// may not have finished before it was superseded; if it did, its frame is delivered, because a
-    /// frame newer than what is on screen is never thrown away — that is what starves a drag.
-    /// Deliveries are strictly increasing either way.
+    /// frame newer than what is on screen is never thrown away — that is what starves a drag — and
+    /// if it did not, its cancelled exact phase is delivered in the frame's place. Either way each
+    /// job that started delivers one exact outcome, in increasing order, and the replaced one,
+    /// which the queue names before replacing it, delivers nothing.
     #[test]
     fn newest_preview_wins_with_one_active_and_one_pending() {
         let mut queue = PreviewQueue::default();
-        queue.request(entry(1));
-        queue.request(entry(2));
+        let first = queue.request(entry(1));
+        assert_eq!(queue.pending_generation(), None, "the first job started");
+        let replaced = queue.request(entry(2));
+        assert_eq!(queue.pending_generation(), Some(replaced));
         let wanted = queue.request(entry(3));
+        assert_eq!(
+            queue.pending_generation(),
+            Some(wanted),
+            "the third request replaced the second"
+        );
         let deadline = Instant::now() + DEADLINE;
         let mut delivered: Vec<u64> = Vec::new();
         loop {
@@ -1114,6 +1257,11 @@ mod tests {
                     result.generation
                 );
                 assert_eq!(result.generation, queue.last_delivered());
+                assert_eq!(
+                    result.phase,
+                    PreviewPhase::Exact,
+                    "no job had a proxy phase"
+                );
                 delivered.push(result.generation);
                 if result.generation == wanted {
                     assert_eq!(result.result.unwrap().pixel(0, 0), Some([3, 0, 0, 255]));
@@ -1123,10 +1271,11 @@ mod tests {
             assert!(Instant::now() < deadline, "the newest preview never came");
             std::thread::yield_now();
         }
-        assert_eq!(delivered.last(), Some(&wanted));
-        assert!(
-            !delivered.contains(&2),
-            "the second request was replaced in the pending slot and never ran: {delivered:?}"
+        assert_eq!(
+            delivered,
+            vec![first, wanted],
+            "the first job's one outcome, then the third's; the second was replaced in the pending \
+             slot and never ran"
         );
     }
 
@@ -1148,10 +1297,13 @@ mod tests {
         let delivered = drain_until(&mut queue, second, PreviewPhase::Exact);
         assert_eq!(
             delivered,
-            vec![(first, PreviewPhase::Exact), (second, PreviewPhase::Exact)],
-            "a superseded but completed frame is delivered before the newer one"
+            vec![
+                (first, PreviewPhase::Exact, false),
+                (second, PreviewPhase::Exact, false)
+            ],
+            "a superseded but completed frame is delivered before the newer one, and nothing was \
+             cancelled"
         );
-        assert_eq!(queue.cancelled_exact(), 0, "nothing was cancelled");
     }
 
     /// `cancel` is the only thing that invalidates an in-flight result: a frame planned before it
@@ -1171,6 +1323,18 @@ mod tests {
         let deadline = Instant::now() + DEADLINE;
         while queue.is_busy() {
             assert!(queue.poll().is_none(), "a frame from before the cancel");
+            assert!(Instant::now() < deadline, "the cancelled job never drained");
+            std::thread::yield_now();
+        }
+        assert_eq!(queue.last_delivered(), 0, "nothing was ever delivered");
+
+        // An exact phase that `cancel` stopped mid-render answers cancelled, and that outcome is
+        // at the floor too: the caller that raised it already knows the generation has ended.
+        queue.request(stacked(1200, 900, eligible_layers(1200, 900), None));
+        queue.cancel();
+        let deadline = Instant::now() + DEADLINE;
+        while queue.is_busy() {
+            assert!(queue.poll().is_none(), "an outcome from before the cancel");
             assert!(Instant::now() < deadline, "the cancelled job never drained");
             std::thread::yield_now();
         }
@@ -1262,6 +1426,7 @@ mod tests {
                 effect_format: EFFECT_FORMAT,
                 payload: json!({"exposure": 0.5, "contrast": 20.0}),
                 mask: None,
+                artifacts: Vec::new(),
             },
             Layer::crop(fitted.normalized(&stage)),
         ]
@@ -1340,6 +1505,7 @@ mod tests {
             proxy,
             mask_overlay: None,
             entry,
+            artifacts: Vec::new(),
         }
     }
 
@@ -1371,17 +1537,18 @@ mod tests {
         }
     }
 
-    /// Poll until this generation's phase is delivered, collecting what came before it.
+    /// Poll until this generation's phase is delivered, collecting what came before it: each
+    /// delivery's generation, phase and whether it was cancelled.
     fn drain_until(
         queue: &mut PreviewQueue,
         generation: u64,
         phase: PreviewPhase,
-    ) -> Vec<(u64, PreviewPhase)> {
+    ) -> Vec<(u64, PreviewPhase, bool)> {
         let deadline = Instant::now() + DEADLINE;
         let mut delivered = Vec::new();
         loop {
             if let Some(result) = queue.poll() {
-                delivered.push((result.generation, result.phase));
+                delivered.push((result.generation, result.phase, result.cancelled()));
                 if (result.generation, result.phase) == (generation, phase) {
                     return delivered;
                 }
@@ -1412,10 +1579,28 @@ mod tests {
             .expect("a proxy is worthwhile");
 
         let mut queue = PreviewQueue::default();
+        let requested = Instant::now();
         let generation = queue.request(job);
         let results = drain_all(&mut queue);
+        let lifetime_ms = requested.elapsed().as_secs_f64() * 1000.0;
         assert_eq!(results.len(), 2, "one proxy frame and one exact frame");
         let [proxy, exact] = <[PreviewResult; 2]>::try_from(results).ok().unwrap();
+
+        // Each phase reports its own worker time: finite, and inside the job's own lifetime. The
+        // two clocks run one after the other on the worker, so together they fit inside it too —
+        // neither phase counts the other, and neither counts anything before the request.
+        for (phase, ms) in [("proxy", proxy.render_ms), ("exact", exact.render_ms)] {
+            assert!(
+                ms.is_finite() && ms >= 0.0 && ms <= lifetime_ms,
+                "the {phase} phase reports {ms} ms of a {lifetime_ms} ms job"
+            );
+        }
+        assert!(
+            proxy.render_ms + exact.render_ms <= lifetime_ms,
+            "the phases overlap: {} + {} ms of a {lifetime_ms} ms job",
+            proxy.render_ms,
+            exact.render_ms
+        );
 
         assert_eq!(proxy.generation, generation);
         assert_eq!(exact.generation, generation);
@@ -1489,6 +1674,7 @@ mod tests {
             effect_format: EFFECT_FORMAT,
             payload: json!({"exposure": 0.8, "contrast": 25.0}),
             mask: Some(mask.id.clone()),
+            artifacts: Vec::new(),
         }]
     }
 
@@ -1726,6 +1912,7 @@ mod tests {
                     effect_format: EFFECT_FORMAT,
                     payload: json!({"texture": 40.0}),
                     mask: None,
+                    artifacts: Vec::new(),
                 }])
                 .collect(),
             masks: vec![thin.clone()],
@@ -1751,8 +1938,9 @@ mod tests {
     }
 
     /// A newer request stops the exact phase of the job it replaced within a chunk, and that phase
-    /// answers with no frame at all. The proxy phase of the older job is polled first, so the
-    /// cancel lands inside the exact render rather than before it.
+    /// answers with no frame at all, delivered under its own generation before anything of the
+    /// newer job. The proxy phase of the older job is polled first, so the cancel lands inside the
+    /// exact render rather than before it.
     #[test]
     fn a_newer_request_cancels_the_exact_phase_of_the_job_it_replaced() {
         let display = bounds(200, 200);
@@ -1764,7 +1952,7 @@ mod tests {
             Some(display),
         ));
         let first = drain_until(&mut queue, older, PreviewPhase::Proxy);
-        assert_eq!(first, vec![(older, PreviewPhase::Proxy)]);
+        assert_eq!(first, vec![(older, PreviewPhase::Proxy, false)]);
 
         let newer = queue.request(stacked(
             1200,
@@ -1773,26 +1961,26 @@ mod tests {
             Some(display),
         ));
         let delivered = drain_until(&mut queue, newer, PreviewPhase::Exact);
+        let order: Vec<(u64, PreviewPhase)> = delivered
+            .iter()
+            .map(|(generation, phase, _)| (*generation, *phase))
+            .collect();
         assert_eq!(
-            delivered.last(),
-            Some(&(newer, PreviewPhase::Exact)),
-            "the newer generation is what the display ends on"
-        );
-        assert!(
-            delivered
-                .windows(2)
-                .all(|pair| pair[0].0 <= pair[1].0 && pair[0] != pair[1]),
-            "deliveries never go backwards: {delivered:?}"
+            order,
+            vec![
+                (older, PreviewPhase::Exact),
+                (newer, PreviewPhase::Proxy),
+                (newer, PreviewPhase::Exact)
+            ],
+            "the older job's one exact outcome, then the newer job's two phases"
         );
         // The exact phase of the older job either finished before the cancel reached it — which is
-        // vanishingly unlikely on a frame this size but is not forbidden — or it was cancelled and
-        // counted. A cancelled phase is never delivered: it carries no frame.
-        if !delivered.contains(&(older, PreviewPhase::Exact)) {
-            assert!(
-                queue.cancelled_exact() >= 1,
-                "the superseded exact phase was neither delivered nor counted"
-            );
-        }
+        // vanishingly unlikely on a frame this size but is not forbidden — or it was cancelled. The
+        // newer job's phases are frames either way.
+        assert!(
+            delivered[1..].iter().all(|(_, _, cancelled)| !cancelled),
+            "{delivered:?}"
+        );
     }
 
     /// The three ways a job that offered bounds has no proxy phase, and the one way a job never
@@ -1911,6 +2099,158 @@ mod tests {
         assert_eq!(calls.load(Ordering::Relaxed), 3);
     }
 
+    // ---------------------------------------------------------------------------------------
+    // The activity each job publishes
+    // ---------------------------------------------------------------------------------------
+
+    /// A job whose one colour layer waits on `gate` in every phase that renders it, so a test can
+    /// hold the job in the phase it is about. The layer leaves its pixels as it found them.
+    fn held(gate: &Arc<crate::modules::RenderGate>, proxy: Option<ProxyBounds>) -> PreviewJob {
+        let layer = Layer {
+            id: LayerId::new(),
+            effect_id: crate::modules::HELD_EFFECT.into(),
+            effect_format: EFFECT_FORMAT,
+            payload: json!({}),
+            artifacts: Vec::new(),
+            mask: None,
+        };
+        let mut job = stacked(64, 48, vec![layer], proxy);
+        let mut registry = ModuleRegistry::builtin();
+        registry
+            .register(crate::modules::HeldModule::shared(gate.clone()))
+            .expect("a valid holding module");
+        job.registry = Arc::new(registry);
+        job
+    }
+
+    /// Read the board until `wanted` holds. The job under test is held at a gate, so what it waits
+    /// for is the worker reaching that gate, never a race with how fast the machine renders.
+    fn board_until(
+        board: &ActivityBoard,
+        wanted: impl Fn(&crate::ActivitySnapshot) -> bool,
+        what: &str,
+    ) -> crate::ActivitySnapshot {
+        let deadline = Instant::now() + DEADLINE;
+        loop {
+            let snapshot = board.snapshot();
+            if wanted(&snapshot) {
+                return snapshot;
+            }
+            assert!(Instant::now() < deadline, "{what}: {snapshot:?}");
+            std::thread::yield_now();
+        }
+    }
+
+    /// A job with a proxy phase is listed in `proxy` while that phase runs and ends in `exact`, and
+    /// its entry has already ended when the queue releases the job. The board keeps every finished
+    /// entry here, because its recent threshold is zero.
+    #[test]
+    fn a_jobs_activity_moves_from_proxy_to_exact_and_ends_when_the_queue_releases_it() {
+        let board = ActivityBoard::with_recent_threshold(Duration::ZERO);
+        let gate = crate::modules::RenderGate::open_gate();
+        let mut queue = PreviewQueue::default();
+        queue.set_activity(board.clone());
+        let job = held(&gate, Some(bounds(16, 16)));
+        let asset = job.entry.asset_id.clone();
+
+        gate.shut();
+        queue.request(job);
+        let running = board_until(
+            &board,
+            |snapshot| {
+                snapshot
+                    .active
+                    .first()
+                    .is_some_and(|active| active.entry.phase == Some("proxy"))
+            },
+            "the proxy phase never reached its gate",
+        );
+        assert_eq!(running.active.len(), 1);
+        let entry = &running.active[0].entry;
+        assert_eq!(
+            (entry.kind, entry.label),
+            ("preview.render", "Rendering preview")
+        );
+        assert_eq!(entry.asset_id.as_ref(), Some(&asset));
+        assert_eq!((&entry.detail, &entry.job_id), (&None, &None));
+        assert!(running.recent.is_empty());
+
+        gate.open();
+        let results = drain_all(&mut queue);
+        assert_eq!(
+            results
+                .iter()
+                .map(|result| result.phase)
+                .collect::<Vec<_>>(),
+            [PreviewPhase::Proxy, PreviewPhase::Exact]
+        );
+        // The queue released the job the moment its exact result arrived, and the entry had
+        // already ended by then: nothing here waits for the worker again.
+        let ended = board.snapshot();
+        assert!(ended.active.is_empty(), "{ended:?}");
+        assert_eq!(ended.recent.len(), 1);
+        let recent = &ended.recent[0];
+        assert_eq!(recent.entry.kind, "preview.render");
+        assert_eq!(
+            recent.entry.phase,
+            Some("exact"),
+            "the job moved on to its exact phase"
+        );
+        assert_eq!(recent.outcome, crate::activity::Outcome::Completed);
+    }
+
+    /// A newer request stops the exact phase of the job it replaces, and that job's activity ends
+    /// cancelled while the newer one completes. The older job is held at its gate inside the first
+    /// 16-row chunk of its colour pass, so the stop reaches the check before its second chunk.
+    #[test]
+    fn a_superseded_jobs_activity_ends_cancelled() {
+        let board = ActivityBoard::with_recent_threshold(Duration::ZERO);
+        let gate = crate::modules::RenderGate::open_gate();
+        let mut queue = PreviewQueue::default();
+        queue.set_activity(board.clone());
+
+        gate.shut();
+        let first = queue.request(held(&gate, None));
+        let running = board_until(
+            &board,
+            |snapshot| {
+                snapshot
+                    .active
+                    .first()
+                    .is_some_and(|active| active.entry.phase == Some("exact"))
+            },
+            "the exact phase never reached its gate",
+        );
+        let older = running.active[0].entry.id;
+        let newer = queue.request(held(&gate, None));
+        gate.open();
+        let delivered = drain_until(&mut queue, newer, PreviewPhase::Exact);
+        assert_eq!(
+            delivered,
+            vec![
+                (first, PreviewPhase::Exact, true),
+                (newer, PreviewPhase::Exact, false)
+            ],
+            "the older exact phase stopped, and its cancelled outcome came first"
+        );
+
+        let ended = board.snapshot();
+        assert!(ended.active.is_empty(), "{ended:?}");
+        let outcomes: Vec<(u64, crate::activity::Outcome)> = ended
+            .recent
+            .iter()
+            .map(|recent| (recent.entry.id, recent.outcome))
+            .collect();
+        assert_eq!(
+            outcomes,
+            [
+                (older + 1, crate::activity::Outcome::Completed),
+                (older, crate::activity::Outcome::Cancelled),
+            ],
+            "newest first: the job that replaced it completed"
+        );
+    }
+
     #[test]
     fn history_selection_and_view_are_read_only_validated_session_state() {
         let mut session = PreviewSession::default();
@@ -1931,6 +2271,152 @@ mod tests {
         session.return_current();
         assert!(session.can_edit());
         assert_eq!(session.selection, HistorySelection::Current);
+    }
+
+    /// A RAW job over planes developed at one white balance, rendering them at `white_balance`, at
+    /// display bounds that give it a proxy phase, asking for a report.
+    fn raw_job(white_balance: Option<crate::WhiteBalanceApproximation>) -> PreviewJob {
+        use crate::{LinearImage, LinearSettings};
+        let (width, height) = (240, 160);
+        let planes: Vec<f32> = (0..3 * width * height)
+            .map(|index| 0.02 + ((index * 37) % 1009) as f32 / 1100.0)
+            .collect();
+        let image = LinearImage::with_fingerprint(width, height, planes, "sha256:raw-wb").unwrap();
+        let mut job = job(1, true);
+        // The stock test job carries a pixel-stage layer, which is not proxy-eligible.
+        job.recipe.layers.clear();
+        job.source = PreviewSource::Raw {
+            image,
+            settings: LinearSettings {
+                exposure_ev: 0.25,
+                white_balance,
+            },
+        };
+        job.proxy = Some(ProxyBounds {
+            width: 60,
+            height: 60,
+        });
+        job
+    }
+
+    fn approximation() -> crate::WhiteBalanceApproximation {
+        crate::WhiteBalanceApproximation::from_matrix([
+            [1.35, 0.08, -0.04],
+            [0.03, 0.98, 0.02],
+            [-0.06, 0.04, 0.71],
+        ])
+        .unwrap()
+    }
+
+    /// A job whose source approximates its white balance says so on both of its phases and is
+    /// never reduced into a report, although it asked for one. Otherwise it is an ordinary job:
+    /// the proxy phase is the approximate recipe rendered against the exact downscale of the
+    /// developed planes, byte for byte, and the exact phase the approximate recipe at full size.
+    #[test]
+    fn an_approximate_white_balance_is_labelled_on_both_phases_and_never_analysed() {
+        let job = raw_job(Some(approximation()));
+        assert!(job.analyse, "the job asked for a report");
+        assert!(job.source.approximate_white_balance());
+        let (registry, source, recipe) =
+            (job.registry.clone(), job.source.clone(), job.recipe.clone());
+        let snapshot = job.entry.snapshot.id.clone();
+        let plan = source
+            .proxy_plan(&registry, &recipe, job.proxy.unwrap())
+            .unwrap()
+            .expect("a proxy is worthwhile");
+
+        let mut queue = PreviewQueue::default();
+        let generation = queue.request(job);
+        let results = drain_all(&mut queue);
+        assert_eq!(results.len(), 2, "one proxy frame and one exact frame");
+        let [proxy, exact] = <[PreviewResult; 2]>::try_from(results).ok().unwrap();
+        assert_eq!(
+            (proxy.generation, exact.generation),
+            (generation, generation)
+        );
+        assert_eq!(
+            (proxy.phase, exact.phase),
+            (PreviewPhase::Proxy, PreviewPhase::Exact)
+        );
+        assert!(proxy.approximate_white_balance && exact.approximate_white_balance);
+        assert!(proxy.report.is_none());
+        assert!(
+            exact.report.is_none(),
+            "an approximate frame is never reduced, whatever the job asked"
+        );
+
+        let reference = source
+            .proxy(plan)
+            .expect("the exact downscale")
+            .render(&registry, snapshot.clone(), &recipe)
+            .expect("the approximate recipe at proxy size");
+        assert_eq!(
+            proxy.result.expect("a proxy frame").rgba.as_ref(),
+            reference.rgba.as_ref(),
+            "the proxy frame is the approximate recipe over the exact downscale"
+        );
+        let reference = source
+            .render(&registry, snapshot, &recipe)
+            .expect("the approximate recipe at full size");
+        assert_eq!(
+            exact.result.expect("an exact frame").rgba.as_ref(),
+            reference.rgba.as_ref()
+        );
+    }
+
+    /// The proxy cache keys on the developed planes and takes the settings from the job, so a
+    /// drafted white balance renders against the proxy the committed frame built — a cache hit —
+    /// through its own matrix, and says so.
+    #[test]
+    fn a_drafted_white_balance_hits_the_proxy_the_exact_job_built() {
+        let exact = raw_job(None);
+        let mut drafted = raw_job(Some(approximation()));
+        // The same developed planes: a drafted job reads the planes the committed one did.
+        drafted.source = PreviewSource::Raw {
+            image: match &exact.source {
+                PreviewSource::Raw { image, .. } => image.clone(),
+                PreviewSource::Jpeg(_) => unreachable!(),
+            },
+            settings: match &drafted.source {
+                PreviewSource::Raw { settings, .. } => *settings,
+                PreviewSource::Jpeg(_) => unreachable!(),
+            },
+        };
+        let mut queue = PreviewQueue::default();
+        queue.request(exact);
+        let first = drain_all(&mut queue);
+        assert!(first[0].proxy_built && !first[0].approximate_white_balance);
+        queue.request(drafted);
+        let second = drain_all(&mut queue);
+        assert_eq!(second[0].phase, PreviewPhase::Proxy);
+        assert!(!second[0].proxy_built, "the drafted job reuses the proxy");
+        assert!(second[0].approximate_white_balance);
+        assert_ne!(
+            second[0].result.as_ref().unwrap().rgba,
+            first[0].result.as_ref().unwrap().rgba,
+            "the cached pixels render through the drafted matrix, not the cached settings"
+        );
+    }
+
+    /// The same job over planes that hold its white balance is exact: unlabelled, and reduced.
+    #[test]
+    fn an_exact_raw_job_is_unlabelled_and_analysed() {
+        let job = raw_job(None);
+        assert!(!job.source.approximate_white_balance());
+        let mut queue = PreviewQueue::default();
+        queue.request(job);
+        let results = drain_all(&mut queue);
+        assert_eq!(results.len(), 2);
+        assert!(
+            results
+                .iter()
+                .all(|result| !result.approximate_white_balance)
+        );
+        assert!(
+            results[0].report.is_none(),
+            "a proxy frame is never reduced"
+        );
+        assert!(results[1].report.is_some(), "the exact frame is");
     }
 
     /// A cached RAW proxy is pixels, not settings: a second job over the same developed planes
@@ -1955,7 +2441,10 @@ mod tests {
             job.recipe.layers.clear();
             job.source = PreviewSource::Raw {
                 image: image.clone(),
-                settings: LinearSettings { exposure_ev: ev },
+                settings: LinearSettings {
+                    exposure_ev: ev,
+                    white_balance: None,
+                },
             };
             job.proxy = Some(bounds);
             job
@@ -2055,6 +2544,7 @@ mod tests {
             effect_format: EFFECT_FORMAT,
             payload: json!({"texture": 40.0}),
             mask: mask.map(|mask| mask.id.clone()),
+            artifacts: Vec::new(),
         };
         for (held, absent) in [(&mask, true), (&geometric, false)] {
             let job = stacked_with_masks(
@@ -2184,5 +2674,119 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// A straightened crop over a RAW source with a Presence layer, previewed while another
+    /// evaluation holds the whole spatial target: the pointer readout sampling through the same
+    /// layer on the owner thread, which is how a committed RAW crop was once refused with "spatial
+    /// processing needs … bytes, and … of the … byte spatial budget is in use" and left unshown.
+    /// Both phases deliver the cropped frame, each byte for byte the frame the same stack renders
+    /// with the target free, and every batch releases what it reserved.
+    #[test]
+    fn a_cropped_raw_preview_with_presence_renders_while_the_spatial_target_is_held() {
+        use crate::{LinearImage, LinearSettings, PRESENCE_EFFECT, SpatialBudget};
+        let _guard = crate::render::spatial::tests::spatial_guard();
+        crate::clear_estimates();
+        // More than one 512 px tile each way, so the spatial pass runs in batches.
+        let (width, height) = (1100_u32, 700_u32);
+        let planes: Vec<f32> = (0..3 * width * height)
+            .map(|index| 0.05 + (index % 1009) as f32 / 1400.0)
+            .collect();
+        let image =
+            LinearImage::with_fingerprint(width, height, planes, "sha256:raw-crop").unwrap();
+        let stage = CropStage {
+            width,
+            height,
+            angle: 7.0,
+        };
+        let (box_width, box_height) = stage.bounding_box();
+        let fitted = stage.fit_about_center(BoxRect {
+            x: 0.0,
+            y: 0.0,
+            width: box_width,
+            height: box_height,
+        });
+        let mut job = job(1, false);
+        job.recipe.layers = vec![
+            Layer {
+                id: LayerId::new(),
+                effect_id: PRESENCE_EFFECT.into(),
+                effect_format: EFFECT_FORMAT,
+                payload: json!({"clarity": 60.0}),
+                artifacts: Vec::new(),
+                mask: None,
+            },
+            Layer::crop(fitted.normalized(&stage)),
+        ];
+        job.source = PreviewSource::Raw {
+            image,
+            settings: LinearSettings::default(),
+        };
+        let display = ProxyBounds {
+            width: 480,
+            height: 320,
+        };
+        job.proxy = Some(display);
+        let registry = job.registry.clone();
+        let recipe = job.recipe.clone();
+        let snapshot = job.entry.snapshot.id.clone();
+        let output = registry.compile(width, height, &recipe).unwrap().stage();
+        assert!(
+            output.width < width && output.height < height,
+            "the crop trims the stage"
+        );
+        let plan = job
+            .source
+            .proxy_plan(&registry, &recipe, display)
+            .unwrap()
+            .expect("a proxy is worthwhile");
+        let exact_reference = job
+            .source
+            .render(&registry, snapshot.clone(), &recipe)
+            .expect("the stack renders with the target free");
+        let proxy_reference = job
+            .source
+            .proxy(plan)
+            .unwrap()
+            .render(&registry, snapshot, &recipe)
+            .expect("the proxy renders with the target free");
+
+        let budget = SpatialBudget::default();
+        let held = budget.reserve(budget.target(), 1);
+        let mut queue = PreviewQueue::default();
+        let generation = queue.request(job);
+        let results = drain_all(&mut queue);
+        drop(held);
+        assert_eq!(budget.in_use(), 0, "every batch released its reservation");
+        assert_eq!(results.len(), 2, "one proxy frame and one exact frame");
+        let [proxy, exact] = <[PreviewResult; 2]>::try_from(results).ok().unwrap();
+        assert_eq!(
+            (proxy.generation, proxy.phase),
+            (generation, PreviewPhase::Proxy)
+        );
+        assert_eq!(
+            (exact.generation, exact.phase),
+            (generation, PreviewPhase::Exact)
+        );
+        assert_eq!(exact.proxy_declined, None, "the proxy phase ran");
+        let proxy = proxy
+            .result
+            .expect("the proxy phase renders beside a held target");
+        assert_eq!(
+            (proxy.width, proxy.height),
+            (proxy_reference.width, proxy_reference.height)
+        );
+        assert!(
+            proxy.rgba == proxy_reference.rgba,
+            "the proxy frame differs"
+        );
+        let exact = exact
+            .result
+            .expect("the exact phase renders beside a held target");
+        assert_eq!((exact.width, exact.height), (output.width, output.height));
+        assert!(
+            exact.rgba == exact_reference.rgba,
+            "the exact frame differs"
+        );
     }
 }

@@ -1117,6 +1117,7 @@ fn deleting_a_mask_carrying_layers_of_two_effects_says_what_it_removed() {
             effect_format: crate::EFFECT_FORMAT,
             payload: json!({}),
             mask: bound.then(|| mask.id.clone()),
+            artifacts: Vec::new(),
         };
         let global = layer(crate::BASIC_EFFECT, false);
         let layers = vec![
@@ -1370,6 +1371,7 @@ impl crate::ToolModule for Colliding {
                 collapsed: false,
                 layout: crate::ModuleLayout::Stacked,
                 availability: crate::Availability::Available,
+                ..crate::ModuleDescriptor::default()
             });
         &DESCRIPTOR
     }

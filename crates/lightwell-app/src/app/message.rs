@@ -2,16 +2,22 @@
 //! response becomes exactly one of these; pixel deltas, pointer positions and key codes stay in the
 //! view and the keymap.
 use crate::{
+    app::capabilities::Answer,
     app::controls::CurveSampleIdentity,
-    app::tasks::{HostAnswer, PresetChange, PreviewPayload, Refresh, SyncResult, Upload},
+    app::tasks::{
+        HostAnswer, PerformanceRead, PresetChange, PreviewPayload, Refresh, SyncResult, Upload,
+    },
     crop_draft::Handle,
     mask_draft::MaskHandle,
-    state::histogram::Readout,
+    state::{
+        capabilities::{CapabilityView, SecretText},
+        histogram::Readout,
+    },
 };
 use iced_runtime::image as image_memory;
 use lightwell_core::{
     ClientSession, ContentPoint, Draft, EntryId, HistoryPage, ModuleDescriptor, PresetSummary,
-    PreviewJob, StageTransform, Version,
+    PreviewJob, StageTransform, Version, capabilities::jobs::JobRecord,
 };
 use lightwell_ui::{ColorPickerEvent, CurveEditorEvent};
 use serde_json::{Map, Value};
@@ -68,6 +74,8 @@ pub(crate) enum MenuTarget {
     Draft,
     /// A module's picker control: Copy as JSON request for the `workspace.set` a click sends.
     Mode(String),
+    /// A module's task control: Copy as JSON request for the `task.<id>` a press sends.
+    Task { module_id: String, task: String },
     /// A library preset's row, by its identity: Delete, Export and, for an imported preset, Copy
     /// import report.
     Preset(String),
@@ -93,6 +101,8 @@ pub(crate) enum PaletteAction {
     Mode(String),
     /// Show or hide one side panel.
     TogglePanel(Panel),
+    /// Open or close the state panel's Performance section.
+    TogglePerformance,
     ToggleThirds,
     Fit,
     HundredPercent,
@@ -360,6 +370,134 @@ pub(crate) enum CropMessage {
     Cancel,
 }
 
+/// One capability gesture on a module's section or on the consent notice, or an owner answer the
+/// capability driver started. Every gesture becomes the same owner requests an independent JSON
+/// client sends; the text a person is typing stays here until it is committed.
+#[derive(Clone, Debug)]
+pub(crate) enum CapabilityMessage {
+    /// Show the section's status or its settings.
+    Show {
+        module_id: String,
+        view: CapabilityView,
+    },
+    /// Open or close the permissions list under the permissions line.
+    TogglePermissions(String),
+    /// Text typed into a number, text or endpoint field.
+    FieldText {
+        module_id: String,
+        profile: Option<String>,
+        field: String,
+        text: String,
+    },
+    /// Enter in a typed field: commit its text.
+    FieldCommit {
+        module_id: String,
+        profile: Option<String>,
+        field: String,
+    },
+    /// A toggle or a choice: commit this value at once.
+    FieldValue {
+        module_id: String,
+        profile: Option<String>,
+        field: String,
+        value: Value,
+    },
+    /// Choose… on a file field: open the native file dialog.
+    ChooseFile {
+        module_id: String,
+        field: String,
+    },
+    /// What the native dialog chose, or nothing when it was dismissed.
+    FileChosen {
+        module_id: String,
+        field: String,
+        path: Option<PathBuf>,
+    },
+    /// Replace on a secret: open its masked input.
+    SecretEdit {
+        module_id: String,
+        profile: Option<String>,
+        field: String,
+    },
+    /// What has been typed into the open masked input.
+    SecretText {
+        module_id: String,
+        text: SecretText,
+    },
+    /// Save the open masked input's text as the secret.
+    SecretCommit(String),
+    /// Close the masked input without saving.
+    SecretCancel(String),
+    SecretClear {
+        module_id: String,
+        profile: Option<String>,
+        field: String,
+    },
+    /// The Add profile form's adapter and label, and its button.
+    ProfileAdapter {
+        module_id: String,
+        adapter: String,
+    },
+    ProfileLabel {
+        module_id: String,
+        label: String,
+    },
+    ProfileCreate(String),
+    ProfileRemove {
+        module_id: String,
+        profile: String,
+    },
+    /// Activate (`true`) or Deactivate.
+    Activate {
+        module_id: String,
+        on: bool,
+    },
+    Install {
+        module_id: String,
+        resource: String,
+    },
+    Remove {
+        module_id: String,
+        resource: String,
+    },
+    Cancel {
+        module_id: String,
+        job: String,
+    },
+    Revoke {
+        module_id: String,
+        grant: String,
+    },
+    /// The profile a task run sends, when several are ready.
+    TaskProfile {
+        module_id: String,
+        task: String,
+        profile: String,
+    },
+    RunTask {
+        module_id: String,
+        task: String,
+    },
+    /// Commit a successful task's artifact through the task's declared apply action.
+    Apply {
+        module_id: String,
+        task: String,
+    },
+    /// Copy the `task.<id>` request the task control would send.
+    CopyTaskRequest {
+        module_id: String,
+        task: String,
+    },
+    /// Allow (`true`) or Don't allow on the open consent notice.
+    Consent(bool),
+    /// An owner round trip the driver started has answered.
+    Answered(Box<Answer>),
+    /// Read the tracked live jobs again; produced only while one is queued or running.
+    Poll,
+    /// What `module.job.read` answered for each polled job, by module and job.
+    Polled(Vec<(String, String, Result<JobRecord, String>)>),
+}
+
 /// The semantic messages the desktop understands. Variants the current layout does not yet raise
 /// are declared here because the panels that raise them land in the tasks that follow; every arm
 /// whose meaning the design fixes is implemented now.
@@ -421,9 +559,15 @@ pub(crate) enum Message {
     /// The window's logical size, which decides how large a fitted photograph is drawn and so how
     /// fine a clipping overlay's cell grid can be.
     Resized(f32, f32),
-    /// The truncated preview of a crop layer's input stage reached the GPU.
+    /// The crop layer's input stage, cut into tiles the toolkit's image atlas holds whole.
+    DraftCut(
+        Upload,
+        Vec<(crate::draft_photo::TileRect, iced::widget::image::Handle)>,
+    ),
+    /// One tile of the truncated preview of a crop layer's input stage reached the GPU.
     DraftUploaded(
         Upload,
+        usize,
         Result<image_memory::Allocation, image_memory::Error>,
     ),
     /// One crop draft change.
@@ -454,6 +598,8 @@ pub(crate) enum Message {
     HostAnswered(Result<Box<HostAnswer>, String>),
     /// Every tool control is generated from these; the desktop knows no tool by name.
     ModulesLoaded(Result<Vec<ModuleDescriptor>, String>),
+    /// A module capability gesture or answer.
+    Capability(CapabilityMessage),
     /// A generated field changed: the text the user typed for one declared parameter.
     Field {
         action: String,
@@ -591,6 +737,18 @@ pub(crate) enum Message {
     },
     /// Show or hide one side panel; the owner holds the flag.
     TogglePanel(Panel),
+    /// Open or close the state panel's Performance section. The flag is local to this client and
+    /// this launch, like a tools-panel section's, so no request carries it.
+    TogglePerformance,
+    /// One tick of the Performance section's sampler. It exists only while the section is
+    /// expanded and the state panel is shown, which is also when the timer that produces it exists.
+    PerformanceTick,
+    /// `resources.read` and `activity.list` answered, with the sampling epoch that asked, so a read
+    /// that was in flight when the section stopped or restarted sampling is dropped.
+    PerformanceSampled {
+        epoch: u64,
+        result: Result<Box<PerformanceRead>, String>,
+    },
     /// Enter the pointer mode or a module's canvas mode.
     SetMode(String),
     /// Show or hide the thirds overlay.
@@ -697,6 +855,9 @@ pub(crate) enum Message {
     /// not the editor's own latency — and a stroke is the one gesture whose positions arrive that way
     /// from a hand.
     PacedStrokeTick,
+    /// A scripted double-click's second press, once its gap has passed. Exists only while a
+    /// double-click step waits for it, which is also when the timer that produces it exists.
+    DoubleClickSecond,
     /// Capture the frame the next redraw presents.
     Capture,
     Captured(iced::window::Screenshot),

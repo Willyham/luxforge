@@ -54,7 +54,8 @@ pub(crate) fn derive(inputs: &Inputs<'_>) -> PaletteModel {
 }
 
 /// The host commands every build offers, whatever modules are registered: the pointer mode, the
-/// view and history commands, and the two panel toggles, each named for what it currently does.
+/// view and history commands, the two panel toggles and the Performance section's, each named for
+/// what it currently does.
 fn host_entries(inputs: &Inputs<'_>) -> Vec<(String, String, PaletteAction)> {
     let workspace = &inputs.session.workspace;
     vec![
@@ -110,6 +111,12 @@ fn host_entries(inputs: &Inputs<'_>) -> Vec<(String, String, PaletteAction)> {
             toggle_label(workspace.tools_panel, "tools panel"),
             "workspace.set".to_owned(),
             PaletteAction::TogglePanel(Panel::Tools),
+        ),
+        // The section's flag is local, so the detail names what it reads rather than a setter.
+        (
+            toggle_label(inputs.performance_expanded, "performance"),
+            "resources.read \u{b7} activity.list".to_owned(),
+            PaletteAction::TogglePerformance,
         ),
     ]
 }

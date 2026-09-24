@@ -8,7 +8,7 @@
 use crate::{
     app::{
         crop::SURFACE_ID,
-        message::{CropMessage, MaskMessage, Message},
+        message::{CapabilityMessage, CropMessage, MaskMessage, Message},
     },
     crop_canvas::{CropCanvas, Mode, Part, View},
     mask_canvas::{MaskCanvas, OutputView as MaskView, Placement},
@@ -23,7 +23,6 @@ use iced::{
     mouse::Cursor,
     widget::{Column, canvas, container, image, mouse_area, responsive, scrollable, stack, text},
 };
-use iced_runtime::image as image_memory;
 use lightwell_ui::{
     ButtonSize, ButtonTone, ModeEntry, NoticeCardModel, ToggleEntry, Tone, floating_bar,
     mode_strip, notice_card, text_button, theme,
@@ -54,7 +53,7 @@ pub(crate) fn surface<'a>(model: &'a CanvasModel, surfaces: Surfaces<'a>) -> Ele
 /// scrollable owns the space instead, so the padding would fight the pan.
 fn photo_area<'a>(model: &'a CanvasModel, surfaces: Surfaces<'a>) -> Element<'a, Message> {
     let content = match (&model.photo, surfaces.draft, surfaces.draft_photo) {
-        (PhotoView::Draft, Some(draft), Some(allocation)) => crop_surface(model, draft, allocation),
+        (PhotoView::Draft, Some(draft), Some(photo)) => crop_surface(model, draft, photo),
         (PhotoView::Plain, _, _) => match (surfaces.photo, model.dimensions) {
             (Some(raster), Some(dimensions)) => plain(model, raster, &surfaces, dimensions),
             _ => empty("Open a photograph"),
@@ -193,6 +192,12 @@ fn notice_view(notice: &Notice) -> Element<'_, Message> {
                     NoticeAction::DiscardMaskDraft => Message::Mask(MaskMessage::Cancel),
                     NoticeAction::ReapplyMaskDraft => Message::Mask(MaskMessage::Reapply),
                     NoticeAction::ReturnCurrent => Message::ReturnCurrent,
+                    NoticeAction::AllowConsent => {
+                        Message::Capability(CapabilityMessage::Consent(true))
+                    }
+                    NoticeAction::DenyConsent => {
+                        Message::Capability(CapabilityMessage::Consent(false))
+                    }
                 },
             )
         })
@@ -301,10 +306,11 @@ fn empty(message: &str) -> Element<'_, Message> {
 
 /// The photograph, with the clipping overlay stacked over it when there is one.
 ///
-/// Fit uses the [photo surface](lightwell_ui::photo_surface), which owns its texture and writes the
-/// raster into it as it draws. Percentage zooms use Iced's image widget: its renderer clips a
-/// large scrollable image to the window without making the GPU viewport as large as the zoomed
-/// photograph. The overlay is a second image, never a change to the photo.
+/// The photograph is drawn by the [photo surface](lightwell_ui::photo_surface) at every zoom: it
+/// owns its texture and writes the raster into it as it draws, so no allocation round trip stands
+/// between a rendered frame and the screen, and it hands the renderer only the part of a zoomed box
+/// that is on screen. The overlay keeps the toolkit's image path, as a second image stacked over
+/// the first and never a change to it.
 ///
 /// Alignment comes from giving both the same sizing rule — `Contain` inside the same box at Fit,
 /// the same fixed extent at a percentage — and from the overlay's cell grid keeping the source's
@@ -397,19 +403,18 @@ fn plain<'a>(
                 Length::Fixed(width as f32 * scale),
                 Length::Fixed(height as f32 * scale),
             );
-            // The image widget draws through the bounded window viewport while the scrollable
-            // retains the photograph's full zoomed extent. A shader primitive would set its GPU
-            // viewport to that entire extent and can exceed the device limit at high zoom.
-            let handle = image::Handle::from_rgba(
-                width,
-                height,
-                iced_runtime::core::Bytes::from_owner(raster.pixels().clone()),
+            // `Fill` rather than a fit: the box is the exact stage's displayed size and the texture
+            // may be the display proxy, which is smaller. Filling stretches it to exactly that box,
+            // so the photograph and the overlay — which fills the same box — stay in the same
+            // rectangle whichever texture is on screen. The box may be far larger than the window;
+            // the surface hands the renderer only its visible part.
+            let photo = lightwell_ui::photo_surface(
+                raster,
+                lightwell_ui::Placement::Fill,
+                box_width,
+                box_height,
             );
-            let photo = image(handle)
-                .width(box_width)
-                .height(box_height)
-                .content_fit(ContentFit::Fill);
-            let mut layers: Vec<Element<'a, Message>> = vec![photo.into()];
+            let mut layers: Vec<Element<'a, Message>> = vec![photo];
             for handle in &overlays {
                 layers.push(
                     image(handle.clone())
@@ -454,9 +459,9 @@ fn plain<'a>(
 fn crop_surface<'a>(
     model: &'a CanvasModel,
     draft: &'a crate::crop_draft::CropDraft,
-    allocation: &'a image_memory::Allocation,
+    photo: &'a crate::draft_photo::DraftPhoto,
 ) -> Element<'a, Message> {
-    let handle = allocation.handle().clone();
+    let handle = photo.clone();
     let box_size = draft.stage.bounding_box();
     let mode = match model.surface_mode {
         SurfaceMode::Pan => Mode::Pan,
@@ -466,21 +471,22 @@ fn crop_surface<'a>(
     let option = model.option;
     // Two stacked canvases: the toolkit paints every image of one layer over every mesh of that
     // layer, so the frame, thirds, handles and guide need the layer the stack gives its second child.
-    let parts = move |handle: image::Handle, view: View, width: Length, height: Length| {
-        stack([Part::Photo, Part::Overlay].map(|part| {
-            canvas(CropCanvas::new(
-                draft,
-                handle.clone(),
-                view,
-                mode,
-                option,
-                part,
-            ))
-            .width(width)
-            .height(height)
-            .into()
-        }))
-    };
+    let parts =
+        move |handle: crate::draft_photo::DraftPhoto, view: View, width: Length, height: Length| {
+            stack([Part::Photo, Part::Overlay].map(|part| {
+                canvas(CropCanvas::new(
+                    draft,
+                    handle.clone(),
+                    view,
+                    mode,
+                    option,
+                    part,
+                ))
+                .width(width)
+                .height(height)
+                .into()
+            }))
+        };
     match model.zoom {
         ZoomView::Fit => responsive(move |available| match View::fit(box_size, available) {
             Some(view) => parts(handle.clone(), view, Length::Fill, Length::Fill).into(),

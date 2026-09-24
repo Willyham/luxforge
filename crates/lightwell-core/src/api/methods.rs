@@ -6,8 +6,10 @@ use super::{
     MaskOverlayColour, MaskOverlayMode, POINTER_MODE, PROTOCOL,
 };
 use crate::{
-    ActionDescriptor, AssetId, ComponentId, Draft, DraftId, EditorService, EntryId, Error,
-    ErrorKind, HistorySelection, MaskId, ModuleRegistry, Mutation, MutationOutcome, PresetId, Zoom,
+    ActionDescriptor, ArtifactId, AssetId, ComponentId, Draft, DraftId, EditorService, EntryId,
+    Error, ErrorKind, HistorySelection, MaskId, ModuleRegistry, Mutation, MutationOutcome,
+    PresetId, Zoom,
+    capabilities::{descriptor::TaskDescriptor, host::TASK_PREFIX},
     mask::commands::{self as mask_commands, MaskCommand, MaskTarget},
     path,
 };
@@ -50,6 +52,16 @@ pub(super) const METHODS: &[MethodSpec] = &[
         required: &["job_id"],
         optional: &[],
         notes: "this client's bounded source job state; ready includes the committed asset state",
+        handler: None,
+    },
+    // The activity board belongs to the catalog owner, whose workers publish to it, so the owner
+    // answers from it: one lock and a copy, nothing rendered or read.
+    MethodSpec {
+        name: "activity.list",
+        mutates: false,
+        required: &[],
+        optional: &[],
+        notes: "{sequence, active, recent, untracked}: the host's running work oldest first, and up to 16 recent entries that ran at least 250 ms, newest first; each entry has id, kind, label and elapsed_ms, or outcome (completed, cancelled or failed), duration_ms and ended_ms_ago, plus detail, asset_id, phase, progress {done, total} and job_id when known; job_id names the job that job.status (source work) or analysis.read (histograms) also answers; sequence changes exactly when the contents do; needs no asset, takes no parameters, mutates nothing and emits no event",
         handler: None,
     },
     MethodSpec {
@@ -142,6 +154,175 @@ pub(super) const METHODS: &[MethodSpec] = &[
         optional: &[("asset_id", "filter controls for this asset source kind")],
         notes: "every registered module descriptor with its effects, actions, parameters and controls",
         handler: Some(module_list),
+    },
+    // Module settings are answered by the catalog owner, which holds the capability host: the
+    // settings directory and the secret store. They are user-level, outside every catalog, and
+    // never create history entries.
+    MethodSpec {
+        name: "module.settings.read",
+        mutates: false,
+        required: &["module_id"],
+        optional: &[],
+        notes: "{module_id, schema, revision, state, fields, profiles}: each field's value, default, source (user or default) and validity, a secret field as {secret_present} only, and each profile's status (ready, incomplete, missing-credentials or incompatible); state is ready, incomplete or incompatible",
+        handler: None,
+    },
+    MethodSpec {
+        name: "module.settings.set",
+        mutates: true,
+        required: &["module_id", "values", "mutation"],
+        optional: &[(
+            "profile_id",
+            "the profile whose fields to set; default the module's own fields",
+        )],
+        notes: "validates the named non-secret fields against their kinds and commits them together; null returns a field to its default; an endpoint is stored as the URL the transport policy accepts and a file as its canonical path; a secret field is refused; mutation.expected_revision is the module's settings revision; returns {outcome, revision, changed, invalidates_activation, settings}",
+        handler: None,
+    },
+    MethodSpec {
+        name: "module.settings.set-secret",
+        mutates: true,
+        required: &["module_id", "setting", "value", "mutation"],
+        optional: &[(
+            "profile_id",
+            "the profile whose secret to set; default the module's own",
+        )],
+        notes: "stores one secret field's value in the secure store and never echoes it; a retry is matched by the setting alone; not-ready names a locked or unavailable store and nothing is kept in plain text",
+        handler: None,
+    },
+    MethodSpec {
+        name: "module.settings.clear-secret",
+        mutates: true,
+        required: &["module_id", "setting", "mutation"],
+        optional: &[(
+            "profile_id",
+            "the profile whose secret to clear; default the module's own",
+        )],
+        notes: "removes only that secret from the secure store; an absent secret is a no-op",
+        handler: None,
+    },
+    MethodSpec {
+        name: "module.settings.reset",
+        mutates: true,
+        required: &["module_id", "mutation"],
+        optional: &[],
+        notes: "deletes the module's stored values and profiles and clears their secrets; the one write an incompatible entry accepts; the revision keeps counting",
+        handler: None,
+    },
+    MethodSpec {
+        name: "module.profile.create",
+        mutates: true,
+        required: &["module_id", "adapter", "label", "mutation"],
+        optional: &[],
+        notes: "a new empty provider profile of a declared adapter with a host-generated profile-<uuid> identity, at most the module's declared maximum; returns it as profile",
+        handler: None,
+    },
+    MethodSpec {
+        name: "module.profile.remove",
+        mutates: true,
+        required: &["module_id", "profile_id", "mutation"],
+        optional: &[],
+        notes: "clears the profile's secrets and removes it and its values, revokes the profile's grants and returns the removed profile",
+        handler: None,
+    },
+    // Permissions, activation, resources and capability jobs are answered by the catalog owner
+    // too: grants live beside the settings, and the jobs, lanes and activation state live there.
+    MethodSpec {
+        name: "module.permission.grant",
+        mutates: true,
+        required: &["module_id", "capability", "scope", "request_id"],
+        optional: &[],
+        notes: "grants one exact scope of a declared capability; only a client with permission authority may, otherwise forbidden; scope is {path} for read-user-file (the canonical path its file setting holds now), {resource, version, origin} for download-artifact (the declared version from the origin of its pinned URL) or {profile_id, adapter, origin, data, asset_id} for remote-image-request (an existing profile of that adapter whose endpoint has that origin, the capability's data class and an asset of this catalog); clears a matching denial; a retried request_id returns the same grant; returns {grant, outcome, deduplicated}",
+        handler: None,
+    },
+    MethodSpec {
+        name: "module.permission.deny",
+        mutates: true,
+        required: &["module_id", "capability", "scope"],
+        optional: &[],
+        notes: "records that the person did not allow one exact scope; the next consent-required for it reports denied: true; any client may; returns {denial}",
+        handler: None,
+    },
+    MethodSpec {
+        name: "module.permission.revoke",
+        mutates: true,
+        required: &["grant_id"],
+        optional: &[("reason", "1..256 characters; default revoked")],
+        notes: "marks the grant revoked and cancels the queued and running jobs that depend on it with cancelled: permission revoked; never touches recipes, history or artifacts; any client may; returns {grant, outcome, cancelled_jobs}",
+        handler: None,
+    },
+    MethodSpec {
+        name: "module.permission.list",
+        mutates: false,
+        required: &[],
+        optional: &[("module_id", "one module's grants and denials; default all")],
+        notes: "{grants, denials}: every grant, revoked ones with {revoked: {ms, reason}}, and every recorded denial; none holds a secret",
+        handler: None,
+    },
+    MethodSpec {
+        name: "module.activate",
+        mutates: true,
+        required: &["module_id"],
+        optional: &[],
+        notes: "checks the module's declared required settings and resources and fails with not-ready and data.requirements [{kind, id, state}] listing every missing one before anything is queued; otherwise queues its activation on the module lane, or joins the one queued or running; returns {module_id, activation, job_id?, status?}; an active module answers activation: active with no job",
+        handler: None,
+    },
+    MethodSpec {
+        name: "module.deactivate",
+        mutates: true,
+        required: &["module_id"],
+        optional: &[],
+        notes: "supersedes a queued activation, cancels a running one, or marks an active module inactive and queues the release of what it loaded after the module lane's earlier work; never deletes a resource or an edit; returns {module_id, activation, job_id?, status?}",
+        handler: None,
+    },
+    MethodSpec {
+        name: "module.status",
+        mutates: false,
+        required: &["module_id"],
+        optional: &[],
+        notes: "{module_id, activation: {state, reason?, job_id?, error?}, settings: {state, revision, missing}, resources, permissions: {grants, denials}, jobs}; state is inactive, activating, active or failed; reads settings, stats installed markers and reads grants, and loads nothing",
+        handler: None,
+    },
+    MethodSpec {
+        name: "module.resource.list",
+        mutates: false,
+        required: &["module_id"],
+        optional: &[],
+        notes: "{resources: [{id, title, version, bytes, sha256, license, provenance, url, state, path?, installed_ms?, job_id?, error?}], storage: {root, used_bytes, quota_bytes}}; state is not-installed, installing, installed or failed; stats only, no hashing",
+        handler: None,
+    },
+    MethodSpec {
+        name: "module.resource.install",
+        mutates: true,
+        required: &["module_id", "resource_id"],
+        optional: &[(
+            "source",
+            "{kind: download} (default), which needs the download-artifact grant, or {kind: file, path} to copy a local file, which needs none because only the pinned bytes are accepted",
+        )],
+        notes: "queues a transfer-lane job that streams into staging, checks the pinned length and SHA-256, asks the module to check the format, checks the storage quota and only then installs; consent-required and resource-limit are reported before anything is queued; an installed resource answers state: installed and a second request joins the running install; returns {module_id, resource_id, state, job_id?, status?}",
+        handler: None,
+    },
+    MethodSpec {
+        name: "module.resource.remove",
+        mutates: true,
+        required: &["module_id", "resource_id"],
+        optional: &[],
+        notes: "queues a transfer-lane job that deletes the installed version; a module that requires it and is active or activating is deactivated first; never touches a catalog, recipe or artifact; returns {module_id, resource_id, state, job_id?, status?}",
+        handler: None,
+    },
+    MethodSpec {
+        name: "module.job.read",
+        mutates: false,
+        required: &["job_id"],
+        optional: &[],
+        notes: "{job_id, kind, module_id, resource_id?, status, progress: {fraction?, message?}, result?, error?: {code, message, data?}, request_id?}; kind is activate, deactivate, install, remove or task; status is queued, running, succeeded, failed, cancelled or superseded; any client may read any capability job; the owner keeps the last 32 finished",
+        handler: None,
+    },
+    MethodSpec {
+        name: "module.job.cancel",
+        mutates: true,
+        required: &["job_id"],
+        optional: &[],
+        notes: "removes a queued job as cancelled, or asks a running one to stop at its next checkpoint; a finished job is returned unchanged; a deactivation cannot be cancelled; any client may; returns the job",
+        handler: None,
     },
     MethodSpec {
         name: "history.undo",
@@ -349,6 +530,14 @@ pub(super) const METHODS: &[MethodSpec] = &[
         handler: Some(session_state),
     },
     MethodSpec {
+        name: "resources.read",
+        mutates: false,
+        required: &[],
+        optional: &[],
+        notes: "what the operating system accounts to this process: {monotonic_ns, cpu: {time_ns, logical_cpus}, memory: {kind, bytes, peak_bytes, resident_bytes}, gpu: {time_ns, allocated_bytes, unified_memory}, budgets: {colour_scratch, spatial} each {target_bytes, in_use_bytes, peak_bytes}}; times are nanoseconds and sizes bytes; memory.kind is footprint (macOS, Activity Monitor's Memory, including GPU allocations on unified memory), resident (Linux) or private (Windows); time counters are cumulative, so a rate comes from two reads: CPU percent of one core is 100 × Δcpu.time_ns / Δmonotonic_ns, up to 100 × logical_cpus, and GPU percent is the same over gpu.time_ns; monotonic_ns means something only as a difference; a counter the platform cannot give is omitted and its object's unavailable maps its key to the reason; takes no parameters, needs no asset, emits no event and changes nothing",
+        handler: Some(resources_read),
+    },
+    MethodSpec {
         name: "draft.begin",
         mutates: false,
         required: &["asset_id", "action"],
@@ -472,10 +661,44 @@ pub(super) const METHODS: &[MethodSpec] = &[
         notes: "drops this client's interest in the job and cancels the work only when no other client holds it; returns {cancelled: true}",
         handler: None,
     },
+    MethodSpec {
+        name: "artifact.status",
+        mutates: false,
+        required: &[],
+        optional: &[],
+        notes: "the catalog's derived-artifact root and its state (absent, ready, missing or foreign), the catalog_id its manifest must name, and how many artifacts entries reference, how many a collection would remove and their recorded bytes; reads the manifest and counts rows only",
+        handler: Some(artifact_status),
+    },
+    MethodSpec {
+        name: "artifact.inspect",
+        mutates: false,
+        required: &["artifact_id"],
+        optional: &[],
+        notes: "one artifact's record (hash, bytes, kind, dimensions, colour, publishing module, time), whether its file is present, missing or of the wrong length, how many entries reference it and whether a task of this process published it; stats only",
+        handler: Some(artifact_inspect),
+    },
+    // Relocation and collection run on the source worker and are read with job.status, so the
+    // catalog owner answers them. Both emit their event when the request is accepted.
+    MethodSpec {
+        name: "artifact.relocate",
+        mutates: true,
+        required: &["directory"],
+        optional: &[],
+        notes: "queues a source job that checks the directory's manifest names this catalog and every referenced artifact's hash there, then records it as the artifact root; any mismatch fails the job naming the first bad artifact and changes nothing; returns {job_id, status}",
+        handler: None,
+    },
+    MethodSpec {
+        name: "artifact.collect",
+        mutates: true,
+        required: &[],
+        optional: &[],
+        notes: "removes the rows of artifacts no entry references and no task of this process published, then queues a source job that removes their files, object files without a row and staged files older than an hour; nothing an entry references is touched; returns {job_id, status} and the job result counts {rows, objects, temporary}",
+        handler: None,
+    },
 ];
 
 /// A resolved method: a host method from the static table, or one generated from a registered
-/// module action or query. All three come from the same lookup discovery uses.
+/// module action, query or task. All four come from the same lookup discovery uses.
 pub(super) enum Method {
     Host(&'static MethodSpec),
     Action(String),
@@ -484,6 +707,9 @@ pub(super) enum Method {
     /// A host command of the `mask.*` family, declared with the same descriptor types a module
     /// action uses and dispatched through the same lookup.
     Mask(&'static MaskCommand),
+    /// A module's worker task. The request queues a capability job and changes nothing itself; the
+    /// catalog owner answers it and announces the task when it succeeds.
+    Task,
 }
 
 impl Method {
@@ -491,13 +717,17 @@ impl Method {
         match self {
             Self::Host(spec) => spec.mutates,
             Self::Action(_) => true,
-            Self::Query(_) => false,
             Self::Mask(command) => command.mutates,
+            Self::Query(_) | Self::Task => false,
         }
     }
     /// `true` for the methods the owner loop answers from its own state.
     pub(super) fn owner_answered(&self) -> bool {
-        matches!(self, Self::Host(spec) if spec.handler.is_none())
+        match self {
+            Self::Host(spec) => spec.handler.is_none(),
+            Self::Task => true,
+            Self::Action(_) | Self::Query(_) | Self::Mask(_) => false,
+        }
     }
 }
 
@@ -512,6 +742,12 @@ pub(super) fn query_method(query_id: &str) -> String {
     format!("query.{query_id}")
 }
 
+/// Task method names are generated in a third namespace: task `generate-proof-tint` is
+/// `task.generate-proof-tint`.
+pub(super) fn task_method(task_id: &str) -> String {
+    format!("{TASK_PREFIX}{task_id}")
+}
+
 pub(super) fn find(service: &EditorService, name: &str) -> Option<Method> {
     if let Some(spec) = METHODS.iter().find(|spec| spec.name == name) {
         return Some(Method::Host(spec));
@@ -524,6 +760,9 @@ pub(super) fn find(service: &EditorService, name: &str) -> Option<Method> {
             .registry()
             .action(action_id)
             .map(|_| Method::Action(action_id.to_owned()));
+    }
+    if let Some(task_id) = name.strip_prefix(TASK_PREFIX) {
+        return service.registry().task(task_id).map(|_| Method::Task);
     }
     let query_id = name.strip_prefix("query.")?;
     service
@@ -552,7 +791,7 @@ pub(super) fn dispatch(
             handler: Some(handler),
             ..
         })) => handler(service, session, &request.params),
-        Some(Method::Host(_)) => Err(Error::new(
+        Some(Method::Host(_) | Method::Task) => Err(Error::new(
             ErrorKind::Protocol,
             format!("{} is answered by the catalog owner", request.method),
         )),
@@ -637,6 +876,37 @@ fn query_schema(query: &ActionDescriptor) -> Value {
     })
 }
 
+/// One generated task description. `asset_id` and `profile_id` are the envelope when the task
+/// declares them, and the remaining top-level fields are its own declared parameters. The request
+/// itself changes nothing: it queues a task job and answers `{job_id, status}`.
+fn task_schema(task: &TaskDescriptor) -> Value {
+    let mut required = Vec::new();
+    if task.asset {
+        required.push(json!("asset_id"));
+    }
+    if task.profile {
+        required.push(json!("profile_id"));
+    }
+    let mut optional = Map::new();
+    for parameter in &task.parameters {
+        if parameter.required && parameter.default.is_none() {
+            required.push(json!(parameter.name));
+        } else {
+            optional.insert(parameter.name.clone(), json!(parameter.notes));
+        }
+    }
+    json!({
+        "mutates": false,
+        "required": required,
+        "optional": optional,
+        "notes": format!(
+            "{} Checks the task's requirements (not-ready with data.requirements) and a live grant for each capability it uses (consent-required naming the first missing one) before anything is queued, then queues a task job on the module lane; returns {{job_id, status}}; module.job.read reports {{result, artifacts}} when it succeeds",
+            task.notes
+        ),
+        "parameters": task.parameters,
+    })
+}
+
 pub fn schemas(registry: &ModuleRegistry) -> Value {
     let mut methods: Map<String, Value> = METHODS
         .iter()
@@ -672,6 +942,9 @@ pub fn schemas(registry: &ModuleRegistry) -> Value {
         }
         for query in &descriptor.queries {
             methods.insert(query_method(&query.id), query_schema(query));
+        }
+        for task in &descriptor.tasks {
+            methods.insert(task_method(&task.id), task_schema(task));
         }
     }
     json!({
@@ -1436,6 +1709,33 @@ fn session_state(
     session_value(service, session)
 }
 
+/// The process's resource counters and working-memory budgets. It takes no parameters and says so
+/// when given one, so a client that expects an option here learns there is none.
+fn resources_read(
+    _: &mut EditorService,
+    _: &mut ClientSession,
+    params: &Value,
+) -> Result<Value, Error> {
+    match params {
+        Value::Null => {}
+        Value::Object(object) => {
+            if let Some(name) = object.keys().next() {
+                return Err(Error::new(
+                    ErrorKind::Validation,
+                    format!("unknown parameter {name}; resources.read takes none"),
+                ));
+            }
+        }
+        _ => {
+            return Err(Error::new(
+                ErrorKind::Validation,
+                "params must be a JSON object",
+            ));
+        }
+    }
+    value(crate::resources::read())
+}
+
 fn render_sample(
     service: &mut EditorService,
     session: &mut ClientSession,
@@ -1741,6 +2041,34 @@ fn render_locate(
     value(service.locate_entry(&p.asset_id, &entry_id, p.x, p.y)?)
 }
 
+fn artifact_status(
+    service: &mut EditorService,
+    _: &mut ClientSession,
+    params: &Value,
+) -> Result<Value, Error> {
+    #[derive(Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct P {}
+    if !params.is_null() {
+        parse::<P>(params)?;
+    }
+    service.artifact_status()
+}
+
+fn artifact_inspect(
+    service: &mut EditorService,
+    _: &mut ClientSession,
+    params: &Value,
+) -> Result<Value, Error> {
+    #[derive(Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct P {
+        artifact_id: ArtifactId,
+    }
+    let p = parse::<P>(params)?;
+    service.inspect_artifact(&p.artifact_id)
+}
+
 /// The geometry tail of one entry as a single affine map. Read-only in every sense: it resolves the
 /// entry exactly as `render.locate` does, compiles the stack, composes the tail and touches nothing —
 /// no history entry, no event, no session state. A gesture asks once and maps pointer positions
@@ -2033,6 +2361,31 @@ mod tests {
                 "notes": listed["recipe.describe"]["notes"],
             })
         );
+        // The capability host's methods follow module.list in the table, are answered by the
+        // catalog owner and say which of them write.
+        let listing = METHODS
+            .iter()
+            .position(|spec| spec.name == "module.list")
+            .unwrap();
+        for (offset, (name, writes)) in crate::capabilities::host::METHODS.iter().enumerate() {
+            let spec = &METHODS[listing + 1 + offset];
+            assert_eq!(spec.name, *name);
+            assert!(spec.handler.is_none(), "{name} is answered by the owner");
+            assert_eq!(spec.mutates, *writes, "{name}");
+            assert!(listed.contains_key(*name));
+        }
+        assert_eq!(
+            listed["module.settings.set-secret"]["required"],
+            json!(["module_id", "setting", "value", "mutation"])
+        );
+        assert_eq!(
+            listed["module.settings.set"]["optional"]
+                .as_object()
+                .unwrap()
+                .keys()
+                .collect::<Vec<_>>(),
+            ["profile_id"]
+        );
         // The preset library's host methods, in table order, with their parameters.
         assert_eq!(
             METHODS
@@ -2267,6 +2620,152 @@ mod tests {
                 .contains("number parameter"),
             "the schema describes number parameters"
         );
+        drop(service);
+        std::fs::remove_file(catalog).unwrap();
+    }
+
+    /// `resources.read` is a host method in the table: listed after `session.state` with notes
+    /// that state its units and how a rate is derived, answered by its own handler with the
+    /// documented objects, refusing parameters it does not take, and never the cause of an event.
+    #[test]
+    fn resources_read_is_listed_and_answers_through_the_method_table() {
+        let catalog = std::env::temp_dir().join(format!(
+            "lightwell-methods-resources-{}.sqlite",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_file(&catalog);
+        let mut service = EditorService::open(&catalog).unwrap();
+        let mut session = ClientSession::default();
+        let names: Vec<&str> = METHODS.iter().map(|spec| spec.name).collect();
+        let index = names
+            .iter()
+            .position(|name| *name == "resources.read")
+            .expect("resources.read is a host method");
+        assert_eq!(names[index - 1], "session.state");
+        let schema = ok(&mut service, &mut session, "schema.list", json!({}));
+        let listed = &schema["methods"]["resources.read"];
+        assert_eq!(listed["mutates"], json!(false));
+        assert_eq!(listed["required"], json!([]));
+        assert_eq!(listed["optional"], json!({}));
+        let notes = listed["notes"].as_str().expect("notes");
+        for phrase in [
+            "times are nanoseconds and sizes bytes",
+            "100 × Δcpu.time_ns / Δmonotonic_ns",
+            "unavailable maps its key to the reason",
+            "needs no asset, emits no event and changes nothing",
+        ] {
+            assert!(notes.contains(phrase), "the notes say {phrase:?}");
+        }
+        let method = find(&service, "resources.read").expect("found");
+        assert!(!method.owner_answered(), "its handler answers it");
+        for params in [json!({}), Value::Null] {
+            let read = ok(&mut service, &mut session, "resources.read", params);
+            let mut keys: Vec<&str> = read
+                .as_object()
+                .expect("an object")
+                .keys()
+                .map(String::as_str)
+                .collect();
+            keys.sort_unstable();
+            assert_eq!(keys, ["budgets", "cpu", "gpu", "memory", "monotonic_ns"]);
+            assert!(read["cpu"]["logical_cpus"].is_u64());
+            assert!(read["memory"]["kind"].is_string());
+            assert!(read["budgets"]["colour_scratch"]["target_bytes"].is_u64());
+            assert!(read["budgets"]["spatial"]["target_bytes"].is_u64());
+            assert!(
+                !mutates(&method, Some(&read)),
+                "the owner records no event for a read"
+            );
+        }
+        for (params, message) in [
+            (json!({"interval": 1}), "unknown parameter interval"),
+            (json!([]), "params must be a JSON object"),
+        ] {
+            let error = call(&mut service, &mut session, "resources.read", params)
+                .error
+                .expect("refused");
+            assert_eq!(error.code, "validation");
+            assert!(error.message.contains(message), "{}", error.message);
+        }
+        assert_eq!(
+            session,
+            ClientSession::default(),
+            "the session is untouched"
+        );
+        drop(service);
+        std::fs::remove_file(catalog).unwrap();
+    }
+
+    /// A declared task generates exactly one `task.<id>` method, listed by `schema.list` and
+    /// resolved by the same lookup dispatch uses, and it is the catalog owner's to answer.
+    #[test]
+    fn a_declared_task_generates_one_owner_answered_method_that_discovery_and_dispatch_share() {
+        let catalog = std::env::temp_dir().join(format!(
+            "lightwell-methods-tasks-{}.sqlite",
+            std::process::id()
+        ));
+        let mut registry = ModuleRegistry::builtin();
+        registry
+            .register(Arc::new(crate::CapabilitiesProofModule::new(
+                "http://127.0.0.1:9",
+            )))
+            .unwrap();
+        let mut service = EditorService::open_with(&catalog, Arc::new(registry)).unwrap();
+        let mut session = ClientSession::default();
+        let registry = service.registry().clone();
+        let descriptors = registry.descriptors();
+        let count = |kind: fn(&ModuleDescriptor) -> usize| -> usize {
+            descriptors.iter().map(|descriptor| kind(descriptor)).sum()
+        };
+        let tasks: Vec<String> = descriptors
+            .iter()
+            .flat_map(|descriptor| descriptor.tasks.iter())
+            .map(|task| task_method(&task.id))
+            .collect();
+        assert_eq!(tasks, ["task.generate-proof-tint"]);
+        let schema = schemas(&registry);
+        let listed = schema["methods"].as_object().unwrap();
+        assert_eq!(
+            listed.len(),
+            METHODS.len()
+                + mask_commands::all().len()
+                + count(|descriptor| descriptor.actions.len())
+                + count(|descriptor| descriptor.queries.len())
+                + tasks.len()
+        );
+        for name in listed.keys() {
+            let method = find(&service, name).expect("every listed method resolves");
+            assert_eq!(
+                name.starts_with(TASK_PREFIX),
+                matches!(method, Method::Task),
+                "{name}"
+            );
+        }
+        let method = find(&service, &tasks[0]).unwrap();
+        assert!(method.owner_answered());
+        assert!(
+            !method.mutates(),
+            "the request queues a job and writes nothing"
+        );
+        let response = dispatch(
+            &mut service,
+            &mut session,
+            &ApiRequest {
+                id: "task".into(),
+                method: tasks[0].clone(),
+                params: json!({}),
+                token: None,
+            },
+            0,
+        );
+        assert_eq!(response.error.unwrap().code, "protocol");
+        assert_eq!(
+            listed[&tasks[0]]["parameters"],
+            json!([]),
+            "its declared parameters"
+        );
+        assert!(find(&service, "task.missing").is_none());
+        assert!(find(&service, "generate-proof-tint").is_none());
         drop(service);
         std::fs::remove_file(catalog).unwrap();
     }
@@ -2515,6 +3014,7 @@ mod tests {
                     stage: EffectStage::Geometry,
                     order: 0,
                     maskable: false,
+                    artifacts: false,
                 }],
                 actions: vec![ActionDescriptor {
                     id: "test-angle".into(),
@@ -2548,6 +3048,7 @@ mod tests {
                 collapsed: false,
                 layout: crate::ModuleLayout::Stacked,
                 availability: Availability::Available,
+                ..ModuleDescriptor::default()
             },
             seen: seen.clone(),
         };
@@ -2619,6 +3120,7 @@ mod tests {
                     stage: EffectStage::Geometry,
                     order: 0,
                     maskable: false,
+                    artifacts: false,
                 }],
                 actions: vec![ActionDescriptor {
                     id: MARK_ACTION.into(),
@@ -2636,6 +3138,7 @@ mod tests {
                 collapsed: false,
                 layout: crate::ModuleLayout::Stacked,
                 availability,
+                ..ModuleDescriptor::default()
             }))
         }
 
@@ -2663,6 +3166,7 @@ mod tests {
                 effect_format: EFFECT_FORMAT,
                 payload: json!({}),
                 mask: None,
+                artifacts: Vec::new(),
             }))
         }
         fn validate_payload(&self, _: &str, _: u32, _: &Value) -> Result<(), Error> {

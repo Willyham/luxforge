@@ -29,3 +29,7 @@ The workspace's text is set in Inter 4.1 (SIL Open Font License 1.1), vendored a
 ## RAW implementation dependencies
 
 The [RAW backend selection](../research/raw-backend-selection.md) records pinned decoder/development candidates and why their processing stages are separate. The standalone Rawler comparison workspace has its own lockfile and is not an application runtime dependency. The private native adapter vendors the chosen LibRaw/librtprocess source with upstream notices and build configuration. These additions require the same source/notice and portable packaging checks; their experiments do not complete the deferred manual audit.
+
+## Module capability dependencies
+
+The [module capabilities](../design/module-capabilities.md) transport and secret store add `rustls` 0.23.45 with only the `ring` provider (no aws-lc-rs or CMake) and TLS 1.2/1.3, `rustls-platform-verifier` 0.7.0 so certificates are checked by the operating system's own verifier on macOS and Windows (native roots with webpki on Linux), `url` 2.5.8, `security-framework` 3.7.0 for the macOS Keychain (macOS only, keychain item APIs only) and `zeroize` 1.9.0. `ring` carries native C and assembly. The verifier's CDLA-licensed root bundle is a wasm32-only dependency, outside the three audited target graphs, so `deny.toml` is unchanged and the license and source checks pass. As with every other dependency, passing the automated checks is not the deferred manual review.

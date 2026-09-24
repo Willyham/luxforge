@@ -251,6 +251,7 @@ fn a_mixed_kind_mask_renders_exactly_as_the_reference_composes_it() {
                     effect_format: EFFECT_FORMAT,
                     payload: json!({"exposure": MASKED_EV}),
                     mask: Some(mask.id.clone()),
+                    artifacts: Vec::new(),
                 }],
                 masks: vec![mask.clone()],
                 ..Recipe::default()
@@ -344,6 +345,7 @@ fn invert_applies_before_amount_and_the_reference_agrees() {
             effect_format: EFFECT_FORMAT,
             payload: json!({"exposure": MASKED_EV}),
             mask: Some(mask.id.clone()),
+            artifacts: Vec::new(),
         }],
         masks: vec![mask.clone()],
         ..Recipe::default()
@@ -904,6 +906,7 @@ fn a_brush_subtracting_from_a_gradient_renders_exactly_as_the_reference_composes
                 effect_format: EFFECT_FORMAT,
                 payload: json!({"exposure": MASKED_EV}),
                 mask: Some(mask.id.clone()),
+                artifacts: Vec::new(),
             }],
             masks: vec![mask],
             strokes: table,

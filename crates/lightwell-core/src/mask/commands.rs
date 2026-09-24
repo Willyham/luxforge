@@ -2363,6 +2363,7 @@ static CONTROLS: LazyLock<Vec<Control>> = LazyLock::new(|| {
             label: "Amount".to_owned(),
             style: NumberStyle::Slider,
             rail: None,
+            reset: None,
         },
         Control::Toggle {
             action: "mask.set-invert".to_owned(),
@@ -2408,6 +2409,7 @@ static CONTROLS: LazyLock<Vec<Control>> = LazyLock::new(|| {
                     parameter: parameter.name,
                     style: NumberStyle::Field,
                     rail: None,
+                    reset: None,
                 }),
         );
     }
@@ -3224,6 +3226,7 @@ mod tests {
             effect_format: crate::EFFECT_FORMAT,
             payload: json!({}),
             mask: Some(recipe.masks[0].id.clone()),
+            artifacts: Vec::new(),
         });
         let full = format!(
             "recipe already has {MASKS_PER_RECIPE} masks; the limit is {MASKS_PER_RECIPE} masks \
@@ -3391,6 +3394,7 @@ mod tests {
             effect_format: crate::EFFECT_FORMAT,
             payload: json!({}),
             mask: bound.cloned(),
+            artifacts: Vec::new(),
         };
         let global = layer(crate::BASIC_EFFECT, None);
         recipe.layers = vec![
@@ -3467,6 +3471,7 @@ mod tests {
                 effect_format: crate::EFFECT_FORMAT,
                 payload: json!({}),
                 mask: Some(mask.clone()),
+                artifacts: Vec::new(),
             });
         }
         let global = Layer {
@@ -3475,6 +3480,7 @@ mod tests {
             effect_format: crate::EFFECT_FORMAT,
             payload: json!({}),
             mask: None,
+            artifacts: Vec::new(),
         };
         recipe.layers.insert(0, global.clone());
         let deleted = apply(
@@ -3524,6 +3530,7 @@ mod tests {
             effect_format: crate::EFFECT_FORMAT,
             payload: json!({}),
             mask: Some(mask.clone()),
+            artifacts: Vec::new(),
         };
         let global = Layer {
             id: LayerId::new(),
@@ -3531,6 +3538,7 @@ mod tests {
             effect_format: crate::EFFECT_FORMAT,
             payload: json!({}),
             mask: None,
+            artifacts: Vec::new(),
         };
         recipe.layers = vec![
             global.clone(),
@@ -3589,6 +3597,7 @@ mod tests {
             effect_format: crate::EFFECT_FORMAT,
             payload: json!({}),
             mask: Some(mask.clone()),
+            artifacts: Vec::new(),
         };
         recipe.layers.push(layer.clone());
         // A kind this build cannot evaluate is listed, kept and reported as unavailable.

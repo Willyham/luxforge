@@ -2,7 +2,7 @@ use crate::{
     Error, ErrorKind, Layer, Recipe, SnapshotId, SourceImage,
     mask_field::{MaskField, MaskSampling},
     modules::{
-        ColorOperation, ExactGeometry, ModuleRegistry, Processing, Region, Resample,
+        ColorOperation, ExactGeometry, ModuleRegistry, Parallelism, Processing, Region, Resample,
         SpatialOperation, Stage,
     },
 };
@@ -20,7 +20,8 @@ pub mod linear;
 pub mod spatial;
 pub(crate) use linear::render_linear_proxy_cancellable;
 pub use linear::{
-    LinearImage, LinearSettings, render_linear, render_linear_cancellable, sample_linear,
+    LinearImage, LinearSettings, WhiteBalanceApproximation, render_linear,
+    render_linear_cancellable, sample_linear,
 };
 use spatial::{
     PRODUCTION_TILE, SpatialPlan, build_reduction, fill_planes, resolve_globals, run_batches,
@@ -136,15 +137,20 @@ fn linear_to_srgb(linear: f64) -> u8 {
     (encoded * 255.0).round() as u8
 }
 
-/// The default aggregate limit on transient float scratch: 64 MiB across every active render.
+/// The default aggregate target for transient float scratch: 64 MiB across every active render.
 const DEFAULT_SCRATCH_BYTES: u64 = 64 * 1024 * 1024;
 
-/// A process-wide bound on the transient float buffers a render streams through. Frames have their
-/// own 512 MiB limit; this bounds everything that is neither a frame nor the source, so a colour
-/// pass can never trade a bounded frame for unbounded scratch. Reservations are taken before the
-/// allocation they pay for and released when it is dropped.
+/// A process-wide account of the transient float buffers a render streams through. Frames have
+/// their own 512 MiB limit; this covers everything that is neither a frame nor the source, so a
+/// colour pass never trades a bounded frame for scratch nobody counts. Reservations are taken
+/// before the allocation they pay for and released when it is dropped.
+///
+/// It is a target, not a limit. What keeps scratch inside it is the row chunk, sized so one chunk
+/// per pool worker stays well below the target; a chunk that finds the target taken — because more
+/// renders overlap than the sizing assumed, or the target was lowered — still runs, and
+/// [`Self::peak`] shows the overshoot. Nothing here refuses work.
 pub struct ScratchBudget {
-    limit: AtomicU64,
+    target: AtomicU64,
     used: AtomicU64,
     /// The largest `used` any reservation ever reached, so a process that is idle when it is asked
     /// can still report what the budget actually had to carry. It is only ever raised.
@@ -152,7 +158,7 @@ pub struct ScratchBudget {
 }
 
 static SCRATCH_BUDGET: ScratchBudget = ScratchBudget {
-    limit: AtomicU64::new(DEFAULT_SCRATCH_BYTES),
+    target: AtomicU64::new(DEFAULT_SCRATCH_BYTES),
     used: AtomicU64::new(0),
     peak: AtomicU64::new(0),
 };
@@ -165,14 +171,14 @@ impl ScratchBudget {
         &SCRATCH_BUDGET
     }
 
-    pub fn limit(&self) -> u64 {
-        self.limit.load(Ordering::Relaxed)
+    pub fn target(&self) -> u64 {
+        self.target.load(Ordering::Relaxed)
     }
 
-    /// Set the limit and return the previous one. Lowering it below what is already reserved does
-    /// not free anything; the next reservation is what fails.
-    pub fn set_limit(&self, bytes: u64) -> u64 {
-        self.limit.swap(bytes, Ordering::SeqCst)
+    /// Set the target and return the previous one. It changes nothing a reservation does; it is
+    /// the figure the high-water mark is read against.
+    pub fn set_target(&self, bytes: u64) -> u64 {
+        self.target.swap(bytes, Ordering::SeqCst)
     }
 
     pub fn in_use(&self) -> u64 {
@@ -181,37 +187,27 @@ impl ScratchBudget {
 
     /// The high-water mark of [`Self::in_use`] since the process started. A render's scratch is
     /// released as soon as its chunk is done, so `in_use` observed from outside a pass is almost
-    /// always zero; this is what makes the budget observable after the fact.
+    /// always zero; this is what makes the budget observable after the fact, including a peak
+    /// above the target.
     pub fn peak(&self) -> u64 {
         self.peak.load(Ordering::Relaxed)
     }
 
-    /// Reserve `bytes` or fail with `ResourceLimit`. The reservation is released when the returned
-    /// guard is dropped, including on an early return from the work it covers.
-    fn reserve(&self, bytes: usize) -> Result<Reservation<'_>, Error> {
+    /// Reserve `bytes`. It never fails. The reservation is released when the returned guard is
+    /// dropped, including on an early return from the work it covers.
+    fn reserve(&self, bytes: usize) -> Reservation<'_> {
         let bytes = bytes as u64;
-        let limit = self.limit();
         let total = self
             .used
-            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |used| {
-                used.checked_add(bytes).filter(|total| *total <= limit)
-            })
-            .map_err(|used| {
-                Error::new(
-                    ErrorKind::ResourceLimit,
-                    format!(
-                        "colour processing needs {bytes} bytes of scratch, and {used} of the {limit} byte budget is in use"
-                    ),
-                )
-            })?
-            + bytes;
+            .fetch_add(bytes, Ordering::SeqCst)
+            .saturating_add(bytes);
         // One relaxed maximum beside the reservation that already happened: the counter is only
         // read by diagnostics, so no other value depends on the order it becomes visible in.
         self.peak.fetch_max(total, Ordering::Relaxed);
-        Ok(Reservation {
+        Reservation {
             budget: self,
             bytes,
-        })
+        }
     }
 }
 
@@ -570,7 +566,7 @@ fn apply_color_run(
         cancel.check()?;
         let count = chunk.len() / 4;
         let _reservation =
-            ScratchBudget::default().reserve(count * std::mem::size_of::<[f32; 3]>())?;
+            ScratchBudget::default().reserve(count * std::mem::size_of::<[f32; 3]>());
         // One row of snapshot scratch for a masked operation's own input, reserved before it
         // allocates and released with the chunk. It is a row and not a chunk because `apply_units`
         // is handed one row at a time; nothing here scales with the frame, and an unmasked run takes
@@ -578,7 +574,7 @@ fn apply_color_run(
         let (_snapshot_reservation, mut snapshot) = if masked {
             let pixels = width as usize;
             (
-                Some(ScratchBudget::default().reserve(pixels * std::mem::size_of::<[f32; 3]>())?),
+                Some(ScratchBudget::default().reserve(pixels * std::mem::size_of::<[f32; 3]>())),
                 vec![[0.0f32; 3]; pixels],
             )
         } else {
@@ -1012,7 +1008,7 @@ impl Entry {
 /// existing sRGB table, runs its unit chain over stage-aligned tiles and quantizes each tile into a
 /// new frame of the same size with the existing exact-threshold quantizer. Alpha is copied from the
 /// input; no full-frame float buffer exists at any point, only one tile's working set per tile in
-/// flight, charged to the spatial budget before the first tile allocates.
+/// flight, charged to the spatial budget before each batch of tiles allocates.
 #[allow(clippy::too_many_arguments)]
 fn spatial_frame(
     input: &[u8],
@@ -1036,19 +1032,30 @@ fn spatial_frame(
         build_reduction(stage, read)
     })?;
     let mut output = vec![0; Raster::expected_len(stage.width, stage.height)?];
-    let _reservation = spatial::reserve_batch(&plan)?;
     run_batches(
         &plan,
         cancel,
-        |tile| -> Result<Vec<u8>, Error> {
-            let (region, values) = run_tile(&plan, operation, &globals, tile, |region, planes| {
-                fill_planes(region, planes, read)
-            })?;
-            let mut bytes = Vec::with_capacity((tile.pixels() * 3) as usize);
-            for y in tile.y0..tile.y1() {
-                for x in tile.x0..tile.x1() {
-                    bytes.extend(quantize_pixel(spatial::plane_pixel(region, &values, x, y)));
+        |tile, parallelism| -> Result<Vec<u8>, Error> {
+            let (region, values) = run_tile(
+                &plan,
+                operation,
+                &globals,
+                tile,
+                parallelism,
+                |region, planes| fill_planes(region, planes, parallelism, read),
+            )?;
+            let mut bytes = vec![0; (tile.pixels() * 3) as usize];
+            let row = |(row, bytes): (usize, &mut [u8])| {
+                let y = tile.y0 + row as u32;
+                for (column, x) in (tile.x0..tile.x1()).enumerate() {
+                    let rgb = quantize_pixel(spatial::plane_pixel(region, &values, x, y));
+                    bytes[column * 3..column * 3 + 3].copy_from_slice(&rgb);
                 }
+            };
+            let row_bytes = tile.width as usize * 3;
+            match parallelism {
+                Parallelism::Pool => bytes.par_chunks_mut(row_bytes).enumerate().for_each(row),
+                Parallelism::Serial => bytes.chunks_mut(row_bytes).enumerate().for_each(row),
             }
             Ok(bytes)
         },
@@ -1571,10 +1578,16 @@ impl<'a> Evaluation<'a> {
             || build_reduction(stage, read),
         )?;
         let tile = plan.tile_containing(x, y);
-        let _reservation = spatial::reserve_one(&plan)?;
-        let (region, values) = run_tile(&plan, operation, &globals, tile, |region, planes| {
-            fill_planes(region, planes, read)
-        })?;
+        let _reservation = spatial::reserve_one(&plan);
+        // Serial on the calling thread: on the pool a sample would queue behind a render.
+        let (region, values) = run_tile(
+            &plan,
+            operation,
+            &globals,
+            tile,
+            Parallelism::Serial,
+            |region, planes| fill_planes(region, planes, Parallelism::Serial, read),
+        )?;
         let rgb = quantize_pixel(spatial::plane_pixel(region, &values, x, y));
         // Alpha is never touched by a unit; it is the input frame's, exactly as the render copies
         // it.
@@ -1688,6 +1701,44 @@ pub fn sample(
         height: stage.height,
         rgba: evaluation.pixel(x, y)?,
     })
+}
+
+/// The centres of the cells of a `side` × `side` grid over a `width` × `height` stage, row by row
+/// from the top-left. Along an axis of `extent` pixels the centre of cell `i` is
+/// `floor((2i + 1) · extent / (2 · side))`, which lies inside every non-empty stage.
+pub(crate) fn grid_centres(side: u32, width: u32, height: u32) -> Vec<(u32, u32)> {
+    let centre = |index: u32, extent: u32| {
+        ((2 * u64::from(index) + 1) * u64::from(extent) / (2 * u64::from(side.max(1)))) as u32
+    };
+    (0..side)
+        .flat_map(|row| (0..side).map(move |column| (column, row)))
+        .map(|(column, row)| (centre(column, width), centre(row, height)))
+        .collect()
+}
+
+/// Point samples of a recipe's output stage at the centres of a `side` × `side` grid, row by row
+/// from the top-left. One compiled evaluation answers every point, so the cost is
+/// `O(side² × layers)` — a point through a spatial layer evaluates its tile, as any sample does —
+/// and no frame is allocated; each sample is the byte the render holds there. `checkpoint` is asked
+/// before each point, so a caller can stop between them.
+pub(crate) fn sample_grid(
+    registry: &ModuleRegistry,
+    source: &SourceImage,
+    recipe: &Recipe,
+    side: u32,
+    checkpoint: &dyn Fn() -> Result<(), Error>,
+) -> Result<Vec<[u8; 4]>, Error> {
+    let evaluation = Evaluation::new(registry, source, recipe)?;
+    let stage = evaluation.stage();
+    grid_centres(side, stage.width, stage.height)
+        .into_iter()
+        .map(|(x, y)| {
+            checkpoint()?;
+            evaluation.pixel(x, y)?.ok_or_else(|| {
+                Error::new(ErrorKind::Internal, "a grid centre lies outside the stage")
+            })
+        })
+        .collect()
 }
 
 /// Map one pixel of a recipe's output stage back to the content-stage pixel it shows: the source
@@ -2060,6 +2111,7 @@ mod tests {
                 effect_format: EFFECT_FORMAT,
                 payload: json!({"exposure": 0.7, "contrast": 30.0, "vibrance": 40.0}),
                 mask: None,
+                artifacts: Vec::new(),
             },
             Layer::crop(rect.normalized(&stage)),
         ];
@@ -2295,6 +2347,7 @@ mod tests {
                     stage: EffectStage::Geometry,
                     order: 0,
                     maskable: false,
+                    artifacts: false,
                 })
                 .collect(),
                 actions: Vec::new(),
@@ -2306,6 +2359,7 @@ mod tests {
                 collapsed: false,
                 layout: crate::ModuleLayout::Stacked,
                 availability: Availability::Available,
+                ..ModuleDescriptor::default()
             }))
         }
     }
@@ -2408,6 +2462,7 @@ mod tests {
             effect_format: EFFECT_FORMAT,
             payload: serde_json::to_value(crop).unwrap(),
             mask: None,
+            artifacts: Vec::new(),
         }
     }
 
@@ -2418,6 +2473,7 @@ mod tests {
             effect_format: EFFECT_FORMAT,
             payload: json!({"x": x, "y": y, "width": width, "height": height}),
             mask: None,
+            artifacts: Vec::new(),
         }
     }
 
@@ -2428,6 +2484,7 @@ mod tests {
             effect_format: EFFECT_FORMAT,
             payload: json!({}),
             mask: None,
+            artifacts: Vec::new(),
         }
     }
 
@@ -2438,6 +2495,7 @@ mod tests {
             effect_format: EFFECT_FORMAT,
             payload: json!({"scale": scale}),
             mask: None,
+            artifacts: Vec::new(),
         }
     }
 
@@ -3015,6 +3073,7 @@ mod tests {
                     effect_format: EFFECT_FORMAT,
                     payload: json!({"exposure": 0.4, "contrast": 20.0}),
                     mask: None,
+                    artifacts: Vec::new(),
                 },
                 Layer {
                     id: LayerId::new(),
@@ -3022,6 +3081,7 @@ mod tests {
                     effect_format: EFFECT_FORMAT,
                     payload: json!({"texture": 35.0}),
                     mask: None,
+                    artifacts: Vec::new(),
                 },
                 Layer::crop(fitted_crop(width, height, 6.0, [0.2, 0.2, 0.55, 0.55])),
             ],
@@ -3228,6 +3288,7 @@ mod tests {
                 effect_format: EFFECT_FORMAT,
                 payload: json!({}),
                 mask: None,
+                artifacts: Vec::new(),
             }],
             masks: Vec::new(),
             ..Recipe::default()
@@ -3692,8 +3753,8 @@ mod tests {
     // The pointwise colour stage.
     // ---------------------------------------------------------------------------------------
 
-    /// The scratch budget is process-wide, so the test that shrinks it and every test that reserves
-    /// from it hold this lock instead of racing.
+    /// The scratch budget is process-wide, so the test that lowers its target and every test that
+    /// reserves from it hold this lock instead of racing.
     static SCRATCH_TESTS: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     fn scratch_guard() -> std::sync::MutexGuard<'static, ()> {
@@ -3808,6 +3869,7 @@ mod tests {
                         stage: EffectStage::Color,
                         order: 0,
                         maskable: true,
+                        artifacts: false,
                     }],
                     actions: Vec::new(),
                     queries: Vec::new(),
@@ -3818,6 +3880,7 @@ mod tests {
                     collapsed: false,
                     layout: crate::ModuleLayout::Stacked,
                     availability: Availability::Available,
+                    ..ModuleDescriptor::default()
                 },
                 counter,
             })
@@ -3886,6 +3949,7 @@ mod tests {
             effect_format: EFFECT_FORMAT,
             payload,
             mask: None,
+            artifacts: Vec::new(),
         }
     }
 
@@ -4496,7 +4560,7 @@ mod tests {
         let source = gradient(64, 48);
         let recipe = colour_recipe(vec![exposure_layer(&[1.0])]);
         let budget = ScratchBudget::default();
-        assert_eq!(budget.limit(), 64 * 1024 * 1024, "the declared default");
+        assert_eq!(budget.target(), 64 * 1024 * 1024, "the declared default");
         // The budget is process-wide and other tests' preview workers reserve from it on their
         // own threads, so "nothing is held between renders" is read once those renders have
         // finished, not at an arbitrary instant.
@@ -4512,26 +4576,28 @@ mod tests {
             }
         };
         idle();
-        let previous = budget.set_limit(16);
-        let error = render(&registry, &source, SnapshotId::new(), &recipe)
-            .expect_err("one row chunk is larger than 16 bytes");
-        budget.set_limit(previous);
-        assert_eq!(error.kind, ErrorKind::ResourceLimit);
-        assert!(error.detail.contains("scratch"), "{error}");
+        let expected = render(&registry, &source, SnapshotId::new(), &recipe).unwrap();
         idle();
-        // The same stack renders again once the budget is back.
-        assert!(render(&registry, &source, SnapshotId::new(), &recipe).is_ok());
-        // A point sample streams nothing, so it answers whatever the budget is.
-        let previous = budget.set_limit(0);
+        // The target is a target: a render whose row chunk is larger than all of it still
+        // completes, with the same bytes, and the high-water mark shows it went past.
+        let previous = budget.set_target(16);
+        let rendered = render(&registry, &source, SnapshotId::new(), &recipe);
+        budget.set_target(previous);
+        let rendered = rendered.expect("a chunk past the target still runs");
+        assert_eq!(rendered.rgba, expected.rgba);
+        assert!(budget.peak() > 16, "the chunk was reserved and counted");
+        idle();
+        // A point sample streams nothing, so it reserves nothing whatever the target is.
+        let previous = budget.set_target(0);
         let sampled = sample(&registry, &source, &recipe, 1, 1).unwrap();
-        budget.set_limit(previous);
+        budget.set_target(previous);
         assert!(sampled.rgba.is_some());
     }
 
     #[test]
     fn a_row_chunk_stays_inside_the_scratch_budget_at_every_supported_width() {
         // 16 workers, one chunk each: the byte cap decides for wide frames and the row cap for
-        // narrow ones, and neither reaches the 64 MiB budget.
+        // narrow ones, and neither reaches the 64 MiB target.
         for width in [1_u32, 64, 6000, 10_000, 16_384] {
             let rows = color_chunk_rows(width);
             let bytes = rows * width as usize * std::mem::size_of::<[f32; 3]>();
@@ -4947,41 +5013,49 @@ mod tests {
             }
         };
         idle();
-        // One row chunk plus one row of snapshot: a limit that fits the chunk but not the snapshot
-        // fails with the same resource-limit error, naming scratch, and nothing is left reserved.
+        // One row chunk plus one row of snapshot. The budget is a **target and not a limit**, so a
+        // target that fits the chunk but not the snapshot renders anyway rather than refusing: what
+        // the snapshot costs is visible in the high-water mark, never in an error.
         let chunk = color_chunk_rows(source.width) * source.width as usize * 12;
-        let previous = budget.set_limit(chunk as u64);
-        let error = render(&registry, &source, SnapshotId::new(), &recipe)
-            .expect_err("the snapshot does not fit");
-        budget.set_limit(previous);
-        assert_eq!(error.kind, ErrorKind::ResourceLimit);
-        assert!(error.detail.contains("scratch"), "{error}");
+        let snapshot = source.width as usize * 12;
+        let previous = budget.set_target(chunk as u64);
+        let rendered = render(&registry, &source, SnapshotId::new(), &recipe);
+        budget.set_target(previous);
+        assert!(
+            rendered.is_ok(),
+            "a masked run past the target still renders: {:?}",
+            rendered.err()
+        );
         idle();
         assert!(render(&registry, &source, SnapshotId::new(), &recipe).is_ok());
-        // The unmasked stack renders inside a budget that holds only the chunk, so the snapshot is
-        // charged to masked runs alone.
+        // The unmasked stack renders inside a target that holds only the chunk without ever
+        // overshooting it, so the snapshot is charged to masked runs alone.
         let unmasked = colour_recipe(vec![exposure_layer(&[1.0])]);
-        let previous = budget.set_limit(chunk as u64);
+        let previous = budget.set_target(chunk as u64);
+        let before = budget.peak();
         let rendered = render(&registry, &source, SnapshotId::new(), &unmasked);
-        budget.set_limit(previous);
+        budget.set_target(previous);
         assert!(rendered.is_ok(), "{:?}", rendered.err());
         idle();
-        // A point sample streams nothing and allocates no snapshot, so it answers at any limit.
-        let previous = budget.set_limit(0);
+        // A point sample streams nothing and allocates no snapshot, so it answers at any target.
+        let previous = budget.set_target(0);
         let sampled = sample(&registry, &source, &recipe, 3, 3).unwrap();
-        budget.set_limit(previous);
+        budget.set_target(previous);
         assert!(sampled.rgba.is_some());
         // The high-water mark is what makes the aggregate observable after the fact: a masked pass
-        // has to have carried at least one chunk and one row of snapshot at once, and the whole of it
-        // stays inside the declared budget. `peak` is process-wide and only ever raised, so this reads
-        // "at least" and the limit reads "at most".
-        let snapshot = source.width as usize * 12;
+        // has to have carried at least one chunk and one row of snapshot at once. `peak` is
+        // process-wide and only ever raised, so this reads "at least"; the unmasked and sampled runs
+        // above raised it by nothing, which is the other half of the claim.
         assert!(
             budget.peak() >= (chunk + snapshot) as u64,
             "the peak {} never reached one chunk plus one row of snapshot",
             budget.peak()
         );
-        assert!(budget.peak() <= budget.limit(), "{}", budget.peak());
+        assert_eq!(
+            budget.peak(),
+            before,
+            "an unmasked run or a point sample raised the peak the masked run had already set"
+        );
     }
 
     /// What a masked colour layer costs on a photo-sized frame, and what the bounds rectangle saves.
@@ -5213,6 +5287,7 @@ mod tests {
                     effect_format: EFFECT_FORMAT,
                     payload: json!({"exposure": 0.5, "contrast": 20.0, "vibrance": 30.0}),
                     mask: None,
+                    artifacts: Vec::new(),
                 },
                 Layer::crop(fitted_crop(height, width, 7.0, [0.05, 0.05, 0.9, 0.9])),
             ],

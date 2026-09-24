@@ -2,6 +2,7 @@
 //! and the compilation of its persisted payloads into host processing primitives. Modules never
 //! write the catalog, never keep an undo stack and never render.
 pub(crate) mod basic;
+mod capabilities_proof;
 mod controls;
 mod crop;
 mod descriptor;
@@ -17,6 +18,12 @@ mod transform;
 mod vignette;
 
 pub use basic::BasicModule;
+pub use capabilities_proof::{
+    APPLY_PROOF_TINT, CapabilitiesProofModule, PROOF_ADAPTER, PROOF_EFFECT, PROOF_GENERATE_PATH,
+    PROOF_MODULE, PROOF_PALETTE, PROOF_PALETTE_GAINS, PROOF_PALETTE_PATH, PROOF_PALETTE_SHA256,
+    PROOF_RESOURCE, PROOF_RESOURCE_VERSION, PROOF_TASK, PROOF_TINT_KIND, ProofEndpoint,
+    ProofRequest, RESET_PROOF_TINT, input_factor, palette_bytes,
+};
 pub use controls::{
     CONTROLS_EFFECT, ControlsModule, RESET_CONTROLS, SAMPLE_CONTROLS_CURVE, SET_CONTROLS,
 };
@@ -33,6 +40,7 @@ pub use descriptor::{
     ParameterKind, RailDecoration, ResetAction, action_label, check_parameters, check_value,
     render_summary, valid_identity, valid_name,
 };
+pub(crate) use descriptor::{check_declared_values, check_parameter_declarations};
 pub use mixer::MixerModule;
 pub use pixel::PixelModule;
 pub use presence::PresenceModule;
@@ -41,24 +49,26 @@ pub use processing::{
     ColorOperation, ExactGeometry, MAX_COLOR_UNITS, PointwiseColor, Processing, Resample, Stage,
 };
 pub use raw::neutral::{SensorMosaic, sensor_neutral_gains, sensor_neutral_gains_mapped};
-pub use raw::white_balance::gains_from_temperature_tint;
+pub use raw::white_balance::{gains_from_temperature_tint, temperature_tint_from_gains};
 pub use raw::{RawModule, RawPayload, WhiteBalanceMode};
 pub use registry::ModuleRegistry;
 #[cfg(test)]
 pub(crate) use registry::tests::{
-    PATCH_ACTION, PATCH_MODULE, PatchModule, STAGE_ACTION, STAGE_EFFECT, StageModule, TestModule,
+    HELD_ACTION, HELD_EFFECT, HeldModule, PATCH_ACTION, PATCH_MODULE, PatchModule, RenderGate,
+    STAGE_ACTION, STAGE_EFFECT, StageModule, TestModule,
 };
 pub use spatial::{
     ESTIMATE_REDUCTION, ESTIMATE_STORE_ENTRIES, Global, MAX_GLOBAL_BYTES, MAX_GLOBAL_VALUES,
-    MAX_MASKED_SPATIAL_LAYERS, MAX_REDUCTION_PIXELS, MAX_SPATIAL_HALO, MAX_SPATIAL_UNITS, Planes,
-    PlanesMut, Reduction, Region, SPATIAL_BUDGET_BYTES, SPATIAL_TILE, SpatialOperation,
-    SpatialUnit,
+    MAX_MASKED_SPATIAL_LAYERS, MAX_REDUCTION_PIXELS, MAX_SPATIAL_HALO, MAX_SPATIAL_UNITS,
+    Parallelism, Planes, PlanesMut, Reduction, Region, SPATIAL_BUDGET_BYTES, SPATIAL_TILE,
+    SpatialOperation, SpatialUnit,
 };
 pub use transform::TransformModule;
 pub use vignette::VignetteModule;
 
-use crate::{Error, Layer};
+use crate::{Error, Layer, artifacts::PreparedArtifact, capabilities::context::ModuleContext};
 use serde_json::{Map, Value};
+use std::{path::Path, sync::Arc};
 
 /// A normalized action request: the durable history action identity and the parameter object
 /// stored on the history entry.
@@ -206,4 +216,68 @@ pub trait ToolModule: Send + Sync {
         payload: &Value,
         stage: Stage,
     ) -> Result<Processing, Error>;
+    /// Compile a layer that references derived artifacts: the same as [`ToolModule::compile`], with
+    /// the verified bytes of every artifact the layer lists, in the layer's order. The host calls
+    /// this instead of `compile` only for a layer whose `artifacts` list is not empty, which only an
+    /// effect declaring `artifacts: true` may have. The bytes are immutable and already checked
+    /// against their hash; the module decides what they mean and refuses what it cannot use. The
+    /// default ignores them, so a module that declares no such effect never implements it.
+    fn compile_bound(
+        &self,
+        effect_id: &str,
+        format: u32,
+        payload: &Value,
+        stage: Stage,
+        artifacts: &[Arc<PreparedArtifact>],
+    ) -> Result<Processing, Error> {
+        let _ = artifacts;
+        self.compile(effect_id, format, payload, stage)
+    }
+    /// Load what the module's declared activation needs, on the capability worker's module lane,
+    /// after the host checked every required setting and resource. `context` gives the installed
+    /// resources' paths, the settings and the declared secrets; the module keeps what it loads
+    /// until [`ToolModule::deactivate`]. Call `context.checkpoint()` between units of work and
+    /// return its error when cancelled. After an activation that does not succeed, or one cancelled
+    /// as it finished, the host calls `deactivate` itself, so partial state is released in one
+    /// place. Never called on the owner or UI thread, and never by discovery or catalog reopen.
+    fn activate(&self, context: &ModuleContext) -> Result<(), Error> {
+        let _ = context;
+        Ok(())
+    }
+    /// Release everything `activate` loaded. Called on the module lane, after any work queued
+    /// before it; it must tolerate being called when nothing is loaded.
+    fn deactivate(&self) {}
+    /// Check that a staged resource's bytes are the format the module declares, before the host
+    /// installs it. The bytes already match the pinned length and SHA-256. Called on the transfer
+    /// lane; a refusal leaves nothing installed. Read the file; never execute or load it with a
+    /// general object loader.
+    fn validate_resource(&self, resource_id: &str, path: &Path) -> Result<(), Error> {
+        let _ = (resource_id, path);
+        Ok(())
+    }
+    /// Run one declared worker task on the capability worker's module lane and return its result
+    /// value, which the host reports as the job's `result`.
+    ///
+    /// Before the job was queued the host checked the task's parameters (`parameters` holds them
+    /// with their declared defaults), its asset and profile, its activation requirement and a live
+    /// grant for every capability it `uses`, and prepared the data it may send. `context` is the
+    /// only way to reach any of it: `read_file` for a granted `read-user-file`, `send` for a
+    /// granted `remote-image-request` whose body the host built, `publish_artifact` for a result
+    /// the catalog records when the task succeeds, and the settings, secrets, progress and
+    /// cancellation every job has. Call `context.checkpoint()` between units of work and return its
+    /// error when cancelled; artifacts a task publishes before it fails or is cancelled are never
+    /// recorded. Never called on the owner or UI thread. The default refuses, so a module that
+    /// declares no tasks never implements it.
+    fn run_task(
+        &self,
+        task_id: &str,
+        parameters: &Map<String, Value>,
+        context: &ModuleContext,
+    ) -> Result<Value, Error> {
+        let _ = (task_id, parameters, context);
+        Err(Error::new(
+            crate::ErrorKind::Validation,
+            format!("module {} declares no tasks", self.descriptor().id),
+        ))
+    }
 }

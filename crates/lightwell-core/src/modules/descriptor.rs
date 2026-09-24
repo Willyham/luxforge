@@ -1,6 +1,12 @@
 //! Plain-data module descriptors: one serializable source for API discovery, generated controls
 //! and every validation limit a module declares.
-use crate::{Error, ErrorKind};
+use crate::{
+    Error, ErrorKind,
+    capabilities::descriptor::{
+        ActivationDescriptor, CapabilityDescriptor, ResourceDescriptor, SettingsDescriptor,
+        TaskDescriptor,
+    },
+};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use std::collections::HashSet;
@@ -120,6 +126,10 @@ pub struct EffectDescriptor {
     /// `mask` among the optional fields of every action that accepts it.
     #[serde(default, skip_serializing_if = "is_default")]
     pub maskable: bool,
+    /// Whether a layer of this effect may reference derived artifacts through its host-owned
+    /// `artifacts` list. A layer of an effect that does not declare it must list none.
+    #[serde(default, skip_serializing_if = "is_default")]
+    pub artifacts: bool,
 }
 
 /// The closed set of parameter types v0 modules may declare. `f64` bounds rule out `Eq` here and
@@ -156,6 +166,9 @@ pub enum ParameterKind {
         points_min: usize,
         points_max: usize,
     },
+    /// One derived artifact published in this catalog, as its opaque `artifact-…` identity. The
+    /// generic check validates the identity's syntax; the commit checks that the artifact exists.
+    Artifact,
     /// Ordered [x, y] fractions. Interpolation belongs to the module.
     Curve {
         points_min: usize,
@@ -326,6 +339,12 @@ pub enum Control {
         style: NumberStyle,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         rail: Option<RailDecoration>,
+        /// What resetting this one field runs — a double-click on its label or rail, or its
+        /// field's own reset — when that is not the field's declared default: an action of this
+        /// module with fixed parameters, validated like a group's reset. Without it the field
+        /// resets to its parameter's declared default.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reset: Option<ResetAction>,
     },
     Toggle {
         action: String,
@@ -372,6 +391,9 @@ pub enum Control {
     /// module declares at most one, and a module that declares a pick canvas declares exactly one,
     /// so every pick mode is reachable from the panel.
     Picker { label: String },
+    /// A button that runs one of this module's own worker tasks through the client's consent and
+    /// progress flow; when the task declares `apply`, the client offers Apply with its result.
+    Task { task: String, label: String },
     /// The host's preset library. Choosing a preset submits `action` once with that preset's
     /// `settings`, `name` and `preset-id`, so applying one is the same API call every client makes.
     /// The action is this module's own, with a required `settings` parameter of kind `settings`, a
@@ -479,14 +501,19 @@ pub enum ModuleLayout {
 }
 
 /// An unavailable provider keeps its descriptor and effect identities so stored data stays readable.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "kebab-case")]
 pub enum Availability {
+    #[default]
     Available,
-    Unavailable { reason: String },
+    Unavailable {
+        reason: String,
+    },
 }
 
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+/// `Default` is an empty, unregistrable descriptor: a base for struct update, so a module states
+/// only the fields it declares and every capability field stays empty unless it names one.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ModuleDescriptor {
     pub id: String,
@@ -520,6 +547,24 @@ pub struct ModuleDescriptor {
     #[serde(default)]
     pub layout: ModuleLayout,
     pub availability: Availability,
+    /// User-level settings and provider profiles the host stores for this module, outside every
+    /// catalog. Discovery lists the declarations only, never a value or a secret.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub settings: Option<SettingsDescriptor>,
+    /// What the module may be granted: reading a file setting, sending an asset's data to a
+    /// profile's endpoint, or installing a declared resource.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub capabilities: Vec<CapabilityDescriptor>,
+    /// Pinned files the host may install for this module.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub resources: Vec<ResourceDescriptor>,
+    /// What explicit activation requires; `None` is a module with nothing to activate.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub activation: Option<ActivationDescriptor>,
+    /// Worker tasks, each reached through the generated `task.<id>` method. A task identity is
+    /// unique across the registry.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tasks: Vec<TaskDescriptor>,
 }
 
 impl ModuleDescriptor {
@@ -530,6 +575,7 @@ impl ModuleDescriptor {
                 check_raw_control_hints(control)?;
             }
         }
+        crate::capabilities::descriptor::check_raw(value)?;
         let descriptor: Self = serde_json::from_value(value.clone())
             .map_err(|error| validation(format!("invalid module descriptor: {error}")))?;
         descriptor.validate()?;
@@ -549,6 +595,20 @@ impl ModuleDescriptor {
 
     pub fn effect(&self, id: &str) -> Option<&EffectDescriptor> {
         self.effects.iter().find(|effect| effect.id == id)
+    }
+
+    pub fn capability(&self, id: &str) -> Option<&CapabilityDescriptor> {
+        self.capabilities
+            .iter()
+            .find(|capability| capability.id == id)
+    }
+
+    pub fn resource(&self, id: &str) -> Option<&ResourceDescriptor> {
+        self.resources.iter().find(|resource| resource.id == id)
+    }
+
+    pub fn task(&self, id: &str) -> Option<&TaskDescriptor> {
+        self.tasks.iter().find(|task| task.id == id)
     }
 
     pub fn is_available(&self) -> bool {
@@ -594,6 +654,9 @@ impl ModuleDescriptor {
         for query in &self.queries {
             check_declared(query, "query", &mut queries)?;
         }
+        // Settings, capabilities, resources, activation and tasks refer to each other and to the
+        // actions above, so they are checked together once those are known to be sound.
+        crate::capabilities::descriptor::validate(self)?;
         for control in &self.controls {
             self.check_control(control, 1)?;
         }
@@ -823,8 +886,10 @@ impl ModuleDescriptor {
                 action,
                 parameter,
                 rail,
+                reset,
                 ..
             } => {
+                self.check_reset(reset.as_ref())?;
                 let declared = self.declared_action(action)?;
                 let declared = self.declared_parameter(declared, parameter)?;
                 if !matches!(
@@ -973,6 +1038,20 @@ impl ModuleDescriptor {
                     }
                 }
             }
+            Control::Task { task, label } => {
+                if label.trim().is_empty() {
+                    return Err(validation(format!(
+                        "task control for {task} of module {} has no label",
+                        self.id
+                    )));
+                }
+                if self.task(task).is_none() {
+                    return Err(validation(format!(
+                        "task control of module {} names undeclared task {task}",
+                        self.id
+                    )));
+                }
+            }
             Control::Presets { action } => {
                 let declared = self.declared_action(action)?;
                 self.check_presets_action(declared)?;
@@ -1086,18 +1165,29 @@ fn check_declared<'a>(
     if declared.title.trim().is_empty() {
         return Err(validation(format!("{kind} {} has no title", declared.id)));
     }
-    let mut parameters = HashSet::with_capacity(declared.parameters.len());
-    for parameter in &declared.parameters {
+    check_parameter_declarations(kind, &declared.id, &declared.parameters)?;
+    check_summary(declared)
+}
+
+/// The parameters one action, query or task declares: valid, unique names, sound kinds, hints and
+/// defaults, so every caller can be validated against them the same way.
+pub(crate) fn check_parameter_declarations(
+    kind: &str,
+    id: &str,
+    declared: &[ParameterDescriptor],
+) -> Result<(), Error> {
+    let mut parameters = HashSet::with_capacity(declared.len());
+    for parameter in declared {
         if !valid_name(&parameter.name) {
             return Err(validation(format!(
-                "invalid parameter name {} of {kind} {}",
-                parameter.name, declared.id
+                "invalid parameter name {} of {kind} {id}",
+                parameter.name
             )));
         }
         if !parameters.insert(parameter.name.as_str()) {
             return Err(validation(format!(
-                "duplicate parameter {} of {kind} {}",
-                parameter.name, declared.id
+                "duplicate parameter {} of {kind} {id}",
+                parameter.name
             )));
         }
         match &parameter.kind {
@@ -1175,7 +1265,7 @@ fn check_declared<'a>(
             check_value(parameter, default)?;
         }
     }
-    check_summary(declared)
+    Ok(())
 }
 
 /// The largest number of decimals a client is asked to display. Beyond this a slider's text is
@@ -1484,6 +1574,16 @@ pub fn check_value(parameter: &ParameterDescriptor, value: &Value) -> Result<(),
                 }
             }
         }
+        ParameterKind::Artifact => {
+            let valid = value
+                .as_str()
+                .is_some_and(|text| crate::ArtifactId::parse(text).is_ok());
+            if !valid {
+                return Err(validation(format!(
+                    "parameter {name} must be an artifact identity"
+                )));
+            }
+        }
         ParameterKind::Curve {
             points_min,
             points_max,
@@ -1601,37 +1701,53 @@ pub fn check_parameters(
     action: &ActionDescriptor,
     input: &Value,
 ) -> Result<Map<String, Value>, Error> {
+    check_declared_values(
+        "action",
+        &action.id,
+        &action.parameters,
+        action.patch,
+        input,
+    )
+}
+
+/// The generic check behind [`check_parameters`], for anything that declares parameters the way an
+/// action does: `what` and `id` name it in every refusal, e.g. `task generate-proof-tint`.
+pub(crate) fn check_declared_values(
+    what: &str,
+    id: &str,
+    parameters: &[ParameterDescriptor],
+    patch: bool,
+    input: &Value,
+) -> Result<Map<String, Value>, Error> {
+    let declared = |name: &str| parameters.iter().find(|parameter| parameter.name == name);
     let empty = Map::new();
     let object = match input {
         Value::Object(object) => object,
         Value::Null => &empty,
         _ => {
             return Err(validation(format!(
-                "parameters of action {} must be a JSON object",
-                action.id
+                "parameters of {what} {id} must be a JSON object"
             )));
         }
     };
     for name in object.keys() {
-        if action.parameter(name).is_none() {
+        if declared(name).is_none() {
             return Err(validation(format!(
-                "unknown parameter {name} for action {}",
-                action.id
+                "unknown parameter {name} for {what} {id}"
             )));
         }
     }
     let mut checked = Map::new();
-    if action.patch {
+    if patch {
         for (name, value) in object {
-            let parameter = action
-                .parameter(name)
-                .expect("every key was matched to a declared parameter above");
+            let parameter =
+                declared(name).expect("every key was matched to a declared parameter above");
             check_value(parameter, value)?;
             checked.insert(name.clone(), value.clone());
         }
         return Ok(checked);
     }
-    for parameter in &action.parameters {
+    for parameter in parameters {
         match (object.get(&parameter.name), &parameter.default) {
             (Some(value), _) => {
                 check_value(parameter, value)?;
@@ -1642,8 +1758,8 @@ pub fn check_parameters(
             }
             (None, None) if parameter.required => {
                 return Err(validation(format!(
-                    "missing required parameter {} for action {}",
-                    parameter.name, action.id
+                    "missing required parameter {} for {what} {id}",
+                    parameter.name
                 )));
             }
             (None, None) => {}
@@ -1782,6 +1898,7 @@ mod tests {
                 label: "Angle".into(),
                 style: crate::NumberStyle::Slider,
                 rail: None,
+                reset: None,
             }],
             // The shared descriptor's reset names an action this one does not declare.
             reset: None,
@@ -1915,6 +2032,24 @@ mod tests {
         }
     }
 
+    /// The test module with one number control whose field reset runs `action` with `preset`.
+    fn number_reset(action: &str, preset: Value) -> ModuleDescriptor {
+        ModuleDescriptor {
+            controls: vec![Control::Number {
+                action: "set-thing".into(),
+                parameter: "x".into(),
+                label: "X".into(),
+                style: crate::NumberStyle::Slider,
+                rail: None,
+                reset: Some(ResetAction {
+                    action: action.into(),
+                    preset: preset.as_object().unwrap().clone(),
+                }),
+            }],
+            ..descriptor()
+        }
+    }
+
     #[test]
     fn a_points_parameter_is_declared_within_the_host_path_bound() {
         let limit = crate::path::POINTS_PER_STROKE;
@@ -1949,6 +2084,36 @@ mod tests {
         );
     }
 
+    /// A number control may declare what resetting its field runs. It is validated like a group's
+    /// reset, lists in `module.list` beside the control's other fields, and a control without one
+    /// lists no `reset` at all, so every other control keeps its shape.
+    #[test]
+    fn a_number_control_declares_its_own_field_reset() {
+        let declared = number_reset("set-thing", json!({"mode": "fast"}));
+        declared
+            .validate()
+            .expect("a reset naming this module's action");
+        let listed = serde_json::to_value(&declared).unwrap();
+        assert_eq!(
+            listed["controls"][0],
+            json!({"kind":"number","action":"set-thing","parameter":"x","label":"X",
+                "reset":{"action":"set-thing","preset":{"mode":"fast"}}})
+        );
+        assert_eq!(ModuleDescriptor::parse(&listed).unwrap(), declared);
+        let plain = serde_json::to_value(descriptor()).unwrap();
+        let number = &plain["controls"][0]["controls"][0];
+        assert_eq!(number["kind"], "number");
+        assert!(number.get("reset").is_none(), "{number}");
+        // A preset naming another module's action is refused like any undeclared action.
+        let error = number_reset("reset-raw", json!({}))
+            .validate()
+            .expect_err("another module's action");
+        assert_eq!(
+            error.detail,
+            "module test.module references undeclared action reset-raw"
+        );
+    }
+
     fn descriptor() -> ModuleDescriptor {
         ModuleDescriptor {
             id: "test.module".into(),
@@ -1960,6 +2125,7 @@ mod tests {
                 stage: EffectStage::Pixel,
                 order: 0,
                 maskable: false,
+                artifacts: false,
             }],
             actions: vec![action()],
             queries: Vec::new(),
@@ -1976,6 +2142,7 @@ mod tests {
                         label: "X".into(),
                         style: crate::NumberStyle::Slider,
                         rail: None,
+                        reset: None,
                     },
                     Control::Action {
                         action: "set-thing".into(),
@@ -1996,6 +2163,7 @@ mod tests {
             collapsed: false,
             layout: ModuleLayout::Stacked,
             availability: Availability::Available,
+            ..ModuleDescriptor::default()
         }
     }
 
@@ -2104,6 +2272,7 @@ mod tests {
                         stage: EffectStage::Pixel,
                         order: 0,
                         maskable: false,
+                        artifacts: false,
                     }],
                     ..descriptor()
                 },
@@ -2210,6 +2379,7 @@ mod tests {
                         label: "X".into(),
                         style: crate::NumberStyle::Slider,
                         rail: None,
+                        reset: None,
                     }],
                     ..descriptor()
                 },
@@ -2223,6 +2393,7 @@ mod tests {
                         label: "X".into(),
                         style: crate::NumberStyle::Slider,
                         rail: None,
+                        reset: None,
                     }],
                     ..descriptor()
                 },
@@ -2323,6 +2494,7 @@ mod tests {
                         label: "RGB".into(),
                         style: crate::NumberStyle::Slider,
                         rail: None,
+                        reset: None,
                     }],
                     ..descriptor()
                 },
@@ -2432,6 +2604,22 @@ mod tests {
                     }],
                     ..descriptor()
                 },
+            ),
+            (
+                "number reset names an undeclared action",
+                number_reset("missing", json!({})),
+            ),
+            (
+                "number reset names an undeclared parameter",
+                number_reset("set-thing", json!({"missing": 1})),
+            ),
+            (
+                "number reset preset out of range",
+                number_reset("set-thing", json!({"x": 99})),
+            ),
+            (
+                "number reset preset of the wrong kind",
+                number_reset("set-thing", json!({"mode": 3})),
             ),
             (
                 "summary names an undeclared parameter",
@@ -3317,6 +3505,7 @@ mod tests {
                 stage,
                 order,
                 maskable: false,
+                artifacts: false,
             };
             assert_eq!(serde_json::to_value(stage).unwrap(), json!(name));
             // `order` is always serialized, so `module.list` reports it for every effect.
@@ -3713,6 +3902,7 @@ mod tests {
                 label: "Amount".into(),
                 style: NumberStyle::Stepper,
                 rail: Some(RailDecoration::Hue),
+                reset: None,
             },
             Control::Curve {
                 action: "set-controls".into(),
@@ -3967,6 +4157,7 @@ mod tests {
                 label: "X".into(),
                 style: crate::NumberStyle::Slider,
                 rail: None,
+                reset: None,
             }],
             collapsed: false,
         };
@@ -4010,6 +4201,7 @@ mod tests {
             label: "X".into(),
             style: crate::NumberStyle::Slider,
             rail: None,
+            reset: None,
         });
         let error = non_group
             .validate()

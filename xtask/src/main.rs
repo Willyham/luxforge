@@ -1,5 +1,6 @@
 mod basic_acceptance;
 mod basic_smoke;
+mod capabilities_smoke;
 mod controls_smoke;
 mod crop_smoke;
 mod diagnostics;
@@ -17,6 +18,7 @@ mod mask_range_smoke;
 mod mask_smoke;
 mod mixer_smoke;
 mod package;
+mod performance_smoke;
 mod policy;
 mod presence_mixer_vignette_acceptance;
 mod presence_smoke;
@@ -34,6 +36,7 @@ mod smoke;
 mod verify;
 mod vignette_smoke;
 mod workspace_smoke;
+mod zoom_smoke;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::{
@@ -441,8 +444,9 @@ fn main_result() -> Result {
             match source {
                 Some(source) => {
                     ensure(
-                        scenario == raw_panel_smoke::SCENARIO,
-                        "--source is only for the raw-panel scenario",
+                        scenario == raw_panel_smoke::SCENARIO
+                            || scenario == performance_smoke::SCENARIO,
+                        "--source is only for the raw-panel and performance scenarios",
                     )?;
                     smoke::run_sources(&root, &out, &scenario, &bin, timeout, vec![source])?;
                 }
@@ -529,7 +533,7 @@ fn main_result() -> Result {
         }
         "__hang" => std::thread::sleep(std::time::Duration::from_secs(60)),
         "help" => println!(
-            "cargo xtask doctor|check|check-repository|fmt|lint|test|build [--release]|develop [--debug] [--background] [app args]|fixtures|generate-fixtures [--output NEW]|audit|raw-corpus --manifest FILE --output NEW|raw-reference --output NEW|raw-editor --manifest FILE --output NEW [--samples N] [--binary PATH]|editor-acceptance --output NEW|editor-performance --source JPEG --output NEW [--samples N]|editor-latency --source JPEG --output NEW [--binary PATH] [--samples N] [--mode drag|commit|burst|paint] [--control slider|curve] [--action ID --parameter NAME] [--crop DEGREES] [--basic] [--mask] [--idle]|inventory --output NEW|package --output NEW|smoke --output NEW [--scenario NAME] [--binary PATH] [--source RAW (raw-panel only)]|verify --output NEW [--tier quick|rendered|timing|full] [--jobs N] [--binary PATH] [--manifest FILE]|check-capture --image PNG [--orientation N] [--aspect R] [--columns LEFT,RIGHT]|hardening --binary PATH --output NEW|measure --binary PATH --output NEW [--samples N]|probe --candidate iced|egui --output NEW"
+            "cargo xtask doctor|check|check-repository|fmt|lint|test|build [--release]|develop [--debug] [--background] [app args]|fixtures|generate-fixtures [--output NEW]|audit|raw-corpus --manifest FILE --output NEW|raw-reference --output NEW|raw-editor --manifest FILE --output NEW [--samples N] [--binary PATH]|editor-acceptance --output NEW|editor-performance --source JPEG --output NEW [--samples N]|editor-latency --source JPEG --output NEW [--binary PATH] [--samples N] [--mode drag|commit|burst|paint] [--control slider|curve] [--action ID --parameter NAME] [--crop DEGREES] [--basic] [--mask] [--idle]|inventory --output NEW|package --output NEW|smoke --output NEW [--scenario NAME] [--binary PATH] [--source RAW (raw-panel and performance only)]|verify --output NEW [--tier quick|rendered|timing|full] [--jobs N] [--binary PATH] [--manifest FILE]|check-capture --image PNG [--orientation N] [--aspect R] [--columns LEFT,RIGHT]|hardening --binary PATH --output NEW|measure --binary PATH --output NEW [--samples N]|probe --candidate iced|egui --output NEW"
         ),
         _ => return Err("Unknown command; use cargo xtask help".into()),
     }

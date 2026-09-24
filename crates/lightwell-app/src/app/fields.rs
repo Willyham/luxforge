@@ -3,8 +3,7 @@
 //! was typed and commits nothing.
 use crate::state::tools::{ControlOwner, Rendered, classify};
 use lightwell_core::{
-    ActionDescriptor, Control, ModuleDescriptor, ParameterDescriptor, ParameterKind, RAW_EFFECT,
-    RawPayload, Recipe, WhiteBalanceMode, check_value,
+    ActionDescriptor, Control, ModuleDescriptor, ParameterDescriptor, ParameterKind, check_value,
 };
 use serde_json::{Map, Value};
 use std::collections::BTreeMap;
@@ -69,57 +68,6 @@ impl Fields {
         Ok(())
     }
 
-    /// Reflect the displayed RAW history entry. While a person edits one field, keep their text;
-    /// all other controls follow authoritative recipe state across undo, redo and reopen.
-    ///
-    /// Each value is written with the decimals its own parameter declares, so a bound field reads
-    /// exactly like one the person set: the descriptors are the only place that knows, which is why
-    /// they are passed in rather than the RAW names being formatted by a rule of their own here.
-    pub(crate) fn bind_raw(
-        &mut self,
-        modules: &[ModuleDescriptor],
-        recipe: &Recipe,
-        editing: Option<&(String, String)>,
-        dragging: Option<&(String, String)>,
-    ) {
-        let Some(layer) = recipe
-            .layers
-            .first()
-            .filter(|layer| layer.effect_id == RAW_EFFECT)
-        else {
-            return;
-        };
-        let Ok(payload) = RawPayload::from_layer(layer) else {
-            return;
-        };
-        let gains = match payload.wb_mode {
-            WhiteBalanceMode::AsShot => payload.as_shot_gains,
-            WhiteBalanceMode::Custom => payload.gains,
-        };
-        for (action, parameter, value) in [
-            ("set-raw-exposure", "ev", payload.exposure_ev),
-            (
-                "set-raw-temperature",
-                "kelvin",
-                payload.temperature_kelvin.unwrap_or(6504.0),
-            ),
-            ("set-raw-tint", "tint", payload.tint.unwrap_or(0.0)),
-            ("set-raw-red-gain", "gain", f64::from(gains[0])),
-            ("set-raw-blue-gain", "gain", f64::from(gains[2])),
-        ] {
-            if editing.is_some_and(|field| field.0 == action && field.1 == parameter)
-                || dragging.is_some_and(|field| field.0 == action && field.1 == parameter)
-            {
-                continue;
-            }
-            let text = match declared(modules, action, parameter) {
-                Some(declared) => format_number(declared, value),
-                None => number_text(value),
-            };
-            self.set(action, parameter, text);
-        }
-    }
-
     /// Correlated evidence: what every generated control held when a frame was captured.
     pub(crate) fn summary(&self) -> Value {
         Value::Object(
@@ -163,11 +111,13 @@ fn seed_controls(owner: ControlOwner<'_>, controls: &[Control], fields: &mut Fie
                 }
             }
             // None carries a field of its own: an action button submits the fields already
-            // seeded, a picker only enters its module's canvas mode and a preset row submits a
-            // library preset's own settings, name and identity.
+            // seeded, a picker only enters its module's canvas mode, a preset row submits a library
+            // preset's own settings, name and identity, and a task sends the open asset and a
+            // profile.
             Rendered::Action { .. }
             | Rendered::Picker { .. }
             | Rendered::Presets { .. }
+            | Rendered::Task { .. }
             | Rendered::Unsupported(_) => {}
         }
     }
@@ -226,6 +176,8 @@ pub(crate) fn seed_text(parameter: &ParameterDescriptor) -> String {
             .and_then(Value::as_bool)
             .unwrap_or(false)
             .to_string(),
+        // An artifact identity has no default and nothing sensible to seed.
+        ParameterKind::Artifact => String::new(),
         ParameterKind::Curve {
             fixed_x,
             points_min,
@@ -298,6 +250,7 @@ pub(crate) fn decimals_for(parameter: &ParameterDescriptor) -> usize {
         ParameterKind::Color
         | ParameterKind::Enum { .. }
         | ParameterKind::Boolean
+        | ParameterKind::Artifact
         | ParameterKind::Curve { .. }
         | ParameterKind::Points { .. }
         | ParameterKind::String { .. }
@@ -407,6 +360,9 @@ pub(crate) fn parse_field(parameter: &ParameterDescriptor, text: &str) -> Result
             .parse::<bool>()
             .map(Value::from)
             .map_err(|_| format!("{name} must be a boolean")),
+        ParameterKind::Artifact => lightwell_core::ArtifactId::parse(text.trim())
+            .map(|id| Value::from(id.as_str()))
+            .map_err(|_| format!("{name} must be an artifact identity")),
         ParameterKind::Curve { .. } => serde_json::from_str::<Value>(text.trim())
             .map_err(|_| format!("{name} must be a JSON curve point list"))
             .and_then(|value| {
@@ -455,6 +411,7 @@ pub(crate) fn value_text(parameter: &ParameterDescriptor, value: &Value) -> Resu
             .collect::<Vec<_>>()
             .join(","),
         ParameterKind::Boolean => value.as_bool().unwrap().to_string(),
+        ParameterKind::Artifact => value.as_str().unwrap().to_owned(),
         ParameterKind::Curve { .. } | ParameterKind::Points { .. } | ParameterKind::Settings => {
             value.to_string()
         }
@@ -582,19 +539,26 @@ fn control_preset_of(modules: &[ModuleDescriptor], action: &str) -> Map<String, 
         .unwrap_or_default()
 }
 
-/// What a double-click on a label submits: that one field at its declared default.
+/// What resetting one field runs — a double-click on its label or rail, or its field's own reset —
+/// as the action and the parameters it is sent with.
 ///
-/// It runs as one action exactly where one field is already a whole request — a patch action's
-/// field, which the module merges, or the only parameter its action declares. An action with a
-/// second parameter has no way to send one field alone, so the double-click only refills the text
-/// there, as it has always done. A non-patch action's default is the value that is sent, so a
-/// parameter that declares none cannot be reset this way either; `seed_text` would invent its
-/// minimum, and inventing a value to commit is not a reset.
-pub(crate) fn reset_field_preset(
+/// A number control that declares its own reset runs exactly that: an action of its module with
+/// fixed parameters, such as RAW's custom temperature and tint returning the development to As
+/// shot. Otherwise the field returns to its declared default, which runs as one action exactly
+/// where one field is already a whole request — a patch action's field, which the module merges,
+/// or the only parameter its action declares. An action with a second parameter has no way to send
+/// one field alone, so the reset only refills the text there, as it has always done. A non-patch
+/// action's default is the value that is sent, so a parameter that declares none cannot be reset
+/// this way either; `seed_text` would invent its minimum, and inventing a value to commit is not a
+/// reset.
+pub(crate) fn field_reset(
     modules: &[ModuleDescriptor],
     action: &str,
     parameter: &str,
-) -> Option<Map<String, Value>> {
+) -> Option<(String, Map<String, Value>)> {
+    if let Some(reset) = crate::state::tools::declared_field_reset(modules, action, parameter) {
+        return Some((reset.action.clone(), reset.preset.clone()));
+    }
     let declared = crate::state::tools::declared_action(modules, action)?;
     if !declared.patch && !crate::state::tools::drafts_alone(modules, action, parameter) {
         return None;
@@ -604,7 +568,10 @@ pub(crate) fn reset_field_preset(
         return None;
     }
     let value = parse_field(declared, &seed_text(declared)).ok()?;
-    Some([(parameter.to_owned(), value)].into_iter().collect())
+    Some((
+        action.to_owned(),
+        [(parameter.to_owned(), value)].into_iter().collect(),
+    ))
 }
 
 fn control_preset<'a>(controls: &'a [Control], action: &str) -> Option<&'a Map<String, Value>> {
@@ -1157,8 +1124,9 @@ mod tests {
             .find(|action| action.patch)
             .expect("a built-in declares a field patch");
         let parameter = patch.parameters.first().expect("a declared field");
-        let preset = reset_field_preset(&modules, &patch.id, &parameter.name)
+        let (action, preset) = field_reset(&modules, &patch.id, &parameter.name)
             .expect("a patch action resets one field as one action");
+        assert_eq!(action, patch.id);
         assert_eq!(preset.len(), 1);
         assert_eq!(
             preset[&parameter.name],
@@ -1166,7 +1134,61 @@ mod tests {
         );
         // A non-patch action cannot send one field alone, so the double-click only refills text.
         let (action, x, _) = point_pick(&modules).expect("a canvas pick");
-        assert_eq!(reset_field_preset(&modules, action, x), None);
+        assert_eq!(field_reset(&modules, action, x), None);
+    }
+
+    /// A number control that declares its own reset runs that action with its preset, and no
+    /// field default; the same field without the declaration resets to its default again.
+    #[test]
+    fn a_declared_field_reset_runs_its_own_action() {
+        let mut descriptor = crate::app::testing::controls_descriptor();
+        // The declared reset sends another field, never the Amount default.
+        let reset = lightwell_core::ResetAction {
+            action: "fixture-set".into(),
+            preset: json!({"mode": "two"}).as_object().unwrap().clone(),
+        };
+        let (action, parameter) = declare_amount_reset(&mut descriptor, Some(reset.clone()));
+        let modules = [descriptor.clone()];
+        assert_eq!(
+            field_reset(&modules, &action, &parameter),
+            Some((reset.action.clone(), reset.preset.clone()))
+        );
+        declare_amount_reset(&mut descriptor, None);
+        let modules = [descriptor];
+        let (sent, preset) = field_reset(&modules, &action, &parameter)
+            .expect("a patch field resets to its default");
+        assert_eq!(sent, action);
+        assert_eq!(preset.keys().collect::<Vec<_>>(), [&parameter]);
+    }
+
+    /// Set the controls fixture's Amount slider's declared field reset, returning its field.
+    pub(crate) fn declare_amount_reset(
+        descriptor: &mut ModuleDescriptor,
+        declared: Option<lightwell_core::ResetAction>,
+    ) -> (String, String) {
+        fn walk(
+            controls: &mut [Control],
+            declared: &Option<lightwell_core::ResetAction>,
+        ) -> Option<(String, String)> {
+            controls.iter_mut().find_map(|control| match control {
+                Control::Group { controls, .. } => walk(controls, declared),
+                Control::Number {
+                    action,
+                    parameter,
+                    reset,
+                    ..
+                } if parameter == "amount" => {
+                    *reset = declared.clone();
+                    Some((action.clone(), parameter.clone()))
+                }
+                _ => None,
+            })
+        }
+        let field = walk(&mut descriptor.controls, &declared).expect("the Amount slider");
+        descriptor
+            .validate()
+            .expect("the fixture validates with its reset");
+        field
     }
 
     /// Every group reset a module's controls declare, in order.
@@ -1205,6 +1227,7 @@ mod tests {
                 label: "X".into(),
                 style: lightwell_core::NumberStyle::Slider,
                 rail: None,
+                reset: None,
             },
             Control::Color {
                 action: "act".into(),

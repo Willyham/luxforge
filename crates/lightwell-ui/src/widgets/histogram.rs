@@ -9,7 +9,8 @@
 use crate::{Icon, icon, theme};
 use iced::{
     Color, Element, Length, Point, Rectangle, Renderer, Size, Theme,
-    widget::{button, canvas, container, text, tooltip},
+    alignment::Horizontal,
+    widget::{button, canvas, container, stack, text, text::LineHeight, tooltip},
 };
 use std::cell::Cell;
 
@@ -118,6 +119,51 @@ pub fn histogram<'a, M: 'a>(model: &HistogramModel) -> Element<'a, M> {
     .width(Length::Fill)
     .height(Length::Fixed(theme::HISTOGRAM_HEIGHT))
     .style(theme::control_surface)
+    .into()
+}
+
+/// The plot as the inspector shows it: [`histogram`], with what it describes stated on hover and,
+/// while there is nothing to plot, `notice` drawn in caption style in the middle of the plot's own
+/// area.
+///
+/// Neither changes the plot's size. The notice is a layer over the plot rather than a row under it,
+/// clipped to the plot, so a long reason wraps inside it instead of growing it, and nothing below
+/// the plot moves as a notice comes and goes. The caller decides what either says.
+pub fn described_histogram<'a, M: 'a>(
+    model: &HistogramModel,
+    description: String,
+    notice: Option<String>,
+) -> Element<'a, M> {
+    let plot = histogram(model);
+    let content: Element<'a, M> = match notice {
+        Some(notice) => stack![
+            plot,
+            container(
+                text(notice)
+                    .size(theme::SIZE_CAPTION)
+                    .line_height(LineHeight::Absolute(theme::CAPTION_LINE_HEIGHT.into()))
+                    .align_x(Horizontal::Center)
+                    .color(theme::TEXT_TERTIARY),
+            )
+            .center(Length::Fill)
+            .padding(theme::SPACING)
+            .clip(true),
+        ]
+        .width(Length::Fill)
+        .into(),
+        None => plot,
+    };
+    tooltip(
+        content,
+        container(
+            text(description)
+                .size(theme::SIZE_CAPTION)
+                .color(theme::TEXT_PRIMARY),
+        )
+        .padding(theme::TOOLTIP_PADDING)
+        .style(theme::bar_surface),
+        tooltip::Position::Bottom,
+    )
     .into()
 }
 

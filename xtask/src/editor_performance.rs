@@ -15,6 +15,7 @@ fn basic_exposure_layer(ev: f64) -> Layer {
         effect_format: 1,
         payload: json!({ "exposure": ev }),
         mask: None,
+        artifacts: Vec::new(),
     }
 }
 
@@ -35,6 +36,7 @@ fn basic_exposure_and_tone_layer(ev: f64) -> Layer {
             "blacks": 10.0,
         }),
         mask: None,
+        artifacts: Vec::new(),
     }
 }
 
@@ -48,6 +50,7 @@ fn basic_vibrance_saturation_layer(vibrance: f64, saturation: f64) -> Layer {
         effect_format: 1,
         payload: json!({ "vibrance": vibrance, "saturation": saturation }),
         mask: None,
+        artifacts: Vec::new(),
     }
 }
 
@@ -60,6 +63,7 @@ fn basic_white_balance_layer(temperature: f64, tint: f64) -> Layer {
         effect_format: 1,
         payload: json!({ "temperature": temperature, "tint": tint }),
         mask: None,
+        artifacts: Vec::new(),
     }
 }
 
@@ -83,6 +87,7 @@ fn basic_full_layer() -> Layer {
             "saturation": 15.0,
         }),
         mask: None,
+        artifacts: Vec::new(),
     }
 }
 

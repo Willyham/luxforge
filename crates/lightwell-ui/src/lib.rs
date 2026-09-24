@@ -24,6 +24,7 @@ pub use widgets::*;
 mod gallery;
 mod gallery_components;
 mod gallery_panels;
+mod gallery_performance;
 
 /// Builds one instance of every widget in every state shown on the components board
 /// (`docs/design/develop-workspace/components.png`), as `Element<'_, ()>` values, so a caller can
@@ -39,7 +40,7 @@ pub fn gallery_states() -> Vec<iced::Element<'static, ()>> {
 /// Names the exact gallery states in draw order for the real-app evidence board.
 #[doc(hidden)]
 pub fn gallery_named_states() -> Vec<(&'static str, iced::Element<'static, ()>)> {
-    const NAMES: [&str; 74] = [
+    const NAMES: [&str; 78] = [
         "Highlights · resting slider",
         "Exposure · dragging slider",
         "Contrast · editing slider value",
@@ -59,6 +60,10 @@ pub fn gallery_named_states() -> Vec<(&'static str, iced::Element<'static, ()>)>
         "Vibrance +15 · previewed history row",
         "Crop 4:5 · ordinary history row",
         "Rotate right · branch history row",
+        "Performance · running section under the history",
+        "Performance heading · expanded with a caption, collapsed",
+        "Metric rows · one sample, part of a window, unavailable",
+        "Job rows · running, with a long detail, with progress, finished",
         "Original not found · notice",
         "Changed elsewhere · warning notice",
         "Crop · floating bar",
@@ -106,14 +111,14 @@ pub fn gallery_named_states() -> Vec<(&'static str, iced::Element<'static, ()>)>
         "Curve · disabled",
         "Named vector icons · 12 and 16 points",
         "Basic · expanded module section",
-        "Module bands · collapsed, unavailable, collapsed group",
+        "Module bands · collapsed, unavailable, collapsed groups",
         "Colour mixer · tab row per selected tab",
-        "Neutral picker · labelled buttons",
         "Truncation · band hints and history labels on one line",
+        "Neutral picker · labelled buttons",
         "Transforms · icon-button row",
         "Crop and straighten · drafting",
-        "Pixel · field rows",
         "Crop and straighten · idle",
+        "Pixel · field rows",
     ];
     let states = gallery_states();
     assert_eq!(
@@ -129,6 +134,6 @@ mod tests {
     #[test]
     fn gallery_builds_every_widget_state_without_panicking() {
         let states = super::gallery_named_states();
-        assert_eq!(states.len(), 74);
+        assert_eq!(states.len(), 78);
     }
 }

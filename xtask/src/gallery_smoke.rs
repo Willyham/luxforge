@@ -1,9 +1,9 @@
-//! Ten renderer captures of the full 74-state widget gallery in the real desktop.
+//! Ten renderer captures of the full 78-state widget gallery in the real desktop.
 use crate::{smoke::frame_identity, *};
 
 pub const WINDOW: [&str; 2] = ["1440", "1000"];
 pub const PAGES: usize = 10;
-pub const STATES: usize = 74;
+pub const STATES: usize = 78;
 
 pub fn frames(scenario: &str) -> Option<usize> {
     (scenario == "gallery").then_some(PAGES + 2)

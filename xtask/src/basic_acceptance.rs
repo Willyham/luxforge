@@ -1607,6 +1607,7 @@ pub fn run(root: &Path, out: &Path) -> Result<Value> {
                     effect_format: EFFECT_FORMAT,
                     payload: json!({"exposure": 1.0}),
                     mask: None,
+                    artifacts: Vec::new(),
                 },
                 Layer {
                     id: lightwell_core::LayerId::new(),
@@ -1614,6 +1615,7 @@ pub fn run(root: &Path, out: &Path) -> Result<Value> {
                     effect_format: EFFECT_FORMAT,
                     payload: json!({"exposure": -1.0}),
                     mask: None,
+                    artifacts: Vec::new(),
                 },
             ],
             masks: Vec::new(),
@@ -1636,6 +1638,7 @@ pub fn run(root: &Path, out: &Path) -> Result<Value> {
                 effect_format: 2,
                 payload: json!({"exposure": 1.0}),
                 mask: None,
+                artifacts: Vec::new(),
             }],
             masks: Vec::new(),
             ..Recipe::default()

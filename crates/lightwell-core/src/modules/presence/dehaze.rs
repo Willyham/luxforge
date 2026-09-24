@@ -26,7 +26,7 @@ use super::filters::{
 };
 use crate::{
     Error, ErrorKind,
-    modules::{Global, Planes, PlanesMut, Reduction, SpatialUnit, Stage},
+    modules::{Global, Parallelism, Planes, PlanesMut, Reduction, SpatialUnit, Stage},
 };
 
 /// The integer reduction factor per axis the transmission map is computed on.
@@ -169,6 +169,7 @@ impl SpatialUnit for Dehaze {
         output: &mut PlanesMut<'_>,
         global: Option<&Global>,
         scratch: &mut [f32],
+        parallelism: Parallelism,
     ) -> Result<(), Error> {
         // A missing estimate is never silently treated as neutral: the effect would be omitted from
         // the render without saying so.
@@ -225,32 +226,39 @@ impl SpatialUnit for Dehaze {
             PlaneMut::over(blue_buffer, reduced_geometry, dark_source_rect)?,
         ];
         let mut normalized = PlaneMut::over(normalized_buffer, reduced_geometry, dark_source_rect)?;
-        for j in dark_source_rect.y0..dark_source_rect.y1 {
-            let y0 = j * REDUCTION;
-            let y1 = ((j + 1) * REDUCTION).min(frame.y1);
-            for i in dark_source_rect.x0..dark_source_rect.x1 {
-                let x0 = i * REDUCTION;
-                let x1 = ((i + 1) * REDUCTION).min(frame.x1);
-                let mut sums = [0.0_f64; 3];
-                let mut count = 0.0_f64;
-                for y in y0..y1 {
-                    for x in x0..x1 {
-                        let pixel = input.sample(x, y);
-                        for (channel, sum) in sums.iter_mut().enumerate() {
-                            *sum += f64::from(pixel[channel]);
+        let [red, green, blue] = &mut reduced;
+        filters::for_rows_of(
+            parallelism,
+            [red, green, blue, &mut normalized],
+            |j, rows| {
+                let y0 = j * REDUCTION;
+                let y1 = ((j + 1) * REDUCTION).min(frame.y1);
+                for i in dark_source_rect.x0..dark_source_rect.x1 {
+                    let x0 = i * REDUCTION;
+                    let x1 = ((i + 1) * REDUCTION).min(frame.x1);
+                    let mut sums = [0.0_f64; 3];
+                    let mut count = 0.0_f64;
+                    for y in y0..y1 {
+                        for x in x0..x1 {
+                            let pixel = input.sample(x, y);
+                            for (channel, sum) in sums.iter_mut().enumerate() {
+                                *sum += f64::from(pixel[channel]);
+                            }
+                            count += 1.0;
                         }
-                        count += 1.0;
                     }
+                    let column = (i - dark_source_rect.x0) as usize;
+                    let mut smallest = f32::INFINITY;
+                    for (channel, sum) in sums.iter().enumerate() {
+                        let mean = sum / count;
+                        rows[channel][column] = mean as f32;
+                        smallest =
+                            smallest.min((mean / atmosphere[channel]).clamp(0.0, 1.0) as f32);
+                    }
+                    rows[3][column] = smallest;
                 }
-                let mut smallest = f32::INFINITY;
-                for (channel, plane) in reduced.iter_mut().enumerate() {
-                    let mean = sums[channel] / count;
-                    plane.set(i, j, mean as f32);
-                    smallest = smallest.min((mean / atmosphere[channel]).clamp(0.0, 1.0) as f32);
-                }
-                normalized.set(i, j, smallest);
-            }
-        }
+            },
+        );
 
         let mut dark = PlaneMut::over(dark_buffer, reduced_geometry, raw_rect)?;
         {
@@ -261,22 +269,31 @@ impl SpatialUnit for Dehaze {
                     .clip(reduced_frame_rect)
                     .pixels(),
             )?;
-            box_min(&normalized.as_plane(), self.r_dark, &mut dark, temp_buffer)?;
+            box_min(
+                &normalized.as_plane(),
+                self.r_dark,
+                &mut dark,
+                temp_buffer,
+                parallelism,
+            )?;
         }
 
         let mut raw = PlaneMut::over(raw_buffer, reduced_geometry, raw_rect)?;
         let mut guide = PlaneMut::over(guide_buffer, reduced_geometry, raw_rect)?;
-        for j in raw_rect.y0..raw_rect.y1 {
+        let dark = dark.as_plane();
+        let reduced = reduced.each_ref().map(|plane| plane.as_plane());
+        filters::for_rows_of(parallelism, [&mut raw, &mut guide], |j, rows| {
             for i in raw_rect.x0..raw_rect.x1 {
-                raw.set(i, j, 1.0 - self.omega * dark.get(i, j));
+                let column = (i - raw_rect.x0) as usize;
+                rows[0][column] = 1.0 - self.omega * dark.get(i, j);
                 let pixel = [
                     reduced[0].get(i, j),
                     reduced[1].get(i, j),
                     reduced[2].get(i, j),
                 ];
-                guide.set(i, j, filters::encoded_luminance(pixel));
+                rows[1][column] = filters::encoded_luminance(pixel);
             }
-        }
+        });
 
         let mut refined = PlaneMut::over(refined_buffer, reduced_geometry, refined_rect)?;
         guided_filter(
@@ -286,17 +303,25 @@ impl SpatialUnit for Dehaze {
             EPS_DEHAZE,
             &mut refined,
             &mut scratch,
+            parallelism,
         )?;
         let mut transmission = PlaneMut::over(transmission_buffer, geometry, out)?;
-        upsample(&refined.as_plane(), REDUCTION, &mut transmission);
+        upsample(
+            &refined.as_plane(),
+            REDUCTION,
+            &mut transmission,
+            parallelism,
+        );
 
         let atmosphere: [f32; 3] = std::array::from_fn(|channel| atmosphere[channel] as f32);
         let positive = self.amount > 0.0;
-        for y in out.y0..out.y1 {
+        let transmission = transmission.as_plane();
+        output.for_rows(parallelism, |y, red, green, blue| {
+            let y = i64::from(y);
             for x in out.x0..out.x1 {
                 let pixel = input.sample(x, y);
                 let t = transmission.get(x, y).clamp(T_FLOOR, 1.0);
-                let value = std::array::from_fn(|channel| {
+                let value: [f32; 3] = std::array::from_fn(|channel| {
                     if positive {
                         (pixel[channel] - atmosphere[channel]) / t + atmosphere[channel]
                     } else {
@@ -304,9 +329,10 @@ impl SpatialUnit for Dehaze {
                         veil * pixel[channel] + (1.0 - veil) * atmosphere[channel]
                     }
                 });
-                output.set(x as u32, y as u32, value);
+                let column = (x - out.x0) as usize;
+                [red[column], green[column], blue[column]] = value;
             }
-        }
+        });
         Ok(())
     }
 

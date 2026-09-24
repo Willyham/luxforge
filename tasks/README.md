@@ -7,12 +7,12 @@ Each JSON file is an independent plan. IDs start at `TASK-001` inside every file
 | [Initial RAW editing](implementation-initial-raw.json) | Continuous high-precision RAW recipes for the original Nikon Z6, Fujifilm X100VI and supplied DJI Air 2S DNG: mode qualification, decoder/development evidence, bounded preparation, neutral rendering, exposure/WB, history and UI/API parity |
 | [UI components](implementation-ui-components.json) | The closed control vocabulary for modules: new parameter and control kinds, pure widgets, desktop gesture rules, a controls proof module and rendered evidence, per the accepted [design](../docs/design/ui-components.md); completed with native M4 captures and scoped before/after timing evidence |
 | [Masking](implementation-masking.json) | Local adjustments as a host concept: the mask model and persistence, mask targeting of the delivered modules, masked colour and spatial primitives, linear and radial gradients, brushes with feathering and erasing, and deterministic non-AI luminance and colour range selections, per the [design](../docs/design/masking.md) |
-| [Shared module capabilities](module-capabilities.json) | Proposed host-owned settings, permissions, secure credentials, resource jobs and durable derived artifacts for modules |
 | [Corrections](corrections.json) | Proposed offline Clone/Heal and optional provider-agnostic AI Remove, with a qualified local-model path and explicit owner decisions |
 | [Dependency advisories](dependency-advisories.json) | Remove or re-review the two expiring advisory exceptions the dependency audit enforces |
 | [Product decisions](product-decisions.json) | Open product questions |
+| [Known bugs](known-bugs.json) | Independent defects found in use, each with its measured symptom and acceptance |
 
-The shared capabilities and Corrections plans are planning proposals. AI implementation depends on the shared capability outcome and on owner acceptance of the scope and consequential product choices in the [Corrections design](../docs/design/corrections.md).
+The Corrections plan is a planning proposal. Its AI implementation builds on the implemented [module capabilities](../docs/design/module-capabilities.md) and depends on owner acceptance of the scope and consequential product choices in the [Corrections design](../docs/design/corrections.md).
 
 RAW editing is implemented with initial native M4 verification. Its [design](../docs/design/initial-raw.md) records the owner's continuous RAW editing requirement, the pinned processing path, and outstanding controlled quality, resource and platform qualification. The supplied FC3411 DNG has required gain/warp corrections and continuous editor support; its [contract](../docs/design/air2s-dng.md) records the qualified encoding, numerical interpretation and limits. RAW JPEG-export integration requires the shared exporter on the [roadmap](../docs/plan.md) and does not block the RAW editing checkpoint.
 

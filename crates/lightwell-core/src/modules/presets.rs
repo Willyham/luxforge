@@ -126,6 +126,7 @@ impl PresetsModule {
                 collapsed: true,
                 layout: ModuleLayout::Stacked,
                 availability: Availability::Available,
+                ..ModuleDescriptor::default()
             },
         }
     }

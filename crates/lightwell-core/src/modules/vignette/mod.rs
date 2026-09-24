@@ -337,6 +337,7 @@ impl VignetteModule {
                     stage: EffectStage::Finish,
                     order: 0,
                     maskable: false,
+                    artifacts: false,
                 }],
                 actions: vec![
                     ActionDescriptor {
@@ -387,6 +388,7 @@ impl VignetteModule {
                             label: AMOUNT_LABEL.into(),
                             style: crate::NumberStyle::Slider,
                             rail: None,
+                            reset: None,
                         },
                         Control::Number {
                             action: SET_VIGNETTE.into(),
@@ -394,6 +396,7 @@ impl VignetteModule {
                             label: MIDPOINT_LABEL.into(),
                             style: crate::NumberStyle::Slider,
                             rail: None,
+                            reset: None,
                         },
                         Control::Number {
                             action: SET_VIGNETTE.into(),
@@ -401,6 +404,7 @@ impl VignetteModule {
                             label: ROUNDNESS_LABEL.into(),
                             style: crate::NumberStyle::Slider,
                             rail: None,
+                            reset: None,
                         },
                         Control::Number {
                             action: SET_VIGNETTE.into(),
@@ -408,6 +412,7 @@ impl VignetteModule {
                             label: FEATHER_LABEL.into(),
                             style: crate::NumberStyle::Slider,
                             rail: None,
+                            reset: None,
                         },
                     ],
                     collapsed: false,
@@ -421,6 +426,7 @@ impl VignetteModule {
                 collapsed: true,
                 layout: crate::ModuleLayout::Stacked,
                 availability: Availability::Available,
+                ..ModuleDescriptor::default()
             },
         }
     }
@@ -496,6 +502,7 @@ impl ToolModule for VignetteModule {
                 payload: payload_of(&merged),
                 // The mask is the host's: an update keeps whatever this layer already carries.
                 mask: layer.mask.clone(),
+                artifacts: Vec::new(),
             })),
             // The host inserts a finish-stage layer at the end of the stack; a first set whose
             // merged amount is still 0 has nothing visible to store, so it adds no layer at all.
@@ -506,6 +513,7 @@ impl ToolModule for VignetteModule {
                 effect_format: EFFECT_FORMAT,
                 payload: payload_of(&merged),
                 mask: None,
+                artifacts: Vec::new(),
             })),
         }
     }
@@ -613,6 +621,7 @@ mod tests {
             effect_format: EFFECT_FORMAT,
             payload,
             mask: None,
+            artifacts: Vec::new(),
         }
     }
 

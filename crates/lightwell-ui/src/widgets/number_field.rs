@@ -7,10 +7,11 @@
 //! (`°`) inside it.
 
 use crate::theme;
+use crate::widgets::double_click::double_click_when;
 use crate::widgets::text::{control_label, error_caption, value_text};
 use iced::alignment::{Horizontal, Vertical};
 use iced::widget::text::{LineHeight, Wrapping};
-use iced::widget::{Row, button, column, container, mouse_area, row, text, text_input};
+use iced::widget::{Row, button, column, container, row, text, text_input};
 use iced::{Alignment, Element, Length, Padding};
 
 /// The value field's visible state. Parsing and validation belong to the caller.
@@ -140,18 +141,17 @@ fn invalid(model: &NumberFieldModel) -> Option<String> {
     }
 }
 
-/// The field's label: double-clicking it resets the field.
+/// The field's label: double-clicking it resets the field. The wrapper stays in place while the
+/// field is disabled, so a press made just before a moment of disablement still counts.
 pub(crate) fn field_label<'a, M: Clone + 'a>(
     model: &NumberFieldModel,
     on_reset: M,
 ) -> Element<'a, M> {
-    if model.enabled {
-        mouse_area(control_label(model.label.clone(), true))
-            .on_double_click(on_reset)
-            .into()
-    } else {
-        control_label(model.label.clone(), false).into()
-    }
+    double_click_when(
+        control_label(model.label.clone(), model.enabled),
+        on_reset,
+        model.enabled,
+    )
 }
 
 /// The value in its box: a press opens it for typing; typing shows the text as typed.

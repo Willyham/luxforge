@@ -2,10 +2,12 @@
 //! texture or calls the owner, and no framework type appears in any model, so every rule the screen
 //! follows is testable without a window.
 pub(crate) mod canvas;
+pub(crate) mod capabilities;
 pub(crate) mod histogram;
 pub(crate) mod masks;
 pub(crate) mod palette;
 pub(crate) mod panel;
+pub(crate) mod performance;
 pub(crate) mod presets;
 pub(crate) mod status;
 pub(crate) mod title;
@@ -36,6 +38,9 @@ pub(crate) struct Inputs<'a> {
     pub(crate) modules_ready: bool,
     /// The displayed entry's layers as the owner described them.
     pub(crate) recipe: Option<&'a RecipeDescription>,
+    /// The displayed entry's stored layers, payloads included, as the preview job that shows it
+    /// carries them. The idle crop section reads the committed crop from these.
+    pub(crate) displayed_layers: Option<&'a [lightwell_core::Layer]>,
     pub(crate) fields: &'a Fields,
     /// Local presentation state for generated controls; it never enters the recipe.
     pub(crate) control_ui: &'a tools::ControlsUi,
@@ -100,8 +105,9 @@ pub(crate) struct Inputs<'a> {
     pub(crate) clients: Option<usize>,
     /// A preview job is in flight or its pixels are still being uploaded.
     pub(crate) rendering: bool,
-    /// How long the displayed preview took from request to upload.
-    pub(crate) render_ms: Option<f64>,
+    /// How long the frame on the photo surface took to render, measured on the preview worker for
+    /// that frame's own phase. `None` before any frame is on screen.
+    pub(crate) render: Option<status::RenderTime>,
     /// The last preview failure, cleared by the next successful upload.
     pub(crate) render_error: Option<&'a (ErrorKind, String)>,
     pub(crate) pointer: Option<(u32, u32)>,
@@ -120,6 +126,13 @@ pub(crate) struct Inputs<'a> {
     pub(crate) presets: &'a presets::PresetLibrary,
     /// The Presets section's create form.
     pub(crate) preset_form: &'a presets::PresetForm,
+    /// What the desktop knows about every capability-declaring module, and the open consent
+    /// notice.
+    pub(crate) capabilities: &'a capabilities::CapabilityStore,
+    /// The Performance section is expanded, which is local to this client and this launch.
+    pub(crate) performance_expanded: bool,
+    /// What the Performance section's sampler has read since it last started sampling.
+    pub(crate) performance: &'a performance::PerformanceHistory,
 }
 
 /// The whole screen as plain data. The tools panel keeps its sections across derivations so an
@@ -134,12 +147,16 @@ pub(crate) struct Workspace {
     pub(crate) histogram: histogram::HistogramModel,
     pub(crate) status: status::StatusBarModel,
     pub(crate) palette: palette::PaletteModel,
+    /// The state panel's pinned last block. It keeps itself across derivations and is rebuilt only
+    /// when a sample lands or the section opens or closes.
+    pub(crate) performance: performance::PerformanceModel,
 }
 
 impl Workspace {
     pub(crate) fn derive(&mut self, inputs: &Inputs<'_>) {
         self.title = title::derive(inputs);
         self.panel = panel::derive(inputs);
+        self.performance.refresh(inputs);
         self.canvas = canvas::derive(inputs);
         self.masks = masks::derive(inputs);
         self.tools.refresh(inputs);
@@ -166,6 +183,21 @@ impl Workspace {
                             "selected": picker.selected,
                             "enabled": picker.enabled,
                         }),
+                    )
+                })
+                .collect(),
+        )
+    }
+
+    /// Which sections' bands carry the edited dot, for the correlated evidence state.
+    pub(crate) fn active(&self) -> serde_json::Value {
+        serde_json::Value::Object(
+            self.tools
+                .all()
+                .map(|section| {
+                    (
+                        section.module_id.clone(),
+                        serde_json::Value::from(section.active),
                     )
                 })
                 .collect(),
@@ -240,6 +272,9 @@ mod tests {
         presets: presets::PresetLibrary,
         preset_form: presets::PresetForm,
         slider_draft: Option<crate::app::slider::SliderDraft>,
+        capabilities: capabilities::CapabilityStore,
+        performance_expanded: bool,
+        performance: performance::PerformanceHistory,
     }
 
     impl Scene {
@@ -281,6 +316,9 @@ mod tests {
                 presets: presets::PresetLibrary::default(),
                 preset_form: presets::PresetForm::default(),
                 slider_draft: None,
+                capabilities: capabilities::CapabilityStore::default(),
+                performance_expanded: false,
+                performance: performance::PerformanceHistory::default(),
             }
         }
 
@@ -329,6 +367,7 @@ mod tests {
                 modules: &self.modules,
                 modules_ready: true,
                 recipe: self.recipe.as_ref(),
+                displayed_layers: self.displayed_layers(),
                 fields: &self.fields,
                 control_ui: &self.control_ui,
                 editing: self.editing.as_ref(),
@@ -371,7 +410,11 @@ mod tests {
                 photo: true,
                 clients: Some(1),
                 rendering: false,
-                render_ms: Some(41.0),
+                render: Some(status::RenderTime {
+                    ms: 41.0,
+                    proxy: false,
+                    approximate: false,
+                }),
                 render_error: self.render_error.as_ref(),
                 pointer: None,
                 analysis: self.analysis.as_ref(),
@@ -383,6 +426,9 @@ mod tests {
                 palette_selected: 0,
                 presets: &self.presets,
                 preset_form: &self.preset_form,
+                capabilities: &self.capabilities,
+                performance_expanded: self.performance_expanded,
+                performance: &self.performance,
             }
         }
 
@@ -390,6 +436,24 @@ mod tests {
             let mut workspace = Workspace::default();
             workspace.derive(&self.inputs());
             workspace
+        }
+
+        /// The stored layers of the displayed entry: whichever history entry the scene displays.
+        fn displayed_layers(&self) -> Option<&[lightwell_core::Layer]> {
+            let displayed = self.display_entry.as_ref()?;
+            self.history
+                .entries
+                .iter()
+                .find(|entry| &entry.id == displayed)
+                .map(|entry| entry.snapshot.recipe.layers.as_slice())
+        }
+
+        /// The open asset's source dimensions, which the crop layer's input stage starts from.
+        fn sized(mut self, width: u32, height: u32) -> Self {
+            let asset = &mut self.state.as_mut().expect("an open asset").asset;
+            asset.width = width;
+            asset.height = height;
+            self
         }
     }
 
@@ -399,6 +463,47 @@ mod tests {
             .all()
             .find(|section| section.module_id == id)
             .unwrap_or_else(|| panic!("no section for {id}"))
+    }
+
+    /// The Performance section is rebuilt only when a sample lands or it opens or closes: every
+    /// other derivation — a drag re-derives dozens of times a second — leaves it, and so its
+    /// sparklines' version, exactly as it was.
+    #[test]
+    fn the_performance_section_is_rebuilt_only_by_its_own_inputs() {
+        let mut scene = Scene::new(descriptors());
+        let mut workspace = scene.derive();
+        assert!(!workspace.performance.expanded);
+        assert!(workspace.performance.metrics.is_empty());
+
+        scene.performance_expanded = true;
+        scene.performance.clear();
+        workspace.derive(&scene.inputs());
+        assert!(workspace.performance.expanded);
+        assert_eq!(workspace.performance.metrics.len(), 3);
+        let version = workspace.performance.version;
+
+        scene.status = "Something else changed".into();
+        scene.busy = true;
+        workspace.derive(&scene.inputs());
+        assert_eq!(workspace.performance.version, version);
+
+        let sample: performance::ResourceSample = serde_json::from_value(json!({
+            "monotonic_ns": 1,
+            "cpu": {"time_ns": 5, "logical_cpus": 14},
+            "memory": {"kind": "footprint", "bytes": 1_523_000_000_u64},
+            "gpu": {"time_ns": 1}
+        }))
+        .unwrap();
+        scene
+            .performance
+            .push(sample, performance::ActivityList::default());
+        workspace.derive(&scene.inputs());
+        assert_ne!(workspace.performance.version, version);
+        assert_eq!(workspace.performance.metrics[0].value, "1.42");
+
+        scene.performance_expanded = false;
+        workspace.derive(&scene.inputs());
+        assert!(workspace.performance.metrics.is_empty(), "collapsed");
     }
 
     #[test]
@@ -488,6 +593,172 @@ mod tests {
             Some("disabled by --disable-module")
         );
         assert!(!disabled.enabled);
+    }
+
+    fn crop_model(workspace: &Workspace, id: &str) -> tools::CropSectionModel {
+        match section(workspace, id).controls.first() {
+            Some(ControlModel::CropFrame(frame)) => (**frame).clone(),
+            other => panic!("the crop section starts with its frame controls, not {other:?}"),
+        }
+    }
+
+    fn chosen(model: &tools::CropSectionModel) -> Vec<&str> {
+        model
+            .presets
+            .iter()
+            .filter(|chip| chip.chosen)
+            .map(|chip| chip.label.as_str())
+            .collect()
+    }
+
+    /// The largest rectangle of that ratio inside the whole stage, fitted by the core's own geometry
+    /// exactly as `crop-fit` or a ratio chip fits it, as the payload that commits it.
+    fn fitted(stage: lightwell_core::CropStage, ratio: f64) -> CropPayload {
+        let (width, height) = stage.bounding_box();
+        let whole = lightwell_core::BoxRect {
+            x: 0.0,
+            y: 0.0,
+            width,
+            height,
+        };
+        stage
+            .fit_about_center(lightwell_core::largest_with_ratio_inside(whole, ratio))
+            .normalized(&stage)
+    }
+
+    /// Idle, the crop section shows the drafting section's Ratio and Angle controls reading the
+    /// displayed entry's committed crop exactly as a draft opened on it seeds them: the ratio it
+    /// reads as chosen and locked, or Free, and its angle on the rail at rest.
+    #[test]
+    fn the_idle_crop_section_reads_the_committed_crop_as_a_draft_would_seed_it() {
+        let crop = crop_descriptor();
+        let stage = lightwell_core::CropStage {
+            width: 480,
+            height: 320,
+            angle: 0.0,
+        };
+        let idle = |layers: Vec<lightwell_core::Layer>| {
+            let scene = Scene::new(vec![crop.clone()])
+                .opened(layers)
+                .sized(480, 320);
+            crop_model(&scene.derive(), &crop.id)
+        };
+
+        // No crop, or a neutral one: Free with the lock open, no swap, 0° on the rail at rest, and
+        // neither readout nor Apply, which belong to a draft.
+        for layers in [Vec::new(), vec![crop_layer(CropPayload::NEUTRAL)]] {
+            let model = idle(layers);
+            assert!(!model.drafting && model.enabled);
+            assert_eq!(chosen(&model), ["Free"]);
+            assert!(!model.locked && !model.can_swap);
+            assert_eq!(model.lock_label, "Lock ratio");
+            assert_eq!(model.angle, "0");
+            assert_eq!(
+                model.angle_rail,
+                Some(tools::AngleRailModel {
+                    min: -45.0,
+                    max: 45.0,
+                    value: 0.0,
+                    step: crate::app::crop::ANGLE_RAIL_STEP,
+                    live: false,
+                })
+            );
+            assert!(model.readout.is_empty() && !model.can_apply);
+            assert_eq!(model.presets.len(), 7, "every declared ratio is a chip");
+        }
+
+        // A committed 16:9 crop reads as 16:9 with the lock closed, and a draft opened on it seeds
+        // exactly that.
+        let wide = fitted(stage, 16.0 / 9.0);
+        let model = idle(vec![crop_layer(wide)]);
+        assert_eq!(chosen(&model), ["16:9"]);
+        assert!(model.locked && model.can_swap);
+        assert_eq!(model.lock_label, "Unlock ratio");
+        let presets =
+            crate::crop_draft::aspect_presets(&crate::app::testing::CROP_ASPECTS.map(String::from));
+        let draft =
+            CropDraft::from_layer(stage, wide, lightwell_core::LayerId::new(), 0, 3, &presets);
+        assert_eq!(draft.preset, "16:9");
+
+        // Straightened to 2.4° at the stage's own ratio reads as Original, at 2.4° on the rail.
+        let straightened = fitted(
+            lightwell_core::CropStage {
+                angle: 2.4,
+                ..stage
+            },
+            1.5,
+        );
+        let model = idle(vec![crop_layer(straightened)]);
+        assert_eq!(chosen(&model), ["Original"]);
+        assert_eq!(model.angle, "2.4");
+        assert_eq!(model.angle_rail.map(|rail| rail.value), Some(2.4));
+
+        // An off-centre rectangle no ratio produces reads as Free, at its own angle.
+        let free = CropPayload {
+            angle: 7.0,
+            x: 0.2,
+            y: 0.25,
+            width: 0.4,
+            height: 0.3,
+        };
+        let model = idle(vec![crop_layer(free)]);
+        assert_eq!(chosen(&model), ["Free"]);
+        assert!(!model.locked);
+        assert_eq!(model.angle, "7");
+
+        // Behind a quarter turn the crop's input stage is portrait. A 16:9 fitted there reads as
+        // 16:9 only because the turn is read: on the unturned stage the same payload is 480 × 120.
+        let tall = fitted(
+            lightwell_core::CropStage {
+                width: 320,
+                height: 480,
+                angle: 0.0,
+            },
+            16.0 / 9.0,
+        );
+        let turned = lightwell_core::Layer::orientation(Orientation {
+            mirror: false,
+            turns: 1,
+        });
+        assert_eq!(chosen(&idle(vec![turned, crop_layer(tall)])), ["16:9"]);
+        assert_eq!(chosen(&idle(vec![crop_layer(tall)])), ["Free"]);
+    }
+
+    /// The idle controls read the displayed entry, not the current one, and a historical preview or
+    /// a request in flight disables them exactly as it disables every other section's controls.
+    #[test]
+    fn the_idle_crop_section_follows_the_displayed_entry_and_the_disabled_states() {
+        let crop = crop_descriptor();
+        let wide = fitted(
+            lightwell_core::CropStage {
+                width: 480,
+                height: 320,
+                angle: 0.0,
+            },
+            16.0 / 9.0,
+        );
+        let mut scene = Scene::new(vec![crop.clone()])
+            .opened(vec![crop_layer(wide)])
+            .sized(480, 320);
+        scene.busy = true;
+        let model = crop_model(&scene.derive(), &crop.id);
+        assert!(!model.enabled && !model.can_swap);
+        assert_eq!(
+            chosen(&model),
+            ["16:9"],
+            "a disabled section still reads the crop"
+        );
+        scene.busy = false;
+
+        let asset = scene.state.as_ref().expect("an asset").asset.id.clone();
+        let older = entry(&asset, 1, None);
+        scene.history.entries.push(older.clone());
+        scene.display_entry = Some(older.id.clone());
+        scene.session.preview.selection = lightwell_core::HistorySelection::Entry(older.id);
+        let model = crop_model(&scene.derive(), &crop.id);
+        assert!(!model.enabled && !model.can_swap);
+        assert_eq!(chosen(&model), ["Free"], "the displayed entry has no crop");
+        assert_eq!(model.angle, "0");
     }
 
     #[test]
@@ -960,6 +1231,68 @@ mod tests {
         }
     }
 
+    /// Every RAW recipe holds its development layer from the Original on, so the RAW band's dot
+    /// asks the core whether that layer does anything: an untouched RAW, and one returned to As
+    /// shot at 0 EV whatever custom values its payload kept, has no dot; exposure, a custom
+    /// temperature and tint, a neutral pick and explicit gains each have one.
+    #[test]
+    fn the_raw_section_is_active_only_when_its_development_is_not_as_shot_at_zero_ev() {
+        use crate::app::testing::{Z6_AS_SHOT, Z6_CAM_XYZ};
+        use lightwell_core::{RawPayload, WhiteBalanceMode};
+        let raw = descriptors()
+            .into_iter()
+            .find(|module| module.id == "lightwell.raw")
+            .expect("the registered RAW module");
+        let active = |payload: &RawPayload| {
+            let mut scene = Scene::new(vec![raw.clone()])
+                .opened(vec![payload.layer(lightwell_core::LayerId::new())]);
+            scene.state.as_mut().expect("an asset").asset.source =
+                lightwell_core::SourceKind::Raw {
+                    metadata: serde_json::json!({}),
+                };
+            section(&scene.derive(), &raw.id).active
+        };
+        let original = RawPayload::for_as_shot(Z6_AS_SHOT, Z6_CAM_XYZ).unwrap();
+        assert!(!active(&original), "an untouched RAW is not an edit");
+
+        let exposed = RawPayload {
+            exposure_ev: 0.35,
+            ..original.clone()
+        };
+        let custom = RawPayload {
+            wb_mode: WhiteBalanceMode::Custom,
+            temperature_kelvin: Some(5000.0),
+            tint: Some(12.0),
+            gains: lightwell_core::gains_from_temperature_tint(5000.0, 12.0, Z6_CAM_XYZ).unwrap(),
+            ..original.clone()
+        };
+        let picked = RawPayload {
+            wb_mode: WhiteBalanceMode::Custom,
+            gains: [1.9, 1.0, 1.4],
+            ..original.clone()
+        };
+        for (edit, payload) in [
+            ("exposure", &exposed),
+            ("custom white balance", &custom),
+            ("neutral pick", &picked),
+        ] {
+            assert!(active(payload), "{edit} is an edit");
+        }
+
+        // Back to As shot: the payload keeps the custom values it held, which As shot ignores.
+        let back = RawPayload {
+            wb_mode: WhiteBalanceMode::AsShot,
+            ..custom.clone()
+        };
+        assert_ne!(back, original);
+        assert!(!active(&back), "As shot at 0 EV is not an edit");
+        let back_exposed = RawPayload {
+            exposure_ev: -0.5,
+            ..back
+        };
+        assert!(active(&back_exposed), "As shot at -0.5 EV is an edit");
+    }
+
     #[test]
     fn recipe_rows_come_from_the_owners_own_layer_descriptions() {
         let crop = crop_descriptor();
@@ -986,6 +1319,7 @@ mod tests {
                 values: serde_json::Map::new(),
                 available: true,
                 mask: None,
+                artifacts: Vec::new(),
             }],
         });
         let workspace = scene.derive();
@@ -1255,13 +1589,64 @@ mod tests {
         assert_eq!(workspace.status.clients, "3 clients");
         assert_eq!(workspace.status.render, "Rendering…");
 
+        // A display-size proxy on screen says so beside its own time.
+        let mut inputs = scene.inputs();
+        inputs.render = Some(status::RenderTime {
+            ms: 7.6,
+            proxy: true,
+            approximate: false,
+        });
+        workspace.derive(&inputs);
+        assert_eq!(workspace.status.render, "Rendered in 8 ms (proxy)");
+
+        // A drafted RAW white balance approximated on the developed planes says that too.
+        let mut inputs = scene.inputs();
+        inputs.render = Some(status::RenderTime {
+            ms: 9.4,
+            proxy: true,
+            approximate: true,
+        });
+        workspace.derive(&inputs);
+        assert_eq!(
+            workspace.status.render,
+            "Rendered in 9 ms (proxy, approximate)"
+        );
+
         // No local server is a stated fact, never a client count of zero.
         let mut inputs = scene.inputs();
         inputs.clients = None;
-        inputs.render_ms = None;
+        inputs.render = None;
         workspace.derive(&inputs);
         assert_eq!(workspace.status.clients, "live API unavailable");
         assert_eq!(workspace.status.render, "Idle");
+    }
+
+    /// The pointer readout is the status bar's, and only the status bar's: moving the pointer onto
+    /// the photograph changes nothing in the histogram inspector, so no control in the tools panel
+    /// can move, and nothing else in the bar changes either.
+    #[test]
+    fn the_pointer_readout_is_in_the_status_bar_and_leaves_the_inspector_unchanged() {
+        let mut scene = Scene::new(vec![crop_descriptor()]).opened(Vec::new());
+        let without = scene.derive();
+        assert_eq!(without.status.readout, None);
+        scene.readout = Some(histogram::Readout {
+            x: 360,
+            y: 240,
+            rgba: [0, 128, 255, 255],
+        });
+        let with = scene.derive();
+        assert_eq!(
+            with.status.readout.as_deref(),
+            Some("R 0 \u{b7} G 128 \u{b7} B 255 \u{b7} 360, 240")
+        );
+        assert_eq!(with.histogram, without.histogram);
+        assert_eq!(
+            status::StatusBarModel {
+                readout: None,
+                ..with.status.clone()
+            },
+            without.status
+        );
     }
 
     #[test]
@@ -1293,7 +1678,7 @@ mod tests {
                     }
                     ControlModel::Group(group) => all_refused(&group.controls),
                     ControlModel::CropFrame(frame) => {
-                        assert!(!frame.enabled && !frame.can_start && !frame.can_apply)
+                        assert!(!frame.enabled && !frame.can_swap && !frame.can_apply)
                     }
                     _ => {}
                 }
@@ -1335,11 +1720,16 @@ mod tests {
         let mut workspace = Workspace::default();
         workspace.derive(&scene.inputs());
         let fixture_section = section(&workspace, &fixture.id);
-        let ControlModel::Group(group) = &fixture_section.controls[0] else {
-            panic!("declared group")
-        };
-        assert!(group.expanded);
-        let ControlModel::Slider(amount) = &group.controls[0] else {
+        // The fixture declares its controls inside one group, which the panel draws without a
+        // header: the group's controls are the section's own rows.
+        let controls = &fixture_section.controls;
+        assert!(
+            !controls
+                .iter()
+                .any(|control| matches!(control, ControlModel::Group(_))),
+            "a module's only group draws no header"
+        );
+        let ControlModel::Slider(amount) = &controls[0] else {
             panic!("number")
         };
         assert_eq!(
@@ -1352,23 +1742,23 @@ mod tests {
         );
         assert!(matches!(amount.rail, tools::RailStyle::Temperature));
         assert!(
-            matches!(group.controls[1], ControlModel::Slider(ref field) if field.style == tools::NumberControlStyle::Stepper)
+            matches!(controls[1], ControlModel::Slider(ref field) if field.style == tools::NumberControlStyle::Stepper)
         );
         assert!(
-            matches!(group.controls[2], ControlModel::Slider(ref field) if field.style == tools::NumberControlStyle::Field)
+            matches!(controls[2], ControlModel::Slider(ref field) if field.style == tools::NumberControlStyle::Field)
         );
-        assert!(matches!(group.controls[3], ControlModel::Toggle(ref field) if !field.on));
+        assert!(matches!(controls[3], ControlModel::Toggle(ref field) if !field.on));
         assert!(
-            matches!(group.controls[4], ControlModel::Enum(ref field) if field.style == tools::ChoiceControlStyle::Menu)
-        );
-        assert!(
-            matches!(group.controls[5], ControlModel::Color(ref field) if field.style == tools::ColorControlStyle::Picker && field.rgb == [32,64,128])
+            matches!(controls[4], ControlModel::Enum(ref field) if field.style == tools::ChoiceControlStyle::Menu)
         );
         assert!(
-            matches!(group.controls[6], ControlModel::Curve(ref field) if field.channels.len() == 2 && field.sample_query == "fixture-samples" && field.points.len() == 3)
+            matches!(controls[5], ControlModel::Color(ref field) if field.style == tools::ColorControlStyle::Picker && field.rgb == [32,64,128])
         );
         assert!(
-            matches!(group.controls[7], ControlModel::Action(ref field) if field.style == tools::ActionControlStyle::Icon && field.icon.as_deref() == Some("reset"))
+            matches!(controls[6], ControlModel::Curve(ref field) if field.channels.len() == 2 && field.sample_query == "fixture-samples" && field.points.len() == 3)
+        );
+        assert!(
+            matches!(controls[7], ControlModel::Action(ref field) if field.style == tools::ActionControlStyle::Icon && field.icon.as_deref() == Some("reset"))
         );
         let crop_version = section(&workspace, "lightwell.crop").version;
         let fixture_version = fixture_section.version;
@@ -1390,6 +1780,8 @@ mod tests {
                 version: 7,
             },
         );
+        // A recorded collapse of the only group changes nothing: that group has no header, so
+        // its controls are always shown.
         scene
             .control_ui
             .group_expanded
@@ -1398,12 +1790,13 @@ mod tests {
         let fixture_section = section(&workspace, &fixture.id);
         assert_eq!(fixture_section.version, fixture_version + 1);
         assert_eq!(section(&workspace, "lightwell.crop").version, crop_version);
-        let ControlModel::Group(group) = &fixture_section.controls[0] else {
-            panic!("group")
-        };
-        assert!(!group.expanded);
+        assert_eq!(
+            fixture_section.controls.len(),
+            8,
+            "every control is still drawn"
+        );
         assert!(
-            matches!(group.controls[6], ControlModel::Curve(ref field) if field.selected_channel == 1 && field.selected_point == Some(2) && field.sampled.len() == 2)
+            matches!(fixture_section.controls[6], ControlModel::Curve(ref field) if field.selected_channel == 1 && field.selected_point == Some(2) && field.sampled.len() == 2)
         );
         workspace.derive(&scene.inputs());
         assert_eq!(
@@ -1412,11 +1805,8 @@ mod tests {
         );
         let original_entry = scene.display_entry.replace(EntryId::new()).unwrap();
         workspace.derive(&scene.inputs());
-        let ControlModel::Group(group) = &section(&workspace, &fixture.id).controls[0] else {
-            panic!("group")
-        };
         assert!(
-            matches!(group.controls[6], ControlModel::Curve(ref field) if field.sampled.is_empty()),
+            matches!(section(&workspace, &fixture.id).controls[6], ControlModel::Curve(ref field) if field.sampled.is_empty()),
             "a different entry cannot reuse sampled geometry for identical control points"
         );
         scene.display_entry = Some(original_entry);
@@ -1427,14 +1817,123 @@ mod tests {
             "[[0.0,0.0],[0.5,0.7],[1.0,1.0]]".into(),
         );
         workspace.derive(&scene.inputs());
-        let ControlModel::Group(group) = &section(&workspace, &fixture.id).controls[0] else {
-            panic!("group")
-        };
         assert!(
-            matches!(group.controls[6], ControlModel::Curve(ref field) if field.sampled.is_empty()),
+            matches!(section(&workspace, &fixture.id).controls[6], ControlModel::Curve(ref field) if field.sampled.is_empty()),
             "old sampled geometry is hidden until the query matches the current points"
         );
         assert_eq!(section(&workspace, "lightwell.crop").version, crop_version);
+    }
+
+    /// A stacked module whose controls are one group draws that group's controls straight under
+    /// its band: no sub-group header, no disclosure and no caption, and a recorded collapse of that
+    /// group changes nothing. The band keeps the module's reset. Modules with more than one group
+    /// keep their headers, a tabbed module keeps its groups as tabs, and the descriptors that
+    /// `module.list` returns are untouched.
+    #[test]
+    fn a_modules_only_group_is_drawn_without_a_header_and_never_collapses() {
+        let modules = descriptors();
+        let mut scene = Scene::new(modules.clone()).opened(Vec::new());
+        scene.developer = true;
+        if let Some(state) = &mut scene.state {
+            state.asset.source = lightwell_core::SourceKind::Raw {
+                metadata: json!({}),
+            };
+        }
+        let workspace = scene.derive();
+        let groups = |section: &tools::SectionModel| {
+            section
+                .controls
+                .iter()
+                .filter(|control| matches!(control, ControlModel::Group(_)))
+                .count()
+        };
+        for id in [
+            "lightwell.raw",
+            "lightwell.transform",
+            "lightwell.pixel",
+            "lightwell.presence",
+            "lightwell.vignette",
+        ] {
+            let module = modules.iter().find(|module| module.id == id).unwrap();
+            let [lightwell_core::Control::Group { controls, .. }] = module.controls.as_slice()
+            else {
+                panic!("{id} declares exactly one group");
+            };
+            let drawn = section(&workspace, id);
+            assert_eq!(groups(drawn), 0, "{id} draws no sub-group header");
+            assert_eq!(
+                drawn.controls.len(),
+                controls.len(),
+                "{id} draws every control of its only group directly"
+            );
+            assert_eq!(
+                drawn.reset.as_ref().map(|reset| reset.action.as_str()),
+                module.reset.as_ref().map(|reset| reset.action.as_str()),
+                "{id} keeps the band's own reset"
+            );
+        }
+        let raw = section(&workspace, "lightwell.raw");
+        let labels: Vec<&str> = raw
+            .controls
+            .iter()
+            .map(|control| match control {
+                ControlModel::Slider(slider) => slider.label.as_str(),
+                ControlModel::Picker(picker) => picker.label.as_str(),
+                ControlModel::Action(action) => action.label.as_str(),
+                other => panic!("unexpected RAW control {other:?}"),
+            })
+            .collect();
+        assert_eq!(
+            labels,
+            [
+                "Exposure",
+                "Custom temperature",
+                "Custom tint",
+                "Neutral WB",
+                "As shot"
+            ]
+        );
+        assert_eq!(groups(section(&workspace, "lightwell.basic")), 3);
+        let mixer = section(&workspace, "lightwell.mixer");
+        assert_eq!(groups(mixer), 3, "a tabbed module keeps its groups as tabs");
+        assert!(matches!(mixer.layout, tools::SectionLayout::Tabs { .. }));
+
+        // The only group has nothing to collapse: a recorded collapse, however it got there,
+        // leaves every control drawn.
+        let before = raw.controls.clone();
+        scene
+            .control_ui
+            .group_expanded
+            .insert(tools::group_key("lightwell.raw", &[0]), false);
+        let collapsed = scene.derive();
+        assert_eq!(section(&collapsed, "lightwell.raw").controls, before);
+        // A group of a multi-group module still collapses.
+        scene
+            .control_ui
+            .group_expanded
+            .insert(tools::group_key("lightwell.basic", &[1]), false);
+        let toggled = scene.derive();
+        let ControlModel::Group(tone) = &section(&toggled, "lightwell.basic").controls[1] else {
+            panic!("Basic's second group")
+        };
+        assert!(!tone.expanded);
+        // The descriptors are what the API lists, unchanged.
+        assert_eq!(scene.modules, modules);
+    }
+
+    /// A one-group tabbed module is still tabs: the rule is for stacked sections only.
+    #[test]
+    fn a_tabbed_module_with_one_group_keeps_it() {
+        let mut tabs = tabs_descriptor();
+        tabs.controls.truncate(1);
+        let scene = Scene::new(vec![tabs.clone()]).opened(Vec::new());
+        let workspace = scene.derive();
+        let drawn = section(&workspace, &tabs.id);
+        assert!(matches!(
+            drawn.controls.as_slice(),
+            [ControlModel::Group(_)]
+        ));
+        assert_eq!(drawn.layout, tools::SectionLayout::Tabs { selected: 0 });
     }
 
     /// Selecting a tab in a `layout: tabs` module is per-client view state exactly like a group's
@@ -1500,11 +1999,10 @@ mod tests {
         let mut workspace = Workspace::default();
         workspace.derive(&scene.inputs());
         let versions = |workspace: &Workspace| {
-            let ControlModel::Group(group) = &section(workspace, &fixture.id).controls[0] else {
-                panic!("group")
-            };
+            // The fixture's only group draws no header, so its controls are the section's rows.
+            let controls = &section(workspace, &fixture.id).controls;
             let (ControlModel::Color(color), ControlModel::Curve(curve)) =
-                (&group.controls[5], &group.controls[6])
+                (&controls[5], &controls[6])
             else {
                 panic!("canvas controls")
             };

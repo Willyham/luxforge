@@ -460,6 +460,19 @@ pub fn run_unavailable(root: &Path, out: &Path, bin: &Path, timeout: Duration) -
             notices.iter().any(|n| n == "Preview is stale"),
             format!("Launch 2's notices do not name the stale preview: {notices:?}"),
         )?;
+        // The histogram has nothing to plot, and says why inside the plot's own area rather than
+        // in a row under it that would move the tools panel.
+        let histogram = &frame2["state"]["histogram"];
+        ensure(
+            histogram["status"] == json!("unavailable")
+                && histogram["notice"]
+                    .as_str()
+                    .is_some_and(|notice| notice.starts_with("Unavailable")),
+            format!(
+                "Launch 2's histogram is {} with the notice {}",
+                histogram["status"], histogram["notice"]
+            ),
+        )?;
         let crop_module = frame2["state"]["modules"]
             .as_array()
             .ok_or("Missing modules")?
@@ -496,6 +509,7 @@ pub fn run_unavailable(root: &Path, out: &Path, bin: &Path, timeout: Duration) -
                 "launch1_committed_crop_layer": true,
                 "launch2_render_error": frame2["state"]["render_error"],
                 "launch2_notices": notices,
+                "launch2_histogram_notice": frame2["state"]["histogram"]["notice"],
                 "launch2_crop_module": crop_module,
                 "launch2_photo_drawn": has_fixture_colour,
             }),

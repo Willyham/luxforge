@@ -73,6 +73,7 @@ fn vignette_layer(payload: Value) -> Layer {
         effect_format: EFFECT_FORMAT,
         payload,
         mask: None,
+        artifacts: Vec::new(),
     }
 }
 

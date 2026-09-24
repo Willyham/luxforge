@@ -631,6 +631,7 @@ fn masked_stack(mask: Mask) -> Recipe {
             effect_format: EFFECT_FORMAT,
             payload: json!({"exposure": MASKED_EV}),
             mask: Some(mask.id.clone()),
+            artifacts: Vec::new(),
         }],
         masks: vec![mask],
         ..Recipe::default()
@@ -822,7 +823,10 @@ fn linear_source() -> LinearImage {
 fn a_range_selection_reads_the_operations_input_on_the_raw_linear_path() {
     let registry = ModuleRegistry::builtin();
     let source = linear_source();
-    let settings = LinearSettings { exposure_ev: 0.0 };
+    let settings = LinearSettings {
+        exposure_ev: 0.0,
+        white_balance: None,
+    };
     let count = (WIDTH * HEIGHT) as usize;
     let planes = {
         // The same values `linear_source` wrote, recomputed here rather than read back, so the
@@ -988,6 +992,7 @@ fn a_range_a_gradient_and_a_subtract_brush_compose_as_the_algebra_says() {
             effect_format: EFFECT_FORMAT,
             payload: json!({"exposure": MASKED_EV}),
             mask: Some(mask_id),
+            artifacts: Vec::new(),
         }],
         masks: vec![mask],
         strokes: table,

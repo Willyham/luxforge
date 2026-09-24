@@ -207,6 +207,7 @@ impl ToolModule for ControlsModule {
             payload: Value::Object(merged),
             // The mask is the host's: an update keeps whatever this layer already carries.
             mask: old.and_then(|layer| layer.mask.clone()),
+            artifacts: Vec::new(),
         };
         Ok(if old.is_some() {
             ActionPlan::Update(layer)

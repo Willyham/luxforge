@@ -110,11 +110,21 @@ pub fn list_heading<'a, M: Clone + 'a>(label: &str) -> Element<'a, M> {
 
 /// A small marker circle: filled, outlined or hollow depending on [`Marker`].
 fn marker_dot<'a, M: Clone + 'a>(marker: Marker) -> Element<'a, M> {
-    let (background, border_color, border_width) = match marker {
-        Marker::Current => (Some(theme::ACCENT), Color::TRANSPARENT, 0.0),
-        Marker::Previewed => (None, theme::ACCENT, theme::MARKER_RING_WIDTH),
-        Marker::Plain => (None, theme::TEXT_TERTIARY, theme::MARKER_RING_WIDTH),
-        Marker::None => (None, Color::TRANSPARENT, 0.0),
+    match marker {
+        Marker::Current => marker_circle(Some(theme::ACCENT), None),
+        Marker::Previewed => marker_circle(None, Some(theme::ACCENT)),
+        Marker::Plain => marker_circle(None, Some(theme::TEXT_TERTIARY)),
+        Marker::None => marker_circle(None, None),
+    }
+}
+
+/// The list vocabulary's [`theme::MARKER_SIZE`] circle, filled with `fill` and ringed with a
+/// [`theme::MARKER_RING_WIDTH`] outline in `ring`, either or neither. A job row draws its running
+/// and finished markers with it, so they are the same circles as the history's.
+pub(crate) fn marker_circle<'a, M: 'a>(fill: Option<Color>, ring: Option<Color>) -> Element<'a, M> {
+    let (border_color, border_width) = match ring {
+        Some(color) => (color, theme::MARKER_RING_WIDTH),
+        None => (Color::TRANSPARENT, 0.0),
     };
 
     container(Space::new())
@@ -126,7 +136,7 @@ fn marker_dot<'a, M: Clone + 'a>(marker: Marker) -> Element<'a, M> {
                 width: border_width,
                 color: border_color,
             });
-            match background {
+            match fill {
                 Some(color) => style.background(color),
                 None => style,
             }

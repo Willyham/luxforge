@@ -1,0 +1,1 @@
+Test-only TLS fixtures for the module transport tests: a throwaway CA (`ca.pem`, its key discarded) and a leaf for `localhost`, `127.0.0.1` and `downloads.example` (`leaf.pem`, `leaf.key`), valid until 2126. Never trust them outside tests.

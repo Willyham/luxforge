@@ -9,19 +9,30 @@ use crate::{
             BrushEdit, CropMessage, CropPointer, MaskMessage, MenuTarget, Message, PaintTarget,
             PaletteAction, PresetMessage, RowEdit,
         },
+        performance,
         tasks::{HostAnswer, host_task, mutation, workspace_task},
     },
     crop_draft::{Corner, Handle},
     mask_draft::MaskDraft,
     state::{
+        capabilities::{CapabilityView, SecretText},
         presets::{PresetRow, presettable_groups},
         tools::crop_frame,
     },
 };
 use iced::Task;
+use iced::advanced::{Layout, Widget, layout, mouse, renderer, widget::Tree};
 use lightwell_ui::{ColorPickerEvent, CurveEditorEvent};
 use serde_json::{Map, Value, json};
-use std::{collections::VecDeque, path::PathBuf, time::Duration};
+use std::{
+    collections::VecDeque,
+    path::PathBuf,
+    sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+    },
+    time::{Duration, Instant},
+};
 
 /// An evidence run that has not finished by then is stuck; exit so the harness reaps nothing.
 pub(crate) const EVIDENCE_DEADLINE: Duration = Duration::from_secs(25);
@@ -32,6 +43,9 @@ pub(crate) const SCRIPT_EVIDENCE_DEADLINE: Duration = Duration::from_secs(60);
 /// The most steps one evidence run accepts, so a script cannot outlive the evidence deadline
 /// unnoticed.
 const MAX_SCRIPT_STEPS: usize = 64;
+
+/// The longest one `wait` step may idle, so a script cannot spend its deadline doing nothing.
+const MAX_WAIT_MS: u64 = 10_000;
 
 pub(crate) struct Evidence {
     pub(crate) dir: PathBuf,
@@ -70,7 +84,130 @@ pub(crate) struct Evidence {
     /// The gallery page shown instead of the workspace for a scripted capture.
     /// Requested tools-panel scroll fraction, retained beside the capture for correlation.
     pub(crate) tools_scroll: Option<f64>,
+    /// The module a running capability step waits on, and whether it waits for that module's jobs
+    /// to finish as well as for its round trips.
+    pub(crate) capability_wait: Option<(String, bool)>,
+    /// A scripted double-click's second press, waiting for its gap to pass. Its one-shot timer
+    /// exists only while this is set.
+    pub(crate) second_click: Option<SecondClick>,
+    /// When a `wait` step's frame may be captured. The evidence tick checks it, so a wait adds no
+    /// timer of its own.
+    pub(crate) wait_until: Option<Instant>,
+    pub(crate) sync: CaptureSync,
 }
+
+/// What keeps a capture's pixels and its recorded state the same moment. A screenshot reads back
+/// the frame the window renderer drew last rather than drawing a fresh one, so a message handled
+/// after that frame was built — a preview result arriving in the same batch as the capture tick —
+/// would otherwise leave the state describing a picture the capture does not show. A capture is
+/// therefore taken only when the frame drawn last was built after every update so far, and the
+/// state is recorded at that moment, beside the request for the screenshot.
+pub(crate) struct CaptureSync {
+    /// Updates handled so far.
+    pub(crate) updates: u64,
+    /// `updates` as it stood when the frame drawn last was built, stored by that frame's
+    /// [`DrawnMarker`] as it is drawn; `u64::MAX` until the first frame is.
+    pub(crate) drawn: Arc<AtomicU64>,
+    /// The state and the requested generation recorded with the screenshot being taken.
+    pub(crate) state: Option<(Value, u64)>,
+}
+
+impl Default for CaptureSync {
+    fn default() -> Self {
+        Self {
+            updates: 0,
+            drawn: Arc::new(AtomicU64::new(u64::MAX)),
+            state: None,
+        }
+    }
+}
+
+impl CaptureSync {
+    /// Whether the frame drawn last shows the state as it is now.
+    pub(crate) fn current(&self) -> bool {
+        self.drawn.load(Ordering::Relaxed) == self.updates
+    }
+}
+
+/// A widget that draws nothing and, each time it is drawn, stores how many updates the view it
+/// belongs to was built after. Present only in evidence runs, as the top layer of the window.
+struct DrawnMarker {
+    updates: u64,
+    sink: Arc<AtomicU64>,
+}
+
+impl<Message, Theme, Renderer> Widget<Message, Theme, Renderer> for DrawnMarker
+where
+    Renderer: iced::advanced::Renderer,
+{
+    fn size(&self) -> iced::Size<iced::Length> {
+        iced::Size::new(iced::Length::Shrink, iced::Length::Shrink)
+    }
+
+    fn layout(
+        &mut self,
+        _tree: &mut Tree,
+        _renderer: &Renderer,
+        _limits: &layout::Limits,
+    ) -> layout::Node {
+        layout::Node::new(iced::Size::ZERO)
+    }
+
+    fn draw(
+        &self,
+        _tree: &Tree,
+        _renderer: &mut Renderer,
+        _theme: &Theme,
+        _style: &renderer::Style,
+        _layout: Layout<'_>,
+        _cursor: mouse::Cursor,
+        _viewport: &iced::Rectangle,
+    ) {
+        self.sink.store(self.updates, Ordering::Relaxed);
+    }
+}
+
+/// `content` with a [`DrawnMarker`] over it, for an evidence run's window.
+pub(crate) fn marked<'a>(
+    content: iced::Element<'a, Message>,
+    sync: &CaptureSync,
+) -> iced::Element<'a, Message> {
+    iced::widget::stack![
+        content,
+        iced::Element::new(DrawnMarker {
+            updates: sync.updates,
+            sink: sync.drawn.clone(),
+        })
+    ]
+    .into()
+}
+
+/// The second press of a scripted double-click: what the wrapper publishes, `gap_ms` after the
+/// first press's release.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct SecondClick {
+    pub(crate) action: String,
+    pub(crate) parameter: String,
+    pub(crate) gap_ms: u64,
+}
+
+/// One double-click on a generated slider's rail, as the rail's wrapper and iced's slider turn it
+/// into messages: the first press moves the value to `value`, which opens the control's gesture,
+/// and its release commits it; `gap_ms` after that release, the second press is the wrapper's
+/// reset of the field. The step never waits between the two presses for anything but the gap, so
+/// the reset meets whatever the first press's commit is still doing, exactly as a person's does.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct DoubleClickStep {
+    pub(crate) action: String,
+    pub(crate) parameter: String,
+    pub(crate) value: f64,
+    pub(crate) gap_ms: u64,
+}
+
+/// The longest gap a scripted double-click may leave between its release and its second press.
+/// Iced classifies two presses as a double-click only within 300 ms of each other, and the first
+/// press's own hold comes out of that too.
+pub(crate) const MAX_DOUBLE_CLICK_GAP_MS: u64 = 250;
 
 /// The state of a slider step sent by a timer rather than all at once. Each tick sends the next
 /// value through the same messages [`Editor::slider_step`] sends synchronously, then advances or,
@@ -121,6 +258,8 @@ pub(crate) enum Step {
     Draft(DraftStep),
     /// One slider gesture on a generated control: the exact messages a drag sends.
     Slider(SliderStep),
+    /// A double-click on a slider's rail: a committed jump, then the reset, `gap_ms` apart.
+    DoubleClick(DoubleClickStep),
     /// A first-slice generated slider (fraction) or discrete control gesture.
     Controls(ControlsStep),
     Picker(PickerStep),
@@ -159,6 +298,20 @@ pub(crate) enum Step {
     /// Import one file through the section's own import task, bypassing only the native dialog.
     /// The path is as the script wrote it, relative to the editor's working directory.
     PresetImport(String),
+    /// Open or close the state panel's Performance section, as its heading does.
+    Performance(bool),
+    /// Ask nothing of the editor for at least this many milliseconds, then capture. The evidence
+    /// tick keeps rebuilding the view meanwhile, as the editor's own event sync does while a
+    /// photograph is open, so the frame shows what idling did to the screen.
+    Wait(u64),
+    /// Scroll the percent-zoom surface to a fraction of its scrollable range on each axis, as a
+    /// pan does, and capture once the offset it reports has reached the owner's session.
+    Pan {
+        x: f32,
+        y: f32,
+    },
+    /// One gesture on a module's capability section, task control or consent notice.
+    Capability(CapabilityStep),
     /// One Masks-panel view or mask-canvas gesture, through the same [`MaskMessage`] the panel's
     /// rows, buttons and the canvas raise.
     Mask(MaskStep),
@@ -453,6 +606,120 @@ impl PresetPick {
     }
 }
 
+/// One capability gesture: which module, what, and whether its frame waits for the jobs it starts.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct CapabilityStep {
+    pub(crate) module: String,
+    pub(crate) action: CapabilityAction,
+    /// `false` captures while a job the step started is still running.
+    pub(crate) wait: bool,
+}
+
+/// What a capability step does, each through the messages its control sends. Profiles and grants
+/// are named by their position in the lists the section shows.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) enum CapabilityAction {
+    /// Open the status or the settings sub-view.
+    Section(CapabilityView),
+    Set {
+        field: String,
+        value: Value,
+        profile: Option<usize>,
+    },
+    /// Replace a secret through its masked input. The value is recorded as `<redacted>`.
+    Secret {
+        field: String,
+        value: SecretText,
+        profile: Option<usize>,
+    },
+    /// What the native file dialog would return for a file field.
+    File {
+        field: String,
+        path: PathBuf,
+    },
+    CreateProfile {
+        adapter: String,
+        label: String,
+    },
+    RemoveProfile(usize),
+    Install(String),
+    Remove(String),
+    Activate(bool),
+    Task(String),
+    /// Allow (`true`) or Don't allow on the open consent notice.
+    Consent(bool),
+    /// Apply the newest task result that declares an apply action.
+    Apply,
+    /// Cancel the module's newest live job.
+    Cancel,
+    Revoke(usize),
+    /// Capture once every job the desktop tracks for the module has finished.
+    Settle,
+}
+
+/// The keys of a capability step's one gesture.
+const CAPABILITY_ACTIONS: [&str; 14] = [
+    "section", "set", "secret", "file", "profile", "install", "remove", "activate", "task",
+    "consent", "apply", "cancel", "revoke", "settle",
+];
+
+impl CapabilityStep {
+    /// The step as the script wrote it, with a secret's value replaced by `<redacted>`.
+    fn record(&self) -> Value {
+        let (key, value) = match &self.action {
+            CapabilityAction::Section(view) => ("section", json!(view.name())),
+            CapabilityAction::Set {
+                field,
+                value,
+                profile,
+            } => (
+                "set",
+                with_profile(json!({"field": field, "value": value}), *profile),
+            ),
+            CapabilityAction::Secret { field, profile, .. } => (
+                "secret",
+                with_profile(
+                    json!({"field": field, "value": lightwell_core::capabilities::redact::REDACTED}),
+                    *profile,
+                ),
+            ),
+            CapabilityAction::File { field, path } => {
+                ("file", json!({"field": field, "path": path}))
+            }
+            CapabilityAction::CreateProfile { adapter, label } => (
+                "profile",
+                json!({"create": {"adapter": adapter, "label": label}}),
+            ),
+            CapabilityAction::RemoveProfile(index) => ("profile", json!({"remove": index})),
+            CapabilityAction::Install(resource) => ("install", json!({"resource": resource})),
+            CapabilityAction::Remove(resource) => ("remove", json!({"resource": resource})),
+            CapabilityAction::Activate(on) => ("activate", json!(on)),
+            CapabilityAction::Task(task) => ("task", json!({"task": task})),
+            CapabilityAction::Consent(allow) => {
+                ("consent", json!(if *allow { "allow" } else { "deny" }))
+            }
+            CapabilityAction::Apply => ("apply", json!(true)),
+            CapabilityAction::Cancel => ("cancel", json!(true)),
+            CapabilityAction::Revoke(index) => ("revoke", json!(index)),
+            CapabilityAction::Settle => ("settle", json!(true)),
+        };
+        let mut object = Map::new();
+        object.insert("module".into(), json!(self.module));
+        object.insert(key.into(), value);
+        if !self.wait {
+            object.insert("wait".into(), json!(false));
+        }
+        json!({"capability": object})
+    }
+}
+
+fn with_profile(mut value: Value, profile: Option<usize>) -> Value {
+    if let Some(profile) = profile {
+        value["profile"] = json!(profile);
+    }
+    value
+}
+
 /// One slider gesture. Every value becomes one `SliderMoved` with a tick between them, exactly as
 /// a pointer drag and the gated subscription produce them; the gesture then ends the way `end`
 /// says, or stays open when it says nothing.
@@ -640,7 +907,11 @@ impl Step {
     /// The step as the script wrote it, recorded beside the frame it produced.
     pub(crate) fn record(&self) -> Value {
         match self {
-            Self::Api { method, params } => json!({"api":{"method":method,"params":params}}),
+            // Recorded requests are redacted like every other one the desktop keeps.
+            Self::Api { method, params } => json!({"api":{
+                "method": method,
+                "params": lightwell_core::redact_params(method, &Value::Object(params.clone())),
+            }}),
             Self::Draft(draft) => json!({"draft":draft.record()}),
             Self::Slider(slider) => {
                 let mut object = json!({
@@ -655,6 +926,12 @@ impl Step {
                 }
                 json!({"slider": object})
             }
+            Self::DoubleClick(step) => json!({"double_click":{
+                "action": step.action,
+                "parameter": step.parameter,
+                "value": step.value,
+                "gap_ms": step.gap_ms,
+            }}),
             Self::Controls(ControlsStep::Slider {
                 action,
                 parameter,
@@ -753,6 +1030,10 @@ impl Step {
             }
             Self::PresetImport(path) => json!({"preset_import":{"path":path}}),
             Self::Mask(step) => json!({ "mask": step.record() }),
+            Self::Performance(expanded) => json!({"performance":{"expanded":expanded}}),
+            Self::Wait(ms) => json!({"wait":{"ms":ms}}),
+            Self::Pan { x, y } => json!({"pan":{"x":x,"y":y}}),
+            Self::Capability(step) => step.record(),
         }
     }
 }
@@ -849,6 +1130,18 @@ pub(crate) enum Settle {
     Presets,
     /// A host method a script called directly answered.
     Host,
+    /// The percent-zoom surface reported a new scroll offset and the owner answered the
+    /// `view.set` that carried it.
+    Pan,
+    /// Nothing this client started is in flight: no gesture, no request, no waiting reset, and the
+    /// newest requested frame is on screen with its exact phase.
+    Quiet,
+    /// The Performance section's first read since it started sampling has answered, so the frame
+    /// shows its figures rather than the dashes before them.
+    Performance,
+    /// A capability step's round trips have answered and, unless it said otherwise, the jobs it
+    /// started have finished.
+    Capability,
 }
 
 impl Editor {
@@ -875,6 +1168,7 @@ impl Editor {
             Step::Api { method, params } => self.api_step(method, params),
             Step::Draft(draft) => self.draft_step(draft),
             Step::Slider(slider) => self.slider_step(slider),
+            Step::DoubleClick(step) => self.double_click_step(step),
             Step::Controls(control) => self.controls_step(control),
             Step::Picker(picker) => self.picker_step(picker),
             Step::Curve(curve) => self.curve_step(curve),
@@ -896,6 +1190,10 @@ impl Editor {
             Step::PresetCreate(step) => self.preset_create_step(step),
             Step::PresetDelete(pick) => self.preset_delete_step(pick),
             Step::PresetImport(path) => self.preset_import_step(path),
+            Step::Performance(expanded) => self.performance_step(expanded),
+            Step::Wait(ms) => self.wait_step(ms),
+            Step::Pan { x, y } => self.pan_step(x, y),
+            Step::Capability(step) => self.capability_step(step),
             Step::Mask(step) => self.mask_step(step),
         }
     }
@@ -1515,7 +1813,13 @@ impl Editor {
             DraftStep::Rect(rect) => return self.rect_step(*rect),
             DraftStep::AngleRail(fractions) => {
                 if !drafting {
-                    return self.fail_step("no crop draft is open");
+                    return self.idle_step(
+                        fractions
+                            .iter()
+                            .map(|fraction| CropMessage::AngleRail(*fraction))
+                            .chain(std::iter::once(CropMessage::AngleRailReleased))
+                            .collect(),
+                    );
                 }
                 let mut tasks: Vec<Task<Message>> = fractions
                     .iter()
@@ -1543,17 +1847,60 @@ impl Editor {
                 CropMessage::Preset(index)
             }
         };
+        // A change the idle section can make opens the draft first, exactly as the section's own
+        // control does, and is captured once that draft is on screen with the change applied.
+        if !drafting
+            && matches!(
+                step,
+                DraftStep::Preset(_)
+                    | DraftStep::Lock
+                    | DraftStep::Swap
+                    | DraftStep::Nudge(_)
+                    | DraftStep::Angle(_)
+                    | DraftStep::Guide(true)
+            )
+        {
+            let mut messages = vec![message];
+            if matches!(step, DraftStep::Angle(_)) {
+                messages.push(CropMessage::SubmitAngle);
+            }
+            return self.idle_step(messages);
+        }
         let modifier = matches!(step, DraftStep::Option(_) | DraftStep::Guide(_));
         if !drafting && !modifier {
             return self.fail_step("no crop draft is open");
         }
+        // Ending the draft returns the session to the pointer through one `workspace.set`, which
+        // answers on a later turn. The frame waits for that answer when the mode is about to
+        // change, so the recorded mode is the one the captured frame shows.
+        let leaves_mode = matches!(step, DraftStep::Cancel)
+            && self.session.workspace.mode != lightwell_core::POINTER_MODE;
         // Setting the angle text does not change the draft; submitting it does, exactly as Enter in
         // the field does.
         let mut tasks = vec![self.crop_update(message)];
         if matches!(step, DraftStep::Angle(_)) {
             tasks.push(self.crop_update(CropMessage::SubmitAngle));
         }
-        self.capture_next_frame();
+        if leaves_mode {
+            self.await_step(Settle::Session);
+        } else {
+            self.capture_next_frame();
+        }
+        Task::batch(tasks)
+    }
+
+    /// One change from the idle crop section: the same messages its control sends, which open the
+    /// draft seeded from the committed crop and apply the change once the draft's input stage has
+    /// arrived. The frame is the opened draft, so the step waits for it as a start does.
+    fn idle_step(&mut self, messages: Vec<CropMessage>) -> Task<Message> {
+        self.await_step(Settle::Draft);
+        let tasks: Vec<Task<Message>> = messages
+            .into_iter()
+            .map(|message| self.crop_update(message))
+            .collect();
+        if self.crop_pending.is_none() {
+            return self.fail_step("the idle change could not open a draft");
+        }
         Task::batch(tasks)
     }
 
@@ -1640,6 +1987,95 @@ impl Editor {
         }
         tasks.push(self.end_slider_gesture(step.action, step.parameter, step.end));
         Task::batch(tasks)
+    }
+
+    /// The first press of a scripted double-click and its release: the rail's jump to `value`
+    /// opens the control's gesture exactly as a press does, and the release commits it. The second
+    /// press is sent by its own one-shot timer `gap_ms` later, whatever the commit is doing then.
+    fn double_click_step(&mut self, step: DoubleClickStep) -> Task<Message> {
+        let Some(revision) = self.state.as_ref().map(|state| state.revision) else {
+            return self.fail_step("no photograph is open");
+        };
+        if !crate::state::tools::drafts(&self.modules, &step.action, &step.parameter) {
+            return self.fail_step(format!(
+                "{}.{} is not a slider whose one field is a whole request",
+                step.action, step.parameter
+            ));
+        }
+        self.note_step(json!({ "revision_before": revision }));
+        let mut tasks = vec![
+            self.update(Message::SliderMoved {
+                action: step.action.clone(),
+                parameter: step.parameter.clone(),
+                value: step.value,
+            }),
+            self.update(Message::SliderDraftTick),
+        ];
+        if self.slider_draft.is_none() {
+            return self.fail_step(format!(
+                "the first press opened no gesture: {}",
+                self.status
+            ));
+        }
+        tasks.push(self.update(Message::ControlReleased {
+            action: step.action.clone(),
+            parameter: step.parameter.clone(),
+        }));
+        self.event(
+            "double_click_first",
+            json!({"action":step.action,"parameter":step.parameter,"value":step.value}),
+        );
+        if let Some(evidence) = &mut self.evidence {
+            evidence.awaiting = None;
+            evidence.second_click = Some(SecondClick {
+                action: step.action,
+                parameter: step.parameter,
+                gap_ms: step.gap_ms,
+            });
+        }
+        Task::batch(tasks)
+    }
+
+    /// The scripted double-click's second press: the reset the rail's wrapper publishes. The frame
+    /// is captured once nothing the two presses started is still running.
+    pub(crate) fn double_click_second(&mut self) -> Task<Message> {
+        let Some(second) = self
+            .evidence
+            .as_mut()
+            .and_then(|evidence| evidence.second_click.take())
+        else {
+            return Task::none();
+        };
+        self.event(
+            "double_click_second",
+            json!({"action":second.action,"parameter":second.parameter,
+                "revision":self.state.as_ref().map(|state| state.revision),
+                "gesture_open":self.slider_draft.is_some()}),
+        );
+        self.await_step(Settle::Quiet);
+        self.update(Message::ResetField {
+            action: second.action,
+            parameter: second.parameter,
+        })
+    }
+
+    /// Settle a step waiting for quiet once this client has nothing in flight: no gesture, no
+    /// request, no waiting reset, and the newest requested frame on screen with its exact phase.
+    pub(crate) fn settle_when_quiet(&mut self) {
+        let waiting = self
+            .evidence
+            .as_ref()
+            .is_some_and(|evidence| evidence.awaiting == Some(Settle::Quiet));
+        if waiting
+            && self.slider_draft.is_none()
+            && !self.busy
+            && self.pending_reset.is_none()
+            && !self.preview_queue.is_busy()
+            && self.held_by_proxy.is_none()
+            && self.presented_generation == self.preview_generation
+        {
+            self.settle_step(Settle::Quiet);
+        }
     }
 
     /// One tick of a paced slider step: send its next value through the same messages a fast
@@ -1760,6 +2196,15 @@ impl Editor {
             // drained, so the pixels belong to the newest value it sent.
             SliderEnd::Open => {
                 self.await_step(Settle::SliderDraft);
+                // A value whose preview job was refused has already drained with no frame of its
+                // own to wait for, so the frame on screen is the step's evidence.
+                if self
+                    .slider_draft
+                    .as_ref()
+                    .is_some_and(|draft| draft.drained() && draft.unpreviewed)
+                {
+                    self.settle_step(Settle::SliderDraft);
+                }
                 Task::none()
             }
         }
@@ -1978,6 +2423,13 @@ impl Editor {
         else {
             return self.fail_step("the module declares no control group at that path");
         };
+        if crate::state::tools::module_of(&self.modules, &step.module)
+            .is_some_and(|module| crate::state::tools::is_headerless_group(module, &step.path))
+        {
+            return self.fail_step(
+                "that group is the module's only one: the panel draws it without a header, so it has no disclosure",
+            );
+        }
         let key = crate::state::tools::group_key(&step.module, &step.path);
         let expanded = self
             .controls_ui
@@ -2041,6 +2493,50 @@ impl Editor {
         }
         self.await_step(Settle::Session);
         self.update(Message::Gallery(page))
+    }
+
+    /// Ask nothing of the editor until `ms` have passed; the evidence tick captures the frame then.
+    fn wait_step(&mut self, ms: u64) -> Task<Message> {
+        if let Some(evidence) = &mut self.evidence {
+            evidence.wait_until = Some(Instant::now() + Duration::from_millis(ms));
+        }
+        Task::none()
+    }
+
+    /// Called by every evidence tick: a `wait` step whose time is up captures its frame.
+    pub(crate) fn wait_elapsed(&mut self) {
+        let due = self.evidence.as_ref().is_some_and(|evidence| {
+            evidence
+                .wait_until
+                .is_some_and(|until| Instant::now() >= until)
+        });
+        if due {
+            if let Some(evidence) = &mut self.evidence {
+                evidence.wait_until = None;
+            }
+            self.capture_next_frame();
+        }
+    }
+
+    /// Scroll the percent-zoom surface through the same scrollable a Space drag scrolls. The
+    /// scrollable reports the new offset on its next frame, which reaches the owner as the pan any
+    /// scroll sends; the step settles on that answer, so the captured state carries the offset the
+    /// frame was drawn at.
+    fn pan_step(&mut self, x: f32, y: f32) -> Task<Message> {
+        if self.state.is_none() {
+            return self.fail_step("no photograph is open");
+        }
+        if !matches!(
+            self.session.preview.view.zoom,
+            lightwell_core::Zoom::Percent { .. }
+        ) {
+            return self.fail_step("pan needs a percentage zoom");
+        }
+        self.await_step(Settle::Pan);
+        iced::widget::operation::snap_to(
+            crate::app::crop::SURFACE_ID,
+            iced::widget::scrollable::RelativeOffset { x, y },
+        )
     }
 
     fn tools_scroll_step(&mut self, fraction: f64) -> Task<Message> {
@@ -2389,7 +2885,35 @@ impl Editor {
             | PaletteAction::ToggleThirds
             | PaletteAction::Fit
             | PaletteAction::HundredPercent => self.await_step(Settle::Session),
+            PaletteAction::TogglePerformance => self.arm_performance_settle(),
         }
+    }
+
+    /// What toggling the Performance section settles on: its first read when the toggle starts it
+    /// sampling, and otherwise the next frame, since closing it or opening it under a hidden state
+    /// panel asks the owner for nothing.
+    fn arm_performance_settle(&mut self) {
+        let starts = performance::sampling(
+            !self.performance.expanded,
+            self.session.workspace.state_panel && self.gallery_page().is_none(),
+        );
+        if starts {
+            self.await_step(Settle::Performance);
+        } else {
+            self.capture_next_frame();
+        }
+    }
+
+    /// Open or close the Performance section through its heading's own message. Opening it waits
+    /// for the first read, so the frame shows figures; closing it is captured on the next frame. A
+    /// section already in the state asked for sends nothing.
+    fn performance_step(&mut self, expanded: bool) -> Task<Message> {
+        if self.performance.expanded == expanded {
+            self.capture_next_frame();
+            return Task::none();
+        }
+        self.arm_performance_settle();
+        self.update(Message::TogglePerformance)
     }
 
     /// Click one row, exactly as the section does: the section's own action with that preset's
@@ -2611,7 +3135,7 @@ impl Editor {
     /// Capture the frame the next redraw presents. Used by the steps that only change draft state,
     /// and by every refusal — including a refused grid, which is why the overlay wait is dropped
     /// here rather than left for a texture nothing will fill.
-    fn capture_next_frame(&mut self) {
+    pub(crate) fn capture_next_frame(&mut self) {
         if let Some(evidence) = &mut self.evidence {
             evidence.awaiting = None;
             evidence.capture_pending = true;
@@ -2636,7 +3160,7 @@ impl Editor {
 
     /// The running step could not be sent. It is recorded and its frame is still captured, so a
     /// refused step is visible in the evidence rather than missing from it.
-    fn fail_step(&mut self, reason: impl Into<String>) -> Task<Message> {
+    pub(crate) fn fail_step(&mut self, reason: impl Into<String>) -> Task<Message> {
         let reason = reason.into();
         self.status = reason.clone();
         self.event("script_step_failed", json!({"reason":reason}));
@@ -2735,6 +3259,7 @@ fn parse_step(step: &Value) -> Result<Step, String> {
         "api" => parse_api(value),
         "draft" => Ok(Step::Draft(parse_draft(value)?)),
         "slider" => Ok(Step::Slider(parse_slider(value)?)),
+        "double_click" => Ok(Step::DoubleClick(parse_double_click(value)?)),
         "controls" => Ok(Step::Controls(parse_controls(value)?)),
         "picker" => Ok(Step::Picker(parse_picker(value)?)),
         "curve" => Ok(Step::Curve(parse_curve(value)?)),
@@ -2760,8 +3285,12 @@ fn parse_step(step: &Value) -> Result<Step, String> {
         )?)),
         "preset_import" => parse_preset_import(value),
         "mask" => Ok(Step::Mask(parse_mask(value)?)),
+        "performance" => parse_performance(value),
+        "wait" => parse_wait(value),
+        "pan" => parse_pan(value),
+        "capability" => Ok(Step::Capability(parse_capability(value)?)),
         other => Err(format!(
-            "unknown step kind {other}; expected api, draft, slider, controls, picker, curve, group, tab, section, gallery, tools_scroll, slider_draft, field, reset, pick, view, workspace, preview, palette, hover, preset, preset_create, preset_delete, preset_import or mask"
+            "unknown step kind {other}; expected api, draft, slider, double_click, controls, picker, curve, group, tab, section, gallery, tools_scroll, slider_draft, field, reset, pick, view, workspace, preview, palette, hover, preset, preset_create, preset_delete, preset_import, mask, performance, wait, pan or capability"
         )),
     }
 }
@@ -3501,6 +4030,38 @@ fn parse_slider(value: &Value) -> Result<SliderStep, String> {
     })
 }
 
+/// `{"action": "...", "parameter": "...", "value": 0.35, "gap_ms": 120}`: where the first press
+/// lands, and how long after its release the second press comes, at most
+/// [`MAX_DOUBLE_CLICK_GAP_MS`].
+fn parse_double_click(value: &Value) -> Result<DoubleClickStep, String> {
+    let object = value
+        .as_object()
+        .ok_or("double_click takes an object with an action, a parameter, a value and gap_ms")?;
+    known_fields(
+        object,
+        &["action", "parameter", "value", "gap_ms"],
+        "double_click",
+    )?;
+    let first = object
+        .get("value")
+        .and_then(Value::as_f64)
+        .filter(|value| value.is_finite())
+        .ok_or("double_click value is a finite number")?;
+    let gap_ms = object
+        .get("gap_ms")
+        .and_then(Value::as_u64)
+        .filter(|gap| *gap <= MAX_DOUBLE_CLICK_GAP_MS)
+        .ok_or_else(|| {
+            format!("double_click gap_ms is an integer from 0 to {MAX_DOUBLE_CLICK_GAP_MS}")
+        })?;
+    Ok(DoubleClickStep {
+        action: required_text(object, "action", "double_click")?,
+        parameter: required_text(object, "parameter", "double_click")?,
+        value: first,
+        gap_ms,
+    })
+}
+
 fn parse_slider_draft(value: &Value) -> Result<SliderDraftStep, String> {
     match value.as_str().map(str::trim) {
         Some("discard") => Ok(SliderDraftStep::Discard),
@@ -3918,6 +4479,52 @@ fn parse_hover(value: &Value) -> Result<Step, String> {
     })
 }
 
+fn parse_performance(value: &Value) -> Result<Step, String> {
+    let object = value.as_object().ok_or("performance takes an object")?;
+    known_fields(object, &["expanded"], "performance")?;
+    object
+        .get("expanded")
+        .and_then(Value::as_bool)
+        .map(Step::Performance)
+        .ok_or_else(|| "performance expanded takes true or false".to_owned())
+}
+
+fn parse_wait(value: &Value) -> Result<Step, String> {
+    let object = value.as_object().ok_or("wait takes an object with ms")?;
+    for key in object.keys() {
+        if key != "ms" {
+            return Err(format!("unknown wait field {key}"));
+        }
+    }
+    object
+        .get("ms")
+        .and_then(Value::as_u64)
+        .filter(|ms| (1..=MAX_WAIT_MS).contains(ms))
+        .map(Step::Wait)
+        .ok_or_else(|| format!("wait ms takes an integer from 1 to {MAX_WAIT_MS}"))
+}
+
+fn parse_pan(value: &Value) -> Result<Step, String> {
+    let object = value
+        .as_object()
+        .ok_or("pan takes an object with an x and a y")?;
+    for key in object.keys() {
+        if !matches!(key.as_str(), "x" | "y") {
+            return Err(format!("unknown pan field {key}"));
+        }
+    }
+    let fraction = |name: &str| -> Result<f32, String> {
+        unit_fraction(
+            object.get(name).ok_or(format!("pan needs {name}"))?,
+            &format!("pan {name}"),
+        )
+    };
+    Ok(Step::Pan {
+        x: fraction("x")?,
+        y: fraction("y")?,
+    })
+}
+
 fn parse_preview(value: &Value) -> Result<PreviewStep, String> {
     match value {
         Value::String(text) if text.trim() == "current" => Ok(PreviewStep::Current),
@@ -3951,6 +4558,156 @@ fn parse_palette(value: &Value) -> Result<PaletteStep, String> {
             "unknown palette field {other}; expected query or run"
         )),
     }
+}
+
+/// `{"capability": {"module": M, <one gesture>, "wait"?: false}}`. No refusal here echoes a value,
+/// because a secret step's value must reach nothing but the one request that stores it.
+fn parse_capability(value: &Value) -> Result<CapabilityStep, String> {
+    let object = value
+        .as_object()
+        .ok_or("capability takes an object with a module and one gesture")?;
+    for key in object.keys() {
+        if key != "module" && key != "wait" && !CAPABILITY_ACTIONS.contains(&key.as_str()) {
+            return Err(format!("unknown capability field {key}"));
+        }
+    }
+    let module = required_text(object, "module", "capability")?;
+    let wait = match object.get("wait") {
+        None => true,
+        Some(Value::Bool(wait)) => *wait,
+        Some(_) => return Err("capability wait takes true or false".into()),
+    };
+    let mut gestures = object
+        .iter()
+        .filter(|(key, _)| CAPABILITY_ACTIONS.contains(&key.as_str()));
+    let (Some((key, value)), None) = (gestures.next(), gestures.next()) else {
+        return Err(format!(
+            "capability takes exactly one of {}",
+            CAPABILITY_ACTIONS.join(", ")
+        ));
+    };
+    let fields = |step: &str, allowed: &[&str]| -> Result<&Map<String, Value>, String> {
+        let object = value
+            .as_object()
+            .ok_or_else(|| format!("capability {step} takes an object"))?;
+        known_fields(object, allowed, &format!("capability {step}"))?;
+        Ok(object)
+    };
+    let profile = |object: &Map<String, Value>, step: &str| -> Result<Option<usize>, String> {
+        match object.get("profile") {
+            None => Ok(None),
+            Some(index) => index
+                .as_u64()
+                .and_then(|index| usize::try_from(index).ok())
+                .map(Some)
+                .ok_or_else(|| format!("capability {step} profile is a non-negative index")),
+        }
+    };
+    let flag = || match value {
+        Value::Bool(true) => Ok(()),
+        _ => Err(format!("capability {key} takes true")),
+    };
+    let index = || {
+        value
+            .as_u64()
+            .and_then(|index| usize::try_from(index).ok())
+            .ok_or_else(|| format!("capability {key} takes a non-negative index"))
+    };
+    let action = match key.as_str() {
+        "section" => match value.as_str() {
+            Some("status") => CapabilityAction::Section(CapabilityView::Status),
+            Some("settings") => CapabilityAction::Section(CapabilityView::Settings),
+            _ => return Err("capability section is \"status\" or \"settings\"".into()),
+        },
+        "set" => {
+            let object = fields("set", &["field", "value", "profile"])?;
+            CapabilityAction::Set {
+                field: required_text(object, "field", "capability set")?,
+                value: object
+                    .get("value")
+                    .cloned()
+                    .ok_or("capability set needs a value")?,
+                profile: profile(object, "set")?,
+            }
+        }
+        "secret" => {
+            let object = fields("secret", &["field", "value", "profile"])?;
+            CapabilityAction::Secret {
+                field: required_text(object, "field", "capability secret")?,
+                value: SecretText::new(
+                    object
+                        .get("value")
+                        .and_then(Value::as_str)
+                        .filter(|text| !text.is_empty())
+                        .ok_or("capability secret needs a text value")?
+                        .to_owned(),
+                ),
+                profile: profile(object, "secret")?,
+            }
+        }
+        "file" => {
+            let object = fields("file", &["field", "path"])?;
+            CapabilityAction::File {
+                field: required_text(object, "field", "capability file")?,
+                path: PathBuf::from(required_text(object, "path", "capability file")?),
+            }
+        }
+        "profile" => {
+            let object = fields("profile", &["create", "remove"])?;
+            match (object.get("create"), object.get("remove")) {
+                (Some(create), None) => {
+                    let create = create
+                        .as_object()
+                        .ok_or("capability profile create takes an object")?;
+                    known_fields(create, &["adapter", "label"], "capability profile create")?;
+                    CapabilityAction::CreateProfile {
+                        adapter: required_text(create, "adapter", "capability profile create")?,
+                        label: required_text(create, "label", "capability profile create")?,
+                    }
+                }
+                (None, Some(remove)) => CapabilityAction::RemoveProfile(
+                    remove
+                        .as_u64()
+                        .and_then(|index| usize::try_from(index).ok())
+                        .ok_or("capability profile remove takes a non-negative index")?,
+                ),
+                _ => return Err("capability profile takes create or remove".into()),
+            }
+        }
+        "install" | "remove" => {
+            let object = fields(key, &["resource"])?;
+            let resource = required_text(object, "resource", &format!("capability {key}"))?;
+            if key == "install" {
+                CapabilityAction::Install(resource)
+            } else {
+                CapabilityAction::Remove(resource)
+            }
+        }
+        "activate" => CapabilityAction::Activate(
+            value
+                .as_bool()
+                .ok_or("capability activate takes true or false")?,
+        ),
+        "task" => {
+            let object = fields("task", &["task"])?;
+            CapabilityAction::Task(required_text(object, "task", "capability task")?)
+        }
+        "consent" => match value.as_str() {
+            Some("allow") => CapabilityAction::Consent(true),
+            Some("deny") => CapabilityAction::Consent(false),
+            _ => return Err("capability consent is \"allow\" or \"deny\"".into()),
+        },
+        "apply" => flag().map(|()| CapabilityAction::Apply)?,
+        "cancel" => flag().map(|()| CapabilityAction::Cancel)?,
+        "settle" => flag().map(|()| CapabilityAction::Settle)?,
+        "revoke" => CapabilityAction::Revoke(index()?),
+        other => return Err(format!("unknown capability gesture {other}")),
+    };
+    Ok(CapabilityStep {
+        module,
+        action,
+        wait,
+    })
 }
 
 #[cfg(test)]
@@ -4344,6 +5101,34 @@ mod tests {
     /// The gesture, field, reset and conflict-resolution steps parse into exactly the shapes the
     /// runner writes, and record themselves back in the same shape.
     #[test]
+    fn a_double_click_step_parses_strictly_and_records_what_was_written() {
+        let script = r#"[{"double_click":{"action":"set-raw-temperature","parameter":"kelvin","value":5000,"gap_ms":120}}]"#;
+        let steps = parse_script(script).expect("a valid script");
+        assert_eq!(
+            steps,
+            vec![Step::DoubleClick(DoubleClickStep {
+                action: "set-raw-temperature".into(),
+                parameter: "kelvin".into(),
+                value: 5000.0,
+                gap_ms: 120,
+            })]
+        );
+        assert_eq!(
+            steps[0].record(),
+            json!({"double_click":{"action":"set-raw-temperature","parameter":"kelvin","value":5000.0,"gap_ms":120}})
+        );
+        for refused in [
+            // Past the window iced gives two presses.
+            r#"[{"double_click":{"action":"a","parameter":"p","value":1,"gap_ms":251}}]"#,
+            r#"[{"double_click":{"action":"a","parameter":"p","value":1}}]"#,
+            r#"[{"double_click":{"action":"a","parameter":"p","gap_ms":0}}]"#,
+            r#"[{"double_click":{"action":"a","parameter":"p","value":1,"gap_ms":0,"x":1}}]"#,
+        ] {
+            assert!(parse_script(refused).is_err(), "{refused}");
+        }
+    }
+
+    #[test]
     fn the_slider_field_and_reset_steps_round_trip_their_scripts() {
         let steps = parse_script(
             r#"[{"slider":{"action":"set-basic","parameter":"exposure","values":[0.25,0.5,0.75],"release":true}},
@@ -4465,7 +5250,11 @@ mod tests {
             had_errors: false,
             paced_slider: None,
             paced_stroke: None,
+            second_click: None,
             tools_scroll: None,
+            capability_wait: None,
+            wait_until: None,
+            sync: CaptureSync::default(),
         });
         editor.activity.requested = 1;
 
@@ -4623,10 +5412,164 @@ mod tests {
         finish(editor, catalog);
     }
 
+    /// `wait` and `pan` parse strictly and record themselves back in the shape the script wrote.
+    #[test]
+    fn wait_and_pan_steps_parse_strictly_and_round_trip() {
+        let steps = parse_script(r#"[{"wait":{"ms":1000}},{"pan":{"x":0.5,"y":1.0}}]"#)
+            .expect("a valid script");
+        assert_eq!(steps, vec![Step::Wait(1000), Step::Pan { x: 0.5, y: 1.0 }]);
+        assert_eq!(steps[0].record(), json!({"wait":{"ms":1000}}));
+        assert_eq!(steps[1].record(), json!({"pan":{"x":0.5,"y":1.0}}));
+        for (script, expected) in [
+            (r#"[{"wait":{"ms":0}}]"#, "integer from 1 to 10000"),
+            (r#"[{"wait":{"ms":10001}}]"#, "integer from 1 to 10000"),
+            (r#"[{"wait":{"ms":1.5}}]"#, "integer from 1 to 10000"),
+            (r#"[{"wait":{"seconds":1}}]"#, "unknown wait field"),
+            (r#"[{"wait":5}]"#, "an object with ms"),
+            (r#"[{"pan":{"x":0.5}}]"#, "pan needs y"),
+            (r#"[{"pan":{"x":1.5,"y":0}}]"#, "fraction from 0 to 1"),
+            (r#"[{"pan":{"x":0,"y":0,"z":0}}]"#, "unknown pan field"),
+        ] {
+            let error = parse_script(script).expect_err(script);
+            assert!(error.contains(expected), "{script}: {error}");
+        }
+    }
+
+    /// `performance` parses strictly and records itself back in the shape the script wrote.
+    #[test]
+    fn performance_steps_parse_strictly_and_round_trip() {
+        let steps = parse_script(
+            r#"[{"performance":{"expanded":true}},{"performance":{"expanded":false}}]"#,
+        )
+        .expect("a valid script");
+        assert_eq!(
+            steps,
+            vec![Step::Performance(true), Step::Performance(false)]
+        );
+        assert_eq!(steps[0].record(), json!({"performance":{"expanded":true}}));
+        assert_eq!(steps[1].record(), json!({"performance":{"expanded":false}}));
+        for (script, expected) in [
+            (
+                r#"[{"performance":{}}]"#,
+                "performance expanded takes true or false",
+            ),
+            (
+                r#"[{"performance":{"expanded":1}}]"#,
+                "performance expanded takes true or false",
+            ),
+            (
+                r#"[{"performance":{"expanded":true,"module":"x"}}]"#,
+                "unknown performance field module",
+            ),
+            (r#"[{"performance":true}]"#, "performance takes an object"),
+        ] {
+            let error = parse_script(script).expect_err(script);
+            assert!(error.contains(expected), "{script}: {error}");
+        }
+    }
+
+    /// Opening the section waits for its first read, so the frame shows figures; closing it is
+    /// captured on the next frame and asks the owner for nothing.
+    #[test]
+    fn a_scripted_performance_step_waits_for_the_first_read_when_opening() {
+        let (mut editor, catalog, _, _) = scripted(
+            r#"[{"performance":{"expanded":false}},{"performance":{"expanded":true}},{"performance":{"expanded":true}},{"performance":{"expanded":false}}]"#,
+        );
+        // The section starts open: closing it first is captured on the next frame.
+        let _ = editor.next_step();
+        assert!(!editor.performance.expanded);
+        assert!(evidence(&editor).capture_pending);
+        editor.evidence.as_mut().expect("evidence").capture_pending = false;
+        let _ = editor.next_step();
+        assert!(editor.performance.expanded);
+        assert_eq!(editor.performance.requested, 1);
+        assert!(!evidence(&editor).capture_pending, "waits for the read");
+        assert_eq!(evidence(&editor).awaiting, Some(Settle::Performance));
+        let (resources, _) =
+            crate::app::tasks::call(&editor.owner, editor.client, "resources.read", json!({}))
+                .unwrap();
+        let epoch = editor.performance.epoch;
+        let _ = editor.update(Message::PerformanceSampled {
+            epoch,
+            result: Ok(Box::new(crate::app::tasks::PerformanceRead {
+                resources,
+                activity: json!({"sequence":0,"active":[],"recent":[],"untracked":0}),
+                wall_ms: 0,
+            })),
+        });
+        assert!(evidence(&editor).capture_pending, "captured on the answer");
+        assert_eq!(editor.performance.history.len(), 1);
+
+        // Already open: nothing is sent and the next frame is captured.
+        editor.evidence.as_mut().expect("evidence").capture_pending = false;
+        let _ = editor.next_step();
+        assert!(evidence(&editor).capture_pending);
+        assert_eq!(editor.performance.requested, 1);
+
+        editor.evidence.as_mut().expect("evidence").capture_pending = false;
+        let _ = editor.next_step();
+        assert!(!editor.performance.expanded);
+        assert!(evidence(&editor).capture_pending);
+        assert_eq!(editor.performance.requested, 1, "closing asks for nothing");
+        finish(editor, catalog);
+    }
+
+    /// A `wait` step captures nothing until its interval has passed, and then exactly one frame,
+    /// on the evidence tick that finds it due.
+    #[test]
+    fn a_scripted_wait_captures_once_its_interval_has_passed() {
+        let (mut editor, catalog, _, _) = scripted(r#"[{"wait":{"ms":20}}]"#);
+        let _ = editor.next_step();
+        assert!(!evidence(&editor).capture_pending);
+        assert!(evidence(&editor).wait_until.is_some());
+        let _ = editor.update(Message::EvidenceTick);
+        assert!(
+            !evidence(&editor).capture_pending,
+            "a tick before the interval captures nothing"
+        );
+        std::thread::sleep(Duration::from_millis(30));
+        let _ = editor.update(Message::EvidenceTick);
+        assert!(evidence(&editor).capture_pending);
+        assert!(evidence(&editor).wait_until.is_none());
+        finish(editor, catalog);
+    }
+
+    /// A pan scrolls the percent-zoom scrollable, which does not exist at Fit: the step is refused
+    /// there, recorded, and still captured.
+    #[test]
+    fn a_scripted_pan_needs_a_percentage_zoom() {
+        let (mut editor, catalog, _, _) = scripted(r#"[{"pan":{"x":0.5,"y":0.5}}]"#);
+        let _ = editor.next_step();
+        let record = evidence(&editor).current.clone().expect("a step record");
+        assert_eq!(record["status"], json!("failed"));
+        assert!(
+            record["reason"]
+                .as_str()
+                .is_some_and(|reason| reason.contains("percentage zoom")),
+            "{record}"
+        );
+        assert!(evidence(&editor).capture_pending);
+        finish(editor, catalog);
+    }
+
+    /// A capture is allowed only when the frame drawn last was built after every update so far:
+    /// before the first frame is drawn, and after any update since, it is not.
+    #[test]
+    fn a_capture_waits_for_a_frame_built_after_every_update() {
+        let mut sync = CaptureSync::default();
+        assert!(!sync.current(), "nothing has been drawn yet");
+        sync.drawn.store(sync.updates, Ordering::Relaxed);
+        assert!(sync.current());
+        sync.updates += 1;
+        assert!(!sync.current(), "an update since the frame was built");
+        sync.drawn.store(sync.updates, Ordering::Relaxed);
+        assert!(sync.current());
+    }
+
     #[test]
     fn a_scripted_step_that_cannot_be_sent_is_recorded_and_still_captured() {
         let (mut editor, catalog, _, _) =
-            scripted(r#"[{"draft":{"angle":4.0}},{"draft":{"preset":"7:5"}}]"#);
+            scripted(r#"[{"draft":{"cancel":true}},{"draft":{"preset":"7:5"}}]"#);
         for reason in ["no crop draft is open", "declares the aspect option 7:5"] {
             let _ = editor.next_step();
             let record = evidence(&editor).current.clone().expect("a step record");
@@ -4641,6 +5584,35 @@ mod tests {
             assert!(evidence(&editor).capture_pending);
             editor.evidence.as_mut().expect("evidence").capture_pending = false;
         }
+        finish(editor, catalog);
+    }
+
+    /// A draft step with no draft open is a change from the idle section: it sends the section's own
+    /// message, which opens the draft, and its frame waits for that draft with the change applied.
+    #[test]
+    fn a_scripted_idle_change_opens_the_draft_and_is_captured_once_it_is_applied() {
+        let (mut editor, catalog, _, _) = scripted(r#"[{"draft":{"preset":"16:9"}}]"#);
+        let _ = editor.next_step();
+        let record = evidence(&editor).current.clone().expect("a step record");
+        assert_eq!(record["status"], json!("sent"), "{record}");
+        assert_eq!(evidence(&editor).awaiting, Some(Settle::Draft));
+        assert!(!evidence(&editor).capture_pending, "nothing is drafted yet");
+        let pending = editor.crop_pending.as_ref().expect("a starting draft");
+        assert!(
+            matches!(pending.queued.as_slice(), [CropMessage::Preset(_)]),
+            "{:?}",
+            pending.queued
+        );
+        editor.open_draft(lightwell_core::CropStage {
+            width: 480,
+            height: 320,
+            angle: 0.0,
+        });
+        assert_eq!(editor.crop.as_ref().expect("a draft").preset, "16:9");
+        assert!(
+            evidence(&editor).capture_pending,
+            "the opened draft settles the step"
+        );
         finish(editor, catalog);
     }
 

@@ -19,7 +19,7 @@ Accepted owner decisions and the questions still open. Proposals stay proposals 
 
 - Originals are read-only. Import references existing files with a stable asset ID, a verified content fingerprint and a changeable locator. SQLite is the local catalog. Folder relinking, sidecars, portability, backups and sync need their own workflow decisions.
 - A "layer" is an ordered edit operation in a recipe. Each committed action stores a complete immutable recipe snapshot and one attributed history entry. Bitmap compositing, blend modes and arbitrary layer reordering are not selected.
-- History is a graph: entries keep their undo parent and nothing is truncated. A named **version** (the owner's name for the Lightroom-style saved state) is a reference to one retained entry, not a branch. The catalog uses internal format 6; unsupported formats are refused. See [versions and lineage](design/versions-and-lineage.md).
+- History is a graph: entries keep their undo parent and nothing is truncated. A named **version** (the owner's name for the Lightroom-style saved state) is a reference to one retained entry, not a branch. The catalog uses internal format 7; unsupported formats are refused. See [versions and lineage](design/versions-and-lineage.md).
 - Undo and redo navigate saved entries without appending rows. Preview is read-only. Restore appends an action and keeps all later entries. A new edit clears shortcut redo, but every entry stays available. Committed state survives restart; drafts do not.
 - One workspace: centered photo, collapsible controls, visible history, Fit, numeric zoom and true 100%. No library grid during the editor milestones. Cmd/Ctrl+O imports; Cmd/Ctrl+Z and Shift+Cmd/Ctrl+Z navigate history.
 - Geometry: the visible composition travels with mirror and quarter-turns, and a locked ratio swaps orientation on a quarter-turn. Fine angle is limited to ±45°. Space-drag pans.
@@ -46,6 +46,11 @@ Decided on 2026-09-21:
 
 - A picking mode belongs beside the controls it fills, not in the hovering mode strip: a module that declares a `point-pick` or `sample-apply` canvas declares a `picker` control in its own panel (Basic's Neutral picker in the White balance group, RAW's Neutral WB in the RAW group), and the strip holds the pointer, canvas-takeover modes (crop) and view overlays only. Declared letters and the command palette still enter every mode.
 
+Decided on 2026-09-23:
+
+- The state panel's [Performance section](design/performance-panel.md#decisions) starts open on every launch. Memory is shown in binary units with Activity Monitor's MB and GB labels, and CPU as a percentage of one core, so it passes 100% whenever more than one core is busy.
+- A module whose controls are a single group shows them without a sub-group header: a header naming the module's only group, such as RAW's "RAW development" or Transforms' "Exact transforms", repeats the band above it. The band keeps the module's reset. Descriptors and the API are unchanged.
+
 ## Basic adjustments and histogram
 
 Accepted on 2026-09-21 for the [Basic and histogram design](design/basic-and-histogram.md). These settle the product questions; implementation was authorized the same day and is delivered.
@@ -59,7 +64,7 @@ Accepted on 2026-09-21 for the [Basic and histogram design](design/basic-and-his
 
 The work ran to completion on the defaults below without further owner input; the owner reviews and refines the result afterwards. Each default is provisional and recorded in the design, so a later change is a normal edit, not a silent reinterpretation. Measured results against the provisional thresholds are in [performance](specs/performance.md).
 
-- Performance targets are provisional thresholds: settled exact histogram p95 below 200 ms and a 64 MiB aggregate scratch cap. The slider-to-presented-frame target was 100 ms p95 at first; on 2026-09-22 the owner set it to **16 ms p95 with an acceptable bound of 32 ms** (one and two frames at 60 Hz), so a figure below 16 ms passes, one below 32 ms is acceptable and one at or above 32 ms is a miss. A measured miss is reported with its figures and does not block delivery.
+- Performance targets are provisional thresholds: settled exact histogram p95 below 200 ms and a 64 MiB aggregate scratch target. The slider-to-presented-frame target was 100 ms p95 at first; on 2026-09-22 the owner set it to **16 ms p95 with an acceptable bound of 32 ms** (one and two frames at 60 Hz), so a figure below 16 ms passes, one below 32 ms is acceptable and one at or above 32 ms is a miss. A measured miss is reported with its figures and does not block delivery.
 - Global tone stays global. If the tone study finds a visual case a global curve cannot pass, the control ships with that limitation documented and an edge-aware proposal recorded as later work.
 - Clipping overlays: any channel at an endpoint counts; shadow clipping draws blue, highlight red, both magenta; tooltips state the rule.
 - Neutral picker: a 5 × 5 patch at input-stage pixel centres clipped at the image edges, evaluated before the Basic layer; near-black, clipped and non-invertible samples are rejected with a reason.
@@ -76,6 +81,17 @@ Accepted on 2026-09-21 for the [UI components design](design/ui-components.md), 
 - Icon buttons are a declared style, so the Unicode glyphs are replaced with canvas-drawn vector paths in this work.
 - Curve interpolation belongs to the module and is sampled through a declared query; the host owns no curve spline and the widget never interpolates.
 - Option steps by one tenth of the declared step alongside Shift at ten times; the modifier can change later without a descriptor change.
+
+## Module capabilities
+
+Decided on 2026-09-23 under the owner's delegation for the [shared module capabilities](design/module-capabilities.md) ("make sensible decisions, don't block on me"); each is a default the owner can change.
+
+- Settings are user-level only: module settings and named provider profiles, outside every catalog, with no history entries. Secrets live only in the OS credential store, starting with the macOS Keychain; a locked or unsupported store fails explicitly with no plaintext fallback.
+- Sending image data is consented **per asset**: a grant names the module, profile, adapter, endpoint origin, data class and asset, and is not remembered for later photos. Downloads are granted per resource version and origin, file reads per canonical path.
+- Only the desktop (after Allow) or `lightwell-json --permission-authority` may grant. Live-session clients cannot; anyone may deny or revoke. Revocation cancels dependent jobs and never touches recipes, history or accepted artifacts; an endpoint or path change revokes the old grants.
+- Remote endpoints require HTTPS and public addresses; plain HTTP is allowed only to loopback, labelled as such. No proxies.
+- No remote provider adapter ships with the framework; the first real adapters arrive with Corrections. `managed-storage` and `local-runtime` wait for their first consumer.
+- Derived artifacts live in a directory beside the catalog and move with it; catalog format 7 holds their references beside the preset library, the mask table and the stroke store, and earlier formats are refused.
 
 ## Programmable operations and modules
 
@@ -96,7 +112,12 @@ The owner edits local files and syncs them to an external drive, so moved-origin
 
 ## Presets
 
-The owner asked on 2026-09-23 for presets, with native presets and Lightroom import through a presets module whose apply is a history entry, and for the work to proceed without blocking on questions. It is delivered on the defaults recorded in the [presets design](design/presets.md#decisions-taken-on-defaults), each a proposal the owner reviews: presets as catalog data (format 6), only field-patch actions presettable, `apply-preset` carrying its settings, Lightroom values transferred for the controls Lightwell has and never clamped with RAW Kelvin and tint refused, the section first in the tools panel, and white balance unchecked when creating a preset.
+The owner asked on 2026-09-23 for presets, with native presets and Lightroom import through a presets module whose apply is a history entry, and for the work to proceed without blocking on questions. It is delivered on the defaults recorded in the [presets design](design/presets.md#decisions-taken-on-defaults), each a proposal the owner reviews: presets as catalog data (format 7), only field-patch actions presettable, `apply-preset` carrying its settings, Lightroom values transferred for the controls Lightwell has and never clamped with RAW Kelvin and tint refused, the section first in the tools panel, and white balance unchecked when creating a preset.
+
+## Rendering memory
+
+- A shared working-memory budget is a target that keeps memory low, not a limit that refuses the user's work (owner, 2026-09-23). Work that needs more than the target has left still runs and completes. The 256 MiB spatial budget lowers how many tiles run at once, down to one. The 64 MiB colour scratch budget's row chunks are sized so the pool's workers stay well inside it, and a chunk past it still runs. Both keep a high-water mark that the timing tier reads against the target. Size limits on what is accepted — source and frame sizes, the halo and unit bounds a module declares — still refuse with `resource-limit`.
+- When the spatial target holds a render's batch to fewer tiles than the pool has workers, each tile's own passes run on the pool rather than the target being raised (owner, 2026-09-23): the same bytes and the same memory, all three Presence fields at 60 MP in about 3.9 s instead of 11 s, for about twice the CPU time. Larger tiles for a large summed halo remain a proposal.
 
 ## Open product questions
 
@@ -104,10 +125,10 @@ Tracked in [product decisions](../tasks/product-decisions.json).
 
 - How should catalog backup, portability, sidecars, folder relinking and external-drive sync work?
 - Beyond the supplied files, which RAW recording modes/firmware and controlled quality scenes should be prioritized? The implemented decoder/developer and neutral defaults are explicit; broad visual acceptance, the measured resource target and additional DJI modes/scenes remain in [RAW qualification](design/initial-raw.md#remaining-qualification-and-decisions).
-- Masking is authorized (2026-09-23) and is being implemented. Decided the same day: brush strokes are held in a **content-addressed stroke store** keyed by a hash of their contents, because every history entry stores a complete recipe and embedded strokes grow quadratically — about 37.5 MB across history for 200 strokes against 1.08 MB addressed. Entries stay full snapshots and pure deltas are rejected; a missing or corrupt stroke fails explicitly. It lands in phase C before the first brush ships, in catalog format 6. The `points` kind, the stroke list and the `brush-paint` interaction are host primitives shared with the corrections proposal, not mask-private ones. See [masking](design/masking.md#stroke-storage).
+- Masking is authorized (2026-09-23) and is being implemented. Decided the same day: brush strokes are held in a **content-addressed stroke store** keyed by a hash of their contents, because every history entry stores a complete recipe and embedded strokes grow quadratically — about 37.5 MB across history for 200 strokes against 1.08 MB addressed. Entries stay full snapshots and pure deltas are rejected; a missing or corrupt stroke fails explicitly. It lands in phase C before the first brush ships, in catalog format 7. The `points` kind, the stroke list and the `brush-paint` interaction are host primitives shared with the corrections proposal, not mask-private ones. See [masking](design/masking.md#stroke-storage).
 - Do masking's remaining recorded defaults stand — masks as a target for the delivered modules rather than a local-adjustment module of their own, the idempotent component algebra, a radial that selects inside, one stroke amount instead of Flow and Density, and the A-to-D phase order with brushes before range selections?
 - What is the first external module the owner would use, and what enablement and recovery behavior does it need?
-- For the proposed [Corrections module](design/corrections.md), should AI Remove enter the accepted scope, should a changed RAW source-development prefix require regeneration of a saved AI patch, and should remote-photo consent be per asset or remembered?
+- For the proposed [Corrections module](design/corrections.md), should AI Remove enter the accepted scope, and should a changed RAW source-development prefix require regeneration of a saved AI patch? Remote-photo consent is per asset by the [module capabilities](#module-capabilities) default.
 - Which measured workloads and responsiveness budgets become acceptance requirements?
 - Which of the [presets defaults](design/presets.md#decisions-taken-on-defaults) stand, and should RAW white balance import get a calibrated conversion?
 - Which of the [Presence, colour mixer and vignette proposals](design/presence-mixer-vignette.md#proposals-with-recorded-defaults) (section names, stage order, mixer layout, vignette style, JPEG spatial precision, spatial gesture latency, sample cost) stand? Implementation was authorized on 2026-09-22 on the recorded defaults and is delivered; the owner refines the defaults after review, including whether spatial sliders should draft at a bounded resolution now that the measured misses are recorded.
