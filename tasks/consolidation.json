@@ -1838,6 +1838,228 @@
           "All pass with the design's evidence."
         ]
       }
+    },
+    {
+      "id": "TASK-032",
+      "description": "Replace the preview, analysis and clipping-overlay queues with one persistent latest-job worker primitive that takes its own next job, so the next preview no longer waits for the desktop to poll, proxy planning leaves the desktop thread and an abandoned analysis is cancelled.",
+      "status": "in_progress",
+      "dependencies": [
+        "TASK-026"
+      ],
+      "extra_context": [
+        "`PreviewQueue`, `AnalysisQueue` and the desktop's `OverlayQueue` each implement one active job plus one replaceable pending job with a generation, each spawning an OS thread per job; the pending job starts only when the consumer polls, which on the desktop is a runtime hop and is held while an upload is in flight.",
+        "Because the worker cannot own the proxy cache, proxy planning and a compile run on the desktop thread per input.",
+        "Analysis renders are not cancellable, so an abandoned 60 MP Presence analysis keeps the pool busy.",
+        "The capability lanes are first-in first-out, not latest-wins, and stay separate."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Consolidation design",
+          "target": "docs/design/consolidation.md",
+          "relevance": "Constraints and the one-path-per-concept table."
+        },
+        {
+          "kind": "file",
+          "label": "Preview queue",
+          "target": "crates/lightwell-core/src/preview.rs",
+          "relevance": "`PreviewQueue` and the worker."
+        },
+        {
+          "kind": "file",
+          "label": "Analysis jobs",
+          "target": "crates/lightwell-core/src/analysis/jobs.rs",
+          "relevance": "`AnalysisQueue`."
+        },
+        {
+          "kind": "file",
+          "label": "Overlay queue",
+          "target": "crates/lightwell-app/src/app/overlay.rs",
+          "relevance": "The desktop's clipping overlay queue."
+        },
+        {
+          "kind": "file",
+          "label": "Instant preview design",
+          "target": "docs/design/instant-preview.md",
+          "relevance": "The two-phase preview and its hops."
+        },
+        {
+          "kind": "file",
+          "label": "Performance rules",
+          "target": "docs/engineering/performance-rules.md",
+          "relevance": "Rules 8, 11 and 12."
+        }
+      ],
+      "acceptance_criteria": [
+        "One latest-job primitive serves preview, analysis and the clipping overlay; the three queue implementations are gone.",
+        "A pending job starts when the active one finishes, without a desktop poll; proxy planning runs on the preview worker.",
+        "Every analysis render is cancellable and a withdrawn analysis stops at chunk granularity, proved by a test.",
+        "The existing queue tests (delivery floor, order, cancel, waker count, activity) pass; renders are byte-identical."
+      ],
+      "test_strategy": {
+        "approach": "unit",
+        "steps": [
+          "Queue and cancellation tests; the preview and analysis tests."
+        ],
+        "commands": [
+          "cargo test -p lightwell-core",
+          "cargo test -p lightwell-app",
+          "cargo xtask verify --tier quick"
+        ],
+        "expected_results": [
+          "All pass."
+        ]
+      }
+    },
+    {
+      "id": "TASK-033",
+      "description": "Trim the module capabilities further as decided: one versioned JSON document store for settings and grants, the proof endpoint out of the shipped core, one structured owner call and one preparation wait on the desktop, and `host.rs` split by concern.",
+      "status": "in_progress",
+      "dependencies": [
+        "TASK-020",
+        "TASK-015"
+      ],
+      "extra_context": [
+        "`SettingsStore` and `GrantsStore` each implement lock, bounded read, format check, parse and size-bounded atomic save; the artifact store re-implements the atomic temp-sync-rename.",
+        "`ProofEndpoint`, a loopback HTTP test server, is public API of the shipped core crate though only tests, the JSON CLI tests and xtask start it; two more hand-written test HTTP servers exist.",
+        "The desktop's capability `call` duplicates the task helper's and its preparation wait duplicates `wait_source_job`, including a blocking sleep loop inside an async task.",
+        "`capabilities/host.rs` holds settings dispatch, permissions, jobs, activation, status and resources."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Consolidation design",
+          "target": "docs/design/consolidation.md",
+          "relevance": "Constraints and the one-path-per-concept table."
+        },
+        {
+          "kind": "file",
+          "label": "Settings store",
+          "target": "crates/lightwell-core/src/capabilities/settings.rs",
+          "relevance": "One document store."
+        },
+        {
+          "kind": "file",
+          "label": "Grants store",
+          "target": "crates/lightwell-core/src/capabilities/grants.rs",
+          "relevance": "The other."
+        },
+        {
+          "kind": "file",
+          "label": "Proof endpoint",
+          "target": "crates/lightwell-core/src/modules/capabilities_proof/endpoint.rs",
+          "relevance": "The test server in the core."
+        },
+        {
+          "kind": "file",
+          "label": "Capability host",
+          "target": "crates/lightwell-core/src/capabilities/host.rs",
+          "relevance": "The file to split."
+        },
+        {
+          "kind": "file",
+          "label": "Module capabilities design",
+          "target": "docs/design/module-capabilities.md",
+          "relevance": "The contract."
+        },
+        {
+          "kind": "file",
+          "label": "Decisions",
+          "target": "docs/decisions.md",
+          "relevance": "Module capabilities, revised 2026-09-24."
+        }
+      ],
+      "acceptance_criteria": [
+        "One document store serves settings, grants and the installed-resource record, with the settings request log replaced by revision conflicts; the artifact store uses the shared atomic write.",
+        "The proof endpoint is not part of the release core library, and the test servers are one.",
+        "The desktop has one structured owner call and one preparation wait with no sleep loop on the executor.",
+        "`host.rs` is split into activation, permissions and resources; behaviour and the proof journey are unchanged."
+      ],
+      "test_strategy": {
+        "approach": "unit",
+        "steps": [
+          "The settings, grants, lifecycle, proof and desktop capability tests."
+        ],
+        "commands": [
+          "cargo test -p lightwell-core",
+          "cargo test -p lightwell-app",
+          "cargo xtask verify --tier quick"
+        ],
+        "expected_results": [
+          "All pass."
+        ]
+      }
+    },
+    {
+      "id": "TASK-034",
+      "description": "Develop RAW sensor data in tile-aligned bands on the shared Rayon pool, with a cancellation check between bands and the float conversion, DNG stages and camera matrix fused into one parallel pass, so a RAW open and a white-balance release stop running serially.",
+      "status": "in_progress",
+      "dependencies": [
+        "TASK-004"
+      ],
+      "extra_context": [
+        "Development is serial end to end: librtprocess is built without OpenMP, and the adapter's pre-pass, the float conversion, the DNG gain map and warp, the camera matrix and three finiteness scans each walk the frame on one thread; the demosaic has no cancellation point. The recorded white-balance release cost is about 0.54 s on the Z6 and 1.6 s on the X100VI.",
+        "Banding must respect each demosaicer's tile grid and border so the output is byte-identical to whole-frame development; the shared Rayon pool is the only pool (performance rule 9).",
+        "This is performance work, so it measures as it goes with one targeted command and takes its claimed before/after at the end on the supplied RAW files."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Consolidation design",
+          "target": "docs/design/consolidation.md",
+          "relevance": "Constraints and the one-path-per-concept table."
+        },
+        {
+          "kind": "file",
+          "label": "RAW adapter",
+          "target": "crates/lightwell-raw/native/adapter.cpp",
+          "relevance": "The native development entry."
+        },
+        {
+          "kind": "file",
+          "label": "RAW crate",
+          "target": "crates/lightwell-raw/src/lib.rs",
+          "relevance": "The Rust side of development."
+        },
+        {
+          "kind": "file",
+          "label": "Source preparation",
+          "target": "crates/lightwell-core/src/source.rs",
+          "relevance": "The camera-matrix pass."
+        },
+        {
+          "kind": "file",
+          "label": "Initial RAW design",
+          "target": "docs/design/initial-raw.md",
+          "relevance": "The development contract."
+        },
+        {
+          "kind": "file",
+          "label": "Performance rules",
+          "target": "docs/engineering/performance-rules.md",
+          "relevance": "Rule 9 and the known-costs table."
+        }
+      ],
+      "acceptance_criteria": [
+        "Banded development produces planes byte-identical to whole-frame development on the Z6, X100VI and Air 2S files and on synthetic Bayer and X-Trans mosaics.",
+        "Cancellation is checked between bands, including during the demosaic.",
+        "One fused parallel pass does the float conversion, DNG stages, camera matrix and one finiteness check.",
+        "A before/after on the supplied RAW files records the development time and peak memory, with the load average."
+      ],
+      "test_strategy": {
+        "approach": "mixed",
+        "steps": [
+          "Byte-identity tests banded against whole-frame; cancellation tests; one before/after measurement at the end."
+        ],
+        "commands": [
+          "cargo test -p lightwell-raw",
+          "cargo test -p lightwell-core",
+          "cargo xtask verify --tier quick"
+        ],
+        "expected_results": [
+          "Identical planes; faster development recorded."
+        ]
+      }
     }
   ],
   "execution_waves": [
@@ -1863,7 +2085,8 @@
         "TASK-015",
         "TASK-016",
         "TASK-018",
-        "TASK-025"
+        "TASK-025",
+        "TASK-034"
       ]
     },
     {
@@ -1885,7 +2108,8 @@
         "TASK-022",
         "TASK-028",
         "TASK-029",
-        "TASK-030"
+        "TASK-030",
+        "TASK-033"
       ]
     },
     {
@@ -1904,7 +2128,8 @@
     {
       "wave": 7,
       "task_ids": [
-        "TASK-031"
+        "TASK-031",
+        "TASK-032"
       ]
     }
   ]
