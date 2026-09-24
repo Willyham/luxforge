@@ -34,6 +34,7 @@ mod reference;
 mod repository;
 mod scenario;
 mod smoke;
+mod stats;
 mod verify;
 mod vignette_smoke;
 mod workspace_smoke;

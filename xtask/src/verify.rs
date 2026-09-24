@@ -544,7 +544,7 @@ const TARGETS: [Target; 10] = [
     Target {
         text: "Warm 24 MP slider-to-presented-frame p95 < 16 ms, acceptable below 32 ms",
         from: From::Latency,
-        path: "/timings_ms/input_to_presented_frame/p95_ms",
+        path: "/timings_ms/input_to_presented_frame/p95",
         count: Some("/timings_ms/input_to_presented_frame/count"),
         unit: "ms",
         limit: 16.0,
@@ -557,7 +557,7 @@ const TARGETS: [Target; 10] = [
     Target {
         text: "Settled exact histogram p95 < 200 ms after the final input, 24 MP",
         from: From::Latency,
-        path: "/timings_ms/final_input_to_settled_histogram/p95_ms",
+        path: "/timings_ms/final_input_to_settled_histogram/p95",
         count: Some("/timings_ms/final_input_to_settled_histogram/count"),
         unit: "ms",
         limit: 200.0,
@@ -583,7 +583,7 @@ const TARGETS: [Target; 10] = [
     Target {
         text: "24 MP single-image edit working set <= 600 MiB CPU-resident",
         from: From::Measure,
-        path: "/summary/24mp/sampled_peak_rss_mib/median",
+        path: "/summary/24mp/sampled_peak_rss_mib/p50",
         count: None,
         unit: "MiB",
         limit: 600.0,
@@ -596,7 +596,7 @@ const TARGETS: [Target; 10] = [
     Target {
         text: "60 MP peak <= 1 GiB process RSS",
         from: From::Measure,
-        path: "/summary/60mp/sampled_peak_rss_mib/median",
+        path: "/summary/60mp/sampled_peak_rss_mib/p50",
         count: None,
         unit: "MiB",
         limit: 1024.0,
@@ -665,7 +665,7 @@ const TARGETS: [Target; 10] = [
     Target {
         text: "Instant preview: burst presented-frame staleness p95 <= 50 ms",
         from: From::Burst,
-        path: "/burst/staleness_ms/p95_ms",
+        path: "/burst/staleness_ms/p95",
         count: Some("/burst/staleness_ms/count"),
         unit: "ms",
         limit: 50.0,
@@ -744,6 +744,23 @@ fn load_of(entries: &[Entry], component: &str) -> Option<f64> {
         .and_then(|e| e.load)
 }
 
+/// One timing row from a [`stats::Distribution`]-shaped value: `p50`/`p95` and its own `count`, the
+/// same way for every timing tool now that they all write the one shape. A bare scalar (a one-shot
+/// core step, an idle observation, burst frames per second) has no p95 and is its own one-sample
+/// count; `Value::Null` (a metric the run never reached) reads as a zero-sample row either way.
+fn distribution_row(source: &str, metric: &str, value: &Value, load: Option<f64>) -> Value {
+    let (p50, p95, count) = if value.is_object() {
+        (
+            value["p50"].clone(),
+            value["p95"].clone(),
+            value["count"].as_u64().unwrap_or(0) as usize,
+        )
+    } else {
+        (value.clone(), Value::Null, usize::from(!value.is_null()))
+    };
+    row(source, metric, p50, p95, count, load)
+}
+
 /// Every timing row and target verdict the directory can answer so far. Both are recomputed on each
 /// write, so a run that stops early still leaves the rows of the components that finished.
 fn collect(out: &Path, tier: Tier, entries: &[Entry]) -> (Vec<Value>, Vec<Value>) {
@@ -754,43 +771,24 @@ fn collect(out: &Path, tier: Tier, entries: &[Entry]) -> (Vec<Value>, Vec<Value>
     let burst = optional(&out.join("editor-latency-burst/run/latency.json"));
     if let Some(result) = &performance {
         let load = load_of(entries, "editor-performance");
+        let source = "editor-performance/run/result.json";
+        // `import` and the other one-shot core steps are single values, not distributions; the
+        // generic row reads them as a one-sample figure with no p95 rather than a percentile they
+        // cannot support.
         for (metric, value) in result["timings_ms"].as_object().into_iter().flatten() {
-            // `import` and the other one-shot core steps are single values, not distributions; they
-            // are listed with that single value rather than a percentile they cannot support.
-            let (p50, p95, count) = if value.is_object() {
-                (
-                    value["p50_ms"].clone(),
-                    value["p95_ms"].clone(),
-                    value["samples_ms"].as_array().map_or(0, Vec::len),
-                )
-            } else {
-                (value.clone(), Value::Null, usize::from(!value.is_null()))
-            };
-            rows.push(row(
-                "editor-performance/run/result.json",
-                metric,
-                p50,
-                p95,
-                count,
-                load,
-            ));
+            rows.push(distribution_row(source, metric, value, load));
         }
     }
     if let Some(result) = &latency {
         let load = load_of(entries, "editor-latency");
+        let source = "editor-latency/run/latency.json";
         for (metric, value) in result["timings_ms"].as_object().into_iter().flatten() {
-            rows.push(row(
-                "editor-latency/run/latency.json",
-                metric,
-                value["p50_ms"].clone(),
-                value["p95_ms"].clone(),
-                value["count"].as_u64().unwrap_or(0) as usize,
-                load,
-            ));
+            rows.push(distribution_row(source, metric, value, load));
         }
     }
     if let Some(result) = &measure {
         let load = load_of(entries, "measure");
+        let source = "measure/run/measurements.json";
         for workload in ["empty", "24mp", "60mp"] {
             for metric in [
                 "launch_to_observed_frame_ms",
@@ -799,12 +797,10 @@ fn collect(out: &Path, tier: Tier, entries: &[Entry]) -> (Vec<Value>, Vec<Value>
                 "request_to_capture_ms",
             ] {
                 let stat = &result["summary"][workload][metric];
-                rows.push(row(
-                    "measure/run/measurements.json",
+                rows.push(distribution_row(
+                    source,
                     &format!("{workload}.{metric}"),
-                    stat["median"].clone(),
-                    stat["p95"].clone(),
-                    measured(result, workload, metric),
+                    stat,
                     load,
                 ));
             }
@@ -812,39 +808,32 @@ fn collect(out: &Path, tier: Tier, entries: &[Entry]) -> (Vec<Value>, Vec<Value>
         // The idle block is one observation, not a distribution, and it is absent from a run that
         // never reached it.
         for metric in ["cpu_percent_one_core", "rss_mib_peak", "duration_s"] {
-            let value = result["idle"][metric].clone();
-            let count = usize::from(!value.is_null());
-            rows.push(row(
-                "measure/run/measurements.json",
+            let value = &result["idle"][metric];
+            rows.push(distribution_row(
+                source,
                 &format!("idle.{metric}"),
                 value,
-                Value::Null,
-                count,
                 load,
             ));
         }
     }
     if let Some(result) = &burst {
         let load = load_of(entries, "editor-latency-burst");
+        let source = "editor-latency-burst/run/latency.json";
         for metric in ["staleness_ms", "frame_gap_ms"] {
             let value = &result["burst"][metric];
-            rows.push(row(
-                "editor-latency-burst/run/latency.json",
+            rows.push(distribution_row(
+                source,
                 &format!("burst.{metric}"),
-                value["p50_ms"].clone(),
-                value["p95_ms"].clone(),
-                value["count"].as_u64().unwrap_or(0) as usize,
+                value,
                 load,
             ));
         }
         // Frames per second is one observation over the whole run, not a distribution.
-        let fps = result["burst"]["presented_fps"].clone();
-        rows.push(row(
-            "editor-latency-burst/run/latency.json",
+        rows.push(distribution_row(
+            source,
             "burst.presented_fps",
-            fps.clone(),
-            Value::Null,
-            usize::from(!fps.is_null()),
+            &result["burst"]["presented_fps"],
             load,
         ));
     }
@@ -1606,8 +1595,8 @@ mod tests {
     fn target_verdicts_follow_the_measured_figure() {
         let latency = json!({
             "timings_ms":{
-                "input_to_presented_frame":{"count":30,"p50_ms":74.8,"p95_ms":83.4},
-                "final_input_to_settled_histogram":{"count":30,"p50_ms":99.7,"p95_ms":250.0},
+                "input_to_presented_frame":{"count":30,"p50":74.8,"p95":83.4},
+                "final_input_to_settled_histogram":{"count":30,"p50":99.7,"p95":250.0},
             },
             "resources":{"scratch":{"peak_bytes":14_116_000}},
         });
@@ -1628,7 +1617,7 @@ mod tests {
         assert_eq!(verdicts[0]["acceptable_limit"], 32.0);
         assert_eq!(verdicts[0]["measured"], 83.4);
         for (p95, expected) in [(12.0, "pass"), (20.0, "acceptable"), (32.0, "miss")] {
-            let banded = json!({"timings_ms":{"input_to_presented_frame":{"count":30,"p50_ms":p95 - 1.0,"p95_ms":p95}}});
+            let banded = json!({"timings_ms":{"input_to_presented_frame":{"count":30,"p50":p95 - 1.0,"p95":p95}}});
             assert_eq!(
                 TARGETS[0].verdict(Some(&banded), true, None)["verdict"],
                 expected,
@@ -1661,7 +1650,7 @@ mod tests {
             missing["reason"]
                 .as_str()
                 .unwrap()
-                .contains("/timings_ms/input_to_presented_frame/p95_ms")
+                .contains("/timings_ms/input_to_presented_frame/p95")
         );
         // Outside the timing tier the reason is the tier, not a missing file.
         assert_eq!(
@@ -1678,8 +1667,8 @@ mod tests {
                 {"workload":"60mp","sampled_peak_rss_mib":975.0},
             ],
             "summary":{
-                "24mp":{"sampled_peak_rss_mib":{"median":510.0},"open_to_raster_ms":{"p95":120.0}},
-                "60mp":{"sampled_peak_rss_mib":{"median":1100.0}},
+                "24mp":{"sampled_peak_rss_mib":{"p50":510.0},"open_to_raster_ms":{"p95":120.0}},
+                "60mp":{"sampled_peak_rss_mib":{"p50":1100.0}},
                 "empty":{"launch_to_observed_frame_ms":{"p95":1200.0}},
             },
             "idle":{"cpu_percent_one_core":0.93},
@@ -1699,7 +1688,7 @@ mod tests {
         let passing = json!({
             "burst":{
                 "presented_fps":42.0,
-                "staleness_ms":{"count":300,"p50_ms":18.0,"p95_ms":41.0},
+                "staleness_ms":{"count":300,"p50":18.0,"p95":41.0},
             },
         });
         let verdict =
@@ -1711,7 +1700,7 @@ mod tests {
         assert_eq!(verdict(9, &passing)["verdict"], "pass");
         assert_eq!(verdict(9, &passing)["samples"], 300);
         let failing =
-            json!({"burst":{"presented_fps":18.0,"staleness_ms":{"count":300,"p95_ms":61.0}}});
+            json!({"burst":{"presented_fps":18.0,"staleness_ms":{"count":300,"p95":61.0}}});
         assert_eq!(verdict(8, &failing)["verdict"], "miss");
         assert_eq!(verdict(9, &failing)["verdict"], "miss");
     }
@@ -1981,7 +1970,8 @@ mod tests {
         assert_eq!(busy["load_threshold"], 8.0);
 
         // The same figure is a pass below the threshold and neither a pass nor a miss above it.
-        let latency = json!({"timings_ms":{"input_to_presented_frame":{"count":30,"p50_ms":9.5,"p95_ms":12.4}}});
+        let latency =
+            json!({"timings_ms":{"input_to_presented_frame":{"count":30,"p50":9.5,"p95":12.4}}});
         let below = TARGETS[0].verdict(Some(&latency), true, Some(5.7));
         assert_eq!(below["verdict"], "pass");
         assert_eq!(below["reason"], Value::Null);
@@ -1996,7 +1986,8 @@ mod tests {
             above["reason"]
         );
         // A miss is withheld the same way.
-        let missing = json!({"timings_ms":{"input_to_presented_frame":{"count":30,"p50_ms":180.0,"p95_ms":220.0}}});
+        let missing =
+            json!({"timings_ms":{"input_to_presented_frame":{"count":30,"p50":180.0,"p95":220.0}}});
         assert_eq!(
             TARGETS[0].verdict(Some(&missing), true, Some(5.7))["verdict"],
             "miss"

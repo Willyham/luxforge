@@ -164,29 +164,12 @@ pub fn hardening(root: &Path, out: &Path, bin: &Path) -> Result {
     write_json(&out.join("result.json"), &result)?;
     checked
 }
-fn usage(root: &Path, pid: u32) -> Result<(f64, f64)> {
-    let raw = output(root, "ps", &["-o", "time=,rss=", "-p", &pid.to_string()])?;
-    let fields: Vec<_> = raw.split_whitespace().collect();
-    ensure(fields.len() == 2, "Missing ps measurements")?;
-    let (min, sec) = fields[0].split_once(':').ok_or("Unexpected ps CPU time")?;
-    Ok((
-        min.parse::<f64>()? * 60.0 + sec.parse::<f64>()?,
-        fields[1].parse::<f64>()? / 1024.0,
-    ))
-}
-fn stats(values: &[f64]) -> Value {
-    if values.is_empty() {
-        return Value::Null;
-    }
-    let mut sorted = values.to_vec();
-    sorted.sort_by(f64::total_cmp);
-    let n = sorted.len();
-    let median = if n.is_multiple_of(2) {
-        (sorted[n / 2 - 1] + sorted[n / 2]) / 2.0
-    } else {
-        sorted[n / 2]
-    };
-    json!({"median":median,"p95":sorted[(n*95/100).min(n-1)],"first":values[0]})
+/// One measurement's distribution, in the one shape [`stats::Distribution`] gives every timing
+/// tool. Formerly its own interpolated median with `p95 = sorted[n*95/100]` (no ceiling), a
+/// different statistic from the nearest-rank percentile the other timing tools already used; see
+/// `xtask/src/stats.rs` for the golden vectors this changes.
+fn distribution(values: &[f64]) -> Value {
+    stats::distribution_json(values.to_vec())
 }
 pub fn measure(root: &Path, out: &Path, bin: &Path, samples: usize) -> Result {
     ensure(
@@ -239,8 +222,8 @@ pub fn measure(root: &Path, out: &Path, bin: &Path, samples: usize) -> Result {
                         start.elapsed() < Duration::from_secs(35),
                         "Measurement deadline exceeded",
                     )?;
-                    if let Ok((_, r)) = usage(root, child.child.id()) {
-                        rss.push(json!([start.elapsed().as_secs_f64(), r]));
+                    if let Ok((_, r)) = stats::usage(root, child.child.id()) {
+                        rss.push(json!([start.elapsed().as_secs_f64() * 1000.0, r]));
                     }
                     if first.is_none()
                         && fs::read_to_string(evidence.join("events.jsonl"))
@@ -348,17 +331,11 @@ pub fn measure(root: &Path, out: &Path, bin: &Path, samples: usize) -> Result {
             "\"event\":\"render_ready\"",
             Duration::from_secs(10),
         )?;
-        std::thread::sleep(Duration::from_secs(1));
-        let before = usage(root, child.child.id())?;
-        let start = Instant::now();
-        let mut peak = before.1;
-        while start.elapsed() < Duration::from_secs(30) {
-            peak = peak.max(usage(root, child.child.id())?.1);
-            std::thread::sleep(Duration::from_millis(500));
-        }
-        let after = usage(root, child.child.id())?;
-        let elapsed = start.elapsed().as_secs_f64();
-        report["idle"] = json!({"duration_s":elapsed,"cpu_percent_one_core":(after.0-before.0)/elapsed*100.0,"rss_mib_start":before.1,"rss_mib_end":after.1,"rss_mib_peak":peak,"method":"ps CPU delta, 30 seconds after readiness plus one-second settle; child then terminated, not clean-close evidence"});
+        let window = stats::idle_window(root, child.child.id())?;
+        report["idle"] = window.to_json();
+        report["idle"]["method"] = json!(
+            "ps CPU delta, 30 seconds after readiness plus one-second settle; child then terminated, not clean-close evidence"
+        );
         let mut summary = json!({});
         for name in ["empty", "24mp", "60mp"] {
             let rows: Vec<_> = report["runs"]
@@ -384,7 +361,7 @@ pub fn measure(root: &Path, out: &Path, bin: &Path, samples: usize) -> Result {
                         }
                     })
                     .collect::<Vec<_>>();
-                values[key] = stats(&data);
+                values[key] = distribution(&data);
             }
             summary[name] = values;
         }

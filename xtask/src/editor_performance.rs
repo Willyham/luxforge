@@ -129,17 +129,10 @@ fn milliseconds(started: Instant) -> f64 {
     started.elapsed().as_secs_f64() * 1000.0
 }
 
-fn distribution(mut samples: Vec<f64>) -> Value {
-    samples.sort_by(f64::total_cmp);
-    let percentile = |percent: usize| {
-        let rank = (percent * samples.len()).div_ceil(100).max(1);
-        samples[rank - 1]
-    };
-    json!({
-        "samples_ms":samples,
-        "p50_ms":percentile(50),
-        "p95_ms":percentile(95),
-    })
+/// The one [`stats::Distribution`] shape every timing tool now writes, in place of this tool's own
+/// `samples_ms`/`p50_ms`/`p95_ms`.
+fn distribution(samples: Vec<f64>) -> Value {
+    stats::distribution_json(samples)
 }
 
 fn render_samples(

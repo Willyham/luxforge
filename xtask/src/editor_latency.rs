@@ -222,43 +222,16 @@ fn gesture_values(samples: usize, control: Control, field: &FieldTarget) -> Vec<
     }
 }
 
-fn percentile(sorted: &[f64], percent: usize) -> Option<f64> {
-    if sorted.is_empty() {
-        return None;
-    }
-    let rank = (percent * sorted.len()).div_ceil(100).max(1);
-    sorted.get(rank - 1).copied()
-}
-
-/// Nearest-rank p50/p95 with every sample retained, so a tail can never be dropped silently.
-fn distribution(mut samples: Vec<f64>) -> Value {
-    samples.sort_by(f64::total_cmp);
-    json!({
-        "count": samples.len(),
-        "p50_ms": percentile(&samples, 50),
-        "p95_ms": percentile(&samples, 95),
-        "min_ms": samples.first(),
-        "max_ms": samples.last(),
-        "samples_ms": samples,
-    })
+/// Nearest-rank p50/p95 with every sample retained, so a tail can never be dropped silently. The
+/// one [`stats::Distribution`] shape every timing tool now writes.
+fn distribution(samples: Vec<f64>) -> Value {
+    stats::distribution_json(samples)
 }
 
 fn elapsed(event: &Value) -> Result<f64> {
     event["elapsed_ms"]
         .as_f64()
         .ok_or_else(|| "An event carries no elapsed_ms".into())
-}
-
-/// `ps` CPU seconds and resident size, exactly as [`crate::diagnostics`] reads them.
-fn usage(root: &Path, pid: u32) -> Result<(f64, f64)> {
-    let raw = output(root, "ps", &["-o", "time=,rss=", "-p", &pid.to_string()])?;
-    let fields: Vec<_> = raw.split_whitespace().collect();
-    ensure(fields.len() == 2, "Missing ps measurements")?;
-    let (min, sec) = fields[0].split_once(':').ok_or("Unexpected ps CPU time")?;
-    Ok((
-        min.parse::<f64>()? * 60.0 + sec.parse::<f64>()?,
-        fields[1].parse::<f64>()? / 1024.0,
-    ))
 }
 
 /// Run one evidence script to completion, sampling RSS about every 50 ms while it runs.
@@ -273,6 +246,7 @@ fn evidence_run(
     let mut child =
         scenario::launch::spawn_editor(root, bin, args, &out.join(format!("{name}.log")))?;
     let start = Instant::now();
+    let watch = stats::Watch::new(root, child.child.id());
     let mut rss = Vec::new();
     let status = loop {
         if let Some(status) = child.child.try_wait()? {
@@ -282,8 +256,8 @@ fn evidence_run(
             start.elapsed() < deadline,
             format!("The {name} run exceeded its deadline"),
         )?;
-        if let Ok((_, resident)) = usage(root, child.child.id()) {
-            rss.push(json!([start.elapsed().as_secs_f64(), resident]));
+        if let Ok((_, resident)) = watch.usage() {
+            rss.push(json!([start.elapsed().as_secs_f64() * 1000.0, resident]));
         }
         std::thread::sleep(Duration::from_millis(50));
     };
@@ -894,7 +868,7 @@ fn run_paint(root: &Path, out: &Path, bin: &Path, options: &Options) -> Result {
     )?;
     let mut ranked = latencies.clone();
     ranked.sort_by(f64::total_cmp);
-    let p95 = percentile(&ranked, 95);
+    let p95 = stats::Distribution::percentile(&ranked, 95);
     let load = crate::verify::load_average(root);
 
     let result = json!({
@@ -1161,7 +1135,7 @@ pub fn run(root: &Path, out: &Path, bin: &Path, options: Options) -> Result {
         .collect();
     let mut ranked_input_to_frame = input_to_frame.clone();
     ranked_input_to_frame.sort_by(f64::total_cmp);
-    let input_p95 = percentile(&ranked_input_to_frame, 95);
+    let input_p95 = stats::Distribution::percentile(&ranked_input_to_frame, 95);
 
     // The settled exact histogram. A drafted preview is never analysed — the design keeps the plot
     // labelled stale during a gesture — so the exact report is reduced from the frame the commit's
@@ -1718,17 +1692,8 @@ fn hold_and_idle(root: &Path, out: &Path, bin: &Path, source: &Path) -> Result {
         )?;
         std::thread::sleep(Duration::from_millis(50));
     }
-    // One second of settling, exactly as `measure` does, then a 30 second window.
-    std::thread::sleep(Duration::from_secs(1));
-    let before = usage(root, child.child.id())?;
-    let window = Instant::now();
-    let mut peak = before.1;
-    while window.elapsed() < Duration::from_secs(30) {
-        peak = peak.max(usage(root, child.child.id())?.1);
-        std::thread::sleep(Duration::from_millis(500));
-    }
-    let after = usage(root, child.child.id())?;
-    let seconds = window.elapsed().as_secs_f64();
+    // One second of settling, then a 30 second window: the same idle window `measure` takes.
+    let window = stats::idle_window(root, child.child.id())?;
     // The scratch budget travels in the state snapshot written beside a captured frame, and an
     // ordinary launch captures none, so the idle process cannot report it. The gesture process
     // above does, and it runs the same colour stack.
@@ -1747,11 +1712,11 @@ fn hold_and_idle(root: &Path, out: &Path, bin: &Path, source: &Path) -> Result {
                 "controls":frame["state"]["controls"],
             },
             "idle_process":{
-                "duration_s":seconds,
-                "cpu_percent_one_core":(after.0-before.0)/seconds*100.0,
-                "rss_mib_start":before.1,
-                "rss_mib_end":after.1,
-                "rss_mib_peak":peak,
+                "duration_s":window.duration_s,
+                "cpu_percent_one_core":window.cpu_percent_one_core,
+                "rss_mib_start":window.rss_mib_start,
+                "rss_mib_end":window.rss_mib_end,
+                "rss_mib_peak":window.rss_mib_peak,
                 "events":idle_events.len(),
                 "scratch":"not observable: the budget travels in the state snapshot beside a captured frame, and an ordinary launch captures none",
             },

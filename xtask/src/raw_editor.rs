@@ -176,11 +176,6 @@ fn validate_manifest(
     Ok(paths)
 }
 
-fn rss_mib(root: &Path, pid: u32) -> Result<f64> {
-    let raw = output(root, "ps", &["-o", "rss=", "-p", &pid.to_string()])?;
-    Ok(raw.trim().parse::<f64>()? / 1024.0)
-}
-
 fn run_app(
     root: &Path,
     binary: &Path,
@@ -205,6 +200,7 @@ fn run_app(
     let log = evidence.with_extension("log");
     let started = Instant::now();
     let mut child = scenario::launch::spawn_editor(root, binary, &args, &log)?;
+    let watch = stats::Watch::new(root, child.child.id());
     let mut rss = Vec::new();
     let status = loop {
         if let Some(status) = child.child.try_wait()? {
@@ -214,7 +210,7 @@ fn run_app(
             started.elapsed() < Duration::from_secs(70),
             "RAW editor app deadline exceeded",
         )?;
-        if let Ok(sample) = rss_mib(root, child.child.id()) {
+        if let Ok((_, sample)) = watch.usage() {
             rss.push(json!([started.elapsed().as_secs_f64() * 1000.0, sample]));
         }
         std::thread::sleep(Duration::from_millis(50));
@@ -730,14 +726,10 @@ fn one_trial(
     }))
 }
 
+/// The one [`stats::Distribution`] shape every timing tool now writes, in place of this tool's own
+/// `n`/`first`/`p50`/`p95`/`max`.
 fn distribution(samples: &[f64]) -> Value {
-    if samples.is_empty() {
-        return Value::Null;
-    }
-    let mut sorted = samples.to_vec();
-    sorted.sort_by(f64::total_cmp);
-    let nearest = |p: usize| sorted[(sorted.len() * p).div_ceil(100).saturating_sub(1)];
-    json!({"n":samples.len(),"first":samples[0],"p50":nearest(50),"p95":nearest(95),"max":sorted[sorted.len()-1]})
+    stats::distribution_json(samples.to_vec())
 }
 
 fn source_statistics(runs: &[Value]) -> Value {
