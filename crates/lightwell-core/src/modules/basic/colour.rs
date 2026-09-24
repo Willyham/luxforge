@@ -146,7 +146,7 @@ pub(crate) fn chroma(lab: Oklab) -> f32 {
     lab.a.hypot(lab.b)
 }
 
-/// Oklab hue angle in degrees, `atan2(b, a)` mapped to `(-180, 180]` by `atan2` itself.
+/// Oklab hue angle in degrees, `atan2(b, a)` in `[-180, 180]`, including either signed endpoint.
 pub(crate) fn hue_degrees(lab: Oklab) -> f32 {
     lab.b.atan2(lab.a).to_degrees()
 }
@@ -154,17 +154,6 @@ pub(crate) fn hue_degrees(lab: Oklab) -> f32 {
 fn smoothstep(edge0: f32, edge1: f32, x: f32) -> f32 {
     let t = ((x - edge0) / (edge1 - edge0)).clamp(0.0, 1.0);
     t * t * (3.0 - 2.0 * t)
-}
-
-/// Normalize a hue delta (degrees) to `(-180, 180]`.
-fn normalize_hue_delta(mut delta: f32) -> f32 {
-    delta %= 360.0;
-    if delta > 180.0 {
-        delta -= 360.0;
-    } else if delta <= -180.0 {
-        delta += 360.0;
-    }
-    delta
 }
 
 /// `w_c`: full vibrance gain near grey, smoothly falling to zero as chroma approaches
@@ -177,9 +166,14 @@ fn chroma_weight(chroma: f32) -> f32 {
 /// The skin-like hue band response: a raised cosine that is `1` at the band centre and `0` at and
 /// beyond the half-width, `0` outside the band. A colour heuristic over Oklab hue, not skin
 /// detection: it weights every pixel whose hue falls in the band the same way regardless of what
-/// the pixel depicts, and it is not a promise about every skin tone.
+/// the pixel depicts, and it is not a promise about every skin tone. The input comes from
+/// `hue_degrees`: atan2's bounded `[-180, 180]` result, not an arbitrary periodic angle.
 fn skin_hue_response(hue_deg: f32) -> f32 {
-    let delta = normalize_hue_delta(hue_deg - SKIN_HUE_CENTER_DEG);
+    // The delta is in [-235, 125]. Wrapping its [-235, -180] tail would put it
+    // in [125, 180], still outside the +/-35 degree band, so the response is
+    // exactly zero either way. Elsewhere normalization is the identity. This
+    // bounded caller therefore needs neither a remainder nor a wrap per pixel.
+    let delta = hue_deg - SKIN_HUE_CENTER_DEG;
     if delta.abs() >= SKIN_HUE_HALF_WIDTH_DEG {
         0.0
     } else {
@@ -305,6 +299,47 @@ mod tests {
     use super::*;
     use serde::Deserialize;
     use std::{fs, path::PathBuf};
+
+    /// Independent periodic definition of the specified (-180, 180] interval.
+    fn periodic_hue_delta(delta: f32) -> f32 {
+        let remainder = delta % 360.0;
+        if remainder > 180.0 {
+            remainder - 360.0
+        } else if remainder <= -180.0 {
+            remainder + 360.0
+        } else {
+            remainder
+        }
+    }
+
+    #[test]
+    fn bounded_skin_hue_response_matches_the_periodic_formula_exactly() {
+        let check = |hue: f32| {
+            let delta = periodic_hue_delta(hue - SKIN_HUE_CENTER_DEG);
+            let expected = if delta.abs() >= SKIN_HUE_HALF_WIDTH_DEG {
+                0.0
+            } else {
+                (delta / SKIN_HUE_HALF_WIDTH_DEG * std::f32::consts::FRAC_PI_2)
+                    .cos()
+                    .max(0.0)
+            };
+            assert_eq!(
+                skin_hue_response(hue).to_bits(),
+                expected.to_bits(),
+                "hue = {hue:?}"
+            );
+        };
+        // Include either side of the wrap, both band edges and its centre,
+        // atan2's signed endpoints, and near-zero hues explicitly.
+        for hue in [-180.0_f32, -125.0, -0.0, 0.0, 20.0, 55.0, 90.0, 180.0] {
+            for adjacent in [hue.next_down(), hue, hue.next_up()] {
+                check(adjacent);
+            }
+        }
+        for step in 0..=1_000_000 {
+            check(-180.0 + 360.0 * (step as f32 / 1_000_000.0));
+        }
+    }
 
     /// An achromatic Oklab colour reconstructs to three bit-identical channels, `L^3`, for either
     /// sign of zero, over a million evenly spaced `L` in `[0, 1]`. Without the achromatic branch the
