@@ -964,7 +964,7 @@
     {
       "id": "TASK-018",
       "description": "Give the smoke scenarios one shared library for the launch envelope, frame accessors and pixel readers, with every scenario's checks unchanged, proved by replaying the old and new verifiers over the same captured artifacts.",
-      "status": "in_progress",
+      "status": "completed",
       "dependencies": [
         "TASK-007"
       ],
