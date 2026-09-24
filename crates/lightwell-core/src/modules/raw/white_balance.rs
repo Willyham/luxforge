@@ -42,7 +42,7 @@ fn planck_xy(temperature_kelvin: f64) -> [f64; 2] {
     // over 1667..4000 K and 4000..25000 K. The matching y(T) polynomials are split at 2222 K
     // and 4000 K. Lightwell validates a narrower 2000..12000 K interval before calling this.
     let x = if temperature_kelvin <= 4_000.0 {
-        -0.266_123_9e9 / temperature_kelvin.powi(3) - 0.234_358_0e6 / temperature_kelvin.powi(2)
+        -0.266_123_9e9 / temperature_kelvin.powi(3) - 0.234_358_9e6 / temperature_kelvin.powi(2)
             + 0.877_695_6e3 / temperature_kelvin
             + 0.179_910
     } else {
