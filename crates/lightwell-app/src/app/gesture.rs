@@ -356,11 +356,13 @@ impl Editor {
             }
             return;
         }
-        debug_assert!(
-            matches!(self.gesture, None | Some(Gesture::Crop(_))),
-            "the crop draft never displaces another gesture"
-        );
-        self.gesture = Some(Gesture::Crop(CropGesture { draft, pending }));
+        // The crop draft never displaces another gesture: its start was refused, or took an armed
+        // brush's draft, before anything reaches here.
+        let free = matches!(self.gesture, None | Some(Gesture::Crop(_)));
+        debug_assert!(free, "the crop draft never displaces another gesture");
+        if free {
+            self.gesture = Some(Gesture::Crop(CropGesture { draft, pending }));
+        }
     }
 
     /// Why `starting` cannot start now, in the words the status bar uses, or `None` when it can.

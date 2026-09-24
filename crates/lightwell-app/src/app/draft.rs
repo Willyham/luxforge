@@ -322,9 +322,12 @@ impl CoreDraft {
                 Step::Done
             }
             Event::Revision(revision) => {
+                // While the commit is in flight the new revision is most likely its own; the
+                // commit's answer says whether it was refused as stale, so it decides.
                 if self.draft_id.is_none()
                     || self.closing()
                     || self.conflicted
+                    || self.in_flight == Some(Round::Commit)
                     || revision == self.base_revision
                 {
                     return Step::None;
@@ -545,6 +548,19 @@ mod tests {
                 fields: fields(0.5)
             }
         );
+    }
+
+    #[test]
+    fn a_revision_during_the_commit_is_left_to_the_commit_to_answer() {
+        let (mut draft, _) = begun();
+        draft.handle(Event::Release);
+        assert_eq!(
+            draft.handle(Event::Revision(5)),
+            Step::None,
+            "most likely the commit's own revision: no notice for it"
+        );
+        assert!(!draft.conflicted);
+        assert_eq!(draft.handle(Event::Committed(Ok(()))), Step::Done);
     }
 
     #[test]
