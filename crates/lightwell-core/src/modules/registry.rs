@@ -160,7 +160,7 @@ impl ToolModule for Unavailable {
         format: u32,
         payload: &serde_json::Value,
         stage: Stage,
-        artifacts: &[Arc<artifacts::PreparedArtifact>],
+        artifacts: &[Arc<crate::artifacts::PreparedArtifact>],
     ) -> Result<Processing, Error> {
         self.inner
             .compile_bound(effect_id, format, payload, stage, artifacts)
