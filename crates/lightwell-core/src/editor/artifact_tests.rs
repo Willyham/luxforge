@@ -5,6 +5,11 @@ use crate::artifacts::{
     ArtifactId, collect_files, object_path, prepared,
     testing::{APPLY_PLAIN, APPLY_TINT, TINT_EFFECT, TINT_MODULE, TintModule},
 };
+use crate::{Layer, Mutation};
+use rusqlite::params;
+use serde_json::json;
+use sha2::{Digest, Sha256};
+use std::fs::File;
 use std::{
     fs,
     sync::atomic::{AtomicBool, AtomicU64, Ordering},
