@@ -1097,7 +1097,7 @@
     {
       "id": "TASK-020",
       "description": "Give source, analysis and capability jobs one status vocabulary and one status key, and have capability jobs report progress through the activity board instead of their own progress model.",
-      "status": "in_progress",
+      "status": "completed",
       "dependencies": [
         "TASK-015"
       ],
