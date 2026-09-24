@@ -8,7 +8,7 @@
     {
       "id": "TASK-001",
       "description": "Show no edited dot on a module band whose stored layer is neutral, such as Basic after its only changed field is reset to its default.",
-      "status": "ready",
+      "status": "in_progress",
       "dependencies": [],
       "extra_context": [
         "The band's dot comes from `active` and `neutral` in the desktop's tools-panel state. `neutral` recognises the orientation identity, a whole-image crop and a RAW layer at As shot and 0 EV only.",

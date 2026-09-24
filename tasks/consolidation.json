@@ -769,7 +769,7 @@
     {
       "id": "TASK-015",
       "description": "Route every host method through one table whose entries are service or owner handlers, declare each method's parameters once so the schema and the parser cannot differ, and give every mutating method the same `{request_id, actor}` envelope with deduplication.",
-      "status": "in_progress",
+      "status": "completed",
       "dependencies": [
         "TASK-001"
       ],
@@ -1012,6 +1012,221 @@
           "Identical checks; the rendered tier passes."
         ]
       }
+    },
+    {
+      "id": "TASK-019",
+      "description": "Make Basic, the colour mixer, Presence and the vignette one declarative field-patch module each (a field table plus `compile`), let the host own a planned layer's identity, format and mask, declare single-layer effects with one host lookup of a module's own layer, build the desktop's and the registry's module lists from one function with an availability override, and have the core report whether a stored layer is neutral.",
+      "status": "in_progress",
+      "dependencies": [
+        "TASK-001",
+        "TASK-015"
+      ],
+      "extra_context": [
+        "The four field-patch modules are about 85% the same code: descriptor building, parse, plan with commit or update, payload validation, values, labels, describe and neutrality, plus per-module copies of `validation`, `number`, `canonical`, `is_neutral`, `read_payload`, `locate` and group-reset helpers. Their `plan` re-checks ranges the host's generic check already ran.",
+        "`ActionPlan::Update(Layer)` replaces the whole layer, so every module must remember to copy the host-owned mask; `model.rs` imports a module payload type and holds module effect constants and constructors.",
+        "\"The module's one layer\" is looked up about eight times, two of which ignore mask targets (the preset defect TASK-001 fixed at the call site); `single_layer()` is a trait method where a declared effect flag would do.",
+        "The desktop re-lists `ModuleRegistry::builtin()` and wraps disabled modules in its own `Disabled` provider, with three more copies in tests; it decides neutrality by parsing core payloads and gets field-patch modules wrong, which is known bug TASK-001 (a section's dot stays lit after Reset)."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Consolidation design",
+          "target": "docs/design/consolidation.md",
+          "relevance": "Constraints and the one-path-per-concept table."
+        },
+        {
+          "kind": "file",
+          "label": "Basic module",
+          "target": "crates/lightwell-core/src/modules/basic/mod.rs",
+          "relevance": "A field-patch module."
+        },
+        {
+          "kind": "file",
+          "label": "Registry",
+          "target": "crates/lightwell-core/src/modules/registry.rs",
+          "relevance": "`builtin`, single-layer checks and placement."
+        },
+        {
+          "kind": "file",
+          "label": "Module trait",
+          "target": "crates/lightwell-core/src/modules/mod.rs",
+          "relevance": "`ToolModule`, `ActionPlan`, `StageContext`."
+        },
+        {
+          "kind": "file",
+          "label": "Desktop module list",
+          "target": "crates/lightwell-app/src/app/mod.rs",
+          "relevance": "The re-listed modules and `Disabled`."
+        },
+        {
+          "kind": "file",
+          "label": "Desktop tools state",
+          "target": "crates/lightwell-app/src/state/tools.rs",
+          "relevance": "`neutral`."
+        },
+        {
+          "kind": "file",
+          "label": "Modules and API",
+          "target": "docs/design/modules-and-api.md",
+          "relevance": "The module contract."
+        }
+      ],
+      "acceptance_criteria": [
+        "Each field-patch module is its field table, its `compile` and (Basic) its query; the shared behaviour exists once; `schema.list` and `module.list` output is identical before and after, proved by comparing them.",
+        "A plan names the effect and payload and the host assigns identity, format and mask, preserving the mask on update; module effect constants and constructors leave `model.rs`.",
+        "A single-layer effect is declared on its effect descriptor and every lookup of a module's own layer goes through one host function that respects the mask target.",
+        "One function lists the built-in modules for the registry and the desktop, with an availability override; no `Disabled` wrapper remains.",
+        "`recipe.describe` reports each layer's neutrality from its module and the desktop's section dot reads it, closing the known bug.",
+        "Rendered bytes are identical."
+      ],
+      "test_strategy": {
+        "approach": "unit",
+        "steps": [
+          "Descriptor equality before and after; the existing module, preset, mask and describe tests; a dot test for every module with a neutral form."
+        ],
+        "commands": [
+          "cargo test -p lightwell-core",
+          "cargo test -p lightwell-app",
+          "cargo xtask verify --tier quick"
+        ],
+        "expected_results": [
+          "All pass with identical descriptors and renders."
+        ]
+      }
+    },
+    {
+      "id": "TASK-020",
+      "description": "Give source, analysis and capability jobs one status vocabulary and one status key, and have capability jobs report progress through the activity board instead of their own progress model.",
+      "status": "in_progress",
+      "dependencies": [
+        "TASK-015"
+      ],
+      "extra_context": [
+        "Source jobs answer `state: queued|preparing|ready|failed|cancelled` with string ids; analysis jobs `status: pending|ready|failed|superseded|cancelled`; capability jobs `status: queued|running|succeeded|failed|cancelled|superseded`; even source-job answers mix `state` and `status`.",
+        "Capability jobs keep their own progress fraction and message and are not published to the activity board that `activity.list` reads, which the roadmap already names as follow-up; the desktop polls `module.job.read` every 100 ms."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Consolidation design",
+          "target": "docs/design/consolidation.md",
+          "relevance": "Constraints and the one-path-per-concept table."
+        },
+        {
+          "kind": "file",
+          "label": "Owner",
+          "target": "crates/lightwell-core/src/api/owner.rs",
+          "relevance": "Source jobs."
+        },
+        {
+          "kind": "file",
+          "label": "Analysis jobs",
+          "target": "crates/lightwell-core/src/analysis/jobs.rs",
+          "relevance": "Analysis status."
+        },
+        {
+          "kind": "file",
+          "label": "Capability jobs",
+          "target": "crates/lightwell-core/src/capabilities/jobs.rs",
+          "relevance": "Capability status and progress."
+        },
+        {
+          "kind": "file",
+          "label": "Activity board",
+          "target": "crates/lightwell-core/src/activity.rs",
+          "relevance": "Where long-running work is published."
+        },
+        {
+          "kind": "file",
+          "label": "Performance panel design",
+          "target": "docs/design/performance-panel.md",
+          "relevance": "The activity board contract."
+        }
+      ],
+      "acceptance_criteria": [
+        "One job-status type and one `status` key serve all three job kinds and their API answers, with the kind-specific states documented.",
+        "Capability jobs appear on the activity board with their progress, and their own progress model is gone.",
+        "The desktop and docs use the new shapes."
+      ],
+      "test_strategy": {
+        "approach": "unit",
+        "steps": [
+          "Update the job and activity tests; add one showing a capability job's progress on the board."
+        ],
+        "commands": [
+          "cargo test -p lightwell-core",
+          "cargo test -p lightwell-app",
+          "cargo xtask verify --tier quick"
+        ],
+        "expected_results": [
+          "All pass."
+        ]
+      }
+    },
+    {
+      "id": "TASK-021",
+      "description": "Drive every desktop gesture that uses the core draft lifecycle through one pure draft state machine and one gesture field, so the one-draft-per-client rule is a type invariant, and fix each draft race the mask work found, each with a test.",
+      "status": "in_progress",
+      "dependencies": [
+        "TASK-002",
+        "TASK-015"
+      ],
+      "extra_context": [
+        "The slider keeps its draft in `SliderDraft`; the mask gesture keeps the same state machine as loose `Editor` fields; begin, commit and reapply tasks and their messages exist twice; the conflict rule exists three times; the one-draft rule is hand-checked at about a dozen sites with different subsets.",
+        "Races found in the mask gesture: Apply before `draft.begin` answers loses the commit; a late `draft.begin` answer is adopted by a newer gesture; Discard during an in-flight commit races it; a reapply answer carries no draft id; the slider's Discard does not cancel queued drafted frames; `draft.cancel` and a `session.state` read race; the proxy refit ignores the mask draft.",
+        "The crop's desktop-local draft moves onto the core lifecycle in a later task; keep its gesture separate here but make it share the one gesture field and refusal."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Consolidation design",
+          "target": "docs/design/consolidation.md",
+          "relevance": "Constraints and the one-path-per-concept table."
+        },
+        {
+          "kind": "file",
+          "label": "Slider driver",
+          "target": "crates/lightwell-app/src/app/slider.rs",
+          "relevance": "`SliderDraft` and its lifecycle."
+        },
+        {
+          "kind": "file",
+          "label": "Mask driver",
+          "target": "crates/lightwell-app/src/app/masks.rs",
+          "relevance": "The mask gesture's draft fields and handlers."
+        },
+        {
+          "kind": "file",
+          "label": "Desktop tasks",
+          "target": "crates/lightwell-app/src/app/tasks.rs",
+          "relevance": "Draft owner calls."
+        },
+        {
+          "kind": "file",
+          "label": "Performance rules",
+          "target": "docs/engineering/performance-rules.md",
+          "relevance": "Rule 12: the synchronous `draft.set`."
+        }
+      ],
+      "acceptance_criteria": [
+        "One pure draft state machine and one `gesture` field serve the slider and mask gestures; the duplicated tasks, messages and conflict rules are gone.",
+        "One function answers whether a new gesture may start, and every site uses it.",
+        "Each listed race has a test that fails before the change and passes after.",
+        "`draft.set` stays synchronous for both gestures."
+      ],
+      "test_strategy": {
+        "approach": "unit",
+        "steps": [
+          "Unit tests of the state machine; desktop tests for each race; the existing slider and mask tests."
+        ],
+        "commands": [
+          "cargo test -p lightwell-app",
+          "cargo xtask verify --tier quick"
+        ],
+        "expected_results": [
+          "All pass."
+        ]
+      }
     }
   ],
   "execution_waves": [
@@ -1045,7 +1260,10 @@
         "TASK-010",
         "TASK-011",
         "TASK-012",
-        "TASK-017"
+        "TASK-017",
+        "TASK-019",
+        "TASK-020",
+        "TASK-021"
       ]
     }
   ]
